@@ -189,6 +189,59 @@ def _compute_phase_layers(
     return phase_of
 
 
+def _resolve_expanded_dependencies(
+    tree: PlanTree,
+    task_id: int,
+    *,
+    subgraph_ids: Set[int],
+    expand_composites: bool,
+) -> List[int]:
+    """Resolve a task's in-scope dependencies, expanding composite deps to leaves."""
+    node = tree.nodes.get(task_id)
+    if node is None:
+        return []
+
+    resolved: List[int] = []
+    for dep_id in getattr(node, "dependencies", []) or []:
+        candidate_ids: List[int]
+        if dep_id in subgraph_ids:
+            candidate_ids = [dep_id]
+        elif expand_composites and dep_id in tree.nodes:
+            candidate_ids = [
+                leaf_id
+                for leaf_id in _collect_leaf_ids(tree, [dep_id])
+                if leaf_id in subgraph_ids
+            ]
+        else:
+            candidate_ids = []
+
+        for candidate_id in candidate_ids:
+            if candidate_id == task_id:
+                continue
+            if candidate_id not in resolved:
+                resolved.append(candidate_id)
+
+    return resolved
+
+
+def _build_scoped_dependency_map(
+    tree: PlanTree,
+    *,
+    subgraph_ids: Set[int],
+    expand_composites: bool,
+) -> Dict[int, List[int]]:
+    """Build dependency map for phase layering and item rendering."""
+    deps_map: Dict[int, List[int]] = {}
+    for tid in subgraph_ids:
+        deps_map[tid] = _resolve_expanded_dependencies(
+            tree,
+            tid,
+            subgraph_ids=subgraph_ids,
+            expand_composites=expand_composites,
+        )
+    return deps_map
+
+
 # ---------------------------------------------------------------------------
 # Phase semantic labels (heuristic)
 # ---------------------------------------------------------------------------
@@ -326,15 +379,11 @@ def build_todo_list(
         return TodoList(target_task_id=target_task_id)
 
     # 3. Build dependency map for in-scope tasks
-    deps_map: Dict[int, List[int]] = {}
-    for tid in subgraph_ids:
-        node = tree.nodes.get(tid)
-        if node:
-            deps_map[tid] = [
-                d for d in node.dependencies if d in subgraph_ids
-            ]
-        else:
-            deps_map[tid] = []
+    deps_map = _build_scoped_dependency_map(
+        tree,
+        subgraph_ids=subgraph_ids,
+        expand_composites=expand_composites,
+    )
 
     # 4. Compute phase layers
     phase_of = _compute_phase_layers(subgraph_ids, deps_map)
@@ -357,9 +406,7 @@ def build_todo_list(
                     name=node.name,
                     instruction=node.instruction,
                     status=node.status,
-                    dependencies=[
-                        d for d in node.dependencies if d in subgraph_ids
-                    ],
+                    dependencies=list(deps_map.get(tid, [])),
                     phase=p,
                 )
             )
@@ -372,10 +419,86 @@ def build_todo_list(
     return TodoList(target_task_id=target_task_id, phases=phases)
 
 
+def build_full_plan_todo_list(
+    tree: PlanTree,
+    *,
+    expand_composites: bool = True,
+) -> TodoList:
+    """Build a phased TodoList covering the *entire* plan tree.
+
+    Unlike :func:`build_todo_list` which starts from a single target task,
+    this function computes phase layers for every node in the tree (or their
+    atomic leaf descendants when *expand_composites* is True).
+
+    This is the main entry point for the "auto-execute entire plan" feature:
+    the returned ``TodoList.pending_order`` gives a dependency-correct
+    execution sequence; the ``phases`` attribute groups tasks into
+    topological stages that can be presented to the user.
+
+    Parameters
+    ----------
+    tree : PlanTree
+        The plan tree containing all tasks.
+    expand_composites : bool
+        If True, non-leaf (composite) tasks are expanded to their atomic
+        leaf descendants so that only executable tasks appear.
+
+    Returns
+    -------
+    TodoList with ``target_task_id`` set to 0 (plan-level sentinel).
+    """
+    all_ids: Set[int] = set(tree.nodes.keys())
+
+    if expand_composites:
+        expanded = _collect_leaf_ids(tree, sorted(all_ids))
+        subgraph_ids = set(expanded)
+    else:
+        subgraph_ids = all_ids
+
+    if not subgraph_ids:
+        return TodoList(target_task_id=0)
+
+    deps_map = _build_scoped_dependency_map(
+        tree,
+        subgraph_ids=subgraph_ids,
+        expand_composites=expand_composites,
+    )
+
+    phase_of = _compute_phase_layers(subgraph_ids, deps_map)
+
+    max_phase = max(phase_of.values()) if phase_of else 0
+    phases: List[TodoPhase] = []
+    for p in range(max_phase + 1):
+        task_ids_in_phase = sorted(tid for tid, ph in phase_of.items() if ph == p)
+        items: List[TodoItem] = []
+        for tid in task_ids_in_phase:
+            node = tree.nodes.get(tid)
+            if node is None:
+                continue
+            items.append(
+                TodoItem(
+                    task_id=tid,
+                    name=node.name,
+                    instruction=node.instruction,
+                    status=node.status,
+                    dependencies=list(deps_map.get(tid, [])),
+                    phase=p,
+                )
+            )
+        label = f"Phase {p + 1}"
+        phases.append(TodoPhase(phase_id=p, label=label, items=items))
+
+    assign_phase_labels(phases)
+
+    return TodoList(target_task_id=0, phases=phases)
+
+
 __all__ = [
     "TodoItem",
     "TodoPhase",
     "TodoList",
     "build_todo_list",
+    "build_full_plan_todo_list",
     "assign_phase_labels",
+    "_compute_phase_layers",
 ]

@@ -24,7 +24,10 @@ from app.services.plans.dependency_planner import DependencyPlan, compute_depend
 from app.services.plans.plan_decomposer import PlanDecomposer, DecompositionResult
 from app.services.plans.plan_executor import ExecutionConfig, PlanExecutor
 from app.services.plans.task_verification import TaskVerificationService
-from app.services.plans.todo_list import build_todo_list as _build_todo_list
+from app.services.plans.todo_list import (
+    build_todo_list as _build_todo_list,
+    build_full_plan_todo_list as _build_full_plan_todo_list,
+)
 from app.services.plans.decomposition_jobs import (
     execute_decomposition_job,
     plan_decomposition_jobs,
@@ -1175,6 +1178,559 @@ def get_plan_execution_summary(plan_id: int, request: Request):
         running=status_counts["running"],
         pending=status_counts["pending"],
     )
+
+
+class ExecuteFullPlanRequest(BaseModel):
+    deep_think: bool = True
+    async_mode: bool = True
+    session_id: Optional[str] = None
+    paper_mode: bool = Field(default_factory=_default_plan_paper_mode)
+    skip_completed: bool = Field(
+        True, description="Skip tasks already marked completed"
+    )
+    stop_on_failure: bool = Field(
+        True, description="Stop the chain when a task fails"
+    )
+
+
+class ExecuteFullPlanResponse(BaseModel):
+    success: bool
+    message: str
+    plan_id: int
+    todo_list: Optional[Dict[str, Any]] = None
+    job: Optional[Dict[str, Any]] = None
+    result: Optional[Dict[str, Any]] = None
+
+
+def _todo_list_to_dict(todo: Any, plan_id: int) -> Dict[str, Any]:
+    phases_out = []
+    for phase in todo.phases:
+        phases_out.append({
+            "phase_id": phase.phase_id,
+            "label": phase.label,
+            "status": phase.status,
+            "total": phase.total,
+            "completed": phase.completed_count,
+            "items": [
+                {
+                    "task_id": item.task_id,
+                    "name": item.name,
+                    "instruction": item.instruction,
+                    "status": item.status,
+                    "dependencies": item.dependencies,
+                    "phase": item.phase,
+                }
+                for item in phase.items
+            ],
+        })
+    return {
+        "plan_id": plan_id,
+        "target_task_id": todo.target_task_id,
+        "total_tasks": todo.total_tasks,
+        "completed_tasks": todo.completed_tasks,
+        "phases": phases_out,
+        "execution_order": todo.execution_order,
+        "pending_order": todo.pending_order,
+        "summary": todo.summary(),
+    }
+
+
+def _acquire_plan_execution_lock(plan_id: int, task_id: int = 0) -> Optional[threading.Lock]:
+    """Acquire a non-blocking execution lock for a plan/task scope."""
+    lock_key = (plan_id, task_id)
+    with _task_execution_locks_guard:
+        execution_lock = _task_execution_locks.get(lock_key)
+        if execution_lock is None:
+            execution_lock = threading.Lock()
+            _task_execution_locks[lock_key] = execution_lock
+        if not execution_lock.acquire(blocking=False):
+            return None
+        return execution_lock
+
+
+def _release_plan_execution_lock(
+    plan_id: int,
+    task_id: int,
+    execution_lock: threading.Lock,
+) -> None:
+    """Release and remove a previously acquired execution lock."""
+    lock_key = (plan_id, task_id)
+    with _task_execution_locks_guard:
+        try:
+            execution_lock.release()
+        except RuntimeError:
+            pass
+        if _task_execution_locks.get(lock_key) is execution_lock:
+            _task_execution_locks.pop(lock_key, None)
+
+
+@plan_router.get(
+    "/{plan_id}/full-todo-list",
+    response_model=TodoListResponse,
+    summary="Get phased todo-list for the entire plan",
+)
+def get_full_plan_todo_list(
+    plan_id: int,
+    request: Request,
+    expand_composites: bool = Query(True, description="Expand composite tasks to atomic leaves"),
+):
+    """Build a phased TodoList covering ALL tasks in the plan tree.
+
+    Unlike the per-task ``/todo-list`` endpoint which resolves dependencies
+    of a single target task, this computes topological phase layers for every
+    node in the plan (or their atomic leaf descendants).
+    """
+    tree = _load_authorized_plan_tree(plan_id, request)
+    todo = _build_full_plan_todo_list(tree, expand_composites=expand_composites)
+
+    phases_out: List[TodoPhaseResponse] = []
+    for phase in todo.phases:
+        items_out = [
+            TodoItemResponse(
+                task_id=item.task_id,
+                name=item.name,
+                instruction=item.instruction,
+                status=item.status,
+                dependencies=item.dependencies,
+                phase=item.phase,
+            )
+            for item in phase.items
+        ]
+        phases_out.append(
+            TodoPhaseResponse(
+                phase_id=phase.phase_id,
+                label=phase.label,
+                status=phase.status,
+                total=phase.total,
+                completed=phase.completed_count,
+                items=items_out,
+            )
+        )
+
+    return TodoListResponse(
+        plan_id=plan_id,
+        target_task_id=todo.target_task_id,
+        total_tasks=todo.total_tasks,
+        completed_tasks=todo.completed_tasks,
+        phases=phases_out,
+        execution_order=todo.execution_order,
+        pending_order=todo.pending_order,
+        summary=todo.summary(),
+    )
+
+
+@plan_router.post(
+    "/{plan_id}/execute-full",
+    response_model=ExecuteFullPlanResponse,
+    summary="Execute entire plan via phased TodoList",
+)
+def execute_full_plan(
+    plan_id: int,
+    raw_request: Request,
+    request: Optional[ExecuteFullPlanRequest] = Body(default=None),
+):
+    """Execute all pending tasks in the plan, ordered by TodoList phases.
+
+    This is the primary "auto-execute entire plan" endpoint. It:
+    1. Builds a full-plan TodoList with topological phase layers
+    2. Filters to only pending tasks (unless *skip_completed* is False)
+    3. Executes tasks phase-by-phase in dependency order
+    """
+    request = request or ExecuteFullPlanRequest()
+    tree = _load_authorized_plan_tree(plan_id, raw_request)
+
+    todo = _build_full_plan_todo_list(tree, expand_composites=True)
+
+    task_order = list(todo.execution_order)
+    if request.skip_completed:
+        task_order = list(todo.pending_order)
+
+    if not task_order:
+        return ExecuteFullPlanResponse(
+            success=True,
+            message="All tasks are already completed.",
+            plan_id=plan_id,
+            todo_list=_todo_list_to_dict(todo, plan_id),
+        )
+
+    todo_dict = _todo_list_to_dict(todo, plan_id)
+
+    if not request.async_mode:
+        executed: List[int] = []
+        failed: List[int] = []
+        skipped: List[int] = []
+        for tid in task_order:
+            session_ctx = {
+                "session_id": request.session_id,
+                "user_message": f"Execute full plan (plan_id={plan_id}), task #{tid}.",
+                "chat_history": [],
+                "recent_tool_results": [],
+                "deep_think_enabled": bool(request.deep_think),
+                "paper_mode": bool(request.paper_mode),
+            }
+            exec_config = ExecutionConfig(
+                session_context=session_ctx,
+                paper_mode=bool(request.paper_mode),
+            )
+            try:
+                result = _plan_executor.execute_task(plan_id, tid, config=exec_config)
+            except Exception as exc:
+                failed.append(tid)
+                if request.stop_on_failure:
+                    break
+                continue
+
+            if result.status == "completed":
+                executed.append(tid)
+            elif result.status == "skipped":
+                skipped.append(tid)
+                if request.stop_on_failure:
+                    break
+            else:
+                failed.append(tid)
+                if request.stop_on_failure:
+                    break
+
+        success = len(failed) == 0 and len(skipped) == 0
+        return ExecuteFullPlanResponse(
+            success=success,
+            message=(
+                "Full plan execution completed successfully."
+                if success
+                else f"Full plan execution finished: {len(executed)} done, {len(failed)} failed, {len(skipped)} skipped."
+            ),
+            plan_id=plan_id,
+            todo_list=todo_dict,
+            result={
+                "execution_order": task_order,
+                "executed_task_ids": executed,
+                "failed_task_ids": failed,
+                "skipped_task_ids": skipped,
+            },
+        )
+
+    execution_lock = _acquire_plan_execution_lock(plan_id, 0)
+    if execution_lock is None:
+        return ExecuteFullPlanResponse(
+            success=False,
+            message=f"Plan {plan_id} is already being executed. Please wait.",
+            plan_id=plan_id,
+            todo_list=todo_dict,
+        )
+
+    owner_id = get_request_owner_id(raw_request)
+    job: Optional[Any] = None
+    try:
+        job = plan_decomposition_jobs.create_job(
+            plan_id=plan_id,
+            task_id=None,
+            mode="full_plan",
+            job_type="plan_execute",
+            owner_id=owner_id,
+            session_id=request.session_id,
+            params={
+                "include_dependencies": True,
+                "include_subtasks": True,
+                "deep_think": request.deep_think,
+                "paper_mode": request.paper_mode,
+                "steps": len(task_order),
+                "stop_on_failure": request.stop_on_failure,
+            },
+            metadata={
+                "session_id": request.session_id,
+                "plan_id": plan_id,
+                "plan_title": tree.title,
+                "target_task_id": None,
+                "task_order": task_order,
+                "todo_phases": len(todo.phases),
+            },
+        )
+        plan_decomposition_jobs.append_log(
+            job.job_id,
+            "info",
+            "Full plan execution queued in background.",
+            {
+                "plan_id": plan_id,
+                "job_type": job.job_type,
+                "steps": len(task_order),
+                "phases": len(todo.phases),
+                "deep_think": request.deep_think,
+                "paper_mode": request.paper_mode,
+                "stop_on_failure": request.stop_on_failure,
+            },
+        )
+
+        def _locked_run(**kwargs):
+            try:
+                _run_full_plan_job(**kwargs)
+            finally:
+                _release_plan_execution_lock(plan_id, 0, execution_lock)
+
+        thread = threading.Thread(
+            target=_locked_run,
+            kwargs={
+                "job_id": job.job_id,
+                "plan_id": plan_id,
+                "task_order": task_order,
+                "deep_think": request.deep_think,
+                "session_id": request.session_id,
+                "paper_mode": request.paper_mode,
+                "stop_on_failure": request.stop_on_failure,
+            },
+            daemon=True,
+        )
+        thread.start()
+    except Exception as exc:
+        if job is not None:
+            try:
+                plan_decomposition_jobs.mark_failure(
+                    job.job_id,
+                    f"Failed to start full plan execution: {exc}",
+                    result={
+                        "plan_id": plan_id,
+                        "execution_order": task_order,
+                        "executed_task_ids": [],
+                        "failed_task_ids": [],
+                        "skipped_task_ids": [],
+                        "steps": [],
+                    },
+                )
+            except Exception:
+                pass
+        _release_plan_execution_lock(plan_id, 0, execution_lock)
+        raise
+
+    return ExecuteFullPlanResponse(
+        success=True,
+        message="Full plan execution started in background.",
+        plan_id=plan_id,
+        todo_list=todo_dict,
+        job=job.to_payload(),
+        result={"job_id": job.job_id, "status": job.status},
+    )
+
+
+def _run_full_plan_job(
+    *,
+    job_id: str,
+    plan_id: int,
+    task_order: List[int],
+    deep_think: bool = True,
+    session_id: Optional[str] = None,
+    paper_mode: bool = False,
+    stop_on_failure: bool = True,
+) -> None:
+    """Background execution wrapper for full-plan TodoList-based execution."""
+    token = set_current_job(job_id)
+    executed: List[int] = []
+    failed: List[int] = []
+    skipped: List[int] = []
+    step_summaries: List[Dict[str, Any]] = []
+    total_steps = len(task_order)
+
+    def _build_progress_stats(
+        *,
+        current_step: Optional[int] = None,
+        current_task_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        done_steps = len(executed) + len(failed) + len(skipped)
+        progress_percent = 0
+        if total_steps > 0:
+            progress_percent = int(round((min(done_steps, total_steps) / total_steps) * 100))
+            if done_steps < total_steps:
+                progress_percent = max(0, min(99, progress_percent))
+            else:
+                progress_percent = 100
+        stats_payload: Dict[str, Any] = {
+            "executed": len(executed),
+            "failed": len(failed),
+            "skipped": len(skipped),
+            "done": done_steps,
+            "total_steps": total_steps,
+            "progress_percent": progress_percent,
+        }
+        if current_step is not None:
+            stats_payload["current_step"] = current_step
+        if current_task_id is not None:
+            stats_payload["current_task_id"] = current_task_id
+        return stats_payload
+
+    def _publish_progress(
+        *,
+        current_step: Optional[int] = None,
+        current_task_id: Optional[int] = None,
+    ) -> None:
+        plan_decomposition_jobs.update_stats(job_id, _build_progress_stats(
+            current_step=current_step, current_task_id=current_task_id,
+        ))
+        log_job_event(
+            "info",
+            "Full plan progress update.",
+            {
+                "sub_type": "task_progress",
+                "task_id": current_task_id,
+                "step": current_step,
+                "total": total_steps,
+            },
+        )
+
+    try:
+        plan_decomposition_jobs.mark_running(job_id)
+        log_job_event(
+            "info",
+            "Full plan execution started.",
+            {
+                "plan_id": plan_id,
+                "steps": len(task_order),
+                "task_order": task_order,
+                "deep_think": deep_think,
+                "paper_mode": paper_mode,
+                "stop_on_failure": stop_on_failure,
+            },
+        )
+        _publish_progress(current_step=0, current_task_id=task_order[0] if task_order else None)
+
+        session_ctx = {
+            "session_id": session_id,
+            "user_message": f"Execute full plan (plan_id={plan_id}, deep_think={'on' if deep_think else 'off'}).",
+            "chat_history": [],
+            "recent_tool_results": [],
+            "deep_think_enabled": bool(deep_think),
+            "paper_mode": bool(paper_mode),
+        }
+
+        for idx, task_id in enumerate(task_order, start=1):
+            log_job_event(
+                "info",
+                "Executing plan step.",
+                {"plan_id": plan_id, "step": idx, "total_steps": total_steps, "task_id": task_id},
+            )
+            _publish_progress(current_step=idx, current_task_id=task_id)
+
+            # Re-check task status at execution time so background runs do not
+            # re-execute work that finished after the queue was created.
+            try:
+                current_tree = _plan_repo.get_plan_tree(plan_id)
+                current_node = current_tree.nodes.get(task_id)
+                current_status = (
+                    (current_node.status or "").strip().lower()
+                    if current_node is not None
+                    else ""
+                )
+                if current_status in ("completed", "done"):
+                    executed.append(task_id)
+                    step_summaries.append(
+                        {
+                            "task_id": task_id,
+                            "status": "already_completed",
+                            "duration_sec": 0.0,
+                        }
+                    )
+                    log_job_event(
+                        "info",
+                        "Plan step already completed; skipping execution.",
+                        {"plan_id": plan_id, "task_id": task_id, "step": idx},
+                    )
+                    _publish_progress(current_step=idx, current_task_id=task_id)
+                    continue
+            except Exception as exc:
+                log_job_event(
+                    "warning",
+                    "Failed to re-check task status before executing plan step.",
+                    {"plan_id": plan_id, "task_id": task_id, "step": idx, "error": str(exc)},
+                )
+
+            try:
+                exec_config = ExecutionConfig(session_context=session_ctx, paper_mode=bool(paper_mode))
+                result = _plan_executor.execute_task(plan_id, task_id, config=exec_config)
+            except Exception as exc:
+                failed.append(task_id)
+                step_summaries.append(
+                    {
+                        "task_id": task_id,
+                        "status": "exception",
+                        "duration_sec": None,
+                        "error": str(exc),
+                    }
+                )
+                _publish_progress(current_step=idx, current_task_id=task_id)
+                error = f"Task #{task_id} raised an exception: {exc}"
+                if stop_on_failure:
+                    log_job_event("error", "Plan step raised exception.", {"task_id": task_id, "error": str(exc)})
+                    plan_decomposition_jobs.mark_failure(
+                        job_id, error,
+                        result={"plan_id": plan_id, "execution_order": task_order, "executed_task_ids": executed, "failed_task_ids": failed, "skipped_task_ids": skipped, "steps": step_summaries},
+                        stats=_build_progress_stats(current_step=idx, current_task_id=task_id),
+                    )
+                    return
+                log_job_event(
+                    "warning",
+                    "Plan step raised exception; continuing.",
+                    {"task_id": task_id, "error": str(exc)},
+                )
+                continue
+
+            step_summaries.append({"task_id": task_id, "status": result.status, "duration_sec": result.duration_sec})
+
+            if result.status == "completed":
+                executed.append(task_id)
+                _publish_progress(current_step=idx, current_task_id=task_id)
+                continue
+            if result.status == "skipped":
+                skipped.append(task_id)
+                _publish_progress(current_step=idx, current_task_id=task_id)
+                if stop_on_failure:
+                    error = f"Task #{task_id} was skipped; stopping chain."
+                    log_job_event("warning", "Plan step skipped; stopping.", {"task_id": task_id, "reason": result.content})
+                    plan_decomposition_jobs.mark_failure(
+                        job_id, error,
+                        result={"plan_id": plan_id, "execution_order": task_order, "executed_task_ids": executed, "failed_task_ids": failed, "skipped_task_ids": skipped, "steps": step_summaries},
+                        stats=_build_progress_stats(current_step=idx, current_task_id=task_id),
+                    )
+                    return
+                continue
+
+            failed.append(task_id)
+            _publish_progress(current_step=idx, current_task_id=task_id)
+            if stop_on_failure:
+                error = f"Task #{task_id} failed; stopping chain."
+                log_job_event("error", "Plan step failed; stopping.", {"task_id": task_id, "reason": result.content})
+                plan_decomposition_jobs.mark_failure(
+                    job_id, error,
+                    result={"plan_id": plan_id, "execution_order": task_order, "executed_task_ids": executed, "failed_task_ids": failed, "skipped_task_ids": skipped, "steps": step_summaries},
+                    stats=_build_progress_stats(current_step=idx, current_task_id=task_id),
+                )
+                return
+            log_job_event("warning", "Plan step failed; continuing.", {"task_id": task_id, "reason": result.content})
+
+        _publish_progress(current_step=total_steps, current_task_id=task_order[-1] if task_order else None)
+        final_result = {
+            "plan_id": plan_id,
+            "execution_order": task_order,
+            "executed_task_ids": executed,
+            "failed_task_ids": failed,
+            "skipped_task_ids": skipped,
+            "steps": step_summaries,
+        }
+        final_stats = _build_progress_stats(
+            current_step=total_steps,
+            current_task_id=task_order[-1] if task_order else None,
+        )
+        if failed or skipped:
+            plan_decomposition_jobs.mark_failure(
+                job_id,
+                f"Full plan execution finished with {len(failed)} failed and {len(skipped)} skipped task(s).",
+                result=final_result,
+                stats=final_stats,
+            )
+        else:
+            plan_decomposition_jobs.mark_success(
+                job_id,
+                result=final_result,
+                stats=final_stats,
+            )
+    finally:
+        reset_current_job(token)
 
 
 @plan_router.get(

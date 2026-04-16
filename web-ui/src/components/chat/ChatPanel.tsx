@@ -1,5 +1,5 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
-import { App as AntdApp, Card, Input, Button, Space, Typography, Avatar, Divider, Tooltip, Select } from 'antd';
+import { App as AntdApp, Card, Input, Button, Space, Typography, Avatar, Divider, Tooltip } from 'antd';
 import {
   SendOutlined,
   PaperClipOutlined,
@@ -105,15 +105,6 @@ const ChatPanel: React.FC = () => {
     clearMessages,
     retryLastMessage,
     currentSession,
-    defaultSearchProvider,
-    setDefaultSearchProvider,
-    isUpdatingProvider,
-    defaultBaseModel,
-    setDefaultBaseModel,
-    isUpdatingBaseModel,
-    defaultLLMProvider,
-    setDefaultLLMProvider,
-    isUpdatingLLMProvider,
     uploadFile,
   } = useChatStore(
     (state) => ({
@@ -129,15 +120,6 @@ const ChatPanel: React.FC = () => {
       clearMessages: state.clearMessages,
       retryLastMessage: state.retryLastMessage,
       currentSession: state.currentSession,
-      defaultSearchProvider: state.defaultSearchProvider,
-      setDefaultSearchProvider: state.setDefaultSearchProvider,
-      isUpdatingProvider: state.isUpdatingProvider,
-      defaultBaseModel: state.defaultBaseModel,
-      setDefaultBaseModel: state.setDefaultBaseModel,
-      isUpdatingBaseModel: state.isUpdatingBaseModel,
-      defaultLLMProvider: state.defaultLLMProvider,
-      setDefaultLLMProvider: state.setDefaultLLMProvider,
-      isUpdatingLLMProvider: state.isUpdatingLLMProvider,
       uploadFile: state.uploadFile,
     }),
     shallow
@@ -326,60 +308,6 @@ const ChatPanel: React.FC = () => {
     }
   };
 
-  const handleProviderChange = async (value: string | undefined) => {
-    try {
-      await setDefaultSearchProvider(
-        (value as 'builtin' | 'perplexity' | 'tavily') ?? null
-      );
-    } catch (error) {
-      console.error('Failed to switch search provider:', error);
-      message.error('Failed to switch search provider. Please try again later.');
-    }
-  };
-
-  const handleBaseModelChange = async (value: string | undefined) => {
-    try {
-      await setDefaultBaseModel(
-        (value as 'qwen3.6-plus' | 'qwen3.5-plus' | 'qwen3-max-2026-01-23' | 'qwen-turbo') ?? null
-      );
-    } catch (error) {
-      console.error('Failed to switch base model:', error);
-      message.error('Failed to switch base model. Please try again later.');
-    }
-  };
-
-  const handleLLMProviderChange = async (value: string | undefined) => {
-    try {
-      await setDefaultLLMProvider(
-        (value as 'qwen') ?? null
-      );
-    } catch (error) {
-      console.error('Failed to switch LLM provider:', error);
-      message.error('Failed to switch LLM provider. Please try again later.');
-    }
-  };
-
-  const providerOptions = [
-    { label: 'Built-in Search', value: 'builtin' },
-    { label: 'Perplexity Search', value: 'perplexity' },
-    { label: 'Tavily MCP Search', value: 'tavily' },
-  ];
-
-  const providerValue = defaultSearchProvider ?? undefined;
-  const baseModelValue = defaultBaseModel ?? undefined;
-  const llmProviderValue = defaultLLMProvider ?? undefined;
-
-  const llmProviderOptions = [
-    { label: 'Qwen', value: 'qwen' },
-  ];
-
-  const baseModelOptions = [
-    { label: 'Qwen3.6-Plus', value: 'qwen3.6-plus' },
-    { label: 'Qwen3.5-Plus', value: 'qwen3.5-plus' },
-    { label: 'Qwen3-Max (2026-01-23)', value: 'qwen3-max-2026-01-23' },
-    { label: 'Qwen-Turbo', value: 'qwen-turbo' },
-  ];
-
   if (!chatPanelVisible) {
     return null;
   }
@@ -422,33 +350,6 @@ const ChatPanel: React.FC = () => {
         </Space>
 
         <Space size="small">
-          <Select
-            size="small"
-            value={providerValue}
-            onChange={handleProviderChange}
-            options={providerOptions}
-            style={{ width: 140 }}
-            placeholder="Search provider"
-            disabled={isUpdatingProvider}
-          />
-          <Select
-            size="small"
-            value={llmProviderValue}
-            onChange={handleLLMProviderChange}
-            options={llmProviderOptions}
-            style={{ width: 120 }}
-            placeholder="LLM provider"
-            disabled={isUpdatingLLMProvider}
-          />
-          <Select
-            size="small"
-            value={baseModelValue}
-            onChange={handleBaseModelChange}
-            options={baseModelOptions}
-            style={{ width: 140 }}
-            placeholder="Base model"
-            disabled={isUpdatingBaseModel}
-          />
           <Tooltip title="Clear chat">
             <Button
               type="text"

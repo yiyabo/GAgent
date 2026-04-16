@@ -2578,25 +2578,12 @@ class DeepThinkAgent:
 
     def _build_request_tier_block(self) -> str:
         tier = self._request_tier()
-        floor = (self._capability_floor() or "plain_chat").strip().lower()
         intent_type = str(self.request_profile.get("intent_type") or "").strip().lower()
-        non_plain = floor != "plain_chat"
         local_inspect_note = (
             "- For local inspection requests asking what's inside, schema, columns, previews, or a quick dataset overview, start with file_operations, document_reader, or result_interpreter metadata/profile and keep the path lightweight.\n"
             "- Prefer result_interpreter profile for deterministic row/column counts, sample values, and simple ID-overlap checks on local CSV/TSV-style datasets.\n"
             "- Do not jump to result_interpreter analyze or code_executor unless the user clearly needs calculations, transformations, or plots.\n"
-            if non_plain and intent_type == "local_inspect"
-            else ""
-        )
-        light_tool_note = (
-            "\n- Capability is not plain_chat: use tools when the answer depends on file/workspace/remote state; "
-            "a no-tool guess is not an acceptable substitute for a check you could run.\n"
-            if non_plain
-            else ""
-        )
-        std_tool_note = (
-            "\n- Capability is not plain_chat: prioritize tool-backed facts over stylistic completeness.\n"
-            if non_plain
+            if intent_type == "local_inspect"
             else ""
         )
         if tier == "light":
@@ -2607,7 +2594,8 @@ class DeepThinkAgent:
                 "- Keep the tone professional and plain; avoid decorative emojis or hype.\n"
                 "- Prefer finishing in one short reasoning pass.\n"
                 + local_inspect_note
-                + light_tool_note
+                + "- Use tools when the answer depends on file/workspace/remote state; "
+                "a no-tool guess is not an acceptable substitute for a check you could run.\n"
             )
         if tier == "standard":
             return (
@@ -2617,7 +2605,7 @@ class DeepThinkAgent:
                 "- Keep the tone professional and plain; avoid decorative emojis or hype.\n"
                 "- Prefer low-overhead execution, but do not ignore required evidence.\n"
                 + local_inspect_note
-                + std_tool_note
+                + "- Prioritize tool-backed facts over stylistic completeness.\n"
             )
         if tier == "research":
             return (
@@ -2652,7 +2640,6 @@ class DeepThinkAgent:
         return ""
 
     def _build_capability_floor_block(self) -> str:
-        capability_floor = self._capability_floor() or "plain_chat"
         intent_type = str(self.request_profile.get("intent_type") or "").strip().lower()
         lines = [
             "=== TOOL ACCESS ===",
@@ -2694,7 +2681,7 @@ class DeepThinkAgent:
             "2. Match effort to the request. Default to the lightest path that fully satisfies the user.\n"
             "3. Do NOT start broad web/literature research for greetings, casual follow-ups, simple explanations, or opinion-style questions.\n"
             "4. Use tools when they materially improve correctness or usefulness: latest information, explicit citations, factual verification, file/workspace actions, or complex analysis. "
-            "When CAPABILITY FLOOR is not plain_chat, prefer tool-backed checks for anything that depends on real files, remote services, or run results (unless the user clearly wants opinion-only).\n"
+            "Prefer tool-backed checks for anything that depends on real files, remote services, or run results (unless the user clearly wants opinion-only).\n"
             "5. One precise tool call is better than several redundant calls.\n"
             "6. Conclude as soon as the user's need is satisfied; do not pad the reply with extra background, market analysis, or references unless they help answer the request.\n"
             "7. If the user asks for depth, latest research, or sources, then increase rigor and evidence gathering.\n\n"
@@ -3770,6 +3757,39 @@ class DeepThinkAgent:
                         if self.on_thinking:
                             await self._safe_callback(current_step)
                         continue
+
+                    # --- Early stop for light / standard tiers ---
+                    # When the LLM produces a substantive text answer without
+                    # any tool calls on a low-effort request, treat the content
+                    # as the final answer immediately instead of forcing
+                    # additional (empty) iterations + synthesis.
+                    _tier_for_early_stop = self._request_tier()
+                    _content_for_early_stop = (result.content or "").strip()
+                    if (
+                        _tier_for_early_stop in {"light", "standard"}
+                        and _content_for_early_stop
+                        and len(_content_for_early_stop) >= 20
+                        and not self._is_execute_task_request()
+                        and not self._requires_structured_plan()
+                    ):
+                        final_answer = _content_for_early_stop
+                        confidence = max(confidence, 0.85)
+                        current_step.status = "done"
+                        current_step.finished_at = datetime.now()
+                        thinking_steps.append(current_step)
+                        if self.on_thinking:
+                            await self._safe_callback(current_step)
+                        logger.info(
+                            "[DEEP_THINK_NATIVE] Early stop: tier=%s iteration=%s content_len=%d — "
+                            "treating direct text as final answer",
+                            _tier_for_early_stop,
+                            iteration,
+                            len(_content_for_early_stop),
+                        )
+                        if self.on_final_delta:
+                            await self._stream_final_answer(final_answer)
+                        break
+
                     current_step.finished_at = datetime.now()
                     thinking_steps.append(current_step)
                     if self.on_thinking:
@@ -3976,7 +3996,7 @@ class DeepThinkAgent:
             "1. First decide whether the request needs tools at all.\n"
             "2. For simple conversational or high-level requests, reason briefly and answer directly.\n"
             "3. For evidence-heavy or time-sensitive requests, gather targeted evidence with the minimum necessary tool usage.\n"
-            "3a. If capability_floor is not plain_chat and the user asks about files, data, or remote job state, prefer at least one relevant tool call before a final answer.\n"
+            "3a. When the user asks about files, data, or remote job state, prefer at least one relevant tool call before a final answer.\n"
             "4. Call submit_final_answer once the user's request is adequately answered.\n"
             "5. Keep iterative reasoning visible to the user, but concise and relevant.\n\n"
             + "=== AVAILABLE TOOLS ===\n"
@@ -3986,7 +4006,7 @@ class DeepThinkAgent:
             + "\n=== RULES ===\n"
             "- Do NOT call submit_final_answer prematurely.\n"
             "- Do NOT launch broad web/literature research unless the user asks for sources, latest information, deep analysis, or the task is clearly evidence-sensitive.\n"
-            "- Prefer zero-tool or one-tool answers for simple requests when capability_floor is plain_chat; when it is not, prefer necessary tool verification over guessing.\n"
+            "- For simple requests, prefer zero-tool or one-tool answers; for factual questions, prefer tool verification over guessing.\n"
             "- Keep quick checks synchronous; use background workflows only for clearly long-running operations.\n"
             "- Prioritize directness, relevance, and user intent over maximum comprehensiveness.\n"
             "- Prioritize evidence-backed conclusions over speculation when evidence is actually needed.\n"
@@ -5561,14 +5581,11 @@ When ready to answer:
                 )
             return self._get_structured_plan_retry_prompt()
         tier = self._request_tier()
-        floor = (self._capability_floor() or "plain_chat").strip().lower()
         if tier == "light":
-            if floor != "plain_chat":
-                return (
-                    "Light tier but non-plain capability: if you still need file or tool evidence to answer "
-                    "accurately, call the tool now; otherwise finish with submit_final_answer."
-                )
-            return 'This is a light request. Finish now unless another short step is strictly necessary.'
+            return (
+                "Light request: if you still need file or tool evidence to answer "
+                "accurately, call the tool now; otherwise finish with submit_final_answer."
+            )
         if tier == "standard":
             return 'Prefer answering now. Continue only if one more brief step materially improves the response.'
         if iteration >= self.max_iterations - 1:
@@ -6474,65 +6491,25 @@ When ready to answer:
         return self._build_structured_fallback(steps, user_query)
 
     async def _generate_summary(self, steps: List[ThinkingStep], user_query: str) -> str:
-        """Generate a concise DeepThink summary via LLM in strict mode."""
-        if not steps:
-            raise DeepThinkProtocolError(
-                "DeepThink summary generation requires at least one thinking step."
-            )
+        """Build a concise DeepThink summary from visible steps (no LLM call).
 
-        if not hasattr(self.llm_client, "chat_async"):
-            raise DeepThinkProtocolError(
-                "LLM client does not support chat_async required for summary generation."
-            )
-
-        usage_counts = self._collect_tool_usage_counts(steps)
-        tool_stats_line = self._format_tool_usage_counts(usage_counts)
-        tools_used_unique = list(usage_counts.keys())
+        Previous implementation made an extra LLM API call here, which added
+        1-10 seconds of latency *after* the final answer was already streamed
+        to the user, delaying the ``final`` SSE event and keeping the UI in a
+        "still thinking" state.  The frontend ``getProcessSummary`` already has
+        a fallback that builds the summary from step display texts, so an LLM
+        call is unnecessary.
+        """
         language = detect_reasoning_language(user_query)
-
-        steps_lines: List[str] = []
-        for step in self._select_steps_for_summary(steps):
+        selected = self._select_steps_for_summary(steps)
+        labels: List[str] = []
+        for step in selected:
             visible = build_user_visible_step(step, language=language)
             display_text = str(visible.get("display_text") or "").strip()
-            if not display_text:
-                display_text = _localized_text(
-                    language,
-                    "处理当前步骤",
-                    "Processing the current step",
-                )
-            steps_lines.append(f"- Step {step.iteration}: {display_text}")
-        steps_text = "\n".join(steps_lines)
-
-        prompt = (
-            f"User question:\n{user_query[:200]}\n\n"
-            "Write a concise thinking summary for the user in the same language as the user question.\n"
-            "Requirements:\n"
-            "- Use 1 short sentence for very simple flows, or at most 2 short sentences for tool-heavy flows.\n"
-            "- Describe the visible progression, not hidden internal deliberation.\n"
-            "- Do not use phrases like 'I should', 'the user is asking', or other internal self-talk.\n"
-            "- Keep the tone product-like and easy to scan.\n"
-            f"- {PROFESSIONAL_STYLE_INSTRUCTION}\n\n"
-            "Visible steps:\n"
-            f"{steps_text}\n"
-            f"Tools used: {', '.join(sorted(tools_used_unique)) if tools_used_unique else 'None'}\n"
-            f"Tool call counts: {tool_stats_line if tool_stats_line else 'None'}\n\n"
-            "Summary:"
-        )
-
-        try:
-            summary = await asyncio.wait_for(
-                self.llm_client.chat_async(prompt=prompt, max_tokens=150),
-                timeout=10,
-            )
-        except Exception as exc:
-            raise DeepThinkProtocolError(
-                "LLM summary generation failed in strict mode."
-            ) from exc
-
-        cleaned = sanitize_professional_response_text(str(summary or "").strip())
-        if len(cleaned) <= 10:
-            raise DeepThinkProtocolError(
-                "LLM summary output is empty or too short in strict mode."
-            )
-        normalized = sanitize_reasoning_text(cleaned, language=language, max_chars=None) or cleaned
-        return sanitize_professional_response_text(normalized)
+            if display_text:
+                labels.append(display_text)
+        if len(labels) > 1:
+            return " → ".join(labels[:3])
+        if labels:
+            return labels[0]
+        return _default_deepthink_summary(user_query)

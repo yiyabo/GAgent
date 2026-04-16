@@ -5,9 +5,7 @@ This module contains concrete implementations of various tools
 that can be used by AI agents.
 """
 
-from .database_query import database_query_tool
 from .file_operations import file_operations_tool
-from .internal_api import internal_api_tool
 from .graph_rag import graph_rag_tool
 from .web_search import web_search_tool
 from .code_executor import code_executor_tool
@@ -28,8 +26,6 @@ from .terminal_session import terminal_session_tool
 __all__ = [
     "web_search_tool",
     "file_operations_tool",
-    "database_query_tool",
-    "internal_api_tool",
     "graph_rag_tool",
     "code_executor_tool",
     "document_reader_tool",

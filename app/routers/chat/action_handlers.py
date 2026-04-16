@@ -527,7 +527,7 @@ def _extract_subject_from_tool_call(
                 "aliases": build_subject_aliases(path, canonical_ref),
             }
     if tool_name == "vision_reader":
-        path = str(params.get("image_path") or "").strip()
+        path = str(params.get("image_path") or params.get("file_path") or "").strip()
         if path:
             canonical_ref = normalize_tool_path(path, active_subject=active_subject)
             return {
@@ -577,11 +577,17 @@ def _normalize_local_tool_params(agent: Any, tool_name: str, params: Dict[str, A
             normalized.get("file_path"),
             active_subject=active_subject,
         )
-    elif tool_name == "vision_reader" and isinstance(normalized.get("image_path"), str):
-        normalized["image_path"] = normalize_tool_path(
-            normalized.get("image_path"),
-            active_subject=active_subject,
-        )
+    elif tool_name == "vision_reader":
+        if isinstance(normalized.get("image_path"), str):
+            normalized["image_path"] = normalize_tool_path(
+                normalized.get("image_path"),
+                active_subject=active_subject,
+            )
+        if isinstance(normalized.get("file_path"), str):
+            normalized["file_path"] = normalize_tool_path(
+                normalized.get("file_path"),
+                active_subject=active_subject,
+            )
     elif tool_name == "result_interpreter":
         if isinstance(normalized.get("file_path"), str):
             normalized["file_path"] = normalize_tool_path(
@@ -903,18 +909,17 @@ def _enforce_capability_guard(
     tool_name: str,
     params: Dict[str, Any],
 ) -> Optional[AgentStep]:
-    capability_floor = str((getattr(agent, "extra_context", {}) or {}).get("capability_floor") or "tools").strip()
-    allowed_tools = set(allowed_tools_for_capability_floor(capability_floor)) if capability_floor else set()
-    if capability_floor and tool_name not in allowed_tools:
+    # All tools are always available (capability_floor is unconditionally "tools").
+    # The tool-name allowlist check is kept for defense-in-depth against
+    # unregistered or unknown tool names.
+    allowed_tools = set(allowed_tools_for_capability_floor("tools"))
+    if tool_name not in allowed_tools:
         return _capability_guard_failure(
             agent,
             action,
             tool_name=tool_name,
             params=params,
-            message=(
-                f"Tool '{tool_name}' is not available for capability floor "
-                f"'{capability_floor}'."
-            ),
+            message=f"Tool '{tool_name}' is not a registered tool.",
             error_code="tool_not_available",
         )
 
@@ -1402,13 +1407,13 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
 
     elif tool_name == "vision_reader":
         operation = params.get("operation")
-        image_path = params.get("image_path")
+        image_path = params.get("image_path") or params.get("file_path")
 
         if not operation or not image_path:
             return AgentStep(
                 action=action,
                 success=False,
-                message="vision_reader requires `operation` and `image_path`.",
+                message="vision_reader requires `operation` and `image_path` or `file_path`.",
                 details={"error": "missing_params", "tool": tool_name},
             )
 
@@ -1803,6 +1808,10 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
             sections = [sections]
         if isinstance(sections, list):
             params["sections"] = sections
+
+        article_mode = raw_action_params.get("article_mode")
+        if article_mode is not None:
+            params["article_mode"] = article_mode
 
         max_revisions = raw_action_params.get("max_revisions")
         if max_revisions is not None:

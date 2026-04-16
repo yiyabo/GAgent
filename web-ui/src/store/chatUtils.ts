@@ -508,9 +508,6 @@ export const summaryToChatSession = (summary: ChatSessionSummary): ChatSession =
         current_task_name: summary.current_task_name ?? null,
         last_message_at: lastMessageAt,
         is_active: summary.is_active,
-        defaultSearchProvider: summary.settings?.default_search_provider ?? null,
-        defaultBaseModel: summary.settings?.default_base_model ?? null,
-        defaultLLMProvider: summary.settings?.default_llm_provider ?? null,
         titleSource,
         isUserNamed,
     };

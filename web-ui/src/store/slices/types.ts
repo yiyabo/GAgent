@@ -4,9 +4,6 @@ import {
     ChatMessage,
     Memory,
     UploadedFile,
-    WebSearchProvider,
-    BaseModelOption,
-    LLMProviderOption,
     ChatSessionAutoTitleResult,
     ChatActionSummary,
 } from '@/types';
@@ -29,10 +26,6 @@ export interface ChatState {
     currentPlanTitle: string | null;
     currentTaskId: number | null;
     currentTaskName: string | null;
-    defaultSearchProvider: WebSearchProvider | null;
-    defaultBaseModel: BaseModelOption | null;
-    defaultLLMProvider: LLMProviderOption | null;
-
     // UI Slice State
     inputText: string;
     isTyping: boolean;
@@ -40,9 +33,6 @@ export interface ChatState {
     processingSessionIds: Set<string>;
     /** Per-session run id of the currently active chat run (keyed by session processing key). */
     activeRunIds: Map<string, string>;
-    isUpdatingProvider: boolean;
-    isUpdatingBaseModel: boolean;
-    isUpdatingLLMProvider: boolean;
     chatPanelVisible: boolean;
     chatPanelWidth: number;
 
@@ -87,10 +77,6 @@ export interface ChatState {
     setChatContext: (context: { planId?: number | null; planTitle?: string | null; taskId?: number | null; taskName?: string | null }) => void;
     clearChatContext: () => void;
     setCurrentWorkflowId: (workflowId: string | null) => void;
-    setDefaultSearchProvider: (provider: WebSearchProvider | null) => Promise<void>;
-    setDefaultBaseModel: (model: BaseModelOption | null) => Promise<void>;
-    setDefaultLLMProvider: (provider: LLMProviderOption | null) => Promise<void>;
-
     // UI Actions
     setInputText: (text: string) => void;
     setIsTyping: (typing: boolean) => void;

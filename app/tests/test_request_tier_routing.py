@@ -296,7 +296,6 @@ def test_file_followup_inherits_active_subject_and_keeps_local_inspect_tools() -
     assert decision.request_route_mode == "auto_deepthink"
     assert decision.capability_floor == "tools"
     assert decision.subject_resolution["source"] == "inherited"
-    assert decision.simple_channel_allowed is False
 
     profile = build_request_tier_profile(
         decision,
@@ -381,7 +380,6 @@ def test_manual_deepthink_followup_keeps_local_inspect_floor() -> None:
     assert decision.request_tier == "light"
     assert decision.request_route_mode == "manual_deepthink"
     assert decision.capability_floor == "tools"
-    assert decision.simple_channel_allowed is False
 
     profile = build_request_tier_profile(
         decision,
@@ -431,7 +429,7 @@ def test_phagescope_remote_verify_elevates_to_research_with_phagescope_tool() ->
 
 
 def test_phagescope_task_download_outputs_elevates_to_research_without_anchor() -> None:
-    """Log regression: English 'task' + 下载/输出/验证 + module names must not fall through to plain_chat."""
+    """Log regression: English 'task' + 下载/输出/验证 + module names must route to research."""
     decision = resolve_request_routing(
         message="/think 下载 task 38619 的 quality 和 annotation 输出进行验证",
         context={},
@@ -572,7 +570,6 @@ def test_local_mutation_followup_routes_to_execute_with_inherited_subject() -> N
     assert decision.request_tier == "execute"
     assert decision.request_route_mode == "auto_deepthink"
     assert decision.capability_floor == "tools"
-    assert decision.simple_channel_allowed is False
     assert decision.subject_resolution["source"] == "inherited"
 
     profile = build_request_tier_profile(
@@ -585,7 +582,7 @@ def test_local_mutation_followup_routes_to_execute_with_inherited_subject() -> N
 
 
 def test_reunzip_short_followup_routes_without_active_subject_in_context() -> None:
-    """Regression: brief follow-ups like '重新解压' must not fall through to plain_chat."""
+    """Regression: brief follow-ups like '重新解压' must route to execute."""
     decision = resolve_request_routing(
         message="OK的，你重新解压一下吧",
         context={"last_subject_action_class": "inspect"},
@@ -596,7 +593,6 @@ def test_reunzip_short_followup_routes_without_active_subject_in_context() -> No
     )
     assert decision.intent_type == "local_mutation"
     assert decision.capability_floor == "tools"
-    assert decision.simple_channel_allowed is False
 
 
 def test_archive_followups_promote_to_local_mutation() -> None:
@@ -627,7 +623,6 @@ def test_archive_followups_promote_to_local_mutation() -> None:
         )
         assert decision.intent_type == "local_mutation"
         assert decision.capability_floor == "tools"
-        assert decision.simple_channel_allowed is False
 
 
 def test_unrelated_abstract_question_does_not_inherit_local_subject() -> None:
@@ -673,17 +668,15 @@ def test_execute_tier_profile_includes_deliverable_submit() -> None:
 
 
 def test_light_request_no_longer_delegates_to_simple_chat() -> None:
-    """After plain_chat removal, even light requests route via auto_deepthink
-    with full tool access — the simple_chat path is dead code."""
+    """Even light requests route via auto_deepthink with full tool access."""
     decision = resolve_request_routing(message="你好")
 
     assert decision.request_tier == "light"
     assert decision.request_route_mode == "auto_deepthink"
     assert decision.capability_floor == "tools"
-    assert decision.simple_channel_allowed is False
 
 
-def test_start_task_followup_routes_to_execute_instead_of_plain_chat() -> None:
+def test_start_task_followup_routes_to_execute() -> None:
     decision = resolve_request_routing(
         message="你开始完成任务吧",
         history=[
@@ -987,3 +980,24 @@ def test_score_like_rubric_numbers_do_not_trigger_explicit_task_override() -> No
     assert decision.explicit_task_ids == []
     assert decision.requires_plan_optimize is True
     assert decision.plan_request_mode == "update_bound"
+
+
+def test_full_plan_status_question_does_not_trigger_execution() -> None:
+    decision = resolve_request_routing(
+        message="这个计划是不是已经全部完成了？",
+        context={"plan_id": 42},
+    )
+
+    assert decision.full_plan_execution is False
+    assert "full_plan_execution" not in decision.route_reason_codes
+
+
+def test_full_plan_imperative_request_triggers_execution() -> None:
+    decision = resolve_request_routing(
+        message="请执行整个计划",
+        context={"plan_id": 42},
+    )
+
+    assert decision.full_plan_execution is True
+    assert decision.intent_type == "execute_task"
+    assert decision.request_tier == "execute"

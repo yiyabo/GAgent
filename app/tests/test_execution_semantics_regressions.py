@@ -857,6 +857,39 @@ def test_literature_pipeline_forwards_session_id_from_agent(
     assert kwargs.get("session_id") == "test-session"
 
 
+def test_vision_reader_accepts_file_path_alias_from_agent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    agent = _build_minimal_agent()
+
+    monkeypatch.setattr(chat_routes, "get_tool_policy", lambda: {})
+    monkeypatch.setattr(chat_routes, "is_tool_allowed", lambda _name, _policy: True)
+
+    captured: dict[str, object] = {}
+
+    async def _fake_execute_tool(name: str, **kwargs):
+        captured["name"] = name
+        captured["kwargs"] = kwargs
+        return {"success": True, "tool": name, "image_path": kwargs.get("image_path")}
+
+    monkeypatch.setattr(chat_routes, "execute_tool", _fake_execute_tool)
+
+    action = LLMAction(
+        kind="tool_operation",
+        name="vision_reader",
+        parameters={"operation": "read_image", "file_path": "/tmp/chart.png"},
+        order=1,
+    )
+    step = asyncio.run(agent._handle_tool_action(action))
+
+    assert step.success is True
+    assert captured["name"] == "vision_reader"
+    kwargs = captured["kwargs"]
+    assert isinstance(kwargs, dict)
+    assert kwargs.get("image_path") == str(Path("/tmp/chart.png").resolve())
+    assert "file_path" not in kwargs
+
+
 def test_manuscript_writer_aligns_output_path_with_bound_task_contract(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -45,6 +45,31 @@ _PMC_OA_ARCHIVE_TIMEOUT = 45.0
 _PMC_ARTICLE_PAGE_TIMEOUT = 20.0
 _PMC_LEGACY_PDF_TIMEOUT = 30.0
 _PMC_DOWNLOAD_CONCURRENCY = 6
+
+# ---------------------------------------------------------------------------
+# NCBI rate limiter — global singleton
+# NCBI allows 3 requests/sec without API key, 10 with key.
+# We use a conservative 2.5 req/s to stay well within limits across
+# concurrent literature_pipeline invocations.
+# ---------------------------------------------------------------------------
+_NCBI_RATE_LIMIT_INTERVAL = 0.4  # seconds between requests (≈2.5 req/s)
+_NCBI_MAX_RETRIES = 3
+_NCBI_RETRY_BACKOFF_BASE = 2.0  # seconds; doubling each retry
+_ncbi_rate_lock = asyncio.Lock()
+_ncbi_last_request_time: float = 0.0
+
+
+async def _ncbi_throttle() -> None:
+    """Ensure at least _NCBI_RATE_LIMIT_INTERVAL seconds between NCBI calls."""
+    global _ncbi_last_request_time
+    import time
+
+    async with _ncbi_rate_lock:
+        now = time.monotonic()
+        elapsed = now - _ncbi_last_request_time
+        if elapsed < _NCBI_RATE_LIMIT_INTERVAL:
+            await asyncio.sleep(_NCBI_RATE_LIMIT_INTERVAL - elapsed)
+        _ncbi_last_request_time = time.monotonic()
 _COVERAGE_THRESHOLDS = {
     "min_total_studies": 15,
     "min_full_text_studies": 6,
@@ -337,11 +362,35 @@ async def _pubmed_esearch(client: httpx.AsyncClient, term: str, retmax: int) -> 
         "retmax": str(max(1, min(int(retmax), 500))),
         "term": term,
     }
-    r = await client.get(url, params=params, timeout=40.0)
-    r.raise_for_status()
-    payload = r.json()
-    ids = payload.get("esearchresult", {}).get("idlist", []) or []
-    return [str(x) for x in ids if str(x).strip()]
+    last_exc: Optional[Exception] = None
+    for attempt in range(_NCBI_MAX_RETRIES):
+        await _ncbi_throttle()
+        try:
+            r = await client.get(url, params=params, timeout=40.0)
+            if r.status_code == 429:
+                backoff = _NCBI_RETRY_BACKOFF_BASE * (2 ** attempt)
+                logger.warning(
+                    "[LITERATURE] NCBI esearch 429 rate-limited; retrying in %.1fs (attempt %d/%d)",
+                    backoff, attempt + 1, _NCBI_MAX_RETRIES,
+                )
+                await asyncio.sleep(backoff)
+                continue
+            r.raise_for_status()
+            payload = r.json()
+            ids = payload.get("esearchresult", {}).get("idlist", []) or []
+            return [str(x) for x in ids if str(x).strip()]
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 429:
+                last_exc = exc
+                backoff = _NCBI_RETRY_BACKOFF_BASE * (2 ** attempt)
+                logger.warning(
+                    "[LITERATURE] NCBI esearch 429; backoff %.1fs (attempt %d/%d)",
+                    backoff, attempt + 1, _NCBI_MAX_RETRIES,
+                )
+                await asyncio.sleep(backoff)
+                continue
+            raise
+    raise last_exc or RuntimeError("NCBI esearch failed after retries")
 
 
 async def _pubmed_efetch_xml(client: httpx.AsyncClient, pmids: List[str]) -> str:
@@ -351,9 +400,33 @@ async def _pubmed_efetch_xml(client: httpx.AsyncClient, pmids: List[str]) -> str
         "retmode": "xml",
         "id": ",".join(pmids),
     }
-    r = await client.get(url, params=params, timeout=60.0)
-    r.raise_for_status()
-    return r.text
+    last_exc: Optional[Exception] = None
+    for attempt in range(_NCBI_MAX_RETRIES):
+        await _ncbi_throttle()
+        try:
+            r = await client.get(url, params=params, timeout=60.0)
+            if r.status_code == 429:
+                backoff = _NCBI_RETRY_BACKOFF_BASE * (2 ** attempt)
+                logger.warning(
+                    "[LITERATURE] NCBI efetch 429 rate-limited; retrying in %.1fs (attempt %d/%d)",
+                    backoff, attempt + 1, _NCBI_MAX_RETRIES,
+                )
+                await asyncio.sleep(backoff)
+                continue
+            r.raise_for_status()
+            return r.text
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 429:
+                last_exc = exc
+                backoff = _NCBI_RETRY_BACKOFF_BASE * (2 ** attempt)
+                logger.warning(
+                    "[LITERATURE] NCBI efetch 429; backoff %.1fs (attempt %d/%d)",
+                    backoff, attempt + 1, _NCBI_MAX_RETRIES,
+                )
+                await asyncio.sleep(backoff)
+                continue
+            raise
+    raise last_exc or RuntimeError("NCBI efetch failed after retries")
 
 
 _EUROPE_PMC_SEARCH = "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
@@ -556,7 +629,7 @@ async def _biorxiv_fetch_records(
 
     out: List[PaperRecord] = []
     cursor = 0
-    max_pages = 40
+    max_pages = 10
     while len(out) < max_hits and cursor < max_pages:
         url = f"https://api.biorxiv.org/details/biorxiv/{start}/{end}/{cursor}"
         r = await client.get(url, timeout=90.0)
@@ -1149,6 +1222,32 @@ def _resolve_default_output_dir(*, session_id: Optional[str], timestamp: str) ->
     return (_RUNTIME_DIR / "literature" / f"review_pack_{timestamp}").resolve()
 
 
+def _sanitize_relative_subpath(raw_path: Path) -> Path:
+    safe_parts = [part for part in raw_path.parts if part not in ("", ".", "..")]
+    if not safe_parts:
+        return Path("review_pack")
+    return Path(*safe_parts)
+
+
+def _normalize_output_dir(raw_dir: Optional[str], *, default_dir: Path) -> Path:
+    candidate = Path(raw_dir) if raw_dir else default_dir
+    if candidate.is_absolute():
+        return candidate.resolve()
+    if raw_dir:
+        return (_RUNTIME_DIR / "lit_reviews" / _sanitize_relative_subpath(candidate)).resolve()
+    return (_PROJECT_ROOT / candidate).resolve()
+
+
+def _is_within_root(path: Path, root: Path) -> bool:
+    resolved_path = path.resolve()
+    resolved_root = root.resolve()
+    try:
+        resolved_path.relative_to(resolved_root)
+        return True
+    except ValueError:
+        return False
+
+
 def _build_evidence_md(records: List[PaperRecord], topic: str) -> str:
     # Simple grouping: host-interaction vs omics/database by keyword.
     host_kw = re.compile(r"\b(host|receptor|adsorption|infection|lysogen|temperate|CRISPR|immunity)\b", re.I)
@@ -1218,11 +1317,9 @@ async def literature_pipeline_handler(
             "success": False,
             "error": f"session_output_dir_unavailable: {exc}",
         }
-    output_dir = (Path(out_dir) if out_dir else default_dir)
-    if not output_dir.is_absolute():
-        output_dir = (_PROJECT_ROOT / output_dir).resolve()
+    output_dir = _normalize_output_dir(out_dir, default_dir=default_dir)
     # Ensure under project root for safety
-    if not str(output_dir).startswith(str(_PROJECT_ROOT)):
+    if not _is_within_root(output_dir, _PROJECT_ROOT):
         return {"tool": "literature_pipeline", "success": False, "error": "out_dir_outside_project"}
     output_dir.mkdir(parents=True, exist_ok=True)
 

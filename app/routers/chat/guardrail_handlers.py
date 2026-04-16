@@ -150,6 +150,7 @@ async def apply_experiment_fallback(
                 if clean_sections:
                     params["sections"] = clean_sections
         for key in (
+            "article_mode",
             "max_revisions",
             "evaluation_threshold",
             "keep_workspace",
@@ -1026,6 +1027,79 @@ def resolve_all_explicit_task_scope_targets(
         if unmet_out_of_scope:
             continue
         executable.append(task_id)
+
+    return executable
+
+
+def resolve_full_plan_executable_targets(
+    tree: "PlanTree",
+) -> List[int]:
+    """Return ALL executable leaf tasks across the entire plan tree.
+
+    This is used when the user requests full plan execution (e.g.
+    "执行整个计划" / "complete all tasks").  It collects every leaf
+    task that is in an executable status and whose dependencies are
+    all satisfied or will be satisfied by other in-scope tasks.
+
+    Tasks are returned in dependency-aware topological order so the
+    cascade loop can execute them sequentially.
+    """
+    # Collect all root-level task IDs
+    root_ids = tree.root_node_ids()
+    if not root_ids:
+        return []
+
+    # Expand all roots to leaf tasks via DFS
+    leaf_ids: List[int] = []
+    seen: set[int] = set()
+    stack = list(reversed(root_ids))
+    while stack:
+        tid = stack.pop()
+        if tid in seen or not tree.has_node(tid):
+            continue
+        seen.add(tid)
+        children = tree.children_ids(tid)
+        if children:
+            stack.extend(reversed(children))
+        else:
+            leaf_ids.append(tid)
+
+    if not leaf_ids:
+        return []
+
+    # Build scope set for dependency resolution
+    scope_ids = set(leaf_ids)
+
+    # Topological sort via DFS (dependency-first)
+    ordered: List[int] = []
+    visiting: set[int] = set()
+    visited: set[int] = set()
+
+    def _visit(task_id: int) -> None:
+        if task_id in visited or task_id in visiting or not tree.has_node(task_id):
+            return
+        visiting.add(task_id)
+        node = tree.get_node(task_id)
+        for dep_id in getattr(node, "dependencies", []) or []:
+            try:
+                dep_id_int = int(dep_id)
+            except (TypeError, ValueError):
+                continue
+            if dep_id_int in scope_ids:
+                _visit(dep_id_int)
+        visiting.remove(task_id)
+        visited.add(task_id)
+        ordered.append(task_id)
+
+    for task_id in leaf_ids:
+        _visit(task_id)
+
+    # Filter to only executable tasks (pending/failed/skipped)
+    executable: List[int] = []
+    for task_id in ordered:
+        node = tree.get_node(task_id)
+        if is_task_executable_status(node.status):
+            executable.append(task_id)
 
     return executable
 

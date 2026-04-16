@@ -12,7 +12,6 @@ import {
   Tag,
   Tooltip,
   Switch,
-  Select,
 } from 'antd';
 import {
   SendOutlined,
@@ -309,15 +308,6 @@ const ChatMainArea: React.FC = () => {
     loadSessions,
     loadChatHistory,
     toggleMemory,
-    defaultSearchProvider,
-    setDefaultSearchProvider,
-    isUpdatingProvider,
-    defaultBaseModel,
-    setDefaultBaseModel,
-    isUpdatingBaseModel,
-    defaultLLMProvider,
-    setDefaultLLMProvider,
-    isUpdatingLLMProvider,
     historyHasMore,
     historyBeforeId,
     historyLoading,
@@ -338,15 +328,6 @@ const ChatMainArea: React.FC = () => {
       loadSessions: state.loadSessions,
       loadChatHistory: state.loadChatHistory,
       toggleMemory: state.toggleMemory,
-      defaultSearchProvider: state.defaultSearchProvider,
-      setDefaultSearchProvider: state.setDefaultSearchProvider,
-      isUpdatingProvider: state.isUpdatingProvider,
-      defaultBaseModel: state.defaultBaseModel,
-      setDefaultBaseModel: state.setDefaultBaseModel,
-      isUpdatingBaseModel: state.isUpdatingBaseModel,
-      defaultLLMProvider: state.defaultLLMProvider,
-      setDefaultLLMProvider: state.setDefaultLLMProvider,
-      isUpdatingLLMProvider: state.isUpdatingLLMProvider,
       historyHasMore: state.historyHasMore,
       historyBeforeId: state.historyBeforeId,
       historyLoading: state.historyLoading,
@@ -589,62 +570,7 @@ const ChatMainArea: React.FC = () => {
     }
   };
 
-  const handleProviderChange = async (value: string | undefined) => {
-    if (!currentSession) return;
-    try {
-      await setDefaultSearchProvider(
-        (value as 'builtin' | 'perplexity' | 'tavily') ?? null
-      );
-    } catch (err) {
-      console.error('[ChatMainArea] Failed to switch search provider:', err);
-      message.error('Failed to switch search provider. Please try again later.');
-    }
-  };
 
-  const handleBaseModelChange = async (value: string | undefined) => {
-    if (!currentSession) return;
-    try {
-      await setDefaultBaseModel(
-        (value as 'qwen3.6-plus' | 'qwen3.5-plus' | 'qwen3-max-2026-01-23' | 'qwen-turbo') ?? null
-      );
-    } catch (err) {
-      console.error('[ChatMainArea] Failed to switch base model:', err);
-      message.error('Failed to switch base model. Please try again later.');
-    }
-  };
-
-  const handleLLMProviderChange = async (value: string | undefined) => {
-    if (!currentSession) return;
-    try {
-      await setDefaultLLMProvider(
-        (value as 'qwen') ?? null
-      );
-    } catch (err) {
-      console.error('[ChatMainArea] Failed to switch LLM provider:', err);
-      message.error('Failed to switch LLM provider. Please try again later.');
-    }
-  };
-
-  const providerOptions = [
-    { label: 'Built-in Search', value: 'builtin' },
-    { label: 'Perplexity Search', value: 'perplexity' },
-    { label: 'Tavily MCP Search', value: 'tavily' },
-  ];
-
-  const providerValue = defaultSearchProvider ?? undefined;
-  const baseModelValue = defaultBaseModel ?? undefined;
-  const llmProviderValue = defaultLLMProvider ?? undefined;
-
-  const llmProviderOptions = [
-    { label: 'Qwen', value: 'qwen' },
-  ];
-
-  const baseModelOptions = [
-    { label: 'Qwen3.6-Plus', value: 'qwen3.6-plus' },
-    { label: 'Qwen3.5-Plus', value: 'qwen3.5-plus' },
-    { label: 'Qwen3-Max (2026-01-23)', value: 'qwen3-max-2026-01-23' },
-    { label: 'Qwen-Turbo', value: 'qwen-turbo' },
-  ];
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -797,33 +723,6 @@ const ChatMainArea: React.FC = () => {
 
         {/* Controls */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <Select
-            size="small"
-            value={providerValue}
-            onChange={handleProviderChange}
-            options={providerOptions}
-            style={{ width: 130 }}
-            placeholder="Search provider"
-            disabled={isUpdatingProvider}
-          />
-          <Select
-            size="small"
-            value={llmProviderValue}
-            onChange={handleLLMProviderChange}
-            options={llmProviderOptions}
-            style={{ width: 120 }}
-            placeholder="LLM provider"
-            disabled={isUpdatingLLMProvider}
-          />
-          <Select
-            size="small"
-            value={baseModelValue}
-            onChange={handleBaseModelChange}
-            options={baseModelOptions}
-            style={{ width: 140 }}
-            placeholder="Base model"
-            disabled={isUpdatingBaseModel}
-          />
           <Tooltip title={memoryEnabled ? "Memory enabled" : "Memory disabled"}>
             <Switch
               checked={memoryEnabled}

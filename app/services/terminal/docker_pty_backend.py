@@ -410,7 +410,10 @@ class DockerPTYBackend:
         env["USER"] = CONTAINER_USERNAME
         env["LOGNAME"] = CONTAINER_USERNAME
 
-        qwen_model = os.getenv("QWEN_CODE_MODEL", "").strip()
+        qwen_model = (
+            os.getenv("QWEN_CODE_MODEL", "").strip()
+            or os.getenv("QWEN_MODEL", "").strip()
+        )
         if qwen_model:
             env["QWEN_CODE_MODEL"] = qwen_model
 
@@ -438,7 +441,10 @@ class DockerPTYBackend:
                 continue
             cmd.extend(["--add-dir", dir_token])
             seen_dirs.add(dir_token)
-        qwen_model = os.getenv("QWEN_CODE_MODEL", "").strip()
+        qwen_model = (
+            os.getenv("QWEN_CODE_MODEL", "").strip()
+            or os.getenv("QWEN_MODEL", "").strip()
+        )
         if qwen_model:
             cmd.extend(["-m", qwen_model])
         if qwen_session_id:

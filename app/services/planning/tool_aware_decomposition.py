@@ -130,8 +130,6 @@ Analyze whether this task requires external tools and what tool categories are n
                 tool_name = call.get("tool_name")
                 if tool_name == "web_search":
                     requirements.append(ToolRequirement.INFORMATION_RETRIEVAL)
-                elif tool_name == "database_query":
-                    requirements.append(ToolRequirement.DATA_PROCESSING)
                 elif tool_name == "file_operations":
                     requirements.append(ToolRequirement.FILE_MANAGEMENT)
 

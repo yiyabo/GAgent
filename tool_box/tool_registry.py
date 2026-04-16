@@ -15,13 +15,11 @@ from .tools import register_tool
 from .tools_impl.deliverable_submit import deliverable_submit_tool
 from .tools_impl import (
     code_executor_tool,
-    database_query_tool,
     deeppl_tool,
     document_reader_tool,
     file_operations_tool,
     generate_experiment_card_tool,
     graph_rag_tool,
-    internal_api_tool,
     literature_pipeline_tool,
     manuscript_writer_tool,
     paper_replication_tool,
@@ -76,13 +74,7 @@ _TOOL_METADATA: Dict[str, Dict[str, Any]] = {
         "is_concurrent_safe": True,
         "search_hint": "ncbi genbank sequence fasta accession fetch",
     },
-    "database_query": {
-        # NOT is_read_only=True: the "execute" operation runs INSERT/UPDATE/DELETE SQL.
-        # Marking the whole tool as read-only would misclassify execute calls as
-        # observation-only in execute_task probe-loop detection.
-        "is_concurrent_safe": True,
-        "search_hint": "sql database query select table",
-    },
+
     "deeppl": {
         "is_concurrent_safe": True,
         "search_hint": "phage lifestyle prediction temperate lytic",
@@ -143,8 +135,6 @@ _STANDARD_TOOLS: List[Dict[str, Any]] = [
     literature_pipeline_tool,
     review_pack_writer_tool,
     file_operations_tool,
-    database_query_tool,
-    internal_api_tool,
     document_reader_tool,
     vision_reader_tool,
     paper_replication_tool,

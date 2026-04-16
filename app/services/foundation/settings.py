@@ -116,6 +116,11 @@ if _USE_PYDANTIC:
         embedding_cache_size: int = Field(default=10000, env="EMBEDDING_CACHE_SIZE")
         embedding_cache_persistent: bool = Field(default=True, env="EMBEDDING_CACHE_PERSISTENT")
 
+        semantic_intent_enabled: bool = Field(default=False, env="SEMANTIC_INTENT_ENABLED")
+        semantic_intent_high_threshold: float = Field(default=0.72, env="SEMANTIC_INTENT_HIGH_THRESHOLD")
+        semantic_intent_low_threshold: float = Field(default=0.58, env="SEMANTIC_INTENT_LOW_THRESHOLD")
+        semantic_intent_min_gap: float = Field(default=0.08, env="SEMANTIC_INTENT_MIN_GAP")
+
         ctx_debug: bool = Field(default=False, env=["CTX_DEBUG", "CONTEXT_DEBUG"])
         budget_debug: bool = Field(default=False, env="BUDGET_DEBUG")
         decomp_debug: bool = Field(default=False, env="DECOMP_DEBUG")
@@ -294,6 +299,20 @@ else:
             except Exception:
                 self.embedding_cache_size = 10000
             self.embedding_cache_persistent = (os.getenv("EMBEDDING_CACHE_PERSISTENT", "1").strip() == "1")
+
+            self.semantic_intent_enabled = os.getenv("SEMANTIC_INTENT_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
+            try:
+                self.semantic_intent_high_threshold = float(os.getenv("SEMANTIC_INTENT_HIGH_THRESHOLD", "0.72"))
+            except Exception:
+                self.semantic_intent_high_threshold = 0.72
+            try:
+                self.semantic_intent_low_threshold = float(os.getenv("SEMANTIC_INTENT_LOW_THRESHOLD", "0.58"))
+            except Exception:
+                self.semantic_intent_low_threshold = 0.58
+            try:
+                self.semantic_intent_min_gap = float(os.getenv("SEMANTIC_INTENT_MIN_GAP", "0.08"))
+            except Exception:
+                self.semantic_intent_min_gap = 0.08
 
             def _truthy(v: str) -> bool:
                 return str(v).strip().lower() in {"1", "true", "yes", "on"}

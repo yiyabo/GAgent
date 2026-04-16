@@ -48,8 +48,10 @@ class UnifiedToolExecutor:
         # analyze/execute run Claude Code inside; 300s was too short and surfaced as result.error=timeout.
         "result_interpreter": 1200,
         "plan_operation": 1200,
-        "manuscript_writer": 600,
+        "manuscript_writer": 1200,
         "deliverable_submit": 60,
+        "literature_pipeline": 300,
+        "review_pack_writer": 300,
     }
 
     def __init__(self, *, default_timeout: int = DEFAULT_TIMEOUT_SECONDS) -> None:

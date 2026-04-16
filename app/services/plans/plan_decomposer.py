@@ -170,6 +170,12 @@ class DecompositionPromptBuilder:
             "\nSTRICT REQUIREMENTS:",
             "- The entire response must be valid JSON (no comments, no trailing commas, no Markdown code fences).",
             "- `children` must be an array. Each child must include `name`, `instruction`, `dependencies`, `leaf`, and `context`.",
+            "- DEPENDENCY RULES (critical):",
+            "  * `dependencies` specifies which sibling tasks (within THIS batch of children) must complete before this task can start.",
+            "  * Use 0-based INDEX into the `children` array you are generating (e.g. if child[2] depends on child[0], set child[2].dependencies = [0]).",
+            "  * Do NOT reference task IDs from the PLAN OVERVIEW — those are parent/ancestor nodes, not valid dependency targets.",
+            "  * Do NOT invent IDs that do not correspond to a sibling index in your output.",
+            "  * Use an empty array `[]` if the task has no dependencies.",
             "- For paper-writing tasks, include `metadata.paper_section`, `metadata.paper_role`, and `metadata.paper_context_paths` when known.",
             "- For file/data tasks that download files, generate datasets, or write reports/artifacts, include `metadata.acceptance_criteria` when possible. Use deterministic checks only; prefer `file_exists`, `file_nonempty`, `glob_count_at_least`, `text_contains`, `json_field_equals`, `json_field_at_least`, or `pdb_residue_present`.",
             "- `context.sections` must be an array of JSON objects, never strings. Every object must provide `title` and `content` keys.",
@@ -686,18 +692,15 @@ class PlanDecomposer:
     ) -> List[int]:
         """Validate dependency IDs and remove illegal references.
 
+        The LLM is instructed to return **0-based sibling indices** into its
+        ``children`` array.  We attempt index-based resolution first; if that
+        fails we fall back to treating the value as a literal task ID for
+        backward compatibility.
+
         Rules:
-        1. Dependencies must refer to existing nodes in the tree.
+        1. Dependencies must refer to existing nodes in the tree or
+           already-created siblings.
         2. Dependencies must not create cycles with ancestors.
-
-        Args:
-            tree: Current plan tree.
-            parent_id: Parent node ID of the node being created.
-            raw_deps: Raw dependency IDs proposed by LLM.
-            created_sibling_ids: Sibling IDs created in current decomposition pass.
-
-        Returns:
-            Validated dependency ID list.
         """
         if not raw_deps:
             return []
@@ -712,26 +715,76 @@ class PlanDecomposer:
             else:
                 break
 
+        numeric_raw_deps = [
+            dep for dep in raw_deps if isinstance(dep, int)
+        ]
+        in_range_values = [
+            dep for dep in numeric_raw_deps
+            if 0 <= dep < len(created_sibling_ids)
+        ]
+        prefer_index_mode = bool(
+            created_sibling_ids
+            and in_range_values
+            and (
+                0 in in_range_values
+                or (
+                    len(numeric_raw_deps) > 1
+                    and len(in_range_values) == len(numeric_raw_deps)
+                )
+            )
+        )
+
         valid_deps: List[int] = []
-        for dep_id in raw_deps:
-            if dep_id in ancestor_ids:
+        for dep_val in raw_deps:
+            # If the dependency set strongly looks like sibling indices,
+            # resolve indices first to preserve the new prompt contract.
+            if prefer_index_mode and 0 <= dep_val < len(created_sibling_ids):
+                resolved_id = created_sibling_ids[dep_val]
+                if resolved_id not in ancestor_ids:
+                    if resolved_id not in valid_deps:
+                        valid_deps.append(resolved_id)
+                    continue
+                else:
+                    logger.warning(
+                        "Skipping dependency index %s (resolved to %s): would create cycle with ancestor",
+                        dep_val, resolved_id,
+                    )
+                    continue
+
+            # --- Prefer literal task IDs when the value is otherwise ambiguous ---
+            if dep_val in ancestor_ids:
                 logger.warning(
                     "Skipping dependency %s: would create cycle with ancestor",
-                    dep_id
+                    dep_val,
                 )
                 continue
 
-            if dep_id in tree.nodes:
-                valid_deps.append(dep_id)
+            if dep_val in tree.nodes:
+                if dep_val not in valid_deps:
+                    valid_deps.append(dep_val)
                 continue
 
-            if dep_id in created_sibling_ids:
-                valid_deps.append(dep_id)
+            if dep_val in created_sibling_ids:
+                if dep_val not in valid_deps:
+                    valid_deps.append(dep_val)
+                continue
+
+            # --- Fallback: treat as 0-based sibling index ---
+            if 0 <= dep_val < len(created_sibling_ids):
+                resolved_id = created_sibling_ids[dep_val]
+                if resolved_id not in ancestor_ids:
+                    if resolved_id not in valid_deps:
+                        valid_deps.append(resolved_id)
+                    continue
+                logger.warning(
+                    "Skipping dependency index %s (resolved to %s): would create cycle with ancestor",
+                    dep_val, resolved_id,
+                )
                 continue
 
             logger.warning(
-                "Skipping dependency %s: task does not exist",
-                dep_id
+                "Skipping dependency %s: task does not exist (not a valid sibling index or task ID)",
+                dep_val,
             )
 
         return valid_deps

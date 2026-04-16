@@ -5,9 +5,6 @@ export const createUISlice: ChatSliceCreator = (set) => ({
     isTyping: false,
     processingSessionIds: new Set<string>(),
     activeRunIds: new Map<string, string>(),
-    isUpdatingProvider: false,
-    isUpdatingBaseModel: false,
-    isUpdatingLLMProvider: false,
     chatPanelVisible: true,
     chatPanelWidth: 400,
 

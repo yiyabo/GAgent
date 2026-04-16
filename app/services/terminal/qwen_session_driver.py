@@ -5,7 +5,7 @@ container, giving:
 
 - Filesystem persistence (installed packages, generated files survive across calls)
 - Environment isolation (no host pollution)
-- Qwen session continuity via ``--session-id``
+- Stable Qwen session identity for ``--session-id`` / ``--resume`` handoff
 - Structured JSON output (same contract as the host subprocess path)
 
 Architecture::
@@ -13,7 +13,7 @@ Architecture::
     code_executor_handler()
       ↓ use_qwen_code_backend=True + Docker available
     QwenSessionDriver.ensure_container()   ← manages per-session containers
-    build qwen CLI args with stable --session-id
+        build qwen CLI args with a stable Qwen session id
     docker exec <container> qwen ...
 
 ``exec_qwen_task()`` remains available as a lower-level helper for future
@@ -122,33 +122,46 @@ class QwenSessionDriver:
                 self._locks.pop(session_id, None)
                 self._shared_terminal_ids.pop(session_id, None)
 
+            requires_alias_mounts = any(
+                str(host_path or "").strip()
+                and str(container_path or "").strip()
+                and os.path.realpath(str(host_path)) != os.path.normpath(str(container_path))
+                for host_path, container_path in (extra_mounts or [])
+            )
+
             required_paths = [os.path.realpath(host_work_dir)]
             for host_path, _container_path in extra_mounts or []:
                 token = str(host_path or "").strip()
                 if token:
                     required_paths.append(os.path.realpath(token))
 
-            shared_session = await terminal_session_manager.ensure_qwen_code_session(
-                session_id,
-                required_paths=required_paths,
-            )
-            shared_backend = shared_session.backend
-            if isinstance(shared_backend, DockerPTYBackend):
-                shared_container = shared_backend.container_name
-                if shared_container and all(
-                    shared_backend.covers_path(path) for path in required_paths
-                ):
-                    self._containers[session_id] = shared_container
-                    self._session_ids[session_id] = (
-                        shared_backend.qwen_session_id or shared_session.session_id
-                    )
-                    self._locks[session_id] = shared_session.command_lock
-                    self._shared_terminal_ids[session_id] = shared_session.terminal_id
-                    logger.info(
-                        "Reusing shared qwen_code terminal session %s for agent execution",
-                        shared_session.terminal_id,
-                    )
-                    return shared_container
+            if not requires_alias_mounts:
+                shared_session = await terminal_session_manager.ensure_qwen_code_session(
+                    session_id,
+                    required_paths=required_paths,
+                )
+                shared_backend = shared_session.backend
+                if isinstance(shared_backend, DockerPTYBackend):
+                    shared_container = shared_backend.container_name
+                    if shared_container and all(
+                        shared_backend.covers_path(path) for path in required_paths
+                    ):
+                        self._containers[session_id] = shared_container
+                        self._session_ids[session_id] = (
+                            shared_backend.qwen_session_id or shared_session.session_id
+                        )
+                        self._locks[session_id] = shared_session.command_lock
+                        self._shared_terminal_ids[session_id] = shared_session.terminal_id
+                        logger.info(
+                            "Reusing shared qwen_code terminal session %s for agent execution",
+                            shared_session.terminal_id,
+                        )
+                        return shared_container
+            else:
+                logger.info(
+                    "Creating dedicated qwen agent container for %s because alias mounts are required",
+                    session_id,
+                )
 
             # Container doesn't exist or is dead — create a new one
             image = image or _DEFAULT_IMAGE
@@ -231,7 +244,7 @@ class QwenSessionDriver:
                     DockerPTYBackend._cleanup_identity_files(identity_paths)
 
             self._containers[session_id] = name
-            # Stable qwen session-id for context continuity
+            # Stable qwen session id for initial --session-id and later --resume.
             self._session_ids.setdefault(
                 session_id,
                 _sanitise_qwen_session_id(f"agent:{session_id}"),
@@ -321,7 +334,7 @@ class QwenSessionDriver:
         return exit_code, "\n".join(stdout_lines), "\n".join(stderr_lines)
 
     def get_qwen_session_id(self, session_id: str) -> Optional[str]:
-        """Return the stable qwen ``--session-id`` for context continuity."""
+        """Return the stable Qwen session id reused across conversational turns."""
         return self._session_ids.get(session_id)
 
     def get_execution_lock(self, session_id: str) -> asyncio.Lock:
@@ -378,13 +391,17 @@ class QwenSessionDriver:
 
     @staticmethod
     async def _check_image(image: str) -> None:
+        # Use `docker images -q` instead of `docker image inspect` because
+        # inspect can return non-zero for cross-platform images (e.g.
+        # linux/amd64 image on an arm64 host) even though the image exists
+        # and is runnable via Rosetta / QEMU.
         proc = await asyncio.create_subprocess_exec(
-            "docker", "image", "inspect", image,
-            stdout=asyncio.subprocess.DEVNULL,
+            "docker", "images", "-q", image,
+            stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
         )
-        await asyncio.wait_for(proc.wait(), timeout=10)
-        if proc.returncode != 0:
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=10)
+        if not stdout.decode().strip():
             raise RuntimeError(
                 f"Docker image '{image}' not found. "
                 f"Build with: ./scripts/build_qwen_code_runtime_image.sh"
