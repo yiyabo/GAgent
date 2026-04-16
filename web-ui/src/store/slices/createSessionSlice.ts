@@ -21,9 +21,6 @@ export const createSessionSlice: ChatSliceCreator = (set, get) => ({
   const sessionPlanTitle = session?.plan_title ?? null;
   const sessionTaskId = session?.current_task_id ?? null;
   const sessionTaskName = session?.current_task_name ?? null;
-  const provider = session?.defaultSearchProvider ?? null;
-  const baseModel = session?.defaultBaseModel ?? null;
-  const llmProvider = session?.defaultLLMProvider ?? null;
   const historyCursor = session ? resolveHistoryCursor(session.messages) : null;
   const historyHasMore = historyCursor !== null;
 
@@ -35,9 +32,6 @@ export const createSessionSlice: ChatSliceCreator = (set, get) => ({
   currentPlanTitle: sessionPlanTitle,
   currentTaskId: sessionTaskId,
   currentTaskName: sessionTaskName,
-  defaultSearchProvider: provider,
-  defaultBaseModel: baseModel,
-  defaultLLMProvider: llmProvider,
   historyBeforeId: historyCursor,
   historyHasMore,
   historyLoading: false,
@@ -53,9 +47,6 @@ export const createSessionSlice: ChatSliceCreator = (set, get) => ({
   addSession: (session) => {
   const normalized: ChatSession = {
   ...session,
-  defaultSearchProvider: session.defaultSearchProvider ?? null,
-  defaultBaseModel: session.defaultBaseModel ?? null,
-  defaultLLMProvider: session.defaultLLMProvider ?? null,
   };
   set((state) => {
   const exists = state.sessions.some((s) => s.id === normalized.id);
@@ -81,12 +72,6 @@ export const createSessionSlice: ChatSliceCreator = (set, get) => ({
   sessions: newSessions,
   currentSession: state.currentSession?.id === sessionId ? null : state.currentSession,
   messages: state.currentSession?.id === sessionId ? [] : state.messages,
-  defaultSearchProvider:
-  state.currentSession?.id === sessionId ? null : state.defaultSearchProvider,
-  defaultBaseModel:
-  state.currentSession?.id === sessionId ? null : state.defaultBaseModel,
-  defaultLLMProvider:
-  state.currentSession?.id === sessionId ? null : state.defaultLLMProvider,
   };
   });
   },
@@ -190,9 +175,6 @@ export const createSessionSlice: ChatSliceCreator = (set, get) => ({
 
   startNewSession: (title) => {
   const sessionId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-  const providerPreference = get().defaultSearchProvider ?? null;
-  const baseModelPreference = get().defaultBaseModel ?? null;
-  const llmProviderPreference = get().defaultLLMProvider ?? null;
   autoTitleHistory.delete(sessionId);
   const session: ChatSession = {
   id: sessionId,
@@ -208,9 +190,6 @@ export const createSessionSlice: ChatSliceCreator = (set, get) => ({
   current_task_name: null,
   last_message_at: null,
   is_active: true,
-  defaultSearchProvider: providerPreference,
-  defaultBaseModel: baseModelPreference,
-  defaultLLMProvider: llmProviderPreference,
   titleSource: 'local',
   isUserNamed: false,
   };
@@ -240,9 +219,6 @@ export const createSessionSlice: ChatSliceCreator = (set, get) => ({
   }
 
   if (!session) {
-  const providerPreference = get().defaultSearchProvider ?? null;
-  const baseModelPreference = get().defaultBaseModel ?? null;
-  const llmProviderPreference = get().defaultLLMProvider ?? null;
   autoTitleHistory.delete(sessionId);
   session = {
   id: sessionId,
@@ -258,9 +234,6 @@ export const createSessionSlice: ChatSliceCreator = (set, get) => ({
   current_task_name: null,
   last_message_at: null,
   is_active: true,
-  defaultSearchProvider: providerPreference,
-  defaultBaseModel: baseModelPreference,
-  defaultLLMProvider: llmProviderPreference,
   titleSource: 'local',
   isUserNamed: false,
   };
@@ -338,8 +311,6 @@ export const createSessionSlice: ChatSliceCreator = (set, get) => ({
   currentTaskId: null,
   currentTaskName: null,
   currentWorkflowId: null,
-  defaultSearchProvider: null,
-  defaultBaseModel: null,
   });
   SessionStorage.clearCurrentSessionId();
   }

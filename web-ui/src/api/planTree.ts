@@ -168,6 +168,29 @@ class PlanTreeApi extends BaseApi {
       expand_composites: options?.expandComposites,
     });
   };
+
+  getFullPlanTodoList = async (
+    planId: number,
+    options?: { expandComposites?: boolean }
+  ): Promise<TodoListResponse> => {
+    return this.get<TodoListResponse>(`/plans/${planId}/full-todo-list`, {
+      expand_composites: options?.expandComposites,
+    });
+  };
+
+  executeFullPlan = async (
+    planId: number,
+    payload: {
+      deep_think?: boolean;
+      async_mode?: boolean;
+      session_id?: string;
+      paper_mode?: boolean;
+      skip_completed?: boolean;
+      stop_on_failure?: boolean;
+    } = {}
+  ): Promise<Record<string, any>> => {
+    return this.post<Record<string, any>>(`/plans/${planId}/execute-full`, payload);
+  };
 }
 
 export const planTreeApi = new PlanTreeApi();

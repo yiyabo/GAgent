@@ -9,7 +9,7 @@ import {
   Tooltip,
   Typography,
 } from 'antd';
-import { ReloadOutlined, CopyOutlined, PlayCircleOutlined, UnorderedListOutlined } from '@ant-design/icons';
+import { ReloadOutlined, CopyOutlined, PlayCircleOutlined } from '@ant-design/icons';
 import { useQuery } from '@tanstack/react-query';
 import { planTreeApi } from '@api/planTree';
 import { usePlanTasks } from '@hooks/usePlans';
@@ -26,7 +26,6 @@ import { dispatchPlanSyncEvent, shouldHandlePlanSyncEvent } from '@utils/planSyn
 import JobLogPanel from '@components/chat/JobLogPanel';
 import { TaskDrawerContent, copyJsonToClipboard } from './TaskDetailSections';
 import TaskExecuteModal from './TaskExecuteModal';
-import TodoListPanel from './TodoListPanel';
 
 const { Text, Title } = Typography;
 
@@ -129,7 +128,6 @@ const TaskDetailDrawer: React.FC = () => {
   const [executeModalOpen, setExecuteModalOpen] = useState(false);
   const [executeButtonLoading, setExecuteButtonLoading] = useState(false);
   const [verifyLoading, setVerifyLoading] = useState(false);
-  const [todoListOpen, setTodoListOpen] = useState(false);
   const [latestExecution, setLatestExecution] = useState<{
     jobId: string;
     taskId: number;
@@ -301,13 +299,6 @@ const TaskDetailDrawer: React.FC = () => {
       maskClosable
       extra={
         <Space size={4}>
-          <Tooltip title="Todo List">
-            <Button
-              icon={<UnorderedListOutlined />}
-              onClick={() => setTodoListOpen(true)}
-              disabled={!currentPlanId || !selectedTaskId}
-            />
-          </Tooltip>
           <Button
             type="primary"
             icon={<PlayCircleOutlined />}
@@ -395,14 +386,6 @@ const TaskDetailDrawer: React.FC = () => {
         handleDependencyClick={handleDependencyClick}
         refetchPlanTasks={() => { void refetchPlanTasks(); }}
         refetchTaskResult={() => { void refetchTaskResult(); }}
-      />
-
-      <TodoListPanel
-        open={todoListOpen}
-        onClose={() => setTodoListOpen(false)}
-        planId={currentPlanId}
-        targetTaskId={selectedTaskId}
-        onTaskClick={handleDependencyClick}
       />
     </Drawer>
   );

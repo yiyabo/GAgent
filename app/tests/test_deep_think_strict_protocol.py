@@ -2994,3 +2994,184 @@ def test_bound_execute_task_fallback_never_asks_for_missing_task_definition() ->
     assert "请提供 Task 9" not in result.final_answer
     assert "plan68_task9" not in result.final_answer
     assert "当前绑定任务" in result.final_answer
+
+
+# ---------- Early stop for light / standard tiers ----------
+
+
+def test_native_light_tier_early_stops_on_direct_text_answer() -> None:
+    """Light tier: when the LLM returns a direct text answer (no tools),
+    the engine should stop immediately instead of forcing extra iterations."""
+
+    llm = _RecordingNativeLLM([
+        NativeStreamResult(
+            content="斐波那契数列的 Python 实现如下：\n```python\ndef fib(n):\n    a, b = 0, 1\n    for _ in range(n):\n        a, b = b, a + b\n    return a\n```",
+            tool_calls=[],
+        ),
+        # Second response should never be reached if early stop works.
+        NativeStreamResult(
+            content="This should not be reached",
+            tool_calls=[
+                NativeToolCall(
+                    id="final_unreachable",
+                    name="submit_final_answer",
+                    arguments={"answer": "unreachable", "confidence": 0.9},
+                )
+            ],
+        ),
+    ])
+
+    agent = DeepThinkAgent(
+        llm_client=llm,
+        available_tools=["web_search"],
+        tool_executor=_noop_tool_executor,
+        max_iterations=3,
+        request_profile={"request_tier": "light", "capability_floor": "tools"},
+    )
+
+    result = asyncio.run(agent.think("写个斐波那契数列代码"))
+
+    # Should have stopped after 1 iteration
+    assert result.total_iterations == 1
+    assert "斐波那契" in result.final_answer
+    assert "unreachable" not in result.final_answer
+    assert result.confidence >= 0.85
+    # LLM should only have been called once
+    assert len(llm.calls) == 1
+
+
+def test_native_standard_tier_early_stops_on_direct_text_answer() -> None:
+    """Standard tier: same early stop behavior as light."""
+
+    llm = _RecordingNativeLLM([
+        NativeStreamResult(
+            content="HTTP 200 表示请求成功。这是 HTTP 协议中最常见的状态码之一。",
+            tool_calls=[],
+        ),
+        NativeStreamResult(
+            content="unreachable",
+            tool_calls=[],
+        ),
+    ])
+
+    agent = DeepThinkAgent(
+        llm_client=llm,
+        available_tools=["web_search"],
+        tool_executor=_noop_tool_executor,
+        max_iterations=3,
+        request_profile={"request_tier": "standard", "capability_floor": "tools"},
+    )
+
+    result = asyncio.run(agent.think("HTTP 200 是什么意思？"))
+
+    assert result.total_iterations == 1
+    assert "HTTP 200" in result.final_answer
+    assert "unreachable" not in result.final_answer
+
+
+def test_native_research_tier_does_not_early_stop() -> None:
+    """Research tier should NOT early stop — it should continue iterating."""
+
+    llm = _NativeDummyLLM([
+        NativeStreamResult(
+            content="Let me research this topic in detail...",
+            tool_calls=[],
+        ),
+        NativeStreamResult(
+            content="After deeper analysis...",
+            tool_calls=[
+                NativeToolCall(
+                    id="final1",
+                    name="submit_final_answer",
+                    arguments={"answer": "Comprehensive research answer", "confidence": 0.95},
+                )
+            ],
+        ),
+    ])
+
+    agent = DeepThinkAgent(
+        llm_client=llm,
+        available_tools=["web_search"],
+        tool_executor=_noop_tool_executor,
+        max_iterations=5,
+        request_profile={"request_tier": "research", "capability_floor": "tools"},
+    )
+
+    result = asyncio.run(agent.think("深入分析某个复杂话题"))
+
+    # Research tier should NOT have early-stopped at iteration 1
+    assert result.total_iterations == 2
+    assert result.final_answer == "Comprehensive research answer"
+
+
+def test_native_execute_tier_does_not_early_stop() -> None:
+    """Execute tier should NOT early stop even with direct text."""
+
+    llm = _NativeDummyLLM([
+        NativeStreamResult(
+            content="I will execute the task now...",
+            tool_calls=[],
+        ),
+        NativeStreamResult(
+            content="Done",
+            tool_calls=[
+                NativeToolCall(
+                    id="final1",
+                    name="submit_final_answer",
+                    arguments={"answer": "Task executed", "confidence": 0.9},
+                )
+            ],
+        ),
+    ])
+
+    agent = DeepThinkAgent(
+        llm_client=llm,
+        available_tools=["code_executor"],
+        tool_executor=_noop_tool_executor,
+        max_iterations=5,
+        request_profile={
+            "request_tier": "execute",
+            "capability_floor": "tools",
+            "intent_type": "execute_task",
+        },
+    )
+
+    result = asyncio.run(agent.think("执行任务 5"))
+
+    assert result.total_iterations == 2
+    assert result.final_answer == "Task executed"
+
+
+def test_native_light_tier_no_early_stop_on_short_content() -> None:
+    """Light tier should NOT early stop when content is too short (< 20 chars)."""
+
+    llm = _NativeDummyLLM([
+        NativeStreamResult(
+            content="OK",  # Too short — not a substantive answer
+            tool_calls=[],
+        ),
+        NativeStreamResult(
+            content="",
+            tool_calls=[
+                NativeToolCall(
+                    id="final1",
+                    name="submit_final_answer",
+                    arguments={"answer": "Detailed answer after more thinking", "confidence": 0.9},
+                )
+            ],
+        ),
+    ])
+
+    agent = DeepThinkAgent(
+        llm_client=llm,
+        available_tools=["web_search"],
+        tool_executor=_noop_tool_executor,
+        max_iterations=3,
+        request_profile={"request_tier": "light", "capability_floor": "tools"},
+    )
+
+    result = asyncio.run(agent.think("你好"))
+
+    # Should NOT have early-stopped because content is too short
+    assert result.total_iterations == 2
+    assert result.final_answer == "Detailed answer after more thinking"

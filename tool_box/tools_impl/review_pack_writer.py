@@ -55,6 +55,52 @@ def _resolve_default_pack_dir(*, session_id: Optional[str], timestamp: str) -> P
     return (_PROJECT_ROOT / "runtime" / "literature" / f"review_pack_{timestamp}").resolve()
 
 
+def _sanitize_relative_subpath(raw_path: Path) -> Path:
+    safe_parts = [part for part in raw_path.parts if part not in ("", ".", "..")]
+    if not safe_parts:
+        return Path("review_pack")
+    return Path(*safe_parts)
+
+
+def _normalize_pack_dir(raw_dir: Optional[str], *, default_dir: Path) -> Path:
+    candidate = Path(raw_dir) if raw_dir else default_dir
+    if candidate.is_absolute():
+        return candidate.resolve()
+    if raw_dir:
+        return (_PROJECT_ROOT / "runtime" / "lit_reviews" / _sanitize_relative_subpath(candidate)).resolve()
+    return (_PROJECT_ROOT / candidate).resolve()
+
+
+def _normalize_review_output_path(raw_path: Optional[str], *, pack_dir: Path) -> str:
+    if not raw_path:
+        output_file = pack_dir / "review_draft.md"
+        return str(output_file.relative_to(_PROJECT_ROOT))
+
+    candidate = Path(raw_path)
+    if candidate.is_absolute():
+        return str(candidate.resolve())
+
+    output_file = (_PROJECT_ROOT / "runtime" / "lit_reviews" / _sanitize_relative_subpath(candidate)).resolve()
+    return str(output_file.relative_to(_PROJECT_ROOT))
+
+
+def _resolve_project_path(path_str: str) -> Path:
+    candidate = Path(path_str)
+    if candidate.is_absolute():
+        return candidate.resolve()
+    return (_PROJECT_ROOT / candidate).resolve()
+
+
+def _is_within_root(path: Path, root: Path) -> bool:
+    resolved_path = path.resolve()
+    resolved_root = root.resolve()
+    try:
+        resolved_path.relative_to(resolved_root)
+        return True
+    except ValueError:
+        return False
+
+
 def _resolve_session_dir(session_id: Optional[str]) -> Optional[Path]:
     if not isinstance(session_id, str) or not session_id.strip():
         return None
@@ -72,30 +118,41 @@ def _to_session_relative(path: Path, session_dir: Optional[Path]) -> Optional[st
         return None
 
 
+def _is_phage_topic(topic: str) -> bool:
+    """Return True if topic is clearly about phage / bacteriophage."""
+    t = (topic or "").lower()
+    return any(kw in t for kw in ("phage", "bacteriophage", "噬菌体"))
+
+
 def _default_pubmed_query(topic: str) -> str:
-    # Focused for: phage-host interactions + phage omics/databases.
-    # Users can override with query explicitly.
-    base = "phage OR bacteriophage"
-    host = "host interaction OR receptor OR adsorption OR immunity OR CRISPR OR lysogeny OR temperate"
-    omics = "virome OR metagenomics OR database OR atlas OR catalog OR benchmark OR pipeline"
-    # IMPORTANT: PubMed queries are typically English. If topic is Chinese-only, do NOT append it
-    # (it can collapse results to zero). We keep a stable English query and only append topic when
-    # it already contains ASCII keywords.
     t = (topic or "").strip()
     has_ascii = any(ord(ch) < 128 and ch.isalnum() for ch in t)
-    extra = ""
+
+    if _is_phage_topic(topic):
+        # Legacy phage-focused query template.
+        base = "phage OR bacteriophage"
+        host = "host interaction OR receptor OR adsorption OR immunity OR CRISPR OR lysogeny OR temperate"
+        omics = "virome OR metagenomics OR database OR atlas OR catalog OR benchmark OR pipeline"
+        extra = ""
+        if has_ascii:
+            t2 = t.replace("，", " ").replace(",", " ")
+            t2 = " ".join(x for x in t2.split() if x)[:120]
+            if t2:
+                extra = f"({t2})"
+        avoid = 'NOT ("phage display" OR "phage-displayed" OR "phage display library")'
+        return f"(({base}) AND ({host})) OR (({base}) AND ({omics})) {extra} {avoid}".strip()
+
+    # Generic topic: build query directly from the topic string.
     if has_ascii:
         t2 = t.replace("，", " ").replace(",", " ")
-        t2 = " ".join(x for x in t2.split() if x)[:120]
-        if t2:
-            extra = f"({t2})"
-    # Reduce false positives from "phage display" literature.
-    avoid = 'NOT ("phage display" OR "phage-displayed" OR "phage display library")'
-    return f"(({base}) AND ({host})) OR (({base}) AND ({omics})) {extra} {avoid}".strip()
+        t2 = " ".join(x for x in t2.split() if x)[:200]
+        return f"({t2}) AND (review OR methods OR analysis)"
+    # Chinese-only topic: cannot build a useful PubMed query.
+    return ""
 
 
 def _default_task(topic: str) -> str:
-    t = topic.strip() if isinstance(topic, str) and topic.strip() else "phage-related topic"
+    t = topic.strip() if isinstance(topic, str) and topic.strip() else "the specified topic"
     return (
         f"Write a submission-ready English review article on: {t}.\n"
         "Requirements:\n"
@@ -150,17 +207,16 @@ async def review_pack_writer_handler(
             "success": False,
             "error": f"session_output_dir_unavailable: {exc}",
         }
-    pack_dir = Path(out_dir) if out_dir else default_out
-    if not pack_dir.is_absolute():
-        pack_dir = (_PROJECT_ROOT / pack_dir).resolve()
-    if not str(pack_dir).startswith(str(_PROJECT_ROOT)):
+    pack_dir = _normalize_pack_dir(out_dir, default_dir=default_out)
+    if not _is_within_root(pack_dir, _PROJECT_ROOT):
         return {"tool": "review_pack_writer", "success": False, "error": "out_dir_outside_project"}
     pack_dir.mkdir(parents=True, exist_ok=True)
 
     # Default output manuscript path inside pack_dir
-    if not output_path:
-        output_file = pack_dir / "review_draft.md"
-        output_path = str(output_file.relative_to(_PROJECT_ROOT))
+    output_path = _normalize_review_output_path(output_path, pack_dir=pack_dir)
+    output_file = _resolve_project_path(output_path)
+    if not _is_within_root(output_file, _PROJECT_ROOT):
+        return {"tool": "review_pack_writer", "success": False, "error": "output_path_outside_project"}
 
     final_query = (query.strip() if isinstance(query, str) and query.strip() else _default_pubmed_query(topic))
     final_task = task.strip() if isinstance(task, str) and task.strip() else _default_task(topic)
@@ -169,7 +225,7 @@ async def review_pack_writer_handler(
     pack = await literature_pipeline_handler(
         query=final_query,
         max_results=max_results,
-        out_dir=str(pack_dir.relative_to(_PROJECT_ROOT)),
+        out_dir=str(pack_dir),
         download_pdfs=download_pdfs,
         max_pdfs=max_pdfs,
         user_agent=user_agent,
@@ -253,8 +309,9 @@ async def review_pack_writer_handler(
     # 2) Draft manuscript
     draft = await manuscript_writer_handler(
         task=final_task,
-        output_path=output_path,
+        output_path=str(output_file),
         context_paths=context_paths,
+        article_mode="review",
         sections=sections,
         max_revisions=max_revisions,
         evaluation_threshold=evaluation_threshold,

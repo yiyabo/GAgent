@@ -140,6 +140,19 @@ def _detect_scope_blocked(stdout: str, output_data: Optional[Dict[str, Any]]) ->
     return None
 
 
+def _clear_stale_contract_failure_state(
+    *,
+    success: bool,
+    verification_status: Optional[str],
+    contract_error_summary: Optional[str],
+    contract_fix_guidance: Optional[str],
+) -> tuple[Optional[str], Optional[str]]:
+    """Drop stale contract failure details once verification has passed."""
+    if success and verification_status == "passed":
+        return None, None
+    return contract_error_summary, contract_fix_guidance
+
+
 def _derive_task_subdirectories(
     execution_spec: Optional[Dict[str, Any]],
 ) -> List[str]:
@@ -3015,6 +3028,13 @@ async def code_executor_handler(
                         contract_fix_guidance = _format_verification_guidance(verification)
                 except Exception as contract_exc:
                     logger.warning("CLI contract verification failed unexpectedly: %s", contract_exc)
+
+            contract_error_summary, contract_fix_guidance = _clear_stale_contract_failure_state(
+                success=success,
+                verification_status=verification_status,
+                contract_error_summary=contract_error_summary,
+                contract_fix_guidance=contract_fix_guidance,
+            )
 
         if log_file:
             try:

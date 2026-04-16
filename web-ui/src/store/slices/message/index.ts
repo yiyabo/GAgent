@@ -353,9 +353,6 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   currentWorkflowId,
   currentSession,
   memoryEnabled,
-  defaultSearchProvider,
-  defaultBaseModel,
-  defaultLLMProvider,
   uploadedFiles,
   processingSessionIds,
   } = get();
@@ -420,9 +417,6 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   }
   }
 
-  const providerToUse = defaultSearchProvider ?? currentSession?.defaultSearchProvider ?? undefined;
-  const baseModelToUse = defaultBaseModel ?? currentSession?.defaultBaseModel ?? undefined;
-  const llmProviderToUse = defaultLLMProvider ?? currentSession?.defaultLLMProvider ?? undefined;
   const recentMessages = get().messages.slice(-CHAT_REQUEST_HISTORY_LIMIT).map((msg) => ({
   role: msg.type,
   content: msg.content,
@@ -441,9 +435,6 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   task_id: mergedMetadata.task_id,
   plan_title: mergedMetadata.plan_title,
   workflow_id: mergedMetadata.workflow_id,
-  default_search_provider: providerToUse,
-  default_base_model: baseModelToUse,
-  default_llm_provider: llmProviderToUse,
   attachments,
   memories: memoryContext,
   ...(metadata ?? {}),

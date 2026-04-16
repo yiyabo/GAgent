@@ -35,6 +35,7 @@ _DEFAULT_THRESHOLD = 0.8
 _DEFAULT_FINAL_POLISH_MAX_REVISIONS = 2
 _DEFAULT_FINAL_POLISH_THRESHOLD = 0.85
 _DEFAULT_FINAL_POLISH_STEP_TIMEOUT_SEC = 0.0
+_VALID_ARTICLE_MODES = {"auto", "review", "research"}
 _ALLOWED_TEXT_EXTENSIONS = {
     ".md",
     ".txt",
@@ -80,6 +81,7 @@ _ALL_EVAL_DIMENSIONS = [
     "academic_style",
     "citation_integrity",
     "evidence_linkage",
+    "evidence_coverage",
 ]
 
 _SECTION_EVAL_DIMS: Dict[str, List[str]] = {
@@ -93,12 +95,12 @@ _SECTION_EVAL_DIMS: Dict[str, List[str]] = {
 }
 
 _REVIEW_SECTION_EVAL_DIMS: Dict[str, List[str]] = {
-    "introduction": ["structure", "scientific_rigor", "clarity", "citation_integrity", "cohesion", "evidence_linkage"],
-    "method": ["structure", "scientific_rigor", "clarity", "citation_integrity", "cohesion", "evidence_linkage"],
-    "experiment": ["structure", "scientific_rigor", "clarity", "citation_integrity", "cohesion", "evidence_linkage"],
-    "result": ["results_analysis", "clarity", "cohesion", "citation_integrity", "structure", "evidence_linkage"],
-    "discussion": ["scientific_rigor", "results_analysis", "clarity", "cohesion", "citation_integrity", "evidence_linkage"],
-    "conclusion": ["structure", "clarity", "cohesion", "academic_style", "evidence_linkage"],
+    "introduction": ["structure", "scientific_rigor", "clarity", "citation_integrity", "cohesion", "evidence_linkage", "evidence_coverage"],
+    "method": ["structure", "scientific_rigor", "clarity", "citation_integrity", "cohesion", "evidence_linkage", "evidence_coverage"],
+    "experiment": ["structure", "scientific_rigor", "clarity", "citation_integrity", "cohesion", "evidence_linkage", "evidence_coverage"],
+    "result": ["results_analysis", "clarity", "cohesion", "citation_integrity", "structure", "evidence_linkage", "evidence_coverage"],
+    "discussion": ["scientific_rigor", "results_analysis", "clarity", "cohesion", "citation_integrity", "evidence_linkage", "evidence_coverage"],
+    "conclusion": ["structure", "clarity", "cohesion", "academic_style", "evidence_linkage", "evidence_coverage"],
 }
 
 _DIMENSION_WEIGHTS: Dict[str, float] = {
@@ -108,11 +110,21 @@ _DIMENSION_WEIGHTS: Dict[str, float] = {
     "method_detail": 1.0,
     "experiment_detail": 1.0,
     "evidence_linkage": 1.2,
+    "evidence_coverage": 1.15,
     "structure": 1.0,
     "clarity": 1.0,
     "cohesion": 0.8,
     "academic_style": 0.7,
 }
+_REVIEW_SECTION_COVERAGE_TARGETS: Dict[str, Dict[str, int]] = {
+    "introduction": {"min_supported_citations": 2, "min_full_text_citations": 1},
+    "method": {"min_supported_citations": 2, "min_full_text_citations": 1},
+    "experiment": {"min_supported_citations": 3, "min_full_text_citations": 2},
+    "result": {"min_supported_citations": 3, "min_full_text_citations": 2},
+    "discussion": {"min_supported_citations": 3, "min_full_text_citations": 2},
+    "conclusion": {"min_supported_citations": 2, "min_full_text_citations": 1},
+}
+_REVIEW_SECTION_COVERAGE_PASS_THRESHOLD = 0.85
 _TRUTHY_VALUES = {"1", "true", "yes", "on", "y"}
 _FINAL_POLISH_EVAL_DIMS = [
     "deduplication",
@@ -122,6 +134,9 @@ _FINAL_POLISH_EVAL_DIMS = [
     "format_integrity",
     "factual_faithfulness",
 ]
+_NUMERIC_TOKEN_RE = re.compile(
+    r"(?<![A-Za-z0-9_])(?:\d[\d,]*(?:\.\d+)?%?)(?![A-Za-z0-9_])"
+)
 
 
 def _env_enabled(name: str, default: bool) -> bool:
@@ -215,6 +230,7 @@ def _is_review_article_task(task: str) -> bool:
     if not text:
         return False
     review_markers = (
+        "review",
         "review article",
         "literature review",
         "systematic review",
@@ -223,8 +239,43 @@ def _is_review_article_task(task: str) -> bool:
         "state-of-the-art review",
         "write a review",
         "review on",
+        "综述",
+        "文献综述",
+        "系统综述",
+        "叙述性综述",
+        "综述文章",
     )
     return any(marker in text for marker in review_markers)
+
+
+def _normalize_article_mode(article_mode: Optional[str]) -> str:
+    raw = str(article_mode or "").strip().lower()
+    if not raw:
+        return "auto"
+    aliases = {
+        "review_article": "review",
+        "literature_review": "review",
+        "review_synthesis": "review",
+        "synthesis": "review",
+        "original": "research",
+        "original_research": "research",
+        "research_article": "research",
+        "study": "research",
+    }
+    normalized = aliases.get(raw, raw)
+    if normalized not in _VALID_ARTICLE_MODES:
+        return "auto"
+    return normalized
+
+
+def _resolve_article_mode(article_mode: Optional[str], task: str) -> Tuple[str, bool]:
+    requested = _normalize_article_mode(article_mode)
+    if requested == "review":
+        return requested, True
+    if requested == "research":
+        return requested, False
+    resolved_review_mode = _is_review_article_task(task)
+    return ("review" if resolved_review_mode else "research"), resolved_review_mode
 
 
 def _resolve_model_name(model_name: Optional[str]) -> Optional[str]:
@@ -606,22 +657,157 @@ def _validate_review_abstract_contract(text: str) -> Dict[str, Any]:
     return {"pass": not missing, "missing_slots": missing}
 
 
-def _apply_review_evidence_linkage(
+def _build_review_section_coverage_report(
+    *,
+    section: str,
+    text: str,
+    study_cards: List[Dict[str, Any]],
+    coverage_report: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    normalized_section = _normalize_section_key(section)
+    targets = _REVIEW_SECTION_COVERAGE_TARGETS.get(normalized_section)
+    if not targets:
+        return None
+
+    thresholds = coverage_report.get("thresholds") if isinstance(coverage_report, dict) else {}
+    try:
+        min_support_per_core_section = int((thresholds or {}).get("min_support_per_core_section") or 2)
+    except (TypeError, ValueError):
+        min_support_per_core_section = 2
+
+    eligible_cards = [
+        card for card in study_cards if normalized_section in (card.get("section_support") or []) and card.get("citekey")
+    ]
+    cards_by_citekey = {
+        str(card.get("citekey")): card
+        for card in eligible_cards
+        if card.get("citekey")
+    }
+    cited_section_keys = [
+        key for key in _extract_markdown_citekeys(text) if key in cards_by_citekey
+    ]
+    cited_unique = list(dict.fromkeys(cited_section_keys))
+
+    available_total = len(cards_by_citekey)
+    available_full_text = len(
+        [card for card in eligible_cards if card.get("evidence_tier") == "full_text"]
+    )
+    available_quantitative = len(
+        [card for card in eligible_cards if card.get("quantitative_findings")]
+    )
+    cited_full_text = len(
+        [key for key in cited_unique if (cards_by_citekey.get(key) or {}).get("evidence_tier") == "full_text"]
+    )
+    cited_quantitative = len(
+        [key for key in cited_unique if (cards_by_citekey.get(key) or {}).get("quantitative_findings")]
+    )
+
+    target_supported = min(
+        available_total,
+        max(int(targets.get("min_supported_citations") or 0), min_support_per_core_section),
+    )
+    target_full_text = min(
+        available_full_text,
+        int(targets.get("min_full_text_citations") or 0),
+    )
+    has_numeric_claims = bool(_extract_numeric_tokens(text))
+    target_quantitative = min(available_quantitative, 1) if has_numeric_claims else 0
+
+    supported_ratio = (
+        min(1.0, len(cited_unique) / target_supported)
+        if target_supported > 0
+        else 0.0
+    )
+    full_text_ratio = (
+        min(1.0, cited_full_text / target_full_text)
+        if target_full_text > 0
+        else 1.0
+    )
+    quantitative_ratio = (
+        min(1.0, cited_quantitative / target_quantitative)
+        if target_quantitative > 0
+        else 1.0
+    )
+
+    components: List[Tuple[str, float, float]] = [
+        ("supported_studies", supported_ratio, 0.7),
+        ("full_text_support", full_text_ratio, 0.3),
+    ]
+    if target_quantitative > 0:
+        components = [
+            ("supported_studies", supported_ratio, 0.55),
+            ("full_text_support", full_text_ratio, 0.25),
+            ("quantitative_support", quantitative_ratio, 0.2),
+        ]
+    total_weight = sum(weight for _, _, weight in components) or 1.0
+    score = round(
+        sum(ratio * weight for _, ratio, weight in components) / total_weight,
+        4,
+    )
+
+    shortfalls: List[str] = []
+    revision_instructions: List[str] = []
+    if target_supported > 0 and len(cited_unique) < target_supported:
+        shortfalls.append("supported_study_coverage")
+        revision_instructions.append(
+            f"Expand the {normalized_section} synthesis so it cites at least {target_supported} section-relevant included studies instead of only {len(cited_unique)}."
+        )
+    if target_full_text > 0 and cited_full_text < target_full_text:
+        shortfalls.append("full_text_support")
+        revision_instructions.append(
+            f"Anchor the {normalized_section} claims in at least {target_full_text} cited full-text studies when that evidence is available."
+        )
+    if target_quantitative > 0 and cited_quantitative < target_quantitative:
+        shortfalls.append("quantitative_support")
+        revision_instructions.append(
+            f"Support numeric claims in the {normalized_section} section with at least {target_quantitative} cited study reporting quantitative findings."
+        )
+
+    return {
+        "section": normalized_section,
+        "pass": available_total > 0 and score >= _REVIEW_SECTION_COVERAGE_PASS_THRESHOLD,
+        "score": score,
+        "available_supported_studies": available_total,
+        "available_full_text_studies": available_full_text,
+        "available_quantitative_studies": available_quantitative,
+        "cited_supported_studies": len(cited_unique),
+        "cited_full_text_studies": cited_full_text,
+        "cited_quantitative_studies": cited_quantitative,
+        "target_supported_citations": target_supported,
+        "target_full_text_citations": target_full_text,
+        "target_quantitative_citations": target_quantitative,
+        "supported_coverage_ratio": round(supported_ratio, 4),
+        "full_text_coverage_ratio": round(full_text_ratio, 4),
+        "quantitative_coverage_ratio": round(quantitative_ratio, 4),
+        "has_numeric_claims": has_numeric_claims,
+        "shortfalls": shortfalls,
+        "revision_instructions": revision_instructions,
+        "cited_supported_citekeys": cited_unique,
+    }
+
+
+def _apply_review_evidence_diagnostics(
     *,
     section: str,
     text: str,
     evaluation_data: Dict[str, Any],
     study_cards: List[Dict[str, Any]],
+    coverage_report: Dict[str, Any],
 ) -> Dict[str, Any]:
-    if section not in {"introduction", "method", "experiment", "result", "discussion", "conclusion"}:
+    coverage = _build_review_section_coverage_report(
+        section=section,
+        text=text,
+        study_cards=study_cards,
+        coverage_report=coverage_report,
+    )
+    if coverage is None:
         return evaluation_data
-    allowed_by_section = {
-        card.get("citekey")
-        for card in study_cards
-        if card.get("citekey") and section in (card.get("section_support") or [])
-    }
-    cited = [key for key in _extract_markdown_citekeys(text) if key in allowed_by_section]
-    linked_count = len(set(cited))
+
+    try:
+        min_linked_citations = int(((coverage_report or {}).get("thresholds") or {}).get("min_support_per_core_section") or 2)
+    except (TypeError, ValueError):
+        min_linked_citations = 2
+    linked_count = int(coverage.get("cited_supported_studies") or 0)
     scores = evaluation_data.get("scores")
     if not isinstance(scores, dict):
         scores = {}
@@ -634,13 +820,26 @@ def _apply_review_evidence_linkage(
     if not isinstance(revision_instructions, list):
         revision_instructions = []
         evaluation_data["revision_instructions"] = revision_instructions
-    passes_linkage = linked_count >= 2
+
+    passes_linkage = linked_count >= min_linked_citations
     scores["evidence_linkage"] = 1.0 if passes_linkage else 0.0
+    scores["evidence_coverage"] = float(coverage.get("score") or 0.0)
+    evaluation_data["review_evidence_coverage"] = coverage
     if not passes_linkage:
-        defects.append("insufficient_evidence_linkage")
-        revision_instructions.append(
-            f"Support the {section} synthesis with at least two cited included studies that are relevant to this section."
+        if "insufficient_evidence_linkage" not in defects:
+            defects.append("insufficient_evidence_linkage")
+        linkage_instruction = (
+            f"Support the {section} synthesis with at least {min_linked_citations} cited included studies that are relevant to this section."
         )
+        if linkage_instruction not in revision_instructions:
+            revision_instructions.append(linkage_instruction)
+        evaluation_data["pass"] = False
+    if not coverage.get("pass"):
+        if "insufficient_review_evidence_coverage" not in defects:
+            defects.append("insufficient_review_evidence_coverage")
+        for instruction in coverage.get("revision_instructions") or []:
+            if instruction not in revision_instructions:
+                revision_instructions.append(str(instruction))
         evaluation_data["pass"] = False
     return evaluation_data
 
@@ -688,6 +887,102 @@ def _extract_markdown_citekeys(text: str) -> List[str]:
             if normalized and normalized not in keys:
                 keys.append(normalized)
     return keys
+
+
+def _extract_heading_sequence(text: str) -> List[str]:
+    headings: List[str] = []
+    for match in re.finditer(r"^(#{1,6})\s+(.*\S)\s*$", str(text or ""), flags=re.MULTILINE):
+        heading = re.sub(r"\s+", " ", match.group(2).strip()).lower()
+        if heading:
+            headings.append(heading)
+    return headings
+
+
+def _extract_numeric_tokens(text: str) -> List[str]:
+    tokens: List[str] = []
+    for match in _NUMERIC_TOKEN_RE.finditer(str(text or "")):
+        token = match.group(0).replace(",", "").strip()
+        if token and token not in tokens:
+            tokens.append(token)
+    return tokens
+
+
+def _build_release_consistency_report(
+    *,
+    baseline_text: str,
+    candidate_text: str,
+) -> Dict[str, Any]:
+    baseline_headings = _extract_heading_sequence(baseline_text)
+    candidate_headings = _extract_heading_sequence(candidate_text)
+    baseline_citekeys = _extract_markdown_citekeys(baseline_text)
+    candidate_citekeys = _extract_markdown_citekeys(candidate_text)
+    baseline_numbers = _extract_numeric_tokens(baseline_text)
+    candidate_numbers = _extract_numeric_tokens(candidate_text)
+
+    added_citekeys = [key for key in candidate_citekeys if key not in baseline_citekeys]
+    removed_citekeys = [key for key in baseline_citekeys if key not in candidate_citekeys]
+    added_numeric_tokens = [token for token in candidate_numbers if token not in baseline_numbers]
+    removed_numeric_tokens = [token for token in baseline_numbers if token not in candidate_numbers]
+
+    defects: List[str] = []
+    revision_instructions: List[str] = []
+    if candidate_headings != baseline_headings:
+        defects.append("heading_structure_changed")
+        revision_instructions.append(
+            "Restore the original section heading sequence and keep section structure unchanged during final polish."
+        )
+    if added_citekeys or removed_citekeys:
+        defects.append("citation_set_changed")
+        revision_instructions.append(
+            "Restore the original citation set; final polish must not add or remove citekeys."
+        )
+    if added_numeric_tokens or removed_numeric_tokens:
+        defects.append("numeric_claims_changed")
+        revision_instructions.append(
+            "Restore the original numeric claims; final polish must not add, delete, or alter numeric values."
+        )
+
+    return {
+        "pass": len(defects) == 0,
+        "baseline_headings": baseline_headings,
+        "candidate_headings": candidate_headings,
+        "added_citekeys": added_citekeys,
+        "removed_citekeys": removed_citekeys,
+        "added_numeric_tokens": added_numeric_tokens,
+        "removed_numeric_tokens": removed_numeric_tokens,
+        "defects": defects,
+        "revision_instructions": revision_instructions,
+    }
+
+
+def _apply_release_consistency_report(
+    release_review: Optional[Dict[str, Any]],
+    consistency_report: Dict[str, Any],
+) -> Dict[str, Any]:
+    payload = dict(release_review or {})
+    defects = payload.get("defects")
+    if not isinstance(defects, list):
+        defects = []
+    revision_instructions = payload.get("revision_instructions")
+    if not isinstance(revision_instructions, list):
+        revision_instructions = []
+
+    for defect in consistency_report.get("defects") or []:
+        if defect not in defects:
+            defects.append(defect)
+    for instruction in consistency_report.get("revision_instructions") or []:
+        if instruction not in revision_instructions:
+            revision_instructions.append(instruction)
+
+    payload["defects"] = defects
+    payload["revision_instructions"] = revision_instructions
+    payload["consistency_report"] = consistency_report
+    if not consistency_report.get("pass"):
+        payload["pass"] = False
+        summary = str(payload.get("release_summary") or "").strip()
+        suffix = "Deterministic guardrails detected heading, citation, or numeric drift during final polish."
+        payload["release_summary"] = f"{summary} {suffix}".strip() if summary else suffix
+    return payload
 
 
 def _extract_bibtex_keys(text: str) -> List[str]:
@@ -1070,6 +1365,7 @@ def _build_evaluation_prompt(
         "- For review manuscripts, score `results_analysis` based on cross-study synthesis quality, evidence linkage, and explicit handling of missing quantitative data.\n"
         "- For review manuscripts, score `scientific_rigor` based on faithful reporting, transparency about evidence limitations, and sound synthesis rather than the presence of newly generated data.\n"
         "- For review manuscripts, score `evidence_linkage` based on whether comparative claims and synthesis statements are backed by cited included studies.\n"
+        "- For review manuscripts, score `evidence_coverage` based on whether the section cites a broad enough slice of the available section-relevant evidence, prioritizes full-text studies when available, and uses quantitative studies when making numeric claims.\n"
         if review_mode
         else ""
     )
@@ -1454,6 +1750,7 @@ async def manuscript_writer_handler(
     context_paths: Optional[List[str]] = None,
     analysis_path: Optional[str] = None,
     sections: Optional[List[str]] = None,
+    article_mode: Optional[str] = None,
     max_revisions: int = _DEFAULT_MAX_REVISIONS,
     evaluation_threshold: float = _DEFAULT_THRESHOLD,
     max_context_bytes: int = _DEFAULT_MAX_CONTEXT_BYTES,
@@ -1567,7 +1864,8 @@ async def manuscript_writer_handler(
 
         context_paths = context_paths or []
         draft_only = bool(draft_only)
-        review_mode = _is_review_article_task(task)
+        article_mode_requested = _normalize_article_mode(article_mode)
+        article_mode_resolved, review_mode = _resolve_article_mode(article_mode_requested, task)
         section_list = sections or _default_section_list(draft_only=draft_only, review_mode=review_mode)
         section_list = [_normalize_section_key(s) for s in section_list if s and str(s).strip()]
         if not section_list:
@@ -1641,6 +1939,8 @@ async def manuscript_writer_handler(
         drafted_texts: List[str] = []
         section_text_map: Dict[str, str] = {}
         release_review: Optional[Dict[str, Any]] = None
+        release_consistency_report: Optional[Dict[str, Any]] = None
+        release_consistency_path: Optional[Path] = None
 
         def _to_rel(path: Optional[Path]) -> Optional[str]:
             if path is None:
@@ -1692,7 +1992,10 @@ async def manuscript_writer_handler(
             if normalized == "abstract_incomplete":
                 return "Publication blocked: the abstract did not satisfy the required review-manuscript contract."
             if normalized == "unsupported_claims":
-                return "Publication blocked: one or more review sections lacked sufficient evidence linkage."
+                return (
+                    "Publication blocked: one or more review sections lacked sufficient evidence linkage "
+                    "or section-level evidence coverage."
+                )
             if normalized == "polish_quality_gate_failed":
                 summary = ""
                 if isinstance(evaluation, dict):
@@ -1806,6 +2109,8 @@ async def manuscript_writer_handler(
                 "success": False,
                 "error": error_code,
                 "error_code": error_code,
+                "article_mode_requested": article_mode_requested,
+                "article_mode_resolved": article_mode_resolved,
                 "quality_gate_passed": False,
                 "polish_gate_passed": False,
                 "public_release_ready": False,
@@ -1849,6 +2154,8 @@ async def manuscript_writer_handler(
                 "partial_output_path": _to_rel(partial_output),
                 "citation_validation_path": _to_rel(citation_validation_path),
                 "citation_validation": citation_report,
+                "release_consistency_path": _to_rel(release_consistency_path),
+                "release_consistency_report": release_consistency_report,
                 "temp_workspace": _to_rel(work_dir),
                 "hidden_artifact_prefixes": hidden_prefixes,
                 "release_review": polish_review_payload,
@@ -1915,11 +2222,12 @@ async def manuscript_writer_handler(
                         "pass": False,
                     }
                 if review_mode and isinstance(review_evidence, dict):
-                    evaluation_data = _apply_review_evidence_linkage(
+                    evaluation_data = _apply_review_evidence_diagnostics(
                         section=section,
                         text=text,
                         evaluation_data=evaluation_data,
                         study_cards=review_evidence.get("study_cards") or [],
+                        coverage_report=review_evidence.get("coverage_report") or {},
                     )
 
                 scores = evaluation_data.get("scores") or {}
@@ -1961,6 +2269,11 @@ async def manuscript_writer_handler(
                 "score": round(avg_score, 4),
                 "evaluation_path": _to_rel(reviews_dir / f"{section}_eval_{attempts}.json"),
                 "defects": list(evaluation_data.get("defects") or []) if isinstance(evaluation_data, dict) else [],
+                "review_evidence_coverage": (
+                    evaluation_data.get("review_evidence_coverage")
+                    if isinstance(evaluation_data, dict) and isinstance(evaluation_data.get("review_evidence_coverage"), dict)
+                    else None
+                ),
             }
 
         if review_mode:
@@ -2026,6 +2339,8 @@ async def manuscript_writer_handler(
                 "tool": "manuscript_writer",
                 "success": True,
                 "draft_only": True,
+                "article_mode_requested": article_mode_requested,
+                "article_mode_resolved": article_mode_resolved,
                 "release_state": "draft",
                 "public_release_ready": False,
                 "release_summary": (
@@ -2172,13 +2487,14 @@ async def manuscript_writer_handler(
                     section_path.read_text(encoding="utf-8")
                     for _, section_path in passed_sections
                 )
-            has_linkage_failure = any(
-                "insufficient_evidence_linkage" in (row.get("defects") or [])
+            has_review_evidence_failure = any(
+                defect in {"insufficient_evidence_linkage", "insufficient_review_evidence_coverage"}
                 for row in section_results
                 if isinstance(row, dict)
+                for defect in (row.get("defects") or [])
             )
             return _build_failure_payload(
-                error_code="unsupported_claims" if has_linkage_failure else "section_evaluation_failed",
+                error_code="unsupported_claims" if has_review_evidence_failure else "section_evaluation_failed",
                 manifest_path=manifest_path,
                 combined_partial=combined_partial,
             )
@@ -2359,6 +2675,20 @@ async def manuscript_writer_handler(
                             "pass": False,
                         }
 
+                    release_consistency_report = _build_release_consistency_report(
+                        baseline_text=pre_polish_text,
+                        candidate_text=polished_candidate,
+                    )
+                    release_consistency_path = reviews_dir / f"final_release_consistency_{attempt}.json"
+                    release_consistency_path.write_text(
+                        json.dumps(release_consistency_report, ensure_ascii=True, indent=2),
+                        encoding="utf-8",
+                    )
+                    release_review = _apply_release_consistency_report(
+                        release_review,
+                        release_consistency_report,
+                    )
+
                     release_scores = release_review.get("scores") or {}
                     release_score = (
                         _weighted_score(release_scores, _FINAL_POLISH_EVAL_DIMS)
@@ -2455,6 +2785,8 @@ async def manuscript_writer_handler(
         return {
             "tool": "manuscript_writer",
             "success": True,
+            "article_mode_requested": article_mode_requested,
+            "article_mode_resolved": article_mode_resolved,
             "quality_gate_passed": quality_gate_passed,
             "polish_gate_passed": polish_gate_passed,
             "public_release_ready": public_release_ready,
@@ -2490,6 +2822,8 @@ async def manuscript_writer_handler(
             "merge_queue": None if not keep_workspace else _to_rel(manifest_path),
             "citation_validation_path": None if not keep_workspace else _to_rel(citation_validation_path),
             "citation_validation": citation_report if keep_workspace else None,
+            "release_consistency_path": None if not keep_workspace else _to_rel(release_consistency_path),
+            "release_consistency_report": release_consistency_report if keep_workspace else None,
             "output_path": _to_rel(output_file),
             "effective_output_path": _to_rel(output_file),
             "pre_polish_output_path": _to_rel(pre_polish_path),
@@ -2540,6 +2874,12 @@ manuscript_writer_tool = {
                 "type": "array",
                 "items": {"type": "string"},
                 "description": "Section list (default: abstract/introduction/method/experiment/result/discussion/conclusion/references).",
+            },
+            "article_mode": {
+                "type": "string",
+                "enum": ["auto", "review", "research"],
+                "description": "Optional article mode override. Use review to force review/synthesis behavior, research to force original-study behavior, or auto to infer from the task.",
+                "default": "auto",
             },
             "max_revisions": {
                 "type": "integer",

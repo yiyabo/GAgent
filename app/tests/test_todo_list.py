@@ -18,6 +18,7 @@ from app.services.plans.todo_list import (
     TodoList,
     TodoPhase,
     build_todo_list,
+    build_full_plan_todo_list,
     assign_phase_labels,
     _classify_task_label,
     _collect_leaf_ids,
@@ -257,7 +258,16 @@ class TestBuildTodoList:
         assert order.index(1) < order.index(2)
         assert order.index(1) < order.index(3)
         assert order.index(2) < order.index(4)
-        assert order.index(3) < order.index(4)
+
+    def test_composite_dependency_expands_to_leaf_dependencies(self, composite_tree: PlanTree):
+        todo = build_todo_list(composite_tree, 3)
+        assert todo.execution_order == [4, 5, 3]
+        item_by_id = {
+            item.task_id: item
+            for phase in todo.phases
+            for item in phase.items
+        }
+        assert item_by_id[3].dependencies == [4, 5]
 
     def test_pending_order_excludes_done(self, linear_chain_tree: PlanTree):
         # Mark task 1 as completed
@@ -432,3 +442,113 @@ class TestPhaseLabels:
         assert labels[0] == "Data Preparation"
         assert labels[1] == "Quality Control"
         assert labels[2] == "Analysis"
+
+
+# ── Full Plan TodoList Tests ───────────────────────────────────
+
+
+class TestBuildFullPlanTodoList:
+    def test_linear_chain(self, linear_chain_tree):
+        todo = build_full_plan_todo_list(linear_chain_tree)
+        assert todo.target_task_id == 0
+        assert len(todo.phases) == 4
+        assert todo.execution_order == [1, 2, 3, 4]
+        assert todo.total_tasks == 4
+
+    def test_diamond(self, diamond_tree):
+        todo = build_full_plan_todo_list(diamond_tree)
+        assert len(todo.phases) == 3
+        assert todo.phases[0].items[0].task_id == 1
+        phase_1_ids = {item.task_id for item in todo.phases[1].items}
+        assert phase_1_ids == {2, 3}
+        assert todo.phases[2].items[0].task_id == 4
+
+    def test_empty_tree(self):
+        tree = PlanTree(id=1, title="Empty")
+        tree.rebuild_adjacency()
+        todo = build_full_plan_todo_list(tree)
+        assert todo.total_tasks == 0
+        assert len(todo.phases) == 0
+
+    def test_single_task(self):
+        tree = _tree([_node(1, "Only task")])
+        todo = build_full_plan_todo_list(tree)
+        assert len(todo.phases) == 1
+        assert todo.phases[0].items[0].task_id == 1
+
+    def test_pending_order_excludes_done(self):
+        tree = _tree([
+            _node(1, "Done task", status="completed"),
+            _node(2, "Pending task", deps=[1]),
+        ])
+        todo = build_full_plan_todo_list(tree)
+        assert todo.execution_order == [1, 2]
+        assert todo.pending_order == [2]
+        assert todo.completed_tasks == 1
+
+    def test_phase_labels_assigned(self):
+        tree = _tree([
+            _node(1, "Download data"),
+            _node(2, "QC filtering", deps=[1]),
+            _node(3, "Plot heatmap", deps=[2]),
+        ])
+        todo = build_full_plan_todo_list(tree)
+        labels = [p.label for p in todo.phases]
+        assert labels[0] == "Data Preparation"
+        assert labels[1] == "Quality Control"
+
+    def test_composite_expansion(self):
+        tree = _tree([
+            _node(1, "Root", parent_id=None),
+            _node(2, "Child A", parent_id=1),
+            _node(3, "Child B", parent_id=1),
+        ])
+        tree.rebuild_adjacency()
+        todo = build_full_plan_todo_list(tree, expand_composites=True)
+        task_ids = {item.task_id for phase in todo.phases for item in phase.items}
+        assert 1 not in task_ids
+        assert 2 in task_ids
+        assert 3 in task_ids
+
+    def test_no_expansion(self):
+        tree = _tree([
+            _node(1, "Root", parent_id=None),
+            _node(2, "Child A", parent_id=1),
+        ])
+        tree.rebuild_adjacency()
+        todo = build_full_plan_todo_list(tree, expand_composites=False)
+        task_ids = {item.task_id for phase in todo.phases for item in phase.items}
+        assert 1 in task_ids
+        assert 2 in task_ids
+
+    def test_wide_dag(self):
+        tree = _tree([
+            _node(1, "Source A"),
+            _node(2, "Source B"),
+            _node(3, "Merge", deps=[1, 2]),
+            _node(4, "Analysis", deps=[3]),
+        ])
+        todo = build_full_plan_todo_list(tree)
+        assert len(todo.phases[0].items) == 2
+        assert len(todo.phases[1].items) == 1
+        assert len(todo.phases[2].items) == 1
+
+    def test_composite_dependency_expands_to_leaf_dependencies(self, composite_tree: PlanTree):
+        todo = build_full_plan_todo_list(composite_tree)
+        assert todo.execution_order == [4, 5, 3]
+        item_by_id = {
+            item.task_id: item
+            for phase in todo.phases
+            for item in phase.items
+        }
+        assert item_by_id[3].dependencies == [4, 5]
+
+    def test_summary(self):
+        tree = _tree([
+            _node(1, "Done", status="completed"),
+            _node(2, "Pending", deps=[1]),
+        ])
+        todo = build_full_plan_todo_list(tree)
+        s = todo.summary()
+        assert "TodoList" in s
+        assert "Total: 1/2 completed" in s

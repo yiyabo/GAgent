@@ -141,7 +141,7 @@ class ToolEnhancedExecutor:
                 for call in routing_result.get("tool_calls", []):
                     tool = call.get("tool_name")
                     params = call.get("parameters", {}) or {}
-                    if tool in ["web_search", "database_query"]:
+                    if tool in ["web_search"]:
                         info_gathering_tools.append(call)
                     elif tool == "file_operations":
                         op = str(params.get("operation", "")).lower()
@@ -387,20 +387,6 @@ class ToolEnhancedExecutor:
                             search_summary += f"   {item.get('snippet', 'No snippet')[:100]}...\n"
 
                         tool_context_parts.append(f"## Web search results\n\n{search_summary}")
-
-                elif tool_name == "database_query":
-                    # Format database results
-                    if isinstance(result, dict) and result.get("success"):
-                        db_summary = f"Database query: {result.get('sql', 'N/A')}\n"
-                        db_summary += f"Returned {result.get('row_count', 0)} rows\n"
-
-                        rows = result.get("rows", [])
-                        if rows:
-                            db_summary += "Sample data:\n"
-                            for row in rows[:3]:
-                                db_summary += f"  {str(row)}\n"
-
-                        tool_context_parts.append(f"## Database query results\n\n{db_summary}")
 
                 elif tool_name == "file_operations":
                     # Format file operation results
@@ -858,7 +844,7 @@ async def execute_task_with_tools_and_evaluation(
             routing_failed = True
 
         for call in routing_result.get("tool_calls", []):
-            if call.get("tool_name") in ["web_search", "database_query"]:
+            if call.get("tool_name") in ["web_search"]:
                 info_gathering_tools.append(call)
             elif call.get("tool_name") == "file_operations":
                 output_tools.append(call)

@@ -1,11 +1,5 @@
-export type WebSearchProvider = 'builtin' | 'perplexity' | 'tavily';
-export type LLMProviderOption = 'qwen';
-export type BaseModelOption = 'qwen3.6-plus' | 'qwen3.5-plus' | 'qwen3-max-2026-01-23' | 'qwen-turbo';
-
 export interface ChatSessionSettings {
-  default_search_provider?: WebSearchProvider | null;
-  default_base_model?: BaseModelOption | null;
-  default_llm_provider?: LLMProviderOption | null;
+  [key: string]: unknown;
 }
 
 export interface ChatStatusResponse {

@@ -420,7 +420,17 @@ async def result_interpreter_handler(
         if operation == "metadata":
             # Extract metadata.
             if not file_path:
-                return {"success": False, "error": "file_path is required for metadata operation"}
+                # Fallback: try to extract from file_paths or data_paths
+                _fallback = (file_paths or data_paths or [None])[0]
+                if _fallback:
+                    file_path = _fallback
+                else:
+                    return {
+                        "success": False,
+                        "error": "file_path is required for metadata operation. "
+                        "Provide a data file path (CSV/TSV/H5AD/etc). "
+                        "To check plan status, use plan_operation instead.",
+                    }
 
             if not os.path.exists(file_path):
                 return {"success": False, "error": f"File not found: {file_path}"}

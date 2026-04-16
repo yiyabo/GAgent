@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Typography, Button, Space, Badge, Tooltip, Empty, Tabs, Progress, Tag } from 'antd';
 import {
+  AppstoreOutlined,
   NodeIndexOutlined,
   FullscreenOutlined,
   FullscreenExitOutlined,
@@ -23,6 +24,7 @@ import { planTreeApi } from '@api/planTree';
 import ExecutorPanel from './ExecutorPanel';
 import ArtifactsPanel from './ArtifactsPanel';
 import TerminalPanel from '@components/terminal/TerminalPanel';
+import TodoListPanel from '@components/tasks/detail/TodoListPanel';
 import { ENV } from '@/config/env';
 
 const { Title, Text } = Typography;
@@ -53,10 +55,11 @@ const scoreColor = (score: number): string => {
 };
 
 const DAGSidebar: React.FC = () => {
-  const { setCurrentPlan, setTasks, openTaskDrawer, closeTaskDrawer, selectedTaskId } = useTasksStore((state) => ({
+  const { setCurrentPlan, setTasks, openTaskDrawer, openTaskDrawerById, closeTaskDrawer, selectedTaskId } = useTasksStore((state) => ({
   setCurrentPlan: state.setCurrentPlan,
   setTasks: state.setTasks,
   openTaskDrawer: state.openTaskDrawer,
+  openTaskDrawerById: state.openTaskDrawerById,
   closeTaskDrawer: state.closeTaskDrawer,
   selectedTaskId: state.selectedTaskId,
   }));
@@ -84,6 +87,7 @@ const DAGSidebar: React.FC = () => {
   }, []);
   const [showFullscreenDAG, setShowFullscreenDAG] = useState(false);
   const [decomposeSnapshot, setDecomposeSnapshot] = useState<Record<string, any> | null>(null);
+  const [planTodoListOpen, setPlanTodoListOpen] = useState(false);
 
   const sessionId = currentSession?.session_id;
 
@@ -438,6 +442,12 @@ const DAGSidebar: React.FC = () => {
   }, [currentPlanId, refetchTasks]);
 
   useEffect(() => {
+  if (!currentPlanId) {
+  setPlanTodoListOpen(false);
+  }
+  }, [currentPlanId]);
+
+  useEffect(() => {
   setTasks(planTasks);
   }, [planTasks, setTasks]);
 
@@ -494,6 +504,16 @@ const DAGSidebar: React.FC = () => {
   refetchTasks();
   };
 
+  const handlePlanTodoTaskClick = (taskId: number) => {
+  const targetTask = planTasks.find((task) => task.id === taskId);
+  if (targetTask) {
+  openTaskDrawer(targetTask);
+  } else {
+  openTaskDrawerById(taskId);
+  }
+  setPlanTodoListOpen(false);
+  };
+
   const renderPlanPanel = () => (
   <div style={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
   <div style={{ padding: '16px', borderBottom: '1px solid var(--border-color)', background: 'var(--bg-primary)' }}>
@@ -508,6 +528,15 @@ const DAGSidebar: React.FC = () => {
   </div>
 
   <Space size={4}>
+  <Button
+  size="small"
+  icon={<AppstoreOutlined />}
+  onClick={() => setPlanTodoListOpen(true)}
+  disabled={!currentPlanId}
+  >
+  Todo List
+  </Button>
+
   <Tooltip title={dagVisible ? '' : ''}>
   <Button
   type="text"
@@ -718,6 +747,15 @@ const DAGSidebar: React.FC = () => {
   }}
   />
   )}
+
+  <TodoListPanel
+  open={planTodoListOpen}
+  onClose={() => setPlanTodoListOpen(false)}
+  planId={currentPlanId ?? null}
+  targetTaskId={null}
+  onTaskClick={handlePlanTodoTaskClick}
+  fullPlan
+  />
   </>
   );
 };

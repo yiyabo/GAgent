@@ -109,7 +109,7 @@ Router (app/routers/)  →  Service (app/services/)  →  Repository (app/reposi
 
 ### Chat request flow (最常用路径)
 1. `routes.py` receives message → creates `chat_run`
-2. `request_routing.py` classifies **intent** (`intent_type`) and **request tier** (`request_tier`: `light` / `standard` / `research` / `execute`), and sets **`capability_floor`**. The default path grants **`tools`** (full tool-capable DeepThink), not a no-tool “plain chat” mode.
+2. `request_routing.py` classifies **intent** (`intent_type`) and **request tier** (`request_tier`: `light` / `standard` / `research` / `execute`). All requests get full tool access — `capability_floor` is always `"tools"`.
 3. `agent.py` builds context (including bound plan/task when applicable) and invokes DeepThink with the routed profile.
 4. `deep_think_agent.py` runs the LLM with **native tool calling** (or structured path when configured).
 5. Tools executed via `tool_executor.py` → `tool_box/tools_impl/*.py`
@@ -200,8 +200,8 @@ Full list in `app/services/foundation/settings.py`. Key groups:
 
 ### request_routing.py — Intent classification (意图分类)
 - `resolve_intent_type()` classifies **intent** (e.g. chat vs research vs `execute_task`) for prompts and policies; it does **not** remove tools by itself.
-- `determine_capability_floor()` currently returns **`tools`** unconditionally so the model always **can** call tools (avoids mis-routed “chat” turns with **no** tools and hallucinated answers). `intent_type` is still used for wording and tiering.
-- **`request_tier`** is separate: `light` | `standard` | `research` | `execute` (not the string `plain_chat`).
+- `determine_capability_floor()` returns **`tools`** unconditionally — all requests always have full tool access. The `plain_chat` path and `simple_channel_allowed` have been removed.
+- **`request_tier`** controls thinking budget and max iterations: `light` | `standard` | `research` | `execute` — similar to Claude Code's effort parameter.
 - **Explicit task numbers** in the user message set `explicit_task_ids` / `explicit_task_override` and can pin `code_executor` to a task within the named set; changing routing without tests can break bound execution and plan UX.
 - Always run `pytest app/tests/test_request_tier_routing.py -v` after changes.
 
@@ -212,7 +212,7 @@ Full list in `app/services/foundation/settings.py`. Key groups:
 
 ### deep_think_agent.py — Tools and bound tasks
 - Bound **execute_task** flows still attach **task context** (instruction, dependencies, artifacts); tool availability in the prompt may be further narrowed by internal toolsets for that mode.
-- Legacy **`_SUCCESSOR_TOOLSET` / `plain_chat`**-style mappings may still exist for compatibility; the default chat path uses **`tools`** floor. Do not assume “no tools” for a normal user message.
+- All requests have full tool access. The `_build_request_tier_block()` controls response style and depth; `_build_capability_floor_block()` provides tool access instructions.
 - Wrong routing or missing task binding can still yield **fabricated** results if tools are not invoked — verify with logs (`tools_used`).
 
 ### .env — API keys
@@ -301,7 +301,7 @@ route_reason_codes  → 路由决策依据，排查意图分类错误的关键
 | Term | Description |
 |------|-------------|
 | **DeepThink** | Extended thinking mode for complex reasoning (扩展思考模式) |
-| **capability_floor** | Capability lower bound for tool exposure; default path is **`tools`** (模型始终具备调用工具的能力边界，而非无工具闲聊) |
+| **capability_floor** | Always `"tools"` — all requests have full tool access. The `plain_chat` path has been removed (工具权限始终开放) |
 | **explicit_task_ids** | Parsed from user message when they name task numbers; with **`explicit_task_override`** 可压过 plan review/optimize 启发式并约束 `code_executor` 目标 |
 | **PhageScope** | Bacteriophage analysis platform API at phageapi.deepomics.org (噬菌体分析平台) |
 | **Skill** | Configurable AI capability module, selected per task (可配置AI技能模块) |

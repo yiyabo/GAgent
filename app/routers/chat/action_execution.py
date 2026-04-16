@@ -1741,17 +1741,14 @@ async def _execute_action_run(run_id: str) -> None:
             # that prerequisite tasks execute before their dependents.
             _cascade_phases: Dict[int, int] = {}  # task_id → phase
             _current_phase: int = -1
-            _todo_scope_target: Optional[int] = None
             if _cascade_tree is not None:
                 try:
                     from app.services.plans.todo_list import (
                         _compute_phase_layers,
-                        build_todo_list,
+                        build_full_plan_todo_list,
                         assign_phase_labels,
                     )
 
-                    # Compute phases for ALL pending tasks based on
-                    # their mutual in-scope dependencies.
                     _pending_int_set = set()
                     for _pid in pending:
                         try:
@@ -1775,7 +1772,6 @@ async def _execute_action_run(run_id: str) -> None:
                     )
 
                     if _cascade_phases:
-                        # Sort pending by (phase, task_id)
                         _is_str = (
                             isinstance(pending[0], str) if pending else False
                         )
@@ -1816,30 +1812,24 @@ async def _execute_action_run(run_id: str) -> None:
                             },
                         )
 
-                        # Build brief todo-list summary for agent context
-                        # Capture the scope target (last task = most deps = full view)
-                        # and refresh summary each cascade iteration inside the loop.
-                        _todo_scope_target = (
-                            int(pending[-1]) if pending else None
-                        )
-                        if _todo_scope_target and _cascade_tree:
+                        # Build a full-plan TodoList summary that covers
+                        # ALL pending tasks (not just one target's deps).
+                        if _cascade_tree:
                             try:
-                                _todo = build_todo_list(
+                                _todo = build_full_plan_todo_list(
                                     _cascade_tree,
-                                    _todo_scope_target,
-                                    include_target=True,
                                     expand_composites=True,
                                 )
+                                # Keep only pending tasks in the summary
                                 assign_phase_labels(_todo.phases)
                                 _agent_ctx["todo_list_summary"] = _todo.summary()
                                 logger.info(
-                                    "[CASCADE] Todo-list summary injected (scope=%s): %s",
-                                    _todo_scope_target,
+                                    "[CASCADE] Full-plan TodoList summary injected: %s",
                                     _todo.summary()[:200],
                                 )
                             except Exception as _todo_exc:
                                 logger.debug(
-                                    "[CASCADE] Todo-list summary generation "
+                                    "[CASCADE] TodoList summary generation "
                                     "skipped: %s",
                                     _todo_exc,
                                 )
@@ -1900,17 +1890,18 @@ async def _execute_action_run(run_id: str) -> None:
                 _agent_ctx["pending_scope_task_ids"] = pending
 
                 # Refresh todo-list summary so agent sees live progress
-                if _todo_scope_target and _cascade_tree:
+                if _cascade_tree:
                     try:
                         _ps_ref = getattr(agent, "plan_session", None)
                         _ct_fn_ref = getattr(_ps_ref, "current_tree", None) if _ps_ref else None
                         if callable(_ct_fn_ref):
                             _cascade_tree = _ct_fn_ref()
-                        _todo = build_todo_list(
-                            _cascade_tree, _todo_scope_target,
-                            include_target=True, expand_composites=True,
+                        from app.services.plans.todo_list import (
+                            build_full_plan_todo_list as _bfpt,
+                            assign_phase_labels as _apl,
                         )
-                        assign_phase_labels(_todo.phases)
+                        _todo = _bfpt(_cascade_tree, expand_composites=True)
+                        _apl(_todo.phases)
                         _agent_ctx["todo_list_summary"] = _todo.summary()
                     except Exception:
                         pass  # keep previous summary

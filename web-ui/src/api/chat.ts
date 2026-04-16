@@ -8,9 +8,6 @@ import type {
   ChatSessionUpdatePayload,
   ChatSessionAutoTitleResult,
   ChatSessionAutoTitleBulkResponse,
-  BaseModelOption,
-  WebSearchProvider,
-  LLMProviderOption,
 } from '@/types';
 
 interface ChatMessage {
@@ -37,9 +34,6 @@ export class ChatApi extends BaseApi {
   workflow_id?: string;
   session_id?: string;
   metadata?: Record<string, any>;
-  default_search_provider?: WebSearchProvider | null;
-  default_base_model?: BaseModelOption | null;
-  default_llm_provider?: LLMProviderOption | null;
   }): Promise<ChatResponsePayload> => {
   const request: ChatRequest = {
   message,
@@ -51,28 +45,13 @@ export class ChatApi extends BaseApi {
   task_id: context?.task_id,
   plan_title: context?.plan_title,
   workflow_id: context?.workflow_id,
-  default_search_provider:
-  context?.default_search_provider ??
-  context?.metadata?.default_search_provider,
-  default_base_model:
-  context?.default_base_model ??
-  context?.metadata?.default_base_model,
-  default_llm_provider:
-  context?.default_llm_provider ??
-  context?.metadata?.default_llm_provider,
   }
   };
 
   if (context?.metadata) {
-  const {
-  default_search_provider: _ignoredProvider,
-  default_base_model: _ignoredBaseModel,
-  default_llm_provider: _ignoredLLMProvider,
-  ...restMetadata
-  } = context.metadata;
   request.context = {
   ...request.context,
-  ...restMetadata,
+  ...context.metadata,
   };
   }
   

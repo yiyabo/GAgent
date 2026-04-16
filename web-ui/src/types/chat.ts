@@ -1,4 +1,4 @@
-import type { ChatSessionSettings, WebSearchProvider, BaseModelOption, LLMProviderOption } from './settings';
+import type { ChatSessionSettings } from './settings';
 import type { ToolResultPayload, DecompositionJobStatus, JobLogEvent } from './tool';
 
 export interface ChatSessionSummary {
@@ -262,9 +262,6 @@ export interface ChatSession {
   current_task_name?: string | null;
   last_message_at?: Date | null;
   is_active?: boolean;
-  defaultSearchProvider?: WebSearchProvider | null;
-  defaultBaseModel?: BaseModelOption | null;
-  defaultLLMProvider?: LLMProviderOption | null;
   titleSource?: string | null;
   isUserNamed?: boolean | null;
 }

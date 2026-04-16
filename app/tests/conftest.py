@@ -110,3 +110,35 @@ def isolated_terminal_manager(monkeypatch: pytest.MonkeyPatch):
             await manager.close_session(row["terminal_id"])
 
     asyncio.run(_close_all())
+
+
+@pytest.fixture
+def mock_llm_chat(monkeypatch: pytest.MonkeyPatch):
+    """Mock the LLM to return a fixed plain-text reply without network calls.
+
+    Usage::
+
+        def test_something(mock_llm_chat, app_client_factory):
+            mock_llm_chat("Hello from mock LLM")
+            with app_client_factory() as client:
+                resp = client.post("/chat/message", json={...})
+
+    The mock patches ``StructuredChatAgent.get_structured_response`` so that
+    the entire routing / middleware / DB pipeline runs for real — only the
+    LLM call itself is replaced.
+    """
+    from app.services.llm.structured_response import LLMReply, LLMStructuredResponse
+
+    def _set(reply_text: str = "Mock LLM response"):
+        async def _fake_get_structured_response(self, user_message: str):
+            return LLMStructuredResponse(
+                llm_reply=LLMReply(message=reply_text),
+                actions=[],
+            )
+
+        monkeypatch.setattr(
+            "app.routers.chat.agent.StructuredChatAgent.get_structured_response",
+            _fake_get_structured_response,
+        )
+
+    return _set

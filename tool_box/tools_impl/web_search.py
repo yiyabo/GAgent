@@ -27,6 +27,9 @@ async def web_search_handler(query: str, max_results: int = 5, search_engine: st
     Returns:
         Dict containing search results
     """
+    if not query or not query.strip():
+        return {"query": query, "error": "missing_query", "success": False}
+
     try:
         # Perplexity-only implementation; unify return shape for downstream consumers
         response = await _search_perplexity(query)
