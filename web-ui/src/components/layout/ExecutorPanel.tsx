@@ -137,6 +137,12 @@ const toProgressStatus = (status: string): 'normal' | 'active' | 'success' | 'ex
 
 const getProgressText = (item: BackgroundTaskItem): string | null => {
   const parts: string[] = [];
+  const hideStepProgress = item.job_type === 'plan_execute' && item.mode === 'full_plan';
+
+  if (item.effective_status === 'blocked' && (item.incomplete_dependencies?.length ?? 0) > 0) {
+    const deps = (item.incomplete_dependencies ?? []).map((d) => `#${d}`).join(', ');
+    parts.push(`Blocked by ${deps}`);
+  }
 
   if (typeof item.progress_text === 'string' && item.progress_text.trim()) {
   parts.push(item.progress_text.trim());
@@ -160,6 +166,7 @@ const getProgressText = (item: BackgroundTaskItem): string | null => {
   }
 
   if (
+  !hideStepProgress &&
   typeof item.current_step === 'number' &&
   Number.isFinite(item.current_step) &&
   item.current_step > 0
@@ -190,7 +197,10 @@ const getProgressText = (item: BackgroundTaskItem): string | null => {
 const resolveItemProgress = (
   item: BackgroundTaskItem
 ): { percent: number; status: 'normal' | 'active' | 'success' | 'exception'; text: string | null } => {
-  const status = toProgressStatus(item.progress_status || item.status || 'queued');
+  const status =
+    item.effective_status === 'blocked'
+      ? 'normal'
+      : toProgressStatus(item.progress_status || item.status || 'queued');
   const explicitPercent =
   typeof item.progress_percent === 'number' && Number.isFinite(item.progress_percent)
   ? clampPercent(item.progress_percent)
@@ -246,7 +256,9 @@ const _itemFingerprint = (item: BackgroundTaskItem): string =>
 
 const TaskRow = React.memo<TaskRowProps>(
   ({ item, currentPlanId, isExpanded, canExpand, isProcessing, onToggle, onSendMessage }) => {
-    const normalized = normalizeJobStatus(item.status);
+    const effective = item.effective_status || null;
+    const displayStatus = effective === 'blocked' ? 'queued' : item.status;
+    const normalized = effective === 'blocked' ? 'queued' : normalizeJobStatus(item.status);
     const duration = formatDuration(item.started_at, item.finished_at);
     const progress = resolveItemProgress(item);
     const remoteMeta =
@@ -297,7 +309,7 @@ const TaskRow = React.memo<TaskRowProps>(
           </td>
           <td className="task-status">
             <span className={`task-status-dot ${normalized}`} />
-            <span className="task-status-text">{getStatusLabel(item.status)}</span>
+            <span className="task-status-text">{effective === 'blocked' ? 'blocked' : getStatusLabel(displayStatus)}</span>
             {duration ? <span className="task-status-meta">{duration}</span> : null}
             <span className="task-status-meta">{formatRelativeTime(item.created_at)}</span>
             {normalized === 'completed' && (

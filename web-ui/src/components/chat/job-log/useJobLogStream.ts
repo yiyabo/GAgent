@@ -573,16 +573,23 @@ export function useJobLogStream({ jobId, initialJob, planId, jobType: initialJob
     setIsStreaming(false);
   }, []);
 
+  const pollStartRef = React.useRef<number | null>(null);
+
   const stopPolling = React.useCallback(() => {
     if (pollerRef.current !== null) {
-      window.clearInterval(pollerRef.current);
+      window.clearTimeout(pollerRef.current);
       pollerRef.current = null;
     }
+    pollStartRef.current = null;
   }, []);
 
   const startPolling = React.useCallback(() => {
     if (pollerRef.current !== null) return;
-    pollerRef.current = window.setInterval(async () => {
+    if (pollStartRef.current === null) {
+      pollStartRef.current = Date.now();
+    }
+    const tick = async () => {
+      pollerRef.current = null;
       try {
         const snapshot = await planTreeApi.getJobStatus(jobId);
         applySnapshot(snapshot);
@@ -599,17 +606,23 @@ export function useJobLogStream({ jobId, initialJob, planId, jobType: initialJob
         }
         if (FINAL_STATUSES.has(snapshot.status)) {
           stopPolling();
+          return;
         }
       } catch (err) {
         const isNotFoundError = err instanceof Error && /not found/i.test(err.message || '');
         if (isNotFoundError) {
           setMissingJob(true);
           stopPolling();
-        } else {
-          console.error('Failed to poll job status:', err);
+          return;
         }
+        console.error('Failed to poll job status:', err);
       }
-    }, 5000);
+      // Backoff: first 30s poll every 5s, then every 15s.
+      const elapsed = Date.now() - (pollStartRef.current ?? Date.now());
+      const delay = elapsed < 30_000 ? 5_000 : 15_000;
+      pollerRef.current = window.setTimeout(tick, delay);
+    };
+    pollerRef.current = window.setTimeout(tick, 5_000);
   }, [applySnapshot, emitPlanProgressSync, jobId, stopPolling]);
 
   const fetchCliLog = React.useCallback(async () => {

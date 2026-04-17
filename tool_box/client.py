@@ -8,6 +8,7 @@ and calling tools.
 import asyncio
 import json
 import logging
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -41,26 +42,32 @@ class MCPToolBoxClient:
         server_config = self.servers[name]
 
         try:
-            # Start the server process
-            if isinstance(server_config["command"], str):
-                process = subprocess.Popen(
-                    server_config["command"],
-                    shell=True,
-                    cwd=server_config["cwd"],
-                    stdin=subprocess.PIPE,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                )
+            # Start the server process.
+            # Always invoke without `shell=True` to prevent command injection when
+            # `server_config["command"]` is influenced by external configuration
+            # (e.g. MCP server manifests). String commands are tokenised via shlex
+            # so shell metacharacters are treated as literals.
+            raw_command = server_config["command"]
+            if isinstance(raw_command, str):
+                argv = shlex.split(raw_command)
             else:
-                process = subprocess.Popen(
-                    server_config["command"],
-                    cwd=server_config["cwd"],
-                    stdin=subprocess.PIPE,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
+                argv = list(raw_command)
+
+            if not argv:
+                logger.error(
+                    "Server %s has empty command after parsing; aborting start", name
                 )
+                return False
+
+            process = subprocess.Popen(
+                argv,
+                shell=False,
+                cwd=server_config["cwd"],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
 
             self.processes[name] = process
             self.servers[name]["status"] = "running"

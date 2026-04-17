@@ -5,7 +5,7 @@ import logging
 import re
 from collections import deque
 from dataclasses import dataclass
-from typing import Any, Deque, Dict, Iterable, List, Optional
+from typing import Any, Deque, Dict, Iterable, List, Optional, Set, Tuple
 
 from pydantic import BaseModel, Field
 
@@ -176,6 +176,9 @@ class DecompositionPromptBuilder:
             "  * Do NOT reference task IDs from the PLAN OVERVIEW — those are parent/ancestor nodes, not valid dependency targets.",
             "  * Do NOT invent IDs that do not correspond to a sibling index in your output.",
             "  * Use an empty array `[]` if the task has no dependencies.",
+            "  * CROSS-LINK RULE (MANDATORY): If this batch contains BOTH evidence/data-preparation tasks (e.g. extracting/organizing evidence, preparing references, gathering source material) AND downstream tasks that consume that output (e.g. drafting a section, writing a report, running analysis on the evidence), the downstream task's `dependencies` MUST include every evidence/preparation sibling it relies on. Do NOT leave downstream writing/analysis tasks with empty dependencies when evidence siblings exist — the executor runs tasks as soon as their direct deps are satisfied, so missing edges cause writers to start before evidence is ready.",
+            "  * Keywords that signal evidence/preparation roles: 整理, 提取, 收集, 证据, 资料, 参考, evidence, extract, collect, gather, prepare, references.",
+            "  * Keywords that signal downstream consumer roles: 撰写, 写作, 起草, 初稿, 章节, 报告, 分析, draft, write, author, section, report, analyze, synthesize.",
             "- For paper-writing tasks, include `metadata.paper_section`, `metadata.paper_role`, and `metadata.paper_context_paths` when known.",
             "- For file/data tasks that download files, generate datasets, or write reports/artifacts, include `metadata.acceptance_criteria` when possible. Use deterministic checks only; prefer `file_exists`, `file_nonempty`, `glob_count_at_least`, `text_contains`, `json_field_equals`, `json_field_at_least`, or `pdb_residue_present`.",
             "- `context.sections` must be an array of JSON objects, never strings. Every object must provide `title` and `content` keys.",
@@ -465,6 +468,7 @@ class PlanDecomposer:
                 continue
 
             created_sibling_ids = [n.id for n in created_nodes if n.parent_id == current.node_id]
+            batch_created: List[PlanNode] = []
             for child in children:
                 if budget_remaining is not None and budget_remaining <= 0:
                     break
@@ -478,6 +482,7 @@ class PlanDecomposer:
                 if budget_remaining is not None:
                     budget_remaining -= 1
                 created_nodes.append(new_node)
+                batch_created.append(new_node)
                 created_sibling_ids.append(new_node.id)  # update
                 self._update_tree_cache(tree, new_node)
                 outline_cache = tree.to_outline(max_depth=5, max_nodes=80)
@@ -501,6 +506,15 @@ class PlanDecomposer:
                                 relative_depth=current.relative_depth + 1,
                             )
                         )
+
+            # Fix C: after the full sibling batch exists, enforce
+            # evidence → writer/consumer edges when the LLM omitted them.
+            if batch_created:
+                self._auto_link_evidence_to_writers(
+                    plan_id=plan_id,
+                    siblings=batch_created,
+                    tree=tree,
+                )
 
             if llm_result.should_stop:
                 stopped_reason = llm_result.reason or "llm_requested_stop"
@@ -655,6 +669,15 @@ class PlanDecomposer:
             raw_deps=child.dependencies,
             created_sibling_ids=created_sibling_ids,
         )
+        # Fix B: inherit parent's own direct dependencies so leaves can't run
+        # before their ancestors' prerequisites are satisfied. This fixes the
+        # class of bugs where a writer-child starts while its evidence
+        # ancestor-dep is still failed/running.
+        validated_deps = self._inherit_parent_dependencies(
+            tree=tree,
+            parent_id=parent_id,
+            current_deps=validated_deps,
+        )
         child_metadata = self._derive_paper_metadata(child)
 
         node = self._repo.create_task(
@@ -788,6 +811,153 @@ class PlanDecomposer:
             )
 
         return valid_deps
+
+    # ------------------------------------------------------------------
+    # Dependency enforcement helpers (Fix B + Fix C)
+    # ------------------------------------------------------------------
+
+    # Keyword heuristics used when the LLM does not explicitly tag
+    # paper_role. Both Chinese and English forms are recognised.
+    _EVIDENCE_KEYWORDS: Tuple[str, ...] = (
+        "整理", "提取", "收集", "证据", "资料", "参考", "文献证据",
+        "evidence", "extract", "collect", "gather", "prepare reference",
+        "references", "literature", "data preparation", "prepare data",
+    )
+    _CONSUMER_KEYWORDS: Tuple[str, ...] = (
+        "撰写", "写作", "起草", "初稿", "章节", "综述", "报告", "分析",
+        "整合", "合成", "draft", "write", "author", "section", "report",
+        "analyze", "analysis", "synthesize", "compose",
+    )
+    _EVIDENCE_ROLES = {
+        "evidence_collector", "evidence_extractor", "evidence", "data_collector",
+    }
+    _CONSUMER_ROLES = {
+        "section_writer", "manuscript_writer", "manuscript_assembler",
+        "writer", "author", "analyst",
+    }
+
+    def _classify_sibling(self, node: PlanNode) -> str:
+        """Return 'evidence' / 'consumer' / 'other' for a just-created node."""
+        metadata = node.metadata if isinstance(node.metadata, dict) else {}
+        role = str(metadata.get("paper_role") or "").strip().lower()
+        if role in self._EVIDENCE_ROLES:
+            return "evidence"
+        if role in self._CONSUMER_ROLES:
+            return "consumer"
+        haystack = f"{node.name or ''} {node.instruction or ''}".lower()
+        has_evidence_kw = any(kw.lower() in haystack for kw in self._EVIDENCE_KEYWORDS)
+        has_consumer_kw = any(kw.lower() in haystack for kw in self._CONSUMER_KEYWORDS)
+        # A node tagged as both (e.g. "整理并撰写") is treated as consumer so
+        # that it still gets evidence siblings as dependencies.
+        if has_consumer_kw:
+            return "consumer"
+        if has_evidence_kw:
+            return "evidence"
+        return "other"
+
+    def _inherit_parent_dependencies(
+        self,
+        *,
+        tree: PlanTree,
+        parent_id: Optional[int],
+        current_deps: List[int],
+    ) -> List[int]:
+        """Append the parent's own direct deps so leaves wait for ancestor prereqs.
+
+        Skips ancestors of the child to avoid creating cycles, and dedupes.
+        """
+        if parent_id is None:
+            return list(current_deps)
+        parent_node = tree.nodes.get(parent_id)
+        if not parent_node:
+            return list(current_deps)
+        parent_deps = [d for d in (parent_node.dependencies or []) if d in tree.nodes]
+        if not parent_deps:
+            return list(current_deps)
+
+        # Ancestors of the CHILD being created (i.e. parent and above) must
+        # never become dependencies — that would form a cycle.
+        ancestor_ids: Set[int] = set()
+        cursor = parent_id
+        while cursor is not None:
+            ancestor_ids.add(cursor)
+            anc_node = tree.nodes.get(cursor)
+            cursor = anc_node.parent_id if anc_node else None
+
+        merged = list(current_deps)
+        seen = set(merged)
+        for dep in parent_deps:
+            if dep in ancestor_ids or dep in seen:
+                continue
+            merged.append(dep)
+            seen.add(dep)
+        if len(merged) > len(current_deps):
+            logger.info(
+                "[DECOMPOSER] Inherited parent (%s) dependencies %s for new child",
+                parent_id,
+                [d for d in merged if d not in current_deps],
+            )
+        return merged
+
+    def _auto_link_evidence_to_writers(
+        self,
+        *,
+        plan_id: int,
+        siblings: List[PlanNode],
+        tree: PlanTree,
+    ) -> None:
+        """Ensure consumer siblings depend on every evidence sibling in the batch.
+
+        The LLM is instructed to encode this via `dependencies`, but historically
+        it drops the edges for mixed batches (see plan 68 tasks #24/#30). This
+        post-pass is a safety net — it only *adds* edges and never removes or
+        rewrites LLM-provided ones.
+        """
+        if len(siblings) < 2:
+            return
+        evidence_nodes: List[PlanNode] = []
+        consumer_nodes: List[PlanNode] = []
+        for node in siblings:
+            kind = self._classify_sibling(node)
+            if kind == "evidence":
+                evidence_nodes.append(node)
+            elif kind == "consumer":
+                consumer_nodes.append(node)
+        if not evidence_nodes or not consumer_nodes:
+            return
+        evidence_ids = [e.id for e in evidence_nodes]
+        for consumer in consumer_nodes:
+            existing = list(consumer.dependencies or [])
+            missing = [eid for eid in evidence_ids if eid not in existing and eid != consumer.id]
+            if not missing:
+                continue
+            new_deps = existing + missing
+            try:
+                updated = self._repo.update_task(
+                    plan_id,
+                    consumer.id,
+                    dependencies=new_deps,
+                )
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning(
+                    "[DECOMPOSER] Auto-link failed for task %s: %s",
+                    consumer.id, exc,
+                )
+                continue
+            tree.nodes[consumer.id] = updated
+            logger.info(
+                "[DECOMPOSER] Auto-linked consumer task %s → evidence siblings %s",
+                consumer.id, missing,
+            )
+            _log_job(
+                "info",
+                "Auto-linked consumer task to evidence siblings",
+                {
+                    "task_id": consumer.id,
+                    "added_dependencies": missing,
+                    "parent_id": consumer.parent_id,
+                },
+            )
 
     def _update_tree_cache(self, tree: PlanTree, node: PlanNode) -> None:
         tree.nodes[node.id] = node

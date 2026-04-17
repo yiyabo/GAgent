@@ -486,6 +486,16 @@ class TestBuildFullPlanTodoList:
         assert todo.pending_order == [2]
         assert todo.completed_tasks == 1
 
+    def test_pending_order_excludes_running_tasks_and_blocked_dependents(self):
+        tree = _tree([
+            _node(1, "Running task", status="running"),
+            _node(2, "Blocked dependent", deps=[1]),
+            _node(3, "Independent task"),
+        ])
+        todo = build_full_plan_todo_list(tree)
+        assert todo.execution_order == [1, 3, 2]
+        assert todo.pending_order == [3]
+
     def test_phase_labels_assigned(self):
         tree = _tree([
             _node(1, "Download data"),
@@ -506,9 +516,10 @@ class TestBuildFullPlanTodoList:
         tree.rebuild_adjacency()
         todo = build_full_plan_todo_list(tree, expand_composites=True)
         task_ids = {item.task_id for phase in todo.phases for item in phase.items}
-        assert 1 not in task_ids
+        assert 1 in task_ids
         assert 2 in task_ids
         assert 3 in task_ids
+        assert todo.execution_order == [2, 3, 1]
 
     def test_no_expansion(self):
         tree = _tree([
@@ -535,13 +546,26 @@ class TestBuildFullPlanTodoList:
 
     def test_composite_dependency_expands_to_leaf_dependencies(self, composite_tree: PlanTree):
         todo = build_full_plan_todo_list(composite_tree)
-        assert todo.execution_order == [4, 5, 3]
+        assert todo.execution_order == [4, 5, 2, 3, 1]
         item_by_id = {
             item.task_id: item
             for phase in todo.phases
             for item in phase.items
         }
-        assert item_by_id[3].dependencies == [4, 5]
+        assert item_by_id[2].dependencies == [4, 5]
+        assert item_by_id[3].dependencies == [2]
+        assert item_by_id[1].dependencies == [2, 3]
+
+    def test_full_plan_preserves_pending_parent_synthesis_tasks(self):
+        tree = _tree([
+            _node(1, "Root synthesis", status="pending"),
+            _node(2, "Completed child A", parent_id=1, status="completed"),
+            _node(3, "Completed child B", parent_id=1, status="completed"),
+        ])
+        tree.rebuild_adjacency()
+        todo = build_full_plan_todo_list(tree)
+        assert todo.execution_order == [2, 3, 1]
+        assert todo.pending_order == [1]
 
     def test_summary(self):
         tree = _tree([

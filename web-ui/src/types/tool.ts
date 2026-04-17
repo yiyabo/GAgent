@@ -90,6 +90,7 @@ export interface BackgroundTaskItem {
   category: BackgroundTaskCategory;
   job_id: string;
   job_type: string;
+  mode?: string | null;
   status: string;
   label: string;
   session_id?: string | null;
@@ -107,6 +108,11 @@ export interface BackgroundTaskItem {
   total_steps?: number | null;
   done_steps?: number | null;
   current_task_id?: number | null;
+  effective_status?: string | null;
+  status_reason?: string | null;
+  blocked_by_dependencies?: boolean | null;
+  incomplete_dependencies?: number[] | null;
+  is_active_execution?: boolean | null;
   counts?: {
     done: number;
     total: number;
