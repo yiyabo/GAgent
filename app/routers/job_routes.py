@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 from collections import deque
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Literal, Optional
 
@@ -71,6 +72,7 @@ class BackgroundTaskItem(BaseModel):
     category: Literal["task_creation", "phagescope", "code_executor"]
     job_id: str
     job_type: str
+    mode: Optional[str] = None
     status: str
     label: str
     session_id: Optional[str] = None
@@ -89,6 +91,11 @@ class BackgroundTaskItem(BaseModel):
     total_steps: Optional[int] = None
     done_steps: Optional[int] = None
     current_task_id: Optional[int] = None
+    effective_status: Optional[str] = None
+    status_reason: Optional[str] = None
+    blocked_by_dependencies: bool = False
+    incomplete_dependencies: List[int] = Field(default_factory=list)
+    is_active_execution: bool = False
     error: Optional[str] = None
 
 
@@ -415,6 +422,7 @@ def _extract_item_progress(
                 progress_text = f"{done}/{total}"
 
     if job_type == "plan_execute":
+        mode = str(payload.get("mode") or "").strip().lower()
         executed = max(0, _to_int(stats.get("executed")) or 0)
         failed = max(0, _to_int(stats.get("failed")) or 0)
         skipped = max(0, _to_int(stats.get("skipped")) or 0)
@@ -429,11 +437,26 @@ def _extract_item_progress(
         if total is not None and total > 0:
             total_steps = total
             done_steps = done
+            if mode == "full_plan":
+                overall_total = _to_int(stats.get("overall_total_steps"))
+                if overall_total is None:
+                    overall_total = _to_int(params.get("overall_total_steps"))
+                overall_done = _to_int(stats.get("overall_done_steps"))
+                if overall_done is None:
+                    overall_done = _to_int(params.get("initial_completed_steps"))
+                if overall_total is not None and overall_total > 0:
+                    if percent_raw is None:
+                        percent_raw = _to_int(stats.get("progress_percent"))
+                    if percent_raw is None and overall_done is not None:
+                        percent_raw = int(round((min(overall_done, overall_total) / overall_total) * 100))
+                    if overall_done is not None:
+                        progress_text = f"{max(0, overall_done)}/{overall_total}"
             if percent_raw is None:
                 percent_raw = _to_int(stats.get("progress_percent"))
             if percent_raw is None:
                 percent_raw = int(round((min(done, total) / total) * 100))
-            progress_text = f"{done}/{total}"
+            if not progress_text:
+                progress_text = f"{done}/{total}"
 
     if job_type == "plan_decompose" or category == "task_creation":
         node_budget = _to_int(params.get("node_budget"))
@@ -498,6 +521,159 @@ def _append_item(group: BackgroundTaskGroup, item: BackgroundTaskItem) -> None:
         group.succeeded += 1
     elif status == "failed":
         group.failed += 1
+
+
+def _parse_timestamp_sort_key(value: Any) -> tuple[int, str]:
+    raw = str(value or "").strip()
+    if not raw:
+        return (0, "")
+    normalized = raw
+    if " " in normalized and "T" not in normalized:
+        normalized = normalized.replace(" ", "T")
+    if normalized.endswith("Z"):
+        normalized = f"{normalized[:-1]}+00:00"
+    try:
+        parsed = datetime.fromisoformat(normalized)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        else:
+            parsed = parsed.astimezone(timezone.utc)
+        return (1, parsed.isoformat())
+    except Exception:
+        return (1, raw)
+
+
+def _board_item_recency_key(item: BackgroundTaskItem) -> tuple[int, str]:
+    return _parse_timestamp_sort_key(item.created_at or item.started_at or item.finished_at)
+
+
+def _full_plan_group_key(item: BackgroundTaskItem) -> Optional[str]:
+    if item.job_type != "plan_execute":
+        return None
+    if item.plan_id is None:
+        return None
+    return f"plan:{item.plan_id}"
+
+
+def _should_collapse_full_plan_item(job_payload: Dict[str, Any], metadata: Dict[str, Any]) -> bool:
+    mode = str(job_payload.get("mode") or metadata.get("mode") or "").strip().lower()
+    if mode == "full_plan":
+        return True
+    return metadata.get("target_task_id") is None
+
+
+def _full_plan_item_rank(item: BackgroundTaskItem) -> tuple[int, tuple[int, str], str]:
+    status = _normalize_status(item.status)
+    status_rank = 1
+    if status == "queued":
+        status_rank = 2
+    elif status == "running":
+        status_rank = 3
+    return (status_rank, _board_item_recency_key(item), item.job_id)
+
+
+_plan_state_cache: Dict[int, Dict[int, Dict[str, Any]]] = {}
+
+
+def _resolve_plan_task_effective_state(
+    plan_id: Optional[Any],
+    task_id: Optional[int],
+    *,
+    cache: Dict[int, Dict[int, Dict[str, Any]]],
+) -> Optional[Dict[str, Any]]:
+    if task_id is None or task_id <= 0:
+        return None
+    try:
+        pid = int(plan_id) if plan_id is not None else None
+    except (TypeError, ValueError):
+        return None
+    if pid is None or pid <= 0:
+        return None
+    if pid in cache:
+        return cache[pid].get(task_id)
+    try:
+        from app.routers.plan_routes import (  # local import to avoid cycles
+            _plan_repo,
+            _resolve_effective_task_states,
+        )
+        tree = _plan_repo.get_plan_tree(pid)
+        states = _resolve_effective_task_states(pid, tree)
+    except Exception as exc:  # pragma: no cover - defensive
+        _logger.warning("jobs.board: failed to resolve plan %s states: %s", pid, exc)
+        cache[pid] = {}
+        return None
+    cache[pid] = states
+    return states.get(task_id)
+
+
+def _apply_effective_state_to_item(
+    item: BackgroundTaskItem,
+    state: Optional[Dict[str, Any]],
+) -> None:
+    if not state:
+        return
+    effective = state.get("effective_status")
+    if isinstance(effective, str) and effective:
+        item.effective_status = effective
+    reason = state.get("status_reason")
+    if isinstance(reason, str) and reason:
+        item.status_reason = reason
+    item.blocked_by_dependencies = bool(state.get("blocked_by_dependencies"))
+    incomplete = state.get("incomplete_dependencies") or []
+    if isinstance(incomplete, list):
+        item.incomplete_dependencies = [int(x) for x in incomplete if isinstance(x, int) or (isinstance(x, str) and x.isdigit())]
+    item.is_active_execution = bool(state.get("is_active_execution"))
+
+
+def _build_plan_execute_board_item(
+    job_id: str,
+    job_payload: Dict[str, Any],
+    *,
+    plan_state_cache: Optional[Dict[int, Dict[int, Dict[str, Any]]]] = None,
+) -> BackgroundTaskItem:
+    status = str(job_payload.get("status") or "queued")
+    metadata = job_payload.get("metadata") if isinstance(job_payload.get("metadata"), dict) else {}
+    plan_value = job_payload.get("plan_id")
+    if plan_value is None:
+        plan_value = metadata.get("plan_id")
+    target_task_name = str(metadata.get("target_task_name") or "").strip()
+    target_task_id = metadata.get("target_task_id")
+    label = target_task_name or (
+        f"Execute task #{target_task_id}"
+        if target_task_id is not None
+        else "Plan Task Execution"
+    )
+    session_value = metadata.get("session_id")
+    progress_fields = _extract_item_progress(
+        category="code_executor",
+        status=status,
+        job_payload=job_payload,
+    )
+    item = BackgroundTaskItem(
+        category="code_executor",
+        job_id=job_id,
+        job_type=str(job_payload.get("job_type") or "plan_execute"),
+        mode=str(job_payload.get("mode") or "").strip() or None,
+        status=status,
+        label=label,
+        session_id=session_value if isinstance(session_value, str) and session_value.strip() else None,
+        plan_id=plan_value,
+        created_at=job_payload.get("created_at"),
+        started_at=job_payload.get("started_at"),
+        finished_at=job_payload.get("finished_at"),
+        **progress_fields,
+        error=job_payload.get("error"),
+    )
+    cache = plan_state_cache if plan_state_cache is not None else {}
+    focus_task_id = item.current_task_id
+    if focus_task_id is None:
+        try:
+            focus_task_id = int(target_task_id) if target_task_id is not None else None
+        except (TypeError, ValueError):
+            focus_task_id = None
+    state = _resolve_plan_task_effective_state(plan_value, focus_task_id, cache=cache)
+    _apply_effective_state_to_item(item, state)
+    return item
 
 
 def _list_task_creation_job_ids(
@@ -851,6 +1027,8 @@ def get_background_task_board(
             plan_id=effective_plan_id if (session_id or plan_id is not None) else None,
             job_type="plan_execute",
         )
+    collapsed_full_plan_items: Dict[str, BackgroundTaskItem] = {}
+    plan_state_cache: Dict[int, Dict[int, Dict[str, Any]]] = {}
     for job_id in plan_execute_ids:
         if job_id in seen:
             continue
@@ -865,41 +1043,27 @@ def get_background_task_board(
             continue
 
         metadata = job_payload.get("metadata") if isinstance(job_payload.get("metadata"), dict) else {}
-        target_task_name = str(metadata.get("target_task_name") or "").strip()
-        target_task_id = metadata.get("target_task_id")
-        label = target_task_name or (
-            f"Execute task #{target_task_id}"
-            if target_task_id is not None
-            else "Plan Task Execution"
-        )
-        session_value = metadata.get("session_id")
-        item = BackgroundTaskItem(
-            category="code_executor",
-            job_id=job_id,
-            job_type=str(job_payload.get("job_type") or "plan_execute"),
-            status=status,
-            label=label,
-            session_id=session_value if isinstance(session_value, str) and session_value.strip() else None,
-            plan_id=job_payload.get("plan_id"),
-            created_at=job_payload.get("created_at"),
-            started_at=job_payload.get("started_at"),
-            finished_at=job_payload.get("finished_at"),
-            **_extract_item_progress(
-                category="code_executor",
-                status=status,
-                job_payload=job_payload,
-            ),
-            error=job_payload.get("error"),
-        )
+        item = _build_plan_execute_board_item(job_id, job_payload, plan_state_cache=plan_state_cache)
+        if _should_collapse_full_plan_item(job_payload, metadata):
+            group_key = _full_plan_group_key(item)
+            if group_key:
+                current = collapsed_full_plan_items.get(group_key)
+                if current is None or _full_plan_item_rank(item) > _full_plan_item_rank(current):
+                    collapsed_full_plan_items[group_key] = item
+                seen.add(job_id)
+                continue
+
         _append_item(groups["code_executor"], item)
         seen.add(job_id)
+    for item in collapsed_full_plan_items.values():
+        _append_item(groups["code_executor"], item)
 
     # cap each group and total
     for key in ("task_creation", "phagescope", "code_executor"):
         group = groups[key]
         group.items = sorted(
             group.items,
-            key=lambda item: item.created_at or "",
+            key=_board_item_recency_key,
             reverse=True,
         )[:limit]
         group.total = len(group.items)

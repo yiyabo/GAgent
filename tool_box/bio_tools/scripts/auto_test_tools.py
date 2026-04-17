@@ -10,6 +10,7 @@ It generates a report in `tool_box/bio_tools/test_log.md`.
 
 import os
 import re
+import shlex
 import subprocess
 import glob
 from pathlib import Path
@@ -141,15 +142,35 @@ def prepare_command(cmd, test_data_path):
     return modified_cmd
 
 def run_command(cmd, timeout=60):
-    """Run shell command and return result."""
+    """Run shell command and return result.
+
+    Commands are tokenised with shlex and executed without a shell to avoid
+    command-injection risks when the underlying markdown docs contain hostile
+    or malformed snippets. Pipelines / redirections in the doc commands are
+    therefore not supported - extracted commands are expected to be single
+    invocations (e.g. `docker run ...`).
+    """
     try:
-        # Use shell=True to handle pipes and complex args
+        if isinstance(cmd, str):
+            argv = shlex.split(cmd)
+        else:
+            argv = list(cmd)
+
+        if not argv:
+            return {
+                "success": False,
+                "stdout": "",
+                "stderr": "Empty command after parsing",
+                "cmd": cmd,
+                "returncode": -1,
+            }
+
         result = subprocess.run(
-            cmd, 
-            shell=True, 
-            capture_output=True, 
-            text=True, 
-            timeout=timeout
+            argv,
+            shell=False,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
         )
         return {
             "success": result.returncode == 0,
@@ -194,7 +215,7 @@ def attempt_fix(cmd, result, test_data_path):
     # Try adding user mapping if image supports it, or just note it.
     # docker run -u $(id -u):$(id -g) ...
     if "permission denied" in stderr and "-u " not in new_cmd:
-        # Only works if we can calculate uid/gid (linux/mac)
+        # Only works if we can calculate uid/gid (linux/mac); Windows has no getuid.
         try:
             uid = os.getuid()
             gid = os.getgid()
@@ -202,7 +223,8 @@ def attempt_fix(cmd, result, test_data_path):
             # Insert after "run "
             new_cmd = new_cmd.replace("docker run ", f"docker run -u {uid}:{gid} ")
             fixed = True
-        except:
+        except AttributeError:
+            # os.getuid / os.getgid unavailable on this platform
             pass
 
     # Fix 3: Input file missing (maybe the mapping failed?)

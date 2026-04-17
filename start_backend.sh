@@ -16,6 +16,8 @@ BACKEND_HOST=${BACKEND_HOST:-0.0.0.0}
 BACKEND_PORT=${BACKEND_PORT:-9000}
 # Default to hot-reload for local development; set BACKEND_RELOAD=false to disable.
 BACKEND_RELOAD=${BACKEND_RELOAD:-true}
+# Suppress per-request "GET /jobs/... 200 OK" noise by default; set ACCESS_LOG=true to re-enable.
+ACCESS_LOG=${ACCESS_LOG:-false}
 
 echo "🚀 Starting backend server..."
 echo "📍 Host: $BACKEND_HOST"
@@ -46,6 +48,15 @@ case "$BACKEND_RELOAD" in
     ;;
 esac
 
+ACCESS_LOG_ARGS=()
+case "$ACCESS_LOG" in
+  true|TRUE|1|yes|YES|on|ON)
+    ;;
+  *)
+    ACCESS_LOG_ARGS=(--no-access-log)
+    ;;
+esac
+
 cd "$ROOT_DIR"
 
 # Optional: pin interpreter without conda (e.g. BACKEND_PYTHON_BIN=/path/to/python3.11)
@@ -53,6 +64,7 @@ if [ -n "${BACKEND_PYTHON_BIN:-}" ] && [ -x "${BACKEND_PYTHON_BIN}" ]; then
   exec "${BACKEND_PYTHON_BIN}" -m uvicorn app.main:app \
     --host "$BACKEND_HOST" \
     --port "$BACKEND_PORT" \
+    "${ACCESS_LOG_ARGS[@]}" \
     "${RELOAD_ARGS[@]}"
 fi
 
@@ -81,4 +93,5 @@ fi
 exec python -m uvicorn app.main:app \
     --host "$BACKEND_HOST" \
     --port "$BACKEND_PORT" \
+    "${ACCESS_LOG_ARGS[@]}" \
     "${RELOAD_ARGS[@]}"

@@ -42,6 +42,7 @@ const taskStatusIcon: Record<string, React.ReactNode> = {
   failed: <CloseCircleOutlined style={{ color: '#ff4d4f' }} />,
   skipped: <MinusCircleOutlined style={{ color: '#d9d9d9' }} />,
   running: <ExclamationCircleOutlined style={{ color: '#1890ff' }} />,
+  blocked: <MinusCircleOutlined style={{ color: '#fa8c16' }} />,
 };
 
 const taskStatusColor: Record<string, string> = {
@@ -50,6 +51,7 @@ const taskStatusColor: Record<string, string> = {
   failed: 'red',
   skipped: 'default',
   running: 'processing',
+  blocked: 'orange',
 };
 
 function phaseToStepStatus(status: string): 'finish' | 'process' | 'wait' | 'error' {
@@ -69,6 +71,10 @@ const TodoTaskItem: React.FC<{
   item: TodoItemResponse;
   onTaskClick?: (taskId: number) => void;
 }> = ({ item, onTaskClick }) => {
+  const displayStatus = item.effective_status || item.status;
+  const incomplete = item.incomplete_dependencies ?? [];
+  const blocked =
+    (item.blocked_by_dependencies ?? false) || displayStatus === 'blocked';
   return (
     <div
       style={{
@@ -78,16 +84,16 @@ const TodoTaskItem: React.FC<{
         padding: '6px 8px',
         borderRadius: 6,
         border: '1px solid #f0f0f0',
-        background: item.status === 'completed' ? '#f6ffed' : undefined,
+        background: displayStatus === 'completed' ? '#f6ffed' : undefined,
       }}
     >
       <span style={{ marginTop: 2, flexShrink: 0 }}>
-        {taskStatusIcon[item.status] ?? taskStatusIcon.pending}
+        {taskStatusIcon[displayStatus] ?? taskStatusIcon.pending}
       </span>
       <div style={{ flex: 1, minWidth: 0 }}>
         <Space size={6} wrap>
-          <Tag color={taskStatusColor[item.status] ?? 'default'} style={{ marginRight: 0 }}>
-            {item.status}
+          <Tag color={taskStatusColor[displayStatus] ?? 'default'} style={{ marginRight: 0 }}>
+            {displayStatus}
           </Tag>
           <Button
             type="link"
@@ -98,6 +104,15 @@ const TodoTaskItem: React.FC<{
             #{item.task_id} {item.name}
           </Button>
         </Space>
+        {blocked && incomplete.length > 0 && (
+          <div style={{ marginTop: 2 }}>
+            <Tooltip title={item.status_reason || undefined}>
+              <Text type="warning" style={{ fontSize: 12 }}>
+                Blocked by {incomplete.map((d) => `#${d}`).join(', ')}
+              </Text>
+            </Tooltip>
+          </div>
+        )}
         {item.instruction && (
           <Paragraph
             type="secondary"

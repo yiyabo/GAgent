@@ -218,6 +218,11 @@ export interface TodoItemResponse {
   name: string;
   instruction: string | null;
   status: string;
+  effective_status?: string;
+  status_reason?: string | null;
+  blocked_by_dependencies?: boolean;
+  incomplete_dependencies?: number[];
+  is_active_execution?: boolean;
   dependencies: number[];
   phase: number;
 }
