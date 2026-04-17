@@ -7,7 +7,9 @@ from app.routers.chat.agent import (
     _build_deep_think_task_context,
     _refresh_deep_think_runtime_context,
 )
+from app.routers.chat.guardrail_handlers import resolve_full_plan_executable_targets
 from app.routers.chat.models import AgentResult, AgentStep
+from app.routers.chat.request_routing import RequestRoutingDecision
 from app.routers.chat_routes import StructuredChatAgent
 from app.services.llm.structured_response import LLMAction, LLMReply, LLMStructuredResponse
 from app.services.plans.plan_models import PlanNode, PlanTree
@@ -224,6 +226,63 @@ def test_deterministic_execute_shortcut_builds_rerun_action():
     assert action.name == "rerun_task"
     assert action.parameters == {"task_id": 39}
     assert action.metadata["origin"] == "explicit_execute_shortcut"
+
+
+def test_resolve_full_plan_targets_skips_tasks_blocked_by_running_dependencies():
+    tree = PlanTree(
+        id=34,
+        title="plan",
+        nodes={
+            1: PlanNode(id=1, plan_id=34, name="Running upstream", status="running"),
+            2: PlanNode(id=2, plan_id=34, name="Blocked downstream", status="pending", dependencies=[1]),
+            3: PlanNode(id=3, plan_id=34, name="Independent work", status="pending"),
+        },
+    )
+    tree.rebuild_adjacency()
+
+    assert resolve_full_plan_executable_targets(tree) == [3]
+
+
+def test_full_plan_routing_clears_stale_scope_flags_before_shortcut():
+    tree = PlanTree(
+        id=34,
+        title="plan",
+        nodes={
+            23: PlanNode(id=23, plan_id=34, name="Final synthesis", status="pending"),
+        },
+    )
+    tree.rebuild_adjacency()
+    agent = StructuredChatAgent.__new__(StructuredChatAgent)
+    agent.plan_session = _DummyPlanSession(plan_id=34, tree=tree)
+    agent.extra_context = {
+        "explicit_scope_all_blocked": True,
+        "pending_scope_task_ids": [99, 100],
+    }
+    agent.history = []
+
+    decision = RequestRoutingDecision(
+        request_tier="execute",
+        request_route_mode="manual_deepthink",
+        route_reason_codes=["full_plan_execution"],
+        manual_deep_think=False,
+        thinking_visibility="progress",
+        effective_user_message="请执行整个计划",
+        intent_type="execute_task",
+        capability_floor="tools",
+        subject_resolution={},
+        brevity_hint=False,
+        explicit_task_ids=[],
+        explicit_task_override=False,
+        full_plan_execution=True,
+    )
+
+    agent._update_routing_context(decision)
+
+    assert agent.extra_context.get("current_task_id") == 23
+    assert "explicit_scope_all_blocked" not in agent.extra_context
+    assert "pending_scope_task_ids" not in agent.extra_context
+    structured = agent._build_deterministic_execute_task_structured()
+    assert structured is not None
 
 
 def test_invoke_llm_uses_deterministic_execute_shortcut():

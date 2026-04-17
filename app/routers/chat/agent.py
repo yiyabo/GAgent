@@ -4436,12 +4436,17 @@ class StructuredChatAgent:
                     all_targets = []
 
                 if all_targets:
+                    self.extra_context.pop("explicit_scope_all_blocked", None)
+                    self.extra_context.pop("explicit_scope_block_reason", None)
+                    self.extra_context.pop("explicit_scope_blocked_task_ids", None)
                     first_target = all_targets[0]
                     self.extra_context["current_task_id"] = int(first_target)
                     self.extra_context["task_id"] = int(first_target)
                     remaining = all_targets[1:]
                     if remaining:
                         self.extra_context["pending_scope_task_ids"] = remaining
+                    else:
+                        self.extra_context.pop("pending_scope_task_ids", None)
                     # Synthesize explicit_task_override so the deterministic
                     # shortcut fires (rerun_task → cascade loop).
                     self.extra_context["explicit_task_override"] = True
@@ -4456,6 +4461,9 @@ class StructuredChatAgent:
                     )
                 else:
                     # No executable tasks remain
+                    self.extra_context.pop("pending_scope_task_ids", None)
+                    self.extra_context.pop("current_task_id", None)
+                    self.extra_context.pop("task_id", None)
                     self.extra_context["explicit_scope_all_blocked"] = True
                     self.extra_context["explicit_scope_block_reason"] = "all_completed"
                     logger.info(
@@ -4507,8 +4515,11 @@ class StructuredChatAgent:
                             remaining,
                             self.plan_session.plan_id,
                         )
+                    else:
+                        self.extra_context.pop("pending_scope_task_ids", None)
                     # Clear any stale blocked flag from a previous turn
                     self.extra_context.pop("explicit_scope_all_blocked", None)
+                    self.extra_context.pop("explicit_scope_block_reason", None)
                     self.extra_context.pop("explicit_scope_blocked_task_ids", None)
                 else:
                     # All tasks in the explicit set are currently unexecutable.

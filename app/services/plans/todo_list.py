@@ -22,9 +22,17 @@ from .plan_models import PlanNode, PlanTree
 from .dependency_planner import compute_dependency_plan
 
 
+_DONE_STATUSES = {"completed", "done", "success"}
+_RUNNABLE_STATUSES = {"pending", "failed", "skipped"}
+
+
 # ---------------------------------------------------------------------------
 # Data structures
 # ---------------------------------------------------------------------------
+
+
+def _normalize_status(value: Optional[str]) -> str:
+    return str(value or "").strip().lower()
 
 @dataclass
 class TodoItem:
@@ -39,7 +47,15 @@ class TodoItem:
 
     @property
     def is_done(self) -> bool:
-        return self.status in ("completed", "done", "success")
+        return _normalize_status(self.status) in _DONE_STATUSES
+
+    @property
+    def is_runnable(self) -> bool:
+        return _normalize_status(self.status) in _RUNNABLE_STATUSES
+
+    @property
+    def is_running(self) -> bool:
+        return _normalize_status(self.status) == "running"
 
 
 @dataclass
@@ -56,9 +72,9 @@ class TodoPhase:
             return "empty"
         if all(item.is_done for item in self.items):
             return "completed"
-        if any(item.status == "failed" for item in self.items):
+        if any(_normalize_status(item.status) == "failed" for item in self.items):
             return "partial_failure"
-        if any(item.is_done for item in self.items):
+        if any(item.is_done or item.is_running for item in self.items):
             return "in_progress"
         return "pending"
 
@@ -93,13 +109,25 @@ class TodoList:
 
     @property
     def pending_order(self) -> List[int]:
-        """Task IDs that still need execution, in order."""
-        return [
+        """Dependency-safe task IDs that are still runnable, in order."""
+        resolved = {
             item.task_id
             for phase in self.phases
             for item in phase.items
-            if not item.is_done
-        ]
+            if item.is_done
+        }
+        runnable: List[int] = []
+        runnable_set: Set[int] = set()
+
+        for phase in self.phases:
+            for item in phase.items:
+                if not item.is_runnable:
+                    continue
+                deps = list(item.dependencies or [])
+                if all(dep_id in resolved or dep_id in runnable_set for dep_id in deps):
+                    runnable.append(item.task_id)
+                    runnable_set.add(item.task_id)
+        return runnable
 
     def summary(self) -> str:
         parts = [f"TodoList for task {self.target_task_id}:"]
@@ -229,16 +257,37 @@ def _build_scoped_dependency_map(
     *,
     subgraph_ids: Set[int],
     expand_composites: bool,
+    include_child_dependencies: bool = False,
 ) -> Dict[int, List[int]]:
     """Build dependency map for phase layering and item rendering."""
     deps_map: Dict[int, List[int]] = {}
     for tid in subgraph_ids:
-        deps_map[tid] = _resolve_expanded_dependencies(
+        resolved = _resolve_expanded_dependencies(
             tree,
             tid,
             subgraph_ids=subgraph_ids,
             expand_composites=expand_composites,
         )
+        if include_child_dependencies:
+            for child_id in tree.children_ids(tid):
+                candidate_ids: List[int]
+                if child_id in subgraph_ids:
+                    candidate_ids = [child_id]
+                elif expand_composites and child_id in tree.nodes:
+                    candidate_ids = [
+                        leaf_id
+                        for leaf_id in _collect_leaf_ids(tree, [child_id])
+                        if leaf_id in subgraph_ids
+                    ]
+                else:
+                    candidate_ids = []
+
+                for candidate_id in candidate_ids:
+                    if candidate_id == tid:
+                        continue
+                    if candidate_id not in resolved:
+                        resolved.append(candidate_id)
+        deps_map[tid] = resolved
     return deps_map
 
 
@@ -427,8 +476,7 @@ def build_full_plan_todo_list(
     """Build a phased TodoList covering the *entire* plan tree.
 
     Unlike :func:`build_todo_list` which starts from a single target task,
-    this function computes phase layers for every node in the tree (or their
-    atomic leaf descendants when *expand_composites* is True).
+    this function computes phase layers for every node in the tree.
 
     This is the main entry point for the "auto-execute entire plan" feature:
     the returned ``TodoList.pending_order`` gives a dependency-correct
@@ -440,20 +488,16 @@ def build_full_plan_todo_list(
     tree : PlanTree
         The plan tree containing all tasks.
     expand_composites : bool
-        If True, non-leaf (composite) tasks are expanded to their atomic
-        leaf descendants so that only executable tasks appear.
+        Retained for API compatibility. Full-plan execution always preserves
+        composite tasks and enforces parent-after-child ordering so synthesis
+        nodes are not dropped from the runnable queue.
 
     Returns
     -------
     TodoList with ``target_task_id`` set to 0 (plan-level sentinel).
     """
     all_ids: Set[int] = set(tree.nodes.keys())
-
-    if expand_composites:
-        expanded = _collect_leaf_ids(tree, sorted(all_ids))
-        subgraph_ids = set(expanded)
-    else:
-        subgraph_ids = all_ids
+    subgraph_ids = all_ids
 
     if not subgraph_ids:
         return TodoList(target_task_id=0)
@@ -462,6 +506,7 @@ def build_full_plan_todo_list(
         tree,
         subgraph_ids=subgraph_ids,
         expand_composites=expand_composites,
+        include_child_dependencies=True,
     )
 
     phase_of = _compute_phase_layers(subgraph_ids, deps_map)

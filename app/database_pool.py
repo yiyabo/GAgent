@@ -166,11 +166,14 @@ class SQLiteConnectionPool:
         except Exception as e:
             logger.error(f"Database operation failed: {e}")
             if conn:
-                # Rollback any pending transaction
+                # Rollback any pending transaction; log failures rather than
+                # swallowing them silently (and never catch KeyboardInterrupt/SystemExit).
                 try:
                     conn.rollback()
-                except:
-                    pass
+                except sqlite3.Error as rollback_exc:
+                    logger.warning(
+                        "Rollback failed after database error: %s", rollback_exc
+                    )
             raise
         finally:
             if conn:

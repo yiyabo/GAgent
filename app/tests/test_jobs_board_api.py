@@ -418,3 +418,133 @@ def test_jobs_board_includes_plan_execute_jobs_in_claude_group(
     assert exec_item["current_task_id"] == 9
     assert exec_item["done_steps"] == 1
     assert exec_item["total_steps"] == 4
+
+
+def test_jobs_board_collapses_full_plan_runs_per_plan(
+    board_api_env: Tuple[sqlite3.Connection, Dict[str, Dict[str, Any]], TestClient],
+) -> None:
+    conn, payloads, client = board_api_env
+
+    _insert_job_index(
+        conn,
+        job_id="job_full_failed",
+        plan_id=42,
+        job_type="plan_execute",
+        created_at="2026-02-19 13:00:00",
+    )
+    _insert_job_index(
+        conn,
+        job_id="job_full_running",
+        plan_id=42,
+        job_type="plan_execute",
+        created_at="2026-02-19 13:05:00",
+    )
+    _insert_job_index(
+        conn,
+        job_id="job_task_chain",
+        plan_id=42,
+        job_type="plan_execute",
+        created_at="2026-02-19 13:06:00",
+    )
+
+    payloads.update(
+        {
+            "job_full_failed": {
+                "job_id": "job_full_failed",
+                "job_type": "plan_execute",
+                "mode": "full_plan",
+                "status": "failed",
+                "created_at": "2026-02-19T13:00:00Z",
+                "finished_at": "2026-02-19T13:04:00Z",
+                "metadata": {
+                    "session_id": "sess-exec",
+                    "target_task_id": None,
+                    "plan_id": 42,
+                },
+                "params": {"steps": 20},
+                "stats": {
+                    "executed": 6,
+                    "failed": 1,
+                    "skipped": 0,
+                    "total_steps": 20,
+                    "current_step": 7,
+                    "current_task_id": 18,
+                },
+                "error": "Job interrupted by server restart",
+            },
+            "job_full_running": {
+                "job_id": "job_full_running",
+                "job_type": "plan_execute",
+                "mode": "full_plan",
+                "status": "running",
+                "created_at": "2026-02-19T13:05:00Z",
+                "started_at": "2026-02-19T13:05:03Z",
+                "metadata": {
+                    "session_id": "sess-exec",
+                    "target_task_id": None,
+                    "plan_id": 42,
+                },
+                "params": {
+                    "steps": 17,
+                    "overall_total_steps": 25,
+                    "initial_completed_steps": 8,
+                },
+                "stats": {
+                    "executed": 0,
+                    "failed": 0,
+                    "skipped": 0,
+                    "total_steps": 17,
+                    "current_step": 2,
+                    "current_task_id": 17,
+                    "overall_done_steps": 8,
+                    "overall_total_steps": 25,
+                },
+            },
+            "job_task_chain": {
+                "job_id": "job_task_chain",
+                "job_type": "plan_execute",
+                "mode": "task_chain",
+                "status": "completed",
+                "created_at": "2026-02-19T13:06:00Z",
+                "started_at": "2026-02-19T13:06:02Z",
+                "finished_at": "2026-02-19T13:06:30Z",
+                "metadata": {
+                    "session_id": "sess-exec",
+                    "target_task_id": 9,
+                    "target_task_name": "Execute task #9",
+                },
+                "params": {"steps": 3},
+                "stats": {
+                    "executed": 3,
+                    "failed": 0,
+                    "skipped": 0,
+                    "total_steps": 3,
+                    "current_step": 3,
+                    "current_task_id": 9,
+                },
+            },
+        }
+    )
+
+    response = client.get("/jobs/board", params={"plan_id": 42})
+    assert response.status_code == 200
+    groups = response.json()["groups"]
+
+    claude_items = groups["code_executor"]["items"]
+    assert len(claude_items) == 2
+    assert response.json()["total"] == 2
+
+    assert claude_items[0]["job_id"] == "job_task_chain"
+    assert claude_items[0]["label"] == "Execute task #9"
+
+    full_plan_items = [item for item in claude_items if item["label"] == "Plan Task Execution"]
+    assert len(full_plan_items) == 1
+    full_plan_item = full_plan_items[0]
+    assert full_plan_item["job_id"] == "job_full_running"
+    assert full_plan_item["mode"] == "full_plan"
+    assert full_plan_item["status"] == "running"
+    assert full_plan_item["progress_percent"] == 32
+    assert full_plan_item["progress_text"] == "8/25"
+    assert full_plan_item["current_step"] == 2
+    assert full_plan_item["total_steps"] == 17
+    assert full_plan_item["current_task_id"] == 17
