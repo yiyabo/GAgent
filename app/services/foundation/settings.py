@@ -160,6 +160,18 @@ if _USE_PYDANTIC:
         # Plan rubric evaluation & auto-optimization
         plan_rubric_threshold: int = Field(default=80, env="PLAN_RUBRIC_THRESHOLD")
         plan_optimize_max_iters: int = Field(default=3, env="PLAN_OPTIMIZE_MAX_ITERS")
+        plan_auto_optimize_overall_threshold: float = Field(
+            default=85.0,
+            env="PLAN_AUTO_OPTIMIZE_OVERALL_THRESHOLD",
+        )
+        plan_auto_optimize_dimension_threshold: float = Field(
+            default=70.0,
+            env="PLAN_AUTO_OPTIMIZE_DIMENSION_THRESHOLD",
+        )
+        plan_auto_optimize_max_changes: int = Field(
+            default=8,
+            env="PLAN_AUTO_OPTIMIZE_MAX_CHANGES",
+        )
 
         # DeepThink configuration
         # Mode:
@@ -367,6 +379,24 @@ else:
                 self.plan_optimize_max_iters = int(os.getenv("PLAN_OPTIMIZE_MAX_ITERS", "3"))
             except Exception:
                 self.plan_optimize_max_iters = 3
+            try:
+                self.plan_auto_optimize_overall_threshold = float(
+                    os.getenv("PLAN_AUTO_OPTIMIZE_OVERALL_THRESHOLD", "85")
+                )
+            except Exception:
+                self.plan_auto_optimize_overall_threshold = 85.0
+            try:
+                self.plan_auto_optimize_dimension_threshold = float(
+                    os.getenv("PLAN_AUTO_OPTIMIZE_DIMENSION_THRESHOLD", "70")
+                )
+            except Exception:
+                self.plan_auto_optimize_dimension_threshold = 70.0
+            try:
+                self.plan_auto_optimize_max_changes = int(
+                    os.getenv("PLAN_AUTO_OPTIMIZE_MAX_CHANGES", "8")
+                )
+            except Exception:
+                self.plan_auto_optimize_max_changes = 8
 
             # DeepThink settings
             self.deep_think_mode = os.getenv("DEEP_THINK_MODE", "smart")

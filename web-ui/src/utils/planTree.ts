@@ -1,5 +1,26 @@
 import type { PlanNodeResponse, PlanTreeResponse, Task } from '@/types';
 
+const normalizeTaskStatus = (rawStatus?: string | null): Task['status'] => {
+  const normalized = typeof rawStatus === 'string' ? rawStatus.toLowerCase() : 'pending';
+  switch (normalized) {
+    case 'running':
+      return 'running';
+    case 'success':
+    case 'done':
+    case 'completed':
+      return 'completed';
+    case 'failed':
+    case 'error':
+      return 'failed';
+    case 'skipped':
+      return 'skipped';
+    case 'blocked':
+      return 'blocked';
+    default:
+      return 'pending';
+  }
+};
+
 export function planTreeToTasks(tree: PlanTreeResponse): Task[] {
   const nodes = Object.values(tree.nodes || {});
   
@@ -22,31 +43,19 @@ export function planTreeToTasks(tree: PlanTreeResponse): Task[] {
     const taskType: Task['task_type'] = isRoot ? 'root' : hasChildren ? 'composite' : 'atomic';
 
     const metadata = (node.metadata as Record<string, any>) || {};
-    const rawStatus = typeof node.status === 'string' ? node.status.toLowerCase() : 'pending';
-    let status: Task['status'];
-    switch (rawStatus) {
-      case 'running':
-        status = 'running';
-        break;
-      case 'success':
-      case 'done':
-      case 'completed':
-        status = 'completed';
-        break;
-      case 'failed':
-        status = 'failed';
-        break;
-      case 'skipped':
-        status = 'skipped';
-        break;
-      default:
-        status = 'pending';
-    }
+    const status = normalizeTaskStatus(node.effective_status ?? node.status);
 
     return {
       id,
       name: node.name,
       status,
+      effective_status: node.effective_status ?? node.status ?? null,
+      status_reason: node.status_reason ?? null,
+      blocked_by_dependencies: node.blocked_by_dependencies ?? false,
+      incomplete_dependencies: Array.isArray(node.incomplete_dependencies)
+        ? node.incomplete_dependencies.map(Number).filter((dep) => !Number.isNaN(dep))
+        : [],
+      is_active_execution: node.is_active_execution ?? false,
       parent_id: node.parent_id != null ? Number(node.parent_id) : undefined,
       path: node.path ?? undefined,
       depth: node.depth ?? 0,

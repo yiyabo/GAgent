@@ -15,6 +15,7 @@ import re
 import inspect
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple, Union
 from uuid import uuid4
 
@@ -42,6 +43,15 @@ from app.services.plans.plan_executor import (
     PlanExecutor,
     PlanExecutorLLMService,
     ExecutionConfig,
+)
+from app.services.plans.plan_generation import (
+    create_plan_and_generate,
+    ensure_plan_generation_ready,
+)
+from app.services.plans.plan_optimizer import (
+    auto_optimize_plan,
+    capture_plan_optimization_outcome,
+    resolve_plan_review_result,
 )
 from app.services.plans.task_verification import TaskVerificationService
 from app.config import get_graph_rag_settings, get_search_settings
@@ -137,6 +147,34 @@ def _append_unique_text(target: List[str], seen: set[str], value: Any, *, limit:
     target.append(text)
     if len(target) > limit:
         del target[limit:]
+
+
+def _build_plan_generation_session_context(agent: Any) -> Dict[str, Any]:
+    context: Dict[str, Any] = {
+        "session_id": getattr(agent, "session_id", None),
+        "user_message": getattr(agent, "_current_user_message", None),
+        "chat_history": getattr(agent, "history", None),
+        "recent_tool_results": (getattr(agent, "extra_context", {}) or {}).get("recent_tool_results", []),
+        "owner_id": (getattr(agent, "extra_context", {}) or {}).get("owner_id"),
+    }
+    return {key: value for key, value in context.items() if value is not None}
+
+
+async def _maybe_ensure_plan_generation_ready_for_agent(
+    agent: Any,
+    *,
+    plan_id: int,
+    fallback_tree: Any,
+) -> Any:
+    repo = getattr(getattr(agent, "plan_session", None), "repo", None)
+    if repo is None or not callable(getattr(repo, "get_plan_tree", None)):
+        return SimpleNamespace(plan_tree=fallback_tree, decomposition_status="unknown")
+    return await ensure_plan_generation_ready(
+        plan_id=plan_id,
+        repo=repo,
+        decomposer=agent.plan_decomposer or PlanDecomposer(repo=repo),
+        session_context=_build_plan_generation_session_context(agent),
+    )
 
 
 def _resolve_bound_task_tree_and_node(agent: Any) -> Tuple[Optional[PlanTree], Optional[PlanNode]]:
@@ -2596,101 +2634,19 @@ async def handle_plan_action(agent: Any, action: LLMAction) -> AgentStep:
         # Ensure plan origin is recorded for later comparison (standard vs deepthink).
         metadata.setdefault("plan_origin", "standard")
         metadata.setdefault("created_by", "structured_agent")
-        # First create an empty plan record
-        new_tree = agent.plan_session.repo.create_plan(
-            title=title,
-            owner=owner,
-            description=description,
-            metadata=metadata,
-        )
-
-        # Create a ROOT task first - enforce a single root node for the plan
         raw_tasks = params.get("tasks")
-        root_node = agent.plan_session.repo.create_task(
-            new_tree.id,
-            name=title,
-            status="pending",
-            instruction=description or f"Root task for plan: {title}",
-            parent_id=None,  # ROOT has no parent
-            metadata={"is_root": True, "task_type": "root"},
+        generation = await create_plan_and_generate(
+            title=title,
+            description=description,
+            tasks=raw_tasks if isinstance(raw_tasks, list) else None,
+            owner=owner,
+            metadata=metadata,
+            repo=agent.plan_session.repo,
+            decomposer=agent.plan_decomposer or PlanDecomposer(repo=agent.plan_session.repo),
+            session_context=_build_plan_generation_session_context(agent),
         )
-        root_task_id: Optional[int] = root_node.id
-        logger.info("Created ROOT task %s for plan %s", root_task_id, new_tree.id)
-
-        # If the caller provided an explicit task list, materialize it immediately
-        created_seed_tasks: List[Any] = []
-        if isinstance(raw_tasks, list) and raw_tasks:
-            for idx, t in enumerate(raw_tasks):
-                if not isinstance(t, dict):
-                    continue
-                instr_raw = t.get("instruction") or t.get("description") or ""
-                try:
-                    instruction = str(instr_raw).strip()
-                except Exception:
-                    instruction = ""
-                name_raw = t.get("name") or t.get("title")
-                name: str
-                if isinstance(name_raw, str) and name_raw.strip():
-                    name = name_raw.strip()
-                else:
-                    # Derive a short step name from the instruction when no explicit name is given
-                    base = instruction.strip()
-                    if "。" in base:
-                        base = base.split("。", 1)[0]
-                    elif "." in base:
-                        base = base.split(".", 1)[0]
-                    elif "\n" in base:
-                        base = base.split("\n", 1)[0]
-                    base = base[:40] if base else f"Step {idx + 1}"
-                    name = f"Step {idx + 1}: {base}" if base else f"Step {idx + 1}"
-
-                status_raw = t.get("status") or "pending"
-                if not isinstance(status_raw, str):
-                    status = str(status_raw).strip() or "pending"
-                else:
-                    status = status_raw.strip() or "pending"
-
-                parent_id_raw = t.get("parent_id")
-                # Default to ROOT task if no parent_id is specified
-                parent_id = root_task_id
-                if parent_id_raw is not None:
-                    try:
-                        parent_id = int(parent_id_raw)
-                    except (TypeError, ValueError):
-                        parent_id = root_task_id  # Fall back to ROOT if invalid
-                # Enforce single root: if resolved parent_id is None, force to root_task_id
-                if parent_id is None:
-                    parent_id = root_task_id
-
-                deps_raw = t.get("dependencies")
-                deps: Optional[List[int]] = None
-                if isinstance(deps_raw, list):
-                    tmp: List[int] = []
-                    for d in deps_raw:
-                        try:
-                            tmp.append(int(d))
-                        except (TypeError, ValueError):
-                            continue
-                    deps = tmp or None
-
-                meta_raw = t.get("metadata")
-                meta = meta_raw if isinstance(meta_raw, dict) else None
-
-                try:
-                    node = agent.plan_session.repo.create_task(
-                        new_tree.id,
-                        name=name,
-                        status=status,
-                        instruction=instruction or None,
-                        parent_id=parent_id,
-                        metadata=meta,
-                        dependencies=deps,
-                    )
-                    created_seed_tasks.append(node)
-                except Exception as exc:  # pragma: no cover - defensive
-                    logger.warning(
-                        "Failed to create seed task for plan %s: %s", new_tree.id, exc
-                    )
+        new_tree = generation.plan_tree
+        created_seed_tasks = list(generation.seeded_tasks)
 
         # Bind session to the new plan and refresh the in-memory tree so that
         # any seed tasks are immediately visible to the caller and UI.
@@ -2702,40 +2658,33 @@ async def handle_plan_action(agent: Any, action: LLMAction) -> AgentStep:
         message = f'Created and bound new plan #{effective_tree.id} "{effective_tree.title}".'
         if created_seed_tasks:
             message += f" Seeded with {len(created_seed_tasks)} top-level task(s) from the proposed plan."
+        if generation.decomposition_status == "completed":
+            message += " Integrated decomposition completed before returning the plan."
+        elif generation.decomposition_status == "partial":
+            message += " Integrated decomposition completed partially; inspect failed nodes before execution."
         details = {
             "plan_id": effective_tree.id,
             "title": effective_tree.title,
             "task_count": effective_tree.node_count(),
+            "root_task_id": generation.root_task_id,
+            "decomposition_status": generation.decomposition_status,
+            "decomposition_completed": generation.decomposition_status == "completed",
+            "material_collection": {
+                "used": bool(generation.collected_materials),
+                "count": len(generation.collected_materials),
+                "entries": generation.collected_materials,
+            },
         }
         if created_seed_tasks:
             details["seed_tasks"] = [node.model_dump() for node in created_seed_tasks]
+        if generation.decomposition is not None:
+            details["decomposition"] = {
+                "created": [node.model_dump() for node in generation.decomposition.created_tasks],
+                "failed_nodes": generation.decomposition.failed_nodes,
+                "stopped_reason": generation.decomposition.stopped_reason,
+                "stats": generation.decomposition.stats,
+            }
         agent._dirty = True
-
-        decomposition_info = agent._auto_decompose_plan(new_tree.id)
-        if decomposition_info:
-            job = decomposition_info.get("job")
-            summary = decomposition_info.get("result")
-            if job is not None:
-                job_payload = job.to_payload()
-                details["decomposition_job"] = job_payload
-                details["target_task_name"] = new_tree.title
-                message += " Automatic decomposition has been submitted for background execution."
-            elif summary is not None:
-                created_count = len(summary.created_tasks)
-                details["decomposition"] = {
-                    "created": [
-                        node.model_dump() for node in summary.created_tasks
-                    ],
-                    "failed_nodes": summary.failed_nodes,
-                    "stopped_reason": summary.stopped_reason,
-                    "stats": summary.stats,
-                }
-                if created_count:
-                    message += f" Automatic decomposition produced {created_count} tasks."
-                else:
-                    message += " Automatic decomposition finished without creating new tasks."
-        elif agent._decomposition_notes:
-            details["decomposition_notes"] = list(agent._decomposition_notes)
 
         return AgentStep(
             action=action, success=True, message=message, details=details
@@ -2811,6 +2760,12 @@ async def handle_plan_action(agent: Any, action: LLMAction) -> AgentStep:
             evaluate_plan_rubric,
             is_rubric_evaluation_unavailable,
         )
+        readiness = await _maybe_ensure_plan_generation_ready_for_agent(
+            agent,
+            plan_id=plan_id,
+            fallback_tree=tree,
+        )
+        tree = readiness.plan_tree
         try:
             rubric_result = await asyncio.to_thread(
                 evaluate_plan_rubric,
@@ -2845,6 +2800,7 @@ async def handle_plan_action(agent: Any, action: LLMAction) -> AgentStep:
         details = {
             "plan_id": plan_id,
             "plan_title": tree.title,
+            "decomposition_status": readiness.decomposition_status,
             "status": "evaluation_unavailable" if rubric_unavailable else "completed",
             "rubric_score": rubric_result.overall_score,
             "rubric_dimension_scores": rubric_result.dimension_scores,
@@ -2866,14 +2822,60 @@ async def handle_plan_action(agent: Any, action: LLMAction) -> AgentStep:
         tree = agent._require_plan_bound()
         plan_id = tree.id
         changes = params.get("changes")
-        if not changes or not isinstance(changes, list):
-            return AgentStep(
-                action=action, success=False,
-                message="optimize_plan requires a non-empty `changes` list.",
-                details={"plan_id": plan_id},
-            )
 
         repo = agent.plan_session.repo
+        readiness = await _maybe_ensure_plan_generation_ready_for_agent(
+            agent,
+            plan_id=plan_id,
+            fallback_tree=tree,
+        )
+        # Use the tree from readiness (may have been mutated/expanded)
+        tree = getattr(readiness, "plan_tree", None) or tree
+        if not changes or not isinstance(changes, list):
+            outcome = await auto_optimize_plan(
+                plan_id=plan_id,
+                repo=repo,
+            )
+            review_before = outcome.review_before
+            review_after = outcome.review_after or review_before
+            score_delta = None
+            if review_before is not None and review_after is not None:
+                score_delta = float(review_after.overall_score) - float(review_before.overall_score)
+            success = bool(outcome.applied_changes) or not outcome.optimization_needed
+            agent._refresh_plan_tree(force_reload=True)
+            return AgentStep(
+                action=action,
+                success=success,
+                message=outcome.summary,
+                details={
+                    "plan_id": plan_id,
+                    "decomposition_status": readiness.decomposition_status,
+                    "auto_generated_changes": True,
+                    "optimization_needed": outcome.optimization_needed,
+                    "applied_changes": len(outcome.applied_changes),
+                    "failed_changes": 0,
+                    "generated_changes": list(outcome.generated_changes),
+                    "rubric_score_before": (
+                        review_before.overall_score if review_before is not None else None
+                    ),
+                    "rubric_score_after": (
+                        review_after.overall_score if review_after is not None else None
+                    ),
+                    "rubric_score_delta": score_delta,
+                    "changes_detail": {
+                        "applied": list(outcome.applied_changes),
+                        "failed": [],
+                    },
+                },
+            )
+        # Use cached review only — do not block structural edits on rubric evaluation.
+        # If no cached review exists, score delta will simply be omitted.
+        review_before = None
+        tree_metadata = getattr(tree, "metadata", None)
+        if isinstance(tree_metadata, dict):
+            from app.services.plans.plan_optimizer import _coerce_plan_rubric_result
+            review_before = _coerce_plan_rubric_result(tree_metadata.get("plan_evaluation"))
+        plan_tree_before = tree  # Snapshot before changes are applied
         try:
             applied = repo.apply_changes_atomically(plan_id, changes)
         except Exception as exc:
@@ -2893,12 +2895,52 @@ async def handle_plan_action(agent: Any, action: LLMAction) -> AgentStep:
                 },
             )
 
+        outcome = None
+        try:
+            outcome = await capture_plan_optimization_outcome(
+                plan_id=plan_id,
+                plan_tree_before=plan_tree_before,
+                applied_changes=applied,
+                generated_changes=changes,
+                repo=repo,
+                summary=f"Applied {len(applied)} explicit plan changes.",
+                review_before=review_before,
+                auto_generated=False,
+                skip_evaluation=review_before is None,
+            )
+        except Exception as exc:
+            logger.warning(
+                "capture_plan_optimization_outcome failed (changes already applied): %s",
+                exc,
+            )
+        review_after = (outcome.review_after if outcome is not None else None) or review_before
+        score_delta = None
+        if review_before is not None and review_after is not None:
+            score_delta = float(review_after.overall_score) - float(review_before.overall_score)
+
         agent._refresh_plan_tree(force_reload=True)
-        message = f"Plan #{plan_id} optimized: {len(applied)} changes applied."
+        message = (
+            f"Plan #{plan_id} optimized: {len(applied)} changes applied."
+            + (
+                f" Rubric {review_before.overall_score:.1f}% -> {review_after.overall_score:.1f}% ({score_delta:+.1f})."
+                if review_before is not None and review_after is not None and score_delta is not None
+                else ""
+            )
+        )
         details = {
             "plan_id": plan_id,
+            "decomposition_status": readiness.decomposition_status,
             "applied_changes": len(applied),
             "failed_changes": 0,
+            "auto_generated_changes": False,
+            "generated_changes": list(changes),
+            "rubric_score_before": (
+                review_before.overall_score if review_before is not None else None
+            ),
+            "rubric_score_after": (
+                review_after.overall_score if review_after is not None else None
+            ),
+            "rubric_score_delta": score_delta,
             "changes_detail": {"applied": applied, "failed": []},
         }
         return AgentStep(

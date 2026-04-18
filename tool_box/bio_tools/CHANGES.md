@@ -31,7 +31,7 @@
 5. **`tool_box/bio_tools/BIO_TOOLS_TABLE.md`**
    - 
 
-6. **`tool_box/bio_tools/test_bio_tools_complete.py`** ()
+6. **`tool_box/bio_tools/run_bio_tools_complete.py`** ()
    - 
 
 7. **`tool_box/bio_tools/api_examples.py`** ()
@@ -71,7 +71,7 @@
 ```bash
 cd /home/zczhao/GAgent
 PYTHONPATH=/home/zczhao/GAgent:$PYTHONPATH \
-  python tool_box/bio_tools/test_bio_tools_complete.py
+  python tool_box/bio_tools/run_bio_tools_complete.py
 ```
 
 ：

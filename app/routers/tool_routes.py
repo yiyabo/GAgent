@@ -13,11 +13,20 @@ from tool_box import route_user_request
 from tool_box import execute_tool as _execute_tool
 from . import register_router
 
-from ..execution.executors.tool_enhanced import execute_task_with_tools
-from ..repository.tasks import default_repo
 from ..utils.route_helpers import parse_bool, sanitize_context_options
 
 router = APIRouter(tags=["tools"])
+
+
+_LEGACY_TASK_TOOL_DETAIL = (
+    "Legacy task-table tool endpoints have been retired. Use /tools/analyze for "
+    "capability analysis and the PlanTree-backed execution endpoints in "
+    "plan_routes (/tasks/{task_id}/execute?plan_id=...) instead."
+)
+
+
+def _raise_legacy_task_tool_route_retired() -> None:
+    raise HTTPException(status_code=410, detail=_LEGACY_TASK_TOOL_DETAIL)
 
 register_router(
     namespace="tools",
@@ -301,54 +310,11 @@ async def list_bio_tools():
 
 @router.get("/tasks/{task_id}/tool-requirements")
 async def get_task_tool_requirements(task_id: int):
-    """Analyze tool requirements for a specific task"""
-    try:
-        from ..services.planning.tool_aware_decomposition import analyze_task_tool_requirements
-        requirements = await analyze_task_tool_requirements(task_id, default_repo)
-
-        return {
-            "task_id": task_id,
-            "tool_requirements": requirements,
-            "recommendations": {
-                "use_tool_enhanced_execution": len(requirements.get("requirements", [])) > 0,
-                "expected_improvement": (
-                    "15-30% quality improvement" if requirements.get("confidence", 0) > 0.7 else "Tool usage uncertain"
-                ),
-            },
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Tool requirement analysis failed: {str(e)}") from e
+    """Retired legacy endpoint retained only for explicit guidance."""
+    _raise_legacy_task_tool_route_retired()
 
 
 @router.post("/tasks/{task_id}/execute/tool-enhanced")
 async def execute_task_with_tools_api(task_id: int, payload: Optional[Dict[str, Any]] = Body(None)):
-    """Execute task with Tool Box enhancement"""
-    try:
-        # Get task info
-        task = default_repo.get_task_info(task_id)
-        if not task:
-            raise HTTPException(status_code=404, detail="Task not found")
-
-        # Parse options
-        use_context = True
-        context_options = None
-
-        if payload:
-            use_context = parse_bool(payload.get("use_context"), default=True)
-            context_options = payload.get("context_options")
-            if context_options:
-                context_options = sanitize_context_options(context_options)
-
-        # Use tool-enhanced executor
-        # Execute with tools
-        status = await execute_task_with_tools(
-            task=task, repo=default_repo, use_context=use_context, context_options=context_options
-        )
-
-        # Update task status
-        default_repo.update_task_status(task_id, status)
-
-        return {"task_id": task_id, "status": status, "execution_type": "tool_enhanced", "enhanced_capabilities": True}
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Tool-enhanced execution failed: {str(e)}") from e
+    """Retired legacy endpoint retained only for explicit guidance."""
+    _raise_legacy_task_tool_route_retired()

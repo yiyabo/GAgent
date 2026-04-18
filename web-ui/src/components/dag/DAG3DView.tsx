@@ -135,7 +135,7 @@ const DAG3DView: React.FC<DAGViewProps> = ({ onClose, onNodeSelect }) => {
   pending: allTasks.filter(t => t.status === 'pending').length,
   running: allTasks.filter(t => t.status === 'running').length,
   completed: allTasks.filter(t => t.status === 'completed').length,
-  failed: allTasks.filter(t => t.status === 'failed').length,
+  failed: allTasks.filter(t => t.status === 'failed' || t.status === 'blocked').length,
   });
   } catch (error: any) {
   console.error('Failed to load tasks:', error);

@@ -55,6 +55,8 @@ const DAGVisualization: React.FC<DAGVisualizationProps> = ({
   case 'failed':
   case 'error':
   return '#ef4444'; //  - error-color
+  case 'blocked':
+  return '#f97316';
   default:
   return 'var(--text-tertiary)';
   }
@@ -207,7 +209,7 @@ const DAGVisualization: React.FC<DAGVisualizationProps> = ({
   pending: allTasks.filter((task) => task.status === 'pending').length,
   running: allTasks.filter((task) => task.status === 'running').length,
   completed: allTasks.filter((task) => task.status === 'completed').length,
-  failed: allTasks.filter((task) => task.status === 'failed').length,
+  failed: allTasks.filter((task) => task.status === 'failed' || task.status === 'blocked').length,
   };
   setStats(normalizedStats);
   setTaskStats(normalizedStats);

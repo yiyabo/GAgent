@@ -25,6 +25,7 @@ class ToolExecutionContext:
     task_instruction: Optional[str] = None
     session_id: Optional[str] = None
     current_job_id: Optional[str] = None
+    work_dir: Optional[str] = None
     channel: str = "plan_executor"
     mode: str = "task_execution"
     capability_floor: str = "tools"
@@ -82,6 +83,7 @@ class UnifiedToolExecutor:
             task_id=context.task_id,
             task_name=context.task_name,
             job_id=context.current_job_id,
+            work_dir=context.work_dir or "",
             capability_floor=context.capability_floor or "execute",
         )
 
