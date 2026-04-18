@@ -586,6 +586,8 @@ class TaskVerificationService:
                 "success": False,
             }
 
+        raw_check = self._normalize_check(raw_check)
+
         check_type = str(raw_check.get("type") or "").strip()
         if not check_type:
             return {
@@ -870,6 +872,26 @@ class TaskVerificationService:
         return text
 
     @staticmethod
+    def _normalize_check(raw_check: Any) -> Any:
+        """Normalize legacy field names in a check dict to standard names.
+
+        Mapping (only when the standard field is absent):
+          - ``field`` → ``key_path``
+          - ``min_count`` → ``min_value``
+
+        Returns a shallow copy; the original dict is never mutated.
+        Non-dict inputs are returned as-is.
+        """
+        if not isinstance(raw_check, dict):
+            return raw_check
+        result = dict(raw_check)
+        if "field" in result and "key_path" not in result:
+            result["key_path"] = result["field"]
+        if "min_count" in result and "min_value" not in result:
+            result["min_value"] = result["min_count"]
+        return result
+
+    @staticmethod
     def _coerce_json_key_path(raw_check: Dict[str, Any]) -> str:
         return str(raw_check.get("key_path") or raw_check.get("field") or "").strip()
 
@@ -883,6 +905,8 @@ class TaskVerificationService:
     def _coerce_json_min_value(raw_check: Dict[str, Any]) -> Any:
         if raw_check.get("min_value") is not None:
             return raw_check.get("min_value")
+        if raw_check.get("min_count") is not None:
+            return raw_check.get("min_count")
         return raw_check.get("value")
 
     @staticmethod

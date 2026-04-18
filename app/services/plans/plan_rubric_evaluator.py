@@ -112,6 +112,16 @@ def rubric_definition_en() -> Dict[str, Any]:
                 "S5": "Acceptance thresholds or pass criteria are stated.",
             },
         },
+        "innovation_feasibility": {
+            "focus": "Only assess non-obvious innovation and practical feasibility under stated constraints.",
+            "subcriteria": {
+                "I1": "At least one non-obvious or novel idea is explicit.",
+                "I2": "Innovation is tied to expected benefit or impact.",
+                "I3": "Feasibility constraints are explicit (time, compute, data, budget, access).",
+                "I4": "Resource requirements are explicit and realistic.",
+                "I5": "Risks, unknowns, or fallback plans are explicitly described.",
+            },
+        },
     }
 
 
@@ -491,6 +501,7 @@ def _default_weights() -> Tuple[Dict[str, float], Dict[str, Dict[str, float]]]:
         "task_granularity_atomicity": 1.0,
         "reproducibility_parameterization": 1.0,
         "scientific_rigor": 1.0,
+        "innovation_feasibility": 1.0,
     }
     rubric = rubric_definition_en()
     sub_w: Dict[str, Dict[str, float]] = {}
@@ -749,7 +760,7 @@ def evaluate_plan_rubric(
 
     prompt = f"""You are a strict research-plan quality evaluator.
 
-You must evaluate the plan using the provided rubric with 5 dimensions and 5 subcriteria each.
+    You must evaluate the plan using the provided rubric with 6 dimensions and 5 subcriteria each.
 Your job is to score each subcriterion and provide concrete evidence.
 
 ## Rubric (English)

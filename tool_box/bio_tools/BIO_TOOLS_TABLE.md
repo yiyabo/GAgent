@@ -124,7 +124,7 @@ result = await execute_tool('bio_tools',
 ```bash
 cd /home/zczhao/GAgent
 PYTHONPATH=/home/zczhao/GAgent:$PYTHONPATH \
-  python tool_box/bio_tools/test_bio_tools_complete.py
+  python tool_box/bio_tools/run_bio_tools_complete.py
 ```
 
 ---

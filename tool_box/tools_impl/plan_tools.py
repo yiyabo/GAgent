@@ -6,11 +6,81 @@ Supports creating, reviewing, optimizing, and querying plans with iterative impr
 """
 
 import asyncio
+import inspect
 import json
 import logging
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
+from app.services.plans.plan_decomposer import PlanDecomposer
+from app.services.plans.plan_generation import (
+    create_plan_and_generate,
+    ensure_plan_generation_ready,
+)
+from app.services.plans.plan_optimizer import (
+    auto_optimize_plan,
+    capture_plan_optimization_outcome,
+    resolve_plan_review_result,
+)
+
 logger = logging.getLogger(__name__)
+
+
+def _build_session_context_from_tool_context(tool_context: Optional[Any]) -> Optional[Dict[str, Any]]:
+    if tool_context is None:
+        return None
+
+    context: Dict[str, Any] = {}
+    extra = getattr(tool_context, "extra", None)
+    if isinstance(extra, dict):
+        for key in (
+            "user_message",
+            "chat_history",
+            "recent_tool_results",
+            "owner_id",
+            "request_tier",
+        ):
+            value = extra.get(key)
+            if value is not None:
+                context[key] = value
+
+    session_id = getattr(tool_context, "session_id", None)
+    if session_id:
+        context["session_id"] = session_id
+    plan_id = getattr(tool_context, "plan_id", None)
+    if plan_id is not None:
+        context["bound_plan_id"] = plan_id
+
+    return context or None
+
+
+def _summarize_nodes(nodes: List[Any], *, limit: int = 20) -> List[Dict[str, Any]]:
+    items: List[Dict[str, Any]] = []
+    for node in nodes[:limit]:
+        instruction = str(getattr(node, "instruction", "") or "").strip()
+        items.append(
+            {
+                "id": getattr(node, "id", None),
+                "name": getattr(node, "name", None),
+                "instruction": instruction[:100] + "..." if len(instruction) > 100 else instruction,
+                "parent_id": getattr(node, "parent_id", None),
+            }
+        )
+    return items
+
+
+def _supports_generation_readiness(repo: Any) -> bool:
+    if not callable(getattr(repo, "get_plan_tree", None)):
+        return False
+    if not callable(getattr(repo, "create_task", None)):
+        return False
+    if not callable(getattr(repo, "update_task", None)):
+        return False
+    try:
+        create_task_sig = inspect.signature(repo.create_task)
+    except (TypeError, ValueError):
+        return False
+    return "metadata" in create_task_sig.parameters
 
 
 async def plan_operation_handler(
@@ -62,11 +132,11 @@ async def plan_operation_handler(
 
     try:
         if operation == "create":
-            return await _create_plan(title, description, tasks)
+            return await _create_plan(title, description, tasks, tool_context=tool_context)
         elif operation == "review":
-            return await _review_plan(plan_id)
+            return await _review_plan(plan_id, tool_context=tool_context)
         elif operation == "optimize":
-            return await _optimize_plan(plan_id, changes)
+            return await _optimize_plan(plan_id, changes, tool_context=tool_context)
         elif operation == "get":
             return await _get_plan(plan_id)
         elif operation == "todo_list":
@@ -89,6 +159,7 @@ async def _create_plan(
     title: Optional[str],
     description: Optional[str],
     tasks: Optional[List[Dict[str, Any]]],
+    tool_context: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """
     Create a new plan with initial tasks.
@@ -104,89 +175,73 @@ async def _create_plan(
     if not title:
         return {"success": False, "error": "Plan title is required"}
     
-    if not tasks or not isinstance(tasks, list):
-        return {"success": False, "error": "Tasks list is required and must be non-empty"}
-    
     try:
         from app.repository.plan_repository import PlanRepository
-        
+
         repo = PlanRepository()
-        
-        # Create the plan
-        plan_tree = repo.create_plan(
+        session_context = _build_session_context_from_tool_context(tool_context)
+        owner = None
+        if isinstance(session_context, dict):
+            owner = session_context.get("owner_id")
+
+        outcome = await create_plan_and_generate(
             title=title,
             description=description,
+            tasks=tasks,
+            owner=owner,
             metadata={"created_by": "deepthink_agent"},
+            repo=repo,
+            decomposer=PlanDecomposer(repo=repo),
+            session_context=session_context,
         )
-        plan_id = plan_tree.id
-        
-        # Create ROOT task first
-        root_node = repo.create_task(
+        plan_id = outcome.plan_tree.id
+        created_tasks = _summarize_nodes(outcome.seeded_tasks)
+        generated_tasks = _summarize_nodes(
+            list(outcome.decomposition.created_tasks) if outcome.decomposition else []
+        )
+        material_count = len(outcome.collected_materials)
+        total_tasks = max(0, len(outcome.plan_tree.nodes) - 1)
+
+        logger.info(
+            "Created plan %s with integrated generation: total_tasks=%s, decomposition_status=%s, materials=%s",
             plan_id,
-            name=title,
-            status="pending",
-            instruction=description or f"Root task for plan: {title}",
-            parent_id=None,
-            metadata={"is_root": True, "task_type": "root"},
+            total_tasks,
+            outcome.decomposition_status,
+            material_count,
         )
-        root_task_id = root_node.id
-        
-        # Create task ID mapping for dependency resolution
-        task_name_to_id: Dict[str, int] = {}
-        created_tasks: List[Dict[str, Any]] = []
-        
-        # First pass: create all tasks
-        for idx, task_def in enumerate(tasks):
-            task_name = task_def.get("name") or f"Task {idx + 1}"
-            task_instruction = task_def.get("instruction") or task_def.get("description") or ""
-            
-            node = repo.create_task(
-                plan_id,
-                name=task_name,
-                status="pending",
-                instruction=task_instruction,
-                parent_id=root_task_id,  # All top-level tasks are children of ROOT
-                metadata={"task_type": "composite"},
-            )
-            
-            task_name_to_id[task_name] = node.id
-            created_tasks.append({
-                "id": node.id,
-                "name": task_name,
-                "instruction": task_instruction[:100] + "..." if len(task_instruction) > 100 else task_instruction,
-            })
-        
-        # Second pass: set up dependencies
-        for task_def in tasks:
-            task_name = task_def.get("name")
-            dep_names = task_def.get("dependencies", [])
-            
-            if task_name and dep_names and task_name in task_name_to_id:
-                task_id = task_name_to_id[task_name]
-                dep_ids = [task_name_to_id[dep] for dep in dep_names if dep in task_name_to_id]
-                
-                if dep_ids:
-                    repo.update_task(plan_id, task_id, dependencies=dep_ids)
-        
-        logger.info(f"Created plan {plan_id} with {len(created_tasks)} tasks")
-        
+
         return {
             "success": True,
             "operation": "create",
             "plan_id": plan_id,
             "title": title,
-            "root_task_id": root_task_id,
-            "task_count": len(created_tasks),
+            "root_task_id": outcome.root_task_id,
+            "task_count": total_tasks,
+            "seed_task_count": len(created_tasks),
             "created_tasks": created_tasks,
-            "message": f"Successfully created plan '{title}' with {len(created_tasks)} tasks. Use review operation to check for issues.",
+            "generated_tasks": generated_tasks,
+            "decomposition_completed": outcome.decomposition_status == "completed",
+            "decomposition_status": outcome.decomposition_status,
+            "decomposition_failed_nodes": (
+                list(outcome.decomposition.failed_nodes) if outcome.decomposition else []
+            ),
+            "material_collection": {
+                "used": material_count > 0,
+                "count": material_count,
+                "entries": outcome.collected_materials,
+            },
+            "message": (
+                f"Successfully created and decomposed plan '{title}' with {total_tasks} tasks. "
+                f"Decomposition status: {outcome.decomposition_status}."
+            ),
         }
-        
+
     except Exception as e:
         logger.exception(f"Failed to create plan: {e}")
         return {"success": False, "error": f"Failed to create plan: {str(e)}"}
 
 
-async def _review_plan(plan_id: Optional[int]) -> Dict[str, Any]:
+async def _review_plan(plan_id: Optional[int], tool_context: Optional[Any] = None) -> Dict[str, Any]:
     """
     Review a plan for potential issues.
     
@@ -211,9 +266,21 @@ async def _review_plan(plan_id: Optional[int]) -> Dict[str, Any]:
             evaluate_plan_rubric,
             is_rubric_evaluation_unavailable,
         )
-        
+
         repo = PlanRepository()
-        plan_tree = repo.get_plan_tree(plan_id)
+        if _supports_generation_readiness(repo):
+            readiness = await ensure_plan_generation_ready(
+                plan_id=plan_id,
+                repo=repo,
+                decomposer=PlanDecomposer(repo=repo),
+                session_context=_build_session_context_from_tool_context(tool_context),
+            )
+        else:
+            readiness = SimpleNamespace(
+                plan_tree=repo.get_plan_tree(plan_id),
+                decomposition_status="unavailable",
+            )
+        plan_tree = readiness.plan_tree
         
         issues: List[Dict[str, Any]] = []
         suggestions: List[str] = []
@@ -354,6 +421,7 @@ async def _review_plan(plan_id: Optional[int]) -> Dict[str, Any]:
             "operation": "review",
             "plan_id": plan_id,
             "plan_title": plan_tree.title,
+            "decomposition_status": readiness.decomposition_status,
             "status": status,
             "structural_status": structural_status,
             "health_score": health_score,
@@ -519,6 +587,7 @@ def _apply_plan_description_update(repo: Any, plan_id: int, description: str) ->
 async def _optimize_plan(
     plan_id: Optional[int],
     changes: Optional[List[Dict[str, Any]]],
+    tool_context: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """
     Optimize a plan by applying changes.
@@ -540,16 +609,85 @@ async def _optimize_plan(
     if plan_id is None:
         return {"success": False, "error": "plan_id is required"}
     
-    if not changes or not isinstance(changes, list):
-        return {"success": False, "error": "changes list is required"}
-    
     try:
         from app.repository.plan_repository import PlanRepository
-        
+
         repo = PlanRepository()
-        
+
+        if _supports_generation_readiness(repo):
+            readiness = await ensure_plan_generation_ready(
+                plan_id=plan_id,
+                repo=repo,
+                decomposer=PlanDecomposer(repo=repo),
+                session_context=_build_session_context_from_tool_context(tool_context),
+            )
+        else:
+            readiness = SimpleNamespace(
+                plan_tree=repo.get_plan_tree(plan_id),
+                decomposition_status="unavailable",
+            )
+
         # Verify plan exists
-        plan_tree = repo.get_plan_tree(plan_id)
+        plan_tree = readiness.plan_tree
+
+        if not changes or not isinstance(changes, list):
+            outcome = await auto_optimize_plan(
+                plan_id=plan_id,
+                repo=repo,
+            )
+            review_before = outcome.review_before
+            review_after = outcome.review_after or review_before
+            applied_changes = list(outcome.applied_changes)
+            score_delta = None
+            if review_before is not None and review_after is not None:
+                score_delta = float(review_after.overall_score) - float(review_before.overall_score)
+            success = bool(applied_changes) or not outcome.optimization_needed
+            return {
+                "success": success,
+                "operation": "optimize",
+                "plan_id": plan_id,
+                "decomposition_status": readiness.decomposition_status,
+                "auto_generated_changes": True,
+                "optimization_needed": outcome.optimization_needed,
+                "applied_changes": len(applied_changes),
+                "failed_changes": 0,
+                "generated_changes": list(outcome.generated_changes),
+                "rubric_score_before": (
+                    review_before.overall_score if review_before is not None else None
+                ),
+                "rubric_score_after": (
+                    review_after.overall_score if review_after is not None else None
+                ),
+                "rubric_score_delta": score_delta,
+                "rubric_dimension_scores_before": (
+                    dict(review_before.dimension_scores) if review_before is not None else {}
+                ),
+                "rubric_dimension_scores_after": (
+                    dict(review_after.dimension_scores) if review_after is not None else {}
+                ),
+                "rubric_evaluator_after": (
+                    {
+                        "provider": review_after.evaluator_provider,
+                        "model": review_after.evaluator_model,
+                        "evaluated_at": review_after.evaluated_at,
+                        "rubric_version": review_after.rubric_version,
+                    }
+                    if review_after is not None
+                    else None
+                ),
+                "changes_detail": {
+                    "applied": applied_changes,
+                    "failed": [],
+                },
+                "message": outcome.summary,
+            }
+
+        # Use cached review only — do not block structural edits on rubric evaluation.
+        review_before = None
+        if isinstance(plan_tree.metadata, dict):
+            from app.services.plans.plan_optimizer import _coerce_plan_rubric_result
+            review_before = _coerce_plan_rubric_result(plan_tree.metadata.get("plan_evaluation"))
+        plan_tree_before = plan_tree  # Snapshot before any changes are applied
         
         applied_changes: List[Dict[str, Any]] = []
         failed_changes: List[Dict[str, Any]] = []
@@ -689,25 +827,84 @@ async def _optimize_plan(
                 }
             )
 
+        outcome = None
+        if applied_changes:
+            try:
+                outcome = await capture_plan_optimization_outcome(
+                    plan_id=plan_id,
+                    plan_tree_before=plan_tree_before,
+                    applied_changes=applied_changes,
+                    generated_changes=changes,
+                    repo=repo,
+                    summary="Applied explicit plan optimization changes.",
+                    review_before=review_before,
+                    auto_generated=False,
+                    skip_evaluation=review_before is None,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "capture_plan_optimization_outcome failed (changes already applied): %s",
+                    exc,
+                )
+
+        review_after = outcome.review_after if outcome is not None else review_before
+        current_tree = outcome.plan_tree if outcome is not None else plan_tree
+        score_delta = None
+        if review_before is not None and review_after is not None:
+            score_delta = float(review_after.overall_score) - float(review_before.overall_score)
+
+        message = (
+            f"Applied {len(applied_changes)} changes, {len(failed_changes)} failed. "
+            + (
+                (
+                    f"Rubric {review_before.overall_score:.1f}% -> {review_after.overall_score:.1f}% "
+                    f"({score_delta:+.1f})."
+                )
+                if applied_changes and review_before is not None and review_after is not None and score_delta is not None
+                else "Use review to check the result."
+            )
+            if applied_changes
+            else "Applied 0 changes, 1 failed. No real plan updates were applied."
+        )
+
         return {
             "success": len(failed_changes) == 0 and len(applied_changes) > 0,
             "operation": "optimize",
             "plan_id": plan_id,
+            "decomposition_status": readiness.decomposition_status,
             "applied_changes": len(applied_changes),
             "failed_changes": len(failed_changes),
+            "auto_generated_changes": False,
+            "generated_changes": list(changes),
+            "rubric_score_before": (
+                review_before.overall_score if review_before is not None else None
+            ),
+            "rubric_score_after": (
+                review_after.overall_score if review_after is not None else None
+            ),
+            "rubric_score_delta": score_delta,
+            "rubric_dimension_scores_before": (
+                dict(review_before.dimension_scores) if review_before is not None else {}
+            ),
+            "rubric_dimension_scores_after": (
+                dict(review_after.dimension_scores) if review_after is not None else {}
+            ),
+            "rubric_evaluator_after": (
+                {
+                    "provider": review_after.evaluator_provider,
+                    "model": review_after.evaluator_model,
+                    "evaluated_at": review_after.evaluated_at,
+                    "rubric_version": review_after.rubric_version,
+                }
+                if review_after is not None
+                else None
+            ),
             "changes_detail": {
                 "applied": applied_changes,
                 "failed": failed_changes,
             },
-            "current_task_count": len(plan_tree.nodes),
-            "message": (
-                f"Applied {len(applied_changes)} changes, {len(failed_changes)} failed. "
-                + (
-                    "Use review to check the result."
-                    if applied_changes
-                    else "No real plan updates were applied."
-                )
-            ),
+            "current_task_count": len(current_tree.nodes),
+            "message": message,
         }
         
     except Exception as e:
@@ -876,11 +1073,11 @@ Supports creating plans, reviewing them for issues, and optimizing based on feed
 Use this tool to create well-structured plans with iterative improvement.
 
 WORKFLOW for Plan Creation:
-1. Use web_search first only when current external evidence or best practices materially affect the plan
-2. Create initial plan with 'create' operation
-3. Use 'review' to check dependencies and granularity
-4. If issues found, use 'optimize' to fix them
-5. Repeat review-optimize until plan is satisfactory
+1. Use 'create' to generate the plan in one synchronous pass
+2. The system may collect web_search or graph_rag evidence before decomposition when needed
+3. 'create' returns only after the plan has been decomposed as far as the configured budget allows
+4. Use 'review' to score the completed structure
+5. Use 'optimize' to change the structure; if no explicit changes are supplied, it may synthesize them from the latest rubric review
 
 OPTIMIZE CHANGE FORMAT (each change MUST have an "action" field):
 - update_task: {"action": "update_task", "task_id": 4, "name": "New Name", "instruction": "New details"}
@@ -916,7 +1113,7 @@ Legacy compatibility:
             },
             "tasks": {
                 "type": "array",
-                "description": "List of task definitions [{name, instruction, dependencies?}] (for create)",
+                "description": "Optional seed tasks [{name, instruction, dependencies?}] used as initial structure hints before integrated decomposition",
                 "items": {
                     "type": "object",
                     "properties": {

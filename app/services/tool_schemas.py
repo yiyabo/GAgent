@@ -807,7 +807,7 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
                 "Use get/review/optimize for bound plans. "
                 "Research with web_search first only when latest external evidence materially affects the plan. "
                 "For optimize, use concrete change objects such as add_task, update_task, update_description, "
-                "delete_task, or reorder_task; keep update_task fields at the top level. "
+                "delete_task, or reorder_task; keep update_task fields at the top level. If changes are omitted, optimize may auto-generate them from the latest rubric review. "
                 "Do not use this tool to mark the currently executing task completed or failed; current-task status is auto-synced from tool execution."
             ),
             "parameters": {
@@ -853,7 +853,7 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
             "name": "terminal_session",
             "description": (
                 "Manage interactive terminal sessions (sandbox PTY or remote SSH). "
-                "Use 'create' to open a new terminal tied to the current chat session, "
+                "Use 'create' or 'ensure' to get a terminal tied to the current chat session or execution context, "
                 "'write' to send commands (plain text or base64), "
                 "'list' to see active sessions, "
                 "'close' to terminate a session, "

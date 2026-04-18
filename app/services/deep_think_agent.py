@@ -2698,7 +2698,7 @@ class DeepThinkAgent:
             "- Never use code_executor as fallback for bio_tools input-conversion/parsing failures.\n"
             "- For status polling tools, if state is unchanged across several checks, stop active polling and summarize current status.\n"
             "- If the user explicitly asks for a plan or task breakdown and plan_operation is available, use plan_operation to create or update a structured plan instead of replying with a prose-only pseudo-plan.\n"
-            "- For plan creation, research is optional. Use web_search first only when latest evidence or external best practices materially affect the plan; otherwise create or update the plan directly from current context.\n"
+            "- For plan creation, `plan_operation.create` already performs integrated material collection before decomposition when needed. Do not manually split this into create-then-decompose unless you are explicitly refining an existing plan later.\n"
             "- When executing a currently bound plan task, do NOT use plan_operation or task_operation just to mark that task completed/failed. Tool execution auto-sync already handles current task status; use plan_operation/task_operation only for structural plan edits.\n"
             "- When executing a currently bound plan task, observation-only tools (read-only file_operations, document_reader, vision_reader) may clarify one concrete uncertainty, but they are not task completion. Do not loop on probe-only exploration.\n"
             "- If the current bound task depends on upstream deliverables that are missing, report BLOCKED_DEPENDENCY clearly instead of silently switching to a different upstream task.\n"
@@ -5396,16 +5396,17 @@ Use this for data exploration, statistical analysis, and visualization tasks on 
 Operations:
 - create: Create a new plan with tasks. Params: {"operation": "create", "title": "Plan Title", "description": "Goal", "tasks": [{"name": "Task 1", "instruction": "Details...", "dependencies": ["Task 0"]}]}
 - review: Review plan quality and structure. Returns BOTH: (1) structural health_score and (2) a strict research-plan rubric_score with detailed breakdown. Params: {"operation": "review", "plan_id": 123}
-- optimize: Apply changes to improve the plan. Params: {"operation": "optimize", "plan_id": 123, "changes": [{"action": "add_task|update_task|update_description|delete_task|reorder_task", ...}]}
+- optimize: Apply changes to improve the plan. Params: {"operation": "optimize", "plan_id": 123, "changes": [{"action": "add_task|update_task|update_description|delete_task|reorder_task", ...}]}. If `changes` is omitted, optimize may synthesize changes from the latest rubric feedback.
 - get: Get plan details. Params: {"operation": "get", "plan_id": 123}
 
 WORKFLOW for Plan Creation:
-1. If the request depends on latest external evidence or best practices, optionally use web_search first
-2. For a new plan, call 'create' directly from the current context
-3. After a successful new-plan create, prefer 'review' so rubric metadata is available for the UI and later optimization
-4. For a bound plan, use 'get', 'review', or 'optimize' on the existing plan_id
-5. Use 'optimize' only when review or user feedback gives you concrete changes to apply
-6. Report the real plan result to the user with plan_id and rubric status when available
+1. For a new plan, call 'create' directly from the current context
+2. The create path may collect web_search or graph_rag evidence before decomposition when needed
+3. Treat the returned plan as already generated/decomposed up to the configured budget; do not assume a second decomposition step is pending
+4. After a successful new-plan create, prefer 'review' so rubric metadata is available for the UI and later optimization
+5. For a bound plan, use 'get', 'review', or 'optimize' on the existing plan_id
+6. Use 'optimize' when review or user feedback indicates the plan should improve; it can apply explicit changes or synthesize them from the latest review
+7. Report the real plan result to the user with plan_id and decomposition/rubric status when available
 
 IMPORTANT:
 - When creating plans, ensure each task has clear, actionable instructions.
@@ -5420,6 +5421,7 @@ Operations:
 - list: List active terminal sessions. Params: {"operation": "list"}
 - close: Close a terminal session. Params: {"operation": "close", "terminal_id": "tid"}
 - ensure: Explicitly get or create a terminal. Params: {"operation": "ensure", "session_id": "chat_session_id"}. Returns terminal_id.
+- create: Legacy alias for ensure in sandbox/qwen_code flows; if session_id is omitted the system may bind it from the current execution context.
 
 Typical usage: just call write with data — the system handles terminal creation automatically.
 IMPORTANT: data must end with \\n to execute the command.""",
