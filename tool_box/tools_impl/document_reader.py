@@ -13,6 +13,9 @@ from typing import Any, Dict, Optional, Tuple
 import zipfile
 from xml.etree import ElementTree as ET
 
+from tool_box.context import ToolContext
+from tool_box.path_resolution import resolve_tool_path
+
 logger = logging.getLogger(__name__)
 
 
@@ -343,15 +346,14 @@ async def document_reader_handler(
     operation: str,
     file_path: str,
     use_ocr: bool = False,
+    tool_context: Optional[ToolContext] = None,
 ) -> Dict[str, Any]:
     import glob as glob_module
     
     # Check if path contains glob patterns (*, ?, [])
     if any(c in file_path for c in ['*', '?', '[']):
         # Expand glob pattern
-        expanded_path = Path(file_path).expanduser()
-        if not expanded_path.is_absolute():
-            expanded_path = Path.cwd() / file_path
+        expanded_path = resolve_tool_path(file_path, tool_context=tool_context)
         
         matched_files = sorted(glob_module.glob(str(expanded_path)))
         
@@ -384,7 +386,12 @@ async def document_reader_handler(
             results = []
             for matched_file in matched_files[:10]:  # Limit to 10 files
                 try:
-                    result = await document_reader_handler(operation, matched_file, use_ocr)
+                    result = await document_reader_handler(
+                        operation,
+                        matched_file,
+                        use_ocr,
+                        tool_context=tool_context,
+                    )
                     results.append({
                         "file": matched_file,
                         "success": result.get("success", False),
@@ -411,9 +418,7 @@ async def document_reader_handler(
             }
     
     # Normalize path early and handle directory listing
-    abs_path = Path(file_path).expanduser()
-    if not abs_path.is_absolute():
-        abs_path = Path.cwd() / abs_path
+    abs_path = resolve_tool_path(file_path, tool_context=tool_context)
     if abs_path.is_dir():
         try:
             entries = []

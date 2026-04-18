@@ -160,8 +160,10 @@ const PlanTreeVisualization: React.FC<PlanTreeVisualizationProps> = ({
   const cleanName = (task.short_name || task.name || '').replace(/^(ROOT|COMPOSITE|ATOMIC):\s*/i, '');
   const displayName = cleanName.length > 36 ? cleanName.substring(0, 36) + '…' : cleanName;
   const duration = getTaskDuration(task);
-  const isFailed = task.status === 'failed';
-  const failedTooltip = isFailed ? `Task failed · Click to view details` : undefined;
+  const isFailed = task.status === 'failed' || task.status === 'blocked';
+  const failedTooltip = isFailed
+  ? `${task.status === 'blocked' ? 'Task blocked' : 'Task failed'} · Click to view details`
+  : undefined;
 
   const nodeInner = (
   <div

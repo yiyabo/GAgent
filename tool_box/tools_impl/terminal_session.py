@@ -3,10 +3,49 @@
 from __future__ import annotations
 
 import base64
+import re
 from typing import Any, Dict, Optional
+
+from tool_box.context import ToolContext
 
 from app.services.terminal.session_manager import terminal_session_manager
 from app.services.terminal.ssh_backend import SSHConfig
+
+
+def _sanitize_session_owner(value: str) -> str:
+    token = re.sub(r"[^A-Za-z0-9._-]+", "-", str(value or "").strip())
+    token = token.strip("-._")
+    return token or "terminal"
+
+
+def _resolve_effective_session_id(
+    session_id: Optional[str],
+    tool_context: Optional[ToolContext],
+) -> Optional[str]:
+    explicit = str(session_id or "").strip()
+    if explicit:
+        return explicit
+
+    if tool_context is not None:
+        context_session = str(getattr(tool_context, "session_id", "") or "").strip()
+        if context_session:
+            return context_session
+
+        plan_id = getattr(tool_context, "plan_id", None)
+        task_id = getattr(tool_context, "task_id", None)
+        job_id = str(getattr(tool_context, "job_id", "") or "").strip()
+        if job_id or plan_id is not None or task_id is not None:
+            parts = []
+            if plan_id is not None:
+                parts.append(f"plan{plan_id}")
+            if task_id is not None:
+                parts.append(f"task{task_id}")
+            if job_id:
+                job_token = _sanitize_session_owner(job_id)
+                parts.append(job_token if job_token.startswith("job") else f"job{job_token}")
+            return "_".join(parts) or None
+
+    return None
 
 
 async def terminal_session_handler(
@@ -25,19 +64,27 @@ async def terminal_session_handler(
     start_ts: Optional[float] = None,
     end_ts: Optional[float] = None,
     event_type: Optional[str] = None,
+    tool_context: Optional[ToolContext] = None,
 ) -> Dict[str, Any]:
     op = str(operation or "").strip().lower()
+    effective_session_id = _resolve_effective_session_id(session_id, tool_context)
 
     if op == "create":
-        if not session_id:
+        if not effective_session_id:
             raise ValueError("session_id is required for create")
         resolved_mode = mode if mode in ("sandbox", "ssh", "qwen_code") else "sandbox"
-        ssh_cfg = SSHConfig(**ssh_config) if (resolved_mode == "ssh" and isinstance(ssh_config, dict)) else None
-        session = await terminal_session_manager.create_session(
-            session_id,
-            mode=resolved_mode,
-            ssh_config=ssh_cfg,
-        )
+        if resolved_mode == "ssh" and isinstance(ssh_config, dict):
+            ssh_cfg = SSHConfig(**ssh_config)
+            session = await terminal_session_manager.create_session(
+                effective_session_id,
+                mode=resolved_mode,
+                ssh_config=ssh_cfg,
+            )
+        else:
+            session = await terminal_session_manager.ensure_session_for_chat(
+                effective_session_id,
+                mode=resolved_mode,
+            )
         return {
             "operation": op,
             "success": True,
@@ -49,11 +96,11 @@ async def terminal_session_handler(
         }
 
     if op == "ensure":
-        if not session_id:
+        if not effective_session_id:
             raise ValueError("session_id is required for ensure")
         resolved_mode = mode if mode in ("sandbox", "ssh", "qwen_code") else "sandbox"
         session = await terminal_session_manager.ensure_session_for_chat(
-            session_id,
+            effective_session_id,
             mode=resolved_mode,
         )
         return {
@@ -67,7 +114,7 @@ async def terminal_session_handler(
         }
 
     if op == "list":
-        items = await terminal_session_manager.list_sessions(session_id=session_id)
+        items = await terminal_session_manager.list_sessions(session_id=effective_session_id)
         return {"operation": op, "success": True, "items": items, "count": len(items)}
 
     if op == "close":
@@ -77,8 +124,16 @@ async def terminal_session_handler(
         return {"operation": op, "success": True, "terminal_id": terminal_id}
 
     if op == "write":
-        if not terminal_id:
-            raise ValueError("terminal_id is required for write")
+        resolved_terminal_id = str(terminal_id or "").strip()
+        if not resolved_terminal_id:
+            if not effective_session_id:
+                raise ValueError("terminal_id is required for write")
+            resolved_mode = mode if mode in ("sandbox", "ssh", "qwen_code") else "sandbox"
+            session = await terminal_session_manager.ensure_session_for_chat(
+                effective_session_id,
+                mode=resolved_mode,
+            )
+            resolved_terminal_id = session.terminal_id
         if data is None:
             payload = b""
         elif str(encoding).lower() == "base64":
@@ -86,7 +141,7 @@ async def terminal_session_handler(
         else:
             payload = str(data).encode("utf-8")
         result = await terminal_session_manager.write_and_wait(
-            terminal_id,
+            resolved_terminal_id,
             payload,
             timeout=10.0,
             idle_timeout=0.5,
@@ -95,7 +150,7 @@ async def terminal_session_handler(
         return {
             "operation": op,
             "success": True,
-            "terminal_id": terminal_id,
+            "terminal_id": resolved_terminal_id,
             "bytes_sent": len(payload),
             "output": result["output"],
             # `status` is PTY settle state only: "completed" means no recent output for idle_timeout,
@@ -203,7 +258,7 @@ async def terminal_session_handler(
 
 terminal_session_tool = {
     "name": "terminal_session",
-    "description": "Create/manage interactive terminal sessions (sandbox PTY or SSH), including write/resize/audit/replay/approval operations.",
+    "description": "Create/manage interactive terminal sessions (sandbox PTY or SSH), including write/resize/audit/replay/approval operations. In orchestrated executions, create/ensure/write can auto-bind to the current execution session.",
     "category": "execution",
     "parameters_schema": {
         "type": "object",

@@ -59,6 +59,8 @@ const TreeVisualization: React.FC<TreeVisualizationProps> = ({
   case 'failed':
   case 'error':
   return '❌';
+  case 'blocked':
+  return '⛔';
   default:
   return '⭕';
   }
@@ -92,6 +94,8 @@ const TreeVisualization: React.FC<TreeVisualizationProps> = ({
   case 'failed':
   case 'error':
   return '#ff4d4f';
+  case 'blocked':
+  return '#fa8c16';
   default:
   return '#d9d9d9';
   }
@@ -123,7 +127,7 @@ const TreeVisualization: React.FC<TreeVisualizationProps> = ({
   pending: allTasks.filter((task) => task.status === 'pending').length,
   running: allTasks.filter((task) => task.status === 'running').length,
   completed: allTasks.filter((task) => task.status === 'completed').length,
-  failed: allTasks.filter((task) => task.status === 'failed').length,
+  failed: allTasks.filter((task) => task.status === 'failed' || task.status === 'blocked').length,
   };
   setStats(computedStats);
   setTaskStats(computedStats);
@@ -338,6 +342,7 @@ const TreeVisualization: React.FC<TreeVisualizationProps> = ({
   { label: 'Running', value: 'running' },
   { label: 'Completed', value: 'completed' },
   { label: 'Failed', value: 'failed' },
+  { label: 'Blocked', value: 'blocked' },
   ]}
   />
   <Button 

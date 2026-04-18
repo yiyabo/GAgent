@@ -11,6 +11,9 @@ import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from tool_box.context import ToolContext
+from tool_box.path_resolution import resolve_tool_path_str
+
 logger = logging.getLogger(__name__)
 
 # Security configuration
@@ -49,20 +52,6 @@ def _normalize_allowed_base_paths() -> List[str]:
 
 
 ALLOWED_BASE_PATHS = _normalize_allowed_base_paths()
-
-# Default work directory - avoid creating files in root directory
-DEFAULT_WORK_DIR = "results"
-
-
-def _normalize_file_path(file_path: str) -> str:
-    """Normalize file path, avoid creating files in root directory"""
-    # If it's a simple filename (no directory), put it in the results directory
-    if not os.path.dirname(file_path) and not file_path.startswith('/'):
-        os.makedirs(DEFAULT_WORK_DIR, exist_ok=True)
-        return os.path.join(DEFAULT_WORK_DIR, file_path)
-    
-    return file_path
-
 
 def _path_is_within(candidate: Path, base: Path) -> bool:
     try:
@@ -144,11 +133,8 @@ async def file_operations_handler(
     destination: Optional[str] = None,
     pattern: Optional[str] = None,
     session_id: Optional[str] = None,
+    tool_context: Optional[ToolContext] = None,
 ) -> Dict[str, Any]:
-    # Normalize file path
-    path = _normalize_file_path(path)
-    if destination:
-        destination = _normalize_file_path(destination)
     """
     File operations tool handler
 
@@ -160,27 +146,43 @@ async def file_operations_handler(
         pattern: File pattern for list operations
         session_id: Optional execution session identifier. Accepted for
             executor compatibility and intentionally ignored by this tool.
+        tool_context: Optional structured execution context. Used for
+            work_dir-aware relative path resolution.
 
     Returns:
         Dict containing operation results
     """
     try:
+        resolved_path = resolve_tool_path_str(
+            path,
+            tool_context=tool_context,
+            treat_bare_as_results_output=operation == "write",
+        )
+        resolved_destination = (
+            resolve_tool_path_str(
+                destination,
+                tool_context=tool_context,
+                treat_bare_as_results_output=True,
+            )
+            if destination
+            else None
+        )
         if operation == "read":
-            return await _read_file(path)
+            return await _read_file(resolved_path)
         elif operation == "write":
-            return await _write_file(path, content or "")
+            return await _write_file(resolved_path, content or "")
         elif operation == "list":
-            return await _list_directory(path, pattern)
+            return await _list_directory(resolved_path, pattern)
         elif operation == "delete":
-            return await _delete_path(path)
+            return await _delete_path(resolved_path)
         elif operation == "copy":
-            return await _copy_path(path, destination)
+            return await _copy_path(resolved_path, resolved_destination)
         elif operation == "move":
-            return await _move_path(path, destination)
+            return await _move_path(resolved_path, resolved_destination)
         elif operation == "exists":
-            return await _check_exists(path)
+            return await _check_exists(resolved_path)
         elif operation == "info":
-            return await _get_file_info(path)
+            return await _get_file_info(resolved_path)
         else:
             return {"operation": operation, "success": False, "error": f"Unsupported operation: {operation}"}
 

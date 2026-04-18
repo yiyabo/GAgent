@@ -1239,9 +1239,11 @@ def _plan_evaluation_from_tool_results(
         if not isinstance(result_payload, dict):
             continue
         operation = str(result_payload.get("operation") or "").strip().lower()
-        if operation != "review":
+        if operation not in {"review", "optimize"}:
             continue
         rubric_score = result_payload.get("rubric_score")
+        if operation == "optimize":
+            rubric_score = result_payload.get("rubric_score_after", rubric_score)
         if not isinstance(rubric_score, (int, float)):
             continue
         evaluator = (
@@ -1249,6 +1251,13 @@ def _plan_evaluation_from_tool_results(
             if isinstance(result_payload.get("rubric_evaluator"), dict)
             else {}
         )
+        if operation == "optimize" and isinstance(result_payload.get("rubric_evaluator_after"), dict):
+            evaluator = result_payload.get("rubric_evaluator_after")
+
+        dimension_scores_payload = result_payload.get("rubric_dimension_scores")
+        if operation == "optimize" and isinstance(result_payload.get("rubric_dimension_scores_after"), dict):
+            dimension_scores_payload = result_payload.get("rubric_dimension_scores_after")
+
         evaluation: Dict[str, Any] = {
             "plan_id": result_payload.get("plan_id"),
             "rubric_version": evaluator.get("rubric_version"),
@@ -1257,8 +1266,8 @@ def _plan_evaluation_from_tool_results(
             "evaluated_at": evaluator.get("evaluated_at"),
             "overall_score": float(rubric_score),
             "dimension_scores": (
-                dict(result_payload.get("rubric_dimension_scores"))
-                if isinstance(result_payload.get("rubric_dimension_scores"), dict)
+                dict(dimension_scores_payload)
+                if isinstance(dimension_scores_payload, dict)
                 else {}
             ),
             "subcriteria_scores": (
@@ -3743,51 +3752,97 @@ class StructuredChatAgent:
                                                 plan_id,
                                             )
 
-                                        # CRITICAL: Trigger automatic task decomposition
-                                        # This ensures DeepThink-created plans get the same
-                                        # multi-level decomposition as regular plans
-                                        session_ctx = {
-                                            "user_message": effective_user_message,
-                                            "request_tier": routing_decision.request_tier,
-                                            "chat_history": self.history,
-                                            "chat_history_max_messages": self.max_history_messages,
-                                            "recent_tool_results": self.extra_context.get(
-                                                "recent_tool_results", []
-                                            ),
-                                        }
-                                        if self.session_id:
-                                            session_ctx["session_id"] = self.session_id
-                                        owner_id = str(
-                                            self.extra_context.get("owner_id") or ""
-                                        ).strip()
-                                        if owner_id:
-                                            session_ctx["owner_id"] = owner_id
-                                        decompose_result = await asyncio.to_thread(
-                                            self._auto_decompose_plan,
-                                            plan_id,
-                                            wait_for_completion=False,
-                                            session_context=session_ctx,
-                                            after_success=lambda: self._run_created_plan_auto_review_sync(
-                                                plan_id
-                                            ),
-                                        )
                                         auto_review_mode = "not_scheduled"
-                                        if decompose_result:
-                                            if decompose_result.get("result") is not None:
-                                                summary = decompose_result["result"]
-                                                logger.info(
-                                                    "[DeepThink] Auto-decomposition completed for plan %s",
-                                                    plan_id,
-                                                )
-                                                result["decomposition_completed"] = True
-                                                result["decomposition_created"] = len(
-                                                    summary.created_tasks
-                                                )
-                                                result["decomposition_stats"] = summary.stats
-                                                result["decomposition_note"] = (
-                                                    "Automatic task decomposition completed before review."
-                                                )
-                                                if self._start_background_created_plan_auto_review(
+                                        integrated_generation = bool(
+                                            result.get("decomposition_completed")
+                                        ) or str(
+                                            result.get("decomposition_status") or ""
+                                        ).strip().lower() in {"completed", "partial", "not_configured", "skipped"}
+                                        if integrated_generation:
+                                            logger.info(
+                                                "[DeepThink] Plan %s returned from integrated generation with decomposition_status=%s",
+                                                plan_id,
+                                                result.get("decomposition_status"),
+                                            )
+                                            if self._start_background_created_plan_auto_review(
+                                                plan_id
+                                            ):
+                                                result["auto_review"] = {
+                                                    "status": "scheduled",
+                                                    "mode": "background",
+                                                }
+                                                auto_review_mode = "background"
+                                        else:
+                                            # Backward compatibility for older create handlers that still
+                                            # return before decomposition is complete.
+                                            session_ctx = {
+                                                "user_message": effective_user_message,
+                                                "request_tier": routing_decision.request_tier,
+                                                "chat_history": self.history,
+                                                "chat_history_max_messages": self.max_history_messages,
+                                                "recent_tool_results": self.extra_context.get(
+                                                    "recent_tool_results", []
+                                                ),
+                                            }
+                                            if self.session_id:
+                                                session_ctx["session_id"] = self.session_id
+                                            owner_id = str(
+                                                self.extra_context.get("owner_id") or ""
+                                            ).strip()
+                                            if owner_id:
+                                                session_ctx["owner_id"] = owner_id
+                                            decompose_result = await asyncio.to_thread(
+                                                self._auto_decompose_plan,
+                                                plan_id,
+                                                wait_for_completion=False,
+                                                session_context=session_ctx,
+                                                after_success=lambda: self._run_created_plan_auto_review_sync(
+                                                    plan_id
+                                                ),
+                                            )
+                                            if decompose_result:
+                                                if decompose_result.get("result") is not None:
+                                                    summary = decompose_result["result"]
+                                                    logger.info(
+                                                        "[DeepThink] Auto-decomposition completed for plan %s",
+                                                        plan_id,
+                                                    )
+                                                    result["decomposition_completed"] = True
+                                                    result["decomposition_created"] = len(
+                                                        summary.created_tasks
+                                                    )
+                                                    result["decomposition_stats"] = summary.stats
+                                                    result["decomposition_note"] = (
+                                                        "Automatic task decomposition completed before review."
+                                                    )
+                                                    if self._start_background_created_plan_auto_review(
+                                                        plan_id
+                                                    ):
+                                                        result["auto_review"] = {
+                                                            "status": "scheduled",
+                                                            "mode": "background",
+                                                        }
+                                                        auto_review_mode = "background"
+                                                elif decompose_result.get("job") is not None:
+                                                    decompose_job = decompose_result.get("job")
+                                                    decompose_job_id = getattr(
+                                                        decompose_job, "job_id", None
+                                                    )
+                                                    logger.info(
+                                                        "[DeepThink] Auto-decomposition submitted for plan %s",
+                                                        plan_id,
+                                                    )
+                                                    result["decomposition_triggered"] = True
+                                                    result["decomposition_note"] = (
+                                                        "Automatic task decomposition has been submitted for background execution."
+                                                    )
+                                                    result["auto_review"] = {
+                                                        "status": "scheduled",
+                                                        "mode": "after_decomposition",
+                                                        "decomposition_job_id": decompose_job_id,
+                                                    }
+                                                    auto_review_mode = "after_decomposition"
+                                                elif self._start_background_created_plan_auto_review(
                                                     plan_id
                                                 ):
                                                     result["auto_review"] = {
@@ -3795,27 +3850,6 @@ class StructuredChatAgent:
                                                         "mode": "background",
                                                     }
                                                     auto_review_mode = "background"
-                                            elif decompose_result.get("job") is not None:
-                                                decompose_job = decompose_result.get("job")
-                                                decompose_job_id = getattr(
-                                                    decompose_job, "job_id", None
-                                                )
-                                                logger.info(
-                                                    "[DeepThink] Auto-decomposition submitted for plan %s",
-                                                    plan_id,
-                                                )
-                                                result["decomposition_triggered"] = True
-                                                result["decomposition_note"] = (
-                                                    "Automatic task decomposition has been submitted for background execution."
-                                                )
-                                                result["auto_review"] = {
-                                                    "status": "scheduled",
-                                                    "mode": "after_decomposition",
-                                                    "decomposition_job_id": decompose_job_id,
-                                                }
-                                                auto_review_mode = (
-                                                    "after_decomposition"
-                                                )
                                             elif self._start_background_created_plan_auto_review(
                                                 plan_id
                                             ):
@@ -3824,20 +3858,12 @@ class StructuredChatAgent:
                                                     "mode": "background",
                                                 }
                                                 auto_review_mode = "background"
-                                        elif self._start_background_created_plan_auto_review(
-                                            plan_id
-                                        ):
-                                            result["auto_review"] = {
-                                                "status": "scheduled",
-                                                "mode": "background",
-                                            }
-                                            auto_review_mode = "background"
 
                                         deep_think_bg_category = "task_creation"
 
                                         logger.info(
                                             "[DeepThink] Auto-bound plan %s to session "
-                                            "(decomposition dispatched to background, "
+                                            "(generation ready, "
                                             "auto-review=%s, auto-optimize skipped)",
                                             plan_id,
                                             auto_review_mode,
@@ -4747,6 +4773,8 @@ class StructuredChatAgent:
         self,
         plan_id: int,
     ) -> Optional[Dict[str, Any]]:
+        from app.services.plans.plan_optimizer import plan_review_needs_optimization
+
         try:
             review_result = asyncio.run(
                 execute_tool(
@@ -4784,6 +4812,34 @@ class StructuredChatAgent:
             review_result.get("status"),
             review_result.get("rubric_score"),
         )
+
+        if plan_review_needs_optimization(review_result):
+            try:
+                optimize_result = asyncio.run(
+                    execute_tool(
+                        "plan_operation",
+                        operation="optimize",
+                        plan_id=plan_id,
+                    )
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[DeepThink] Auto-optimize failed for plan %s: %s",
+                    plan_id,
+                    exc,
+                )
+                return dict(review_result)
+
+            if isinstance(optimize_result, dict):
+                logger.info(
+                    "[DeepThink] Auto-optimized plan %s after review (applied_changes=%s, score_before=%s, score_after=%s)",
+                    plan_id,
+                    optimize_result.get("applied_changes"),
+                    optimize_result.get("rubric_score_before"),
+                    optimize_result.get("rubric_score_after"),
+                )
+                review_result = dict(review_result)
+                review_result["auto_optimize"] = dict(optimize_result)
         return dict(review_result)
 
     def _start_background_created_plan_auto_review(self, plan_id: int) -> bool:

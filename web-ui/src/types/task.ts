@@ -4,7 +4,12 @@ import type { ContextOptions } from './settings';
 export interface Task {
   id: number;
   name: string;
-  status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped';
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped' | 'blocked';
+  effective_status?: string | null;
+  status_reason?: string | null;
+  blocked_by_dependencies?: boolean;
+  incomplete_dependencies?: number[];
+  is_active_execution?: boolean;
   parent_id?: number;
   path?: string;
   depth?: number;
@@ -69,6 +74,11 @@ export interface PlanNodeResponse {
   plan_id: number;
   name: string;
   status?: string;
+  effective_status?: string | null;
+  status_reason?: string | null;
+  blocked_by_dependencies?: boolean;
+  incomplete_dependencies?: number[];
+  is_active_execution?: boolean;
   instruction?: string | null;
   parent_id?: number | null;
   position?: number;
@@ -96,6 +106,11 @@ export interface PlanResultItem {
   task_id: number;
   name?: string | null;
   status?: Task['status'] | string | null;
+  effective_status?: string | null;
+  status_reason?: string | null;
+  blocked_by_dependencies?: boolean;
+  incomplete_dependencies?: number[];
+  is_active_execution?: boolean;
   content?: string | null;
   notes?: string[];
   metadata?: Record<string, any>;
@@ -122,6 +137,7 @@ export interface PlanExecutionSummary {
   completed: number;
   failed: number;
   skipped: number;
+  blocked?: number;
   running: number;
   pending: number;
 }
@@ -130,6 +146,11 @@ export interface DependencyNodeInfo {
   id: number;
   name: string;
   status: string;
+  effective_status?: string | null;
+  status_reason?: string | null;
+  blocked_by_dependencies?: boolean;
+  incomplete_dependencies?: number[];
+  is_active_execution?: boolean;
 }
 
 export interface ExecutionChecklistItem {
@@ -137,6 +158,11 @@ export interface ExecutionChecklistItem {
   task_id: number;
   name: string;
   status: string;
+  effective_status?: string | null;
+  status_reason?: string | null;
+  blocked_by_dependencies?: boolean;
+  incomplete_dependencies?: number[];
+  is_active_execution?: boolean;
   execution_state: 'completed' | 'failed' | 'running' | 'blocked' | 'ready' | string;
   instruction?: string | null;
   depends_on: number[];

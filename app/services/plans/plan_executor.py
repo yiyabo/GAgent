@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import time
 import asyncio
@@ -24,6 +25,19 @@ from ..deliverables import get_deliverable_publisher
 from ..execution.tool_executor import ToolExecutionContext, UnifiedToolExecutor
 from ..llm.llm_service import LLMService
 from ..skills import get_skills_loader
+from .artifact_contracts import (
+    artifact_manifest_path,
+    find_candidate_source_for_alias,
+    find_runtime_candidates,
+    infer_artifact_contract,
+    infer_contract_from_candidates,
+    load_artifact_manifest,
+    producer_candidates_for_alias,
+    publish_artifact,
+    published_artifact_paths_for_task,
+    resolve_manifest_aliases,
+    save_artifact_manifest,
+)
 from .plan_models import PlanNode, PlanTree
 from .task_verification import TaskVerificationService, VerificationFinalization
 
@@ -454,12 +468,26 @@ When a task requires tool execution, request one of these tools:
             if isinstance(raw_paper_context_paths, list)
             else []
         )
+        artifact_contract = node_metadata.get("artifact_contract") if isinstance(node_metadata.get("artifact_contract"), dict) else {}
+        resolved_input_artifacts = (
+            (session_context or {}).get("resolved_input_artifacts")
+            if isinstance((session_context or {}).get("resolved_input_artifacts"), dict)
+            else {}
+        )
         if paper_mode:
             lines.append("\n=== PAPER MODE ===")
             if paper_section:
                 lines.append(f"- paper_section: {paper_section}")
             if paper_role:
                 lines.append(f"- paper_role: {paper_role}")
+            if isinstance(artifact_contract.get("requires"), list) and artifact_contract["requires"]:
+                lines.append(f"- artifact_requires: {artifact_contract['requires']}")
+            if isinstance(artifact_contract.get("publishes"), list) and artifact_contract["publishes"]:
+                lines.append(f"- artifact_publishes: {artifact_contract['publishes']}")
+            if resolved_input_artifacts:
+                lines.append("- resolved_input_artifacts:")
+                for alias, path in list(resolved_input_artifacts.items())[:10]:
+                    lines.append(f"  - {alias}: {path}")
             if paper_context_paths:
                 lines.append("- paper_context_paths:")
                 for path in paper_context_paths[:10]:
@@ -630,6 +658,7 @@ class PlanExecutor:
         cfg = config or ExecutionConfig.from_settings(self._settings)
         summary = ExecutionSummary(plan_id=plan_id)
         tree = self._repo.get_plan_tree(plan_id)
+        tree = self._infer_missing_dependencies(tree)
         order = list(self._execution_order(tree))
 
         if cfg.max_tasks is not None:
@@ -663,6 +692,7 @@ class PlanExecutor:
         # Track failed/skipped task ids for transitive dependency skip
         _failed_or_skipped: set = set()
         cfg.session_context["_artifact_registry"] = artifact_registry
+        cfg.session_context["_artifact_manifest"] = self._get_artifact_manifest(plan_id, cfg.session_context)
 
         # Layer 3: Recovery attempt tracker per task
         recovery_attempts: Dict[int, int] = {}
@@ -1100,6 +1130,50 @@ class PlanExecutor:
                 },
             )
 
+        if config.session_context is None:
+            config.session_context = {}
+        session_context = config.session_context if isinstance(config.session_context, dict) else {}
+        artifact_contract, resolved_input_artifacts, missing_aliases, producer_map = self._resolve_required_artifacts(
+            plan_id,
+            node,
+            dependencies=dependencies,
+            tree=tree,
+            session_context=session_context,
+        )
+        if isinstance(node.metadata, dict):
+            node.metadata.setdefault("artifact_contract", artifact_contract)
+            raw_paths = node.metadata.get("paper_context_paths")
+            merged_paths = [
+                str(item).strip()
+                for item in raw_paths
+                if isinstance(item, str) and str(item).strip()
+            ] if isinstance(raw_paths, list) else []
+            for path in resolved_input_artifacts.values():
+                if path not in merged_paths:
+                    merged_paths.append(path)
+            if merged_paths:
+                node.metadata["paper_context_paths"] = merged_paths[:40]
+        if session_context is not None:
+            session_context["resolved_input_artifacts"] = dict(resolved_input_artifacts)
+        if missing_aliases:
+            _log_job(
+                "warning",
+                f"Task {node.id} blocked: required artifacts not published",
+                {
+                    "task_id": node.id,
+                    "missing_artifact_aliases": missing_aliases,
+                    "producer_task_candidates": producer_map,
+                },
+            )
+            return self._block_for_missing_artifacts(
+                plan_id=plan_id,
+                node=node,
+                tree=tree,
+                missing_aliases=missing_aliases,
+                producer_candidates=producer_map,
+                resolved_input_artifacts=resolved_input_artifacts,
+            )
+
         outline = tree.to_outline(max_depth=4, max_nodes=80) if config.include_plan_outline else None
 
         if self._should_use_deep_think(config):
@@ -1191,6 +1265,20 @@ class PlanExecutor:
                     result_payload,
                     execution_status=task_status,
                 )
+                finalization.payload = self._enrich_finalized_payload_with_artifacts(
+                    plan_id=plan_id,
+                    node=node,
+                    payload=finalization.payload,
+                    final_status=finalization.final_status,
+                    session_context=config.session_context,
+                )
+                raw_response = json.dumps(finalization.payload, ensure_ascii=False)
+                self._persist_execution(
+                    plan_id,
+                    node.id,
+                    finalization.payload,
+                    status=finalization.final_status,
+                )
                 # Update in-memory tree so subsequent tasks see latest outputs.
                 node.execution_result = raw_response
                 node.status = finalization.final_status
@@ -1240,6 +1328,20 @@ class PlanExecutor:
             },
             execution_status="failed",
         )
+        finalization.payload = self._enrich_finalized_payload_with_artifacts(
+            plan_id=plan_id,
+            node=node,
+            payload=finalization.payload,
+            final_status=finalization.final_status,
+            session_context=config.session_context,
+        )
+        raw_response = json.dumps(finalization.payload, ensure_ascii=False)
+        self._persist_execution(
+            plan_id,
+            node.id,
+            finalization.payload,
+            status=finalization.final_status,
+        )
         node.execution_result = raw_response
         node.status = finalization.final_status
         tree.nodes[node.id] = node
@@ -1264,6 +1366,139 @@ class PlanExecutor:
             },
         )
         return result
+
+    def _infer_missing_dependencies(self, tree: PlanTree) -> PlanTree:
+        """Infer and persist missing dependency edges based on producer-consumer matching.
+
+        For each task that declares ``paper_context_paths``, check whether the
+        referenced file basename has a known producer (a task whose
+        ``acceptance_criteria`` declares that file via ``file_exists`` or
+        ``file_nonempty``).  If the producer is not already in the consumer's
+        ``dependencies``, add it via ``update_task``.
+
+        Returns the (possibly reloaded) tree.  On any error, returns the
+        original tree unchanged.
+        """
+        try:
+            # Step 1: Build producer_map {basename|artifact_alias → task_id}
+            producer_map: Dict[str, int] = {}
+            producer_all: Dict[str, List[int]] = {}  # for warning on conflicts
+            for node in tree.nodes.values():
+                metadata = node.metadata if isinstance(node.metadata, dict) else {}
+                contract = self._resolve_task_artifact_contract(node)
+                for alias in contract.get("publishes", []):
+                    producer_all.setdefault(alias, []).append(node.id)
+                    if alias not in producer_map or node.id > producer_map[alias]:
+                        producer_map[alias] = node.id
+                criteria = metadata.get("acceptance_criteria")
+                if not isinstance(criteria, dict):
+                    continue
+                checks = criteria.get("checks")
+                if not isinstance(checks, list):
+                    continue
+                for check in checks:
+                    if not isinstance(check, dict):
+                        continue
+                    check_type = str(check.get("type") or "").strip()
+                    if check_type not in ("file_exists", "file_nonempty"):
+                        continue
+                    raw_path = check.get("path")
+                    if not isinstance(raw_path, str) or not raw_path.strip():
+                        continue
+                    basename = os.path.basename(raw_path.strip())
+                    if not basename:
+                        continue
+                    producer_all.setdefault(basename, []).append(node.id)
+                    # Take task_id with the largest value (latest created)
+                    if basename not in producer_map or node.id > producer_map[basename]:
+                        producer_map[basename] = node.id
+
+            # Log warnings for multi-producer basenames / aliases
+            for basename, ids in producer_all.items():
+                if len(ids) > 1:
+                    chosen = producer_map[basename]
+                    logger.warning(
+                        "Multiple producers for '%s': tasks %s, using task %d",
+                        basename,
+                        sorted(ids),
+                        chosen,
+                    )
+
+            # Step 2: Find missing dependencies
+            pending_additions: Dict[int, List[int]] = {}  # consumer_id → [producer_ids]
+            for node in tree.nodes.values():
+                metadata = node.metadata if isinstance(node.metadata, dict) else {}
+                contract = self._resolve_task_artifact_contract(node)
+                for alias in contract.get("requires", []):
+                    producer_id = producer_map.get(alias)
+                    if producer_id is None or producer_id == node.id or producer_id in node.dependencies:
+                        continue
+                    pending_additions.setdefault(node.id, []).append(producer_id)
+                raw_paths = metadata.get("paper_context_paths")
+                if not isinstance(raw_paths, list):
+                    continue
+                for raw_path in raw_paths:
+                    if not isinstance(raw_path, str) or not raw_path.strip():
+                        continue
+                    basename = os.path.basename(raw_path.strip())
+                    producer_id = producer_map.get(basename)
+                    if producer_id is None:
+                        continue
+                    if producer_id == node.id:
+                        continue
+                    if producer_id in node.dependencies:
+                        continue
+                    pending_additions.setdefault(node.id, []).append(producer_id)
+
+            if not pending_additions:
+                return tree
+
+            # Step 3: Persist new dependencies
+            expected_edges: List[tuple] = []  # (consumer_id, producer_id, basename)
+            for consumer_id, additions in pending_additions.items():
+                node = tree.nodes[consumer_id]
+                new_deps = list(node.dependencies)
+                for dep_id in additions:
+                    if dep_id not in new_deps:
+                        new_deps.append(dep_id)
+                self._repo.update_task(tree.id, consumer_id, dependencies=new_deps)
+                for producer_id in additions:
+                    # Find the basename that triggered this edge
+                    metadata = node.metadata if isinstance(node.metadata, dict) else {}
+                    raw_paths = metadata.get("paper_context_paths") or []
+                    matched_basename = ""
+                    for rp in raw_paths:
+                        bn = os.path.basename(str(rp).strip())
+                        if producer_map.get(bn) == producer_id:
+                            matched_basename = bn
+                            break
+                    expected_edges.append((consumer_id, producer_id, matched_basename))
+
+            # Step 4: Verify persistence and log results
+            updated_tree = self._repo.get_plan_tree(tree.id)
+            any_accepted = False
+            for consumer_id, producer_id, basename in expected_edges:
+                updated_node = updated_tree.nodes.get(consumer_id)
+                if updated_node and producer_id in updated_node.dependencies:
+                    logger.info(
+                        "Inferred dependency: task %d -> task %d (via %s)",
+                        consumer_id,
+                        producer_id,
+                        basename,
+                    )
+                    any_accepted = True
+                else:
+                    logger.warning(
+                        "Dependency task %d -> task %d rejected (likely cycle), skipping",
+                        consumer_id,
+                        producer_id,
+                    )
+
+            return updated_tree if any_accepted else tree
+
+        except Exception as exc:
+            logger.warning("Failed to infer missing dependencies: %s", exc)
+            return tree
 
     def _preselect_skills_for_plan(
         self,
@@ -1329,6 +1564,7 @@ class PlanExecutor:
         dependencies: List[PlanNode],
         paper_context_paths: Sequence[str],
         artifact_registry: Optional[Dict[int, List[str]]] = None,
+        artifact_manifest: Optional[Dict[str, Any]] = None,
     ) -> List[str]:
         seen: set[str] = set()
         ordered: List[str] = []
@@ -1338,7 +1574,11 @@ class PlanExecutor:
                 seen.add(text)
                 ordered.append(text)
         for dep in dependencies:
-            artifact_context = self._dependency_artifact_context(dep, artifact_registry)
+            artifact_context = self._dependency_artifact_context(
+                dep,
+                artifact_registry,
+                artifact_manifest=artifact_manifest,
+            )
             artifact_paths = artifact_context.get("artifact_paths") or []
             if not isinstance(artifact_paths, list):
                 continue
@@ -1348,6 +1588,93 @@ class PlanExecutor:
                     seen.add(text)
                     ordered.append(text)
         return ordered
+
+    @staticmethod
+    def _resolve_context_paths_from_deps(
+        context_paths: List[str],
+        dep_artifacts: List[Tuple[int, List[str]]],
+    ) -> List[str]:
+        """Resolve relative filenames in *context_paths* against dependency artifacts.
+
+        For each relative path, search *dep_artifacts* for a basename match.
+
+        Conflict resolution:
+          - **Cross-dependency**: if multiple deps have the same basename, pick
+            the artifact from the dep with the largest ``dep_id``.
+          - **Same-dependency**: if one dep exposes multiple artifacts with the
+            same basename, pick by path priority: paths containing
+            ``deliverable/`` win over ``results/``, which win over anything
+            else (fallback: last match in the list).
+
+        Absolute paths are kept as-is.  Unmatched relative paths are preserved.
+        """
+        _PRIORITY_SEGMENTS = ("deliverable", "results")
+
+        def _path_priority(p: str) -> int:
+            lowered = p.lower()
+            for idx, segment in enumerate(_PRIORITY_SEGMENTS):
+                if f"/{segment}/" in lowered or lowered.startswith(f"{segment}/"):
+                    return idx
+            return len(_PRIORITY_SEGMENTS)
+
+        resolved: List[str] = []
+        for raw_path in context_paths:
+            text = raw_path.strip()
+            if not text:
+                resolved.append(raw_path)
+                continue
+            # Absolute paths: keep as-is
+            if text.startswith("/"):
+                resolved.append(text)
+                continue
+
+            target_basename = os.path.basename(text)
+            if not target_basename:
+                resolved.append(text)
+                continue
+
+            # Collect all matches: list of (dep_id, artifact_path)
+            matches: List[Tuple[int, str]] = []
+            for dep_id, artifact_paths in dep_artifacts:
+                for ap in artifact_paths:
+                    if os.path.basename(ap) == target_basename:
+                        matches.append((dep_id, ap))
+
+            if not matches:
+                resolved.append(text)
+                continue
+
+            if len(matches) == 1:
+                resolved.append(matches[0][1])
+                continue
+
+            # Multiple matches — group by dep_id, pick max dep_id
+            max_dep_id = max(dep_id for dep_id, _ in matches)
+            same_dep_matches = [ap for dep_id, ap in matches if dep_id == max_dep_id]
+
+            # Cross-dependency conflict: warn
+            dep_ids_with_match = sorted(set(dep_id for dep_id, _ in matches))
+            if len(dep_ids_with_match) > 1:
+                logger.warning(
+                    "Multiple dependencies have artifact '%s': deps %s, using dep %d",
+                    target_basename,
+                    dep_ids_with_match,
+                    max_dep_id,
+                )
+
+            if len(same_dep_matches) == 1:
+                resolved.append(same_dep_matches[0])
+                continue
+
+            # Same-dependency internal conflict: pick by path priority.
+            # Among candidates with the same priority, take the last one in the
+            # artifact list (later entries are typically more final).
+            best_priority = min(_path_priority(p) for p in same_dep_matches)
+            candidates_at_best = [p for p in same_dep_matches if _path_priority(p) == best_priority]
+            best = candidates_at_best[-1]
+            resolved.append(best)
+
+        return resolved
 
     def _derive_skill_tool_hints(
         self,
@@ -1474,8 +1801,13 @@ class PlanExecutor:
                 if isinstance(item, str) and item.strip():
                     paper_context_paths.append(item.strip())
         _artifact_registry = session_context.get("_artifact_registry")
+        _artifact_manifest = self._get_artifact_manifest(plan_id, session_context)
         for dep in dependencies:
-            artifact_context = self._dependency_artifact_context(dep, _artifact_registry)
+            artifact_context = self._dependency_artifact_context(
+                dep,
+                _artifact_registry,
+                artifact_manifest=_artifact_manifest,
+            )
             artifact_paths = artifact_context.get("artifact_paths") or []
             if isinstance(artifact_paths, list):
                 for artifact_path in artifact_paths:
@@ -1495,10 +1827,21 @@ class PlanExecutor:
                     "published_modules": artifact_context.get("published_modules"),
                 }
             )
+        # Resolve relative paper_context_paths against dependency artifacts
+        dep_artifacts_for_resolve: List[Tuple[int, List[str]]] = [
+            (dep_out["id"], dep_out["artifact_paths"])
+            for dep_out in dep_outputs
+            if isinstance(dep_out.get("artifact_paths"), list)
+        ]
+        if dep_artifacts_for_resolve and paper_context_paths:
+            paper_context_paths = self._resolve_context_paths_from_deps(
+                paper_context_paths, dep_artifacts_for_resolve
+            )
         dependency_paths = self._collect_dependency_paths(
             dependencies,
             paper_context_paths,
             artifact_registry=_artifact_registry,
+            artifact_manifest=_artifact_manifest,
         )
 
         if paper_mode:
@@ -1514,6 +1857,7 @@ class PlanExecutor:
             constraints.extend(
                 [
                     "Paper mode is enabled: prioritize dependency artifact_paths and paper_context_paths as primary evidence.",
+                    "When resolved_input_artifacts or absolute paper_context_paths are provided, treat them as the canonical source of truth instead of guessing filenames.",
                     "Do not claim completion without explicit citation integrity checks against provided reference files.",
                     "CRITICAL TOOL SELECTION: For writing ANY paper content (sections, drafts, revisions, full assembly), you MUST use manuscript_writer. Do NOT use code_executor to write paper text. code_executor may only be used for data analysis, code generation, or non-writing tasks.",
                 ]
@@ -1675,6 +2019,7 @@ class PlanExecutor:
                     task_instruction=node.instruction,
                     session_id=session_context.get("session_id"),
                     current_job_id=self._current_job_id(),
+                    work_dir=os.getcwd(),
                     channel="plan_executor",
                     mode="task_execution",
                 ),
@@ -1781,6 +2126,20 @@ class PlanExecutor:
                 payload,
                 execution_status="completed",
             )
+            finalization.payload = self._enrich_finalized_payload_with_artifacts(
+                plan_id=plan_id,
+                node=node,
+                payload=finalization.payload,
+                final_status=finalization.final_status,
+                session_context=config.session_context,
+            )
+            raw_response = json.dumps(finalization.payload, ensure_ascii=False)
+            self._persist_execution(
+                plan_id,
+                node.id,
+                finalization.payload,
+                status=finalization.final_status,
+            )
             node.execution_result = raw_response
             node.status = finalization.final_status
             tree.nodes[node.id] = node
@@ -1809,6 +2168,20 @@ class PlanExecutor:
                 node,
                 failure_payload,
                 execution_status="failed",
+            )
+            finalization.payload = self._enrich_finalized_payload_with_artifacts(
+                plan_id=plan_id,
+                node=node,
+                payload=finalization.payload,
+                final_status=finalization.final_status,
+                session_context=config.session_context,
+            )
+            raw_response = json.dumps(finalization.payload, ensure_ascii=False)
+            self._persist_execution(
+                plan_id,
+                node.id,
+                finalization.payload,
+                status=finalization.final_status,
             )
             node.execution_result = raw_response
             node.status = finalization.final_status
@@ -1992,6 +2365,302 @@ class PlanExecutor:
                 deps.append(dep)
         return deps
 
+    def _get_artifact_manifest(
+        self,
+        plan_id: int,
+        session_context: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        manifest = None
+        if isinstance(session_context, dict):
+            manifest = session_context.get("_artifact_manifest")
+        if isinstance(manifest, dict) and int(manifest.get("plan_id") or plan_id) == plan_id:
+            manifest.setdefault("artifacts", {})
+            return manifest
+        manifest = load_artifact_manifest(plan_id)
+        if isinstance(session_context, dict):
+            session_context["_artifact_manifest"] = manifest
+        return manifest
+
+    def _save_artifact_manifest(
+        self,
+        plan_id: int,
+        manifest: Dict[str, Any],
+        session_context: Optional[Dict[str, Any]],
+    ) -> None:
+        save_artifact_manifest(plan_id, manifest)
+        if isinstance(session_context, dict):
+            session_context["_artifact_manifest"] = manifest
+
+    def _resolve_task_artifact_contract(self, node: PlanNode) -> Dict[str, List[str]]:
+        metadata = node.metadata if isinstance(node.metadata, dict) else {}
+        return infer_artifact_contract(
+            task_name=node.display_name(),
+            instruction=node.instruction or "",
+            metadata=metadata,
+        )
+
+    def _task_can_publish_artifacts(self, node: PlanNode) -> bool:
+        raw_status = str(getattr(node, "status", "") or "").strip().lower()
+        if raw_status in {"done", "success"}:
+            raw_status = "completed"
+        if raw_status != "completed":
+            return False
+
+        payload: Any = getattr(node, "execution_result", None)
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except Exception:
+                payload = {"content": payload}
+
+        payload_status = ""
+        metadata: Dict[str, Any] = {}
+        if isinstance(payload, dict):
+            payload_status = str(payload.get("status", "") or "").strip().lower()
+            if payload_status in {"done", "success"}:
+                payload_status = "completed"
+            metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+
+        if payload_status and payload_status != "completed":
+            return False
+        if bool(metadata.get("blocked_by_dependencies")):
+            return False
+        return True
+
+    def _extract_candidate_artifact_paths(self, node: PlanNode) -> List[str]:
+        payload: Any = node.execution_result
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except Exception:
+                payload = {"content": payload}
+        candidates = self._extract_path_like_values(payload)
+        if isinstance(payload, dict):
+            metadata = payload.get("metadata")
+            if isinstance(metadata, dict):
+                published = metadata.get("published_artifacts")
+                if isinstance(published, dict):
+                    for entry in published.values():
+                        if not isinstance(entry, dict):
+                            continue
+                        for key in ("path", "source_path"):
+                            value = str(entry.get(key) or "").strip()
+                            if value and value not in candidates:
+                                candidates.append(value)
+        return candidates[:80]
+
+    def _backfill_task_artifacts(
+        self,
+        plan_id: int,
+        node: PlanNode,
+        manifest: Dict[str, Any],
+        session_context: Optional[Dict[str, Any]],
+    ) -> Dict[str, Dict[str, Any]]:
+        if node.id <= 0:
+            return {}
+        contract = self._resolve_task_artifact_contract(node)
+        candidate_paths = self._extract_candidate_artifact_paths(node)
+        contract = infer_contract_from_candidates(
+            task_name=node.display_name(),
+            instruction=node.instruction or "",
+            candidate_paths=candidate_paths,
+            current_contract=contract,
+        )
+
+        published: Dict[str, Dict[str, Any]] = {}
+        manifest_changed = False
+        artifact_registry = None
+        if isinstance(session_context, dict):
+            artifact_registry = session_context.get("_artifact_registry")
+
+        for alias in contract.get("publishes", []):
+            existing_entry = manifest.get("artifacts", {}).get(alias) if isinstance(manifest.get("artifacts"), dict) else None
+            source = find_candidate_source_for_alias(alias=alias, candidate_paths=candidate_paths)
+            if source is None:
+                runtime_candidates = find_runtime_candidates(plan_id, node.id, alias)
+                for runtime_path in runtime_candidates:
+                    if runtime_path not in candidate_paths:
+                        candidate_paths.append(runtime_path)
+                source = find_candidate_source_for_alias(alias=alias, candidate_paths=candidate_paths)
+            if source is None and isinstance(existing_entry, dict):
+                existing = resolve_manifest_aliases(manifest, [alias]).get(alias)
+                if existing:
+                    published[alias] = dict(existing_entry)
+                    continue
+            if source is None:
+                continue
+            entry = publish_artifact(
+                plan_id=plan_id,
+                alias=alias,
+                source_path=source,
+                producer_task_id=node.id,
+                manifest=manifest,
+            )
+            if entry is None:
+                continue
+            manifest_changed = True
+            published[alias] = entry
+            if isinstance(artifact_registry, dict):
+                existing_paths = artifact_registry.setdefault(node.id, [])
+                if entry["path"] not in existing_paths:
+                    existing_paths.append(entry["path"])
+
+        if manifest_changed:
+            self._save_artifact_manifest(plan_id, manifest, session_context)
+        return published
+
+    def _resolve_required_artifacts(
+        self,
+        plan_id: int,
+        node: PlanNode,
+        *,
+        dependencies: List[PlanNode],
+        tree: PlanTree,
+        session_context: Optional[Dict[str, Any]],
+    ) -> Tuple[Dict[str, List[str]], Dict[str, str], List[str], Dict[str, List[int]]]:
+        contract = self._resolve_task_artifact_contract(node)
+        required_aliases = list(contract.get("requires") or [])
+        if not required_aliases:
+            return contract, {}, [], {}
+
+        manifest = self._get_artifact_manifest(plan_id, session_context)
+        for dep in dependencies:
+            if self._task_can_publish_artifacts(dep):
+                self._backfill_task_artifacts(plan_id, dep, manifest, session_context)
+
+        resolved = resolve_manifest_aliases(manifest, required_aliases)
+        missing = [alias for alias in required_aliases if alias not in resolved]
+        if not missing:
+            return contract, resolved, [], {}
+
+        producer_map: Dict[str, List[int]] = {}
+        all_nodes = list(tree.nodes.values())
+        for alias in missing:
+            producer_map[alias] = producer_candidates_for_alias(alias, all_nodes)
+            for producer_id in producer_map[alias]:
+                producer = tree.nodes.get(producer_id)
+                if producer is None or not self._task_can_publish_artifacts(producer):
+                    continue
+                self._backfill_task_artifacts(plan_id, producer, manifest, session_context)
+            refreshed = resolve_manifest_aliases(manifest, [alias]).get(alias)
+            if refreshed:
+                resolved[alias] = refreshed
+
+        final_missing = [alias for alias in required_aliases if alias not in resolved]
+        return contract, resolved, final_missing, producer_map
+
+    def _block_for_missing_artifacts(
+        self,
+        *,
+        plan_id: int,
+        node: PlanNode,
+        tree: PlanTree,
+        missing_aliases: List[str],
+        producer_candidates: Dict[str, List[int]],
+        resolved_input_artifacts: Dict[str, str],
+    ) -> ExecutionResult:
+        blocking_ids: List[int] = []
+        for alias in missing_aliases:
+            blocking_ids.extend(producer_candidates.get(alias) or [])
+        unique_blocking_ids = sorted({task_id for task_id in blocking_ids if task_id != node.id})
+        dependency_info = []
+        for task_id in unique_blocking_ids:
+            dep = tree.nodes.get(task_id)
+            if dep is None:
+                continue
+            dependency_info.append(
+                {"id": dep.id, "name": dep.display_name(), "status": dep.status}
+            )
+        reason = (
+            f"Blocked by dependencies: task #{node.id} is missing required published artifacts "
+            f"{missing_aliases}. Resolve upstream producer task(s) first."
+        )
+        notes = [
+            "This task was not executed because required input artifacts are missing.",
+            f"Missing artifact aliases: {', '.join(missing_aliases)}",
+        ]
+        metadata = {
+            "blocked_by_dependencies": True,
+            "missing_artifact_aliases": list(missing_aliases),
+            "producer_task_candidates": producer_candidates,
+            "resolved_input_artifacts": dict(resolved_input_artifacts),
+            "incomplete_dependencies": unique_blocking_ids,
+            "incomplete_dependency_info": dependency_info,
+        }
+        payload = {
+            "status": "skipped",
+            "content": reason,
+            "notes": notes,
+            "metadata": metadata,
+        }
+        finalization = self._task_verifier.finalize_payload(
+            node,
+            payload,
+            execution_status="skipped",
+        )
+        raw_response = json.dumps(finalization.payload, ensure_ascii=False)
+        self._persist_execution(
+            plan_id,
+            node.id,
+            finalization.payload,
+            status=finalization.final_status,
+        )
+        node.status = finalization.final_status
+        node.execution_result = raw_response
+        tree.nodes[node.id] = node
+        return ExecutionResult(
+            plan_id=plan_id,
+            task_id=node.id,
+            status=finalization.final_status,
+            content=reason,
+            notes=notes,
+            metadata=finalization.payload.get("metadata") or {},
+            raw_response=raw_response,
+        )
+
+    def _enrich_finalized_payload_with_artifacts(
+        self,
+        *,
+        plan_id: int,
+        node: PlanNode,
+        payload: Dict[str, Any],
+        final_status: str,
+        session_context: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        metadata = payload.setdefault("metadata", {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+            payload["metadata"] = metadata
+
+        resolved_inputs = {}
+        if isinstance(session_context, dict):
+            maybe_resolved = session_context.get("resolved_input_artifacts")
+            if isinstance(maybe_resolved, dict):
+                resolved_inputs = {
+                    str(alias): str(path)
+                    for alias, path in maybe_resolved.items()
+                    if str(alias).strip() and str(path).strip()
+                }
+        if resolved_inputs:
+            metadata["resolved_input_artifacts"] = resolved_inputs
+
+        if final_status != "completed":
+            return payload
+
+        manifest = self._get_artifact_manifest(plan_id, session_context)
+        payload_for_scan = json.loads(json.dumps(payload, ensure_ascii=False))
+        temp_node = node.model_copy(
+            update={
+                "execution_result": json.dumps(payload_for_scan, ensure_ascii=False),
+            }
+        )
+        published = self._backfill_task_artifacts(plan_id, temp_node, manifest, session_context)
+        if published:
+            metadata["published_artifacts"] = published
+            metadata["artifact_manifest_path"] = str(artifact_manifest_path(plan_id))
+            self._save_artifact_manifest(plan_id, manifest, session_context)
+        return payload
+
     @staticmethod
     def _is_internal_artifact_path(value: str) -> bool:
         normalized = "/" + str(value or "").strip().replace("\\", "/").lstrip("/")
@@ -2146,12 +2815,24 @@ class PlanExecutor:
         self,
         dep: PlanNode,
         artifact_registry: Optional[Dict[int, List[str]]] = None,
+        artifact_manifest: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         # --- Priority 1: artifact_registry (accumulated across tasks) ---
         registry_paths = (artifact_registry or {}).get(dep.id)
+        manifest_paths = published_artifact_paths_for_task(artifact_manifest or {}, dep.id)
         if isinstance(registry_paths, list) and registry_paths:
+            combined_paths: List[str] = []
+            for candidate in list(registry_paths) + list(manifest_paths):
+                if isinstance(candidate, str) and candidate and candidate not in combined_paths:
+                    combined_paths.append(candidate)
             return {
-                "artifact_paths": registry_paths[:40],
+                "artifact_paths": combined_paths[:40],
+                "deliverable_manifest": None,
+                "published_modules": [],
+            }
+        if manifest_paths:
+            return {
+                "artifact_paths": manifest_paths[:40],
                 "deliverable_manifest": None,
                 "published_modules": [],
             }
@@ -2291,6 +2972,7 @@ class PlanExecutor:
                     task_instruction=node.instruction,
                     session_id=session_id,
                     current_job_id=self._current_job_id(),
+                    work_dir=os.getcwd(),
                     channel="plan_executor",
                     mode="task_execution",
                 ),

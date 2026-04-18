@@ -190,3 +190,10 @@ class PlanDecomposerLLMService:
         except ValidationError:
             logger.error("Failed to parse decomposition response: %s", cleaned)
             raise
+
+    def decide_search(self, prompt: str) -> str:
+        """Ask the LLM whether plan generation needs external material collection."""
+        return self._llm.chat(
+            prompt,
+            model=self._settings.model,
+        )

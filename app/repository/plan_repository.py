@@ -197,6 +197,104 @@ class PlanRepository:
         return node
 
     _CASCADE_COMPLETION_MARKER = "completed as part of parent task"
+    _AUTO_COMPLETION_CONTENT = (
+        "Automatically marked completed because all direct child tasks reached "
+        "completion-like terminal states."
+    )
+
+    @staticmethod
+    def _normalize_persisted_status(value: Any) -> str:
+        return str(value or "pending").strip().lower() or "pending"
+
+    def _build_autocomplete_execution_result(self, *, source_task_id: int) -> str:
+        payload = {
+            "status": "completed",
+            "content": self._AUTO_COMPLETION_CONTENT,
+            "notes": [f"Auto-completed from child task #{source_task_id}."],
+            "metadata": {
+                "auto_completed_from_children": True,
+                "source_task_id": source_task_id,
+            },
+        }
+        return json.dumps(payload, ensure_ascii=False)
+
+    def _infer_status_from_execution_result(self, execution_result: Any) -> Optional[str]:
+        payload: Any = execution_result
+        raw_text = ""
+
+        if isinstance(execution_result, (bytes, bytearray)):
+            try:
+                raw_text = execution_result.decode("utf-8")
+            except Exception:
+                raw_text = str(execution_result)
+            payload = raw_text
+        elif isinstance(execution_result, str):
+            raw_text = execution_result
+
+        if isinstance(payload, str):
+            stripped = payload.strip()
+            if not stripped:
+                return None
+            if self._CASCADE_COMPLETION_MARKER in stripped.lower():
+                return "completed"
+            try:
+                payload = json.loads(stripped)
+            except Exception:
+                return None
+
+        if not isinstance(payload, dict):
+            return None
+
+        raw_status = self._normalize_persisted_status(payload.get("status"))
+        if raw_status in {"completed", "done", "success"}:
+            return "completed"
+        if raw_status in {"failed", "error"}:
+            return "failed"
+        if raw_status == "skipped":
+            return "skipped"
+        return None
+
+    def _reconcile_task_statuses_from_execution_results(self, conn, plan_id: int) -> int:
+        self._ensure_task_columns(conn, plan_id)
+        rows = conn.execute(
+            """
+            SELECT id, status, execution_result
+            FROM tasks
+            WHERE execution_result IS NOT NULL
+              AND TRIM(execution_result) != ''
+            """
+        ).fetchall()
+
+        # Statuses that indicate the task is actively being worked on.
+        # Their old execution_result is stale and must not override the
+        # current status.
+        _ACTIVE_STATUSES = {"running", "queued"}
+
+        updates: List[Tuple[str, int]] = []
+        for row in rows:
+            current = self._normalize_persisted_status(row["status"])
+            if current in _ACTIVE_STATUSES:
+                continue
+            inferred = self._infer_status_from_execution_result(row["execution_result"])
+            if inferred is None:
+                continue
+            if inferred == current:
+                continue
+            updates.append((inferred, int(row["id"])))
+
+        if not updates:
+            return 0
+
+        conn.executemany(
+            "UPDATE tasks SET status=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+            updates,
+        )
+        logger.info(
+            "Reconciled %s stale task statuses from execution_result for plan %s",
+            len(updates),
+            plan_id,
+        )
+        return len(updates)
 
     def _maybe_autocomplete_ancestors(self, conn, task_id: int) -> int:
         """Mark ancestor nodes as completed if all their direct children are completed/skipped.
@@ -277,15 +375,14 @@ class PlanRepository:
             if not parent_row:
                 break
 
-            current_status = (
-                str(parent_row["status"]).strip().lower()
-                if parent_row["status"] is not None
-                else "pending"
-            )
+            current_status = self._normalize_persisted_status(parent_row["status"])
             if current_status != "completed":
+                completion_result = self._build_autocomplete_execution_result(
+                    source_task_id=task_id,
+                )
                 conn.execute(
-                    "UPDATE tasks SET status='completed', updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                    (parent_id,),
+                    "UPDATE tasks SET status='completed', execution_result=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                    (completion_result, parent_id),
                 )
                 updated += 1
 
@@ -688,38 +785,16 @@ class PlanRepository:
     def get_node(self, plan_id: int, task_id: int) -> PlanNode:
         with plan_db_connection(get_plan_db_path(plan_id)) as conn:
             self._ensure_task_columns(conn, plan_id)
-            row = conn.execute(
-                """
-                SELECT
-                    id,
-                    name,
-                    status,
-                    instruction,
-                    parent_id,
-                    position,
-                    depth,
-                    path,
-                    metadata,
-                    execution_result,
-                    context_combined,
-                    context_sections,
-                    context_meta,
-                    context_updated_at
-                FROM tasks
-                WHERE id=?
-                """,
-                (task_id,),
-            ).fetchone()
-            if not row:
-                raise ValueError(f"Task {task_id} not found in plan {plan_id}")
-            dependencies = self._load_dependencies_for_task(conn, task_id)
-            return _row_to_plan_node(plan_id, row, dependencies)
+            self._reconcile_task_statuses_from_execution_results(conn, plan_id)
+            return self._get_node_from_conn(conn, plan_id, task_id)
 
     def subgraph(
         self, plan_id: int, node_id: int, max_depth: int = 2
     ) -> List[PlanNode]:
         plan_path = get_plan_db_path(plan_id)
         with plan_db_connection(plan_path) as conn:
+            self._ensure_task_columns(conn, plan_id)
+            self._reconcile_task_statuses_from_execution_results(conn, plan_id)
             node = conn.execute(
                 "SELECT id, path, depth FROM tasks WHERE id=?",
                 (node_id,),
@@ -728,7 +803,6 @@ class PlanRepository:
                 raise ValueError(f"Task {node_id} not found in plan {plan_id}")
             path = node["path"] or f"/{node_id}"
             base_depth = node["depth"] or 0
-            self._ensure_task_columns(conn, plan_id)
             rows = conn.execute(
                 """
                 SELECT
@@ -781,6 +855,7 @@ class PlanRepository:
             raise ValueError(f"Plan storage not found for plan {plan_id}")
         with plan_db_connection(plan_path) as conn:
             self._ensure_task_columns(conn, plan_id)
+            self._reconcile_task_statuses_from_execution_results(conn, plan_id)
             task_rows = conn.execute(
                 """
                 SELECT

@@ -46,6 +46,7 @@ export const STATUS_COLORS = {
   pending: '#d97706',
   failed: '#dc2626',
   error: '#dc2626',
+  blocked: '#ea580c',
   default: '#71717a',
 };
 
@@ -303,6 +304,8 @@ export function getStatusName(status?: string): string {
   case 'failed':
   case 'error':
   return 'failed';
+  case 'blocked':
+  return 'blocked';
   default:
   return '';
   }

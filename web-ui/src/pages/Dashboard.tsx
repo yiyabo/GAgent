@@ -59,7 +59,7 @@ const Dashboard: React.FC = () => {
         pending: planTasks.filter((task) => task.status === 'pending').length,
         running: planTasks.filter((task) => task.status === 'running').length,
         completed: planTasks.filter((task) => task.status === 'completed').length,
-        failed: planTasks.filter((task) => task.status === 'failed').length,
+        failed: planTasks.filter((task) => task.status === 'failed' || task.status === 'blocked').length,
       }
     : getTaskStats();
   const stats = processStats(statsSource);
