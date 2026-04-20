@@ -7,6 +7,8 @@ from types import SimpleNamespace
 from starlette.requests import Request
 
 from app.routers import plan_routes
+from app.services.plans.artifact_contracts import canonical_artifact_path, save_artifact_manifest
+from app.services.plans.artifact_preflight import ArtifactPreflightIssue, ArtifactPreflightResult
 from app.services.plans.plan_models import PlanNode, PlanTree
 from app.services.request_principal import RequestPrincipal
 
@@ -167,11 +169,138 @@ def test_execute_full_plan_async_persists_overall_progress_counts(
     assert thread_calls[0]["kwargs"]["initial_completed_steps"] == 1
 
 
+def test_execute_full_plan_returns_preflight_failure(monkeypatch) -> None:
+    tree = _tree()
+
+    monkeypatch.setattr(
+        plan_routes,
+        "_load_authorized_plan_tree",
+        lambda _plan_id, _request: tree,
+    )
+    monkeypatch.setattr(
+        plan_routes._artifact_preflight_service,
+        "validate_plan",
+        lambda *_args, **_kwargs: ArtifactPreflightResult(
+            plan_id=7,
+            ok=False,
+            errors=[
+                ArtifactPreflightIssue(
+                    code="missing_producer",
+                    severity="error",
+                    task_id=2,
+                    message="Task #2 requires missing artifact alias 'ai_dl.references_bib'.",
+                )
+            ],
+        ),
+    )
+
+    response = plan_routes.execute_full_plan(
+        7,
+        _build_request("alice"),
+        plan_routes.ExecuteFullPlanRequest(async_mode=True),
+    )
+
+    assert response.success is False
+    assert "Artifact preflight failed" in response.message
+    assert response.result["preflight"]["errors"][0]["code"] == "missing_producer"
+
+
+def test_execute_task_with_dependencies_allows_external_canonical_producer(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    alias = "general.evidence_md"
+    canonical = canonical_artifact_path(7, alias)
+    assert canonical is not None
+    canonical.parent.mkdir(parents=True, exist_ok=True)
+    canonical.write_text("evidence", encoding="utf-8")
+    save_artifact_manifest(
+        7,
+        {
+            "plan_id": 7,
+            "artifacts": {
+                alias: {
+                    "alias": alias,
+                    "path": str(canonical.resolve()),
+                    "producer_task_id": 1,
+                    "source_path": str(canonical.resolve()),
+                }
+            },
+        },
+    )
+    tree = PlanTree(
+        id=7,
+        title="Plan 7",
+        nodes={
+            1: PlanNode(
+                id=1,
+                plan_id=7,
+                name="Prepare evidence",
+                status="completed",
+                metadata={"artifact_contract": {"publishes": [alias]}},
+                execution_result=json.dumps({"status": "completed", "content": "ok"}),
+            ),
+            2: PlanNode(
+                id=2,
+                plan_id=7,
+                name="Consume evidence",
+                status="pending",
+                metadata={"artifact_contract": {"requires": [alias]}},
+            ),
+        },
+    )
+    tree.rebuild_adjacency()
+
+    monkeypatch.setattr(
+        plan_routes,
+        "_load_authorized_plan_tree",
+        lambda _plan_id, _request: tree,
+    )
+    monkeypatch.setattr(
+        plan_routes,
+        "_build_plan_execution_snapshot",
+        lambda _plan_id: {"active_task_ids": set(), "active_jobs": []},
+    )
+    monkeypatch.setattr(
+        plan_routes._plan_executor,
+        "execute_task",
+        lambda _plan_id, task_id, **_kwargs: SimpleNamespace(
+            status="completed",
+            duration_sec=0.1,
+            content=f"task {task_id} ok",
+        ),
+    )
+
+    response = plan_routes.execute_task_with_dependencies(
+        2,
+        plan_id=7,
+        raw_request=_build_request("alice"),
+        request=plan_routes.ExecuteTaskRequest(
+            async_mode=False,
+            include_dependencies=False,
+            include_subtasks=False,
+        ),
+    )
+
+    assert response.success is True
+    assert response.result["executed_task_ids"] == [2]
+
+
 def test_run_full_plan_job_continues_after_exception_when_stop_on_failure_disabled(
     monkeypatch,
 ) -> None:
     store = _JobStoreStub()
     execution_order: list[int] = []
+    tree = PlanTree(
+        id=7,
+        title="Plan 7",
+        nodes={
+            1: PlanNode(id=1, plan_id=7, name="Step 1", status="pending"),
+            2: PlanNode(id=2, plan_id=7, name="Step 2", status="pending"),
+        },
+    )
+    tree.rebuild_adjacency()
 
     def _execute_task(_plan_id: int, task_id: int, **_kwargs):
         execution_order.append(task_id)
@@ -182,6 +311,14 @@ def test_run_full_plan_job_continues_after_exception_when_stop_on_failure_disabl
     monkeypatch.setattr(plan_routes, "plan_decomposition_jobs", store)
     monkeypatch.setattr(plan_routes, "log_job_event", lambda *args, **kwargs: None)
     monkeypatch.setattr(plan_routes._plan_executor, "execute_task", _execute_task)
+    monkeypatch.setattr(plan_routes._plan_repo, "get_plan_tree", lambda _plan_id: tree)
+    monkeypatch.setattr(
+        plan_routes,
+        "_resolve_effective_task_states",
+        lambda _plan_id, _tree, **kwargs: {
+            tid: {"effective_status": "pending"} for tid in tree.nodes
+        },
+    )
 
     plan_routes._run_full_plan_job(
         job_id="job-1",
@@ -362,7 +499,14 @@ def test_run_full_plan_job_reruns_stale_running_tasks_without_active_job(
     monkeypatch.setattr(
         plan_routes,
         "_build_plan_execution_snapshot",
-        lambda _plan_id: {"active_task_ids": set(), "active_jobs": []},
+        lambda _plan_id, **kwargs: {"active_task_ids": set(), "active_jobs": []},
+    )
+    monkeypatch.setattr(
+        plan_routes,
+        "_resolve_effective_task_states",
+        lambda _plan_id, _tree, **kwargs: {
+            tid: {"effective_status": "pending"} for tid in tree.nodes
+        },
     )
 
     plan_routes._run_full_plan_job(
@@ -431,6 +575,15 @@ def test_run_full_plan_job_reports_overall_progress_with_completed_baseline(
     monkeypatch,
 ) -> None:
     store = _JobStoreStub()
+    tree = PlanTree(
+        id=7,
+        title="Plan 7",
+        nodes={
+            1: PlanNode(id=1, plan_id=7, name="Step 1", status="pending"),
+            2: PlanNode(id=2, plan_id=7, name="Step 2", status="pending"),
+        },
+    )
+    tree.rebuild_adjacency()
 
     def _execute_task(_plan_id: int, _task_id: int, **_kwargs):
         return SimpleNamespace(status="completed", duration_sec=0.1, content="ok")
@@ -438,6 +591,14 @@ def test_run_full_plan_job_reports_overall_progress_with_completed_baseline(
     monkeypatch.setattr(plan_routes, "plan_decomposition_jobs", store)
     monkeypatch.setattr(plan_routes, "log_job_event", lambda *args, **kwargs: None)
     monkeypatch.setattr(plan_routes._plan_executor, "execute_task", _execute_task)
+    monkeypatch.setattr(plan_routes._plan_repo, "get_plan_tree", lambda _plan_id: tree)
+    monkeypatch.setattr(
+        plan_routes,
+        "_resolve_effective_task_states",
+        lambda _plan_id, _tree, **kwargs: {
+            tid: {"effective_status": "pending"} for tid in tree.nodes
+        },
+    )
 
     plan_routes._run_full_plan_job(
         job_id="job-4",
@@ -599,6 +760,102 @@ def test_get_plan_tree_keeps_alias_blocked_tasks_blocked_without_known_producer(
     assert "ai_dl.evidence_md" in payload["nodes"]["1"]["status_reason"]
 
 
+def test_get_plan_tree_marks_false_completed_producer_failed_when_canonical_publish_missing(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    # Create a manifest with at least one entry so artifact tracking is
+    # considered active.  Without any manifest the resolver gracefully skips
+    # publish-contract checks (plans executed via DeepThink may never
+    # initialise a manifest).
+    save_artifact_manifest(7, {
+        "plan_id": 7,
+        "artifacts": {
+            "other.placeholder": {
+                "alias": "other.placeholder",
+                "path": "/tmp/placeholder",
+                "producer_task_id": 999,
+            }
+        },
+    })
+    tree = PlanTree(
+        id=7,
+        title="Plan 7",
+        nodes={
+            1: PlanNode(
+                id=1,
+                plan_id=7,
+                name="Step 1",
+                status="completed",
+                metadata={"artifact_contract": {"publishes": ["general.evidence_md"]}},
+                execution_result=json.dumps({"status": "completed", "content": "ok"}),
+            ),
+        },
+    )
+    tree.rebuild_adjacency()
+
+    monkeypatch.setattr(
+        plan_routes,
+        "_load_authorized_plan_tree",
+        lambda _plan_id, _request: tree,
+    )
+    monkeypatch.setattr(
+        plan_routes,
+        "_build_plan_execution_snapshot",
+        lambda _plan_id: {"active_task_ids": set(), "active_jobs": []},
+    )
+
+    payload = plan_routes.get_plan_tree(7, _build_request("alice"))
+
+    assert payload["nodes"]["1"]["effective_status"] == "failed"
+    assert payload["nodes"]["1"]["status_reason"].startswith("Completion contract unsatisfied")
+
+
+def test_get_plan_tree_preserves_retryable_skipped_status_and_summary(
+    monkeypatch,
+) -> None:
+    tree = PlanTree(
+        id=7,
+        title="Plan 7",
+        nodes={
+            1: PlanNode(
+                id=1,
+                plan_id=7,
+                name="Step 1",
+                status="skipped",
+                execution_result=json.dumps(
+                    {
+                        "status": "skipped",
+                        "content": "Upstream temporary issue.",
+                        "metadata": {"blocked_by_dependencies": False},
+                    }
+                ),
+            ),
+        },
+    )
+    tree.rebuild_adjacency()
+
+    monkeypatch.setattr(
+        plan_routes,
+        "_load_authorized_plan_tree",
+        lambda _plan_id, _request: tree,
+    )
+    monkeypatch.setattr(
+        plan_routes,
+        "_build_plan_execution_snapshot",
+        lambda _plan_id: {"active_task_ids": set(), "active_jobs": []},
+    )
+
+    payload = plan_routes.get_plan_tree(7, _build_request("alice"))
+    summary = plan_routes.get_plan_execution_summary(7, _build_request("alice"))
+
+    assert payload["nodes"]["1"]["status"] == "skipped"
+    assert payload["nodes"]["1"]["effective_status"] == "skipped"
+    assert summary.skipped == 1
+    assert summary.pending == 0
+
+
 def test_execute_full_plan_reruns_false_completed_tasks_with_retry_text(
     monkeypatch,
 ) -> None:
@@ -628,6 +885,92 @@ def test_execute_full_plan_reruns_false_completed_tasks_with_retry_text(
         executed.append(task_id)
         tree.nodes[task_id].status = "completed"
         tree.nodes[task_id].execution_result = json.dumps({"status": "completed", "content": "ok"})
+        return SimpleNamespace(status="completed", duration_sec=0.1, content="ok")
+
+    monkeypatch.setattr(
+        plan_routes,
+        "_load_authorized_plan_tree",
+        lambda _plan_id, _request: tree,
+    )
+    monkeypatch.setattr(plan_routes._plan_repo, "get_plan_tree", lambda _plan_id: tree)
+    monkeypatch.setattr(plan_routes._plan_executor, "execute_task", _execute_task)
+    monkeypatch.setattr(
+        plan_routes,
+        "_build_plan_execution_snapshot",
+        lambda _plan_id: {"active_task_ids": set(), "active_jobs": []},
+    )
+
+    response = plan_routes.execute_full_plan(
+        7,
+        _build_request("alice"),
+        plan_routes.ExecuteFullPlanRequest(async_mode=False, stop_on_failure=False),
+    )
+
+    assert response.success is True
+    assert executed == [1, 2]
+    assert response.result["executed_task_ids"] == [1, 2]
+
+
+def test_execute_full_plan_reruns_false_completed_tasks_with_missing_publish_contract(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    # Seed a manifest with a placeholder so artifact tracking is active and
+    # the resolver can detect task 1 as "false completed" (publish contract
+    # unsatisfied).
+    save_artifact_manifest(7, {
+        "plan_id": 7,
+        "artifacts": {
+            "other.placeholder": {
+                "alias": "other.placeholder",
+                "path": "/tmp/placeholder",
+                "producer_task_id": 999,
+            }
+        },
+    })
+    tree = PlanTree(
+        id=7,
+        title="Plan 7",
+        nodes={
+            1: PlanNode(
+                id=1,
+                plan_id=7,
+                name="Step 1",
+                status="completed",
+                metadata={"artifact_contract": {"publishes": ["general.evidence_md"]}},
+                execution_result=json.dumps({"status": "completed", "content": "ok"}),
+            ),
+            2: PlanNode(id=2, plan_id=7, name="Step 2", status="pending", dependencies=[1]),
+        },
+    )
+    tree.rebuild_adjacency()
+    executed: list[int] = []
+
+    def _execute_task(_plan_id: int, task_id: int, **_kwargs):
+        executed.append(task_id)
+        tree.nodes[task_id].status = "completed"
+        tree.nodes[task_id].execution_result = json.dumps({"status": "completed", "content": "ok"})
+        if task_id == 1:
+            alias = "general.evidence_md"
+            canonical = canonical_artifact_path(7, alias)
+            assert canonical is not None
+            canonical.parent.mkdir(parents=True, exist_ok=True)
+            canonical.write_text("evidence", encoding="utf-8")
+            save_artifact_manifest(
+                7,
+                {
+                    "plan_id": 7,
+                    "artifacts": {
+                        alias: {
+                            "alias": alias,
+                            "path": str(canonical.resolve()),
+                            "producer_task_id": 1,
+                            "source_path": str(canonical.resolve()),
+                        }
+                    },
+                },
+            )
         return SimpleNamespace(status="completed", duration_sec=0.1, content="ok")
 
     monkeypatch.setattr(

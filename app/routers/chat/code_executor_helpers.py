@@ -36,6 +36,11 @@ _NON_DELIVERABLE_WORKSPACE_RE = re.compile(
     r"/plan\d+_task\d+/run_[^/]+(?:$|/results$|/(?:code|data|docs)(?:/.*)?$)",
     re.IGNORECASE,
 )
+_LEGACY_SESSION_WORKSPACE_RE = re.compile(
+    r"(?:^|/)runtime/session_current/workspace(?:/.*)?$",
+    re.IGNORECASE,
+)
+_USELESS_RUNTIME_ROOT_RE = re.compile(r"(?:^|/)runtime/?$", re.IGNORECASE)
 
 # ---------------------------------------------------------------------------
 # Conversation summary builder for CC context injection
@@ -332,6 +337,16 @@ def _is_non_deliverable_workspace_path(path: str) -> bool:
     return bool(_NON_DELIVERABLE_WORKSPACE_RE.search(normalized))
 
 
+def _is_non_canonical_runtime_path(path: str) -> bool:
+    normalized = "/" + str(path or "").strip().replace("\\", "/").lstrip("/")
+    if not normalized or normalized == "/":
+        return False
+    return bool(
+        _LEGACY_SESSION_WORKSPACE_RE.search(normalized)
+        or _USELESS_RUNTIME_ROOT_RE.search(normalized)
+    )
+
+
 def _looks_like_file_path(path: str) -> bool:
     text = str(path or "").strip()
     if not text:
@@ -380,6 +395,7 @@ def extract_task_artifact_paths(
             or _is_flat_relative_results_alias(text)
             or _is_internal_artifact_path(text)
             or _is_non_deliverable_workspace_path(text)
+            or _is_non_canonical_runtime_path(text)
         ):
             continue
         if text.startswith("/"):
@@ -412,11 +428,13 @@ def resolve_code_executor_task_context(agent: Any) -> Tuple[Optional["PlanNode"]
 
     explicit_task_ids = agent.extra_context.get("explicit_task_ids")
     if isinstance(explicit_task_ids, list) and explicit_task_ids:
+        full_plan_exec = bool(agent.extra_context.get("full_plan_execution", False))
         explicit_target = resolve_explicit_task_scope_target(
             tree,
             explicit_task_ids,
             allow_cascade_rerun=True,
             auto_include_dependency_closure=True,
+            full_plan_execution=full_plan_exec,
         )
         if explicit_target is None:
             return None, "explicit_task_scope_blocked"

@@ -364,27 +364,9 @@ async def verify_local_mutation_terminal_write(
 async def prepare_local_mutation_terminal_write(
     agent: Any, tool_name: str, params: Dict[str, Any]
 ) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]], Optional[int], Optional[str]]:
-    """Optionally wrap write payload and capture pre-snapshot for local_mutation."""
-    if tool_name != "terminal_session":
-        return params, None, None, None
-    if str(params.get("operation") or "").strip().lower() != "write":
-        return params, None, None, None
-    intent = str((getattr(agent, "extra_context", {}) or {}).get("intent_type") or "").strip().lower()
-    if intent != "local_mutation":
-        return params, None, None, None
-    enc = str(params.get("encoding") or "utf-8").strip().lower()
-    if enc == "base64":
-        # Cannot safely inject exit-marker suffix into opaque base64 payloads.
-        return params, None, None, None
-    data = params.get("data")
-    if not isinstance(data, str) or not data.strip():
-        return params, None, None, None
-    ctx = dict(getattr(agent, "extra_context", {}) or {})
-    ctx["_mutation_marker_seq"] = int(ctx.get("_mutation_marker_seq") or 0) + 1
-    marker_id = int(ctx["_mutation_marker_seq"])
-    agent.extra_context = ctx
-    pre = await snapshot_active_subject_fs(agent)
-    original = data
-    new_params = dict(params)
-    new_params["data"] = wrap_local_mutation_command(original, marker_id)
-    return new_params, pre, marker_id, original
+    """No-op stub — local_mutation intent was removed in Phase 2.
+
+    Kept as a stable call-site interface; always returns the original params
+    with no mutation wrapping.
+    """
+    return params, None, None, None

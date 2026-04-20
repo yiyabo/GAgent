@@ -10,6 +10,7 @@ from typing import Optional
 from app.repository.chat_runs import get_chat_run, mark_chat_run_finished, mark_chat_run_started
 from app.routers.chat.models import ChatRequest
 from app.routers.chat.stream_context import build_agent_for_chat_request
+from app.routers.chat.session_helpers import _save_chat_message
 from app.services.chat_run_emitter import ChatRunEmitter
 from app.services import chat_run_hub as hub
 from app.services.realtime_bus import start_owner_lease, stop_owner_lease
@@ -17,6 +18,37 @@ from app.services.realtime_bus import start_owner_lease, stop_owner_lease
 logger = logging.getLogger(__name__)
 
 _CASCADE_MAX_TASKS = 50
+
+
+def _build_explicit_execution_final_payload(
+    *,
+    summary: str,
+    plan_id: int,
+    completed_ids: list[int],
+    failed_id: Optional[int],
+    total_tasks: int,
+) -> dict:
+    status = "failed" if failed_id is not None else "completed"
+    metadata = {
+        "plan_id": plan_id,
+        "status": status,
+        "unified_stream": True,
+        "explicit_task_execution": True,
+        "completed_task_ids": completed_ids,
+        "failed_task_id": failed_id,
+        "total_tasks": total_tasks,
+        "analysis_text": summary,
+        "final_summary": summary,
+        "thinking_display_mode": "final_answer",
+    }
+    return {
+        "type": "final",
+        "payload": {
+            "response": summary,
+            "actions": [],
+            "metadata": metadata,
+        },
+    }
 
 
 async def _run_explicit_task_execution(
@@ -53,7 +85,11 @@ async def _run_explicit_task_execution(
         "chat_history": getattr(agent, "history", []),
         "paper_mode": False,
     }
-    exec_config = ExecutionConfig(session_context=session_ctx)
+    exec_config = ExecutionConfig(
+        session_context=session_ctx,
+        enable_skills=False,
+        skill_trace_enabled=False,
+    )
     completed_ids = []
     failed_id = None
 
@@ -143,20 +179,30 @@ async def _run_explicit_task_execution(
 
     logger.info("[EXPLICIT_EXEC] %s run=%s", summary, run_id)
 
+    final_payload = _build_explicit_execution_final_payload(
+        summary=summary,
+        plan_id=plan_id,
+        completed_ids=completed_ids,
+        failed_id=failed_id,
+        total_tasks=len(all_task_ids),
+    )
+
     try:
-        await emitter.emit(
-            {
-                "type": "final",
-                "content": summary,
-                "metadata": {
-                    "completed_task_ids": completed_ids,
-                    "failed_task_id": failed_id,
-                    "total_tasks": len(all_task_ids),
-                },
-            }
-        )
+        await emitter.emit(final_payload)
     except Exception:
         pass
+
+    session_id = getattr(agent, "session_id", None)
+    if session_id and summary:
+        try:
+            _save_chat_message(
+                session_id,
+                "assistant",
+                summary,
+                metadata=final_payload["payload"]["metadata"],
+            )
+        except Exception:
+            pass
 
 
 async def _run_cascade(
@@ -307,7 +353,9 @@ async def execute_chat_run(run_id: str) -> None:
         )
         _executor = getattr(agent, "plan_executor", None)
 
-        if _explicit and _first_task and _plan_id and _executor:
+        _pending = list(_ctx.get("pending_scope_task_ids") or [])
+
+        if _explicit and _first_task and _plan_id and _executor and _pending:
             # Direct execution path: use plan_executor for ALL tasks
             await _run_explicit_task_execution(
                 agent,
@@ -318,6 +366,11 @@ async def execute_chat_run(run_id: str) -> None:
                 emitter=emitter,
             )
         else:
+            if _explicit and _first_task and _plan_id and _executor:
+                logger.info(
+                    "[EXPLICIT_EXEC] run=%s single-task explicit execute -> using process_unified_stream",
+                    run_id,
+                )
             # Normal chat streaming path
             async for _chunk in agent.process_unified_stream(
                 message_to_send,

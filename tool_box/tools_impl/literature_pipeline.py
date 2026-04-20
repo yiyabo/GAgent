@@ -1298,6 +1298,8 @@ async def literature_pipeline_handler(
     user_agent: Optional[str] = None,
     proxy: Optional[str] = None,
     session_id: Optional[str] = None,
+    task_id: Optional[int] = None,
+    ancestor_chain: Optional[List[int]] = None,
     include_europepmc: bool = True,
     include_biorxiv: bool = True,
     biorxiv_years_back: int = 3,
@@ -1309,17 +1311,35 @@ async def literature_pipeline_handler(
     max_pdfs = max(0, min(int(max_pdfs), 200))
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    try:
-        default_dir = _resolve_default_output_dir(session_id=session_id, timestamp=timestamp)
-    except Exception as exc:
-        return {
-            "tool": "literature_pipeline",
-            "success": False,
-            "error": f"session_output_dir_unavailable: {exc}",
-        }
-    output_dir = _normalize_output_dir(out_dir, default_dir=default_dir)
-    # Ensure under project root for safety
-    if not _is_within_root(output_dir, _PROJECT_ROOT):
+    # --- Unified output path: use PathRouter when task_id is available ---
+    unified_output_dir: Optional[Path] = None
+    if task_id is not None and session_id:
+        from app.services.path_router import get_path_router
+        path_router = get_path_router()
+        unified_output_dir = path_router.get_task_output_dir(
+            session_id, task_id, ancestor_chain, create=True
+        )
+        output_dir = unified_output_dir
+    elif out_dir is None and session_id and not task_id:
+        # Ad-hoc execution without task context → use PathRouter tmp
+        from app.services.path_router import get_path_router
+        path_router = get_path_router()
+        unified_output_dir = path_router.get_tmp_output_dir(
+            session_id, run_id=timestamp, create=True
+        )
+        output_dir = unified_output_dir
+    else:
+        try:
+            default_dir = _resolve_default_output_dir(session_id=session_id, timestamp=timestamp)
+        except Exception as exc:
+            return {
+                "tool": "literature_pipeline",
+                "success": False,
+                "error": f"session_output_dir_unavailable: {exc}",
+            }
+        output_dir = _normalize_output_dir(out_dir, default_dir=default_dir)
+    # Ensure under project root for safety (skip for PathRouter-managed paths)
+    if unified_output_dir is None and not _is_within_root(output_dir, _PROJECT_ROOT):
         return {"tool": "literature_pipeline", "success": False, "error": "out_dir_outside_project"}
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1623,6 +1643,38 @@ async def literature_pipeline_handler(
         "progress_steps": progress_steps,
         "coverage_report": coverage_report,
     }
+
+    # --- Unified output_location block (dual-write) ---
+    if unified_output_dir:
+        # Build file list relative to session root
+        from app.services.session_paths import get_runtime_session_dir
+        try:
+            session_dir = get_runtime_session_dir(session_id, create=False) if session_id else None
+        except ValueError:
+            session_dir = None
+
+        output_files: List[str] = []
+        if session_dir and session_dir.exists():
+            for f in sorted(output_dir.rglob("*")):
+                if f.is_file():
+                    try:
+                        output_files.append(str(f.relative_to(session_dir)).replace("\\", "/"))
+                    except ValueError:
+                        output_files.append(str(f))
+
+        result["output_location"] = {
+            "type": "task" if task_id is not None else "tmp",
+            "session_id": session_id,
+            "task_id": task_id,
+            "ancestor_chain": ancestor_chain,
+            "base_dir": str(unified_output_dir),
+            "files": output_files,
+        }
+        # Legacy fields (dual-write for backward compat)
+        result["artifact_paths"] = [str(f.resolve()) for f in sorted(output_dir.rglob("*")) if f.is_file()]
+        result["produced_files"] = result["artifact_paths"]
+        result["session_artifact_paths"] = output_files
+
     return result
 
 

@@ -170,11 +170,14 @@ def _candidate_score(candidate: Path, *, purpose: str, source: str) -> Tuple[int
     deliverables_root = candidate / "deliverables"
     deliverables_manifest = deliverables_root / "manifest_latest.json"
     deliverables_latest = deliverables_root / "latest"
+    raw_files = candidate / "raw_files"
     tool_outputs = candidate / "tool_outputs"
 
     if purpose == "raw":
+        if raw_files.exists():
+            score += 140
         if tool_outputs.exists():
-            score += 100
+            score += 60
         # New writes are runtime-first; keep info root as legacy fallback.
         if source == "runtime":
             score += 20
@@ -636,6 +639,7 @@ async def list_session_artifacts(
     include_dirs: bool = Query(False),
     limit: int = Query(500, ge=1, le=5000),
     extensions: Optional[str] = Query(None),
+    path_prefix: Optional[str] = Query(None),
 ) -> ArtifactListResponse:
     _ensure_session_access(session_id, request)
     session_dir = _resolve_session_dir(session_id, purpose="raw")
@@ -644,8 +648,22 @@ async def list_session_artifacts(
     if extensions:
         ext_list = [ext.strip().lower().lstrip(".") for ext in extensions.split(",") if ext.strip()]
 
+    base_dir = session_dir
+    normalized_prefix = str(path_prefix or "").strip().strip("/").replace("\\", "/")
+    if normalized_prefix:
+        requested_base = (session_dir / normalized_prefix).resolve()
+        _assert_path_within(requested_base, session_dir, detail="Invalid artifact path prefix")
+        if not requested_base.exists() or not requested_base.is_dir():
+            return ArtifactListResponse(
+                session_id=session_id,
+                root_path=str(requested_base),
+                items=[],
+                count=0,
+            )
+        base_dir = requested_base
+
     items = _iter_items(
-        session_dir,
+        base_dir,
         max_depth=max_depth,
         include_dirs=include_dirs,
         limit=limit,
@@ -653,9 +671,19 @@ async def list_session_artifacts(
         hidden_prefixes=hidden_prefixes,
     )
 
+    if normalized_prefix:
+        prefixed_items: List[ArtifactItem] = []
+        for item in items:
+            rel_path = str(item.path or "").strip().strip("/")
+            item_path = normalized_prefix if not rel_path else f"{normalized_prefix}/{rel_path}"
+            prefixed_items.append(
+                item.model_copy(update={"path": item_path})
+            )
+        items = prefixed_items
+
     return ArtifactListResponse(
         session_id=session_id,
-        root_path=str(session_dir),
+        root_path=str(base_dir),
         items=items,
         count=len(items),
     )

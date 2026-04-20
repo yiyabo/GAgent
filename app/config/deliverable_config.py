@@ -16,6 +16,7 @@ RESEARCH_MODULES: Tuple[str, ...] = (
 
 
 DeliverablesIngestMode = Literal["legacy", "explicit"]
+DeliverableConflictStrategy = Literal["error", "rename", "keep_first"]
 
 
 @dataclass(frozen=True)
@@ -28,6 +29,8 @@ class DeliverableSettings:
     modules: Tuple[str, ...] = RESEARCH_MODULES
     #: legacy: mirror paths from tool results heuristically; explicit: only manifest + deliverable_submit + manuscript tools
     ingest_mode: DeliverablesIngestMode = "explicit"
+    #: basename collision policy when different source files target the same deliverable name
+    basename_conflict_strategy: DeliverableConflictStrategy = "error"
 
 
 @lru_cache(maxsize=1)
@@ -64,6 +67,17 @@ def get_deliverable_settings() -> DeliverableSettings:
         raw_ingest = "explicit"
     ingest_mode: DeliverablesIngestMode = raw_ingest  # type: ignore[assignment]
 
+    raw_conflict_strategy = (
+        os.getenv(
+            "DELIVERABLES_BASENAME_CONFLICT_STRATEGY",
+            defaults.basename_conflict_strategy,
+        )
+        or defaults.basename_conflict_strategy
+    ).strip().lower()
+    if raw_conflict_strategy not in {"error", "rename", "keep_first"}:
+        raw_conflict_strategy = defaults.basename_conflict_strategy
+    basename_conflict_strategy: DeliverableConflictStrategy = raw_conflict_strategy  # type: ignore[assignment]
+
     return DeliverableSettings(
         enabled=_env_bool("DELIVERABLES_ENABLED", defaults.enabled),
         default_template=template,
@@ -72,7 +86,14 @@ def get_deliverable_settings() -> DeliverableSettings:
         single_version_only=single_version_only,
         modules=defaults.modules,
         ingest_mode=ingest_mode,
+        basename_conflict_strategy=basename_conflict_strategy,
     )
 
 
-__all__ = ["DeliverableSettings", "DeliverablesIngestMode", "RESEARCH_MODULES", "get_deliverable_settings"]
+__all__ = [
+    "DeliverableConflictStrategy",
+    "DeliverableSettings",
+    "DeliverablesIngestMode",
+    "RESEARCH_MODULES",
+    "get_deliverable_settings",
+]

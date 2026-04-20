@@ -102,7 +102,6 @@ const _consumeUnifiedStream = async (
           ctx.get().updateMessage(ctx.assistantMessageId, { metadata: existingMetadata });
         }
       }
-      window.dispatchEvent(new CustomEvent('artifactProduced', { detail: event }));
       continue;
     }
     if (event.type === 'steer_ack') {
@@ -496,6 +495,9 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
 
   await _consumeUnifiedStream(ctx, eventSource);
   await _finalizeAfterUnifiedStream(ctx, state, boundFlush);
+  // Clear file attachments after successful send so they don't
+  // get re-sent with every subsequent message.
+  get().clearUploadedFiles();
   } catch (error) {
   console.error('Failed to send message:', error);
   get().setActiveRunId(processingKey, null);

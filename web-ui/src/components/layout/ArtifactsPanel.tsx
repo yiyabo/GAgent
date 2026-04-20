@@ -39,6 +39,7 @@ import type { ArtifactItem, DeliverableItem } from '@/types';
 import type { DataNode } from 'antd/es/tree';
 import type { ColumnsType } from 'antd/es/table';
 import { useLayoutStore } from '@store/layout';
+import { useTasksStore } from '@store/tasks';
 
 const { Text } = Typography;
 
@@ -150,6 +151,7 @@ type ArtifactTreeNode = DataNode & {
 
 interface DisplayFileItem {
   path: string;
+  sourcePath: string;
   name: string;
   extension?: string | null;
   size?: number;
@@ -167,13 +169,61 @@ const isNotFoundError = (error: unknown): boolean => {
   return status === 404 || message.includes('404') || message.includes('not found');
 };
 
+const trimDisplayPrefix = (path: string, prefix: string | null): string => {
+  const normalizedPath = String(path ?? '').trim().replace(/^\/+/, '');
+  const normalizedPrefix = String(prefix ?? '').trim().replace(/^\/+|\/+$/g, '');
+  if (!normalizedPath || !normalizedPrefix) {
+    return normalizedPath;
+  }
+  if (normalizedPath === normalizedPrefix) {
+    return '';
+  }
+  if (normalizedPath.startsWith(`${normalizedPrefix}/`)) {
+    return normalizedPath.slice(normalizedPrefix.length + 1);
+  }
+  return normalizedPath;
+};
+
 const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
   const { dagSidebarFullscreen, toggleDagSidebarFullscreen } = useLayoutStore();
+  const { tasks, selectedTaskId } = useTasksStore((state) => ({
+    tasks: state.tasks,
+    selectedTaskId: state.selectedTaskId,
+  }));
   const [mode, setMode] = React.useState<PanelMode>('deliverables');
   const [keyword, setKeyword] = React.useState('');
   const [selectedPath, setSelectedPath] = React.useState<string | null>(null);
   const [previewOpen, setPreviewOpen] = React.useState(false);
   const [showSource, setShowSource] = React.useState(false); // Toggle for renderable files
+
+  const rawPathPrefix = React.useMemo(() => {
+    if (!Array.isArray(tasks) || tasks.length === 0 || selectedTaskId == null) {
+      return 'raw_files';
+    }
+    const taskMap = new Map(tasks.map((task) => [task.id, task]));
+    const currentTask = taskMap.get(selectedTaskId);
+    if (!currentTask) {
+      return 'raw_files';
+    }
+
+    const ancestors: number[] = [];
+    const visited = new Set<number>();
+    let parentId = currentTask.parent_id ?? null;
+    while (parentId != null) {
+      if (visited.has(parentId)) {
+        break;
+      }
+      visited.add(parentId);
+      const parentTask = taskMap.get(parentId);
+      if (!parentTask) {
+        break;
+      }
+      ancestors.unshift(parentId);
+      parentId = parentTask.parent_id ?? null;
+    }
+
+    return ['raw_files', ...ancestors.map((id) => `task_${id}`), `task_${selectedTaskId}`].join('/');
+  }, [selectedTaskId, tasks]);
 
   const {
     data: rawData,
@@ -182,12 +232,13 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
     error: rawError,
     refetch: refetchRaw,
   } = useQuery({
-    queryKey: ['artifacts', 'raw', sessionId],
+    queryKey: ['artifacts', 'raw', sessionId, rawPathPrefix],
     queryFn: () =>
       artifactsApi.listSessionArtifacts(sessionId ?? '', {
-        maxDepth: 4,
+        maxDepth: 6,
         includeDirs: false,
-        limit: 500,
+        limit: 1000,
+        pathPrefix: rawPathPrefix,
       }),
     enabled: Boolean(sessionId && mode === 'raw'),
     refetchInterval: 10000,
@@ -215,6 +266,7 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
     if (mode === 'deliverables') {
       return (deliverableData?.items ?? []).map((item: DeliverableItem) => ({
         path: item.path,
+        sourcePath: item.path,
         name: item.name,
         extension: item.extension,
         size: item.size,
@@ -226,26 +278,42 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
     return (rawData?.items ?? [])
       .filter((item: ArtifactItem) => item.type === 'file')
       .map((item: ArtifactItem) => ({
-        path: item.path,
+        path: trimDisplayPrefix(item.path, rawPathPrefix) || item.name,
+        sourcePath: item.path,
         name: item.name,
         extension: item.extension,
         size: item.size,
         sourceType: 'raw',
       }));
-  }, [deliverableData?.items, mode, rawData?.items]);
+  }, [deliverableData?.items, mode, rawData?.items, rawPathPrefix]);
 
   const filteredItems = React.useMemo(() => {
     const normalizedKeyword = keyword.trim().toLowerCase();
     if (!normalizedKeyword) {
       return displayItems;
     }
-    return displayItems.filter((item) => item.path.toLowerCase().includes(normalizedKeyword));
+    return displayItems.filter(
+      (item) =>
+        item.path.toLowerCase().includes(normalizedKeyword) ||
+        item.sourcePath.toLowerCase().includes(normalizedKeyword)
+    );
   }, [displayItems, keyword]);
 
-  const selectedItem = filteredItems.find((item) => item.path === selectedPath) ?? null;
+  const selectedItem = displayItems.find((item) => item.sourcePath === selectedPath) ?? null;
 
-  const handleSelectFile = (path: string) => {
-    setSelectedPath(path);
+  React.useEffect(() => {
+    if (!selectedPath) {
+      return;
+    }
+    const stillExists = displayItems.some((item) => item.sourcePath === selectedPath);
+    if (!stillExists) {
+      setSelectedPath(null);
+      setPreviewOpen(false);
+    }
+  }, [displayItems, selectedPath]);
+
+  const handleSelectFile = (sourcePath: string) => {
+    setSelectedPath(sourcePath);
     setPreviewOpen(true);
     setShowSource(false); // Reset to rendered view when selecting new file
   };
@@ -264,7 +332,7 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
 
   // Text preview for non-renderable text files (and as fallback for renderable files)
   const { data: textPreview, isLoading: textLoading } = useQuery({
-    queryKey: ['artifacts', 'text', sessionId, selectedItem?.sourceType, selectedItem?.path],
+    queryKey: ['artifacts', 'text', sessionId, selectedItem?.sourceType, selectedItem?.sourcePath],
     queryFn: async () => {
       if (!selectedItem?.path) {
         throw new Error('filepath');
@@ -274,7 +342,7 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
           maxBytes: 200000,
         });
       }
-      return artifactsApi.getSessionArtifactText(sessionId ?? '', selectedItem.path, {
+      return artifactsApi.getSessionArtifactText(sessionId ?? '', selectedItem.sourcePath, {
         maxBytes: 200000,
       });
     },
@@ -287,14 +355,18 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
     isLoading: renderLoading,
     error: renderError,
   } = useQuery({
-    queryKey: ['artifacts', 'render', sessionId, selectedItem?.sourceType, selectedItem?.path],
+    queryKey: ['artifacts', 'render', sessionId, selectedItem?.sourceType, selectedItem?.sourcePath],
     queryFn: async () => {
       if (!selectedItem?.path) {
         throw new Error('filepath');
       }
-      return artifactsApi.renderArtifact(sessionId ?? '', selectedItem.path, {
+      return artifactsApi.renderArtifact(
+        sessionId ?? '',
+        selectedItem.sourceType === 'raw' ? selectedItem.sourcePath : selectedItem.path,
+        {
         sourceType: selectedItem.sourceType,
-      });
+        }
+      );
     },
     enabled: Boolean(sessionId && selectedItem?.path && isRenderable && previewOpen),
     retry: 1,
@@ -353,12 +425,12 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
             ? <FileTextOutlined />
             : <FileOutlined />;
           const leafNode: ArtifactTreeNode = {
-            key: currentKey,
+            key: item.sourcePath,
             title: part,
             icon,
             isLeaf: true,
             selectable: true,
-            filePath: item.path,
+            filePath: item.sourcePath,
           };
           if (parent) {
             const children = (parent.children ?? []) as ArtifactTreeNode[];
@@ -402,7 +474,7 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
   const fileUrl = selectedItem
     ? selectedItem.sourceType === 'deliverables'
       ? buildDeliverableFileUrl(sessionId!, selectedItem.path)
-      : buildArtifactFileUrl(sessionId!, selectedItem.path)
+      : buildArtifactFileUrl(sessionId!, selectedItem.sourcePath)
     : null;
 
   const handleRefetch = () => {
@@ -454,7 +526,11 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
           <Space style={{ width: '100%', justifyContent: 'space-between' }}>
             <Space direction="vertical" size={2}>
               <Text type="secondary" style={{ fontSize: 12 }}>
-                {mode === 'deliverables' ? 'Deliverables' : 'Raw Files'}
+                {mode === 'deliverables'
+                  ? 'Deliverables'
+                  : selectedTaskId != null
+                  ? `Raw Files · Task #${selectedTaskId}`
+                  : 'Raw Files'}
               </Text>
               {mode === 'deliverables' && (
                 <>
@@ -540,8 +616,11 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
               selectedKeys={selectedPath ? [selectedPath] : []}
               onSelect={(keys, info) => {
                 const node = info.node as ArtifactTreeNode;
-                if (node.isLeaf && typeof node.key === 'string') {
-                  handleSelectFile(node.key);
+                if (node.isLeaf) {
+                  const nextPath = node.filePath ?? (typeof node.key === 'string' ? node.key : null);
+                  if (nextPath) {
+                    handleSelectFile(nextPath);
+                  }
                 }
               }}
               defaultExpandAll

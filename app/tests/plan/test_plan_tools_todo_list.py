@@ -4,8 +4,10 @@ from unittest.mock import patch
 
 import pytest
 
+from app.routers import plan_routes
+from app.services.plans.artifact_preflight import ArtifactPreflightIssue, ArtifactPreflightResult
 from app.services.plans.plan_models import PlanNode, PlanTree
-from tool_box.tools_impl.plan_tools import plan_operation_handler, _get_todo_list
+from tool_box.tools_impl.plan_tools import plan_operation_handler, _get_todo_list, _update_task
 
 
 def _make_tree() -> PlanTree:
@@ -34,9 +36,25 @@ def _make_tree() -> PlanTree:
 class _RepoStub:
     def __init__(self, tree: PlanTree):
         self.tree = tree
+        self.update_calls: list[tuple[int, int, dict]] = []
 
     def get_plan_tree(self, plan_id: int) -> PlanTree:
         return self.tree
+
+    def update_task(self, plan_id: int, task_id: int, **kwargs):
+        self.update_calls.append((plan_id, task_id, dict(kwargs)))
+        node = self.tree.nodes[task_id]
+        if kwargs.get("status") is not None:
+            node.status = kwargs["status"]
+        if kwargs.get("execution_result") is not None:
+            node.execution_result = kwargs["execution_result"]
+        if kwargs.get("name") is not None:
+            node.name = kwargs["name"]
+        if kwargs.get("instruction") is not None:
+            node.instruction = kwargs["instruction"]
+        if kwargs.get("metadata") is not None:
+            node.metadata = kwargs["metadata"]
+        return node
 
 
 def test_get_todo_list_basic():
@@ -142,3 +160,75 @@ def test_todo_list_phase_structure():
             assert "task_id" in item
             assert "name" in item
             assert "status" in item
+
+
+def test_execute_all_blocks_on_artifact_preflight_failure():
+    tree = _make_tree()
+    stub = _RepoStub(tree)
+
+    with patch(
+        "app.repository.plan_repository.PlanRepository",
+        return_value=stub,
+    ), patch.object(
+        plan_routes,
+        "_resolve_effective_task_states",
+        lambda _plan_id, _tree, **_kwargs: {node_id: {"effective_status": "pending"} for node_id in tree.nodes},
+    ), patch.object(
+        plan_routes,
+        "_todo_list_to_dict",
+        lambda _todo, _plan_id, **_kwargs: {
+            "pending_order": [3, 4],
+            "completed_tasks": 1,
+            "total_tasks": 3,
+        },
+    ), patch(
+        "tool_box.tools_impl.plan_tools._artifact_preflight_service.validate_plan",
+        return_value=ArtifactPreflightResult(
+            plan_id=1,
+            ok=False,
+            errors=[
+                ArtifactPreflightIssue(
+                    code="missing_producer",
+                    severity="error",
+                    task_id=3,
+                    message="Task #3 requires missing artifact alias 'ai_dl.references_bib'.",
+                )
+            ],
+        ),
+    ):
+        result = asyncio.run(
+            plan_operation_handler(
+                operation="execute_all",
+                plan_id=1,
+            )
+        )
+
+    assert result["success"] is False
+    assert result["status"] == "artifact_preflight_failed"
+    assert result["operation"] == "execute_all"
+    assert result["preflight"]["errors"][0]["code"] == "missing_producer"
+
+
+def test_update_task_rejects_completed_without_execution_result() -> None:
+    tree = _make_tree()
+    tree.nodes[3].status = "pending"
+    tree.nodes[3].execution_result = None
+    stub = _RepoStub(tree)
+
+    with patch(
+        "app.repository.plan_repository.PlanRepository",
+        return_value=stub,
+    ):
+        result = asyncio.run(
+            _update_task(
+                plan_id=1,
+                task_id=3,
+                new_status="completed",
+                note="manual review",
+            )
+        )
+
+    assert result["success"] is False
+    assert "execution result" in result["error"].lower()
+    assert stub.update_calls == []
+    assert tree.nodes[3].status == "pending"

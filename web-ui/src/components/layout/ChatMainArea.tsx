@@ -32,6 +32,7 @@ import { useMessages } from '@/hooks/useMessages';
 import ChatMessage from '@components/chat/ChatMessage';
 import FileUploadButton from '@components/chat/FileUploadButton';
 import UploadedFilesList from '@components/chat/UploadedFilesList';
+import { shouldRenderWelcomeState } from './chatMainAreaState';
 import { shallow } from 'zustand/shallow';
 import type { ChatMessage as ChatMessageType, Memory } from '@/types';
 import VirtualList, { ListRef } from 'rc-virtual-list';
@@ -380,6 +381,10 @@ const ChatMainArea: React.FC = () => {
     });
     return [...allHistoryMessages, ...activeOnly];
   }, [allHistoryMessages, messages]);
+  const showWelcomeState = shouldRenderWelcomeState(
+    combinedMessages.length,
+    historyLoading || isHistoryLoadingData
+  );
 
   // ---- Prevent browser from opening dropped files globally ----
   useEffect(() => {
@@ -422,13 +427,15 @@ const ChatMainArea: React.FC = () => {
         await loadSessions();
         const selected = useChatStore.getState().currentSession;
         if (selected) {
-          await loadChatHistory(selected.id);
+          await loadChatHistory(selected.session_id ?? selected.id);
           return;
         }
-        startNewSession('AI Task Orchestration Assistant');
+        const session = startNewSession('AI Task Orchestration Assistant');
+        await loadChatHistory(session.session_id ?? session.id);
       } catch (err) {
         console.warn('[ChatMainArea] Session initialization failed; creating a new session:', err);
-        startNewSession('AI Task Orchestration Assistant');
+        const session = startNewSession('AI Task Orchestration Assistant');
+        await loadChatHistory(session.session_id ?? session.id);
       }
     })();
   }, [currentSession, loadSessions, loadChatHistory, startNewSession]);
@@ -555,9 +562,6 @@ const ChatMainArea: React.FC = () => {
     };
 
     let messageToSend = draft;
-    if (deepThinkEnabled && !messageToSend.startsWith('/think')) {
-      messageToSend = `/think ${messageToSend}`;
-    }
 
     setInputText('');
     inputRef.current?.focus();
@@ -746,7 +750,7 @@ const ChatMainArea: React.FC = () => {
           padding: '16px 0',
         }}
       >
-        {messages.length === 0 ? (
+        {showWelcomeState ? (
           renderWelcome()
         ) : (
           <ChatMessageList
@@ -799,20 +803,6 @@ const ChatMainArea: React.FC = () => {
               borderRadius: 'var(--radius-md)',
             }}>
               <FileUploadButton size="small" />
-              <Tooltip title={deepThinkEnabled ? 'Deep Think enabled' : 'Enable Deep Think mode'}>
-                <Button
-                  type={deepThinkEnabled ? 'primary' : 'text'}
-                  icon={<BulbOutlined />}
-                  size="small"
-                  onClick={() => setDeepThinkEnabled(!deepThinkEnabled)}
-                  style={{
-                    color: deepThinkEnabled ? '#fff' : 'var(--text-secondary)',
-                    background: deepThinkEnabled ? 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)' : 'transparent',
-                    border: deepThinkEnabled ? 'none' : '1px dashed var(--border-color)',
-                    transition: 'all 0.3s ease',
-                  }}
-                />
-              </Tooltip>
             </div>
 
             {/* Input box */}

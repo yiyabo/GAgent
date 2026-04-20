@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +61,43 @@ def build_tool_schemas(available_tools: List[str]) -> List[Dict[str, Any]]:
         if schema is not None:
             schemas.append(schema)
     schemas.append(SUBMIT_FINAL_ANSWER_SCHEMA)
+    return schemas
+
+
+# Tools available to PlanExecutor for task execution.
+EXECUTOR_AVAILABLE_TOOLS: List[str] = [
+    "web_search",
+    "sequence_fetch",
+    "bio_tools",
+    "code_executor",
+    "graph_rag",
+    "document_reader",
+    "vision_reader",
+    "phagescope",
+    "deeppl",
+    "literature_pipeline",
+    "review_pack_writer",
+    "manuscript_writer",
+    "deliverable_submit",
+    "file_operations",
+    "terminal_session",
+    "result_interpreter",
+]
+
+
+def build_executor_tool_schemas(available_tools: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+    """Build tool schemas for PlanExecutor, excluding submit_final_answer.
+
+    Unlike build_tool_schemas (used by DeepThink), this does NOT append
+    the submit_final_answer termination tool, which is not applicable
+    to the plan execution loop.
+    """
+    tools = available_tools if available_tools is not None else EXECUTOR_AVAILABLE_TOOLS
+    schemas = []
+    for name in tools:
+        schema = TOOL_REGISTRY.get(name)
+        if schema is not None:
+            schemas.append(schema)
     return schemas
 
 
@@ -177,7 +214,7 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
         "type": "function",
         "function": {
             "name": "file_operations",
-            "description": "File system operations: list directories, read/write files, copy/move/delete.",
+            "description": "File system operations: list directories, read/write files, copy/move/delete. In task execution, prefer relative output paths so writes land in the current task output directory.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -188,7 +225,7 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
                     },
                     "path": {
                         "type": "string",
-                        "description": "Absolute path to the target file or directory.",
+                        "description": "Target file or directory path. Prefer relative paths or bare filenames for task outputs; avoid absolute session workspace paths for final deliverables.",
                     },
                     "content": {
                         "type": "string",
@@ -196,7 +233,7 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
                     },
                     "destination": {
                         "type": "string",
-                        "description": "Destination path (only for copy/move operations).",
+                        "description": "Destination path (only for copy/move operations). Prefer task-relative destinations for final outputs.",
                     },
                 },
                 "required": ["operation", "path"],
@@ -802,7 +839,11 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
         "function": {
             "name": "plan_operation",
             "description": (
-                "Plan creation and optimization tool. Operations: create, review, optimize, get. "
+                "Plan creation, optimization, and execution tool. "
+                "Operations: create, review, optimize, get, execute_all, todo_list. "
+                "CRITICAL: When the user wants to execute the entire plan or all tasks, "
+                "you MUST use operation='execute_all'. Do NOT execute tasks one by one. "
+                "execute_all launches a background job that handles all tasks automatically. "
                 "Use create for new structured plans, then prefer review to persist rubric metadata. "
                 "Use get/review/optimize for bound plans. "
                 "Research with web_search first only when latest external evidence materially affects the plan. "
@@ -815,8 +856,8 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
                 "properties": {
                     "operation": {
                         "type": "string",
-                        "enum": ["create", "review", "optimize", "get"],
-                        "description": "Plan operation to perform.",
+                        "enum": ["create", "review", "optimize", "get", "execute_all", "todo_list"],
+                        "description": "Plan operation to perform. Use execute_all to run all pending tasks in background.",
                     },
                     "title": {"type": "string", "description": "Plan title (for create)."},
                     "description": {"type": "string", "description": "Plan goal description (for create)."},

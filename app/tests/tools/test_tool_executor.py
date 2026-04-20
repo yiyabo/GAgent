@@ -110,6 +110,39 @@ def test_tool_executor_phagescope_normalizes_task_id_and_operation(monkeypatch) 
     assert "operation" not in kw
 
 
+def test_tool_executor_phagescope_preserves_plan_task_context(monkeypatch) -> None:
+    captured: dict = {}
+
+    async def _fake_execute_tool(tool_name: str, **kwargs):
+        captured["tool_name"] = tool_name
+        captured["kwargs"] = dict(kwargs)
+        return {"success": True, "action": kwargs.get("action")}
+
+    monkeypatch.setattr(tool_box, "execute_tool", _fake_execute_tool)
+
+    executor = UnifiedToolExecutor()
+    asyncio.run(
+        executor.execute(
+            "phagescope",
+            {"task_id": "38619", "operation": "save_all"},
+            context=ToolExecutionContext(
+                session_id="session_demo",
+                plan_id=7,
+                task_id=42,
+                ancestor_chain=[5],
+            ),
+        )
+    )
+
+    assert captured["tool_name"] == "phagescope"
+    kw = captured["kwargs"]
+    assert kw.get("taskid") == "38619"
+    assert kw.get("task_id") == 42
+    assert kw.get("ancestor_chain") == [5]
+    assert kw.get("action") == "save_all"
+    assert "operation" not in kw
+
+
 def test_tool_executor_replaces_preexisting_tool_context(monkeypatch) -> None:
     captured: dict = {}
 

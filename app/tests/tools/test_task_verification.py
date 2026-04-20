@@ -22,10 +22,16 @@ class _RepoStub:
         assert plan_id == self._tree.id
         self.update_calls.append((plan_id, task_id, dict(kwargs)))
         node = self._tree.nodes[task_id]
+        if kwargs.get("name") is not None:
+            node.name = kwargs["name"]
+        if kwargs.get("instruction") is not None:
+            node.instruction = kwargs["instruction"]
         if kwargs.get("status") is not None:
             node.status = kwargs["status"]
         if kwargs.get("execution_result") is not None:
             node.execution_result = kwargs["execution_result"]
+        if kwargs.get("metadata") is not None:
+            node.metadata = kwargs["metadata"]
         return node
 
 
@@ -33,7 +39,7 @@ class _LLMStub:
     def __init__(self, response: ExecutionResponse) -> None:
         self._response = response
 
-    def generate(self, _prompt: str, _config):
+    def generate(self, _prompt: str, _config=None, **kwargs):
         return self._response
 
 
@@ -385,6 +391,48 @@ def test_verify_task_route_rechecks_existing_output(tmp_path, monkeypatch):
 
     assert response.success is True
     assert response.result.status == "completed"
+    assert repo.update_calls[-1][2]["status"] == "completed"
+
+
+def test_verify_task_route_fails_when_artifact_authority_demotes_result(tmp_path, monkeypatch):
+    output_path = tmp_path / "report.json"
+    output_path.write_text(json.dumps({"ok": True}), encoding="utf-8")
+    payload = {
+        "status": "completed",
+        "content": "report done",
+        "metadata": {
+            "execution_status": "completed",
+            "artifact_paths": [str(output_path)],
+        },
+    }
+    tree = PlanTree(id=56, title="Verify Route Plan")
+    tree.nodes = {
+        23: PlanNode(
+            id=23,
+            plan_id=56,
+            name="Collect evidence",
+            status="completed",
+            instruction="Download the dataset.",
+            metadata={
+                "artifact_contract": {"publishes": ["general.evidence_md"]},
+                "acceptance_criteria": {
+                    "category": "file_data",
+                    "blocking": True,
+                    "checks": [{"type": "file_exists", "path": str(output_path)}],
+                },
+            },
+            execution_result=json.dumps(payload, ensure_ascii=False),
+        )
+    }
+    repo = _RepoStub(tree)
+    monkeypatch.setattr(plan_routes, "_plan_repo", repo)
+    monkeypatch.setattr(plan_routes, "_load_authorized_plan_tree", lambda plan_id, request: tree)
+
+    response = plan_routes.verify_task_result(23, request=None, plan_id=56)
+
+    assert response.success is False
+    assert response.result.status == "completed"
+    assert "artifact authority failed" in response.message.lower()
     assert repo.update_calls[-1][2]["status"] == "completed"
 
 
@@ -930,6 +978,265 @@ def test_glob_nonempty_check_fails(tmp_path):
 # Artifact path fallback for file_exists / file_nonempty
 # ---------------------------------------------------------------------------
 
+
+def test_accept_task_result_persists_manual_acceptance_and_patch() -> None:
+    tree = PlanTree(id=77, title="Manual Accept")
+    tree.nodes = {
+        4: PlanNode(
+            id=4,
+            plan_id=77,
+            name="Collect evidence",
+            status="failed",
+            instruction="Collect the evidence and verify it.",
+            execution_result=json.dumps(
+                {
+                    "status": "failed",
+                    "content": "verification failed but files exist",
+                    "metadata": {
+                        "verification_status": "failed",
+                        "artifact_authority": {"status": "failed"},
+                    },
+                },
+                ensure_ascii=False,
+            ),
+        )
+    }
+    repo = _RepoStub(tree)
+    verifier = TaskVerificationService()
+
+    finalization = verifier.accept_task_result(
+        repo,
+        plan_id=77,
+        task_id=4,
+        reason="Artifacts are acceptable after review.",
+        accepted_by="tester",
+        task_name="Collect reviewed evidence",
+        task_instruction="Use the generated artifacts as the accepted baseline.",
+    )
+
+    assert finalization.final_status == "completed"
+    update = repo.update_calls[-1][2]
+    assert update["status"] == "completed"
+    assert update["name"] == "Collect reviewed evidence"
+    assert update["instruction"] == "Use the generated artifacts as the accepted baseline."
+
+    persisted = json.loads(update["execution_result"])
+    manual_acceptance = persisted["metadata"]["manual_acceptance"]
+    assert manual_acceptance["status"] == "accepted"
+    assert manual_acceptance["reason"] == "Artifacts are acceptable after review."
+    assert manual_acceptance["accepted_by"] == "tester"
+    assert manual_acceptance["task_patch"] == {
+        "name": "Collect reviewed evidence",
+        "instruction": "Use the generated artifacts as the accepted baseline.",
+    }
+
+
+def test_accept_task_result_allows_completed_task_with_failed_verification() -> None:
+    tree = PlanTree(id=771, title="Manual Accept Verification Failure")
+    tree.nodes = {
+        4: PlanNode(
+            id=4,
+            plan_id=771,
+            name="Collect evidence",
+            status="completed",
+            instruction="Collect the evidence and verify it.",
+            execution_result=json.dumps(
+                {
+                    "status": "completed",
+                    "content": "execution succeeded but verification failed",
+                    "metadata": {
+                        "verification": {
+                            "status": "failed",
+                        },
+                    },
+                },
+                ensure_ascii=False,
+            ),
+        )
+    }
+    repo = _RepoStub(tree)
+    verifier = TaskVerificationService()
+
+    finalization = verifier.accept_task_result(
+        repo,
+        plan_id=771,
+        task_id=4,
+        reason="Reviewed manually after verification failure.",
+    )
+
+    assert finalization.final_status == "completed"
+    persisted = json.loads(repo.update_calls[-1][2]["execution_result"])
+    assert persisted["metadata"]["manual_acceptance"]["verification_status"] == "failed"
+
+
+def test_accept_task_result_rejects_successful_task_without_review_failure() -> None:
+    tree = PlanTree(id=772, title="Manual Accept Reject Success")
+    tree.nodes = {
+        4: PlanNode(
+            id=4,
+            plan_id=772,
+            name="Collect evidence",
+            status="completed",
+            instruction="Collect the evidence and verify it.",
+            execution_result=json.dumps(
+                {
+                    "status": "completed",
+                    "content": "all checks passed",
+                    "metadata": {
+                        "verification": {
+                            "status": "passed",
+                        },
+                    },
+                },
+                ensure_ascii=False,
+            ),
+        )
+    }
+    repo = _RepoStub(tree)
+    verifier = TaskVerificationService()
+
+    try:
+        verifier.accept_task_result(
+            repo,
+            plan_id=772,
+            task_id=4,
+            reason="This should be rejected.",
+        )
+    except ValueError as exc:
+        assert "manual acceptance is only allowed" in str(exc)
+    else:
+        raise AssertionError("Expected manual acceptance validation to reject successful task")
+
+
+def test_accept_task_route_marks_task_completed(monkeypatch) -> None:
+    tree = PlanTree(id=78, title="Manual Accept Route")
+    tree.nodes = {
+        5: PlanNode(
+            id=5,
+            plan_id=78,
+            name="Collect evidence",
+            status="failed",
+            instruction="Review the generated outputs.",
+            execution_result=json.dumps(
+                {
+                    "status": "failed",
+                    "content": "verification failed",
+                    "metadata": {
+                        "verification_status": "failed",
+                    },
+                },
+                ensure_ascii=False,
+            ),
+        )
+    }
+    repo = _RepoStub(tree)
+    monkeypatch.setattr(plan_routes, "_plan_repo", repo)
+    monkeypatch.setattr(plan_routes, "_load_authorized_plan_tree", lambda plan_id, request: tree)
+    monkeypatch.setattr(plan_routes, "get_request_owner_id", lambda request: "owner-1")
+
+    response = plan_routes.accept_task_result(
+        5,
+        plan_routes.AcceptTaskRequest(
+            reason="Outputs are usable after review.",
+            name="Accepted evidence",
+            instruction="Use this accepted evidence set for the downstream task.",
+        ),
+        request=None,
+        plan_id=78,
+    )
+
+    assert response.success is True
+    assert response.result.status == "completed"
+    assert response.updated_fields == ["name", "instruction"]
+    accepted_update = next(update for _, task_id, update in repo.update_calls if task_id == 5 and "execution_result" in update)
+    persisted = json.loads(accepted_update["execution_result"])
+    assert persisted["metadata"]["manual_acceptance"]["reason"] == "Outputs are usable after review."
+    assert persisted["metadata"]["manual_acceptance"]["accepted_by"] == "owner-1"
+
+
+def test_accept_task_route_resets_downstream_skipped_tasks(monkeypatch) -> None:
+    tree = PlanTree(id=79, title="Manual Accept Route Reset")
+    tree.nodes = {
+        5: PlanNode(
+            id=5,
+            plan_id=79,
+            name="Collect evidence",
+            status="failed",
+            execution_result=json.dumps(
+                {
+                    "status": "failed",
+                    "content": "verification failed",
+                    "metadata": {"verification_status": "failed"},
+                },
+                ensure_ascii=False,
+            ),
+        ),
+        6: PlanNode(
+            id=6,
+            plan_id=79,
+            name="Use evidence",
+            status="skipped",
+            dependencies=[5],
+        ),
+    }
+    tree.rebuild_adjacency()
+    repo = _RepoStub(tree)
+    monkeypatch.setattr(plan_routes, "_plan_repo", repo)
+    monkeypatch.setattr(plan_routes, "_load_authorized_plan_tree", lambda plan_id, request: tree)
+    monkeypatch.setattr(plan_routes, "get_request_owner_id", lambda request: "owner-1")
+
+    response = plan_routes.accept_task_result(
+        5,
+        plan_routes.AcceptTaskRequest(reason="Outputs are usable after review."),
+        request=None,
+        plan_id=79,
+    )
+
+    assert response.success is True
+    assert "reset 1 downstream skipped task" in response.message
+    assert tree.nodes[6].status == "pending"
+    assert any(task_id == 6 and update.get("status") == "pending" for _, task_id, update in repo.update_calls)
+
+
+def test_accept_task_route_rejects_completed_verified_task(monkeypatch) -> None:
+    tree = PlanTree(id=781, title="Manual Accept Route Reject Success")
+    tree.nodes = {
+        5: PlanNode(
+            id=5,
+            plan_id=781,
+            name="Collect evidence",
+            status="completed",
+            instruction="Review the generated outputs.",
+            execution_result=json.dumps(
+                {
+                    "status": "completed",
+                    "content": "verification passed",
+                    "metadata": {
+                        "verification_status": "passed",
+                    },
+                },
+                ensure_ascii=False,
+            ),
+        )
+    }
+    repo = _RepoStub(tree)
+    monkeypatch.setattr(plan_routes, "_plan_repo", repo)
+    monkeypatch.setattr(plan_routes, "_load_authorized_plan_tree", lambda plan_id, request: tree)
+    monkeypatch.setattr(plan_routes, "get_request_owner_id", lambda request: "owner-1")
+
+    try:
+        plan_routes.accept_task_result(
+            5,
+            plan_routes.AcceptTaskRequest(reason="Should not accept an already verified result."),
+            request=None,
+            plan_id=781,
+        )
+    except plan_routes.HTTPException as exc:
+        assert exc.status_code == 400
+        assert "manual acceptance is only allowed" in str(exc.detail)
+    else:
+        raise AssertionError("Expected route to reject successful task manual acceptance")
+
 def test_file_exists_fallback_basename_match(tmp_path):
     """file_exists should pass via basename fallback when path is wrong but file exists in artifacts."""
     run_dir = tmp_path / "results" / "plan1_task1" / "run_abc123"
@@ -1256,3 +1563,125 @@ def test_json_field_at_least_with_field_and_min_count(tmp_path):
     assert finalization.final_status == "completed"
     assert finalization.verification["status"] == "passed"
     assert finalization.verification["checks_passed"] == 2
+
+
+# ---------------------------------------------------------------------------
+# Step 7: artifact authority — require satisfaction
+# ---------------------------------------------------------------------------
+
+
+def test_artifact_authority_reports_require_satisfaction(tmp_path):
+    """When explicit requires are resolved in the manifest, require_status is passed."""
+    # Create the artifact file so resolve_manifest_aliases can find it
+    refs_file = tmp_path / "refs.bib"
+    refs_file.write_text("@article{demo, title={Demo}}", encoding="utf-8")
+
+    verifier = TaskVerificationService()
+    node = PlanNode(
+        id=5,
+        plan_id=1,
+        name="Consumer task",
+        metadata={
+            "artifact_contract": {
+                "requires": ["ai_dl.references_bib"],
+            }
+        },
+    )
+    from app.services.plans.task_verification import VerificationFinalization
+
+    finalization = VerificationFinalization(
+        final_status="completed",
+        execution_status="completed",
+        payload={"status": "completed", "content": "done", "metadata": {}},
+    )
+    manifest = {
+        "artifacts": {
+            "ai_dl.references_bib": {
+                "alias": "ai_dl.references_bib",
+                "path": str(refs_file),
+                "producer_task_id": 3,
+            }
+        }
+    }
+    result = verifier.apply_artifact_authority(1, node, finalization, manifest=manifest)
+    authority = result.payload["metadata"]["artifact_authority"]
+    assert authority["require_status"] == "passed"
+    assert authority["satisfied_require_aliases"] == ["ai_dl.references_bib"]
+    assert authority["missing_require_aliases"] == []
+    assert result.final_status == "completed"
+
+
+def test_artifact_authority_reports_missing_require_aliases(tmp_path):
+    """When explicit requires are NOT in the manifest, require_status is failed."""
+    verifier = TaskVerificationService()
+    node = PlanNode(
+        id=5,
+        plan_id=1,
+        name="Consumer task",
+        metadata={
+            "artifact_contract": {
+                "requires": ["ai_dl.references_bib"],
+            }
+        },
+    )
+    from app.services.plans.task_verification import VerificationFinalization
+
+    finalization = VerificationFinalization(
+        final_status="completed",
+        execution_status="completed",
+        payload={"status": "completed", "content": "done", "metadata": {}},
+    )
+    # Empty manifest — required alias is missing
+    manifest = {"artifacts": {}}
+    result = verifier.apply_artifact_authority(1, node, finalization, manifest=manifest)
+    authority = result.payload["metadata"]["artifact_authority"]
+    assert authority["require_status"] == "failed"
+    assert authority["missing_require_aliases"] == ["ai_dl.references_bib"]
+    assert authority["status"] == "failed"
+    # Note: missing requires does NOT demote completed→failed (only missing publishes do)
+    assert result.final_status == "completed"
+
+
+def test_artifact_authority_combined_publish_and_require(tmp_path):
+    """Both publish and require are checked; combined status reflects both."""
+    # Create the required artifact file
+    refs_file = tmp_path / "refs.bib"
+    refs_file.write_text("@article{demo, title={Demo}}", encoding="utf-8")
+
+    verifier = TaskVerificationService()
+    node = PlanNode(
+        id=5,
+        plan_id=1,
+        name="Transform task",
+        metadata={
+            "artifact_contract": {
+                "requires": ["ai_dl.references_bib"],
+                "publishes": ["ai_dl.evidence_md"],
+            }
+        },
+    )
+    from app.services.plans.task_verification import VerificationFinalization
+
+    finalization = VerificationFinalization(
+        final_status="completed",
+        execution_status="completed",
+        payload={"status": "completed", "content": "done", "metadata": {}},
+    )
+    # Require is satisfied (file exists), publish is NOT (no entry for this task)
+    manifest = {
+        "artifacts": {
+            "ai_dl.references_bib": {
+                "alias": "ai_dl.references_bib",
+                "path": str(refs_file),
+                "producer_task_id": 3,
+            }
+        }
+    }
+    result = verifier.apply_artifact_authority(1, node, finalization, manifest=manifest)
+    authority = result.payload["metadata"]["artifact_authority"]
+    assert authority["require_status"] == "passed"
+    assert authority["publish_status"] == "failed"
+    assert authority["status"] == "failed"
+    # Missing publish demotes completed → failed
+    assert result.final_status == "failed"
+    assert result.payload["metadata"]["failure_kind"] == "artifact_publish_missing"

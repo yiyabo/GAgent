@@ -227,7 +227,14 @@ def _extract_storage_candidates(storage_payload: Dict[str, Any]) -> List[tuple[s
     ):
         if not isinstance(container, dict):
             continue
-        for key in ("preview_path", "result_path", "output_file", "output_file_rel"):
+        for key in (
+            "preview_path",
+            "result_path",
+            "output_file",
+            "output_file_rel",
+            "saved_path",
+            "saved_path_rel",
+        ):
             value = container.get(key)
             if isinstance(value, str) and value.strip():
                 candidates.append((value.strip(), None))
@@ -298,7 +305,14 @@ def extract_artifact_gallery_from_result(
                 origin="workspace" if str(row.get("path") or "").strip().startswith("/") else "artifact",
             )
 
-    for key in ("image_path", "output_file", "output_file_rel", "preview_path"):
+    for key in (
+        "image_path",
+        "output_file",
+        "output_file_rel",
+        "saved_path",
+        "saved_path_rel",
+        "preview_path",
+    ):
         value = result.get(key)
         if isinstance(value, str) and value.strip():
             _append_candidate_item(

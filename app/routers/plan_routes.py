@@ -16,6 +16,7 @@ from app.database import get_db
 from app.repository.plan_repository import PlanRepository
 from app.services.realtime_bus import EventSubscription, get_realtime_bus
 from app.services.request_principal import ensure_owner_access, get_request_owner_id
+from app.services.plans.artifact_contracts import producer_candidates_for_alias
 from app.services.plans.acceptance_criteria import (
     derive_acceptance_criteria_from_text,
     derive_expected_deliverables,
@@ -23,10 +24,18 @@ from app.services.plans.acceptance_criteria import (
 from app.services.plans.dependency_planner import DependencyPlan, compute_dependency_plan
 from app.services.plans.plan_decomposer import PlanDecomposer, DecompositionResult
 from app.services.plans.plan_executor import ExecutionConfig, PlanExecutor
+from app.services.plans.artifact_preflight import ArtifactPreflightResult, ArtifactPreflightService
+from app.services.plans.status_resolver import PlanStatusResolver
 from app.services.plans.task_verification import TaskVerificationService
+from app.services.plans.dependency_enrichment import (
+    enrich_plan_dependencies,
+    validate_plan_dag,
+    check_artifact_readiness,
+)
 from app.services.plans.todo_list import (
     build_todo_list as _build_todo_list,
     build_full_plan_todo_list as _build_full_plan_todo_list,
+    _collect_leaf_ids,
 )
 from app.services.plans.decomposition_jobs import (
     execute_decomposition_job,
@@ -44,6 +53,8 @@ _plan_repo = PlanRepository()
 _plan_decomposer = PlanDecomposer(repo=_plan_repo)
 _plan_executor = PlanExecutor(repo=_plan_repo)
 _task_verifier = TaskVerificationService()
+_artifact_preflight_service = ArtifactPreflightService()
+_plan_status_resolver = PlanStatusResolver()
 logger = logging.getLogger(__name__)
 
 # Guard against duplicate concurrent execution of the same plan+task pair.
@@ -79,6 +90,13 @@ def _load_authorized_plan_tree(plan_id: int, request: Request):
 
 def _sse_message(payload: Dict[str, Any]) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+def _artifact_preflight_failure_payload(result: ArtifactPreflightResult) -> Dict[str, Any]:
+    return {
+        "preflight": result.model_dump(),
+        "summary": result.summary(),
+    }
 
 
 def _is_terminal_job_status(raw_status: Any) -> bool:
@@ -228,6 +246,21 @@ class VerifyTaskResponse(BaseModel):
     message: str
     plan_id: int
     task_id: int
+    result: TaskResultItem
+
+
+class AcceptTaskRequest(BaseModel):
+    reason: str = Field(..., min_length=3, description="Why this failed task is acceptable")
+    name: Optional[str] = Field(default=None, description="Optional updated task name")
+    instruction: Optional[str] = Field(default=None, description="Optional updated task instruction")
+
+
+class AcceptTaskResponse(BaseModel):
+    success: bool
+    message: str
+    plan_id: int
+    task_id: int
+    updated_fields: List[str] = Field(default_factory=list)
     result: TaskResultItem
 
 
@@ -440,182 +473,11 @@ def _resolve_effective_task_states(
     snapshot: Optional[Dict[str, Any]] = None,
 ) -> Dict[int, Dict[str, Any]]:
     snapshot = snapshot or _build_plan_execution_snapshot(plan_id)
-    active_task_ids: Set[int] = set(snapshot.get("active_task_ids") or set())
-    memo: Dict[int, Dict[str, Any]] = {}
-    visiting: Set[int] = set()
-
-    def _fallback(task_id: int, raw_status: str) -> Dict[str, Any]:
-        effective = raw_status or "pending"
-        if effective in {"done", "success"}:
-            effective = "completed"
-        elif effective in {"error"}:
-            effective = "failed"
-        return {
-            "task_id": task_id,
-            "raw_status": raw_status or "pending",
-            "effective_status": effective or "pending",
-            "status_reason": None,
-            "blocked_by_dependencies": False,
-            "incomplete_dependencies": [],
-            "is_active_execution": task_id in active_task_ids,
-        }
-
-    def _resolve(task_id: int) -> Dict[str, Any]:
-        if task_id in memo:
-            return memo[task_id]
-        node = tree.nodes.get(task_id)
-        raw_status = _normalize_task_status(getattr(node, "status", None))
-        if node is None:
-            return _fallback(task_id, raw_status)
-        if task_id in visiting:
-            return _fallback(task_id, raw_status)
-
-        visiting.add(task_id)
-        execution_result = getattr(node, "execution_result", None)
-        content, notes, metadata, raw_payload = _parse_execution_result(execution_result)
-        payload_status = (
-            _normalize_task_status(raw_payload.get("status"))
-            if isinstance(raw_payload, dict)
-            else ""
-        )
-        raw_result_text = ""
-        if isinstance(execution_result, str):
-            raw_result_text = execution_result
-        elif isinstance(raw_payload, dict):
-            raw_result_text = json.dumps(raw_payload, ensure_ascii=False)
-        elif content:
-            raw_result_text = content
-
-        incomplete_dependencies: List[int] = []
-        for dep_id in list(getattr(node, "dependencies", []) or []):
-            if dep_id not in tree.nodes:
-                continue
-            dep_state = _resolve(dep_id)
-            if dep_state.get("effective_status") != "completed":
-                incomplete_dependencies.append(dep_id)
-
-        is_active_execution = task_id in active_task_ids
-        blocked_meta = bool(metadata.get("blocked_by_dependencies"))
-        recorded_incomplete = metadata.get("incomplete_dependencies")
-        if not blocked_meta and isinstance(recorded_incomplete, list) and recorded_incomplete:
-            blocked_meta = True
-
-        status_reason: Optional[str] = None
-        effective_status = "pending"
-
-        if is_active_execution:
-            effective_status = "running"
-            status_reason = "Currently executing in an active background job."
-        elif blocked_meta and incomplete_dependencies:
-            effective_status = "blocked"
-            status_reason = _build_dependency_block_reason(
-                task_id,
-                tree=tree,
-                incomplete_dependencies=incomplete_dependencies,
-                state_by_task=memo,
-            )
-        elif payload_status in {"failed", "error"}:
-            effective_status = "failed"
-            status_reason = _truncate_reason(content or raw_result_text) or "Task failed."
-        elif raw_status in {"failed", "error"}:
-            effective_status = "failed"
-            status_reason = _truncate_reason(content or raw_result_text) or "Task failed."
-        elif raw_status == "running":
-            if _looks_like_dependency_blocked_text(raw_result_text) and incomplete_dependencies:
-                effective_status = "blocked"
-                status_reason = _build_dependency_block_reason(
-                    task_id,
-                    tree=tree,
-                    incomplete_dependencies=incomplete_dependencies,
-                    state_by_task=memo,
-                )
-            elif _looks_like_retry_or_blocked_failure_text(raw_result_text) or _looks_like_failure_text(raw_result_text):
-                effective_status = "failed"
-                status_reason = _truncate_reason(content or raw_result_text) or "Task failed."
-            elif payload_status in {"completed", "done", "success"} or _looks_like_success_text(raw_result_text):
-                effective_status = "completed"
-                status_reason = _truncate_reason(content or raw_result_text) or "Completed."
-            else:
-                effective_status = "failed"
-                status_reason = "Execution interrupted."
-        elif raw_status in {"completed", "done", "success"} or payload_status in {"completed", "done", "success"}:
-            if _looks_like_dependency_blocked_text(raw_result_text) and incomplete_dependencies:
-                effective_status = "blocked"
-                status_reason = _build_dependency_block_reason(
-                    task_id,
-                    tree=tree,
-                    incomplete_dependencies=incomplete_dependencies,
-                    state_by_task=memo,
-                )
-            elif _looks_like_retry_or_blocked_failure_text(content or raw_result_text):
-                effective_status = "failed"
-                status_reason = _truncate_reason(content or raw_result_text) or "Task failed."
-            else:
-                effective_status = "completed"
-                status_reason = _truncate_reason(content or raw_result_text) or "Completed."
-        elif raw_status == "skipped":
-            if blocked_meta and incomplete_dependencies:
-                effective_status = "blocked"
-                status_reason = _build_dependency_block_reason(
-                    task_id,
-                    tree=tree,
-                    incomplete_dependencies=incomplete_dependencies,
-                    state_by_task=memo,
-                )
-            elif blocked_meta:
-                effective_status = "blocked"
-                missing_aliases = metadata.get("missing_artifact_aliases")
-                if isinstance(missing_aliases, list) and missing_aliases:
-                    status_reason = (
-                        "Blocked: required artifacts are still missing "
-                        f"({', '.join(str(alias) for alias in missing_aliases)})."
-                    )
-                else:
-                    status_reason = "Blocked until required dependencies or artifacts are available."
-            else:
-                effective_status = "skipped"
-                status_reason = _truncate_reason(content) or "Task skipped."
-        elif raw_status in {"pending", ""}:
-            if incomplete_dependencies:
-                effective_status = "blocked"
-                status_reason = _build_dependency_block_reason(
-                    task_id,
-                    tree=tree,
-                    incomplete_dependencies=incomplete_dependencies,
-                    state_by_task=memo,
-                )
-            else:
-                effective_status = "pending"
-                status_reason = "Ready to run."
-        else:
-            if incomplete_dependencies:
-                effective_status = "blocked"
-                status_reason = _build_dependency_block_reason(
-                    task_id,
-                    tree=tree,
-                    incomplete_dependencies=incomplete_dependencies,
-                    state_by_task=memo,
-                )
-            else:
-                effective_status = "pending"
-                status_reason = "Ready to run."
-
-        state = {
-            "task_id": task_id,
-            "raw_status": raw_status or "pending",
-            "effective_status": effective_status,
-            "status_reason": status_reason,
-            "blocked_by_dependencies": effective_status == "blocked",
-            "incomplete_dependencies": incomplete_dependencies,
-            "is_active_execution": is_active_execution,
-        }
-        memo[task_id] = state
-        visiting.remove(task_id)
-        return state
-
-    for task_id in sorted(tree.nodes):
-        _resolve(task_id)
-    return memo
+    return _plan_status_resolver.resolve_plan_states(
+        plan_id,
+        tree,
+        snapshot=snapshot,
+    )
 
 
 class DependencyNodeSummary(BaseModel):
@@ -875,6 +737,25 @@ def _collect_subtree_node_ids(tree: "PlanTree", root_task_id: int) -> List[int]:
     return ordered
 
 
+def _expand_artifact_preflight_scope(
+    tree: "PlanTree",
+    task_ids: Set[int],
+    preflight: ArtifactPreflightResult,
+) -> Set[int]:
+    expanded = {task_id for task_id in task_ids if task_id in tree.nodes}
+    if not expanded or not preflight.has_errors():
+        return expanded
+
+    all_nodes = list(tree.nodes.values())
+    for issue in preflight.errors:
+        if issue.code != "missing_producer" or not issue.alias:
+            continue
+        for producer_id in producer_candidates_for_alias(issue.alias, all_nodes):
+            if producer_id in tree.nodes:
+                expanded.add(producer_id)
+    return expanded
+
+
 def _persist_dependency_block(plan_id: int, task_id: int, dependency_block: Dict[str, Any]) -> None:
     try:
         _plan_repo.update_task(
@@ -974,6 +855,7 @@ def _todo_completed_count_from_effective(
 def _todo_pending_order_from_effective(
     todo: Any,
     state_by_task: Dict[int, Dict[str, Any]],
+    tree: Optional["PlanTree"] = None,
 ) -> List[int]:
     resolved = {
         item.task_id
@@ -990,8 +872,20 @@ def _todo_pending_order_from_effective(
             effective_status = str((state_by_task.get(item.task_id) or {}).get("effective_status") or "pending")
             if effective_status not in runnable_statuses:
                 continue
+            # Skip composite parent tasks — only leaf/atomic tasks should be executed directly
+            if tree is not None and tree.children_ids(item.task_id):
+                continue
             deps = list(item.dependencies or [])
-            if all(dep_id in resolved or dep_id in runnable_set for dep_id in deps):
+            # Expand composite parent dependencies to their leaf children
+            def _dep_satisfied(dep_id: int) -> bool:
+                if dep_id in resolved or dep_id in runnable_set:
+                    return True
+                # If dep is a composite parent, check if all its leaves are satisfied
+                if tree is not None and tree.children_ids(dep_id):
+                    leaf_deps = _collect_leaf_ids(tree, [dep_id])
+                    return all(ld in resolved or ld in runnable_set for ld in leaf_deps)
+                return False
+            if all(_dep_satisfied(dep_id) for dep_id in deps):
                 runnable.append(item.task_id)
                 runnable_set.add(item.task_id)
     return runnable
@@ -1554,7 +1448,32 @@ def verify_task_result(
         if isinstance(verification, dict) and verification.get("status") is not None
         else "skipped"
     )
-    if verification_status == "passed":
+    artifact_authority = metadata.get("artifact_authority") if isinstance(metadata, dict) else None
+    artifact_authority_status = (
+        str(artifact_authority.get("status")).strip().lower()
+        if isinstance(artifact_authority, dict) and artifact_authority.get("status") is not None
+        else None
+    )
+    manual_acceptance_active = _task_verifier.is_manual_acceptance_active(metadata)
+    manual_acceptance_reason = None
+    if manual_acceptance_active:
+        manual_acceptance = metadata.get("manual_acceptance") if isinstance(metadata, dict) else None
+        if isinstance(manual_acceptance, dict):
+            manual_acceptance_reason = str(manual_acceptance.get("reason") or "").strip() or None
+    final_status = str(finalization.final_status or "").strip().lower()
+    success = final_status not in {"failed", "error"}
+    if artifact_authority_status == "failed":
+        success = False
+    if manual_acceptance_active:
+        success = True
+    if not success and artifact_authority_status == "failed" and verification_status != "failed":
+        message = f"Task {task_id} verification finished, but artifact authority failed."
+    elif manual_acceptance_active and verification_status == "failed":
+        message = (
+            f"Task {task_id} verification still failed deterministically, "
+            f"but the task remains manually accepted."
+        )
+    elif verification_status == "passed":
         message = f"Task {task_id} verification passed."
     elif verification_status == "failed":
         message = f"Task {task_id} verification failed."
@@ -1562,16 +1481,86 @@ def verify_task_result(
         message = f"Task {task_id} verification skipped."
 
     return VerifyTaskResponse(
-        success=verification_status != "failed",
+        success=success,
         message=message,
         plan_id=plan_id,
         task_id=task_id,
         result=TaskResultItem(
             task_id=task_id,
             name=node.name,
-            status=finalization.final_status,
-            effective_status=finalization.final_status,
-            status_reason=_truncate_reason(content),
+            status="completed" if manual_acceptance_active else finalization.final_status,
+            effective_status="completed" if manual_acceptance_active else finalization.final_status,
+            status_reason=manual_acceptance_reason or _truncate_reason(content),
+            content=content,
+            notes=notes,
+            metadata=metadata,
+            raw=raw_payload,
+        ),
+    )
+
+
+@task_router.post(
+    "/{task_id}/accept",
+    response_model=AcceptTaskResponse,
+    summary="Manually accept a task result after review",
+)
+def accept_task_result(
+    task_id: int,
+    payload: AcceptTaskRequest,
+    request: Request,
+    plan_id: int = Query(..., description="plan ID"),
+):
+    tree = _load_authorized_plan_tree(plan_id, request)
+    if not tree.has_node(task_id):
+        raise HTTPException(status_code=404, detail=f"Task {task_id} not found in plan {plan_id}")
+    node = tree.get_node(task_id)
+    if not node.execution_result:
+        raise HTTPException(status_code=400, detail=f"Task {task_id} has no execution result to accept")
+
+    try:
+        accepted_by = get_request_owner_id(request)
+        finalization = _task_verifier.accept_task_result(
+            _plan_repo,
+            plan_id=plan_id,
+            task_id=task_id,
+            reason=payload.reason,
+            accepted_by=str(accepted_by) if accepted_by is not None else None,
+            task_name=payload.name,
+            task_instruction=payload.instruction,
+        )
+        reset_count = _task_verifier.reset_downstream_skipped_tasks(
+            _plan_repo,
+            plan_id=plan_id,
+            task_id=task_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    content, notes, metadata, raw_payload = _parse_execution_result(finalization.payload)
+    updated_fields: List[str] = []
+    if payload.name is not None and str(payload.name).strip():
+        updated_fields.append("name")
+    if payload.instruction is not None and str(payload.instruction).strip():
+        updated_fields.append("instruction")
+    message = f"Task {task_id} marked completed after manual review."
+    if reset_count:
+        message = (
+            f"Task {task_id} marked completed after manual review; "
+            f"reset {reset_count} downstream skipped task(s) to pending."
+        )
+
+    return AcceptTaskResponse(
+        success=True,
+        message=message,
+        plan_id=plan_id,
+        task_id=task_id,
+        updated_fields=updated_fields,
+        result=TaskResultItem(
+            task_id=task_id,
+            name=str(payload.name).strip() if payload.name is not None and str(payload.name).strip() else node.name,
+            status="completed",
+            effective_status="completed",
+            status_reason=str(payload.reason).strip(),
             content=content,
             notes=notes,
             metadata=metadata,
@@ -1648,6 +1637,34 @@ def execute_task_with_dependencies(
             dependency_plan=dep_response,
             job=None,
             result=None,
+        )
+
+    scoped_task_ids: Set[int] = set(dep_plan.execution_order)
+    scoped_task_ids.update(dep_plan.closure_dependencies)
+    scoped_task_ids.add(task_id)
+    if request.include_subtasks:
+        scoped_task_ids.update(_collect_subtree_node_ids(tree, task_id))
+    preflight = _artifact_preflight_service.validate_plan(
+        plan_id,
+        tree,
+        task_ids=scoped_task_ids,
+    )
+    expanded_task_ids = _expand_artifact_preflight_scope(tree, scoped_task_ids, preflight)
+    if expanded_task_ids != scoped_task_ids:
+        preflight = _artifact_preflight_service.validate_plan(
+            plan_id,
+            tree,
+            task_ids=expanded_task_ids,
+        )
+    if preflight.has_errors():
+        return ExecuteTaskResponse(
+            success=False,
+            message=preflight.summary(),
+            plan_id=plan_id,
+            task_id=task_id,
+            dependency_plan=dep_response,
+            job=None,
+            result=_artifact_preflight_failure_payload(preflight),
         )
 
     if request.include_dependencies and dep_response.running_dependencies:
@@ -1858,8 +1875,11 @@ def _todo_list_to_dict(
     plan_id: int,
     *,
     state_by_task: Optional[Dict[int, Dict[str, Any]]] = None,
+    tree: Optional["PlanTree"] = None,
 ) -> Dict[str, Any]:
-    state_by_task = state_by_task or _resolve_effective_task_states(plan_id, _plan_repo.get_plan_tree(plan_id))
+    if tree is None:
+        tree = _plan_repo.get_plan_tree(plan_id)
+    state_by_task = state_by_task or _resolve_effective_task_states(plan_id, tree)
     phases_out = []
     for phase in todo.phases:
         phases_out.append({
@@ -1893,7 +1913,7 @@ def _todo_list_to_dict(
         ),
         "phases": phases_out,
         "execution_order": todo.execution_order,
-        "pending_order": _todo_pending_order_from_effective(todo, state_by_task),
+        "pending_order": _todo_pending_order_from_effective(todo, state_by_task, tree=tree),
         "summary": _todo_summary_from_effective(todo, state_by_task),
     }
 
@@ -1946,8 +1966,25 @@ def get_full_plan_todo_list(
     tree = _load_authorized_plan_tree(plan_id, request)
     todo = _build_full_plan_todo_list(tree, expand_composites=expand_composites)
     state_by_task = _resolve_effective_task_states(plan_id, tree)
-    todo_payload = _todo_list_to_dict(todo, plan_id, state_by_task=state_by_task)
+    todo_payload = _todo_list_to_dict(todo, plan_id, state_by_task=state_by_task, tree=tree)
     return TodoListResponse(**todo_payload)
+
+
+@plan_router.get(
+    "/{plan_id}/active-job",
+    summary="Get the latest active plan_execute job for a plan",
+)
+def get_plan_active_job(plan_id: int, request: Request):
+    """Return the latest running or queued plan_execute job for the given plan.
+
+    Returns null if no active job exists.
+    """
+    job_ids = _list_plan_execute_job_ids(plan_id, limit=5)
+    for job_id in job_ids:
+        payload = plan_decomposition_jobs.get_job_payload(job_id, include_logs=False)
+        if isinstance(payload, dict) and payload.get("status") in ("running", "queued"):
+            return {"job_id": job_id, "status": payload.get("status"), "plan_id": plan_id}
+    return {"job_id": None, "status": None, "plan_id": plan_id}
 
 
 @plan_router.post(
@@ -1971,11 +2008,46 @@ def execute_full_plan(
     tree = _load_authorized_plan_tree(plan_id, raw_request)
     state_by_task = _resolve_effective_task_states(plan_id, tree)
 
+    # --- Artifact dependency enrichment ---
+    try:
+        _enrichment_result = enrich_plan_dependencies(tree)
+        if _enrichment_result.added_edges:
+            for _enode in tree.iter_nodes():
+                try:
+                    _plan_repo.update_task(plan_id, _enode.id, dependencies=list(_enode.dependencies))
+                except Exception:
+                    pass
+            logging.getLogger("app.routers.plan_routes").info(
+                "Enriched plan %s with %d implicit dependency edges.",
+                plan_id, len(_enrichment_result.added_edges),
+            )
+        _dag_validation = validate_plan_dag(tree)
+        if _dag_validation.has_errors():
+            return ExecuteFullPlanResponse(
+                success=False,
+                message=_dag_validation.summary(),
+                plan_id=plan_id,
+            )
+    except Exception as _enrich_exc:
+        logging.getLogger("app.routers.plan_routes").warning(
+            "Dependency enrichment failed (continuing with original graph): %s", _enrich_exc
+        )
+
     todo = _build_full_plan_todo_list(tree, expand_composites=True)
-    todo_dict = _todo_list_to_dict(todo, plan_id, state_by_task=state_by_task)
+    todo_dict = _todo_list_to_dict(todo, plan_id, state_by_task=state_by_task, tree=tree)
     task_order = list(todo_dict.get("execution_order") or [])
     if request.skip_completed:
         task_order = list(todo_dict.get("pending_order") or [])
+
+    preflight = _artifact_preflight_service.validate_plan(plan_id, tree)
+    if preflight.has_errors():
+        return ExecuteFullPlanResponse(
+            success=False,
+            message=preflight.summary(),
+            plan_id=plan_id,
+            todo_list=todo_dict,
+            result=_artifact_preflight_failure_payload(preflight),
+        )
 
     if not task_order:
         has_running = any(
@@ -2001,6 +2073,12 @@ def execute_full_plan(
         for tid in task_order:
             try:
                 current_tree = _plan_repo.get_plan_tree(plan_id)
+
+                # Safety guard: skip composite parent tasks — only leaf tasks should be executed
+                if current_tree.children_ids(tid):
+                    executed.append(tid)
+                    continue
+
                 current_state_by_task = _resolve_effective_task_states(plan_id, current_tree)
                 current_status = str(
                     (current_state_by_task.get(tid) or {}).get("effective_status") or "pending"
@@ -2300,6 +2378,20 @@ def _run_full_plan_job(
             # re-execute work that finished after the queue was created.
             try:
                 current_tree = _plan_repo.get_plan_tree(plan_id)
+
+                # Safety guard: skip composite parent tasks — only leaf tasks should be executed
+                if current_tree.children_ids(task_id):
+                    log_job_event(
+                        "info",
+                        "Skipping composite parent task.",
+                        {"plan_id": plan_id, "task_id": task_id, "step": idx, "reason": "has_children"},
+                    )
+                    executed.append(task_id)
+                    completed_steps += 1
+                    step_summaries.append({"task_id": task_id, "status": "composite_skipped", "duration_sec": 0.0})
+                    _publish_progress(current_step=idx, current_task_id=task_id)
+                    continue
+
                 current_state_by_task = _resolve_effective_task_states(
                     plan_id,
                     current_tree,
@@ -2386,13 +2478,137 @@ def _run_full_plan_job(
                         return
                     continue
             except Exception as exc:
-                log_job_event(
-                    "warning",
-                    "Failed to re-check task status before executing plan step.",
-                    {"plan_id": plan_id, "task_id": task_id, "step": idx, "error": str(exc)},
+                # Transient tree-refresh failure: retry once after a short
+                # backoff before giving up on this step.  This avoids burning
+                # through the queue on a momentary DB hiccup.
+                import time as _time
+                _time.sleep(1.0)
+                try:
+                    current_tree = _plan_repo.get_plan_tree(plan_id)
+                    log_job_event(
+                        "info",
+                        "Plan tree refresh succeeded on retry.",
+                        {"plan_id": plan_id, "task_id": task_id, "step": idx},
+                    )
+                except Exception as retry_exc:
+                    log_job_event(
+                        "error",
+                        "Plan tree refresh failed on retry; aborting remaining steps.",
+                        {"plan_id": plan_id, "task_id": task_id, "step": idx, "error": str(retry_exc)},
+                    )
+                    failed.append(task_id)
+                    step_summaries.append({
+                        "task_id": task_id,
+                        "status": "tree_refresh_failed",
+                        "duration_sec": 0.0,
+                        "error": str(retry_exc),
+                    })
+                    _publish_progress(current_step=idx, current_task_id=task_id)
+                    # Without a valid tree, dependency/completion checks for
+                    # subsequent tasks are unreliable.  Abort the entire job
+                    # regardless of stop_on_failure to avoid cascading skips.
+                    error = (
+                        f"Task #{task_id}: plan tree refresh failed after retry ({retry_exc}); "
+                        "aborting job — remaining tasks cannot be safely checked."
+                    )
+                    plan_decomposition_jobs.mark_failure(
+                        job_id,
+                        error,
+                        result={
+                            "plan_id": plan_id,
+                            "execution_order": task_order,
+                            "executed_task_ids": executed,
+                            "failed_task_ids": failed,
+                            "skipped_task_ids": skipped,
+                            "steps": step_summaries,
+                        },
+                        stats=_build_progress_stats(current_step=idx, current_task_id=task_id),
+                    )
+                    return
+
+                # Retry succeeded — re-run the same state checks that the
+                # primary try block performs (composite parent, already
+                # completed/running, dependency-blocked).
+                if current_tree.children_ids(task_id):
+                    log_job_event(
+                        "info",
+                        "Skipping composite parent task (after retry).",
+                        {"plan_id": plan_id, "task_id": task_id, "step": idx, "reason": "has_children"},
+                    )
+                    executed.append(task_id)
+                    completed_steps += 1
+                    step_summaries.append({"task_id": task_id, "status": "composite_skipped", "duration_sec": 0.0})
+                    _publish_progress(current_step=idx, current_task_id=task_id)
+                    continue
+
+                current_state_by_task = _resolve_effective_task_states(
+                    plan_id,
+                    current_tree,
+                    snapshot=_build_plan_execution_snapshot(plan_id, exclude_job_ids={job_id}),
                 )
+                current_status = str(
+                    (current_state_by_task.get(task_id) or {}).get("effective_status") or "pending"
+                ).strip().lower()
+                if current_status in ("completed", "running"):
+                    already_status = "already_running" if current_status == "running" else "already_completed"
+                    executed.append(task_id)
+                    if current_status != "running":
+                        completed_steps += 1
+                    step_summaries.append({"task_id": task_id, "status": already_status, "duration_sec": 0.0})
+                    _publish_progress(current_step=idx, current_task_id=task_id)
+                    continue
+
+                dependency_block = _build_dependency_block_details(
+                    current_tree, task_id, state_by_task=current_state_by_task,
+                )
+                if dependency_block is not None:
+                    _persist_dependency_block(plan_id, task_id, dependency_block)
+                    skipped.append(task_id)
+                    step_summaries.append({
+                        "task_id": task_id,
+                        "status": "blocked_by_dependencies",
+                        "duration_sec": 0.0,
+                        "reason": dependency_block["reason"],
+                        "metadata": dependency_block["metadata"],
+                    })
+                    _publish_progress(current_step=idx, current_task_id=task_id)
+                    if stop_on_failure:
+                        error = f"Task #{task_id} was blocked by incomplete dependencies; stopping chain."
+                        plan_decomposition_jobs.mark_failure(
+                            job_id, error,
+                            result={
+                                "plan_id": plan_id, "execution_order": task_order,
+                                "executed_task_ids": executed, "failed_task_ids": failed,
+                                "skipped_task_ids": skipped, "steps": step_summaries,
+                            },
+                            stats=_build_progress_stats(current_step=idx, current_task_id=task_id),
+                        )
+                        return
+                    continue
 
             try:
+                # --- Artifact readiness guard ---
+                _readiness_block = check_artifact_readiness(
+                    current_tree.nodes.get(task_id),
+                    current_tree,
+                    manifest=None,
+                )
+                if _readiness_block is not None:
+                    log_job_event(
+                        "warning",
+                        "Task blocked by missing input artifacts.",
+                        {"task_id": task_id, "step": idx, "reason": _readiness_block.reason},
+                    )
+                    skipped.append(task_id)
+                    step_summaries.append({
+                        "task_id": task_id,
+                        "status": "missing_input_artifact",
+                        "duration_sec": 0.0,
+                        "reason": _readiness_block.reason,
+                    })
+                    _publish_progress(current_step=idx, current_task_id=task_id)
+                    continue
+
                 exec_config = ExecutionConfig(session_context=session_ctx, paper_mode=bool(paper_mode))
                 result = _plan_executor.execute_task(plan_id, task_id, config=exec_config)
             except Exception as exc:
@@ -2423,6 +2639,20 @@ def _run_full_plan_job(
                 continue
 
             step_summaries.append({"task_id": task_id, "status": result.status, "duration_sec": result.duration_sec})
+
+            log_job_event(
+                "info" if result.status == "completed" else "warning" if result.status == "skipped" else "error",
+                f"Plan step completed: task #{task_id}",
+                {
+                    "sub_type": "step_complete",
+                    "plan_id": plan_id,
+                    "task_id": task_id,
+                    "step": idx,
+                    "total_steps": total_steps,
+                    "status": result.status,
+                    "duration_sec": result.duration_sec,
+                },
+            )
 
             if result.status == "completed":
                 executed.append(task_id)
@@ -2514,7 +2744,7 @@ def get_plan_todo_list(
         expand_composites=expand_composites,
     )
     state_by_task = _resolve_effective_task_states(plan_id, tree)
-    todo_payload = _todo_list_to_dict(todo, plan_id, state_by_task=state_by_task)
+    todo_payload = _todo_list_to_dict(todo, plan_id, state_by_task=state_by_task, tree=tree)
     return TodoListResponse(**todo_payload)
 
 

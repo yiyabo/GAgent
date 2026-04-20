@@ -118,6 +118,42 @@ def _to_session_relative(path: Path, session_dir: Optional[Path]) -> Optional[st
         return None
 
 
+def _attach_output_location(
+    result: Dict[str, Any],
+    *,
+    base_dir: Optional[Path],
+    session_id: Optional[str],
+    task_id: Optional[int],
+    ancestor_chain: Optional[List[int]],
+) -> Dict[str, Any]:
+    if base_dir is None:
+        return result
+
+    resolved_base = base_dir.resolve()
+    session_root = _resolve_session_dir(session_id)
+    artifact_paths = [str(path.resolve()) for path in sorted(resolved_base.rglob("*")) if path.is_file()]
+    session_artifact_paths: List[str] = []
+    for path in sorted(resolved_base.rglob("*")):
+        if not path.is_file():
+            continue
+        rel = _to_session_relative(path, session_root)
+        session_artifact_paths.append((rel or str(path.resolve())).replace("\\", "/"))
+
+    out = dict(result)
+    out["output_location"] = {
+        "type": "task" if task_id is not None else "tmp",
+        "session_id": session_id,
+        "task_id": task_id,
+        "ancestor_chain": ancestor_chain,
+        "base_dir": str(resolved_base),
+        "files": session_artifact_paths,
+    }
+    out["artifact_paths"] = artifact_paths
+    out["produced_files"] = artifact_paths
+    out["session_artifact_paths"] = session_artifact_paths
+    return out
+
+
 def _is_phage_topic(topic: str) -> bool:
     """Return True if topic is clearly about phage / bacteriophage."""
     t = (topic or "").lower()
@@ -190,6 +226,8 @@ async def review_pack_writer_handler(
     user_agent: Optional[str] = None,
     proxy: Optional[str] = None,
     session_id: Optional[str] = None,
+    task_id: Optional[int] = None,
+    ancestor_chain: Optional[List[int]] = None,
 ) -> Dict[str, Any]:
     if not isinstance(topic, str) or not topic.strip():
         return {"tool": "review_pack_writer", "success": False, "error": "missing_topic"}
@@ -199,16 +237,26 @@ async def review_pack_writer_handler(
 
     # Resolve out_dir
     ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    try:
-        default_out = _resolve_default_pack_dir(session_id=session_id, timestamp=ts)
-    except Exception as exc:
-        return {
-            "tool": "review_pack_writer",
-            "success": False,
-            "error": f"session_output_dir_unavailable: {exc}",
-        }
-    pack_dir = _normalize_pack_dir(out_dir, default_dir=default_out)
-    if not _is_within_root(pack_dir, _PROJECT_ROOT):
+    # --- Unified output path: use PathRouter when task_id is available ---
+    unified_output_dir: Optional[Path] = None
+    if task_id is not None and session_id and not out_dir:
+        from app.services.path_router import get_path_router
+        path_router = get_path_router()
+        unified_output_dir = path_router.get_task_output_dir(
+            session_id, task_id, ancestor_chain, create=True
+        )
+        pack_dir = unified_output_dir
+    else:
+        try:
+            default_out = _resolve_default_pack_dir(session_id=session_id, timestamp=ts)
+        except Exception as exc:
+            return {
+                "tool": "review_pack_writer",
+                "success": False,
+                "error": f"session_output_dir_unavailable: {exc}",
+            }
+        pack_dir = _normalize_pack_dir(out_dir, default_dir=default_out)
+    if unified_output_dir is None and not _is_within_root(pack_dir, _PROJECT_ROOT):
         return {"tool": "review_pack_writer", "success": False, "error": "out_dir_outside_project"}
     pack_dir.mkdir(parents=True, exist_ok=True)
 
@@ -231,18 +279,25 @@ async def review_pack_writer_handler(
         user_agent=user_agent,
         proxy=proxy,
         session_id=session_id,
+        task_id=task_id,
+        ancestor_chain=ancestor_chain,
     )
     stage = 1
 
     if not isinstance(pack, dict) or not pack.get("success"):
-        return {
+        return _attach_output_location({
             "tool": "review_pack_writer",
             "success": False,
             "error": "literature_pipeline_failed",
             "progress_bar": _bar(stage, len(stage_names)),
             "progress_stage": stage_names[stage - 1],
             "pack": pack,
-        }
+        },
+        base_dir=unified_output_dir,
+        session_id=session_id,
+        task_id=task_id,
+        ancestor_chain=ancestor_chain,
+        )
 
     outputs = pack.get("outputs") if isinstance(pack.get("outputs"), dict) else {}
     evidence_coverage_passed = bool(pack.get("evidence_coverage_passed"))
@@ -269,7 +324,7 @@ async def review_pack_writer_handler(
             if coverage_summary
             else "Publication blocked: evidence coverage was too weak for a PI-readable review manuscript."
         )
-        return {
+        return _attach_output_location({
             "tool": "review_pack_writer",
             "success": False,
             "partial": False,
@@ -304,7 +359,12 @@ async def review_pack_writer_handler(
                 "manuscript_partial": None,
                 "manuscript_workspace": None,
             },
-        }
+        },
+        base_dir=unified_output_dir,
+        session_id=session_id,
+        task_id=task_id,
+        ancestor_chain=ancestor_chain,
+        )
 
     # 2) Draft manuscript
     draft = await manuscript_writer_handler(
@@ -323,6 +383,8 @@ async def review_pack_writer_handler(
         evaluation_provider=evaluation_provider,
         merge_provider=merge_provider,
         session_id=session_id,
+        task_id=task_id,
+        ancestor_chain=ancestor_chain,
     )
     stage = 2
 
@@ -381,7 +443,7 @@ async def review_pack_writer_handler(
             if value and value not in hidden_artifact_prefixes:
                 hidden_artifact_prefixes.append(value)
 
-    return {
+    return _attach_output_location({
         "tool": "review_pack_writer",
         "success": True if ok else False,
         "partial": partial,
@@ -425,7 +487,12 @@ async def review_pack_writer_handler(
             "manuscript_partial": partial_path,
             "manuscript_workspace": (draft or {}).get("temp_workspace") if isinstance(draft, dict) else None,
         },
-    }
+    },
+    base_dir=unified_output_dir,
+    session_id=session_id,
+    task_id=task_id,
+    ancestor_chain=ancestor_chain,
+    )
 
 
 review_pack_writer_tool = {

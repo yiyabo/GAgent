@@ -20,16 +20,7 @@ RequestTier = Literal["light", "standard", "research", "execute"]
 RequestRouteMode = Literal["manual_deepthink", "auto_simple", "auto_deepthink"]
 ThinkingVisibility = Literal["visible", "progress", "hidden"]
 ThinkingDisplayMode = Literal["full_thinking", "compact_progress", "final_answer", "hidden"]
-PlanRequestMode = Literal["create", "update_bound", "create_new"]
-IntentType = Literal[
-    "chat",
-    "local_read",
-    "local_inspect",
-    "local_mutation",
-    "research",
-    "execute_task",
-]
-CapabilityFloor = Literal["tools"]
+IntentType = Literal["chat", "execute_task"]
 SubjectKind = Literal["none", "file", "directory", "workspace"]
 
 _MANUAL_DEEP_RE = re.compile(r"^\s*/(?:think|deep)\b", re.IGNORECASE)
@@ -167,16 +158,46 @@ _FULL_PLAN_EXECUTION_PHRASES = (
     "complete entire plan",
     "finish all tasks",
     "finish the plan",
+    "start executing",
+    "execute them all",
+    "execute them",
+    "run them all",
+    "run them",
+    "do them all",
+    "do all tasks",
+    "go ahead and execute",
+    "go ahead and run",
+    "let's execute",
+    "let's run",
+    "let's go",
     "执行整个计划",
     "执行全部任务",
     "执行所有任务",
+    "执行它们",
+    "执行她们",
+    "执行他们",
+    "执行这些任务",
+    "执行这些",
     "完成整个计划",
     "完成全部任务",
     "完成所有任务",
+    "完成它们",
+    "完成她们",
+    "完成他们",
+    "完成这些任务",
+    "完成这些",
     "把计划做完",
     "把任务做完",
     "把所有任务做完",
+    "把它们做完",
+    "把这些做完",
     "全部执行",
+    "全部做完",
+    "全部完成",
+    "都执行",
+    "都做了",
+    "都做完",
+    "都完成",
     "自动执行",
     "自动完成所有",
     "自动执行所有",
@@ -184,10 +205,18 @@ _FULL_PLAN_EXECUTION_PHRASES = (
     "自动执行计划",
     "开始执行整个",
     "开始执行全部",
+    "开始执行所有",
     "开始完成所有",
     "开始自动执行",
+    "开始执行吧",
+    "开始吧",
+    "开始做吧",
+    "开工吧",
     "一键执行",
     "一键完成",
+    "跑起来",
+    "跑完所有",
+    "跑完全部",
 )
 
 _FULL_PLAN_STATUS_QUERY_MARKERS = (
@@ -257,6 +286,9 @@ _EXECUTE_PHRASES = (
     "检查日志",
     "创建计划",
     "生成计划",
+    "优化计划",
+    "优化一下",
+    "进行优化",
     "拆解",
     "分解",
     "提交",
@@ -278,6 +310,7 @@ _EXECUTE_PHRASES = (
     "重新提交",
     "重新运行",
     "重新执行",
+    "重新生成",
     "重试",
     "try it",
     "try again",
@@ -292,6 +325,10 @@ _EXECUTE_PHRASES = (
     "直接做",
     "直接开始",
     "开工",
+    # Standalone action verbs that signal execution without followthrough cue
+    "解压",
+    "解包",
+    "测试一下",
 )
 
 # NOTE: All phrases MUST be lowercase — used with _contains_any_lowered().
@@ -408,6 +445,12 @@ _PLAN_OPTIMIZE_PHRASES = (
     "优化一下plan",
     "更新plan",
     "更新一下plan",
+    # Short forms — when plan_bound, "再优化一下" clearly targets the current plan
+    "再优化",
+    "再优化一下",
+    "优化一下吧",
+    "进行优化",
+    "开始优化",
 )
 
 _PLAN_OPTIMIZE_MARKERS = (
@@ -471,117 +514,6 @@ _PLAN_NEW_REQUEST_PHRASES = (
     "另一个计划",
 )
 
-_LOCAL_READ_PHRASES = (
-    "read",
-    "open",
-    "inspect",
-    "look inside",
-    "look at the file",
-    "read the file",
-    "show the file",
-    "show contents",
-    "读取",
-    "阅读",
-    "打开",
-    "看看",
-    "看一下",
-    "查看",
-    "读一下",
-    "读这个",
-)
-
-_LOCAL_INSPECT_PHRASES = (
-    "analyze this file",
-    "what's inside",
-    "what is inside",
-    "show me what's inside",
-    "list the data",
-    "list the files",
-    "inspect the contents",
-    "inside",
-    "content",
-    "contents",
-    "schema",
-    "column",
-    "columns",
-    "读取文件",
-    "分析这个文件",
-    "里面",
-    "里头",
-    "内容",
-    "数据",
-    "有哪些数据",
-    "都有哪些数据",
-    "有啥",
-    "看看里面",
-    "展开看看",
-    "列数据",
-    "目录结构",
-)
-
-# PhageScope API / remote verification: require product anchor + remote-intent cue so we
-# upgrade to research floor (phagescope in allowed_tools) without lifting generic local reads.
-_PHAGESCOPE_DOMAIN_MARKERS = (
-    "phagescope",
-    "phage scope",
-)
-
-_PHAGESCOPE_REMOTE_INTENT_MARKERS = (
-    "ping",
-    "连通",
-    "连通性",
-    "访问",
-    "访问权限",
-    "api",
-    "token",
-    "验证",
-    "测试",
-    "下载",
-    "download",
-    "连接",
-    "credential",
-    "credentials",
-    "connectivity",
-    "登录",
-    "接口",
-)
-
-# Follow-up: user asks whether a remote PhageScope task (numeric id) is running / status — without
-# repeating the word "phagescope". Requires a PhageScope anchor (subject path or prior cue).
-_PHAGESCOPE_TASK_STATUS_PHRASES = (
-    "在跑",
-    "运行",
-    "运行中",
-    "状态",
-    "进度",
-    "查询",
-    "咨询",
-    "看看",
-    "任务",
-    "task",  # e.g. "task 38619" without Chinese 任务
-    "是否",
-    "真的",
-    "跑完",
-    "完成",
-    "下载",
-    "输出",
-    "验证",
-    "结果",
-)
-
-# Numeric remote task id + result/output vocabulary (no phagescope keyword / no workspace anchor).
-_PHAGESCOPE_TASK_RESULT_PHRASES = (
-    "下载",
-    "download",
-    "输出",
-    "结果",
-    "验证",
-    "quality",
-    "annotation",
-    "模块",
-    "module",
-)
-
 _LOCAL_MUTATION_PHRASES = (
     "unzip",
     "extract",
@@ -642,25 +574,6 @@ _MUTATION_SCOPE_PHRASES = (
     "解压一下",
     "去解压",
     "接着解压",
-)
-
-_FILE_OR_WORKSPACE_PHRASES = (
-    "file",
-    "files",
-    "folder",
-    "directory",
-    "workspace",
-    "repo",
-    "repository",
-    "codebase",
-    "log",
-    "logs",
-    "文件",
-    "目录",
-    "工作区",
-    "仓库",
-    "代码库",
-    "日志",
 )
 
 _DIRECTORY_PHRASES = ("folder", "directory", "目录", "文件夹")
@@ -769,24 +682,65 @@ _IMAGE_DISPLAY_EXECUTION_OVERRIDE_PHRASES = (
 _ACTION_VERB_PHRASES = (
     "尝试", "试试", "试一下", "提交", "测试", "跑", "运行",
     "执行", "部署", "构建", "修改", "修复", "调试", "安装", "配置",
+    "分析", "解压", "解开", "解包", "展开", "重新生成", "生成",
     "try", "attempt", "submit", "test", "run", "deploy", "build",
     "fix", "install", "configure",
-)
-
-_ANALYSIS_FOLLOWTHROUGH_PHRASES = (
-    "分析",
-    "分析一下",
-    "继续分析",
-    "analyze",
-    "analyse",
-    "analyze it",
-    "analyze this data",
 )
 
 # Chat-only continuations: "继续说" should stay as chat, not escalate to execute
 _CHAT_CONTINUATION_PHRASES = (
     "继续说", "继续讲", "继续解释", "继续介绍", "继续聊", "继续讨论",
     "keep talking", "keep explaining", "go on explaining", "continue explaining",
+)
+
+# Bound-task execution cues: when a task is already bound (current_task_id),
+# these phrases signal the user wants to *execute* the task, not just chat
+# about it.  Used by resolve_intent_type to restore execute_task intent so
+# DeepThink safeguards (probe-only detection, verification-only replacement)
+# remain active.
+_BOUND_TASK_EXECUTE_CUES = (
+    "继续执行",
+    "继续这个任务",
+    "继续做",
+    "继续解压",
+    "继续运行",
+    "开始执行",
+    "开始做",
+    "开始完成任务",
+    "开始完成",
+    "直接做",
+    "直接开始",
+    "直接执行",
+    "开工",
+    "执行这个任务",
+    "执行这个",
+    "执行它",
+    "跑一下",
+    "跑一次",
+    "再跑",
+    "再试",
+    "重试",
+    "重新执行",
+    "重新运行",
+    "解压",
+    "解包",
+    "continue this task",
+    "continue executing",
+    "execute this task",
+    "execute this",
+    "execute it",
+    "run this task",
+    "run this",
+    "run it",
+    "start executing",
+    "start now",
+    "go ahead",
+    "do it",
+    "finish it",
+    "try it",
+    "try again",
+    "retry",
+    "rerun",
 )
 
 _DEPTH_CUES = (
@@ -827,9 +781,9 @@ _REFERENTIAL_CUES = (
     "this one",
 )
 
-# All tools available when capability_floor == "tools".
-# Inspired by Claude Code: the LLM sees every tool and decides which to use.
-_ALL_TOOLS: List[str] = [
+# All registered tools — the LLM sees every tool and decides which to use.
+# Inspired by Claude Code: flat tool pool, no per-request filtering.
+ALL_TOOLS: List[str] = [
     "file_operations",
     "document_reader",
     "vision_reader",
@@ -850,11 +804,6 @@ _ALL_TOOLS: List[str] = [
     "verify_task",
 ]
 
-# Legacy alias kept for backward compatibility in action_handlers._enforce_capability_guard.
-_SUCCESSOR_TOOLSET: Dict[str, List[str]] = {
-    "tools": list(_ALL_TOOLS),
-}
-
 
 @dataclass(frozen=True)
 class RequestRoutingDecision:
@@ -865,15 +814,10 @@ class RequestRoutingDecision:
     thinking_visibility: ThinkingVisibility
     effective_user_message: str
     intent_type: IntentType
-    capability_floor: CapabilityFloor
     subject_resolution: Dict[str, Any]
     brevity_hint: bool
     explicit_task_ids: List[int]
     explicit_task_override: bool
-    requires_structured_plan: bool = False
-    plan_request_mode: Optional[PlanRequestMode] = None
-    requires_plan_review: bool = False
-    requires_plan_optimize: bool = False
     full_plan_execution: bool = False
 
     @property
@@ -895,15 +839,10 @@ class RequestRoutingDecision:
             "thinking_visibility": self.thinking_visibility,
             "thinking_display_mode": thinking_display_mode,
             "intent_type": self.intent_type,
-            "capability_floor": self.capability_floor,
             "subject_resolution": dict(self.subject_resolution),
             "brevity_hint": self.brevity_hint,
             "explicit_task_ids": list(self.explicit_task_ids),
             "explicit_task_override": self.explicit_task_override,
-            "requires_structured_plan": self.requires_structured_plan,
-            "plan_request_mode": self.plan_request_mode,
-            "requires_plan_review": self.requires_plan_review,
-            "requires_plan_optimize": self.requires_plan_optimize,
             "full_plan_execution": self.full_plan_execution,
         }
         if self.thinking_visibility == "progress":
@@ -919,13 +858,8 @@ class RequestTierProfile:
     available_tools: List[str]
     output_bias: str
     intent_type: IntentType
-    capability_floor: CapabilityFloor
     explicit_task_ids: List[int]
     explicit_task_override: bool
-    requires_structured_plan: bool = False
-    plan_request_mode: Optional[PlanRequestMode] = None
-    requires_plan_review: bool = False
-    requires_plan_optimize: bool = False
     full_plan_execution: bool = False
 
     def prompt_metadata(self) -> Dict[str, Any]:
@@ -936,20 +870,15 @@ class RequestTierProfile:
             "output_bias": self.output_bias,
             "available_tools": list(self.available_tools),
             "intent_type": self.intent_type,
-            "capability_floor": self.capability_floor,
             "explicit_task_ids": list(self.explicit_task_ids),
             "explicit_task_override": self.explicit_task_override,
-            "requires_structured_plan": self.requires_structured_plan,
-            "plan_request_mode": self.plan_request_mode,
-            "requires_plan_review": self.requires_plan_review,
-            "requires_plan_optimize": self.requires_plan_optimize,
             "full_plan_execution": self.full_plan_execution,
         }
 
 
-def allowed_tools_for_capability_floor(capability_floor: CapabilityFloor) -> List[str]:
-    """Always returns all tools — capability_floor is always 'tools'."""
-    return list(_ALL_TOOLS)
+def get_all_tools() -> List[str]:
+    """Return the flat tool pool — all tools always available."""
+    return list(ALL_TOOLS)
 
 
 def manual_deep_think_requested(
@@ -997,9 +926,6 @@ def resolve_request_routing(
         plan_id=plan_id,
         current_task_id=current_task_id,
     )
-    capability_floor, capability_reasons = determine_capability_floor(
-        intent_type=intent_type,
-    )
     request_tier, reasons, brevity_hint = classify_request_tier(
         message=effective_user_message,
         history=history,
@@ -1009,78 +935,46 @@ def resolve_request_routing(
         intent_type=intent_type,
     )
     combined_reasons = list(
-        dict.fromkeys(subject_reasons + intent_reasons + capability_reasons + reasons)
+        dict.fromkeys(subject_reasons + intent_reasons + reasons)
     )
     explicit_task_ids = extract_task_ids_from_text(effective_user_message)
     explicit_task_override = bool(explicit_task_ids)
     if explicit_task_override:
         combined_reasons.append("explicit_task_override")
-        # ── Intent elevation ──────────────────────────────────────────
-        # When the user references specific task IDs (e.g. "任务 7",
-        # "task 13, 14, 15") in a plan-bound session, they almost
-        # certainly intend to *execute* those tasks, not just chat about
-        # them.  If the intent classifier returned a weaker intent
-        # (chat / local_read / etc.) because no explicit execute keyword
-        # was present, elevate to execute_task so the agent receives
-        # the correct system prompt and request tier.
-        if intent_type in ("chat", "local_read", "local_inspect"):
-            intent_type = "execute_task"
-            combined_reasons.append("intent_execute_task")
-            combined_reasons.append("intent_execution")
-            # Re-derive capability & tier to match the elevated intent
-            capability_floor, _cap_reasons = determine_capability_floor(
-                intent_type=intent_type,
-            )
-            request_tier, _tier_reasons, brevity_hint = classify_request_tier(
-                message=effective_user_message,
-                history=history,
-                context=context,
-                plan_id=plan_id,
-                current_task_id=current_task_id,
-                intent_type=intent_type,
-            )
-            combined_reasons.extend(_cap_reasons)
-            combined_reasons.extend(_tier_reasons)
-    context_plan_id = (context or {}).get("plan_id")
-    context_task_id = (context or {}).get("current_task_id")
-    effective_plan_bound = plan_id is not None or context_plan_id is not None
-    effective_task_bound = current_task_id is not None or context_task_id is not None
-    if explicit_task_override:
-        requires_plan_review = False
-        requires_plan_optimize = False
-    else:
-        requires_plan_review = _has_explicit_plan_review_request(
-            effective_user_message,
-            plan_bound=effective_plan_bound,
-            task_bound=effective_task_bound,
-        )
-        requires_plan_optimize = _has_explicit_plan_optimize_request(
-            effective_user_message,
-            plan_bound=effective_plan_bound,
-            task_bound=effective_task_bound,
-        )
-    plan_request_mode = _resolve_plan_request_mode(
-        effective_user_message,
-        plan_bound=effective_plan_bound,
-    )
-    if plan_request_mode is None and effective_plan_bound and (requires_plan_review or requires_plan_optimize):
-        plan_request_mode = "update_bound"
-    requires_structured_plan = plan_request_mode is not None
-
-    # ── Full plan execution detection ─────────────────────────────
-    # "执行整个计划" / "complete all tasks" etc. → execute the entire
-    # plan tree automatically via cascade, not just specific task IDs.
-    full_plan_execution = _is_full_plan_execution_request(
-        effective_user_message, plan_bound=effective_plan_bound,
-    )
-    if full_plan_execution:
-        combined_reasons.append("full_plan_execution")
-        if intent_type != "execute_task":
+        # Explicit task IDs → elevate to execute_task so DeepThink
+        # activates bound-task execution logic.
+        if intent_type == "chat":
             intent_type = "execute_task"
             combined_reasons.append("intent_execute_task")
         if request_tier != "execute":
             request_tier = "execute"
+            combined_reasons.append("tier_elevated_explicit_task")
+
+    context_plan_id = (context or {}).get("plan_id")
+    effective_plan_bound = plan_id is not None or context_plan_id is not None
+
+    # Detect imperative full-plan execution requests ("执行整个计划",
+    # "execute all tasks", etc.).  Tier-elevate to execute (more iterations)
+    # so DeepThink has enough budget to call plan_operation(execute_all).
+    #
+    # full_plan_execution stays False — the plan_operation tool has an
+    # execute_all operation that launches a background job with DAG ordering,
+    # artifact manifest, task verification, and deliverable publishing.
+    # DeepThink will call it via native tool-calling, which also produces
+    # visible thinking steps for the user.  Setting full_plan_execution=True
+    # would bypass DeepThink entirely and delegate to PlanExecutor directly.
+    full_plan_execution = False
+    _execution_keywords_detected = _is_full_plan_execution_request(
+        effective_user_message, plan_bound=effective_plan_bound,
+    )
+    if _execution_keywords_detected:
+        combined_reasons.append("plan_execution_hint")
+        if request_tier != "execute":
+            request_tier = "execute"
             combined_reasons.append("tier_elevated_full_plan")
+        if intent_type == "chat":
+            intent_type = "execute_task"
+            combined_reasons.append("intent_execute_task")
 
     if manual:
         combined_reasons = ["manual_deepthink"] + [
@@ -1094,15 +988,10 @@ def resolve_request_routing(
             thinking_visibility="visible",
             effective_user_message=effective_user_message,
             intent_type=intent_type,
-            capability_floor=capability_floor,
             subject_resolution=subject_resolution,
             brevity_hint=brevity_hint,
             explicit_task_ids=explicit_task_ids,
             explicit_task_override=explicit_task_override,
-            requires_structured_plan=requires_structured_plan,
-            plan_request_mode=plan_request_mode,
-            requires_plan_review=requires_plan_review,
-            requires_plan_optimize=requires_plan_optimize,
             full_plan_execution=full_plan_execution,
         )
     return RequestRoutingDecision(
@@ -1110,18 +999,13 @@ def resolve_request_routing(
         request_route_mode="auto_deepthink",
         route_reason_codes=combined_reasons,
         manual_deep_think=False,
-        thinking_visibility="progress" if request_tier in {"research", "execute"} else "visible",
+        thinking_visibility="visible",
         effective_user_message=effective_user_message,
         intent_type=intent_type,
-        capability_floor=capability_floor,
         subject_resolution=subject_resolution,
         brevity_hint=brevity_hint,
         explicit_task_ids=explicit_task_ids,
         explicit_task_override=explicit_task_override,
-        requires_structured_plan=requires_structured_plan,
-        plan_request_mode=plan_request_mode,
-        requires_plan_review=requires_plan_review,
-        requires_plan_optimize=requires_plan_optimize,
         full_plan_execution=full_plan_execution,
     )
 
@@ -1135,11 +1019,19 @@ def classify_request_tier(
     current_task_id: Optional[int] = None,
     intent_type: IntentType = "chat",
 ) -> tuple[RequestTier, List[str], bool]:
+    """Classify the request into a tier that controls thinking budget and iterations.
+
+    This function uses keyword heuristics to decide how much resource to
+    allocate (thinking budget, max iterations, thinking visibility).  It does
+    NOT decide intent — the LLM decides what tools to call.
+    """
     text = str(message or "").strip()
     lowered = text.lower()
     collapsed = _NON_WORD_RE.sub("", lowered)
     reasons: List[str] = []
     context_dict = dict(context or {})
+
+    # ── Structural signals ────────────────────────────────────────
     attachments = context_dict.get("attachments")
     has_attachments = isinstance(attachments, list) and len(attachments) > 0
     if has_attachments:
@@ -1159,12 +1051,20 @@ def classify_request_tier(
         reasons.append("time_sensitive_cue")
 
     has_execute_keyword = _contains_any(lowered, _EXECUTE_PHRASES)
-    has_file_or_workspace_cue = _contains_any(lowered, _FILE_OR_WORKSPACE_PHRASES)
     has_depth_cue = _contains_any(lowered, _DEPTH_CUES)
-    if has_file_or_workspace_cue:
-        reasons.append("file_or_workspace_cue")
     if has_depth_cue:
         reasons.append("depth_cue")
+
+    has_followthrough_cue = _contains_any(lowered, _FOLLOWTHROUGH_PHRASES)
+    has_action_verb = _contains_any(lowered, _ACTION_VERB_PHRASES)
+    is_chat_continuation = _contains_any(lowered, _CHAT_CONTINUATION_PHRASES)
+    followthrough_implies_execute = (
+        has_followthrough_cue and has_action_verb and not is_chat_continuation
+    )
+
+    has_plan_request = _has_explicit_plan_request(text)
+    has_plan_review = _has_explicit_plan_review_request(text, plan_bound=plan_bound, task_bound=task_bound)
+    has_plan_optimize = _has_explicit_plan_optimize_request(text, plan_bound=plan_bound, task_bound=task_bound)
 
     recent_assistant_turn = _last_role(history, "assistant")
     is_brief_followup = bool(recent_assistant_turn) and (
@@ -1174,63 +1074,54 @@ def classify_request_tier(
     if is_brief_followup:
         reasons.append("brief_followup")
 
-    has_followthrough_cue = _contains_any(lowered, _FOLLOWTHROUGH_PHRASES)
-    if has_followthrough_cue and "brief_followup" not in reasons:
-        reasons.append("followthrough_cue")
+    # ── Tier decision ─────────────────────────────────────────────
+    # 1. Execute tier: structural signals or keyword heuristics that
+    #    indicate the user wants the LLM to take action (more iterations,
+    #    progress display).  This does NOT set intent_type — the LLM
+    #    decides what tools to call.
+    if intent_type == "execute_task":
+        reasons.append("intent_execution")
+        return "execute", reasons, is_brief_followup
 
-    has_action_verb = _contains_any(lowered, _ACTION_VERB_PHRASES)
-    is_chat_continuation = _contains_any(lowered, _CHAT_CONTINUATION_PHRASES)
-    followthrough_implies_execute = (
-        has_followthrough_cue and has_action_verb and not is_chat_continuation
-    )
-    prioritize_image_display = should_prioritize_existing_image_display(
-        message,
-        context_dict,
-        task_bound=task_bound,
-        plan_followthrough=bool(plan_bound and has_followthrough_cue),
-        followthrough_implies_execute=followthrough_implies_execute,
-    )
-
-    if has_execute_keyword and not prioritize_image_display:
+    if has_attachments:
         reasons.append("execution_keyword")
+        return "execute", reasons, is_brief_followup
 
+    if has_plan_request or has_plan_review or has_plan_optimize:
+        if has_plan_request:
+            reasons.append("plan_request")
+        if has_plan_review:
+            reasons.append("plan_review")
+        if has_plan_optimize:
+            reasons.append("plan_optimize")
+        return "execute", reasons, is_brief_followup
+
+    if has_execute_keyword or followthrough_implies_execute:
+        reasons.append("execution_keyword")
+        return "execute", reasons, is_brief_followup
+
+    if plan_bound and has_followthrough_cue and not is_chat_continuation:
+        reasons.append("plan_followthrough")
+        return "execute", reasons, is_brief_followup
+
+    # 2. Research: literature / time-sensitive cues
+    if has_research_cue or has_time_sensitive_cue:
+        return "research", reasons, is_brief_followup
+
+    # 2b. Remote status queries
+    _REMOTE_STATUS_WORDS = ("状态", "进度", "在跑", "运行", "完成", "status", "running", "progress")
+    if (
+        re.search(r"(?<!\d)\d{5,}(?!\d)", lowered)
+        and _contains_any(lowered, _REMOTE_STATUS_WORDS)
+    ):
+        reasons.append("remote_status_query")
+        return "standard", reasons, is_brief_followup
+
+    # 3. Light: greetings, short social, brief follow-ups
     is_light_exact = collapsed in {
         _NON_WORD_RE.sub("", token.lower()) for token in _LIGHT_EXACT
     }
     is_light_phrase = _contains_any(lowered, _LIGHT_PHRASES)
-    is_short_direct_request = bool(text) and (
-        len(text) <= 60 or len(text.split()) <= 14
-    )
-    is_simple_question = is_short_direct_request and (
-        "?" in text
-        or "？" in text
-        or any(
-            token in lowered
-            for token in ("what", "why", "how", "can you", "可以", "怎么", "如何", "是什么")
-        )
-        or "吗" in text
-    )
-
-    if intent_type in {"local_mutation", "execute_task"}:
-        reasons.append("intent_execution")
-        return "execute", reasons, is_brief_followup
-
-    if intent_type == "research":
-        reasons.append("intent_research")
-        return "research", reasons, is_brief_followup
-
-    if has_attachments or (has_execute_keyword and not prioritize_image_display):
-        return "execute", reasons, is_brief_followup
-
-    if plan_bound and (
-        has_followthrough_cue or (has_execute_keyword and not prioritize_image_display)
-    ):
-        if "plan_bound" not in reasons:
-            reasons.append("plan_bound")
-        return "execute", reasons, is_brief_followup
-
-    if has_research_cue or has_time_sensitive_cue:
-        return "research", reasons, is_brief_followup
 
     if is_light_exact or is_light_phrase:
         reasons.append("light_social")
@@ -1243,24 +1134,16 @@ def classify_request_tier(
     if is_brief_followup:
         return "light", reasons, True
 
-    if (is_simple_question or is_short_direct_request) and not has_depth_cue:
+    is_short_direct_request = bool(text) and (
+        len(text) <= 60 or len(text.split()) <= 14
+    )
+    if is_short_direct_request and not has_depth_cue:
         reasons.append("short_direct_request")
         return "light", reasons, False
 
+    # 4. Default: standard
     reasons.append("default_standard")
     return "standard", reasons, False
-
-
-def determine_capability_floor(
-    *,
-    intent_type: IntentType,
-) -> tuple[CapabilityFloor, List[str]]:
-    """Always grant tool access — the LLM decides which tools to use.
-
-    The cost of having tools available but unused is zero.
-    IntentType is preserved for prompt engineering and request_tier control.
-    """
-    return "tools", [f"capability_{intent_type}"]
 
 
 def resolve_subject_resolution(
@@ -1376,12 +1259,12 @@ def resolve_subject_resolution(
 
 
 def _max_iterations_light(decision: RequestRoutingDecision) -> int:
-    """Light requests: 2 steps normally, 3 with manual deep think."""
-    return 2 if not decision.manual_deep_think else 3
+    """Light requests: always 3 steps (unified with manual deep think)."""
+    return 3
 
 
 def _max_iterations_standard(decision: RequestRoutingDecision) -> int:
-    return 3 if decision.manual_deep_think else 2
+    return 3
 
 
 def _max_iterations_execute(
@@ -1406,15 +1289,10 @@ def build_request_tier_profile(
     default_max_iterations: int,
 ) -> RequestTierProfile:
     common = dict(
-        available_tools=allowed_tools_for_capability_floor(decision.capability_floor),
+        available_tools=get_all_tools(),
         intent_type=decision.intent_type,
-        capability_floor=decision.capability_floor,
         explicit_task_ids=list(decision.explicit_task_ids),
         explicit_task_override=decision.explicit_task_override,
-        requires_structured_plan=decision.requires_structured_plan,
-        plan_request_mode=decision.plan_request_mode,
-        requires_plan_review=decision.requires_plan_review,
-        requires_plan_optimize=decision.requires_plan_optimize,
         full_plan_execution=decision.full_plan_execution,
     )
     if decision.request_tier == "light":
@@ -1473,6 +1351,35 @@ def _has_explicit_plan_request(text: str) -> bool:
     ) or bool(_PLAN_REQUEST_RE.search(lowered))
 
 
+# Phrases that unambiguously reference the *entire* plan, not just the
+# current task.  Used to disambiguate when both plan and task are bound.
+_UNAMBIGUOUS_FULL_PLAN_MARKERS = (
+    "all",
+    "entire",
+    "whole",
+    "every",
+    "整个",
+    "全部",
+    "所有",
+    "所有任务",
+    "全部任务",
+    "整个计划",
+)
+
+
+def _is_unambiguous_full_plan_request(text: str) -> bool:
+    """Return True only when the message explicitly references all/entire plan.
+
+    Short cues like "开始吧" / "let's go" / "start executing" are ambiguous
+    when a task is bound — they could mean "start this task".  This function
+    filters to only the phrases that clearly target the whole plan.
+    """
+    lowered = str(text or "").strip().lower()
+    if not lowered:
+        return False
+    return _contains_any_lowered(lowered, _UNAMBIGUOUS_FULL_PLAN_MARKERS)
+
+
 def _is_full_plan_execution_request(text: str, *, plan_bound: bool) -> bool:
     """Detect if the user wants to execute the entire plan tree.
 
@@ -1495,33 +1402,6 @@ def _is_full_plan_execution_request(text: str, *, plan_bound: bool) -> bool:
     if looks_like_status_question and not has_imperative_context:
         return False
     return True
-
-
-def _is_explicit_new_plan_request(text: str) -> bool:
-    lowered = str(text or "").strip().lower()
-    if not lowered:
-        return False
-    return _contains_any_lowered(lowered, _PLAN_NEW_REQUEST_PHRASES)
-
-
-def _resolve_plan_request_mode(
-    text: str,
-    *,
-    plan_bound: bool,
-) -> Optional[PlanRequestMode]:
-    lowered = str(text or "").strip().lower()
-    if not lowered:
-        return None
-    has_plan = _contains_any_lowered(lowered, _PLAN_REQUEST_PHRASES) or _contains_any_lowered(
-        lowered, _PLAN_NEW_REQUEST_PHRASES
-    ) or bool(_PLAN_REQUEST_RE.search(lowered))
-    if not has_plan:
-        return None
-    if _contains_any_lowered(lowered, _PLAN_NEW_REQUEST_PHRASES):
-        return "create_new"
-    if plan_bound:
-        return "update_bound"
-    return "create"
 
 
 def _has_explicit_plan_review_request(
@@ -1654,94 +1534,6 @@ def _extract_explicit_path(text: str) -> Optional[str]:
     return None
 
 
-def _is_phagescope_remote_verification_intent(lowered: str) -> bool:
-    """True when the user is asking to verify PhageScope API/connectivity (not generic phage analysis)."""
-    if not _contains_any(lowered, _PHAGESCOPE_DOMAIN_MARKERS):
-        return False
-    return _contains_any(lowered, _PHAGESCOPE_REMOTE_INTENT_MARKERS)
-
-
-def _subject_refs_phagescope_workspace(subject: Mapping[str, Any]) -> bool:
-    """True when inherited/explicit subject paths live under a phagescope workspace (session continuity)."""
-    for key in ("canonical_ref", "display_ref"):
-        v = subject.get(key)
-        if isinstance(v, str) and "phagescope" in v.replace("\\", "/").lower():
-            return True
-    aliases = subject.get("aliases")
-    if isinstance(aliases, (list, tuple)):
-        for a in aliases:
-            if isinstance(a, str) and "phagescope" in a.replace("\\", "/").lower():
-                return True
-    return False
-
-
-def _text_has_phagescope_remote_task_id(text: str) -> bool:
-    """Heuristic: PhageScope remote task ids are typically 5+ digit numbers."""
-    return bool(re.search(r"(?<![0-9])(\d{5,})(?![0-9])", text))
-
-
-def _is_phagescope_task_status_followup(
-    lowered: str,
-    subject: Mapping[str, Any],
-    context_dict: Mapping[str, Any],
-) -> bool:
-    """User checks a numeric task id + running/status without saying 'phagescope' again; keep research tools."""
-    if not _text_has_phagescope_remote_task_id(lowered):
-        return False
-    if not _contains_any(lowered, _PHAGESCOPE_TASK_STATUS_PHRASES):
-        return False
-    if _contains_any(lowered, _PHAGESCOPE_DOMAIN_MARKERS):
-        return True
-    if _subject_refs_phagescope_workspace(subject):
-        return True
-    active = context_dict.get("active_subject")
-    if isinstance(active, dict) and _subject_refs_phagescope_workspace(active):
-        return True
-    return False
-
-
-def _is_phagescope_task_result_followup(lowered: str) -> bool:
-    """
-    Fetch/download/verify pipeline outputs for a numeric remote task id without 'phagescope' or workspace anchor.
-
-    Example: '下载 task 38619 的 quality 和 annotation 输出进行验证' must route to research (phagescope allowed).
-    """
-    if not _text_has_phagescope_remote_task_id(lowered):
-        return False
-    return _contains_any(lowered, _PHAGESCOPE_TASK_RESULT_PHRASES)
-
-
-def _try_semantic_intent_fallback(message: str) -> Optional[tuple[IntentType, List[str]]]:
-    """Attempt semantic intent classification when rules produce no match.
-
-    Returns ``(intent, reason_codes)`` if the embedding classifier is
-    confident, or ``None`` to let the caller fall back to ``"chat"``.
-    This function is intentionally fail-safe: any exception results in
-    ``None`` so the main routing pipeline is never disrupted.
-    """
-    try:
-        from app.services.foundation.settings import get_settings
-
-        if not get_settings().semantic_intent_enabled:
-            return None
-
-        from app.services.intent import get_semantic_intent_classifier
-
-        classifier = get_semantic_intent_classifier()
-        if not classifier.is_initialized:
-            classifier.initialize()
-            if not classifier.is_initialized:
-                return None
-
-        intent, _score, sem_reasons = classifier.classify(message)
-        if intent is not None:
-            return intent, sem_reasons  # type: ignore[return-value]
-        return None
-    except Exception as exc:
-        logging.getLogger(__name__).debug("semantic intent fallback error: %s", exc)
-        return None
-
-
 def resolve_intent_type(
     *,
     message: str,
@@ -1751,195 +1543,42 @@ def resolve_intent_type(
     plan_id: Optional[int] = None,
     current_task_id: Optional[int] = None,
 ) -> tuple[IntentType, List[str]]:
+    """LLM-first intent classification.
+
+    Only structural signals (attachments, explicit task IDs, bound-task
+    execution cues, full plan execution) produce ``execute_task``.
+    General keyword-based classification has been removed — the LLM decides
+    what to do via tool descriptions.  ``classify_request_tier`` still uses
+    keyword heuristics to control thinking budget and iterations independently.
+    """
+    context_dict = dict(context or {})
+    reasons: List[str] = []
     text = str(message or "").strip()
     lowered = text.lower()
-    context_dict = dict(context or {})
-    subject = dict(subject_resolution or {})
-    subject_kind = str(subject.get("kind") or "none").strip().lower()
-    active_subject = context_dict.get("active_subject")
-    last_subject_action_class = str(context_dict.get("last_subject_action_class") or "").strip().lower()
-    reasons: List[str] = []
 
-    has_research_cue = _contains_any(lowered, _RESEARCH_PHRASES)
-    has_time_sensitive_cue = _contains_any(lowered, _TIME_SENSITIVE_PHRASES)
-    has_execute_keyword = _contains_any(lowered, _EXECUTE_PHRASES)
-    has_plan_request = _has_explicit_plan_request(text)
-    has_local_read_cue = _contains_any(lowered, _LOCAL_READ_PHRASES)
-    has_local_inspect_cue = _contains_any(lowered, _LOCAL_INSPECT_PHRASES)
-    has_local_mutation_cue = _contains_any(lowered, _LOCAL_MUTATION_PHRASES)
-    has_archive_object_cue = _contains_any(lowered, _ARCHIVE_OBJECT_PHRASES)
-    has_mutation_scope_cue = _contains_any(lowered, _MUTATION_SCOPE_PHRASES)
-    has_image_display_cue = requests_existing_image_display(message, context_dict)
-    has_image_regeneration_cue = requests_image_regeneration(message)
-    has_attachments = isinstance(context_dict.get("attachments"), list) and bool(
-        context_dict.get("attachments")
-    )
-    has_subject_context = subject_kind != "none" or isinstance(active_subject, dict)
-    # Allow follow-up "再解压/继续解压" when the prior turn already touched the same subject path
-    # even if subject_resolution for this message is empty (short follow-ups).
-    has_local_subject_continuity = last_subject_action_class in {
-        "read_only",
-        "inspect",
-        "mutation",
-    }
-    mutation_context_ok = has_subject_context or has_local_subject_continuity
-    task_bound = current_task_id is not None or context_dict.get("current_task_id") is not None
-    plan_bound = plan_id is not None or context_dict.get("plan_id") is not None
-    has_local_manuscript_assembly = local_manuscript_assembly_request(
-        text,
-        plan_bound=plan_bound,
-        task_bound=task_bound,
-    )
-    has_plan_review_request = _has_explicit_plan_review_request(
-        text,
-        plan_bound=plan_bound,
-        task_bound=task_bound,
-    )
-    has_plan_optimize_request = _has_explicit_plan_optimize_request(
-        text,
-        plan_bound=plan_bound,
-        task_bound=task_bound,
-    )
-    has_followthrough_cue = _contains_any(lowered, _FOLLOWTHROUGH_PHRASES)
-    explicit_path = _extract_explicit_path(text)
-
-    # Compound detection: followthrough cue ("继续") + action verb ("尝试") → execute,
-    # unless the message is a chat continuation ("继续说", "继续讲").
-    has_action_verb = _contains_any(lowered, _ACTION_VERB_PHRASES)
-    is_chat_continuation = _contains_any(lowered, _CHAT_CONTINUATION_PHRASES)
-    followthrough_implies_execute = (
-        has_followthrough_cue and has_action_verb and not is_chat_continuation
-    )
-    followthrough_implies_analysis_execute = (
-        has_followthrough_cue
-        and not is_chat_continuation
-        and _contains_any(lowered, _ANALYSIS_FOLLOWTHROUGH_PHRASES)
-        and (
-            has_local_inspect_cue
-            or has_local_read_cue
-            or has_subject_context
-            or bool(explicit_path)
-            or has_attachments
-        )
-    )
-
-    if (
-        has_image_regeneration_cue
-        and (
-            _contains_any(lowered, _IMAGE_NOUN_PHRASES)
-            or _has_recent_image_artifacts(context_dict)
-        )
-    ):
-        reasons.extend(["intent_execute_task", "image_regeneration"])
-        return "execute_task", reasons
-
-    if should_prioritize_existing_image_display(
-        message,
-        context_dict,
-        task_bound=task_bound,
-        plan_followthrough=bool(plan_bound and has_followthrough_cue),
-        followthrough_implies_execute=followthrough_implies_execute,
-    ):
-        reasons.append("intent_show_existing_image")
-        return "local_read", reasons
-
-    if has_plan_request:
-        reasons.append("intent_plan_request")
-        if has_plan_review_request:
-            reasons.append("intent_plan_review_request")
-        if has_plan_optimize_request:
-            reasons.append("intent_plan_optimize_request")
-        return "execute_task", reasons
-
-    if has_plan_review_request or has_plan_optimize_request:
-        if has_plan_review_request:
-            reasons.append("intent_plan_review_request")
-        if has_plan_optimize_request:
-            reasons.append("intent_plan_optimize_request")
-        return "execute_task", reasons
-
-    if (
-        has_execute_keyword
-        or (plan_bound and has_followthrough_cue)
-        or followthrough_implies_execute
-        or followthrough_implies_analysis_execute
-    ):
+    # Attachments → execute (the LLM needs tool iterations to process files)
+    if isinstance(context_dict.get("attachments"), list) and context_dict.get("attachments"):
         reasons.append("intent_execute_task")
-        if (followthrough_implies_execute or followthrough_implies_analysis_execute) and not has_execute_keyword:
-            reasons.append("execution_keyword")
+        reasons.append("has_attachments")
         return "execute_task", reasons
 
-    if has_local_manuscript_assembly:
-        reasons.append("intent_manuscript_assembly")
-        return "execute_task", reasons
+    # Bound-task follow-ups: when a task is already bound (current_task_id)
+    # and the user message contains execution-intent keywords, elevate to
+    # execute_task so DeepThink safeguards (probe-only detection,
+    # verification-only replacement, bound-task final-answer prompt) activate.
+    effective_task_id = current_task_id or context_dict.get("current_task_id")
+    if effective_task_id is not None and _contains_any(lowered, _BOUND_TASK_EXECUTE_CUES):
+        # Exclude chat continuations ("继续说", "keep explaining") which
+        # should stay as chat even when task-bound.
+        if not _contains_any(lowered, _CHAT_CONTINUATION_PHRASES):
+            reasons.append("intent_execute_task")
+            reasons.append("bound_task_execution_cue")
+            return "execute_task", reasons
 
-    if (
-        mutation_context_ok
-        and has_local_mutation_cue
-        and (
-            has_archive_object_cue
-            or has_mutation_scope_cue
-            or _references_mutation_subject(
-                lowered,
-                last_subject_action_class=last_subject_action_class,
-            )
-        )
-    ) or (
-        bool(explicit_path)
-        and has_local_mutation_cue
-        and (has_archive_object_cue or has_mutation_scope_cue)
-    ):
-        reasons.append("intent_local_mutation")
-        return "local_mutation", reasons
-
-    if _is_phagescope_remote_verification_intent(lowered):
-        reasons.append("intent_phagescope_remote_verify")
-        return "research", reasons
-
-    if _is_phagescope_task_status_followup(lowered, subject, context_dict):
-        reasons.append("intent_phagescope_task_status")
-        return "research", reasons
-
-    if _is_phagescope_task_result_followup(lowered):
-        reasons.append("intent_phagescope_task_result")
-        return "research", reasons
-
-    if has_research_cue or has_time_sensitive_cue:
-        reasons.append("intent_research")
-        return "research", reasons
-
-    if has_attachments:
-        reasons.append("intent_local_inspect")
-        return "local_inspect", reasons
-
-    if has_image_display_cue:
-        reasons.append("intent_show_existing_image")
-        return "local_read", reasons
-
-    if subject_kind != "none":
-        if has_local_inspect_cue or _references_prior_subject(lowered):
-            reasons.append("intent_local_inspect")
-            return "local_inspect", reasons
-        if has_local_read_cue or subject.get("source") == "explicit":
-            reasons.append("intent_local_read")
-            return "local_read", reasons
-        reasons.append("intent_local_read")
-        return "local_read", reasons
-
-    if has_local_inspect_cue:
-        reasons.append("intent_local_inspect")
-        return "local_inspect", reasons
-    if has_local_read_cue:
-        reasons.append("intent_local_read")
-        return "local_read", reasons
-
-    # Semantic fallback: only when enabled and no rule matched
-    semantic_result = _try_semantic_intent_fallback(text)
-    if semantic_result is not None:
-        sem_intent, sem_reasons = semantic_result
-        reasons.extend(sem_reasons)
-        return sem_intent, reasons
-
+    # Everything else → chat.  The LLM will call plan_operation,
+    # manuscript_writer, code_executor, etc. as needed based on tool
+    # descriptions.  classify_request_tier still elevates the tier
+    # (and thus iterations/budget) when it detects execute-like keywords.
     reasons.append("intent_chat")
     return "chat", reasons
 

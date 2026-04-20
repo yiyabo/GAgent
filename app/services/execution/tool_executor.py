@@ -5,7 +5,7 @@ import json
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable, Dict, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from app.services.deliverables import (
     format_deliverable_submit_summary,
@@ -24,11 +24,12 @@ class ToolExecutionContext:
     task_name: Optional[str] = None
     task_instruction: Optional[str] = None
     session_id: Optional[str] = None
+    ancestor_chain: Optional[List[int]] = None
+    owner_id: Optional[str] = None
     current_job_id: Optional[str] = None
     work_dir: Optional[str] = None
     channel: str = "plan_executor"
     mode: str = "task_execution"
-    capability_floor: str = "tools"
     on_stdout: Optional[Callable[[str], Awaitable[None]]] = None
     on_stderr: Optional[Callable[[str], Awaitable[None]]] = None
 
@@ -83,8 +84,8 @@ class UnifiedToolExecutor:
             task_id=context.task_id,
             task_name=context.task_name,
             job_id=context.current_job_id,
+            owner_id=context.owner_id,
             work_dir=context.work_dir or "",
-            capability_floor=context.capability_floor or "execute",
         )
 
         timeout = int(self.TOOL_TIMEOUTS.get(tool_name, self._default_timeout))
@@ -219,6 +220,9 @@ class UnifiedToolExecutor:
     ) -> Dict[str, Any]:
         safe_params = dict(params or {})
         safe_params.pop("tool_context", None)
+        explicit_task_id = safe_params.get("task_id")
+        if tool_name == "phagescope" and explicit_task_id is not None:
+            safe_params.pop("task_id", None)
 
         if tool_name == "code_executor":
             for key in (
@@ -252,10 +256,23 @@ class UnifiedToolExecutor:
         if context.session_id:
             safe_params["session_id"] = context.session_id
 
+        # Inject task_id and ancestor_chain for all task-aware tools.
+        # For PhageScope, keep the plan task_id in task_id (for local output
+        # routing) while still accepting user-supplied task_id as an alias for
+        # remote PhageScope taskid.
+        if context.task_id is not None and tool_name != "code_executor":
+            if safe_params.get("task_id") is None:
+                safe_params["task_id"] = context.task_id
+        if context.ancestor_chain is not None:
+            if safe_params.get("ancestor_chain") is None:
+                safe_params["ancestor_chain"] = context.ancestor_chain
+
         if tool_name == "phagescope":
             # LLMs often emit task_id/operation; handler only accepts taskid/action (prepare_handler_kwargs drops unknown keys).
-            if safe_params.get("taskid") is None and safe_params.get("task_id") is not None:
-                safe_params["taskid"] = safe_params.pop("task_id")
+            if safe_params.get("taskid") is None and explicit_task_id is not None:
+                safe_params["taskid"] = explicit_task_id
+            if context.task_id is None:
+                safe_params.pop("task_id", None)
             if safe_params.get("action") is None:
                 legacy_op = safe_params.get("operation")
                 if isinstance(legacy_op, str) and legacy_op.strip():

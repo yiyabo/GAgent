@@ -84,11 +84,6 @@ const DAGSidebar: React.FC = () => {
   );
   const [activeTab, setActiveTab] = useState<string>('plan');
 
-  useEffect(() => {
-    const onArtifact = () => { setActiveTab('artifacts'); };
-    window.addEventListener('artifactProduced', onArtifact);
-    return () => { window.removeEventListener('artifactProduced', onArtifact); };
-  }, []);
   const [showFullscreenDAG, setShowFullscreenDAG] = useState(false);
   const [decomposeSnapshot, setDecomposeSnapshot] = useState<Record<string, any> | null>(null);
   const [planTodoListOpen, setPlanTodoListOpen] = useState(false);
@@ -857,6 +852,7 @@ const DAGSidebar: React.FC = () => {
   open={planTodoListOpen}
   onClose={() => setPlanTodoListOpen(false)}
   planId={currentPlanId ?? null}
+  currentSessionId={currentSession?.session_id ?? currentSession?.id ?? null}
   targetTaskId={null}
   onTaskClick={handlePlanTodoTaskClick}
   fullPlan

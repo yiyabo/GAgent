@@ -396,3 +396,257 @@ class TestFallbackArtifactMatchNoLenient:
             Path("/some/path.csv"), [], lenient=True
         )
         assert result is None
+
+
+# ===========================================================================
+# 5. scope-guardrail-fix: full_plan_execution composite dep handling
+# ===========================================================================
+
+def _make_scope_tree(nodes_spec):
+    """Build a minimal PlanTree mock from a spec list.
+
+    Each entry: (task_id, status, dependencies, children_ids)
+    """
+    nodes = {}
+    children_map = {}
+    for tid, status, deps, children in nodes_spec:
+        node = MagicMock()
+        node.id = tid
+        node.status = status
+        node.dependencies = deps
+        node.execution_result = None
+        nodes[tid] = node
+        children_map[tid] = children
+
+    tree = MagicMock()
+    tree.has_node = lambda tid: tid in nodes
+    tree.get_node = lambda tid: nodes[tid]
+    tree.children_ids = lambda tid: children_map.get(tid, [])
+    return tree
+
+
+class TestFullPlanExecutionCompositeDeps:
+    """resolve_explicit_task_scope_target with full_plan_execution=True should
+    not block on composite parent deps whose leaves are all covered."""
+
+    def test_p1_composite_dep_all_leaves_completed_not_blocked(self):
+        """P1: Task A depends on composite B; all leaves of B are completed.
+        full_plan_execution=True → A is returned (not blocked)."""
+        from app.routers.chat.guardrail_handlers import resolve_explicit_task_scope_target
+
+        # Tree:
+        #   B (composite, pending) → children: [B1, B2]
+        #   B1 (leaf, completed)
+        #   B2 (leaf, completed)
+        #   A (leaf, pending, depends on B)
+        tree = _make_scope_tree([
+            (100, "pending", [], [101, 102]),   # B composite
+            (101, "completed", [], []),          # B1 leaf
+            (102, "completed", [], []),          # B2 leaf
+            (200, "pending", [100], []),         # A leaf, depends on B
+        ])
+        tree.get_node(101).execution_result = '{"result": "ok"}'
+        tree.get_node(102).execution_result = '{"result": "ok"}'
+
+        result = resolve_explicit_task_scope_target(
+            tree, [200],
+            allow_cascade_rerun=True,
+            auto_include_dependency_closure=True,
+            full_plan_execution=True,
+        )
+        assert result == 200, "A should be executable when composite dep's leaves are all done"
+
+    def test_p1b_composite_dep_leaves_in_scope_not_blocked(self):
+        """P1b: Task A depends on composite B; leaves of B are pending but in scope.
+        full_plan_execution=True → A is returned (leaves will be run)."""
+        from app.routers.chat.guardrail_handlers import resolve_explicit_task_scope_target
+
+        # Tree:
+        #   B (composite, pending) → children: [B1, B2]
+        #   B1 (leaf, pending) — in scope
+        #   B2 (leaf, pending) — in scope
+        #   A (leaf, pending, depends on B) — in scope
+        tree = _make_scope_tree([
+            (100, "pending", [], [101, 102]),   # B composite
+            (101, "pending", [], []),            # B1 leaf, in scope
+            (102, "pending", [], []),            # B2 leaf, in scope
+            (200, "pending", [100], []),         # A leaf, depends on B
+        ])
+
+        # scope = [101, 102, 200] — all three are in explicit_task_ids
+        # B1 and B2 are in scope → composite B is "satisfied"
+        # But A depends on B (composite), and B1/B2 are in scope_ids
+        # So A should NOT be blocked by B
+        # However A has unmet_in_scope deps (101, 102 are in scope and pending)
+        # → resolve returns 101 first (the first executable in scope)
+        result = resolve_explicit_task_scope_target(
+            tree, [101, 102, 200],
+            allow_cascade_rerun=True,
+            auto_include_dependency_closure=True,
+            full_plan_execution=True,
+        )
+        # 101 has no deps → it's the first executable
+        assert result == 101
+
+    def test_p2_leaf_dep_out_of_scope_still_blocks(self):
+        """P2: Task A depends on leaf Task X (pending, not in scope).
+        full_plan_execution=False → A is blocked (returns None)."""
+        from app.routers.chat.guardrail_handlers import resolve_explicit_task_scope_target
+
+        # Tree:
+        #   X (leaf, pending) — NOT in scope
+        #   A (leaf, pending, depends on X)
+        tree = _make_scope_tree([
+            (50, "pending", [], []),    # X leaf, out of scope
+            (200, "pending", [50], []), # A leaf, depends on X
+        ])
+
+        result = resolve_explicit_task_scope_target(
+            tree, [200],
+            allow_cascade_rerun=True,
+            auto_include_dependency_closure=False,
+            full_plan_execution=False,
+        )
+        assert result is None, "A should be blocked when out-of-scope leaf dep is pending"
+
+    def test_p2_leaf_dep_out_of_scope_also_blocks_with_full_plan(self):
+        """P2 variant: Even with full_plan_execution=True, a pending out-of-scope
+        LEAF dep still blocks (only composite deps get the relaxed check)."""
+        from app.routers.chat.guardrail_handlers import resolve_explicit_task_scope_target
+
+        tree = _make_scope_tree([
+            (50, "pending", [], []),    # X leaf, out of scope
+            (200, "pending", [50], []), # A leaf, depends on X
+        ])
+
+        result = resolve_explicit_task_scope_target(
+            tree, [200],
+            allow_cascade_rerun=True,
+            auto_include_dependency_closure=False,
+            full_plan_execution=True,
+        )
+        assert result is None, "Leaf out-of-scope pending dep should still block even in full_plan mode"
+
+    def test_p3_all_deps_completed_same_result_both_modes(self):
+        """P3: All deps completed → same result regardless of full_plan_execution."""
+        from app.routers.chat.guardrail_handlers import resolve_explicit_task_scope_target
+
+        tree = _make_scope_tree([
+            (100, "completed", [], []),  # dep, completed
+            (200, "pending", [100], []), # A, depends on completed dep
+        ])
+        tree.get_node(100).execution_result = '{"result": "ok"}'
+
+        result_normal = resolve_explicit_task_scope_target(
+            tree, [200],
+            allow_cascade_rerun=True,
+            full_plan_execution=False,
+        )
+        result_full = resolve_explicit_task_scope_target(
+            tree, [200],
+            allow_cascade_rerun=True,
+            full_plan_execution=True,
+        )
+        assert result_normal == 200
+        assert result_full == 200
+
+    def test_p4_in_scope_ordering_preserved(self):
+        """P4: Task A depends on in-scope Task B (pending).
+        B is returned first (ordering preserved), not A."""
+        from app.routers.chat.guardrail_handlers import resolve_explicit_task_scope_target
+
+        tree = _make_scope_tree([
+            (10, "pending", [], []),    # B, in scope, no deps
+            (20, "pending", [10], []),  # A, in scope, depends on B
+        ])
+
+        result = resolve_explicit_task_scope_target(
+            tree, [10, 20],
+            allow_cascade_rerun=True,
+            full_plan_execution=True,
+        )
+        assert result == 10, "B should be returned first since A depends on it"
+
+    def test_p5_composite_dep_with_unfinished_leaf_not_in_scope_still_blocks(self):
+        """P5: Task A depends on composite B; one leaf of B is pending and NOT
+        in scope. full_plan_execution=True still blocks A."""
+        from app.routers.chat.guardrail_handlers import resolve_explicit_task_scope_target
+
+        # Tree:
+        #   B (composite, pending) → children: [B1, B2]
+        #   B1 (leaf, completed)
+        #   B2 (leaf, pending) — NOT in scope
+        #   A (leaf, pending, depends on B)
+        tree = _make_scope_tree([
+            (100, "pending", [], [101, 102]),   # B composite
+            (101, "completed", [], []),          # B1 leaf, done
+            (102, "pending", [], []),            # B2 leaf, pending, NOT in scope
+            (200, "pending", [100], []),         # A leaf, depends on B
+        ])
+        tree.get_node(101).execution_result = '{"result": "ok"}'
+
+        result = resolve_explicit_task_scope_target(
+            tree, [200],
+            allow_cascade_rerun=True,
+            auto_include_dependency_closure=False,
+            full_plan_execution=True,
+        )
+        assert result is None, "A should be blocked when composite dep has unfinished leaf not in scope"
+
+    def test_real_world_plan72_pattern(self):
+        """Reproduce the Plan 72 pattern: leaf tasks depend on composite parent
+        nodes that are pending because not all their children have run yet.
+
+        Scope = [25, 26] (leaves of Task 7 "撰写第5章")
+        Task 25 depends on Task 2 (composite "文献检索", pending)
+        Task 2 has children [14, 15, 16]; 14 and 15 are completed, 16 is in scope.
+
+        With full_plan_execution=True → Task 25 should NOT be blocked.
+        """
+        from app.routers.chat.guardrail_handlers import resolve_explicit_task_scope_target
+
+        # Task 2: composite "文献检索", pending (some children still pending)
+        # Task 14, 15: completed leaves of Task 2
+        # Task 16: pending leaf of Task 2, in scope
+        # Task 25: pending leaf, depends on Task 2
+        # Task 26: pending leaf, depends on Task 25
+        tree = _make_scope_tree([
+            (2,  "pending",   [],     [14, 15, 16]),  # composite, pending
+            (14, "completed", [],     []),             # leaf, done
+            (15, "completed", [],     []),             # leaf, done
+            (16, "pending",   [],     []),             # leaf, in scope
+            (25, "pending",   [2],    []),             # leaf, depends on composite 2
+            (26, "pending",   [25],   []),             # leaf, depends on 25
+        ])
+        tree.get_node(14).execution_result = '{"result": "ok"}'
+        tree.get_node(15).execution_result = '{"result": "ok"}'
+
+        # scope = [16, 25, 26] — leaf 16 is in scope, so composite 2 is "satisfied"
+        result = resolve_explicit_task_scope_target(
+            tree, [16, 25, 26],
+            allow_cascade_rerun=True,
+            auto_include_dependency_closure=True,
+            full_plan_execution=True,
+        )
+        # 16 has no deps → it's the first executable
+        assert result == 16, f"Expected 16 (first executable), got {result}"
+
+    def test_full_plan_false_blocks_on_composite_dep(self):
+        """Regression: with full_plan_execution=False, composite pending dep
+        still blocks (old behaviour preserved)."""
+        from app.routers.chat.guardrail_handlers import resolve_explicit_task_scope_target
+
+        tree = _make_scope_tree([
+            (100, "pending", [], [101, 102]),
+            (101, "completed", [], []),
+            (102, "pending", [], []),            # leaf of composite, pending, not in scope
+            (200, "pending", [100], []),
+        ])
+        tree.get_node(101).execution_result = '{"result": "ok"}'
+
+        result = resolve_explicit_task_scope_target(
+            tree, [200],
+            allow_cascade_rerun=True,
+            full_plan_execution=False,
+        )
+        assert result is None, "Old behaviour: composite pending dep should block when full_plan_execution=False"

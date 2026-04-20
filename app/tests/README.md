@@ -8,6 +8,7 @@
 - Paper layer: `pytest -q app/tests/paper`
 - Integration layer: `pytest -q app/tests/integration -m integration`
 - Production smoke layer: `pytest -q app/tests/smoke -m prod_smoke`
+- E2E layer (real LLM): `pytest -q app/tests/e2e -m external`
 
 ## Directory Layout
 
@@ -18,6 +19,7 @@
 - `app/tests/paper`: literature/manuscript/review-pack and paper-specific pipelines
 - `app/tests/integration`: real-app integration coverage
 - `app/tests/smoke`: startup and production-oriented smoke checks
+- `app/tests/e2e`: end-to-end tests with real LLM calls (marked `external`, run nightly)
 
 Legacy/reference test suites remain outside the default Python test entrypoint:
 
@@ -66,9 +68,34 @@ If a test file needs a prefix outside this list, first ask whether it belongs in
 
 - `integration`: real `create_app()` tests with isolated local database/filesystem dependencies
 - `prod_smoke`: production-oriented startup, HTTP, and WebSocket smoke coverage
-- `external`: reserved for future tests that require staging or real external services
+- `external`: tests that require real external services (LLM API keys, network access); used by the E2E suite in `app/tests/e2e/`
 
 ## CI split
 
 - PR: run everything except `prod_smoke` and `external`
 - Nightly/manual: run `prod_smoke` with coverage reporting
+- Nightly E2E: run `external` with real LLM API keys (`.github/workflows/nightly-e2e.yml`)
+
+## E2E Test Environment Variables
+
+The backend E2E suite (`app/tests/e2e/`) requires real LLM API keys. Tests are automatically skipped when the required key is missing.
+
+### Required (one of, depending on provider)
+
+| Variable | Description |
+|----------|-------------|
+| `QWEN_API_KEY` | API key for Qwen provider |
+| `OPENAI_API_KEY` | API key for OpenAI provider |
+| `KIMI_API_KEY` | API key for Kimi provider |
+| `PERPLEXITY_API_KEY` | API key for Perplexity provider |
+
+### Optional
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `LLM_PROVIDER` | `qwen` | Which LLM provider to use (`qwen`, `openai`, `kimi`, `perplexity`) |
+| `QWEN_MODEL` | (provider default) | Model override for Qwen |
+| `OPENAI_MODEL` | (provider default) | Model override for OpenAI |
+| `KIMI_MODEL` | (provider default) | Model override for Kimi |
+| `PERPLEXITY_MODEL` | (provider default) | Model override for Perplexity |
+| `E2E_LLM_TIMEOUT` | `120` | Per-LLM-call timeout in seconds |

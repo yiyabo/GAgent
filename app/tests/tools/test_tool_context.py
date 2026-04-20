@@ -44,7 +44,6 @@ class TestToolContextDefaults:
         assert ctx.plan_id is None
         assert ctx.task_id is None
         assert ctx.work_dir == ""
-        assert ctx.capability_floor == "tools"
         assert ctx.tool_history == []
         assert ctx.abort_event is None
         assert ctx.on_progress is None
@@ -197,7 +196,6 @@ class TestUnifiedToolExecutorContext:
             task_name="My Task",
             current_job_id="job-42",
             work_dir="/tmp/demo-work",
-            capability_floor="research",
         )
 
         await executor.execute("exec_ctx_test", {"query": "test"}, context=exec_ctx)
@@ -210,4 +208,3 @@ class TestUnifiedToolExecutorContext:
         assert ctx.task_name == "My Task"
         assert ctx.job_id == "job-42"
         assert ctx.work_dir == "/tmp/demo-work"
-        assert ctx.capability_floor == "research"

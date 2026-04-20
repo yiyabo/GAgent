@@ -778,12 +778,83 @@ def _expand_scope_with_dependency_closure(
     return expanded or ordered_ids
 
 
+def _composite_dep_satisfied(
+    tree: "PlanTree",
+    composite_id: int,
+    scope_ids: set,
+    allow_cascade_rerun: bool,
+) -> bool:
+    """Return True if all leaf descendants of a composite dependency node are
+    either already completed (with real outputs) or present in ``scope_ids``
+    (meaning they will be executed as part of the current scope).
+
+    Used during full-plan execution to avoid blocking tasks on composite parent
+    nodes whose status is still ``pending`` only because some children haven't
+    run yet — but those children are already in the execution scope.
+    """
+    stack = list(tree.children_ids(composite_id))
+    while stack:
+        child_id = stack.pop()
+        if not tree.has_node(child_id):
+            continue
+        grandchildren = tree.children_ids(child_id)
+        if grandchildren:
+            stack.extend(grandchildren)
+            continue
+        # Leaf node: satisfied if it's in scope (will be run) or already done.
+        if child_id in scope_ids:
+            continue
+        child_node = tree.get_node(child_id)
+        needs = is_task_executable_status(child_node.status) or (
+            allow_cascade_rerun and _is_cascade_completed(child_node)
+        )
+        if needs:
+            return False  # leaf not in scope and not done → not satisfied
+    return True
+
+
+def _dep_needs_resolution_for_scope(
+    tree: "PlanTree",
+    dep_node: Any,
+    dep_id: int,
+    *,
+    scope_ids: set,
+    allow_cascade_rerun: bool,
+    full_plan_execution: bool,
+) -> bool:
+    """Determine whether an out-of-scope dependency is still blocking.
+
+    Standard behaviour (``full_plan_execution=False``): a dep blocks if it is
+    in an executable status (pending/failed/skipped) or is cascade-completed
+    and reruns are allowed.
+
+    Full-plan-execution behaviour (``full_plan_execution=True``): composite
+    deps (nodes with children) are treated as satisfied when all their leaf
+    descendants are either completed or already in ``scope_ids``.  This
+    prevents composite parent nodes whose status is ``pending`` (because not
+    all children have run yet) from blocking their own children that are
+    already queued in the scope.
+    """
+    base_needs = is_task_executable_status(dep_node.status) or (
+        allow_cascade_rerun and _is_cascade_completed(dep_node)
+    )
+    if not base_needs:
+        return False  # dep is genuinely completed → never blocking
+
+    if full_plan_execution and tree.children_ids(dep_id):
+        # Composite dep: only block if its leaves aren't all covered.
+        return not _composite_dep_satisfied(tree, dep_id, scope_ids, allow_cascade_rerun)
+
+    return True  # leaf dep that still needs work → blocking
+
+
 def resolve_explicit_task_scope_target(
     tree: "PlanTree",
     explicit_task_ids: List[int],
     *,
     allow_cascade_rerun: bool = False,
     auto_include_dependency_closure: bool = False,
+    full_plan_execution: bool = False,
 ) -> Optional[int]:
     ordered_ids: List[int] = []
     seen: set[int] = set()
@@ -889,13 +960,17 @@ def resolve_explicit_task_scope_target(
             # dep_needs_resolution: True when the dep still needs to produce real
             # outputs — either it's pending/failed/skipped in the normal sense, or
             # it was cascade-completed (no real outputs yet) and the caller asked
-            # for cascade reruns.  This is intentionally broader than
-            # is_task_executable_status: we ask "does this dep still owe outputs?"
-            # rather than "is it in a runnable status?".
-            dep_needs_resolution = is_task_executable_status(dep_node.status) or (
-                allow_cascade_rerun and _is_cascade_completed(dep_node)
-            )
-            if not dep_needs_resolution:
+            # for cascade reruns.  During full-plan execution, composite deps whose
+            # leaves are all covered by scope_ids or already completed are treated
+            # as satisfied (see _dep_needs_resolution_for_scope).
+            if not _dep_needs_resolution_for_scope(
+                tree,
+                dep_node,
+                dep_id_int,
+                scope_ids=scope_ids,
+                allow_cascade_rerun=allow_cascade_rerun,
+                full_plan_execution=full_plan_execution,
+            ):
                 continue
             if dep_id_int in scope_ids:
                 unmet_in_scope = True
@@ -914,6 +989,7 @@ def resolve_all_explicit_task_scope_targets(
     *,
     allow_cascade_rerun: bool = False,
     auto_include_dependency_closure: bool = False,
+    full_plan_execution: bool = False,
 ) -> List[int]:
     """Return ALL executable leaf tasks for composite task expansion.
 
@@ -1019,10 +1095,14 @@ def resolve_all_explicit_task_scope_targets(
             if dep_id_int in scope_ids:
                 continue  # in-scope deps will be executed before this task
             dep_node = tree.get_node(dep_id_int)
-            dep_needs_resolution = is_task_executable_status(dep_node.status) or (
-                allow_cascade_rerun and _is_cascade_completed(dep_node)
-            )
-            if dep_needs_resolution:
+            if _dep_needs_resolution_for_scope(
+                tree,
+                dep_node,
+                dep_id_int,
+                scope_ids=scope_ids,
+                allow_cascade_rerun=allow_cascade_rerun,
+                full_plan_execution=full_plan_execution,
+            ):
                 unmet_out_of_scope = True
                 break
         if unmet_out_of_scope:
@@ -1758,55 +1838,81 @@ def apply_plan_first_guardrail(
     return structured
 
 
-def apply_explicit_plan_review_guardrail(
+def apply_plan_review_optimize_guardrail(
     agent: Any,
     structured: LLMStructuredResponse,
 ) -> LLMStructuredResponse:
+    """Ensure explicit review/optimize requests produce real plan_operation actions.
+
+    When routing detected ``intent_plan_review_request`` or
+    ``intent_plan_optimize_request`` but the LLM did not generate the
+    corresponding plan_operation action(s), inject the missing ones.
+    """
     plan_id = getattr(getattr(agent, "plan_session", None), "plan_id", None)
     if plan_id is None:
         return structured
 
-    review_required = bool(agent.extra_context.get("requires_plan_review")) or bool(
-        agent.extra_context.get("requires_plan_optimize")
-    )
-    if not review_required:
+    extra = getattr(agent, "extra_context", {}) or {}
+    reason_codes = extra.get("route_reason_codes")
+    if not isinstance(reason_codes, list):
+        return structured
+
+    wants_review = "intent_plan_review_request" in reason_codes
+    wants_optimize = "intent_plan_optimize_request" in reason_codes
+    if not wants_review and not wants_optimize:
         return structured
 
     actions = list(structured.actions or [])
-    has_review = any(
-        action.kind == "plan_operation" and action.name == "review_plan"
-        for action in actions
-    )
-    if has_review:
+    existing_plan_ops = {
+        getattr(a, "name", "")
+        for a in actions
+        if getattr(a, "kind", "") == "plan_operation"
+    }
+
+    has_review = "review_plan" in existing_plan_ops
+    has_optimize = "optimize_plan" in existing_plan_ops
+
+    missing_review = wants_review and not has_review
+    missing_optimize = wants_optimize and not has_optimize
+    if not missing_review and not missing_optimize:
         return structured
 
-    review_action = LLMAction(
-        kind="plan_operation",
-        name="review_plan",
-        parameters={"plan_id": int(plan_id)},
-        order=1,
-        blocking=True,
-    )
-    optimize_actions = [
-        action for action in actions
-        if action.kind == "plan_operation" and action.name == "optimize_plan"
-    ]
-    if optimize_actions:
-        rewritten = [review_action]
-        next_order = 2
-        for action in actions:
-            copied = action.model_copy(deep=True)
-            copied.order = next_order
-            rewritten.append(copied)
-            next_order += 1
-        structured.actions = rewritten
-        logger.info(
-            "[CHAT][GUARDRAIL][PLAN_REVIEW] prepended review_plan before optimize_plan for explicit review/optimize request"
+    # Build the injection list: missing actions go first, then existing actions
+    injected: List[LLMAction] = []
+    next_order = 1
+    if missing_review:
+        injected.append(
+            LLMAction(
+                kind="plan_operation",
+                name="review_plan",
+                parameters={"plan_id": int(plan_id)},
+                order=next_order,
+                blocking=True,
+            )
         )
-        return structured
+        next_order += 1
+    if missing_optimize:
+        injected.append(
+            LLMAction(
+                kind="plan_operation",
+                name="optimize_plan",
+                parameters={"plan_id": int(plan_id)},
+                order=next_order,
+                blocking=True,
+            )
+        )
+        next_order += 1
 
-    structured.actions = [review_action]
+    for action in actions:
+        copied = action.model_copy(deep=True)
+        copied.order = next_order
+        injected.append(copied)
+        next_order += 1
+
+    structured.actions = injected
     logger.info(
-        "[CHAT][GUARDRAIL][PLAN_REVIEW] replaced actions with review_plan for explicit review request"
+        "[CHAT][GUARDRAIL][PLAN_REVIEW_OPTIMIZE] injected missing %s for plan %s",
+        [a.name for a in injected if a.kind == "plan_operation" and a.name not in existing_plan_ops],
+        plan_id,
     )
     return structured

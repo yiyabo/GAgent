@@ -16,6 +16,7 @@ _ALLOWED_UNIT_PREFIXES = {
     "llm",
     "memory",
     "protocol",
+    "qwen",
     "realtime",
     "resource",
     "semantic",

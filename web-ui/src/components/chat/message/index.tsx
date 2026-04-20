@@ -395,6 +395,32 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
       return null;
     }
 
+    const rawProgress = (metadata as any)?.deep_think_progress;
+    const progressHint =
+      rawProgress && typeof rawProgress === 'object'
+        ? {
+            label:
+              typeof rawProgress.current_label === 'string'
+                ? rawProgress.current_label
+                : typeof rawProgress.label === 'string'
+                  ? rawProgress.label
+                  : null,
+            tool:
+              typeof rawProgress.current_tool === 'string'
+                ? rawProgress.current_tool
+                : typeof rawProgress.tool === 'string'
+                  ? rawProgress.tool
+                  : null,
+            phase: typeof rawProgress.phase === 'string' ? rawProgress.phase : null,
+            details:
+              typeof rawProgress.current_details === 'string'
+                ? rawProgress.current_details
+                : null,
+            updated_at:
+              typeof rawProgress.updated_at === 'string' ? rawProgress.updated_at : null,
+          }
+        : null;
+
     return (
       <ThinkingProcess
         process={message.thinking_process}
@@ -415,6 +441,7 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
         controlBusy={deepThinkControlBusyAction !== null}
         controlBusyAction={deepThinkControlBusyAction}
         cancelRunBusy={deepThinkCancelRunBusy}
+        progressHint={progressHint}
       />
     );
   };

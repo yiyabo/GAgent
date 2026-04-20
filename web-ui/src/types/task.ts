@@ -125,6 +125,15 @@ export interface VerifyTaskResponse {
   result: PlanResultItem;
 }
 
+export interface AcceptTaskResponse {
+  success: boolean;
+  message: string;
+  plan_id: number;
+  task_id: number;
+  updated_fields: string[];
+  result: PlanResultItem;
+}
+
 export interface PlanResultsResponse {
   plan_id: number;
   total: number;

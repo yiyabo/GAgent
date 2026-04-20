@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 
+from app.services.plans.artifact_preflight import ArtifactPreflightIssue, ArtifactPreflightResult
 from app.services.plans.plan_models import PlanNode, PlanTree
 from app.services.plans.plan_rubric_evaluator import PlanRubricResult
 from tool_box.tools_impl.plan_tools import _create_plan, _optimize_plan, _review_plan
@@ -234,3 +235,9 @@ def test_optimize_plan_ensures_generation_ready_before_mutation(monkeypatch) -> 
     assert result["decomposition_status"] == "completed"
     assert readiness_called["value"] is True
     assert repo.tree.nodes[2].instruction == "Updated task A"
+
+
+# NOTE: test_review_plan_blocks_on_artifact_preflight_failure and
+# test_optimize_plan_blocks_on_artifact_preflight_failure were removed —
+# review and optimize intentionally skip preflight so they can fix
+# broken artifact contracts.

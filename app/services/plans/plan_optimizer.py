@@ -272,12 +272,14 @@ def _build_plan_optimizer_prompt(
             "",
             "=== OPTIMIZATION RULES ===",
             f"- Emit at most {max_changes} changes.",
-            "- Prefer update_description, add_task, and update_task. Use reorder_task only when ordering is clearly wrong.",
-            "- Do NOT delete tasks automatically.",
-            "- Preserve the plan goal; focus on missing rationale, missing reproducibility details, quality-control gaps, and overly broad tasks.",
+            "- Prefer update_task (improve existing task instructions, add missing details, fix dependencies) over add_task or structural changes.",
+            "- Do NOT delete tasks. Do NOT replace multiple tasks with a single merged task. The plan structure should be preserved.",
+            "- Do NOT reduce the total number of tasks. If a task is too broad, split it; if it lacks detail, enrich its instruction.",
+            "- Focus on: enriching task instructions with specific parameters/tools/thresholds, fixing broken dependency chains, adding missing acceptance criteria, and filling context gaps.",
+            "- Preserve the plan goal and all existing task coverage. Removing tasks will cause contextual_completeness to drop.",
             "- Only reference existing task_id values that appear in the outline.",
-            "- For add_task, provide a concrete executable instruction and choose a parent_id.",
-            "- For update_task, include only fields that should change.",
+            "- For update_task, include only fields that should change. Provide concrete, actionable improvements.",
+            "- For add_task, only add tasks that fill genuine gaps (e.g., missing validation steps, missing data preprocessing). Provide a concrete executable instruction and choose a parent_id.",
             "- If the current plan description is vague, use update_description to make it more explicit and execution-ready.",
             "- If no meaningful optimization is needed, return an empty changes array and explain why in summary.",
             "",
@@ -720,8 +722,23 @@ async def auto_optimize_plan(
         )
 
     applied_changes = repo.apply_changes_atomically(plan_id, generated_changes)
+    if not applied_changes:
+        return PlanAutoOptimizationOutcome(
+            plan_tree=tree,
+            review_before=current_review,
+            review_after=current_review,
+            generated_changes=generated_changes,
+            applied_changes=[],
+            summary="No optimization changes could be applied.",
+            optimization_needed=True,
+        )
+    # Reindex positions after bulk changes to keep them contiguous.
     try:
-        return await capture_plan_optimization_outcome(
+        repo.reindex_all_positions(plan_id)
+    except Exception as exc:
+        logger.warning("Failed to reindex positions after auto-optimize for plan %s: %s", plan_id, exc)
+    try:
+        outcome = await capture_plan_optimization_outcome(
             plan_id=plan_id,
             plan_tree_before=tree,
             applied_changes=applied_changes,
@@ -749,3 +766,39 @@ async def auto_optimize_plan(
             summary=proposal.summary or "Applied rubric-driven optimization changes (post-commit scoring failed).",
             optimization_needed=True,
         )
+
+    # Score regression guard: if the optimization made the plan worse,
+    # restore the original tree and report the regression.
+    if (
+        outcome.review_before is not None
+        and outcome.review_after is not None
+        and outcome.review_after.overall_score < outcome.review_before.overall_score
+    ):
+        score_delta = outcome.review_after.overall_score - outcome.review_before.overall_score
+        logger.warning(
+            "Auto-optimize for plan %s caused score regression (%.1f -> %.1f, delta=%.1f); rolling back.",
+            plan_id,
+            outcome.review_before.overall_score,
+            outcome.review_after.overall_score,
+            score_delta,
+        )
+        try:
+            repo.upsert_plan_tree(tree, note="rollback: auto-optimize caused score regression")
+        except Exception as rollback_exc:
+            logger.error("Failed to rollback plan %s after score regression: %s", plan_id, rollback_exc)
+        return PlanAutoOptimizationOutcome(
+            plan_tree=tree,
+            review_before=outcome.review_before,
+            review_after=outcome.review_after,
+            generated_changes=generated_changes,
+            applied_changes=[],
+            summary=(
+                f"Optimization rolled back: score dropped from "
+                f"{outcome.review_before.overall_score:.1f} to "
+                f"{outcome.review_after.overall_score:.1f} ({score_delta:+.1f}). "
+                f"The original plan has been restored."
+            ),
+            optimization_needed=True,
+        )
+
+    return outcome

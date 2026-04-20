@@ -4,12 +4,14 @@ export const statusColorMap: Record<string, string> = {
   completed: 'green',
   failed: 'red',
   skipped: 'default',
+  blocked: 'orange',
 };
 
 export const statusLabelMap: Record<string, string> = {
-  pending: 'execute',
+  pending: 'pending',
   running: 'running',
   completed: 'completed',
   failed: 'failed',
-  skipped: '',
+  skipped: 'skipped',
+  blocked: 'blocked',
 };

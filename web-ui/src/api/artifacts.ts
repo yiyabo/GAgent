@@ -11,13 +11,20 @@ import type {
 class ArtifactsApi extends BaseApi {
   listSessionArtifacts = async (
     sessionId: string,
-    options?: { maxDepth?: number; includeDirs?: boolean; limit?: number; extensions?: string }
+    options?: {
+      maxDepth?: number;
+      includeDirs?: boolean;
+      limit?: number;
+      extensions?: string;
+      pathPrefix?: string;
+    }
   ): Promise<ArtifactListResponse> => {
     return this.get<ArtifactListResponse>(`/artifacts/sessions/${sessionId}`, {
       max_depth: options?.maxDepth,
       include_dirs: options?.includeDirs,
       limit: options?.limit,
       extensions: options?.extensions,
+      path_prefix: options?.pathPrefix,
     });
   };
 
