@@ -216,7 +216,6 @@ def test_evaluate_plan_rubric_uses_sync_path_for_builtin_client_inside_running_l
     async def _forbid_stream(*_args, **_kwargs):
         calls["stream"] += 1
         raise AssertionError("stream evaluator path should not run for built-in LLMClient")
-        yield ""
 
     monkeypatch.setattr(client, "chat", _fake_chat)
     monkeypatch.setattr(client, "chat_async", _forbid_async)

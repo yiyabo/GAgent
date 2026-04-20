@@ -1761,6 +1761,8 @@ async def manuscript_writer_handler(
     evaluation_provider: Optional[str] = None,
     merge_provider: Optional[str] = None,
     session_id: Optional[str] = None,
+    task_id: Optional[int] = None,
+    ancestor_chain: Optional[List[int]] = None,
     keep_workspace: bool = False,
     draft_only: bool = False,
 ) -> Dict[str, Any]:
@@ -1792,7 +1794,21 @@ async def manuscript_writer_handler(
         analysis_file.parent.mkdir(parents=True, exist_ok=True)
 
         run_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-        work_dir = (session_dir or output_file.parent) / f".manuscript_writer_{run_id}"
+        # --- Unified output path: use PathRouter when task_id is available ---
+        unified_output_dir: Optional[Path] = None
+        if task_id is not None and session_id:
+            from app.services.path_router import get_path_router
+            path_router = get_path_router()
+            unified_output_dir = path_router.get_task_output_dir(
+                session_id, task_id, ancestor_chain, create=True
+            )
+            # Use unified output dir as work_dir base (sections/, reviews/, merge/ inside)
+            work_dir = unified_output_dir
+        else:
+            # Legacy: use session_dir for work_dir
+            work_base = session_dir or _RUNTIME_DIR / "_manuscript_scratch"
+            work_base.mkdir(parents=True, exist_ok=True)
+            work_dir = work_base / f".manuscript_writer_{run_id}"
         work_dir.mkdir(parents=True, exist_ok=True)
         sections_dir = work_dir / "sections"
         reviews_dir = work_dir / "reviews"
@@ -1967,6 +1983,77 @@ async def manuscript_writer_handler(
                     prefixes.append(value)
             return prefixes
 
+        def _promote_explicit_outputs_to_task_dir(
+            *entries: Tuple[str, Optional[Path]],
+        ) -> Dict[str, str]:
+            promoted: Dict[str, str] = {}
+            if unified_output_dir is None or session_dir is None:
+                return promoted
+
+            target_root = unified_output_dir.resolve()
+            for field_name, candidate in entries:
+                if candidate is None or not candidate.exists() or not candidate.is_file():
+                    continue
+
+                source = candidate.resolve()
+                try:
+                    source.relative_to(target_root)
+                    target = source
+                except ValueError:
+                    target = (target_root / source.name).resolve()
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    try:
+                        shutil.copy2(source, target)
+                    except Exception as exc:
+                        logger.warning(
+                            "manuscript_writer failed to promote %s into task output dir: %s",
+                            source,
+                            exc,
+                        )
+                        continue
+
+                rel = _to_session_rel(target)
+                if rel:
+                    promoted[field_name] = rel
+            return promoted
+
+        def _attach_output_location(
+            result: Dict[str, Any],
+            *,
+            base_dir: Optional[Path] = None,
+        ) -> Dict[str, Any]:
+            if unified_output_dir is None:
+                return result
+
+            root_dir = (base_dir or unified_output_dir).resolve()
+            artifact_paths = [str(path.resolve()) for path in sorted(root_dir.rglob("*")) if path.is_file()]
+            session_artifact_paths: List[str] = []
+            for path in sorted(root_dir.rglob("*")):
+                if not path.is_file():
+                    continue
+                rel = _to_session_rel(path)
+                session_artifact_paths.append((rel or str(path.resolve())).replace("\\", "/"))
+
+            out = dict(result)
+            out["output_location"] = {
+                "type": "task",
+                "session_id": session_id,
+                "task_id": task_id,
+                "ancestor_chain": ancestor_chain,
+                "base_dir": str(root_dir),
+                "files": session_artifact_paths,
+            }
+            out["artifact_paths"] = list(dict.fromkeys([
+                *[str(item) for item in list(out.get("artifact_paths") or []) if str(item).strip()],
+                *artifact_paths,
+            ]))
+            out["produced_files"] = list(out["artifact_paths"])
+            out["session_artifact_paths"] = list(dict.fromkeys([
+                *[str(item) for item in list(out.get("session_artifact_paths") or []) if str(item).strip()],
+                *session_artifact_paths,
+            ]))
+            return out
+
         def _release_summary_for_error(
             error_code: str,
             *,
@@ -2104,7 +2191,11 @@ async def manuscript_writer_handler(
                 partial_output,
                 partial_path,
             )
-            return {
+            promoted_paths = _promote_explicit_outputs_to_task_dir(
+                ("effective_output_path", output_file),
+                ("effective_analysis_path", analysis_file),
+            )
+            return _attach_output_location({
                 "tool": "manuscript_writer",
                 "success": False,
                 "error": error_code,
@@ -2143,8 +2234,8 @@ async def manuscript_writer_handler(
                 "section_scores": dict(section_scores),
                 "output_path": _to_rel(output_file),
                 "analysis_path": _to_rel(analysis_file),
-                "effective_output_path": _to_rel(output_file),
-                "effective_analysis_path": _to_rel(analysis_file),
+                "effective_output_path": promoted_paths.get("effective_output_path") or _to_rel(output_file),
+                "effective_analysis_path": promoted_paths.get("effective_analysis_path") or _to_rel(analysis_file),
                 "pre_polish_output_path": None,
                 "polished_output_path": None,
                 "sections_dir": _to_rel(sections_dir),
@@ -2162,7 +2253,7 @@ async def manuscript_writer_handler(
                 "sections": section_results,
                 "run_stats": stats,
                 "bib_precheck_warning": bib_precheck_warning,
-            }
+            }, base_dir=work_dir)
 
         # ---------------------------------------------------------------
         # Helper: generate + evaluate + revise a single section
@@ -2335,7 +2426,11 @@ async def manuscript_writer_handler(
                     shutil.rmtree(work_dir)
                 except Exception as exc:
                     cleanup_errors.append(str(exc))
-            return {
+            promoted_paths = _promote_explicit_outputs_to_task_dir(
+                ("effective_output_path", output_file),
+                ("effective_analysis_path", analysis_file),
+            )
+            return _attach_output_location({
                 "tool": "manuscript_writer",
                 "success": True,
                 "draft_only": True,
@@ -2349,9 +2444,9 @@ async def manuscript_writer_handler(
                 "reference_library_path": reference_library_path or None,
                 "source_paths": used_sources,
                 "analysis_path": _to_rel(analysis_file),
-                "effective_analysis_path": _to_rel(analysis_file),
+                "effective_analysis_path": promoted_paths.get("effective_analysis_path") or _to_rel(analysis_file),
                 "output_path": _to_rel(output_file),
-                "effective_output_path": _to_rel(output_file),
+                "effective_output_path": promoted_paths.get("effective_output_path") or _to_rel(output_file),
                 "pre_polish_output_path": None,
                 "polished_output_path": None,
                 "section_profile": section_profile,
@@ -2377,7 +2472,7 @@ async def manuscript_writer_handler(
                     "completed_section_count": len(completed_sections),
                 },
                 "bib_precheck_warning": bib_precheck_warning,
-            }
+            }, base_dir=work_dir)
 
         gen_llm, gen_model = _build_llm_service(generation_provider, gen_model)
         eval_llm, eval_model = _build_llm_service(evaluation_provider, eval_model)
@@ -2782,7 +2877,11 @@ async def manuscript_writer_handler(
             ) if isinstance(release_review.get("scores"), dict) else 0.0
         stats["final_polish_enabled"] = final_polish_enabled
         stats["final_polish_passed"] = polish_gate_passed
-        return {
+        promoted_paths = _promote_explicit_outputs_to_task_dir(
+            ("effective_output_path", output_file),
+            ("effective_analysis_path", analysis_file),
+        )
+        return _attach_output_location({
             "tool": "manuscript_writer",
             "success": True,
             "article_mode_requested": article_mode_requested,
@@ -2815,7 +2914,7 @@ async def manuscript_writer_handler(
             "failed_sections": list(failed_sections),
             "section_scores": dict(section_scores),
             "analysis_path": _to_rel(analysis_file),
-            "effective_analysis_path": _to_rel(analysis_file),
+            "effective_analysis_path": promoted_paths.get("effective_analysis_path") or _to_rel(analysis_file),
             "sections_dir": None if not keep_workspace else _to_rel(sections_dir),
             "reviews_dir": None if not keep_workspace else _to_rel(reviews_dir),
             "combined_path": None if not keep_workspace else _to_rel(combined_path),
@@ -2825,7 +2924,7 @@ async def manuscript_writer_handler(
             "release_consistency_path": None if not keep_workspace else _to_rel(release_consistency_path),
             "release_consistency_report": release_consistency_report if keep_workspace else None,
             "output_path": _to_rel(output_file),
-            "effective_output_path": _to_rel(output_file),
+            "effective_output_path": promoted_paths.get("effective_output_path") or _to_rel(output_file),
             "pre_polish_output_path": _to_rel(pre_polish_path),
             "polished_output_path": _to_rel(polished_workspace_path),
             "release_review": release_review if keep_workspace else None,
@@ -2837,7 +2936,7 @@ async def manuscript_writer_handler(
             "cleanup_errors": cleanup_errors,
             "run_stats": stats,
             "bib_precheck_warning": bib_precheck_warning,
-        }
+        }, base_dir=work_dir)
     except Exception as exc:
         logger.exception("Manuscript writer failed")
         return {"tool": "manuscript_writer", "success": False, "error": str(exc)}

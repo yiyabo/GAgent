@@ -281,7 +281,7 @@ class LLMClient(LLMProvider):
                 self.stream_timeout = self.timeout
             elif self.timeout is not None:
                 self.stream_timeout = max(self.stream_timeout, self.timeout)
-        self.mock = False  # Mock
+        self.mock = os.getenv("LLM_MOCK", "").strip().lower() in {"1", "true", "yes"}
         # Retry/backoff configuration
         try:
             if retries is None:
@@ -543,6 +543,67 @@ class LLMClient(LLMProvider):
         Returns a ``NativeStreamResult`` with the full accumulated content,
         reasoning content, **and** any tool calls the model decided to make.
         """
+        max_retries = max(1, self.retries)
+        last_err: Optional[Exception] = None
+        for attempt in range(max_retries + 1):
+            try:
+                return await self._stream_chat_with_tools_inner(
+                    messages=messages,
+                    tools=tools,
+                    tool_choice=tool_choice,
+                    model=model,
+                    on_content_delta=on_content_delta,
+                    on_reasoning_delta=on_reasoning_delta,
+                    enable_thinking=enable_thinking,
+                    thinking_budget=thinking_budget,
+                )
+            except Exception as e:
+                err_text = str(e).lower()
+                is_transient = (
+                    "closed" in err_text
+                    or "tcptransport" in err_text
+                    or "connection" in err_text
+                    or isinstance(e, (httpx.ConnectError, httpx.RemoteProtocolError))
+                )
+                if is_transient and attempt < max_retries:
+                    delay = max(0.5, self.backoff_base * (2 ** attempt))
+                    logger.warning(
+                        "[LLM] stream_chat_with_tools transient error (attempt %d/%d): %s. Retrying in %.1fs",
+                        attempt + 1, max_retries + 1, e, delay,
+                    )
+                    await asyncio.sleep(delay)
+                    last_err = e
+                    continue
+                raise
+        raise RuntimeError(f"stream_chat_with_tools failed after {max_retries + 1} attempts: {last_err}")
+
+    async def _stream_chat_with_tools_inner(
+        self,
+        messages: list,
+        tools: List[Dict[str, Any]],
+        tool_choice: str = "auto",
+        model: Optional[str] = None,
+        on_content_delta: Optional[Callable[[str], Any]] = None,
+        on_reasoning_delta: Optional[Callable[[str], Any]] = None,
+        enable_thinking: Optional[bool] = None,
+        thinking_budget: Optional[int] = None,
+    ) -> NativeStreamResult:
+        if self.mock:
+            mock_content = "This is a mock completion."
+            if on_content_delta:
+                try:
+                    ret = on_content_delta(mock_content)
+                    if asyncio.iscoroutine(ret):
+                        await ret
+                except Exception:
+                    pass
+            return NativeStreamResult(
+                content=mock_content,
+                reasoning_content="",
+                tool_calls=[],
+                finish_reason="stop",
+            )
+
         if not self.api_key:
             raise RuntimeError(f"{self.provider.upper()}_API_KEY is not set")
 

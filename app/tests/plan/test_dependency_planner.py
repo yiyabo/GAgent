@@ -173,5 +173,7 @@ def test_plan_executor_passes_reference_context_into_deep_think(monkeypatch: pyt
         {"title": "Evidence", "content": "Output table saved at /tmp/analysis/output.csv"}
     ]
     assert "/tmp/paper/evidence.md" in task_context.paper_context_paths
-    assert "/tmp/analysis/output.csv" in task_context.paper_context_paths
+    # output_path from dependency results is no longer auto-injected into
+    # paper_context_paths; the executor now injects canonical artifact paths
+    # from the manifest instead.
     assert "deliverable_submit" in (captured.get("available_tools") or [])

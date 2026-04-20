@@ -102,24 +102,38 @@ export function resolveTaskStatus(
 interface DependenciesProps {
   dependencies: number[] | undefined;
   onDependencyClick: (depId: number) => void;
+  taskMap?: Map<number, PlanTaskNode>;
 }
 
-export const Dependencies: React.FC<DependenciesProps> = ({ dependencies, onDependencyClick }) => {
+export const Dependencies: React.FC<DependenciesProps> = ({ dependencies, onDependencyClick, taskMap }) => {
   if (!dependencies || dependencies.length === 0) {
     return <Text type="secondary">No dependencies</Text>;
   }
   return (
     <Space wrap size={6}>
-      {dependencies.map((dep) => (
-        <Button
-          key={dep}
-          size="small"
-          type="link"
-          onClick={() => onDependencyClick(dep)}
-        >
-          Task #{dep}
-        </Button>
-      ))}
+      {dependencies.map((dep) => {
+        const depTask = taskMap?.get(dep);
+        const depStatus = depTask?.effective_status ?? depTask?.status;
+        return (
+          <Button
+            key={dep}
+            size="small"
+            type="link"
+            onClick={() => onDependencyClick(dep)}
+            style={{ padding: '0 4px', height: 'auto' }}
+          >
+            Task #{dep}
+            {depStatus && (
+              <Tag
+                color={statusColorMap[depStatus] ?? 'default'}
+                style={{ marginLeft: 4, fontSize: 11, lineHeight: '16px', padding: '0 4px' }}
+              >
+                {statusLabelMap[depStatus] ?? depStatus}
+              </Tag>
+            )}
+          </Button>
+        );
+      })}
     </Space>
   );
 };
@@ -155,8 +169,11 @@ interface ExecutionResultProps {
   taskResult: PlanResultItem | undefined;
   cachedResult: PlanResultItem | undefined;
   onReverify?: (() => void) | null;
+  onManualAccept?: (() => void) | null;
   verifyLoading?: boolean;
+  manualAcceptLoading?: boolean;
   canVerify?: boolean;
+  canManualAccept?: boolean;
 }
 
 interface TaskDrawerContentProps {
@@ -167,8 +184,12 @@ interface TaskDrawerContentProps {
   taskResult: PlanResultItem | undefined;
   cachedResult: PlanResultItem | undefined;
   onReverify?: (() => void) | null;
+  onManualAccept?: (() => void) | null;
   verifyLoading?: boolean;
+  manualAcceptLoading?: boolean;
   canVerify?: boolean;
+  canManualAccept?: boolean;
+  taskMap?: Map<number, PlanTaskNode>;
 }
 
 export const TaskDrawerContent: React.FC<TaskDrawerContentProps> = ({
@@ -179,47 +200,81 @@ export const TaskDrawerContent: React.FC<TaskDrawerContentProps> = ({
   taskResult,
   cachedResult,
   onReverify,
+  onManualAccept,
   verifyLoading = false,
+  manualAcceptLoading = false,
   canVerify = false,
+  canManualAccept = false,
+  taskMap,
 }) => {
+  const effectiveStatus = activeTask.effective_status ?? activeTask.status ?? 'pending';
+  const isBlocked = effectiveStatus === 'blocked';
+  const hasTimestamps = Boolean(activeTask.created_at) || Boolean(activeTask.updated_at);
+
   return (
     <Space direction="vertical" size="large" style={{ width: '100%' }}>
       <section>
-        <Title level={5}>Basic Information</Title>
-        <Descriptions column={1} bordered size="small">
-          <Descriptions.Item label="Task Type">
-            {activeTask.task_type ?? 'Unknown'}
-          </Descriptions.Item>
-          <Descriptions.Item label="Status">
-            <Tag color={statusColorMap[activeTask.status ?? 'pending'] ?? 'default'}>
-              {statusLabelMap[activeTask.status ?? 'pending'] ??
-                activeTask.status ??
-                'Unknown'}
+        <Title level={5}>Status</Title>
+        <Space direction="vertical" size="small" style={{ width: '100%' }}>
+          <Space wrap size={8}>
+            <Tag color={statusColorMap[effectiveStatus] ?? 'default'}>
+              {statusLabelMap[effectiveStatus] ?? effectiveStatus}
             </Tag>
-          </Descriptions.Item>
-          {activeTask.parent_id ? (
-            <Descriptions.Item label="Parent Task">
-              <Button
-                type="link"
-                size="small"
-                onClick={() => handleDependencyClick(activeTask.parent_id!)}
-              >
-                Task #{activeTask.parent_id}
-              </Button>
-            </Descriptions.Item>
-          ) : (
-            <Descriptions.Item label="Parent Task">None</Descriptions.Item>
+            {activeTask.parent_id != null && (
+              <Text type="secondary">
+                Parent:{' '}
+                <Button
+                  type="link"
+                  size="small"
+                  style={{ padding: 0, height: 'auto' }}
+                  onClick={() => handleDependencyClick(activeTask.parent_id!)}
+                >
+                  Task #{activeTask.parent_id}
+                </Button>
+              </Text>
+            )}
+          </Space>
+          {isBlocked && activeTask.status_reason && (
+            <div
+              style={{
+                background: '#fff7e6',
+                border: '1px solid #ffd591',
+                borderRadius: 6,
+                padding: '8px 12px',
+                fontSize: 13,
+              }}
+            >
+              <Text type="warning" style={{ fontWeight: 500 }}>⏳ Blocked: </Text>
+              <Text>{activeTask.status_reason}</Text>
+            </div>
           )}
-          <Descriptions.Item label="Depth">
-            {activeTask.depth ?? 0}
-          </Descriptions.Item>
-          <Descriptions.Item label="Created At">
-            {activeTask.created_at ? new Date(activeTask.created_at).toLocaleString() : 'Unknown'}
-          </Descriptions.Item>
-          <Descriptions.Item label="Updated At">
-            {activeTask.updated_at ? new Date(activeTask.updated_at).toLocaleString() : 'Unknown'}
-          </Descriptions.Item>
-        </Descriptions>
+          {isBlocked && !activeTask.status_reason && activeTask.incomplete_dependencies && activeTask.incomplete_dependencies.length > 0 && (
+            <div
+              style={{
+                background: '#fff7e6',
+                border: '1px solid #ffd591',
+                borderRadius: 6,
+                padding: '8px 12px',
+                fontSize: 13,
+              }}
+            >
+              <Text type="warning" style={{ fontWeight: 500 }}>⏳ Waiting for: </Text>
+              {activeTask.incomplete_dependencies.map((depId, idx) => (
+                <React.Fragment key={depId}>
+                  {idx > 0 && ', '}
+                  <Button
+                    type="link"
+                    size="small"
+                    style={{ padding: 0, height: 'auto', fontSize: 13 }}
+                    onClick={() => handleDependencyClick(depId)}
+                  >
+                    Task #{depId}
+                  </Button>
+                </React.Fragment>
+              ))}
+            </div>
+          )}
+        </Space>
       </section>
 
       <section>
@@ -240,6 +295,7 @@ export const TaskDrawerContent: React.FC<TaskDrawerContentProps> = ({
             <Dependencies
               dependencies={activeTask.dependencies}
               onDependencyClick={handleDependencyClick}
+              taskMap={taskMap}
             />
           </div>
         </Space>
@@ -287,20 +343,45 @@ export const TaskDrawerContent: React.FC<TaskDrawerContentProps> = ({
         </section>
       )}
 
-      <section>
-        <Title level={5}>Metadata</Title>
-        {activeTask.metadata && Object.keys(activeTask.metadata).length > 0 ? (
-          <Paragraph
-            code
-            copyable
-            style={{ maxHeight: 200, overflow: 'auto' }}
-          >
-            {JSON.stringify(activeTask.metadata, null, 2)}
-          </Paragraph>
-        ) : (
-          <Text type="secondary">No metadata available</Text>
-        )}
-      </section>
+      <Collapse
+        size="small"
+        bordered={false}
+        items={[
+          ...(activeTask.metadata && Object.keys(activeTask.metadata).length > 0
+            ? [{
+                key: 'metadata',
+                label: 'Metadata',
+                children: (
+                  <Paragraph
+                    code
+                    copyable
+                    style={{ maxHeight: 200, overflow: 'auto' }}
+                  >
+                    {JSON.stringify(activeTask.metadata, null, 2)}
+                  </Paragraph>
+                ),
+              }]
+            : []),
+          ...(hasTimestamps
+            ? [{
+                key: 'timestamps',
+                label: 'Details',
+                children: (
+                  <Descriptions column={1} size="small">
+                    <Descriptions.Item label="Type">{activeTask.task_type ?? 'Unknown'}</Descriptions.Item>
+                    <Descriptions.Item label="Depth">{activeTask.depth ?? 0}</Descriptions.Item>
+                    {activeTask.created_at && (
+                      <Descriptions.Item label="Created">{new Date(activeTask.created_at).toLocaleString()}</Descriptions.Item>
+                    )}
+                    {activeTask.updated_at && (
+                      <Descriptions.Item label="Updated">{new Date(activeTask.updated_at).toLocaleString()}</Descriptions.Item>
+                    )}
+                  </Descriptions>
+                ),
+              }]
+            : []),
+        ]}
+      />
 
       <section>
         <Title level={5}>Execution Result</Title>
@@ -309,8 +390,11 @@ export const TaskDrawerContent: React.FC<TaskDrawerContentProps> = ({
           taskResult={taskResult}
           cachedResult={cachedResult}
           onReverify={onReverify}
+          onManualAccept={onManualAccept}
           verifyLoading={verifyLoading}
+          manualAcceptLoading={manualAcceptLoading}
           canVerify={canVerify}
+          canManualAccept={canManualAccept}
         />
       </section>
     </Space>
@@ -322,8 +406,11 @@ export const ExecutionResult: React.FC<ExecutionResultProps> = ({
   taskResult,
   cachedResult,
   onReverify,
+  onManualAccept,
   verifyLoading = false,
+  manualAcceptLoading = false,
   canVerify = false,
+  canManualAccept = false,
 }) => {
   if (resultLoading && !taskResult && !cachedResult) {
     return (
@@ -338,6 +425,16 @@ export const ExecutionResult: React.FC<ExecutionResultProps> = ({
     return <Text type="secondary">No execution result available</Text>;
   }
   const verification = getVerificationView(result);
+  const manualAcceptance =
+    result.metadata && typeof result.metadata.manual_acceptance === 'object'
+      ? (result.metadata.manual_acceptance as Record<string, any>)
+      : null;
+  const manualAccepted = Boolean(
+    manualAcceptance && (
+      String(manualAcceptance.status ?? '').trim().toLowerCase() === 'accepted' ||
+      manualAcceptance.accepted === true
+    )
+  );
 
   return (
     <Space direction="vertical" size="small" style={{ width: '100%' }}>
@@ -350,9 +447,15 @@ export const ExecutionResult: React.FC<ExecutionResultProps> = ({
         {verification.status && verification.label && (
           <Tag color={verification.color}>{verification.label}</Tag>
         )}
+        {manualAccepted && <Tag color="blue">Manually accepted</Tag>}
         {canVerify && onReverify && (
           <Button size="small" onClick={onReverify} loading={verifyLoading}>
             Re-verify
+          </Button>
+        )}
+        {canManualAccept && onManualAccept && (
+          <Button size="small" onClick={onManualAccept} loading={manualAcceptLoading}>
+            Accept manually
           </Button>
         )}
       </Space>

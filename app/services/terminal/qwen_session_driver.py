@@ -68,6 +68,13 @@ class QwenSessionDriver:
         self._shared_terminal_ids: Dict[str, str] = {}  # session_id → terminal_id
         self._identity_file_paths: Dict[str, Tuple[str, str]] = {}
         self._lock = asyncio.Lock()
+        # Idle container TTL tracking
+        self._last_used: Dict[str, float] = {}  # session_id → monotonic timestamp
+        self._ttl_task: Optional[asyncio.Task] = None
+        self._ttl_seconds: float = float(
+            os.getenv("QWEN_CONTAINER_IDLE_TTL", "600")
+        )  # default 10 minutes
+        self._ttl_check_interval: float = 60.0  # check every 60 seconds
 
     # ------------------------------------------------------------------
     # Container lifecycle
@@ -114,8 +121,10 @@ class QwenSessionDriver:
                                 and backend.container_name == name
                                 and await self._container_running(name)
                             ):
+                                self._touch(session_id)
                                 return name
                 elif await self._container_running(name):
+                    self._touch(session_id)
                     return name
                 self._containers.pop(session_id, None)
                 self._session_ids.pop(session_id, None)
@@ -156,6 +165,7 @@ class QwenSessionDriver:
                             "Reusing shared qwen_code terminal session %s for agent execution",
                             shared_session.terminal_id,
                         )
+                        self._touch(session_id)
                         return shared_container
             else:
                 logger.info(
@@ -251,6 +261,7 @@ class QwenSessionDriver:
             )
             self._locks.setdefault(session_id, asyncio.Lock())
             self._shared_terminal_ids.pop(session_id, None)
+            self._touch(session_id)
             return name
 
     async def exec_qwen_task(
@@ -267,6 +278,10 @@ class QwenSessionDriver:
 
         Returns (exit_code, stdout_text, stderr_text).
         """
+        # Touch all sessions using this container to reset idle TTL
+        for sid, cname in self._containers.items():
+            if cname == container_name:
+                self._touch(sid)
         cmd: List[str] = ["docker", "exec", "-e", f"PATH={CONTAINER_EXEC_PATH}"]
         if cwd:
             cmd.extend(["-w", cwd])
@@ -353,6 +368,7 @@ class QwenSessionDriver:
             self._locks.pop(session_id, None)
             shared_terminal_id = self._shared_terminal_ids.pop(session_id, None)
             identity_paths = self._identity_file_paths.pop(session_id, None)
+            self._last_used.pop(session_id, None)
         if shared_terminal_id:
             return
         if name:
@@ -375,10 +391,65 @@ class QwenSessionDriver:
             self._shared_terminal_ids.clear()
             identity_paths = list(self._identity_file_paths.values())
             self._identity_file_paths.clear()
+            self._last_used.clear()
+        # Cancel the TTL reaper task
+        if self._ttl_task and not self._ttl_task.done():
+            self._ttl_task.cancel()
+            self._ttl_task = None
         for name in names:
             await self._force_remove(name)
         for paths in identity_paths:
             DockerPTYBackend._cleanup_identity_files(paths)
+
+    # ------------------------------------------------------------------
+    # Idle container TTL reaper
+    # ------------------------------------------------------------------
+
+    def _touch(self, session_id: str) -> None:
+        """Record that a session's container was just used."""
+        import time
+        self._last_used[session_id] = time.monotonic()
+        self._ensure_ttl_reaper()
+
+    def _ensure_ttl_reaper(self) -> None:
+        """Start the background TTL reaper if not already running."""
+        if self._ttl_task is not None and not self._ttl_task.done():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+            self._ttl_task = loop.create_task(self._ttl_reaper_loop())
+        except RuntimeError:
+            pass  # no event loop — skip (e.g. during tests)
+
+    async def _ttl_reaper_loop(self) -> None:
+        """Periodically check for idle containers and remove them."""
+        import time
+        while True:
+            try:
+                await asyncio.sleep(self._ttl_check_interval)
+                now = time.monotonic()
+                to_cleanup: list[str] = []
+                async with self._lock:
+                    for session_id, last_used in list(self._last_used.items()):
+                        if now - last_used < self._ttl_seconds:
+                            continue
+                        # Don't reap if there's no container tracked
+                        if session_id not in self._containers:
+                            self._last_used.pop(session_id, None)
+                            continue
+                        to_cleanup.append(session_id)
+                for session_id in to_cleanup:
+                    logger.info(
+                        "Reaping idle container for session %s (idle %.0fs, TTL %.0fs)",
+                        session_id,
+                        now - self._last_used.get(session_id, now),
+                        self._ttl_seconds,
+                    )
+                    await self.cleanup(session_id)
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                logger.warning("TTL reaper error: %s", exc)
 
     # ------------------------------------------------------------------
     # Static helpers
@@ -431,6 +502,110 @@ class QwenSessionDriver:
             await asyncio.wait_for(proc.wait(), timeout=10)
         except Exception:
             pass
+
+    @staticmethod
+    async def _discover_containers(
+        label: str,
+        timeout: float,
+    ) -> list[tuple[str, str]]:
+        """Discover Docker containers with the given label.
+
+        Returns list of (container_id, container_name) tuples.
+        Raises on Docker unavailability or timeout.
+        """
+        proc = await asyncio.create_subprocess_exec(
+            "docker", "ps", "-a",
+            "--filter", f"label={label}",
+            "--format", "{{.ID}} {{.Names}}",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        if proc.returncode != 0:
+            raise RuntimeError(
+                f"docker ps failed (exit {proc.returncode}): {stderr.decode().strip()}"
+            )
+        containers: list[tuple[str, str]] = []
+        for line in stdout.decode().strip().splitlines():
+            parts = line.strip().split(None, 1)
+            if len(parts) == 2:
+                containers.append((parts[0], parts[1]))
+        return containers
+
+    @staticmethod
+    async def _remove_container(
+        container_id: str,
+        timeout: float,
+    ) -> bool:
+        """Force-remove a container by ID. Returns True on success, False on failure."""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "docker", "rm", "-f", container_id,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            return proc.returncode == 0
+        except Exception:
+            return False
+
+    @staticmethod
+    async def cleanup_orphaned_containers(
+        *,
+        timeout: float = 30.0,
+        label: str = "gagent.component=qwen-code-agent",
+    ) -> None:
+        """Discover and remove orphaned Qwen Code containers on startup.
+
+        All errors are caught and logged; no exceptions propagate.
+        """
+        try:
+            loop = asyncio.get_event_loop()
+            deadline = loop.time() + timeout
+
+            # Discovery phase
+            remaining = max(0.1, deadline - loop.time())
+            try:
+                containers = await QwenSessionDriver._discover_containers(label, remaining)
+            except FileNotFoundError:
+                logger.warning("Skipping orphaned container cleanup: docker CLI not found")
+                return
+            except asyncio.TimeoutError:
+                logger.warning("Skipping orphaned container cleanup: docker ps timed out")
+                return
+            except Exception as exc:
+                logger.warning("Skipping orphaned container cleanup: %s", exc)
+                return
+
+            if not containers:
+                logger.debug("No orphaned Qwen Code containers found")
+                return
+
+            # Removal phase
+            removed = 0
+            for idx, (container_id, container_name) in enumerate(containers):
+                remaining = deadline - loop.time()
+                if remaining <= 0:
+                    logger.warning(
+                        "Orphaned container cleanup timed out: %d/%d removed, %d remaining",
+                        removed, len(containers), len(containers) - idx,
+                    )
+                    break
+
+                success = await QwenSessionDriver._remove_container(container_id, remaining)
+                if success:
+                    removed += 1
+                    logger.info("Removed orphaned container %s (%s)", container_name, container_id)
+                else:
+                    logger.warning(
+                        "Failed to remove orphaned container %s (%s)", container_name, container_id
+                    )
+
+            logger.info(
+                "Orphaned container cleanup: %d/%d containers removed", removed, len(containers)
+            )
+        except Exception as exc:
+            logger.warning("Unexpected error during orphaned container cleanup: %s", exc)
 
 
 # Module-level singleton

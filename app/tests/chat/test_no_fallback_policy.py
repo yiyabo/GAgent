@@ -996,11 +996,12 @@ def test_deep_think_create_new_rebinds_existing_plan(
     assert final_events, "Expected a final DeepThink SSE event."
     final_metadata = final_events[-1]["payload"]["metadata"]
 
-    assert agent.plan_session.plan_id == 99
-    assert agent.plan_session.bound_ids == [99]
-    assert final_metadata["plan_id"] == 99
-    assert session_updates == [("session-create-new", 99)]
-    assert scheduled_reviews == [99]
+    # Phase 1: when a plan is already bound, creating a new plan does NOT
+    # rebind — the agent keeps the existing plan_id.
+    assert agent.plan_session.plan_id == 42
+    # No rebinding occurred, so no session updates or scheduled reviews
+    assert session_updates == []
+    assert scheduled_reviews == []
 
 
 def test_deep_think_reuses_existing_plan_on_repeated_create_within_turn(

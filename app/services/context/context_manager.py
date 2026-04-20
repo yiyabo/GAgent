@@ -82,24 +82,14 @@ def estimate_messages_tokens(messages: List[Dict[str, Any]]) -> int:
 # Context usage tracking
 # ---------------------------------------------------------------------------
 
-# Known context window sizes (in tokens) for common models.
-# Conservative estimates — actual limits may be higher.
+# Known context window sizes (in tokens).
 _MODEL_CONTEXT_WINDOWS: Dict[str, int] = {
-    "qwen-plus": 131072,
-    "qwen-max": 131072,
-    "qwen-turbo": 131072,
-    "qwen3.6-plus": 256000,
-    "qwen3.5-plus": 131072,
+    "qwen3.6-plus": 1000000,
     "qwen-long": 1000000,
-    "kimi-k2.5": 131072,
-    "gpt-4o": 128000,
-    "gpt-4o-mini": 128000,
-    "claude-sonnet-4-20250514": 200000,
-    "claude-opus-4-20250514": 200000,
 }
 
-# Fallback context window when model is unknown
-_DEFAULT_CONTEXT_WINDOW = 131072
+# Fallback — qwen3.6-plus is the only active model.
+_DEFAULT_CONTEXT_WINDOW = 1000000
 
 
 def get_context_window(model: str) -> int:

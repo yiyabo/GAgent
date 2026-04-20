@@ -4,16 +4,19 @@ import json
 import logging
 import os
 import re
+import shutil
 import time
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from pydantic import BaseModel, Field, ValidationError
 
 from ...config.executor_config import ExecutorSettings, get_executor_settings
-from ...llm import LLMClient
+from ...llm import LLMClient, NativeStreamResult
+from ..tool_schemas import build_executor_tool_schemas, EXECUTOR_AVAILABLE_TOOLS
 from ..deep_think_agent import (
     DeepThinkAgent,
     TaskExecutionContext,
@@ -27,21 +30,48 @@ from ..llm.llm_service import LLMService
 from ..skills import get_skills_loader
 from .artifact_contracts import (
     artifact_manifest_path,
+    extend_contract_with_runtime_candidates,
     find_candidate_source_for_alias,
     find_runtime_candidates,
     infer_artifact_contract,
-    infer_contract_from_candidates,
     load_artifact_manifest,
     producer_candidates_for_alias,
     publish_artifact,
     published_artifact_paths_for_task,
+    resolve_artifact_contract_with_provenance,
     resolve_manifest_aliases,
     save_artifact_manifest,
 )
+from .artifact_preflight import ArtifactPreflightService
 from .plan_models import PlanNode, PlanTree
+from .status_resolver import PlanStatusResolver
 from .task_verification import TaskVerificationService, VerificationFinalization
 
 logger = logging.getLogger(__name__)
+
+
+def _run_coroutine_sync(coro: Any) -> Any:
+    """Run an async coroutine synchronously, handling nested event loops.
+
+    When called from a thread that already has a running event loop (e.g. via
+    asyncio.to_thread), this spawns a new thread with its own event loop to
+    avoid "cannot run nested event loop" errors.
+
+    Thread-safety note: httpx.AsyncClient is thread-safe per its documentation,
+    so creating a new event loop in a worker thread to drive the same client
+    instance is safe.  However, any non-thread-safe state (e.g. mutable shared
+    caches) accessed inside ``coro`` must use appropriate synchronization.
+    """
+    try:
+        running_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        running_loop = None
+
+    if running_loop and running_loop.is_running():
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            return executor.submit(lambda: asyncio.run(coro)).result()
+    return asyncio.run(coro)
+
 
 def _log_job(level: str, message: str, metadata: Optional[Dict[str, Any]] = None) -> None:
     try:
@@ -49,6 +79,17 @@ def _log_job(level: str, message: str, metadata: Optional[Dict[str, Any]] = None
     except Exception:  # pragma: no cover - defensive
         return
     log_job_event(level, message, metadata)
+
+
+def _summarize_tool_params(params: Optional[Dict[str, Any]], max_length: int = 200) -> str:
+    """Create a brief summary of tool parameters for logging."""
+    if not params:
+        return "(no parameters)"
+    summary = json.dumps(params, ensure_ascii=False)
+    if len(summary) > max_length:
+        return summary[:max_length] + "..."
+    return summary
+
 
 if TYPE_CHECKING:  # pragma: no cover
     from ...repository.plan_repository import PlanRepository
@@ -68,6 +109,21 @@ _NON_DELIVERABLE_WORKSPACE_RE = re.compile(
     r"/plan\d+_task\d+/run_[^/]+(?:/(?:results|code|data|docs))?$",
     re.IGNORECASE,
 )
+_LEGACY_SESSION_WORKSPACE_RE = re.compile(
+    r"(?:^|/)runtime/session_current/workspace(?:/.*)?$",
+    re.IGNORECASE,
+)
+_USELESS_RUNTIME_ROOT_RE = re.compile(r"(?:^|/)runtime/?$", re.IGNORECASE)
+
+
+def _is_non_canonical_runtime_path(path: str) -> bool:
+    normalized = "/" + str(path or "").strip().replace("\\", "/").lstrip("/")
+    if not normalized or normalized == "/":
+        return False
+    return bool(
+        _LEGACY_SESSION_WORKSPACE_RE.search(normalized)
+        or _USELESS_RUNTIME_ROOT_RE.search(normalized)
+    )
 
 
 def _extract_paths_from_execution_result(raw: str, max_paths: int = 40) -> List[str]:
@@ -88,7 +144,11 @@ def _extract_paths_from_execution_result(raw: str, max_paths: int = 40) -> List[
         if isinstance(items, list):
             for p in items:
                 text = str(p).strip()
-                if text.startswith("/") and text not in seen:
+                if (
+                    text.startswith("/")
+                    and not _is_non_canonical_runtime_path(text)
+                    and text not in seen
+                ):
                     seen.add(text)
                     paths.append(text)
 
@@ -96,6 +156,8 @@ def _extract_paths_from_execution_result(raw: str, max_paths: int = 40) -> List[
     if len(paths) < max_paths:
         for m in _PATH_LIKE_RE.finditer(raw):
             p = m.group(1)
+            if _is_non_canonical_runtime_path(p):
+                continue
             if p not in seen:
                 seen.add(p)
                 paths.append(p)
@@ -215,6 +277,7 @@ class ExecutionConfig:
     skill_selection_mode: str = "hybrid"
     skill_max_per_task: int = 3
     skill_trace_enabled: bool = True
+    skip_preflight: bool = False
 
     def __post_init__(self) -> None:
         if self.autonomous:
@@ -255,100 +318,23 @@ class ExecutorPromptBuilder:
 
     SYSTEM_HEADER = (
         "You are an execution agent that completes research or engineering tasks. "
-        "You can either produce text-based results directly OR request tool execution when needed. "
-        "Respond using the JSON schema provided."
+        "When a task requires external tools (data retrieval, code execution, file operations), "
+        "use the provided function-calling tools. "
+        "When a task is text-only (design, planning, writing, analysis), respond with plain text content directly."
     )
 
-    TOOL_CATALOG = """
-=== AVAILABLE TOOLS ===
-When a task requires tool execution, request one of these tools:
-
-**BIOINFORMATICS (FASTA/FASTQ/sequences):**
-- sequence_fetch: Deterministic accession-to-FASTA download with strict allowlist
-  Parameters: {"accession": "<id>" | "accessions": ["<id1>", "<id2>"], "database": "nuccore|protein", "format": "fasta", optional "session_id"/"output_name"}
-  NOTE: Use this first when the user asks to download FASTA by accession IDs.
-- bio_tools: Execute bioinformatics Docker tools (seqkit, blast, prodigal, hmmer, checkv, etc.)
-  Parameters: {"tool_name": "seqkit|blast|prodigal|...", "operation": "stats|blastn|predict|help", "input_file": "<path>", "sequence_text": "<inline FASTA/raw sequence>", "params": {...}}
-  NOTE: Always call operation="help" first if unsure about parameters!
-  NOTE: If no file is provided but sequence text is available, pass it via sequence_text.
-  NOTE: If unsure which tool/operation should be used for the requested analysis, request web_search first with a focused query, then return a bio_tools call.
-
-**CODE EXECUTION & DATA ANALYSIS:**
-- code_executor: Execute one concrete implementation task (data analysis, visualization, model building)
-  Parameters: {"task": "<atomic implementation instruction only>", "allowed_tools": "Bash,Edit"}
-  IMPORTANT: Never ask code_executor to do planning/decomposition/roadmap work.
-  IMPORTANT: Default to direct objective execution. Do NOT request standalone CLI preflight
-  checks (for example version/install/environment diagnostics) unless the user explicitly asks
-  for diagnostics or a prior execution has already failed due to environment/tooling issues.
-
-**INFORMATION RETRIEVAL:**
-- web_search: Search the web for information
-  Parameters: {"query": "<search query>", "max_results": 5}
-- graph_rag: Query phage-host knowledge graph
-  Parameters: {"query": "<query>", "top_k": 5, "hops": 2}
-
-**FILE & DOCUMENT PROCESSING:**
-- document_reader: Read and extract content from text files (PDF, TXT, DOCX)
-  Parameters: {"operation": "read_any", "file_path": "<path>"}
-- vision_reader: OCR and visual understanding for images/scanned PDFs
-  Parameters: {"operation": "ocr_page|describe_figure|read_equation_image", "file_path": "<path>"}
-
-**SPECIALIZED:**
-- phagescope: PhageScope platform operations (submit jobs, check status, fetch results)
-  Parameters: {"action": "submit|task_list|task_detail|task_log|result|quality|download|save_all|batch_submit|batch_reconcile|batch_retry", optional "session_id", "phage_ids", "batch_id", "strategy", ...}
-  IMPORTANT: submit is async and should return taskid quickly. For long-running jobs, prefer submit now and check status later.
-- deeppl: DeepPL lifecycle prediction (DNABERT-based)
-  Parameters: {"action": "help|predict|job_status", for predict exactly one of "input_file" or "sequence_text", optional "execution_mode", "remote_profile", "model_path", "background", "job_id", "session_id"}
-  remote_profile options: gpu | cpu | default
-- literature_pipeline: Build a literature evidence pack from PubMed/PMC
-  Parameters: {"query": "<query>", optional "max_results", "download_pdfs", "max_pdfs", "session_id"}
-- review_pack_writer: Generate a literature-backed review draft
-  Parameters: {"topic": "<topic>", optional "query", "max_results", "download_pdfs", "sections", "max_revisions", "evaluation_threshold", "session_id"}
-- manuscript_writer: Generate research manuscripts
-  Parameters: {"task": "<writing task>", "output_path": "<path>"}
-
-**DELIVERABLES (session sidebar / paper bundle):**
-- deliverable_submit: Promote specific files into the session Deliverables tree (code, image_tabular, paper, refs, docs).
-  Parameters: {"publish": true|false, "artifacts": [{"path": "<file>", "module": "code|image_tabular|paper|refs|docs", optional "reason": "<note>"}]}
-  When DELIVERABLES_INGEST_MODE=explicit, tool outputs (e.g. code_executor) are NOT auto-mirrored into Deliverables; call this after the user wants figures/code included for submission.
-  Do not call for browse-only reads unless the user asks to publish to Deliverables.
-"""
-
-    TASK_TYPE_GUIDANCE = """
-=== WHEN TO USE TOOLS ===
-- For design/architecture/planning/text writing → respond with text only (status: "success")
-- For accession-based FASTA download → use sequence_fetch first (status: "needs_tool")
-- For FASTA/FASTQ/sequence analysis → use bio_tools FIRST (status: "needs_tool")
-- If the user provides sequence text instead of a file, call bio_tools with sequence_text.
-- If bioinformatics tool/operation routing is uncertain, use web_search first to disambiguate, then call bio_tools (status: "needs_tool")
-- Do not use code_executor as fallback for bio_tools input conversion/parsing failures.
-- Do not use code_executor as fallback for sequence_fetch download/input failures.
-- For data analysis/visualization/charts → use code_executor (status: "needs_tool")
-- For model code building/training → use code_executor (status: "needs_tool")
-- Never use code_executor for task planning or decomposition; planning stays in the orchestration layer.
-- For code_executor coding tasks, request direct implementation/execution first; avoid standalone
-  "check CLI/version/environment" steps unless diagnostics are explicitly requested or needed after a failure.
-- For web information lookup → use web_search (status: "needs_tool")
-- For reading text files (PDF/TXT) → use document_reader (status: "needs_tool")
-- For reading images/scanned docs → use vision_reader (status: "needs_tool")
-- For phage knowledge queries → use graph_rag (status: "needs_tool")
-- For PhageScope long-running analyses → submit first, do not wait in the same turn; report taskid and current background status.
-- For lifecycle prediction with DeepPL → use deeppl action=predict and include explicit label/confidence in the response.
-- For literature evidence collection only → use literature_pipeline.
-- For a literature-backed review/survey draft → use review_pack_writer.
-- For publishing selected outputs to the session Deliverables panel under explicit ingest → use deliverable_submit after files exist and the user wants them in the submission bundle.
-"""
-
-    OUTPUT_SCHEMA = """{
-  "status": "success" | "failed" | "skipped" | "needs_tool",
-  "content": "<main result text or reasoning for tool request>",
-  "tool_call": {  // REQUIRED when status is "needs_tool", otherwise omit
-    "name": "sequence_fetch" | "bio_tools" | "code_executor" | "web_search" | "document_reader" | "vision_reader" | "graph_rag" | "phagescope" | "deeppl" | "literature_pipeline" | "review_pack_writer" | "manuscript_writer" | "deliverable_submit",
-    "parameters": { <tool-specific parameters> }
-  },
-  "notes": ["optional notes"],
-  "metadata": {}
-}"""
+    TOOL_HINTS = (
+        "\n=== TOOL SELECTION HINTS ===\n"
+        "- FASTA/accession download → sequence_fetch\n"
+        "- Bioinformatics analysis (FASTA/FASTQ) → bio_tools (call help first)\n"
+        "- Literature/PubMed search → literature_pipeline\n"
+        "- Data analysis/visualization/code → code_executor\n"
+        "- Web information lookup → web_search\n"
+        "- Read documents (PDF/TXT) → document_reader\n"
+        "- Read images/scanned docs → vision_reader\n"
+        "- PhageScope operations → phagescope\n"
+        "- Design/planning/text writing → respond directly, no tool needed"
+    )
 
     # Rough char-to-token ratio ~3.5 for mixed EN/ZH text.
     # Cap at ~28k tokens (~100k chars) to stay within typical model context windows.
@@ -542,12 +528,7 @@ When a task requires tool execution, request one of these tools:
             lines.append("\n=== PLAN OUTLINE (TRUNCATED) ===")
             lines.append(plan_outline)
 
-        lines.append(self.TOOL_CATALOG)
-        lines.append(self.TASK_TYPE_GUIDANCE)
-
-        lines.append("\n=== RESPONSE FORMAT ===")
-        lines.append(self.OUTPUT_SCHEMA)
-        lines.append("\nOnly return valid JSON, without Markdown or explanations.")
+        lines.append(self.TOOL_HINTS)
         prompt = "\n".join(lines)
         if len(prompt) > self.MAX_PROMPT_CHARS:
             logger.warning(
@@ -560,13 +541,11 @@ When a task requires tool execution, request one of these tools:
             idx = prompt.find(marker)
             if idx != -1:
                 end_idx = prompt.find("\n===", idx + len(marker))
-                if end_idx == -1:
-                    end_idx = prompt.find(self.TOOL_CATALOG[:30], idx)
                 if end_idx != -1:
                     prompt = prompt[:idx] + "\n[Plan outline omitted due to prompt size limit]\n" + prompt[end_idx:]
             # Hard-truncate if still too long.
             if len(prompt) > self.MAX_PROMPT_CHARS:
-                prompt = prompt[: self.MAX_PROMPT_CHARS] + "\n... [TRUNCATED]\nOnly return valid JSON."
+                prompt = prompt[: self.MAX_PROMPT_CHARS] + "\n... [TRUNCATED]"
         return prompt
 
 
@@ -604,12 +583,26 @@ class PlanExecutorLLMService:
                     model=self._settings.model,
                 )
             self._llm = LLMService(client)
+        # Store direct client reference for native tool calling
+        # (LLMService.client is always set — either the passed-in client or
+        # the default one created by get_default_client()).
+        self._llm_client: LLMClient = self._llm.client  # type: ignore[assignment]
 
-    def generate(self, prompt: str, config: ExecutionConfig) -> ExecutionResponse:
+    def generate(
+        self,
+        prompt: str,
+        config: ExecutionConfig,
+        tools: Optional[List[Dict[str, Any]]] = None,
+    ) -> ExecutionResponse:
         kwargs: Dict[str, Any] = {}
         model = config.model or self._settings.model
         if model:
             kwargs["model"] = model
+
+        if tools is not None:
+            return self._generate_with_tools(prompt, tools, **kwargs)
+
+        # Legacy fallback (no tools)
         if config.timeout is not None:
             kwargs["timeout"] = config.timeout
         response_text = self._llm.chat(prompt, **kwargs)
@@ -619,6 +612,124 @@ class PlanExecutorLLMService:
         except ValidationError:
             logger.error("Failed to parse execution response: %s", cleaned)
             raise
+
+    # ------------------------------------------------------------------
+    # Status inference for text-only responses in native tool-calling mode
+    # ------------------------------------------------------------------
+
+    _FAILURE_TOKENS = (
+        "traceback",
+        "exception",
+        "failed",
+        "error:",
+        "unable to",
+        "timed out",
+        "cannot complete",
+        "cannot be completed",
+        "not possible",
+        "无法完成",
+        "执行失败",
+        "出错",
+        "异常",
+    )
+
+    _BLOCKED_TOKENS = (
+        "blocked by dependencies",
+        "dependency outputs are missing",
+        "incomplete dependencies",
+        "unmet dependencies",
+        "prerequisite",
+        "requires output from",
+        "waiting for",
+        "被依赖阻断",
+        "依赖未完成",
+        "前置任务",
+    )
+
+    _SKIPPED_TOKENS = (
+        "skipped",
+        "not applicable",
+        "out of scope",
+        "already completed",
+        "已跳过",
+        "不适用",
+        "已完成",
+    )
+
+    @classmethod
+    def _infer_text_response_status(cls, content: str) -> str:
+        """Infer execution status from a text-only LLM response.
+
+        When the native tool-calling path receives no tool_calls, the LLM
+        replied with prose.  We apply heuristic detection to avoid mapping
+        refusals, blockers, and failures to 'success'.
+        """
+        if not content or not content.strip():
+            return "success"
+
+        lowered = content.strip().lower()
+
+        # Check blocked/dependency signals first (more specific)
+        if any(token in lowered for token in cls._BLOCKED_TOKENS):
+            return "skipped"
+
+        # Check failure signals
+        if any(token in lowered for token in cls._FAILURE_TOKENS):
+            return "failed"
+
+        # Check skipped signals
+        if any(token in lowered for token in cls._SKIPPED_TOKENS):
+            # "already completed" is ambiguous — could mean success
+            if "already completed" in lowered or "已完成" in lowered:
+                return "success"
+            return "skipped"
+
+        return "success"
+
+    def _generate_with_tools(
+        self,
+        prompt: str,
+        tools: List[Dict[str, Any]],
+        **kwargs: Any,
+    ) -> ExecutionResponse:
+        """Call LLM with native tool calling, synchronously."""
+        # Split prompt into system + user messages.
+        # The first line is the SYSTEM_HEADER from ExecutorPromptBuilder.
+        system_msg = prompt.split("\n", 1)[0]
+        messages = [
+            {"role": "system", "content": system_msg},
+            {"role": "user", "content": prompt},
+        ]
+
+        async def _call() -> NativeStreamResult:
+            return await self._llm_client.stream_chat_with_tools_async(
+                messages=messages,
+                tools=tools,
+                tool_choice="auto",
+                **kwargs,
+            )
+
+        # Bridge async → sync using the module-level helper.
+        result: NativeStreamResult = _run_coroutine_sync(_call())
+
+        # Convert NativeStreamResult → ExecutionResponse
+        if result.tool_calls:
+            first_tc = result.tool_calls[0]
+            return ExecutionResponse(
+                status="needs_tool",
+                content=result.content or "",
+                tool_call=ToolCallRequest(
+                    name=first_tc.name,
+                    parameters=first_tc.arguments,
+                ),
+            )
+        else:
+            content = result.content or ""
+            status = self._infer_text_response_status(content)
+            return ExecutionResponse(
+                status=status,
+                content=content,
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -648,6 +759,58 @@ class PlanExecutor:
         self._deliverable_publisher = get_deliverable_publisher()
         self._tool_executor = UnifiedToolExecutor()
         self._task_verifier = TaskVerificationService()
+        self._artifact_preflight = ArtifactPreflightService()
+        self._status_resolver = PlanStatusResolver()
+
+    def _ensure_runtime_helpers(self) -> None:
+        if not hasattr(self, "_settings"):
+            self._settings = get_executor_settings()
+        if not hasattr(self, "_artifact_preflight"):
+            self._artifact_preflight = ArtifactPreflightService()
+        if not hasattr(self, "_status_resolver"):
+            self._status_resolver = PlanStatusResolver()
+        if not hasattr(self, "_task_verifier"):
+            self._task_verifier = TaskVerificationService()
+
+    def _resolve_task_tool_workspace(
+        self,
+        node: PlanNode,
+        *,
+        session_id: Optional[str],
+        tree: Optional[PlanTree] = None,
+    ) -> Tuple[Optional[List[int]], str]:
+        """Return the canonical task-scoped workspace for tool execution."""
+
+        from app.services.path_router import PathRouter, get_path_router
+
+        resolved_tree = tree
+        if resolved_tree is None:
+            try:
+                resolved_tree = self._repo.get_plan_tree(node.plan_id)
+            except Exception:
+                resolved_tree = None
+
+        ancestor_chain: Optional[List[int]] = None
+        if resolved_tree is not None:
+            try:
+                ancestor_chain = PathRouter.build_ancestor_chain(node.id, resolved_tree)
+            except Exception:
+                ancestor_chain = None
+
+        effective_session_id = session_id or "adhoc"
+        try:
+            work_dir = str(
+                get_path_router().get_task_output_dir(
+                    effective_session_id,
+                    node.id,
+                    ancestor_chain,
+                    create=True,
+                )
+            )
+        except Exception:
+            work_dir = os.getcwd()
+
+        return ancestor_chain, work_dir
 
     def execute_plan(
         self,
@@ -655,9 +818,42 @@ class PlanExecutor:
         *,
         config: Optional[ExecutionConfig] = None,
     ) -> ExecutionSummary:
+        self._ensure_runtime_helpers()
         cfg = config or ExecutionConfig.from_settings(self._settings)
         summary = ExecutionSummary(plan_id=plan_id)
         tree = self._repo.get_plan_tree(plan_id)
+        preflight = self._artifact_preflight.validate_plan(plan_id, tree)
+        if preflight.has_errors() and not cfg.skip_preflight:
+            summary.finished_at = time.time()
+            failed_task_ids = preflight.affected_task_ids() or [0]
+            summary.failed_task_ids.extend(failed_task_ids)
+            summary.results.append(
+                ExecutionResult(
+                    plan_id=plan_id,
+                    task_id=failed_task_ids[0],
+                    status="failed",
+                    content=preflight.summary(),
+                    metadata={"preflight": preflight.model_dump()},
+                )
+            )
+            _log_job(
+                "error",
+                "Plan execution blocked by artifact preflight.",
+                {
+                    "plan_id": plan_id,
+                    "issues": [issue.model_dump() for issue in preflight.errors],
+                },
+            )
+            return summary
+        if preflight.has_errors() and cfg.skip_preflight:
+            _log_job(
+                "warning",
+                "Artifact preflight has errors but skip_preflight=True; continuing execution.",
+                {
+                    "plan_id": plan_id,
+                    "issue_count": len(preflight.errors),
+                },
+            )
         tree = self._infer_missing_dependencies(tree)
         order = list(self._execution_order(tree))
 
@@ -737,8 +933,15 @@ class PlanExecutor:
         total_tasks = len(order)
         for idx, node in enumerate(order):
             # --- Layer 1: skip already-completed tasks (resume support) ---
-            node_status = (node.status or "").strip().lower()
-            if node_status in ("completed", "done") and not cfg.force_rerun:
+            plan_state_by_task = self._status_resolver.resolve_plan_states(
+                plan_id,
+                tree,
+                manifest=self._get_artifact_manifest(plan_id, cfg.session_context),
+            )
+            node_effective_status = str(
+                (plan_state_by_task.get(node.id) or {}).get("effective_status") or ""
+            ).strip().lower()
+            if node_effective_status == "completed" and not cfg.force_rerun:
                 summary.executed_task_ids.append(node.id)
                 _log_job("info", "Skipping already-completed task.", {
                     "plan_id": plan_id, "task_id": node.id,
@@ -1007,6 +1210,7 @@ class PlanExecutor:
         *,
         config: Optional[ExecutionConfig] = None,
     ) -> ExecutionResult:
+        self._ensure_runtime_helpers()
         cfg = config or ExecutionConfig.from_settings(self._settings)
         tree = self._repo.get_plan_tree(plan_id)
         if task_id not in tree.nodes:
@@ -1220,23 +1424,67 @@ class PlanExecutor:
                         "attempt": attempt,
                     },
                 )
-                response = self._llm.generate(prompt, config)
+                _log_job("info", "LLM call started.", {
+                    "sub_type": "llm_call_start",
+                    "task_id": node.id,
+                    "attempt": attempt,
+                })
+                response = self._llm.generate(prompt, config, tools=build_executor_tool_schemas())
+                _log_job("info", "LLM call completed.", {
+                    "sub_type": "llm_call_end",
+                    "task_id": node.id,
+                    "attempt": attempt,
+                    "parsed_status": response.status,
+                    "tool_call_requested": response.tool_call is not None,
+                })
 
                 if response.status == "needs_tool" and response.tool_call:
-                    _log_job(
-                        "info",
-                        f"Task {node.id} requests tool: {response.tool_call.name}",
-                        {
-                            "plan_id": plan_id,
-                            "task_id": node.id,
-                            "tool": response.tool_call.name,
-                        },
-                    )
+                    _log_job("info", f"Tool dispatch: {response.tool_call.name}", {
+                        "sub_type": "tool_dispatch",
+                        "task_id": node.id,
+                        "tool_name": response.tool_call.name,
+                        "parameters_summary": _summarize_tool_params(response.tool_call.parameters),
+                    })
+                    tool_start = time.time()
                     tool_result = self._execute_tool_call(
                         response.tool_call,
                         node=node,
                         config=config,
                     )
+                    tool_duration = round(time.time() - tool_start, 3)
+                    _log_job(
+                        "info" if tool_result.get("success") else "error",
+                        f"Tool completed: {response.tool_call.name}",
+                        {
+                            "sub_type": "tool_complete",
+                            "task_id": node.id,
+                            "tool_name": response.tool_call.name,
+                            "success": tool_result.get("success"),
+                            "duration_sec": tool_duration,
+                        },
+                    )
+                    # Persist action log entry for tool execution
+                    try:
+                        from .decomposition_jobs import get_current_job
+                        from ...repository.plan_storage import append_action_log_entry
+
+                        current_job_id = get_current_job()
+                        if current_job_id:
+                            append_action_log_entry(
+                                plan_id=plan_id,
+                                job_id=current_job_id,
+                                job_type="plan_execute",
+                                session_id=(config.session_context or {}).get("session_id") if config.session_context else None,
+                                user_message=None,
+                                action_kind="tool_call",
+                                action_name=response.tool_call.name,
+                                status="succeeded" if tool_result.get("success") else "failed",
+                                success=tool_result.get("success"),
+                                message=_summarize_tool_params(response.tool_call.parameters),
+                                details={"result_summary": str(tool_result.get("summary", ""))[:500]},
+                            )
+                    except Exception as action_log_exc:
+                        logger.warning("Failed to persist action log for tool %s: %s", response.tool_call.name, action_log_exc)
                     if tool_result.get("success"):
                         final_content = f"{response.content}\n\n=== Tool Execution Result ===\n{tool_result.get('summary', str(tool_result.get('result', '')))}"
                         response.status = "success"
@@ -1259,25 +1507,17 @@ class PlanExecutor:
                 result_payload = response.model_dump()
                 raw_response = json.dumps(result_payload, ensure_ascii=False)
                 task_status = self._normalize_status(response.status)
-                finalization, raw_response = self._finalize_task_execution(
+                finalization, _ = self._finalize_task_execution(
                     plan_id,
                     node,
                     result_payload,
                     execution_status=task_status,
                 )
-                finalization.payload = self._enrich_finalized_payload_with_artifacts(
-                    plan_id=plan_id,
-                    node=node,
-                    payload=finalization.payload,
-                    final_status=finalization.final_status,
-                    session_context=config.session_context,
-                )
-                raw_response = json.dumps(finalization.payload, ensure_ascii=False)
-                self._persist_execution(
+                finalization, raw_response = self._materialize_finalization(
                     plan_id,
-                    node.id,
-                    finalization.payload,
-                    status=finalization.final_status,
+                    node,
+                    finalization,
+                    session_context=config.session_context,
                 )
                 # Update in-memory tree so subsequent tasks see latest outputs.
                 node.execution_result = raw_response
@@ -1314,10 +1554,25 @@ class PlanExecutor:
                         "error": str(exc),
                     },
                 )
+                # Distinguish JSON parse errors from other failures
+                if isinstance(exc, (ValidationError, json.JSONDecodeError)):
+                    _log_job("warning", "LLM response JSON parse failed.", {
+                        "sub_type": "json_parse_error",
+                        "task_id": node.id,
+                        "attempt": attempt,
+                        "error": str(exc),
+                    })
+                else:
+                    _log_job("warning", "Task execution retry triggered.", {
+                        "sub_type": "retry",
+                        "task_id": node.id,
+                        "attempt": attempt,
+                        "reason": str(exc),
+                    })
                 continue
 
         error_message = str(last_error) if last_error else "Unknown execution failure"
-        finalization, raw_response = self._finalize_task_execution(
+        finalization, _ = self._finalize_task_execution(
             plan_id,
             node,
             {
@@ -1328,19 +1583,11 @@ class PlanExecutor:
             },
             execution_status="failed",
         )
-        finalization.payload = self._enrich_finalized_payload_with_artifacts(
-            plan_id=plan_id,
-            node=node,
-            payload=finalization.payload,
-            final_status=finalization.final_status,
-            session_context=config.session_context,
-        )
-        raw_response = json.dumps(finalization.payload, ensure_ascii=False)
-        self._persist_execution(
+        finalization, raw_response = self._materialize_finalization(
             plan_id,
-            node.id,
-            finalization.payload,
-            status=finalization.final_status,
+            node,
+            finalization,
+            session_context=config.session_context,
         )
         node.execution_result = raw_response
         node.status = finalization.final_status
@@ -1843,6 +2090,11 @@ class PlanExecutor:
             artifact_registry=_artifact_registry,
             artifact_manifest=_artifact_manifest,
         )
+        task_ancestor_chain, task_work_dir = self._resolve_task_tool_workspace(
+            node,
+            session_id=session_context.get("session_id"),
+            tree=tree,
+        )
 
         if paper_mode:
             session_context["paper_mode"] = True
@@ -1850,9 +2102,47 @@ class PlanExecutor:
                 session_context["paper_context_paths"] = dependency_paths[:40]
 
         constraints = [
+            "You are in TASK EXECUTION mode, not conversational chat. Complete the task using tools, then produce the output file/result.",
             "Produce actionable output for this task only.",
             "Honor dependency outputs and do not redo completed dependencies.",
+            "Do NOT call submit_final_answer — task completion is determined by producing the required output.",
         ]
+        # Extract tool names mentioned in the instruction and enforce priority
+        _instruction_lower = (node.instruction or "").lower()
+        _tool_names_in_instruction = [
+            t for t in [
+                "literature_pipeline", "web_search", "code_executor", "bio_tools",
+                "sequence_fetch", "document_reader", "vision_reader", "graph_rag",
+                "phagescope", "deeppl", "manuscript_writer", "review_pack_writer",
+                "file_operations", "terminal_session", "deliverable_submit",
+            ]
+            if t in _instruction_lower
+        ]
+        if _tool_names_in_instruction:
+            constraints.append(
+                f"CRITICAL: The task instruction explicitly specifies tool(s): {', '.join(_tool_names_in_instruction)}. "
+                f"You MUST use these tool(s) as the primary method. Do NOT substitute with other tools "
+                f"(e.g., do NOT use code_executor or manuscript_writer when literature_pipeline is specified)."
+            )
+        # Inject session runtime directory so LLM knows where files are
+        session_id = session_context.get("session_id")
+        if session_id:
+            runtime_dir = os.path.join(
+                os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))),
+                "runtime",
+                session_id,
+            )
+            if os.path.isdir(runtime_dir):
+                constraints.append(
+                    f"Session runtime directory: {runtime_dir} — use it to locate session-scoped inputs. "
+                    "Do NOT guess paths like /workspace or /root."
+                )
+        if task_work_dir:
+            constraints.append(
+                f"Task output directory: {task_work_dir} — write final task files here. "
+                "Prefer relative paths or bare filenames so file_operations resolves into this directory. "
+                "Do NOT place final deliverables under session workspace/."
+            )
         if paper_mode:
             constraints.extend(
                 [
@@ -2018,8 +2308,10 @@ class PlanExecutor:
                     task_name=node.display_name(),
                     task_instruction=node.instruction,
                     session_id=session_context.get("session_id"),
+                    ancestor_chain=task_ancestor_chain,
+                    owner_id=session_context.get("owner_id"),
                     current_job_id=self._current_job_id(),
-                    work_dir=os.getcwd(),
+                    work_dir=task_work_dir,
                     channel="plan_executor",
                     mode="task_execution",
                 ),
@@ -2046,7 +2338,7 @@ class PlanExecutor:
                 "deliverable_submit",
             ],
             tool_executor=_tool_wrapper,
-            max_iterations=getattr(self._settings, "deep_think_max_iterations", 12),
+            max_iterations=getattr(self._settings, "deep_think_max_iterations", 16),
             tool_timeout=UnifiedToolExecutor.DEFAULT_TIMEOUT_SECONDS,
             on_thinking=on_thinking,
             on_thinking_delta=on_thinking_delta,
@@ -2120,25 +2412,17 @@ class PlanExecutor:
             if isinstance(session_artifact_paths, list) and session_artifact_paths:
                 payload["session_artifact_paths"] = session_artifact_paths[:40]
                 payload["metadata"]["session_artifact_paths"] = session_artifact_paths[:40]
-            finalization, raw_response = self._finalize_task_execution(
+            finalization, _ = self._finalize_task_execution(
                 plan_id,
                 node,
                 payload,
                 execution_status="completed",
             )
-            finalization.payload = self._enrich_finalized_payload_with_artifacts(
-                plan_id=plan_id,
-                node=node,
-                payload=finalization.payload,
-                final_status=finalization.final_status,
-                session_context=config.session_context,
-            )
-            raw_response = json.dumps(finalization.payload, ensure_ascii=False)
-            self._persist_execution(
+            finalization, raw_response = self._materialize_finalization(
                 plan_id,
-                node.id,
-                finalization.payload,
-                status=finalization.final_status,
+                node,
+                finalization,
+                session_context=config.session_context,
             )
             node.execution_result = raw_response
             node.status = finalization.final_status
@@ -2163,25 +2447,17 @@ class PlanExecutor:
                 "notes": ["deep think execution failed"],
                 "metadata": {"deep_think": True},
             }
-            finalization, raw_response = self._finalize_task_execution(
+            finalization, _ = self._finalize_task_execution(
                 plan_id,
                 node,
                 failure_payload,
                 execution_status="failed",
             )
-            finalization.payload = self._enrich_finalized_payload_with_artifacts(
-                plan_id=plan_id,
-                node=node,
-                payload=finalization.payload,
-                final_status=finalization.final_status,
-                session_context=config.session_context,
-            )
-            raw_response = json.dumps(finalization.payload, ensure_ascii=False)
-            self._persist_execution(
+            finalization, raw_response = self._materialize_finalization(
                 plan_id,
-                node.id,
-                finalization.payload,
-                status=finalization.final_status,
+                node,
+                finalization,
+                session_context=config.session_context,
             )
             node.execution_result = raw_response
             node.status = finalization.final_status
@@ -2206,15 +2482,7 @@ class PlanExecutor:
                     pass
 
     def _run_coroutine_sync(self, coro: Any) -> Any:
-        try:
-            running_loop = asyncio.get_running_loop()
-        except RuntimeError:
-            running_loop = None
-
-        if running_loop and running_loop.is_running():
-            with ThreadPoolExecutor(max_workers=1) as executor:
-                return executor.submit(lambda: asyncio.run(coro)).result()
-        return asyncio.run(coro)
+        return _run_coroutine_sync(coro)
 
     def _persist_execution(
         self,
@@ -2240,6 +2508,170 @@ class PlanExecutor:
             )
             raise
 
+    def _promote_workspace_artifacts_to_task_dir(
+        self,
+        *,
+        node: PlanNode,
+        payload: Dict[str, Any],
+        session_context: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        if not isinstance(payload, dict) or not isinstance(session_context, dict):
+            return payload
+
+        session_id = str(session_context.get("session_id") or "").strip()
+        if not session_id:
+            return payload
+
+        try:
+            from app.services.session_paths import get_runtime_session_dir
+
+            session_dir = get_runtime_session_dir(session_id, create=True).resolve()
+        except Exception:
+            return payload
+
+        workspace_dir = (session_dir / "workspace").resolve()
+        try:
+            _ancestor_chain, task_dir_str = self._resolve_task_tool_workspace(
+                node,
+                session_id=session_id,
+            )
+            task_dir = Path(task_dir_str).resolve()
+        except Exception:
+            return payload
+
+        candidate_paths = self._extract_path_like_values(payload)
+        if not candidate_paths:
+            return payload
+
+        promoted_abs_paths: List[str] = []
+        promoted_session_paths: List[str] = []
+
+        for candidate in candidate_paths:
+            try:
+                source = Path(str(candidate)).expanduser().resolve(strict=False)
+            except Exception:
+                continue
+            if not source.exists() or not source.is_file():
+                continue
+
+            try:
+                source.relative_to(task_dir)
+                promoted_abs_paths.append(str(source))
+                try:
+                    promoted_session_paths.append(
+                        str(source.relative_to(session_dir)).replace("\\", "/")
+                    )
+                except Exception:
+                    pass
+                continue
+            except ValueError:
+                pass
+
+            try:
+                rel_workspace = source.relative_to(workspace_dir)
+            except ValueError:
+                continue
+
+            target = (task_dir / rel_workspace).resolve()
+            try:
+                target.relative_to(task_dir)
+            except ValueError:
+                continue
+
+            target.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                shutil.copy2(source, target)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to promote workspace artifact %s into %s: %s",
+                    source,
+                    target,
+                    exc,
+                )
+                continue
+
+            promoted_abs_paths.append(str(target))
+            try:
+                promoted_session_paths.append(
+                    str(target.relative_to(session_dir)).replace("\\", "/")
+                )
+            except Exception:
+                pass
+
+        if not promoted_abs_paths and not promoted_session_paths:
+            return payload
+
+        normalized_payload = dict(payload)
+
+        existing_artifact_paths = [
+            str(item).strip()
+            for item in list(normalized_payload.get("artifact_paths") or [])
+            if str(item).strip()
+        ]
+        if promoted_abs_paths:
+            normalized_payload["artifact_paths"] = list(
+                dict.fromkeys([*existing_artifact_paths, *promoted_abs_paths])
+            )[:40]
+            normalized_payload["produced_files"] = list(normalized_payload["artifact_paths"])
+
+        existing_session_paths = [
+            str(item).strip()
+            for item in list(normalized_payload.get("session_artifact_paths") or [])
+            if str(item).strip()
+        ]
+        if promoted_session_paths:
+            normalized_payload["session_artifact_paths"] = list(
+                dict.fromkeys([*existing_session_paths, *promoted_session_paths])
+            )[:40]
+
+        metadata = normalized_payload.get("metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+            normalized_payload["metadata"] = metadata
+        if isinstance(normalized_payload.get("artifact_paths"), list):
+            metadata["artifact_paths"] = list(normalized_payload["artifact_paths"])
+        if isinstance(normalized_payload.get("session_artifact_paths"), list):
+            metadata["session_artifact_paths"] = list(
+                normalized_payload["session_artifact_paths"]
+            )
+
+        return normalized_payload
+
+    def _materialize_finalization(
+        self,
+        plan_id: int,
+        node: PlanNode,
+        finalization: VerificationFinalization,
+        *,
+        session_context: Optional[Dict[str, Any]],
+    ) -> Tuple[VerificationFinalization, str]:
+        finalization.payload = self._promote_workspace_artifacts_to_task_dir(
+            node=node,
+            payload=finalization.payload,
+            session_context=session_context,
+        )
+        finalization.payload = self._enrich_finalized_payload_with_artifacts(
+            plan_id=plan_id,
+            node=node,
+            payload=finalization.payload,
+            final_status=finalization.final_status,
+            session_context=session_context,
+        )
+        finalization = self._task_verifier.apply_artifact_authority(
+            plan_id,
+            node,
+            finalization,
+            manifest=self._get_artifact_manifest(plan_id, session_context),
+        )
+        raw_response = json.dumps(finalization.payload, ensure_ascii=False)
+        self._persist_execution(
+            plan_id,
+            node.id,
+            finalization.payload,
+            status=finalization.final_status,
+        )
+        return finalization, raw_response
+
     def _finalize_task_execution(
         self,
         plan_id: int,
@@ -2256,12 +2688,6 @@ class PlanExecutor:
             trigger=trigger,
         )
         serialized = json.dumps(finalization.payload, ensure_ascii=False)
-        self._persist_execution(
-            plan_id,
-            node.id,
-            finalization.payload,
-            status=finalization.final_status,
-        )
         return finalization, serialized
 
     def _execution_order(self, tree: PlanTree) -> Iterable[PlanNode]:
@@ -2399,7 +2825,28 @@ class PlanExecutor:
             metadata=metadata,
         )
 
-    def _task_can_publish_artifacts(self, node: PlanNode) -> bool:
+    def _task_can_publish_artifacts(
+        self,
+        plan_id: int,
+        node: PlanNode,
+        *,
+        tree: Optional[PlanTree] = None,
+        state_by_task: Optional[Dict[int, Dict[str, Any]]] = None,
+        session_context: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        if state_by_task is None and tree is not None:
+            state_by_task = self._status_resolver.resolve_plan_states(
+                plan_id,
+                tree,
+                manifest=self._get_artifact_manifest(plan_id, session_context),
+            )
+        if isinstance(state_by_task, dict):
+            effective_status = str(
+                (state_by_task.get(node.id) or {}).get("effective_status") or ""
+            ).strip().lower()
+            if effective_status:
+                return effective_status == "completed"
+
         raw_status = str(getattr(node, "status", "") or "").strip().lower()
         if raw_status in {"done", "success"}:
             raw_status = "completed"
@@ -2458,14 +2905,39 @@ class PlanExecutor:
     ) -> Dict[str, Dict[str, Any]]:
         if node.id <= 0:
             return {}
-        contract = self._resolve_task_artifact_contract(node)
-        candidate_paths = self._extract_candidate_artifact_paths(node)
-        contract = infer_contract_from_candidates(
+        metadata = node.metadata if isinstance(node.metadata, dict) else {}
+        provenance = resolve_artifact_contract_with_provenance(
             task_name=node.display_name(),
             instruction=node.instruction or "",
-            candidate_paths=candidate_paths,
-            current_contract=contract,
+            metadata=metadata,
         )
+        candidate_paths = self._extract_candidate_artifact_paths(node)
+        backfill_enabled = bool(
+            getattr(self._settings, "artifact_backfill_enabled", False)
+        )
+        if backfill_enabled:
+            # Compatibility path: extend the contract with runtime-discovered
+            # aliases so legacy plans without explicit publishes still land
+            # their artifacts in the canonical manifest.
+            extended = extend_contract_with_runtime_candidates(
+                provenance,
+                task_name=node.display_name(),
+                instruction=node.instruction or "",
+                candidate_paths=candidate_paths,
+            )
+            publishes_to_backfill = extended.publishes()
+            if not provenance.has_explicit and publishes_to_backfill:
+                logger.info(
+                    "[ARTIFACT_BACKFILL_COMPAT] plan=%s task=%s inferred_publishes=%s "
+                    "runtime_publishes=%s — legacy compatibility path used.",
+                    plan_id,
+                    node.id,
+                    extended.inferred_publishes,
+                    extended.runtime_publishes,
+                )
+        else:
+            # Authority path: only publish aliases the task explicitly declared.
+            publishes_to_backfill = list(provenance.explicit_publishes)
 
         published: Dict[str, Dict[str, Any]] = {}
         manifest_changed = False
@@ -2473,10 +2945,10 @@ class PlanExecutor:
         if isinstance(session_context, dict):
             artifact_registry = session_context.get("_artifact_registry")
 
-        for alias in contract.get("publishes", []):
+        for alias in publishes_to_backfill:
             existing_entry = manifest.get("artifacts", {}).get(alias) if isinstance(manifest.get("artifacts"), dict) else None
             source = find_candidate_source_for_alias(alias=alias, candidate_paths=candidate_paths)
-            if source is None:
+            if source is None and backfill_enabled:
                 runtime_candidates = find_runtime_candidates(plan_id, node.id, alias)
                 for runtime_path in runtime_candidates:
                     if runtime_path not in candidate_paths:
@@ -2520,33 +2992,65 @@ class PlanExecutor:
     ) -> Tuple[Dict[str, List[str]], Dict[str, str], List[str], Dict[str, List[int]]]:
         contract = self._resolve_task_artifact_contract(node)
         required_aliases = list(contract.get("requires") or [])
+        metadata = node.metadata if isinstance(node.metadata, dict) else {}
+        explicit_contract = metadata.get("artifact_contract") if isinstance(metadata.get("artifact_contract"), dict) else {}
+        explicit_required_aliases = [
+            str(alias).strip()
+            for alias in list(explicit_contract.get("requires") or [])
+            if str(alias).strip()
+        ]
         if not required_aliases:
             return contract, {}, [], {}
 
         manifest = self._get_artifact_manifest(plan_id, session_context)
-        for dep in dependencies:
-            if self._task_can_publish_artifacts(dep):
-                self._backfill_task_artifacts(plan_id, dep, manifest, session_context)
+
+        backfill_enabled = bool(
+            getattr(self._settings, "artifact_backfill_enabled", False)
+        )
+
+        # Only backfill dependency artifacts when the legacy compat flag is on.
+        # In authority mode (default), dependencies must have already published
+        # their artifacts during their own execution via _materialize_finalization.
+        if backfill_enabled:
+            state_by_task = self._status_resolver.resolve_plan_states(
+                plan_id,
+                tree,
+                manifest=manifest,
+            )
+            for dep in dependencies:
+                if self._task_can_publish_artifacts(
+                    plan_id,
+                    dep,
+                    state_by_task=state_by_task,
+                ):
+                    self._backfill_task_artifacts(plan_id, dep, manifest, session_context)
 
         resolved = resolve_manifest_aliases(manifest, required_aliases)
-        missing = [alias for alias in required_aliases if alias not in resolved]
-        if not missing:
+        missing_for_resolution = [alias for alias in required_aliases if alias not in resolved]
+        missing = [alias for alias in explicit_required_aliases if alias not in resolved]
+        if not missing_for_resolution:
             return contract, resolved, [], {}
 
+        # Producer scan: only attempt backfill when compat flag is on
         producer_map: Dict[str, List[int]] = {}
         all_nodes = list(tree.nodes.values())
-        for alias in missing:
+        for alias in missing_for_resolution:
             producer_map[alias] = producer_candidates_for_alias(alias, all_nodes)
-            for producer_id in producer_map[alias]:
-                producer = tree.nodes.get(producer_id)
-                if producer is None or not self._task_can_publish_artifacts(producer):
-                    continue
-                self._backfill_task_artifacts(plan_id, producer, manifest, session_context)
-            refreshed = resolve_manifest_aliases(manifest, [alias]).get(alias)
-            if refreshed:
-                resolved[alias] = refreshed
+            if backfill_enabled:
+                for producer_id in producer_map[alias]:
+                    producer = tree.nodes.get(producer_id)
+                    if producer is None or not self._task_can_publish_artifacts(
+                        plan_id,
+                        producer,
+                        state_by_task=state_by_task,
+                    ):
+                        continue
+                    self._backfill_task_artifacts(plan_id, producer, manifest, session_context)
+                refreshed = resolve_manifest_aliases(manifest, [alias]).get(alias)
+                if refreshed:
+                    resolved[alias] = refreshed
 
-        final_missing = [alias for alias in required_aliases if alias not in resolved]
+        final_missing = [alias for alias in explicit_required_aliases if alias not in resolved]
         return contract, resolved, final_missing, producer_map
 
     def _block_for_missing_artifacts(
@@ -2644,6 +3148,10 @@ class PlanExecutor:
         if resolved_inputs:
             metadata["resolved_input_artifacts"] = resolved_inputs
 
+        contract = self._resolve_task_artifact_contract(node)
+        if contract.get("requires") or contract.get("publishes"):
+            metadata["artifact_contract"] = contract
+
         if final_status != "completed":
             return payload
 
@@ -2720,7 +3228,11 @@ class PlanExecutor:
                 return
             if "/" not in text and "." not in text:
                 return
-            if cls._is_internal_artifact_path(text) or cls._is_non_deliverable_workspace_path(text):
+            if (
+                cls._is_internal_artifact_path(text)
+                or cls._is_non_deliverable_workspace_path(text)
+                or _is_non_canonical_runtime_path(text)
+            ):
                 return
             seen.add(text)
             found.append(text)
@@ -2774,7 +3286,12 @@ class PlanExecutor:
             cleaned_session_paths: List[str] = []
             for item in session_artifact_paths:
                 text = str(item or "").strip()
-                if not text or cls._is_internal_artifact_path(text) or cls._is_non_deliverable_workspace_path(text):
+                if (
+                    not text
+                    or cls._is_internal_artifact_path(text)
+                    or cls._is_non_deliverable_workspace_path(text)
+                    or _is_non_canonical_runtime_path(text)
+                ):
                     continue
                 if text not in cleaned_session_paths:
                     cleaned_session_paths.append(text)
@@ -2946,10 +3463,14 @@ class PlanExecutor:
         tool_name = tool_call.name
         params = dict(tool_call.parameters)
         session_id = None
+        owner_id = None
         if config.session_context:
             maybe_session = config.session_context.get("session_id")
             if isinstance(maybe_session, str) and maybe_session.strip():
                 session_id = maybe_session.strip()
+            maybe_owner = config.session_context.get("owner_id")
+            if isinstance(maybe_owner, str) and maybe_owner.strip():
+                owner_id = maybe_owner.strip()
 
         logger.info(
             "PlanExecutor executing tool %s for task %s with params: %s",
@@ -2962,6 +3483,10 @@ class PlanExecutor:
         )
 
         try:
+            _ancestor_chain_sync, task_work_dir = self._resolve_task_tool_workspace(
+                node,
+                session_id=session_id,
+            )
             payload = self._tool_executor.execute_sync(
                 tool_name,
                 params,
@@ -2971,8 +3496,10 @@ class PlanExecutor:
                     task_name=node.display_name(),
                     task_instruction=node.instruction,
                     session_id=session_id,
+                    ancestor_chain=_ancestor_chain_sync,
+                    owner_id=owner_id,
                     current_job_id=self._current_job_id(),
-                    work_dir=os.getcwd(),
+                    work_dir=task_work_dir,
                     channel="plan_executor",
                     mode="task_execution",
                 ),

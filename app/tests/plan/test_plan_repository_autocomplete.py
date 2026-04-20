@@ -207,10 +207,11 @@ def test_apply_changes_atomically_reorders_within_same_parent(
     assert [(row["id"], row["position"]) for row in rows] == [(3, 0), (2, 1)]
 
 
-def test_apply_changes_atomically_rolls_back_on_invalid_change(
+def test_apply_changes_atomically_skips_invalid_change_and_applies_valid_ones(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    """Invalid changes are skipped; valid changes in the same batch still apply."""
     plan_path = tmp_path / "plan.sqlite"
     conn = _make_plan_db(plan_path)
     _insert_task(conn, task_id=1, name="Root", parent_id=None, position=0, path="/1", depth=0)
@@ -222,24 +223,25 @@ def test_apply_changes_atomically_rolls_back_on_invalid_change(
     monkeypatch.setattr(plan_repository_module, "get_plan_db_path", lambda _plan_id: plan_path)
     monkeypatch.setattr(repo, "_touch_plan", lambda _plan_id: None)
 
-    with pytest.raises(ValueError, match="Task 999 not found"):
-        repo.apply_changes_atomically(
-            7,
-            [
-                {"action": "add_task", "name": "New Task"},
-                {"action": "update_task", "task_id": 999, "name": "Broken"},
-            ],
-        )
+    applied = repo.apply_changes_atomically(
+        7,
+        [
+            {"action": "add_task", "name": "New Task"},
+            {"action": "update_task", "task_id": 999, "name": "Broken"},
+        ],
+    )
+
+    # add_task succeeded, update_task was skipped
+    assert len(applied) == 1
+    assert applied[0]["action"] == "add_task"
 
     check = sqlite3.connect(plan_path)
     check.row_factory = sqlite3.Row
     rows = check.execute("SELECT id, name, parent_id FROM tasks ORDER BY id ASC").fetchall()
     check.close()
 
-    assert [(row["id"], row["name"], row["parent_id"]) for row in rows] == [
-        (1, "Root", None),
-        (2, "A", 1),
-    ]
+    assert len(rows) == 3  # Root + A + New Task
+    assert rows[2]["name"] == "New Task"
 
 
 def test_apply_changes_atomically_updates_plan_description_and_root_instruction(

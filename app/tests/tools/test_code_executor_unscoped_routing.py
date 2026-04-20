@@ -316,6 +316,26 @@ def test_sync_task_status_skips_for_read_only_file_operations() -> None:
     assert repo.cascaded == []
 
 
+def test_sync_task_status_skips_for_file_operations_write_in_execute_task_mode() -> None:
+    repo = _RepoTaskSyncStub()
+    agent = StructuredChatAgent.__new__(StructuredChatAgent)
+    agent.plan_session = SimpleNamespace(plan_id=49, repo=repo)
+    agent.extra_context = {"current_task_id": 1, "intent_type": "execute_task"}
+    agent._dirty = False
+
+    agent._sync_task_status_after_tool_execution(
+        tool_name="file_operations",
+        success=True,
+        summary="Wrote output file",
+        message="Wrote output file",
+        params={"operation": "write", "path": "/tmp/out.md", "content": "hello"},
+        result={"operation": "write", "path": "/tmp/out.md", "success": True},
+    )
+
+    assert repo.updated == []
+    assert repo.cascaded == []
+
+
 def test_sync_task_status_skips_for_document_reader() -> None:
     repo = _RepoTaskSyncStub()
     agent = StructuredChatAgent.__new__(StructuredChatAgent)

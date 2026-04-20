@@ -14,8 +14,6 @@ from pathlib import Path
 try:
     from pymilvus import (
         MilvusClient, 
-        FieldSchema, 
-        CollectionSchema, 
         DataType,
         connections
     )
@@ -23,8 +21,6 @@ try:
 except ImportError:
     PYMILVUS_AVAILABLE = False
     MilvusClient = None
-    FieldSchema = None
-    CollectionSchema = None
     DataType = None
     connections = None
 

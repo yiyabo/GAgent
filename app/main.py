@@ -146,6 +146,15 @@ async def lifespan(_fastapi_app: FastAPI):
     except Exception as e:
         logging.getLogger("app.main").warning("Failed to resume PhageScope tracking: %s", e)
 
+    # Clean up orphaned Qwen Code containers from previous runs
+    try:
+        from .services.terminal.qwen_session_driver import QwenSessionDriver
+        await QwenSessionDriver.cleanup_orphaned_containers()
+    except Exception as e:
+        logging.getLogger("app.main").warning(
+            "Failed to clean up orphaned Qwen containers: %s", e
+        )
+
     yield
 
     # Gracefully close shared HTTP connection pools on shutdown.

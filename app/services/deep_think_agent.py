@@ -77,6 +77,44 @@ _INTERNAL_TOOL_OUTPUT_RE = re.compile(
     r"/job_[^/]+/step_\d+_[^/]+/(?:result|manifest|preview)\.json$",
     re.IGNORECASE,
 )
+_ARTIFACT_PATH_EXTS = {
+    ".bib",
+    ".csv",
+    ".docx",
+    ".fa",
+    ".faa",
+    ".fasta",
+    ".gb",
+    ".gbk",
+    ".gif",
+    ".h5ad",
+    ".html",
+    ".ipynb",
+    ".jpeg",
+    ".jpg",
+    ".json",
+    ".md",
+    ".mmd",
+    ".nwk",
+    ".pdf",
+    ".pkl",
+    ".png",
+    ".pptx",
+    ".py",
+    ".r",
+    ".rds",
+    ".svg",
+    ".tex",
+    ".tsv",
+    ".txt",
+    ".webp",
+    ".xlsx",
+    ".xls",
+    ".xml",
+    ".yaml",
+    ".yml",
+    ".zip",
+}
 # Native tool steps often prefix JSON: "[file_operations] {...}"
 _TOOL_RESULT_PREFIX_RE = re.compile(r"^\[[^\]]*]\s*")
 _EXPLORATORY_FILE_OPERATIONS = {"read", "list", "exists", "info"}
@@ -466,15 +504,27 @@ class DeepThinkAgent:
         self.steer_drain = steer_drain
         self.on_steer_ack = on_steer_ack
         self.on_tool_progress = on_tool_progress
-        self._pause_event = asyncio.Event()
-        self._pause_event.set()
+        self._pause_event: Optional[asyncio.Event] = None
+        self._pause_initially_set = True
         self._skip_current_step = False
 
+    def _get_pause_event(self) -> asyncio.Event:
+        """Lazily create pause event in the current event loop."""
+        if self._pause_event is None:
+            self._pause_event = asyncio.Event()
+            if self._pause_initially_set:
+                self._pause_event.set()
+        return self._pause_event
+
     def pause(self) -> None:
-        self._pause_event.clear()
+        if self._pause_event is not None:
+            self._pause_event.clear()
+        self._pause_initially_set = False
 
     def resume(self) -> None:
-        self._pause_event.set()
+        if self._pause_event is not None:
+            self._pause_event.set()
+        self._pause_initially_set = True
 
     def skip_step(self) -> None:
         self._skip_current_step = True
@@ -494,41 +544,10 @@ class DeepThinkAgent:
             seen.add(name)
             ordered.append(name)
 
-        if (
-            self._request_tier() == "execute"
-            and str(self.request_profile.get("intent_type") or "").strip().lower() == "execute_task"
-            and not self._requires_structured_plan()
-            and not self._required_bound_plan_operations()
-        ):
-            ordered = [tool for tool in ordered if str(tool).strip().lower() != "plan_operation"]
-
         return ordered
 
     def _request_tier(self) -> str:
         return str(self.request_profile.get("request_tier") or "").strip().lower()
-
-    def _capability_floor(self) -> str:
-        return str(self.request_profile.get("capability_floor") or "").strip().lower()
-
-    def _requires_structured_plan(self) -> bool:
-        return bool(self.request_profile.get("requires_structured_plan"))
-
-    def _plan_request_mode(self) -> str:
-        return str(self.request_profile.get("plan_request_mode") or "").strip().lower()
-
-    def _requires_plan_review(self) -> bool:
-        return bool(self.request_profile.get("requires_plan_review"))
-
-    def _requires_plan_optimize(self) -> bool:
-        return bool(self.request_profile.get("requires_plan_optimize"))
-
-    def _required_bound_plan_operations(self) -> List[str]:
-        ops: List[str] = []
-        if self._requires_plan_review():
-            ops.append("review")
-        if self._requires_plan_optimize():
-            ops.append("optimize")
-        return ops
 
     @staticmethod
     def _coerce_positive_int(value: Any) -> Optional[int]:
@@ -550,16 +569,8 @@ class DeepThinkAgent:
 
     def _is_brief_execute_followup(self) -> bool:
         tier = self._request_tier()
-        intent_type = str(self.request_profile.get("intent_type") or "").strip().lower()
         brevity_hint = bool(self.request_profile.get("brevity_hint"))
-        if tier != "execute" or not brevity_hint:
-            return False
-        return intent_type in {
-            "execute_task",
-            "local_mutation",
-            "local_read",
-            "local_inspect",
-        }
+        return tier == "execute" and brevity_hint
 
     def _is_execute_task_request(self) -> bool:
         return (
@@ -929,6 +940,7 @@ class DeepThinkAgent:
         *,
         task_context: Optional[TaskExecutionContext],
         user_query: str,
+        tool_name: str = "code_executor",
     ) -> str:
         artifact_paths = self._task_context_upstream_artifact_paths(task_context)
         task_label = "the current bound task"
@@ -945,7 +957,7 @@ class DeepThinkAgent:
             task_instruction or str(user_query or "").strip() or "Execute the current bound task.",
             "",
             "Execution followthrough requirement:",
-            f"- Continue {task_label} now with real execution via code_executor.",
+            f"- Continue {task_label} now with real execution via {tool_name}.",
         ]
         if artifact_paths:
             lines.extend(
@@ -968,6 +980,49 @@ class DeepThinkAgent:
             )
         return "\n".join(lines).strip()
 
+    # Tools that can be used as forced followthrough alternatives to code_executor.
+    # These are tools that directly produce outputs (not read-only or coordination tools).
+    _FOLLOWTHROUGH_TOOL_CANDIDATES = frozenset({
+        "literature_pipeline",
+        "web_search",
+        "manuscript_writer",
+        "review_pack_writer",
+        "sequence_fetch",
+        "bio_tools",
+        "phagescope",
+        "deeppl",
+        "code_executor",
+    })
+
+    @staticmethod
+    def _extract_recommended_tool_from_instruction(instruction: str) -> Optional[str]:
+        """Extract a tool name mentioned in the task instruction.
+
+        If the instruction explicitly says "使用 literature_pipeline" or
+        "use web_search", return that tool name so the forced followthrough
+        uses the right tool instead of defaulting to code_executor.
+        """
+        if not instruction:
+            return None
+        lowered = instruction.lower()
+        # Check each candidate tool — return the first one mentioned
+        for tool in DeepThinkAgent._FOLLOWTHROUGH_TOOL_CANDIDATES:
+            if tool in lowered:
+                return tool
+        # Also check Chinese tool references
+        _TOOL_ALIASES = {
+            "文献检索": "literature_pipeline",
+            "文献搜索": "literature_pipeline",
+            "搜索文献": "web_search",
+            "网络搜索": "web_search",
+            "序列获取": "sequence_fetch",
+            "生物工具": "bio_tools",
+        }
+        for alias, tool in _TOOL_ALIASES.items():
+            if alias in instruction:
+                return tool
+        return None
+
     async def _execute_forced_probe_followthrough(
         self,
         *,
@@ -976,19 +1031,44 @@ class DeepThinkAgent:
         iteration: int,
         probe_only_execution_cycles: int,
     ) -> Dict[str, Any]:
+        # Determine the best tool based on task instruction
+        task_instruction = ""
+        if task_context is not None and task_context.task_instruction:
+            task_instruction = str(task_context.task_instruction).strip()
+
+        recommended_tool = self._extract_recommended_tool_from_instruction(task_instruction)
+        tool_name = recommended_tool or "code_executor"
+
         forced_task = self._build_forced_probe_followthrough_task(
             task_context=task_context,
             user_query=user_query,
+            tool_name=tool_name,
         )
         logger.warning(
-            "[DEEP_THINK_NATIVE] Forcing code_executor after probe-only cycles=%s task_id=%s",
+            "[DEEP_THINK_NATIVE] Forcing %s after probe-only cycles=%s task_id=%s (recommended=%s)",
+            tool_name,
             probe_only_execution_cycles,
             getattr(task_context, "task_id", None),
+            recommended_tool or "default",
         )
+
+        # Build tool-specific arguments
+        if tool_name == "code_executor":
+            arguments = {"task": forced_task}
+        elif tool_name == "literature_pipeline":
+            arguments = {"query": task_instruction[:500], "session_id": getattr(self, "_session_id", None)}
+        elif tool_name == "web_search":
+            arguments = {"query": task_instruction[:200]}
+        elif tool_name == "manuscript_writer":
+            arguments = {"task": forced_task}
+        else:
+            # Generic: pass the task description
+            arguments = {"task": forced_task}
+
         forced_call = SimpleNamespace(
-            name="code_executor",
+            name=tool_name,
             id=f"forced_probe_followthrough_{iteration}_{probe_only_execution_cycles}",
-            arguments={"task": forced_task},
+            arguments=arguments,
         )
         return await self._execute_native_tool_call(
             tc=forced_call,
@@ -1144,6 +1224,13 @@ class DeepThinkAgent:
         next_task_id: int,
         reason: str,
     ) -> Dict[str, Any]:
+        # Determine the best tool based on the next task's instruction
+        task_instruction = ""
+        if task_context is not None and task_context.task_instruction:
+            task_instruction = str(task_context.task_instruction).strip()
+        recommended_tool = self._extract_recommended_tool_from_instruction(task_instruction)
+        tool_name = recommended_tool or "code_executor"
+
         forced_task = self._build_forced_handoff_followthrough_task(
             task_context=task_context,
             user_query=user_query,
@@ -1151,16 +1238,27 @@ class DeepThinkAgent:
             next_task_id=next_task_id,
         )
         logger.warning(
-            "[DEEP_THINK_NATIVE] Forcing code_executor after task handoff previous=%s next=%s reason=%s iteration=%s",
+            "[DEEP_THINK_NATIVE] Forcing %s after task handoff previous=%s next=%s reason=%s iteration=%s",
+            tool_name,
             previous_task_id,
             next_task_id,
             reason,
             iteration,
         )
+
+        if tool_name == "code_executor":
+            arguments = {"task": forced_task}
+        elif tool_name == "literature_pipeline":
+            arguments = {"query": task_instruction[:500], "session_id": getattr(self, "_session_id", None)}
+        elif tool_name == "web_search":
+            arguments = {"query": task_instruction[:200]}
+        else:
+            arguments = {"task": forced_task}
+
         forced_call = SimpleNamespace(
-            name="code_executor",
+            name=tool_name,
             id=f"forced_handoff_followthrough_{iteration}_{next_task_id}_{reason}",
-            arguments={"task": forced_task},
+            arguments=arguments,
         )
         return await self._execute_native_tool_call(
             tc=forced_call,
@@ -2175,6 +2273,10 @@ class DeepThinkAgent:
                         "applied_changes": applied_changes,
                         "failed_changes": failed_changes,
                         "error": error or None,
+                        "already_bound_plan_reused": bool(
+                            rp.get("already_bound_plan_reused")
+                            or payload.get("already_bound_plan_reused")
+                        ),
                     }
                 )
         return events
@@ -2185,272 +2287,86 @@ class DeepThinkAgent:
         *,
         user_query: str = "",
     ) -> Dict[str, Any]:
-        required = self._requires_structured_plan()
-        mode = self._plan_request_mode()
-        bound_plan_id = self._current_plan_id()
-        bound_plan_title = self._current_plan_title()
-        language = detect_reasoning_language(user_query)
-        outcome: Dict[str, Any] = {
-            "required": required,
-            "mode": mode or None,
-            "called": False,
-            "satisfied": False,
-            "state": None,
-            "message": None,
-            "plan_id": bound_plan_id,
-            "plan_title": bound_plan_title,
-            "operation": None,
-        }
-        if not required or not mode:
-            return outcome
+        # General plan creation gating is removed (Phase 1) — the LLM judges
+        # plan operations from tool descriptions.  However, for bound plan
+        # review/optimize/update requests we still enforce that the LLM must
+        # actually call plan_operation with a mutation; otherwise the user's
+        # explicit request to modify the plan would silently degrade to prose.
+        plan_id = self._current_plan_id()
+        plan_title = self._current_plan_title()
+        route_reasons = self.request_profile.get("route_reason_codes")
+        if not isinstance(route_reasons, list):
+            route_reasons = []
 
-        events = self._collect_plan_operation_events(steps)
-        outcome["called"] = bool(events)
-
-        if mode in {"create", "create_new"}:
-            for event in events:
-                if event.get("success") and event.get("operation") == "create" and event.get("plan_id") is not None:
-                    outcome.update(
-                        {
-                            "satisfied": True,
-                            "state": "created",
-                            "message": _localized_text(
-                                language,
-                                "已成功创建结构化计划。",
-                                "Structured plan created successfully.",
-                            ),
-                            "plan_id": event.get("plan_id"),
-                            "plan_title": event.get("plan_title") or bound_plan_title,
-                            "operation": "create",
-                        }
-                    )
-                    return outcome
-
-            if events:
-                last_error = str(events[-1].get("error") or "").strip()
-                outcome.update(
-                    {
-                        "state": "failed",
-                        "message": (
-                            _localized_text(
-                                language,
-                                "结构化计划创建失败。",
-                                "Structured plan creation failed.",
-                            )
-                            + (f" {last_error}" if last_error else "")
-                        ).strip(),
-                    }
-                )
-                return outcome
-
-            outcome.update(
-                {
-                    "state": "text_only",
-                    "message": _localized_text(
-                        language,
-                        "本轮只生成了文本建议，未创建结构化计划。",
-                        "This run produced text guidance only; no structured plan was created.",
-                    ),
-                }
+        is_bound_plan_mutation_request = (
+            plan_id is not None
+            and any(
+                code in route_reasons
+                for code in ("plan_review", "plan_optimize")
             )
-            return outcome
-
-        required_update_ops = self._required_bound_plan_operations()
-        if required_update_ops:
-            satisfied_events: Dict[str, Dict[str, Any]] = {}
-            for event in events:
-                if not event.get("success"):
-                    continue
-                operation = str(event.get("operation") or "").strip().lower()
-                if operation == "optimize" and int(event.get("applied_changes") or 0) <= 0:
-                    continue
-                if operation not in required_update_ops:
-                    continue
-                event_plan_id = event.get("plan_id") or bound_plan_id
-                if (
-                    bound_plan_id is not None
-                    and event_plan_id is not None
-                    and event_plan_id != bound_plan_id
-                ):
-                    continue
-                satisfied_events.setdefault(operation, event)
-
-            missing_ops = [op for op in required_update_ops if op not in satisfied_events]
-            if not missing_ops:
-                last_required_op = required_update_ops[-1]
-                matched_event = satisfied_events[last_required_op]
-                success_message = {
-                    ("review",): _localized_text(
-                        language,
-                        "已成功审核当前结构化计划。",
-                        "The bound structured plan was reviewed successfully.",
-                    ),
-                    ("optimize",): _localized_text(
-                        language,
-                        "已成功优化当前结构化计划。",
-                        "The bound structured plan was optimized successfully.",
-                    ),
-                    ("review", "optimize"): _localized_text(
-                        language,
-                        "已成功审核并优化当前结构化计划。",
-                        "The bound structured plan was reviewed and optimized successfully.",
-                    ),
-                }.get(
-                    tuple(required_update_ops),
-                    _localized_text(
-                        language,
-                        "已成功更新当前结构化计划。",
-                        "Structured plan updated successfully.",
-                    ),
-                )
-                outcome.update(
-                    {
-                        "satisfied": True,
-                        "state": "updated",
-                        "message": success_message,
-                        "plan_id": matched_event.get("plan_id") or bound_plan_id,
-                        "plan_title": matched_event.get("plan_title") or bound_plan_title,
-                        "operation": last_required_op,
-                    }
-                )
-                return outcome
-
-            missing_text = {
-                ("review",): _localized_text(
-                    language,
-                    "当前结构化计划尚未成功审核。",
-                    "The bound structured plan was not reviewed successfully.",
-                ),
-                ("optimize",): _localized_text(
-                    language,
-                    "当前结构化计划尚未成功优化。",
-                    "The bound structured plan was not optimized successfully.",
-                ),
-                ("review", "optimize"): _localized_text(
-                    language,
-                    "当前结构化计划尚未完成审核并优化。",
-                    "The bound structured plan was not both reviewed and optimized successfully.",
-                ),
-            }.get(
-                tuple(required_update_ops),
-                _localized_text(
-                    language,
-                    "当前结构化计划未更新成功。",
-                    "The bound structured plan was not updated successfully.",
-                ),
-            )
-            if events:
-                last_error = str(events[-1].get("error") or "").strip()
-                outcome.update(
-                    {
-                        "state": "failed",
-                        "message": (missing_text + (f" {last_error}" if last_error else "")).strip(),
-                    }
-                )
-                return outcome
-            outcome.update(
-                {
-                    "state": "text_only",
-                    "message": missing_text,
-                }
-            )
-            return outcome
-
-        allowed_update_ops = {"get", "review", "optimize"}
-        for event in events:
-            if not event.get("success"):
-                continue
-            if event.get("operation") not in allowed_update_ops:
-                continue
-            if event.get("operation") == "optimize" and int(event.get("applied_changes") or 0) <= 0:
-                continue
-            event_plan_id = event.get("plan_id") or bound_plan_id
-            if bound_plan_id is not None and event_plan_id is not None and event_plan_id != bound_plan_id:
-                continue
-            outcome.update(
-                {
-                    "satisfied": True,
-                    "state": "updated",
-                    "message": _localized_text(
-                        language,
-                        "已成功更新当前结构化计划。",
-                        "Structured plan updated successfully.",
-                    ),
-                    "plan_id": event_plan_id,
-                    "plan_title": event.get("plan_title") or bound_plan_title,
-                    "operation": event.get("operation"),
-                }
-            )
-            return outcome
-
-        if events:
-            last_error = str(events[-1].get("error") or "").strip()
-            outcome.update(
-                {
-                    "state": "failed",
-                    "message": (
-                        _localized_text(
-                            language,
-                            "当前结构化计划未更新成功。",
-                            "The bound structured plan was not updated successfully.",
-                        )
-                        + (f" {last_error}" if last_error else "")
-                    ).strip(),
-                }
-            )
-            return outcome
-
-        outcome.update(
-            {
-                "state": "text_only",
-                "message": _localized_text(
-                    language,
-                    "本轮只生成了文本建议，未更新当前结构化计划。",
-                    "This run produced text guidance only; the bound structured plan was not updated.",
-                ),
-            }
         )
-        return outcome
+
+        if not is_bound_plan_mutation_request:
+            return {
+                "required": False,
+                "mode": None,
+                "called": False,
+                "satisfied": False,
+                "state": None,
+                "message": None,
+                "plan_id": plan_id,
+                "plan_title": plan_title,
+                "operation": None,
+            }
+
+        # Check if plan_operation was actually called with a mutation operation.
+        # Exclude "create" — when a plan is already bound, the tool wrapper
+        # rewrites create into a no-op already_bound_plan_reused result that
+        # does not actually modify the plan.
+        events = self._collect_plan_operation_events(steps)
+        mutation_ops = {"review", "optimize", "update"}
+        called = bool(events)
+        satisfied = any(
+            e.get("success")
+            and e.get("operation") in mutation_ops
+            and not e.get("already_bound_plan_reused")
+            for e in events
+        )
+        last_op = events[-1].get("operation") if events else None
+
+        return {
+            "required": True,
+            "mode": "bound_plan_mutation",
+            "called": called,
+            "satisfied": satisfied,
+            "state": "satisfied" if satisfied else ("called_but_failed" if called else "not_called"),
+            "message": None if satisfied else (
+                "plan_operation was called but did not succeed"
+                if called
+                else "plan_operation was not called; the user requested a plan mutation"
+            ),
+            "plan_id": plan_id,
+            "plan_title": plan_title,
+            "operation": last_op,
+        }
 
     def _build_structured_plan_requirement_block(self) -> str:
-        if not self._requires_structured_plan():
+        # Only inject a requirement block for bound plan review/optimize requests.
+        plan_id = self._current_plan_id()
+        route_reasons = self.request_profile.get("route_reason_codes")
+        if not isinstance(route_reasons, list):
+            route_reasons = []
+
+        if plan_id is None or not any(
+            code in route_reasons for code in ("plan_review", "plan_optimize")
+        ):
             return ""
-        mode = self._plan_request_mode()
-        current_plan_id = self._current_plan_id()
-        required_update_ops = self._required_bound_plan_operations()
-        lines = [
-            "=== STRUCTURED PLAN REQUIREMENT ===",
-            "- The user explicitly asked for a real structured plan. A prose-only answer does NOT satisfy this request.",
-        ]
-        if mode in {"create", "create_new"}:
-            lines.append(
-                "- Before submit_final_answer, you must successfully call plan_operation with operation='create' and obtain a real plan_id."
-            )
-        elif mode == "update_bound":
-            if required_update_ops == ["review"]:
-                lines.append(
-                    "- Before submit_final_answer, you must successfully call plan_operation with operation='review' on the currently bound plan."
-                )
-            elif required_update_ops == ["optimize"]:
-                lines.append(
-                    "- Before submit_final_answer, you must successfully call plan_operation with operation='optimize' on the currently bound plan and apply real plan changes."
-                )
-            elif required_update_ops == ["review", "optimize"]:
-                lines.append(
-                    "- Before submit_final_answer, you must successfully call plan_operation with operation='review' on the currently bound plan, then call operation='optimize' to apply real changes."
-                )
-            else:
-                lines.append(
-                    "- Before submit_final_answer, you must successfully call plan_operation on the currently bound plan using get/review/optimize."
-                )
-            if current_plan_id is not None:
-                lines.append(f"- The bound plan_id is {current_plan_id}. Do not create a new plan unless the user explicitly asked for a new one.")
-                lines.append(f"- IMPORTANT: Only use plan_id={current_plan_id} in plan_operation calls. Other plan IDs will be rejected.")
-                lines.append("- If the chat history mentions other plans from previous conversations, ignore them — focus only on the currently bound plan.")
-        lines.append(
-            "- If plan_operation fails or is never called, your final answer must clearly state that no structured plan was created or updated."
+
+        return (
+            "\n[REQUIREMENT] The user is requesting a plan review/optimize/update. "
+            f"You MUST call `plan_operation` targeting plan_id={plan_id} with the "
+            "appropriate operation before submitting your final answer.\n"
         )
-        return "\n".join(lines) + "\n"
 
     @classmethod
     def _extract_successful_created_plan_from_tool_results(
@@ -2516,41 +2432,13 @@ class DeepThinkAgent:
         )
 
     def _get_structured_plan_retry_prompt(self) -> str:
-        mode = self._plan_request_mode()
-        current_plan_id = self._current_plan_id()
-        required_update_ops = self._required_bound_plan_operations()
-        if mode in {"create", "create_new"}:
-            return (
-                "This request requires a real structured plan. You have not successfully created one yet. "
-                "Call plan_operation with operation='create' now. Do not finish with submit_final_answer until create succeeds "
-                "or you need to clearly report that structured plan creation failed."
-            )
-        if current_plan_id is not None:
-            if required_update_ops == ["review"]:
-                return (
-                    f"This request requires reviewing the bound structured plan (plan_id={current_plan_id}). "
-                    "Call plan_operation with operation='review' now. Do not finish with submit_final_answer until review succeeds "
-                    "or you need to clearly report that the structured plan was not reviewed."
-                )
-            if required_update_ops == ["optimize"]:
-                return (
-                    f"This request requires optimizing the bound structured plan (plan_id={current_plan_id}). "
-                    "Call plan_operation with operation='optimize' now and apply real plan changes. Do not finish with submit_final_answer "
-                    "until optimize succeeds or you need to clearly report that the structured plan was not optimized."
-                )
-            if required_update_ops == ["review", "optimize"]:
-                return (
-                    f"This request requires reviewing and then optimizing the bound structured plan (plan_id={current_plan_id}). "
-                    "Call plan_operation with operation='review' first, then call operation='optimize' with concrete changes. "
-                    "Do not finish with submit_final_answer until both succeed or you need to clearly report that review/optimization did not complete."
-                )
-            return (
-                f"This request requires updating the bound structured plan (plan_id={current_plan_id}). "
-                "Call plan_operation with get/review/optimize on that plan now. Do not finish with submit_final_answer until one succeeds "
-                "or you need to clearly report that the structured plan was not updated."
-            )
+        plan_id = self._current_plan_id()
+        plan_ref = f" (plan_id={plan_id})" if plan_id else ""
         return (
-            "This request requires a real structured plan action. Use plan_operation now before submit_final_answer."
+            f"The user explicitly requested a plan review, optimize, or update operation{plan_ref}. "
+            "You must call `plan_operation` with the appropriate operation (review/optimize/update) "
+            "before calling `submit_final_answer`. Do not respond with prose alone — "
+            "the plan must be mutated as requested."
         )
 
     def _ensure_structured_plan_notice(
@@ -2578,14 +2466,6 @@ class DeepThinkAgent:
 
     def _build_request_tier_block(self) -> str:
         tier = self._request_tier()
-        intent_type = str(self.request_profile.get("intent_type") or "").strip().lower()
-        local_inspect_note = (
-            "- For local inspection requests asking what's inside, schema, columns, previews, or a quick dataset overview, start with file_operations, document_reader, or result_interpreter metadata/profile and keep the path lightweight.\n"
-            "- Prefer result_interpreter profile for deterministic row/column counts, sample values, and simple ID-overlap checks on local CSV/TSV-style datasets.\n"
-            "- Do not jump to result_interpreter analyze or code_executor unless the user clearly needs calculations, transformations, or plots.\n"
-            if intent_type == "local_inspect"
-            else ""
-        )
         if tier == "light":
             return (
                 "=== REQUEST TIER: LIGHT ===\n"
@@ -2593,8 +2473,7 @@ class DeepThinkAgent:
                 "- Use the smallest amount of explanation that fully answers the user.\n"
                 "- Keep the tone professional and plain; avoid decorative emojis or hype.\n"
                 "- Prefer finishing in one short reasoning pass.\n"
-                + local_inspect_note
-                + "- Use tools when the answer depends on file/workspace/remote state; "
+                "- Use tools when the answer depends on file/workspace/remote state; "
                 "a no-tool guess is not an acceptable substitute for a check you could run.\n"
             )
         if tier == "standard":
@@ -2604,8 +2483,7 @@ class DeepThinkAgent:
                 "- Avoid research style output unless the user explicitly asks for sources or latest information.\n"
                 "- Keep the tone professional and plain; avoid decorative emojis or hype.\n"
                 "- Prefer low-overhead execution, but do not ignore required evidence.\n"
-                + local_inspect_note
-                + "- Prioritize tool-backed facts over stylistic completeness.\n"
+                "- Prioritize tool-backed facts over stylistic completeness.\n"
             )
         if tier == "research":
             return (
@@ -2639,8 +2517,7 @@ class DeepThinkAgent:
             )
         return ""
 
-    def _build_capability_floor_block(self) -> str:
-        intent_type = str(self.request_profile.get("intent_type") or "").strip().lower()
+    def _build_tool_access_block(self) -> str:
         lines = [
             "=== TOOL ACCESS ===",
             "- You have access to ALL registered tools. Choose the right tool based on user intent.",
@@ -2654,13 +2531,6 @@ class DeepThinkAgent:
                 f"- This session is bound to plan {current_plan_id}. "
                 "When calling plan_operation, ALWAYS use this plan_id. "
                 "Ignore references to other plans in the chat history."
-            )
-        if intent_type == "local_mutation":
-            lines.append(
-                "- This request is a local filesystem mutation. Do the change directly instead of telling the user to run commands manually."
-            )
-            lines.append(
-                "- Prefer terminal_session for unzip/extract/move/rename/delete style operations."
             )
         return "\n".join(lines) + "\n"
 
@@ -2732,16 +2602,8 @@ class DeepThinkAgent:
         if not isinstance(context, dict):
             return False
         tier = str(context.get("request_tier") or "").strip().lower()
-        intent_type = str(context.get("intent_type") or "").strip().lower()
         brevity_hint = bool(context.get("brevity_hint"))
-        if tier != "execute" or not brevity_hint:
-            return False
-        return intent_type in {
-            "execute_task",
-            "local_mutation",
-            "local_read",
-            "local_inspect",
-        }
+        return tier == "execute" and brevity_hint
 
     @staticmethod
     def _append_recent_chat_history(prompt: str, context: Optional[Dict[str, Any]]) -> str:
@@ -2967,7 +2829,11 @@ class DeepThinkAgent:
             {"role": "user", "content": user_query},
         ]
 
-        llm_model = getattr(self.llm_client, "model", "") or ""
+        llm_model = (
+            getattr(self.llm_client, "model", "")
+            or getattr(getattr(self.llm_client, "client", None), "model", "")
+            or ""
+        )
         ctx_mgr = ContextWindowManager(model=llm_model)
 
         async def _summarize_for_compaction(text: str) -> str:
@@ -2999,7 +2865,7 @@ class DeepThinkAgent:
         logger.info("[DEEP_THINK_NATIVE] Starting for: %s", user_query[:50])
 
         while iteration < runtime_iteration_limit:
-            await self._pause_event.wait()
+            await self._get_pause_event().wait()
             if self.cancel_event and self.cancel_event.is_set():
                 logger.info("[DEEP_THINK_NATIVE] Cancelled by user")
                 break
@@ -3197,8 +3063,6 @@ class DeepThinkAgent:
                         )
                         if (
                             created_plan_id is not None
-                            and self._requires_structured_plan()
-                            and self._plan_request_mode() in {"create", "create_new"}
                             and structured_plan_finalize_nudge_plan_id != created_plan_id
                         ):
                             messages.append(
@@ -3770,7 +3634,6 @@ class DeepThinkAgent:
                         and _content_for_early_stop
                         and len(_content_for_early_stop) >= 20
                         and not self._is_execute_task_request()
-                        and not self._requires_structured_plan()
                     ):
                         final_answer = _content_for_early_stop
                         confidence = max(confidence, 0.85)
@@ -3803,18 +3666,13 @@ class DeepThinkAgent:
 
             # Inject a strong nudge when nearing the iteration limit
             if not final_answer and iteration >= runtime_iteration_limit - 1:
-                final_step_prompt = (
-                    self._get_structured_plan_retry_prompt()
-                    if self._requires_structured_plan()
-                    else (
+                messages.append({
+                    "role": "user",
+                    "content": (
                         "IMPORTANT: You are about to reach the maximum number of thinking steps. "
                         "You MUST call submit_final_answer on the NEXT step with the best answer you can provide "
                         "based on all evidence gathered so far. Do NOT continue researching — synthesize NOW."
-                    )
-                )
-                messages.append({
-                    "role": "user",
-                    "content": final_step_prompt,
+                    ),
                 })
 
         if final_answer and not self._is_valid_final_answer(final_answer, user_query=user_query):
@@ -3989,7 +3847,7 @@ class DeepThinkAgent:
             + self._build_shared_strategy_block()
             + self._build_request_tier_block()
             + self._build_structured_plan_requirement_block()
-            + self._build_capability_floor_block()
+            + self._build_tool_access_block()
             + self._build_grounded_tooling_block()
             + "\n"
             + "\n=== WORKFLOW ===\n"
@@ -4049,7 +3907,7 @@ class DeepThinkAgent:
         logger.info(f"Starting DeepThink for query: {user_query[:50]}...")
 
         while iteration < self.max_iterations:
-            await self._pause_event.wait()
+            await self._get_pause_event().wait()
             if self.cancel_event and self.cancel_event.is_set():
                 logger.info("DeepThink cancelled by user")
                 break
@@ -4154,8 +4012,6 @@ class DeepThinkAgent:
                     # Stream final answer if callback provided
                     if self.on_final_delta and final_answer:
                         await self._stream_final_answer(final_answer)
-                    if not final_answer and self._requires_structured_plan():
-                        continue
                     break
 
                 if current_step.action:
@@ -4575,18 +4431,17 @@ Respond with ONLY a JSON object:
                         cleaned.append(item.strip())
                 return list(dict.fromkeys(cleaned))
             return []
+        paths = self._extract_explicit_artifact_paths(result)
         text = str(result) if result is not None else ""
-        if not text:
-            return []
-        paths: List[str] = []
-        for m in self.ARTIFACT_PATH_RE.finditer(text):
-            candidate = m.group(1)
-            if not self._is_internal_artifact_path(candidate):
-                paths.append(candidate)
-        for m in self.BARE_PATH_RE.finditer(text):
-            candidate = m.group(1)
-            if candidate not in paths and not self._is_internal_artifact_path(candidate):
-                paths.append(candidate)
+        if text:
+            for m in self.ARTIFACT_PATH_RE.finditer(text):
+                candidate = m.group(1)
+                if not self._is_internal_artifact_path(candidate) and candidate not in paths:
+                    paths.append(candidate)
+            for m in self.BARE_PATH_RE.finditer(text):
+                candidate = m.group(1)
+                if candidate not in paths and not self._is_internal_artifact_path(candidate):
+                    paths.append(candidate)
         return list(dict.fromkeys(paths))
 
     @staticmethod
@@ -4600,6 +4455,127 @@ Respond with ONLY a JSON object:
         if normalized.lower().endswith("/deliverables/manifest_latest.json"):
             return True
         return bool(_INTERNAL_TOOL_OUTPUT_RE.search(normalized))
+
+    @staticmethod
+    def _looks_like_artifact_path(path: str) -> bool:
+        text = str(path or "").strip()
+        if not text or "\n" in text or "\r" in text:
+            return False
+        if text.startswith(("http://", "https://")):
+            return False
+        if text.startswith(("/", "./", "../", "~")):
+            return True
+        if "/" in text or "\\" in text:
+            return True
+        return Path(text).suffix.lower() in _ARTIFACT_PATH_EXTS
+
+    def _extract_explicit_artifact_paths(self, result: Any) -> List[str]:
+        if not isinstance(result, dict):
+            return []
+
+        paths: List[str] = []
+
+        def _append(value: Any) -> None:
+            if not isinstance(value, str):
+                return
+            candidate = value.strip()
+            if not self._looks_like_artifact_path(candidate):
+                return
+            if self._is_internal_artifact_path(candidate):
+                return
+            if candidate not in paths:
+                paths.append(candidate)
+
+        def _append_list(items: Any) -> None:
+            if not isinstance(items, list):
+                return
+            for item in items:
+                _append(item)
+
+        for key in ("artifact_paths", "session_artifact_paths", "produced_files"):
+            _append_list(result.get(key))
+
+        for key in (
+            "image_path",
+            "output_file",
+            "output_file_rel",
+            "saved_path",
+            "saved_path_rel",
+            "preview_path",
+            "summary_file",
+            "summary_file_rel",
+        ):
+            _append(result.get(key))
+
+        items = result.get("items")
+        if isinstance(items, list):
+            for row in items:
+                if not isinstance(row, dict):
+                    continue
+                _append(row.get("path"))
+                _append(row.get("relative_path"))
+
+        outputs = result.get("outputs")
+        if isinstance(outputs, dict):
+            for value in outputs.values():
+                _append(value)
+
+        storage = result.get("storage")
+        if isinstance(storage, dict):
+            for container in (
+                storage,
+                storage.get("relative") if isinstance(storage.get("relative"), dict) else None,
+            ):
+                if not isinstance(container, dict):
+                    continue
+                for key in (
+                    "preview_path",
+                    "result_path",
+                    "output_file",
+                    "output_file_rel",
+                    "saved_path",
+                    "saved_path_rel",
+                ):
+                    _append(container.get(key))
+                for key in ("artifact_paths", "paths"):
+                    _append_list(container.get(key))
+
+        deliverables = result.get("deliverables")
+        if isinstance(deliverables, dict):
+            artifacts = deliverables.get("artifacts")
+            if isinstance(artifacts, list):
+                for row in artifacts:
+                    if not isinstance(row, dict):
+                        continue
+                    _append(row.get("path"))
+                    _append(row.get("relative_path"))
+
+        files_saved = result.get("files_saved")
+        output_directory = result.get("output_directory")
+        if isinstance(files_saved, dict):
+            base_dir = None
+            if isinstance(output_directory, str) and output_directory.strip():
+                try:
+                    base_dir = Path(output_directory).expanduser().resolve()
+                except Exception:
+                    base_dir = None
+            for value in files_saved.values():
+                if not isinstance(value, str):
+                    continue
+                if base_dir is not None:
+                    try:
+                        candidate = Path(value).expanduser()
+                        if not candidate.is_absolute():
+                            candidate = (base_dir / candidate).resolve()
+                        else:
+                            candidate = candidate.resolve()
+                        _append(str(candidate))
+                        continue
+                    except Exception:
+                        pass
+                _append(value)
+
+        return paths
 
     async def _emit_artifacts(self, tool_name: str, result: Any, iteration: int) -> None:
         if not self.on_artifact:
@@ -4641,6 +4617,12 @@ Respond with ONLY a JSON object:
             on_progress=_progress_bridge,
             plan_id=self._current_plan_id(),
             session_id=str(self.request_profile.get("session_id") or "").strip() or None,
+            owner_id=str(self.request_profile.get("owner_id") or "").strip() or None,
+            extra={
+                "chat_history": list(self.messages[-20:]) if getattr(self, "messages", None) else [],
+                "paper_mode": bool(self.request_profile.get("paper_mode", False)),
+                "deep_think_enabled": True,
+            },
         )
 
         if self.on_tool_start and tool_name:
@@ -5403,9 +5385,9 @@ WORKFLOW for Plan Creation:
 1. For a new plan, call 'create' directly from the current context
 2. The create path may collect web_search or graph_rag evidence before decomposition when needed
 3. Treat the returned plan as already generated/decomposed up to the configured budget; do not assume a second decomposition step is pending
-4. After a successful new-plan create, prefer 'review' so rubric metadata is available for the UI and later optimization
+4. After a successful new-plan create, report the result to the user immediately. Do NOT automatically call 'review' or 'optimize' — let the user decide whether to review or improve the plan
 5. For a bound plan, use 'get', 'review', or 'optimize' on the existing plan_id
-6. Use 'optimize' when review or user feedback indicates the plan should improve; it can apply explicit changes or synthesize them from the latest review
+6. Only use 'review' or 'optimize' when the user explicitly requests it (e.g., "review the plan", "optimize it", "improve the plan")
 7. Report the real plan result to the user with plan_id and decomposition/rubric status when available
 
 IMPORTANT:
@@ -5516,7 +5498,7 @@ Your goal is to choose the right depth for the user's request: be thorough when 
 {self._build_shared_strategy_block()}
 {self._build_request_tier_block()}
 {self._build_structured_plan_requirement_block()}
-{self._build_capability_floor_block()}
+{self._build_tool_access_block()}
 {self._build_grounded_tooling_block()}
 === THINKING WORKFLOW ===
 1. First classify whether the request needs tools, targeted evidence, or just a direct answer.
@@ -5574,14 +5556,6 @@ When ready to answer:
 
     def _get_next_step_prompt(self, iteration: int) -> str:
         """Generate prompt for the next step, encouraging completion if steps are getting long."""
-        if self._requires_structured_plan():
-            if iteration >= self.max_iterations - 1:
-                return (
-                    "CRITICAL: This request requires a real structured plan action. "
-                    "If no successful plan_operation has happened yet, call it NOW. "
-                    "Only use submit_final_answer after a real create/update succeeds, or to clearly report that the structured plan was not created or updated."
-                )
-            return self._get_structured_plan_retry_prompt()
         tier = self._request_tier()
         if tier == "light":
             return (

@@ -4,6 +4,8 @@ import {
   Button,
   Drawer,
   Empty,
+  Input,
+  Modal,
   Space,
   Spin,
   Tooltip,
@@ -16,6 +18,7 @@ import { usePlanTasks } from '@hooks/usePlans';
 import { useChatStore } from '@store/chat';
 import { useTasksStore } from '@store/tasks';
 import type {
+  AcceptTaskResponse,
   PlanResultItem,
   PlanTaskNode,
   PlanSyncEventDetail,
@@ -128,6 +131,9 @@ const TaskDetailDrawer: React.FC = () => {
   const [executeModalOpen, setExecuteModalOpen] = useState(false);
   const [executeButtonLoading, setExecuteButtonLoading] = useState(false);
   const [verifyLoading, setVerifyLoading] = useState(false);
+  const [manualAcceptOpen, setManualAcceptOpen] = useState(false);
+  const [manualAcceptLoading, setManualAcceptLoading] = useState(false);
+  const [manualAcceptReason, setManualAcceptReason] = useState('');
   const [latestExecution, setLatestExecution] = useState<{
     jobId: string;
     taskId: number;
@@ -147,9 +153,44 @@ const TaskDetailDrawer: React.FC = () => {
     return latestExecution.jobId;
   }, [currentPlanId, latestExecution, selectedTaskId]);
 
+  const resultForActions = taskResult ?? cachedResult;
+  const manualAcceptance =
+    resultForActions?.metadata && typeof resultForActions.metadata.manual_acceptance === 'object'
+      ? (resultForActions.metadata.manual_acceptance as Record<string, any>)
+      : null;
+  const manualAccepted = Boolean(
+    manualAcceptance && (
+      String(manualAcceptance.status ?? '').trim().toLowerCase() === 'accepted' ||
+      manualAcceptance.accepted === true
+    )
+  );
+  const verificationStatus = String(
+    resultForActions?.metadata?.verification?.status ??
+      resultForActions?.metadata?.verification_status ??
+      ''
+  )
+    .trim()
+    .toLowerCase();
+  const taskStatusForManualAccept = String(
+    resultForActions?.effective_status ??
+      activeTask?.effective_status ??
+      resultForActions?.status ??
+      activeTask?.status ??
+      ''
+  )
+    .trim()
+    .toLowerCase();
+  const canManualAccept = Boolean(
+    resultForActions &&
+      !manualAccepted &&
+      (verificationStatus === 'failed' || taskStatusForManualAccept === 'failed' || taskStatusForManualAccept === 'skipped')
+  );
+
   useEffect(() => {
     if (!isTaskDrawerOpen) {
       setLatestExecution(null);
+      setManualAcceptOpen(false);
+      setManualAcceptReason('');
     }
   }, [isTaskDrawerOpen]);
 
@@ -278,6 +319,64 @@ const TaskDetailDrawer: React.FC = () => {
     setTaskResult,
   ]);
 
+  const handleOpenManualAccept = useCallback(() => {
+    const defaultReason =
+      typeof manualAcceptance?.reason === 'string' && manualAcceptance.reason.trim().length > 0
+        ? manualAcceptance.reason.trim()
+        : 'Artifacts reviewed manually; outputs are acceptable for downstream use.';
+    setManualAcceptReason(defaultReason);
+    setManualAcceptOpen(true);
+  }, [manualAcceptance]);
+
+  const handleManualAccept = useCallback(async () => {
+    if (!currentPlanId || !selectedTaskId) {
+      message.error('Missing plan or task information; cannot accept task');
+      return;
+    }
+
+    const reason = manualAcceptReason.trim();
+    if (reason.length < 3) {
+      message.error('Please enter a brief review reason');
+      return;
+    }
+
+    setManualAcceptLoading(true);
+    try {
+      const response: AcceptTaskResponse = await planTreeApi.acceptTask(currentPlanId, selectedTaskId, {
+        reason,
+      });
+      setTaskResult(selectedTaskId, response.result);
+      setManualAcceptOpen(false);
+      message.success(response.message || 'Task accepted after manual review');
+      dispatchPlanSyncEvent({
+        type: 'task_changed',
+        plan_id: currentPlanId,
+        plan_title: null,
+        session_id: currentSessionId ?? null,
+        raw: response,
+      }, {
+        source: 'task.detail.accept',
+        status: response.result?.status ?? null,
+        sessionId: currentSessionId ?? null,
+      });
+      void refetchPlanTasks();
+      void refetchTaskResult();
+    } catch (error: any) {
+      message.error(error?.message || 'Failed to accept task');
+    } finally {
+      setManualAcceptLoading(false);
+    }
+  }, [
+    currentPlanId,
+    currentSessionId,
+    manualAcceptReason,
+    message,
+    refetchPlanTasks,
+    refetchTaskResult,
+    selectedTaskId,
+    setTaskResult,
+  ]);
+
   return (
     <Drawer
       width={480}
@@ -346,8 +445,12 @@ const TaskDetailDrawer: React.FC = () => {
             taskResult={taskResult}
             cachedResult={cachedResult}
             onReverify={handleReverify}
+            onManualAccept={handleOpenManualAccept}
             verifyLoading={verifyLoading}
+            manualAcceptLoading={manualAcceptLoading}
             canVerify={Boolean(taskResult ?? cachedResult)}
+            canManualAccept={canManualAccept}
+            taskMap={taskMap}
           />
           {activeExecutionJobId && (
             <section>
@@ -387,6 +490,29 @@ const TaskDetailDrawer: React.FC = () => {
         refetchPlanTasks={() => { void refetchPlanTasks(); }}
         refetchTaskResult={() => { void refetchTaskResult(); }}
       />
+
+      <Modal
+        open={manualAcceptOpen}
+        title="Accept Task After Manual Review"
+        okText="Accept task"
+        onCancel={() => setManualAcceptOpen(false)}
+        onOk={() => void handleManualAccept()}
+        confirmLoading={manualAcceptLoading}
+        okButtonProps={{ disabled: manualAcceptReason.trim().length < 3 }}
+      >
+        <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+          <Text type="secondary">
+            This marks the task as completed after manual review and may reopen downstream skipped tasks.
+          </Text>
+          <Input.TextArea
+            value={manualAcceptReason}
+            onChange={(event) => setManualAcceptReason(event.target.value)}
+            rows={4}
+            maxLength={500}
+            placeholder="Explain why the current outputs are acceptable."
+          />
+        </Space>
+      </Modal>
     </Drawer>
   );
 };

@@ -113,14 +113,23 @@ class PlanRepository:
             conn.execute("DELETE FROM plans WHERE id=?", (plan_id,))
 
     def update_plan_metadata(self, plan_id: int, metadata: Dict[str, Any]) -> None:
-        """Update the metadata for a plan.
+        """Merge new metadata keys into the existing plan metadata.
 
-        Args:
-            plan_id: The plan ID
-            metadata: New metadata dict (replaces existing)
+        This preserves existing keys (like plan_evaluation) that were set
+        by other operations (like review).
         """
-        metadata_json = _dump_json(metadata or {})
         with get_db() as conn:
+            row = conn.execute(
+                "SELECT metadata FROM plans WHERE id=?", (plan_id,)
+            ).fetchone()
+            existing: Dict[str, Any] = {}
+            if row and row["metadata"]:
+                try:
+                    existing = json.loads(row["metadata"])
+                except (json.JSONDecodeError, TypeError):
+                    existing = {}
+            existing.update(metadata or {})
+            metadata_json = _dump_json(existing)
             conn.execute(
                 """
                 UPDATE plans
@@ -486,113 +495,28 @@ class PlanRepository:
             raise ValueError("changes must be a non-empty list")
 
         applied: List[Dict[str, Any]] = []
+        skipped: List[Dict[str, Any]] = []
         with plan_db_connection(get_plan_db_path(plan_id)) as conn:
             self._ensure_task_columns(conn, plan_id)
             pending_description: Optional[str] = None
             for idx, change in enumerate(changes, start=1):
-                if not isinstance(change, dict):
-                    raise ValueError(f"Change #{idx} must be an object")
-                action = str(change.get("action") or "").strip().lower()
-                if action == "add_task":
-                    parent_id = change.get("parent_id")
-                    if parent_id is None:
-                        parent_id = self._default_root_task_id(conn)
-                    node = self._create_task_with_conn(
-                        conn,
-                        plan_id,
-                        name=str(change.get("name") or "New Task"),
-                        status="pending",
-                        instruction=change.get("instruction"),
-                        parent_id=parent_id,
-                        dependencies=change.get("dependencies"),
+                try:
+                    result = self._apply_single_change(conn, plan_id, idx, change)
+                    if result is not None:
+                        applied.append(result)
+                        if result.get("action") == "update_description":
+                            pending_description = change.get("description")
+                except Exception as exc:
+                    logger.warning(
+                        "Plan %s change #%d failed (skipping): %s — %s",
+                        plan_id, idx, change.get("action", "?"), exc,
                     )
-                    applied.append(
-                        {"action": "add_task", "task_id": node.id, "name": node.name}
-                    )
+                    skipped.append({
+                        "index": idx,
+                        "action": change.get("action", "unknown"),
+                        "error": str(exc),
+                    })
                     continue
-
-                if action == "update_task":
-                    task_id = change.get("task_id")
-                    if task_id is None:
-                        raise ValueError(f"Change #{idx} update_task requires task_id")
-                    update_kwargs: Dict[str, Any] = {}
-                    for field in ("name", "instruction", "dependencies"):
-                        if field in change:
-                            update_kwargs[field] = change[field]
-                    if not update_kwargs:
-                        raise ValueError(
-                            f"Change #{idx} update_task requires at least one mutable field"
-                        )
-                    self._update_task_with_conn(conn, plan_id, int(task_id), **update_kwargs)
-                    applied.append(
-                        {
-                            "action": "update_task",
-                            "task_id": int(task_id),
-                            "updated_fields": sorted(update_kwargs.keys()),
-                        }
-                    )
-                    continue
-
-                if action == "update_description":
-                    description = str(change.get("description") or "").strip()
-                    if not description:
-                        raise ValueError(
-                            f"Change #{idx} update_description requires description"
-                        )
-                    root_id = self._default_root_task_id(conn)
-                    if root_id is not None:
-                        conn.execute(
-                            "UPDATE tasks SET instruction=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
-                            (description, root_id),
-                        )
-                    self._upsert_plan_meta(conn, "description", description)
-                    pending_description = description
-                    applied.append(
-                        {
-                            "action": "update_description",
-                            "updated_fields": ["description"],
-                        }
-                    )
-                    continue
-
-                if action == "delete_task":
-                    task_id = change.get("task_id")
-                    if task_id is None:
-                        raise ValueError(f"Change #{idx} delete_task requires task_id")
-                    self._delete_task_with_conn(conn, plan_id, int(task_id))
-                    applied.append({"action": "delete_task", "task_id": int(task_id)})
-                    continue
-
-                if action == "reorder_task":
-                    task_id = change.get("task_id")
-                    if task_id is None:
-                        raise ValueError(f"Change #{idx} reorder_task requires task_id")
-                    new_position = change.get("new_position")
-                    if new_position is None:
-                        raise ValueError(
-                            f"Change #{idx} reorder_task requires new_position"
-                        )
-                    brief = self._fetch_task_brief(conn, int(task_id))
-                    if brief is None:
-                        raise ValueError(f"Task {task_id} not found in plan {plan_id}")
-                    node = self._move_task_with_conn(
-                        conn,
-                        plan_id,
-                        int(task_id),
-                        new_parent_id=brief["parent_id"],
-                        new_position=int(new_position),
-                    )
-                    applied.append(
-                        {
-                            "action": "reorder_task",
-                            "task_id": node.id,
-                            "new_position": node.position,
-                            "parent_id": node.parent_id,
-                        }
-                    )
-                    continue
-
-                raise ValueError(f"Change #{idx} has unknown action: {action or '<missing>'}")
 
             if pending_description is not None:
                 with get_db() as metadata_conn:
@@ -607,9 +531,105 @@ class PlanRepository:
                 if updated == 0:
                     raise ValueError(f"Plan {plan_id} not found")
 
+        if skipped:
+            logger.warning(
+                "Plan %s: %d/%d changes skipped due to errors",
+                plan_id, len(skipped), len(changes),
+            )
+
         if applied:
             self._touch_plan(plan_id)
         return applied
+
+    def _apply_single_change(
+        self,
+        conn,
+        plan_id: int,
+        idx: int,
+        change: Any,
+    ) -> Optional[Dict[str, Any]]:
+        """Apply one change and return the result dict, or raise on error."""
+        if not isinstance(change, dict):
+            raise ValueError(f"Change #{idx} must be an object")
+        action = str(change.get("action") or "").strip().lower()
+
+        if action == "add_task":
+            parent_id = change.get("parent_id")
+            if parent_id is None:
+                parent_id = self._default_root_task_id(conn)
+            node = self._create_task_with_conn(
+                conn,
+                plan_id,
+                name=str(change.get("name") or "New Task"),
+                status="pending",
+                instruction=change.get("instruction"),
+                parent_id=parent_id,
+                dependencies=change.get("dependencies"),
+            )
+            return {"action": "add_task", "task_id": node.id, "name": node.name}
+
+        if action == "update_task":
+            task_id = change.get("task_id")
+            if task_id is None:
+                raise ValueError(f"Change #{idx} update_task requires task_id")
+            update_kwargs: Dict[str, Any] = {}
+            for field in ("name", "instruction", "dependencies"):
+                if field in change:
+                    update_kwargs[field] = change[field]
+            if not update_kwargs:
+                raise ValueError(f"Change #{idx} update_task requires at least one mutable field")
+            self._update_task_with_conn(conn, plan_id, int(task_id), **update_kwargs)
+            return {
+                "action": "update_task",
+                "task_id": int(task_id),
+                "updated_fields": sorted(update_kwargs.keys()),
+            }
+
+        if action == "update_description":
+            description = str(change.get("description") or "").strip()
+            if not description:
+                raise ValueError(f"Change #{idx} update_description requires description")
+            root_id = self._default_root_task_id(conn)
+            if root_id is not None:
+                conn.execute(
+                    "UPDATE tasks SET instruction=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                    (description, root_id),
+                )
+            self._upsert_plan_meta(conn, "description", description)
+            return {"action": "update_description", "updated_fields": ["description"]}
+
+        if action == "delete_task":
+            task_id = change.get("task_id")
+            if task_id is None:
+                raise ValueError(f"Change #{idx} delete_task requires task_id")
+            self._delete_task_with_conn(conn, plan_id, int(task_id))
+            return {"action": "delete_task", "task_id": int(task_id)}
+
+        if action == "reorder_task":
+            task_id = change.get("task_id")
+            if task_id is None:
+                raise ValueError(f"Change #{idx} reorder_task requires task_id")
+            new_position = change.get("new_position")
+            if new_position is None:
+                raise ValueError(f"Change #{idx} reorder_task requires new_position")
+            brief = self._fetch_task_brief(conn, int(task_id))
+            if brief is None:
+                raise ValueError(f"Task {task_id} not found in plan {plan_id}")
+            node = self._move_task_with_conn(
+                conn,
+                plan_id,
+                int(task_id),
+                new_parent_id=brief["parent_id"],
+                new_position=int(new_position),
+            )
+            return {
+                "action": "reorder_task",
+                "task_id": node.id,
+                "new_position": node.position,
+                "parent_id": node.parent_id,
+            }
+
+        raise ValueError(f"Change #{idx} has unknown action: {action or '<missing>'}")
 
     def upsert_plan_tree(self, tree: PlanTree, *, note: Optional[str] = None) -> None:
         ordered_nodes = tree.ordered_nodes()
@@ -1081,6 +1101,23 @@ class PlanRepository:
                 "UPDATE tasks SET position=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
                 (index, row["id"]),
             )
+
+    def reindex_all_positions(self, plan_id: int) -> None:
+        """Recompact positions for every parent group in the plan.
+
+        Call after bulk operations (optimize, delete) to ensure positions
+        are contiguous within each parent group.
+        """
+        with plan_db_connection(get_plan_db_path(plan_id)) as conn:
+            self._ensure_task_columns(conn, plan_id)
+            parent_ids = [
+                row["parent_id"]
+                for row in conn.execute(
+                    "SELECT DISTINCT parent_id FROM tasks"
+                ).fetchall()
+            ]
+            for parent_id in parent_ids:
+                self._resequence_children(conn, parent_id)
 
     def _resequence_children_explicit(
         self,

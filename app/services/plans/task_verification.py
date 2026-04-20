@@ -20,6 +20,13 @@ from .acceptance_criteria import (
     resolve_glob_min_count,
     resolve_glob_pattern,
 )
+from .artifact_contracts import (
+    artifact_manifest_path,
+    infer_artifact_contract,
+    load_artifact_manifest,
+    resolve_artifact_contract_with_provenance,
+    resolve_manifest_aliases,
+)
 from .plan_models import PlanNode
 
 logger = logging.getLogger(__name__)
@@ -75,6 +82,19 @@ class VerificationFinalization:
 
 class TaskVerificationService:
     """Deterministic verification gate for file/data-oriented task results."""
+
+    @staticmethod
+    def is_manual_acceptance_active(metadata: Optional[Dict[str, Any]]) -> bool:
+        if not isinstance(metadata, dict):
+            return False
+        manual_acceptance = metadata.get("manual_acceptance")
+        if not isinstance(manual_acceptance, dict):
+            return False
+        status = str(manual_acceptance.get("status") or "").strip().lower()
+        if status:
+            return status == "accepted"
+        accepted = manual_acceptance.get("accepted")
+        return accepted is True
 
     def collect_artifact_paths(self, payload: Any) -> List[str]:
         return self._extract_artifact_paths(payload)
@@ -280,6 +300,11 @@ class TaskVerificationService:
             else raw_payload.get("status"),
             trigger=trigger,
         )
+        finalization = self.apply_artifact_authority(
+            plan_id,
+            node,
+            finalization,
+        )
 
         # Persist the effective acceptance_criteria into execution_result.metadata
         # so that future re-verifications (without override) can still find them.
@@ -295,6 +320,275 @@ class TaskVerificationService:
             execution_result=json.dumps(finalization.payload, ensure_ascii=False),
             metadata=node.metadata if isinstance(node.metadata, dict) else None,
         )
+        return finalization
+
+    def accept_task_result(
+        self,
+        repo: Any,
+        *,
+        plan_id: int,
+        task_id: int,
+        reason: str,
+        accepted_by: Optional[str] = None,
+        task_name: Optional[str] = None,
+        task_instruction: Optional[str] = None,
+        trigger: str = "manual_review",
+    ) -> VerificationFinalization:
+        tree = repo.get_plan_tree(plan_id)
+        if not tree.has_node(task_id):
+            raise ValueError(f"Task {task_id} not found in plan {plan_id}")
+
+        node = tree.get_node(task_id)
+        raw_payload = self._parse_execution_result(node.execution_result, fallback_status=node.status)
+        payload = self._coerce_payload(raw_payload, fallback_status=node.status)
+        metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+        payload["metadata"] = metadata
+
+        reason_text = str(reason or "").strip()
+        if not reason_text:
+            raise ValueError("manual acceptance reason is required")
+
+        verification = metadata.get("verification") if isinstance(metadata.get("verification"), dict) else None
+        artifact_authority = (
+            metadata.get("artifact_authority")
+            if isinstance(metadata.get("artifact_authority"), dict)
+            else None
+        )
+        original_payload_status = str(payload.get("status") or node.status or "pending").strip().lower() or "pending"
+        original_task_status = str(node.status or "pending").strip().lower() or "pending"
+        verification_status = (
+            str(verification.get("status") or "").strip().lower()
+            if verification is not None
+            else str(metadata.get("verification_status") or "").strip().lower()
+        )
+        reviewable_statuses = {"failed", "skipped", "error"}
+        can_accept = (
+            verification_status == "failed"
+            or original_task_status in reviewable_statuses
+            or original_payload_status in reviewable_statuses
+        )
+        if not can_accept:
+            raise ValueError(
+                "manual acceptance is only allowed for failed, skipped, errored, or verification-failed task results"
+            )
+
+        manual_acceptance = {
+            "status": "accepted",
+            "accepted": True,
+            "trigger": trigger,
+            "reason": reason_text,
+            "accepted_at": datetime.now(timezone.utc).isoformat(),
+            "accepted_by": str(accepted_by).strip() if accepted_by is not None and str(accepted_by).strip() else None,
+            "original_task_status": original_task_status,
+            "original_payload_status": original_payload_status,
+            "verification_status": verification_status or None,
+            "artifact_authority_status": (
+                str(artifact_authority.get("status") or "").strip().lower()
+                if artifact_authority is not None
+                else None
+            ),
+        }
+        patch_fields: Dict[str, Any] = {}
+        if task_name is not None and str(task_name).strip():
+            patch_fields["name"] = str(task_name).strip()
+        if task_instruction is not None and str(task_instruction).strip():
+            patch_fields["instruction"] = str(task_instruction).strip()
+        if patch_fields:
+            manual_acceptance["task_patch"] = dict(patch_fields)
+
+        metadata["manual_acceptance"] = manual_acceptance
+        metadata["manual_acceptance_status"] = "accepted"
+        metadata["user_status_override"] = True
+        metadata["user_override_note"] = reason_text
+        metadata["original_status"] = original_task_status
+        payload["status"] = "completed"
+
+        updates: Dict[str, Any] = {
+            "status": "completed",
+            "execution_result": json.dumps(payload, ensure_ascii=False),
+            "metadata": node.metadata if isinstance(node.metadata, dict) else None,
+        }
+        if patch_fields:
+            updates.update(patch_fields)
+
+        repo.update_task(plan_id, task_id, **updates)
+
+        return VerificationFinalization(
+            final_status="completed",
+            execution_status=str(metadata.get("execution_status") or original_payload_status or "completed"),
+            payload=payload,
+            verification=verification,
+            artifact_paths=self._extract_artifact_paths(payload),
+        )
+
+    def reset_downstream_skipped_tasks(
+        self,
+        repo: Any,
+        *,
+        plan_id: int,
+        task_id: int,
+    ) -> int:
+        """Reset immediate skipped dependents to pending after manual acceptance.
+
+        This keeps manual acceptance semantics consistent across API and tool
+        entrypoints so downstream tasks can be retried without a second manual
+        status edit.
+        """
+        tree = repo.get_plan_tree(plan_id)
+        reset_count = 0
+        for dep_node in tree.iter_nodes():
+            if task_id not in (dep_node.dependencies or []):
+                continue
+            if str(dep_node.status or "").strip().lower() != "skipped":
+                continue
+            repo.update_task(plan_id, dep_node.id, status="pending")
+            reset_count += 1
+        return reset_count
+
+    def apply_artifact_authority(
+        self,
+        plan_id: int,
+        node: PlanNode,
+        finalization: VerificationFinalization,
+        *,
+        manifest: Optional[Dict[str, Any]] = None,
+    ) -> VerificationFinalization:
+        """Check both publish and require contracts against the artifact manifest.
+
+        Publish check: did this task produce all explicitly declared outputs?
+        Require check: are all explicitly declared inputs available in the manifest?
+        """
+        payload = finalization.payload if isinstance(finalization.payload, dict) else {}
+        metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+        payload["metadata"] = metadata
+        node_metadata = node.metadata if isinstance(node.metadata, dict) else {}
+        provenance = resolve_artifact_contract_with_provenance(
+            task_name=node.display_name(),
+            instruction=node.instruction or "",
+            metadata=node_metadata,
+        )
+
+        # --- Publish satisfaction ---
+        publish_aliases = list(provenance.explicit_publishes)
+        compat_publish_aliases = [
+            alias
+            for alias in provenance.publishes()
+            if alias not in publish_aliases
+        ]
+
+        manifest_payload = manifest if isinstance(manifest, dict) else load_artifact_manifest(plan_id)
+        manifest_artifacts = manifest_payload.get("artifacts") if isinstance(manifest_payload.get("artifacts"), dict) else {}
+
+        resolved_publish = resolve_manifest_aliases(manifest_payload, publish_aliases)
+        published_aliases: List[str] = []
+        missing_publish_aliases: List[str] = []
+        for alias in publish_aliases:
+            entry = manifest_artifacts.get(alias) if isinstance(manifest_artifacts, dict) else None
+            producer_task_id = int(entry.get("producer_task_id") or -1) if isinstance(entry, dict) else -1
+            if alias in resolved_publish and producer_task_id == node.id:
+                published_aliases.append(alias)
+            else:
+                missing_publish_aliases.append(alias)
+
+        publish_status = "not_applicable"
+        if publish_aliases:
+            publish_status = "passed" if not missing_publish_aliases else "failed"
+
+        # --- Require satisfaction ---
+        require_aliases = list(provenance.explicit_requires)
+        compat_require_aliases = [
+            alias
+            for alias in provenance.requires()
+            if alias not in require_aliases
+        ]
+
+        resolved_require = resolve_manifest_aliases(manifest_payload, require_aliases) if require_aliases else {}
+        satisfied_require_aliases: List[str] = []
+        missing_require_aliases: List[str] = []
+        for alias in require_aliases:
+            if alias in resolved_require:
+                satisfied_require_aliases.append(alias)
+            else:
+                missing_require_aliases.append(alias)
+
+        require_status = "not_applicable"
+        if require_aliases:
+            require_status = "passed" if not missing_require_aliases else "failed"
+
+        # --- Combined authority ---
+        contract_source = provenance.contract_source
+        has_any_contract = bool(publish_aliases or require_aliases)
+        all_passed = (publish_status != "failed") and (require_status != "failed")
+        authority_status = "not_applicable"
+        if has_any_contract:
+            authority_status = "passed" if all_passed else "failed"
+
+        authority_summary = {
+            "status": authority_status,
+            "contract_source": contract_source,
+            "has_explicit_contract": provenance.has_explicit,
+            # Publish
+            "expected_publish_aliases": publish_aliases,
+            "compat_publish_aliases": compat_publish_aliases,
+            "published_aliases": published_aliases,
+            "missing_publish_aliases": missing_publish_aliases,
+            "publish_status": publish_status,
+            # Require
+            "expected_require_aliases": require_aliases,
+            "compat_require_aliases": compat_require_aliases,
+            "satisfied_require_aliases": satisfied_require_aliases,
+            "missing_require_aliases": missing_require_aliases,
+            "require_status": require_status,
+            # Manifest
+            "manifest_path": str(artifact_manifest_path(plan_id)) if has_any_contract else None,
+        }
+        metadata["artifact_authority"] = authority_summary
+
+        manual_acceptance_active = self.is_manual_acceptance_active(metadata)
+
+        # Demote completed → failed if publish contract unsatisfied.
+        # However, if verification already passed, a publish-only failure
+        # (artifact exists but wasn't registered in the manifest) should not
+        # override the verification result.  This prevents plan-time path
+        # guesses or missing publish steps from blocking the entire plan
+        # when the task actually produced its outputs.
+        if (
+            not manual_acceptance_active
+            and publish_aliases
+            and finalization.final_status in _COMPLETED_LIKE
+            and missing_publish_aliases
+        ):
+            verification = metadata.get("verification")
+            verification_passed = (
+                isinstance(verification, dict)
+                and str(verification.get("status") or "").strip().lower() == "passed"
+            )
+            if verification_passed:
+                # Verification confirmed the task produced valid outputs.
+                # Record the publish gap as a warning, not a hard failure.
+                metadata["failure_kind"] = "artifact_publish_warning"
+                metadata["artifact_authority_warning"] = (
+                    f"Publish contract unsatisfied for aliases {missing_publish_aliases}, "
+                    "but verification passed. Treating as completed with warning."
+                )
+                logger.warning(
+                    "Task %s: publish contract unsatisfied %s but verification passed; "
+                    "keeping completed status (plan_id=%s)",
+                    node.id,
+                    missing_publish_aliases,
+                    plan_id,
+                )
+            else:
+                metadata["failure_kind"] = "artifact_publish_missing"
+                payload["status"] = "failed"
+                finalization.final_status = "failed"
+
+        if manual_acceptance_active:
+            payload["status"] = "completed"
+            finalization.final_status = "completed"
+            metadata.setdefault("manual_acceptance_status", "accepted")
+
+        finalization.payload = payload
         return finalization
 
     def _effective_acceptance_criteria(self, node: PlanNode) -> Tuple[Optional[Dict[str, Any]], bool]:
@@ -442,6 +736,42 @@ class TaskVerificationService:
             raw_base_dir = criteria.get("base_dir")
             if isinstance(raw_base_dir, str) and raw_base_dir.strip():
                 return Path(raw_base_dir).expanduser()
+
+        # --- Unified output path: try PathRouter first ---
+        # Check if payload contains output_location with hierarchical path info
+        if isinstance(payload, dict):
+            output_location = payload.get("output_location")
+            if isinstance(output_location, dict):
+                base_dir_str = output_location.get("base_dir")
+                if isinstance(base_dir_str, str) and base_dir_str.strip():
+                    candidate = Path(base_dir_str)
+                    if candidate.exists() and candidate.is_dir():
+                        return candidate
+
+            # Also try resolving via PathRouter if session_id and task_id are available
+            session_id = payload.get("session_id") or (
+                payload.get("metadata", {}).get("session_id")
+                if isinstance(payload.get("metadata"), dict) else None
+            )
+            task_id = payload.get("task_id") or (
+                payload.get("metadata", {}).get("task_id")
+                if isinstance(payload.get("metadata"), dict) else None
+            )
+            ancestor_chain = (
+                output_location.get("ancestor_chain")
+                if isinstance(output_location, dict) else None
+            )
+            if session_id and task_id is not None:
+                try:
+                    from app.services.path_router import get_path_router
+                    router = get_path_router()
+                    unified_dir = router.get_task_output_dir(
+                        session_id, int(task_id), ancestor_chain, create=False
+                    )
+                    if unified_dir.exists() and unified_dir.is_dir():
+                        return unified_dir
+                except (ValueError, TypeError):
+                    pass
 
         # For relative acceptance-criteria paths like ``results/foo.csv``, the
         # correct base is the task run/work directory rather than whichever

@@ -109,7 +109,7 @@ Router (app/routers/)  →  Service (app/services/)  →  Repository (app/reposi
 
 ### Chat request flow (最常用路径)
 1. `routes.py` receives message → creates `chat_run`
-2. `request_routing.py` classifies **intent** (`intent_type`) and **request tier** (`request_tier`: `light` / `standard` / `research` / `execute`). All requests get full tool access — `capability_floor` is always `"tools"`.
+2. `request_routing.py` classifies **intent** (`intent_type`: `chat` | `execute_task`) and **request tier** (`request_tier`: `light` | `standard` | `research` | `execute`). All requests get full tool access — the LLM decides which tools to use.
 3. `agent.py` builds context (including bound plan/task when applicable) and invokes DeepThink with the routed profile.
 4. `deep_think_agent.py` runs the LLM with **native tool calling** (or structured path when configured).
 5. Tools executed via `tool_executor.py` → `tool_box/tools_impl/*.py`
@@ -199,11 +199,10 @@ Full list in `app/services/foundation/settings.py`. Key groups:
 ## 8. Danger Zones (修改前务必了解)
 
 ### request_routing.py — Intent classification (意图分类)
-- `resolve_intent_type()` classifies **intent** (e.g. chat vs research vs `execute_task`) for prompts and policies; it does **not** remove tools by itself.
-- `determine_capability_floor()` returns **`tools`** unconditionally — all requests always have full tool access. The `plain_chat` path and `simple_channel_allowed` have been removed.
+- `resolve_intent_type()` returns a binary intent: `chat` or `execute_task`. The LLM decides which tools to use via tool descriptions.
 - **`request_tier`** controls thinking budget and max iterations: `light` | `standard` | `research` | `execute` — similar to Claude Code's effort parameter.
 - **Explicit task numbers** in the user message set `explicit_task_ids` / `explicit_task_override` and can pin `code_executor` to a task within the named set; changing routing without tests can break bound execution and plan UX.
-- Always run `pytest app/tests/test_request_tier_routing.py -v` after changes.
+- Always run `pytest app/tests/chat/test_request_tier_routing.py -v` after changes.
 
 ### phagescope.py — PhageScope API payload format
 - API requires BOTH `phageid` (JSON array) AND `phageids` (semicolon-separated)
@@ -212,7 +211,7 @@ Full list in `app/services/foundation/settings.py`. Key groups:
 
 ### deep_think_agent.py — Tools and bound tasks
 - Bound **execute_task** flows still attach **task context** (instruction, dependencies, artifacts); tool availability in the prompt may be further narrowed by internal toolsets for that mode.
-- All requests have full tool access. The `_build_request_tier_block()` controls response style and depth; `_build_capability_floor_block()` provides tool access instructions.
+- All requests have full tool access. The `_build_request_tier_block()` controls response style and depth.
 - Wrong routing or missing task binding can still yield **fabricated** results if tools are not invoked — verify with logs (`tools_used`).
 
 ### .env — API keys
@@ -277,14 +276,14 @@ grep "phagescope\|POST\|HTTP" log/backend.log | tail -50  # 工具调用记录
 |------|----------------------|
 | AI 给出结果但疑似未调工具 | 是否有对应的 POST 请求记录，`tools_used` 字段是否为空 |
 | PhageScope 提交失败/返回错误 | 实际发出的 HTTP payload、response status、error message |
-| 意图路由异常（该用工具没用） | `capability_floor`（默认 `tools`）、`request_tier`、`route_reason_codes`、`explicit_task_override` |
+| 意图路由异常（该用工具没用） | `intent_type`（`chat` / `execute_task`）、`request_tier`、`route_reason_codes`、`explicit_task_override` |
 | 工具返回结果与预期不符 | 工具实际入参、HTTP 响应原文 |
 | 任务状态 Faileds | 服务端 job_id、module_status、module_log.error |
 
 ### 关键 log 字段说明
 
 ```
-capability_floor    → 能力下限；默认路径为 tools（模型可调用工具集）
+intent_type         → 意图分类：chat / execute_task（二值分类）
 request_tier        → 请求分级：light / standard / research / execute
 tools_used          → 本次实际调用的工具列表（空 = 未调工具）
 route_reason_codes  → 路由决策依据，排查意图分类错误的关键
@@ -301,7 +300,7 @@ route_reason_codes  → 路由决策依据，排查意图分类错误的关键
 | Term | Description |
 |------|-------------|
 | **DeepThink** | Extended thinking mode for complex reasoning (扩展思考模式) |
-| **capability_floor** | Always `"tools"` — all requests have full tool access. The `plain_chat` path has been removed (工具权限始终开放) |
+| **intent_type** | Binary: `"chat"` or `"execute_task"` — the LLM decides which tools to use (意图分类已简化为二值) |
 | **explicit_task_ids** | Parsed from user message when they name task numbers; with **`explicit_task_override`** 可压过 plan review/optimize 启发式并约束 `code_executor` 目标 |
 | **PhageScope** | Bacteriophage analysis platform API at phageapi.deepomics.org (噬菌体分析平台) |
 | **Skill** | Configurable AI capability module, selected per task (可配置AI技能模块) |
@@ -310,4 +309,4 @@ route_reason_codes  → 路由决策依据，排查意图分类错误的关键
 | **A-mem** | Agentic memory system for long-term knowledge (智能体长期记忆) |
 | **MCP** | Model Context Protocol for tool integration (模型上下文协议) |
 | **chat_run** | Single request-response cycle in a chat session (聊天中的单次请求响应周期) |
-| **request_tier** | `light` / `standard` / `research` / `execute` — workload / UX tier, separate from `intent_type` (请求分级) |
+| **request_tier** | `light` / `standard` / `research` / `execute` — workload / UX tier (请求分级) |

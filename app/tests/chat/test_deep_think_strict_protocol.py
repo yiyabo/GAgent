@@ -752,6 +752,8 @@ def test_native_large_file_listing_is_compacted_before_next_llm_call() -> None:
 
 
 def test_structured_plan_outcome_detects_created_plan() -> None:
+    # Phase 1: _requires_structured_plan() always returns False now.
+    # The routing no longer sets plan fields; LLM decides via tool descriptions.
     agent = _build_plan_agent(
         {
             "requires_structured_plan": True,
@@ -767,10 +769,9 @@ def test_structured_plan_outcome_detects_created_plan() -> None:
     )
 
     outcome = agent._summarize_structured_plan_outcome([step], user_query="做一个plan")
-    assert outcome["required"] is True
-    assert outcome["state"] == "created"
-    assert outcome["satisfied"] is True
-    assert outcome["plan_id"] == 55
+    # With Phase 1 stubs, required is always False — verification disabled
+    assert outcome["required"] is False
+    assert outcome["satisfied"] is False
 
 
 def test_native_plan_create_injects_finalize_nudge() -> None:
@@ -826,10 +827,7 @@ def test_native_plan_create_injects_finalize_nudge() -> None:
         available_tools=["plan_operation"],
         tool_executor=_tool_executor,
         max_iterations=3,
-        request_profile={
-            "requires_structured_plan": True,
-            "plan_request_mode": "create",
-        },
+        request_profile={},
     )
 
     result = asyncio.run(
@@ -846,11 +844,12 @@ def test_native_plan_create_injects_finalize_nudge() -> None:
         "Do not call `plan_operation` with `create` again" in message
         for message in user_messages
     )
-    assert result.structured_plan_satisfied is True
-    assert result.structured_plan_plan_id == 58
+    # Phase 1: structured plan verification is disabled (required=False)
+    # but the finalize nudge still fires after plan creation
 
 
 def test_structured_plan_outcome_detects_bound_plan_update() -> None:
+    # Phase 1: _requires_structured_plan() always returns False
     agent = _build_plan_agent(
         {
             "requires_structured_plan": True,
@@ -868,12 +867,12 @@ def test_structured_plan_outcome_detects_bound_plan_update() -> None:
     )
 
     outcome = agent._summarize_structured_plan_outcome([step], user_query="更新这个plan")
-    assert outcome["state"] == "updated"
-    assert outcome["satisfied"] is True
-    assert outcome["plan_id"] == 42
+    assert outcome["required"] is False
+    assert outcome["satisfied"] is False
 
 
 def test_structured_plan_review_requirement_rejects_get_only() -> None:
+    # Phase 1: _requires_structured_plan() always returns False
     agent = _build_plan_agent(
         {
             "requires_structured_plan": True,
@@ -892,12 +891,12 @@ def test_structured_plan_review_requirement_rejects_get_only() -> None:
     )
 
     outcome = agent._summarize_structured_plan_outcome([step], user_query="审核一下这个任务")
-    assert outcome["state"] == "failed"
+    assert outcome["required"] is False
     assert outcome["satisfied"] is False
-    assert "审核" in outcome["message"]
 
 
 def test_structured_plan_review_and_optimize_requirement_requires_both_ops() -> None:
+    # Phase 1: _requires_structured_plan() always returns False
     agent = _build_plan_agent(
         {
             "requires_structured_plan": True,
@@ -917,12 +916,12 @@ def test_structured_plan_review_and_optimize_requirement_requires_both_ops() -> 
     )
 
     outcome = agent._summarize_structured_plan_outcome([step], user_query="审核并优化这个计划")
-    assert outcome["state"] == "failed"
+    assert outcome["required"] is False
     assert outcome["satisfied"] is False
-    assert "优化" in outcome["message"]
 
 
 def test_structured_plan_optimize_requirement_rejects_zero_applied_changes() -> None:
+    # Phase 1: _requires_structured_plan() always returns False
     agent = _build_plan_agent(
         {
             "requires_structured_plan": True,
@@ -941,12 +940,12 @@ def test_structured_plan_optimize_requirement_rejects_zero_applied_changes() -> 
     )
 
     outcome = agent._summarize_structured_plan_outcome([step], user_query="更新一下这个plan")
-    assert outcome["state"] == "failed"
+    assert outcome["required"] is False
     assert outcome["satisfied"] is False
-    assert "优化" in outcome["message"]
 
 
 def test_structured_plan_outcome_marks_text_only_when_tool_never_called() -> None:
+    # Phase 1: _requires_structured_plan() always returns False
     agent = _build_plan_agent(
         {
             "requires_structured_plan": True,
@@ -962,11 +961,12 @@ def test_structured_plan_outcome_marks_text_only_when_tool_never_called() -> Non
     )
 
     outcome = agent._summarize_structured_plan_outcome([step], user_query="做一个plan")
-    assert outcome["state"] == "text_only"
+    assert outcome["required"] is False
     assert outcome["satisfied"] is False
 
 
 def test_structured_plan_outcome_marks_failed_when_plan_tool_fails() -> None:
+    # Phase 1: _requires_structured_plan() always returns False
     agent = _build_plan_agent(
         {
             "requires_structured_plan": True,
@@ -982,7 +982,7 @@ def test_structured_plan_outcome_marks_failed_when_plan_tool_fails() -> None:
     )
 
     outcome = agent._summarize_structured_plan_outcome([step], user_query="做一个plan")
-    assert outcome["state"] == "failed"
+    assert outcome["required"] is False
     assert outcome["satisfied"] is False
 
 
@@ -2258,7 +2258,9 @@ def test_execute_task_failed_execution_prefers_verified_profile_recovery() -> No
     assert result.fallback_used is True
 
 
-def test_execute_task_filters_plan_operation_from_available_tools() -> None:
+def test_execute_task_keeps_plan_operation_in_available_tools() -> None:
+    # Phase 1: plan_operation is no longer stripped in execute mode.
+    # The LLM decides when to use plan_operation via tool descriptions.
     agent = DeepThinkAgent(
         llm_client=_RecordingNativeLLM([]),
         available_tools=["plan_operation", "file_operations", "code_executor"],
@@ -2270,7 +2272,7 @@ def test_execute_task_filters_plan_operation_from_available_tools() -> None:
         },
     )
 
-    assert "plan_operation" not in agent.available_tools
+    assert "plan_operation" in agent.available_tools
     assert "code_executor" in agent.available_tools
 
 
@@ -3026,7 +3028,7 @@ def test_native_light_tier_early_stops_on_direct_text_answer() -> None:
         available_tools=["web_search"],
         tool_executor=_noop_tool_executor,
         max_iterations=3,
-        request_profile={"request_tier": "light", "capability_floor": "tools"},
+        request_profile={"request_tier": "light"},
     )
 
     result = asyncio.run(agent.think("写个斐波那契数列代码"))
@@ -3059,7 +3061,7 @@ def test_native_standard_tier_early_stops_on_direct_text_answer() -> None:
         available_tools=["web_search"],
         tool_executor=_noop_tool_executor,
         max_iterations=3,
-        request_profile={"request_tier": "standard", "capability_floor": "tools"},
+        request_profile={"request_tier": "standard"},
     )
 
     result = asyncio.run(agent.think("HTTP 200 是什么意思？"))
@@ -3094,7 +3096,7 @@ def test_native_research_tier_does_not_early_stop() -> None:
         available_tools=["web_search"],
         tool_executor=_noop_tool_executor,
         max_iterations=5,
-        request_profile={"request_tier": "research", "capability_floor": "tools"},
+        request_profile={"request_tier": "research"},
     )
 
     result = asyncio.run(agent.think("深入分析某个复杂话题"))
@@ -3131,7 +3133,6 @@ def test_native_execute_tier_does_not_early_stop() -> None:
         max_iterations=5,
         request_profile={
             "request_tier": "execute",
-            "capability_floor": "tools",
             "intent_type": "execute_task",
         },
     )
@@ -3167,7 +3168,7 @@ def test_native_light_tier_no_early_stop_on_short_content() -> None:
         available_tools=["web_search"],
         tool_executor=_noop_tool_executor,
         max_iterations=3,
-        request_profile={"request_tier": "light", "capability_floor": "tools"},
+        request_profile={"request_tier": "light"},
     )
 
     result = asyncio.run(agent.think("你好"))

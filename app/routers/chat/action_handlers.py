@@ -48,6 +48,7 @@ from app.services.plans.plan_generation import (
     create_plan_and_generate,
     ensure_plan_generation_ready,
 )
+from app.services.plans.artifact_preflight import ArtifactPreflightService
 from app.services.plans.plan_optimizer import (
     auto_optimize_plan,
     capture_plan_optimization_outcome,
@@ -73,7 +74,7 @@ from .artifact_gallery import (
     extract_artifact_gallery_from_result,
     update_recent_image_artifacts,
 )
-from .request_routing import allowed_tools_for_capability_floor
+from .request_routing import get_all_tools
 from .session_helpers import (
     _lookup_phagescope_task_memory,
     _normalize_search_provider,
@@ -101,13 +102,13 @@ from .tool_results import (
     append_recent_tool_result,
 )
 from .background import (
-    _classify_background_category,
     _BACKGROUND_TOOL_NAMES,
     _BACKGROUND_PLAN_OPS,
     _PHAGESCOPE_SYNC_ACTIONS,
 )
 
 logger = logging.getLogger(__name__)
+_artifact_preflight_service = ArtifactPreflightService()
 
 # ---------------------------------------------------------------------------
 # Aliases matching the names used in the original StructuredChatAgent code
@@ -127,7 +128,6 @@ _RUNTIME_CONTEXT_KEYS = (
     "last_subject_action_class",
     "recent_image_artifacts",
 )
-_READ_ONLY_FILE_OPERATIONS = {"read", "list", "exists", "info"}
 _MUTATING_FILE_OPERATIONS = {"write", "copy", "move", "delete"}
 _LOCAL_SUBJECT_TOOLS = {
     "file_operations",
@@ -137,6 +137,7 @@ _LOCAL_SUBJECT_TOOLS = {
     "code_executor",
     "terminal_session",
 }
+_RERUN_TASK_EXECUTION_JOB_KEY = "_rerun_task_execution_job_id"
 
 
 def _append_unique_text(target: List[str], seen: set[str], value: Any, *, limit: int = 20) -> None:
@@ -175,6 +176,30 @@ async def _maybe_ensure_plan_generation_ready_for_agent(
         decomposer=agent.plan_decomposer or PlanDecomposer(repo=repo),
         session_context=_build_plan_generation_session_context(agent),
     )
+
+
+def _artifact_preflight_failure_step(
+    *,
+    action: LLMAction,
+    plan_id: int,
+    decomposition_status: Optional[str],
+    preflight_result: Any,
+) -> AgentStep:
+    return AgentStep(
+        action=action,
+        success=False,
+        message=preflight_result.summary(),
+        details={
+            "plan_id": plan_id,
+            "decomposition_status": decomposition_status,
+            "preflight": preflight_result.model_dump(),
+            "status": "artifact_preflight_failed",
+        },
+    )
+
+
+def _should_run_artifact_preflight(tree: Any) -> bool:
+    return isinstance(getattr(tree, "nodes", None), dict)
 
 
 def _resolve_bound_task_tree_and_node(agent: Any) -> Tuple[Optional[PlanTree], Optional[PlanNode]]:
@@ -664,12 +689,6 @@ def _infer_subject_action_class(
         return "inspect"
     if tool_name == "terminal_session":
         operation = str(params.get("operation") or "").strip().lower()
-        intent_type = str(extra_context.get("intent_type") or "").strip().lower()
-        if intent_type == "local_mutation" and operation == "write":
-            vs = str((sanitized or {}).get("verification_state") or "").strip().lower()
-            if vs == "verified_success":
-                return "mutation"
-            return None
         if operation in {"replay", "list"}:
             return "inspect"
     return None
@@ -712,12 +731,6 @@ def _update_runtime_context_from_tool(
 ) -> None:
     extra_context = getattr(agent, "extra_context", {}) or {}
     current_turn = _current_user_turn(agent)
-    intent_type_ctx = str(extra_context.get("intent_type") or "").strip().lower()
-    is_term_mut_write = (
-        tool_name == "terminal_session"
-        and str(params.get("operation") or "").strip().lower() == "write"
-        and intent_type_ctx == "local_mutation"
-    )
     subject = _extract_subject_from_tool_call(
         tool_name,
         params,
@@ -756,12 +769,6 @@ def _update_runtime_context_from_tool(
             verification_state = "not_found"
         else:
             verification_state = "failed"
-    elif is_term_mut_write and isinstance(sanitized, dict):
-        mut_vs = str(sanitized.get("verification_state") or "").strip().lower()
-        if mut_vs == "verified_failure":
-            verification_state = "failed"
-        elif mut_vs in ("unverified", "not_attempted") or mut_vs == "":
-            verification_state = "unresolved"
 
     if subject_ref:
         subject_aliases = build_subject_aliases(
@@ -802,56 +809,6 @@ def _update_runtime_context_from_tool(
             extra_context,
             sanitized.get("artifact_gallery"),
         )
-    if is_term_mut_write and isinstance(sanitized, dict):
-        mut_vs = str(sanitized.get("verification_state") or "").strip().lower()
-        if mut_vs == "verified_failure":
-            subject_aliases_tm: List[str] = []
-            if subject_ref:
-                subject_aliases_tm = build_subject_aliases(
-                    subject.get("aliases") if isinstance(subject, dict) else None,
-                    subject_ref,
-                    display_ref,
-                )
-                extra_context["last_failure_state"] = {
-                    "subject_ref": subject_ref,
-                    "subject_aliases": subject_aliases_tm,
-                    "tool_name": tool_name,
-                    "operation": "write",
-                    "error_message": str(sanitized.get("verification_summary") or error_message).strip(),
-                    "timestamp": datetime.utcnow().isoformat() + "Z",
-                }
-            extra_context["last_evidence_state"] = {
-                "status": "failed",
-                "verified_facts": [],
-                "produced_artifacts": produced_artifacts,
-                "unresolved": [str(sanitized.get("verification_summary") or "verification failed")],
-                "timestamp": datetime.utcnow().isoformat() + "Z",
-            }
-            agent.extra_context = extra_context
-            if getattr(agent, "session_id", None):
-                try:
-                    _persist_runtime_context(agent)
-                except Exception as exc:  # pragma: no cover - defensive
-                    logger.debug("Failed to persist runtime context: %s", exc)
-            return
-        if mut_vs in ("unverified", "not_attempted") or mut_vs == "":
-            pending = str(
-                sanitized.get("verification_summary") or "command dispatched; verification pending"
-            ).strip()
-            extra_context["last_evidence_state"] = {
-                "status": "unverified",
-                "verified_facts": [pending] if pending else [],
-                "produced_artifacts": produced_artifacts,
-                "unresolved": [],
-                "timestamp": datetime.utcnow().isoformat() + "Z",
-            }
-            agent.extra_context = extra_context
-            if getattr(agent, "session_id", None):
-                try:
-                    _persist_runtime_context(agent)
-                except Exception as exc:  # pragma: no cover - defensive
-                    logger.debug("Failed to persist runtime context: %s", exc)
-            return
     if success:
         extra_context["last_evidence_state"] = {
             "status": "verified" if subject_ref else "success",
@@ -947,10 +904,10 @@ def _enforce_capability_guard(
     tool_name: str,
     params: Dict[str, Any],
 ) -> Optional[AgentStep]:
-    # All tools are always available (capability_floor is unconditionally "tools").
+    # All tools are always available — the LLM decides which to use.
     # The tool-name allowlist check is kept for defense-in-depth against
     # unregistered or unknown tool names.
-    allowed_tools = set(allowed_tools_for_capability_floor("tools"))
+    allowed_tools = set(get_all_tools())
     if tool_name not in allowed_tools:
         return _capability_guard_failure(
             agent,
@@ -961,35 +918,19 @@ def _enforce_capability_guard(
             error_code="tool_not_available",
         )
 
-    # File mutation guard: use intent_type (not capability_floor) to decide
-    # whether mutating file ops are allowed.
-    intent_type = str((getattr(agent, "extra_context", {}) or {}).get("intent_type") or "").strip().lower()
-    if tool_name == "file_operations" and intent_type in {"local_read", "local_inspect", "research"}:
+    # Mutation awareness: log file-mutating operations for observability.
+    # The old intent-type-based blocking was removed in Phase 1 (LLM-first),
+    # but we keep audit logging so anomalous mutation patterns can be detected.
+    if tool_name == "file_operations":
         operation = str(params.get("operation") or "").strip().lower()
         if operation in _MUTATING_FILE_OPERATIONS:
-            return _capability_guard_failure(
-                agent,
-                action,
-                tool_name=tool_name,
-                params=params,
-                message=(
-                    f"file_operations {operation} requires execute capability; "
-                    f"current intent_type is '{intent_type}'."
-                ),
-                error_code="operation_not_permitted",
+            logger.info(
+                "[MUTATION_AUDIT] file_operations.%s path=%s intent=%s",
+                operation,
+                params.get("path", "<unknown>"),
+                agent.extra_context.get("intent_type", "unknown"),
             )
-        if operation and operation not in _READ_ONLY_FILE_OPERATIONS:
-            return _capability_guard_failure(
-                agent,
-                action,
-                tool_name=tool_name,
-                params=params,
-                message=(
-                    f"file_operations {operation} is not allowed under "
-                    f"intent_type '{intent_type}'."
-                ),
-                error_code="operation_not_permitted",
-            )
+
     return None
 
 
@@ -2371,6 +2312,7 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
     summary = base_summary
     success = sanitized.get("success", True)
     deliverable_report = None
+    deliverable_error = None
     if agent.session_id:
         publish_task_id: Optional[int] = None
         publish_task_name: Optional[str] = None
@@ -2417,6 +2359,7 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
                 publish_status="final" if success is not False else "draft",
             )
         except Exception as exc:  # pragma: no cover - defensive
+            deliverable_error = str(exc)
             logger.warning(
                 "Failed to publish deliverables for session %s tool %s: %s",
                 agent.session_id,
@@ -2428,6 +2371,11 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
         submit_summary = format_deliverable_submit_summary(deliverable_report)
         if submit_summary:
             summary = submit_summary
+
+    if deliverable_error:
+        sanitized["deliverable_error"] = deliverable_error
+        if isinstance(raw_result, dict):
+            raw_result.setdefault("deliverable_error", deliverable_error)
 
     storage_info = None
     if agent.session_id:
@@ -2766,6 +2714,8 @@ async def handle_plan_action(agent: Any, action: LLMAction) -> AgentStep:
             fallback_tree=tree,
         )
         tree = readiness.plan_tree
+        # NOTE: review skips artifact preflight — reviewing a plan with
+        # broken artifact contracts is fine; the review should report issues.
         try:
             rubric_result = await asyncio.to_thread(
                 evaluate_plan_rubric,
@@ -2783,6 +2733,11 @@ async def handle_plan_action(agent: Any, action: LLMAction) -> AgentStep:
         # Persist evaluation into plan metadata
         merged_meta = dict(getattr(tree, "metadata", None) or {})
         merged_meta["plan_evaluation"] = rubric_result.to_dict()
+        # Sync plan_optimization.overall_score_after with latest review score
+        existing_optimization = merged_meta.get("plan_optimization")
+        if isinstance(existing_optimization, dict):
+            existing_optimization["overall_score_after"] = rubric_result.overall_score
+            merged_meta["plan_optimization"] = existing_optimization
         try:
             agent.plan_session.repo.update_plan_metadata(plan_id, merged_meta)
         except Exception as meta_exc:
@@ -2794,7 +2749,14 @@ async def handle_plan_action(agent: Any, action: LLMAction) -> AgentStep:
             if rubric_unavailable
             else (
                 f"Plan #{plan_id} review complete. "
-                f"Rubric score: {rubric_result.overall_score}/100."
+                f"Rubric score: {rubric_result.overall_score:.1f}/100.\n"
+                "INSTRUCTIONS FOR PRESENTING THE REVIEW:\n"
+                "1. Show the overall score prominently.\n"
+                "2. List each dimension score in a table (dimension name, score, brief assessment).\n"
+                "3. For dimensions scoring below 70, explain the specific problems found.\n"
+                "4. Provide concrete, actionable improvement suggestions for each weak dimension.\n"
+                "5. Do NOT call optimize_plan — present the review and wait for the user to decide.\n"
+                "6. Ask the user if they want to proceed with optimization or discuss specific points first."
             )
         )
         details = {
@@ -2831,6 +2793,8 @@ async def handle_plan_action(agent: Any, action: LLMAction) -> AgentStep:
         )
         # Use the tree from readiness (may have been mutated/expanded)
         tree = getattr(readiness, "plan_tree", None) or tree
+        # NOTE: optimize skips artifact preflight — the whole point of
+        # optimize is to fix issues including broken artifact contracts.
         if not changes or not isinstance(changes, list):
             outcome = await auto_optimize_plan(
                 plan_id=plan_id,
@@ -2878,6 +2842,7 @@ async def handle_plan_action(agent: Any, action: LLMAction) -> AgentStep:
         plan_tree_before = tree  # Snapshot before changes are applied
         try:
             applied = repo.apply_changes_atomically(plan_id, changes)
+            repo.reindex_all_positions(plan_id)
         except Exception as exc:
             agent._refresh_plan_tree(force_reload=True)
             return AgentStep(
@@ -2919,13 +2884,17 @@ async def handle_plan_action(agent: Any, action: LLMAction) -> AgentStep:
             score_delta = float(review_after.overall_score) - float(review_before.overall_score)
 
         agent._refresh_plan_tree(force_reload=True)
+        score_info = ""
+        if review_before is not None and review_after is not None and score_delta is not None:
+            score_info = f" Rubric {review_before.overall_score:.1f}% -> {review_after.overall_score:.1f}% ({score_delta:+.1f})."
         message = (
-            f"Plan #{plan_id} optimized: {len(applied)} changes applied."
-            + (
-                f" Rubric {review_before.overall_score:.1f}% -> {review_after.overall_score:.1f}% ({score_delta:+.1f})."
-                if review_before is not None and review_after is not None and score_delta is not None
-                else ""
-            )
+            f"Plan #{plan_id} optimized: {len(applied)} changes applied.{score_info}\n"
+            "INSTRUCTIONS FOR PRESENTING THE OPTIMIZATION RESULT:\n"
+            "1. Show the score change prominently (before → after, delta).\n"
+            "2. List each applied change in a table: task ID, change type, what was modified.\n"
+            "3. If dimension scores are available, show which dimensions improved or declined.\n"
+            "4. Summarize the key improvements in 2-3 sentences.\n"
+            "5. If any changes failed, explain why."
         )
         details = {
             "plan_id": plan_id,
@@ -2956,6 +2925,245 @@ async def handle_plan_action(agent: Any, action: LLMAction) -> AgentStep:
 # ---------------------------------------------------------------------------
 # handle_task_action
 # ---------------------------------------------------------------------------
+
+def _prepare_rerun_task_execution(
+    agent: Any,
+    action: LLMAction,
+) -> Tuple[PlanTree, int, ExecutionConfig]:
+    params = action.parameters or {}
+    tree = agent._require_plan_bound()
+    task_id_raw = params.get("task_id")
+    task_id = agent._coerce_int(task_id_raw, "task_id")
+    if agent.plan_executor is None:
+        raise ValueError("Plan executor is not enabled in this environment.")
+
+    paper_mode_raw = params.get("paper_mode")
+    paper_mode = False
+    if isinstance(paper_mode_raw, bool):
+        paper_mode = paper_mode_raw
+    elif paper_mode_raw is not None:
+        paper_mode = str(paper_mode_raw).strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+            "y",
+        }
+
+    action_metadata = action.metadata if isinstance(action.metadata, dict) else {}
+    is_explicit_execute_shortcut = (
+        str(action_metadata.get("origin") or "").strip().lower()
+        == "explicit_execute_shortcut"
+    )
+
+    session_ctx = {
+        "session_id": agent.session_id,
+        "user_message": (
+            agent._current_user_message
+            if hasattr(agent, "_current_user_message")
+            else None
+        ),
+        "chat_history": agent.history,
+        "chat_history_max_messages": getattr(agent, "max_history_messages", 80),
+        "recent_tool_results": agent.extra_context.get("recent_tool_results", []),
+        "paper_mode": paper_mode,
+        "explicit_execute_shortcut": is_explicit_execute_shortcut,
+    }
+    exec_config = ExecutionConfig(
+        session_context=session_ctx,
+        paper_mode=paper_mode,
+        enable_skills=not is_explicit_execute_shortcut,
+        skill_trace_enabled=not is_explicit_execute_shortcut,
+    )
+    if is_explicit_execute_shortcut:
+        logger.info(
+            "[CHAT][EXEC_SHORTCUT] Disabled skill selection for rerun_task task_id=%s",
+            task_id,
+        )
+    return tree, task_id, exec_config
+
+
+def _ensure_rerun_task_execution_job(
+    agent: Any,
+    tree: PlanTree,
+    task_id: int,
+) -> Optional[str]:
+    extra_context = getattr(agent, "extra_context", None)
+    requested_job_id = ""
+    if isinstance(extra_context, dict):
+        requested_job_id = str(extra_context.get(_RERUN_TASK_EXECUTION_JOB_KEY) or "").strip()
+
+    existing_job = plan_decomposition_jobs.get_job(requested_job_id) if requested_job_id else None
+    if existing_job is not None:
+        return existing_job.job_id
+
+    task_name = ""
+    try:
+        task_name = tree.get_node(task_id).display_name()
+    except Exception:
+        task_name = f"Task {task_id}"
+
+    job_id = requested_job_id or f"plan_execute_{uuid4().hex}"
+    try:
+        job = plan_decomposition_jobs.create_job(
+            plan_id=tree.id,
+            task_id=task_id,
+            mode="single_task",
+            job_type="plan_execute",
+            params={
+                "session_id": getattr(agent, "session_id", None),
+                "task_id": task_id,
+                "mode": "rerun_task",
+            },
+            metadata={
+                "session_id": getattr(agent, "session_id", None),
+                "conversation_id": getattr(agent, "conversation_id", None),
+                "source": "rerun_task",
+                "target_task_name": task_name,
+            },
+            session_id=getattr(agent, "session_id", None),
+            job_id=job_id,
+        )
+        return job.job_id
+    except Exception as exc:
+        logger.warning("Failed to fully initialize rerun_task job %s: %s", job_id, exc)
+        existing_after_failure = plan_decomposition_jobs.get_job(job_id)
+        return existing_after_failure.job_id if existing_after_failure is not None else None
+
+
+def _execute_rerun_task_with_job(
+    agent: Any,
+    tree: PlanTree,
+    task_id: int,
+    exec_config: ExecutionConfig,
+) -> Tuple[Any, Optional[str]]:
+    job_id = _ensure_rerun_task_execution_job(agent, tree, task_id)
+    job_token = set_current_job(job_id) if job_id else None
+
+    try:
+        if job_id:
+            try:
+                plan_decomposition_jobs.mark_running(job_id)
+            except Exception as exc:
+                logger.warning("Failed to mark rerun_task job %s running: %s", job_id, exc)
+        result = agent.plan_executor.execute_task(tree.id, task_id, config=exec_config)
+    except Exception as exc:
+        if job_id:
+            try:
+                plan_decomposition_jobs.mark_failure(
+                    job_id,
+                    str(exc),
+                    result={
+                        "plan_id": tree.id,
+                        "task_id": task_id,
+                        "status": "failed",
+                        "content": str(exc),
+                    },
+                    stats={
+                        "plan_id": tree.id,
+                        "task_id": task_id,
+                        "execution_status": "failed",
+                    },
+                )
+            except Exception as mark_failure_exc:
+                logger.warning(
+                    "Failed to mark rerun_task job %s failed: %s",
+                    job_id,
+                    mark_failure_exc,
+                )
+        raise
+    finally:
+        if job_token is not None:
+            reset_current_job(job_token)
+
+    if job_id:
+        result_payload = result.to_dict() if hasattr(result, "to_dict") else None
+        status = str(getattr(result, "status", "") or "").strip().lower()
+        stats = {
+            "plan_id": tree.id,
+            "task_id": task_id,
+            "execution_status": status or "unknown",
+        }
+        if status in {"failed", "error"}:
+            error_text = str(getattr(result, "content", "") or f"Task {task_id} failed.")
+            try:
+                plan_decomposition_jobs.mark_failure(
+                    job_id,
+                    error_text,
+                    result=result_payload,
+                    stats=stats,
+                )
+            except Exception as exc:
+                logger.warning("Failed to persist rerun_task failure for %s: %s", job_id, exc)
+        else:
+            try:
+                plan_decomposition_jobs.mark_success(
+                    job_id,
+                    result=result_payload,
+                    stats=stats,
+                )
+            except Exception as exc:
+                logger.warning("Failed to persist rerun_task success for %s: %s", job_id, exc)
+
+    return result, job_id
+
+
+def _finalize_rerun_task_execution(
+    agent: Any,
+    action: LLMAction,
+    tree: PlanTree,
+    task_id: int,
+    result: Any,
+    *,
+    job_id: Optional[str] = None,
+) -> AgentStep:
+    status = str(getattr(result, "status", "") or "").strip().lower()
+    success = status in {"completed", "done", "success"}
+    message = f"Task [{task_id}] execution status: {getattr(result, 'status', None)}."
+    if status == "skipped":
+        message = f"Task [{task_id}] was skipped."
+    elif status in {"failed", "error"}:
+        message = f"Task [{task_id}] failed."
+    result_payload = result.to_dict()
+    details = dict(result_payload)
+    details["result"] = dict(result_payload)
+    if job_id:
+        details["job"] = {
+            "job_id": job_id,
+            "job_type": "plan_execute",
+            "task_id": task_id,
+            "plan_id": tree.id,
+        }
+    agent._refresh_plan_tree(force_reload=True)
+    return AgentStep(
+        action=action,
+        success=success,
+        message=message,
+        details=details,
+    )
+
+
+async def handle_task_action_async(agent: Any, action: LLMAction) -> AgentStep:
+    if action.name != "rerun_task":
+        return handle_task_action(agent, action)
+
+    tree, task_id, exec_config = _prepare_rerun_task_execution(agent, action)
+    result, job_id = await asyncio.to_thread(
+        _execute_rerun_task_with_job,
+        agent,
+        tree,
+        task_id,
+        exec_config,
+    )
+    return _finalize_rerun_task_execution(
+        agent,
+        action,
+        tree,
+        task_id,
+        result,
+        job_id=job_id,
+    )
+
 
 def handle_task_action(agent: Any, action: LLMAction) -> AgentStep:
     params = action.parameters or {}
@@ -3217,38 +3425,15 @@ def handle_task_action(agent: Any, action: LLMAction) -> AgentStep:
         )
 
     if action.name == "rerun_task":
-        task_id_raw = params.get("task_id")
-        task_id = agent._coerce_int(task_id_raw, "task_id")
-        if agent.plan_executor is None:
-            raise ValueError("Plan executor is not enabled in this environment.")
-        paper_mode_raw = params.get("paper_mode")
-        paper_mode = False
-        if isinstance(paper_mode_raw, bool):
-            paper_mode = paper_mode_raw
-        elif paper_mode_raw is not None:
-            paper_mode = str(paper_mode_raw).strip().lower() in {"1", "true", "yes", "on", "y"}
-        # Build session context and pass to task executor.
-        session_ctx = {
-            "session_id": agent.session_id,  # For tool calls.
-            "user_message": agent._current_user_message if hasattr(agent, "_current_user_message") else None,
-            "chat_history": agent.history,
-            "chat_history_max_messages": getattr(agent, "max_history_messages", 80),
-            "recent_tool_results": agent.extra_context.get("recent_tool_results", []),
-            "paper_mode": paper_mode,
-        }
-        exec_config = ExecutionConfig(session_context=session_ctx, paper_mode=paper_mode)
-        result = agent.plan_executor.execute_task(tree.id, task_id, config=exec_config)
-        status = (result.status or "").strip().lower()
-        success = status in {"completed", "done", "success"}
-        message = f"Task [{task_id}] execution status: {result.status}."
-        if status == "skipped":
-            message = f"Task [{task_id}] was skipped."
-        elif status in {"failed", "error"}:
-            message = f"Task [{task_id}] failed."
-        details = result.to_dict()
-        agent._refresh_plan_tree(force_reload=True)
-        return AgentStep(
-            action=action, success=success, message=message, details=details
+        tree, task_id, exec_config = _prepare_rerun_task_execution(agent, action)
+        result, job_id = _execute_rerun_task_with_job(agent, tree, task_id, exec_config)
+        return _finalize_rerun_task_execution(
+            agent,
+            action,
+            tree,
+            task_id,
+            result,
+            job_id=job_id,
         )
 
     if action.name == "verify_task":

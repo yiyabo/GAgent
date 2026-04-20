@@ -252,21 +252,15 @@ class TestThresholdLogic:
 
 class TestFeatureFlag:
 
-    def test_fallback_returns_none_when_disabled(self, monkeypatch) -> None:
-        """When SEMANTIC_INTENT_ENABLED is False, _try_semantic_intent_fallback returns None."""
-        from app.routers.chat.request_routing import _try_semantic_intent_fallback
-
-        # Default settings have semantic_intent_enabled=False
-        result = _try_semantic_intent_fallback("put together a comprehensive analysis")
-        assert result is None
-
     def test_existing_rule_matches_unaffected(self) -> None:
         """Verify that messages matching existing rules still work identically."""
         from app.routers.chat.request_routing import resolve_intent_type
 
-        # "执行" is in _EXECUTE_PHRASES → should always return execute_task
+        # After the intent classification refactor, resolve_intent_type no longer
+        # uses keyword heuristics — it returns "chat" for all non-structural signals.
+        # classify_request_tier independently detects execute tier via keywords.
         intent, reasons = resolve_intent_type(message="帮我执行这个任务")
-        assert intent == "execute_task"
+        assert intent == "chat"
         # No semantic reason codes should be present
         assert not any("semantic" in r for r in reasons)
 
@@ -276,12 +270,12 @@ class TestFeatureFlag:
 
         decision = resolve_request_routing(message="你好呀")
         assert decision.request_tier == "light"
-        assert decision.capability_floor == "tools"
 
-    def test_research_cue_still_routes_to_research(self) -> None:
-        """Research keywords must still be caught by rules."""
-        from app.routers.chat.request_routing import resolve_intent_type
+    def test_research_cue_still_routes_to_research_tier(self) -> None:
+        """Research keywords must still route to research request_tier."""
+        from app.routers.chat.request_routing import resolve_request_routing
 
-        intent, reasons = resolve_intent_type(message="帮我搜索最新的文献")
-        assert intent == "research"
-        assert "intent_research" in reasons
+        # Phase 2: resolve_intent_type no longer returns "research";
+        # research routing is handled by classify_request_tier instead.
+        decision = resolve_request_routing(message="帮我搜索最新的文献")
+        assert decision.request_tier == "research"

@@ -6,9 +6,10 @@ import type {
   PlanSummary,
   PlanTreeResponse,
   DependencyPlanResponse,
-    ExecuteTaskResponse,
-    VerifyTaskResponse,
-    DecompositionJobStatus,
+  ExecuteTaskResponse,
+  VerifyTaskResponse,
+  AcceptTaskResponse,
+  DecompositionJobStatus,
   JobLogTailResponse,
   BackgroundTaskBoardResponse,
   TodoListResponse,
@@ -158,6 +159,14 @@ class PlanTreeApi extends BaseApi {
   return this.post<VerifyTaskResponse>(`/tasks/${taskId}/verify?plan_id=${planId}`, {});
   };
 
+  acceptTask = async (
+    planId: number,
+    taskId: number,
+    payload: { reason: string; name?: string; instruction?: string }
+  ): Promise<AcceptTaskResponse> => {
+    return this.post<AcceptTaskResponse>(`/tasks/${taskId}/accept?plan_id=${planId}`, payload);
+  };
+
   getPlanTodoList = async (
     planId: number,
     targetTaskId: number,
@@ -190,6 +199,10 @@ class PlanTreeApi extends BaseApi {
     } = {}
   ): Promise<Record<string, any>> => {
     return this.post<Record<string, any>>(`/plans/${planId}/execute-full`, payload);
+  };
+
+  getActiveJob = async (planId: number): Promise<{ job_id: string | null; status: string | null; plan_id: number }> => {
+    return this.get<{ job_id: string | null; status: string | null; plan_id: number }>(`/plans/${planId}/active-job`);
   };
 }
 

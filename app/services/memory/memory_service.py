@@ -18,7 +18,6 @@ from ...database import get_db
 from ...llm import get_default_client
 from ...models_memory import (
     ImportanceLevel,
-    MemoryEvolutionResult,
     MemoryItem,
     MemoryNote,
     MemoryStats,

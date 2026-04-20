@@ -36,11 +36,11 @@ class ToolContext:
     task_id: Optional[int] = None
     task_name: Optional[str] = None
     job_id: Optional[str] = None
+    owner_id: Optional[str] = None
 
     # --- environment ---
     work_dir: str = ""
     data_dir: str = ""
-    capability_floor: str = "tools"
 
     # --- orchestration state ---
     tool_history: List[Dict[str, Any]] = field(default_factory=list)
