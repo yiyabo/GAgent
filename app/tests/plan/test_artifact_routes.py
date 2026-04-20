@@ -78,6 +78,101 @@ def test_resolve_session_dir_prefers_runtime_for_raw_when_both_have_tool_outputs
     assert resolved == runtime_session.resolve()
 
 
+def test_resolve_session_dir_prefers_runtime_raw_files_over_info_tool_outputs(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    info_root = tmp_path / "information_sessions"
+    runtime_session = runtime_root / "session_abc123"
+    info_session = info_root / "session-session_abc123"
+
+    (runtime_session / "raw_files" / "task_1").mkdir(parents=True, exist_ok=True)
+    (info_session / "tool_outputs").mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(artifact_routes, "RUNTIME_DIR", runtime_root)
+    monkeypatch.setattr(artifact_routes, "INFO_SESSIONS_DIR", info_root)
+
+    resolved = artifact_routes._resolve_session_dir("session_abc123", purpose="raw")
+    assert resolved == runtime_session.resolve()
+
+
+def test_list_session_artifacts_scopes_to_requested_raw_subtree(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    session_dir = runtime_root / "session_abc123"
+    target_dir = session_dir / "raw_files" / "task_1" / "task_8" / "task_34"
+    other_dir = session_dir / "tool_outputs" / "job_1"
+
+    target_dir.mkdir(parents=True, exist_ok=True)
+    other_dir.mkdir(parents=True, exist_ok=True)
+    (target_dir / "result.md").write_text("done\n", encoding="utf-8")
+    (target_dir / "evidence.json").write_text("{}\n", encoding="utf-8")
+    (other_dir / "preview.json").write_text("{}\n", encoding="utf-8")
+
+    monkeypatch.setattr(artifact_routes, "RUNTIME_DIR", runtime_root)
+    monkeypatch.setattr(artifact_routes, "INFO_SESSIONS_DIR", tmp_path / "information_sessions")
+    monkeypatch.setattr(artifact_routes, "_ensure_session_access", _allow_access)
+    monkeypatch.setattr(artifact_routes, "_load_hidden_artifact_prefixes", lambda _sid: [])
+
+    response = asyncio.run(
+        artifact_routes.list_session_artifacts(
+            "session_abc123",
+            None,
+            max_depth=3,
+            include_dirs=False,
+            limit=50,
+            extensions=None,
+            path_prefix="raw_files/task_1/task_8/task_34",
+        )
+    )
+
+    assert response.root_path == str(target_dir.resolve())
+    assert sorted(item.path for item in response.items) == [
+        "raw_files/task_1/task_8/task_34/evidence.json",
+        "raw_files/task_1/task_8/task_34/result.md",
+    ]
+
+
+def test_list_session_artifacts_scoped_raw_subtree_ignores_session_relative_hidden_prefixes(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runtime_root = tmp_path / "runtime"
+    session_dir = runtime_root / "session_abc123"
+    target_dir = session_dir / "raw_files" / "task_1" / "task_8" / "task_34"
+
+    target_dir.mkdir(parents=True, exist_ok=True)
+    (target_dir / "combined_partial.md").write_text("draft\n", encoding="utf-8")
+
+    monkeypatch.setattr(artifact_routes, "RUNTIME_DIR", runtime_root)
+    monkeypatch.setattr(artifact_routes, "INFO_SESSIONS_DIR", tmp_path / "information_sessions")
+    monkeypatch.setattr(artifact_routes, "_ensure_session_access", _allow_access)
+    monkeypatch.setattr(
+        artifact_routes,
+        "_load_hidden_artifact_prefixes",
+        lambda _sid: ["raw_files/task_1/task_8/task_34/combined_partial.md"],
+    )
+
+    response = asyncio.run(
+        artifact_routes.list_session_artifacts(
+            "session_abc123",
+            None,
+            max_depth=3,
+            include_dirs=False,
+            limit=50,
+            extensions=None,
+            path_prefix="raw_files/task_1/task_8/task_34",
+        )
+    )
+
+    assert [item.path for item in response.items] == [
+        "raw_files/task_1/task_8/task_34/combined_partial.md"
+    ]
+
+
 def test_workspace_file_route_rejects_non_image_files(
     tmp_path: Path,
     monkeypatch,

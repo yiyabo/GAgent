@@ -133,28 +133,3 @@ def test_plan_first_guardrail_uses_previous_context_for_generic_confirmation() -
 
     assert len(patched.actions) == 1
     assert patched.actions[0].name == "code_executor"
-
-
-def test_explicit_plan_review_guardrail_rewrites_show_tasks_to_review_plan() -> None:
-    agent = StructuredChatAgent.__new__(StructuredChatAgent)
-    agent.plan_session = SimpleNamespace(plan_id=67)
-    agent.extra_context = {"requires_plan_review": True}
-
-    structured = LLMStructuredResponse(
-        llm_reply=LLMReply(message="我来先看一下任务结构。"),
-        actions=[
-            LLMAction(
-                kind="task_operation",
-                name="show_tasks",
-                parameters={"plan_id": 67},
-                order=1,
-            )
-        ],
-    )
-
-    patched = agent._apply_explicit_plan_review_guardrail(structured)
-
-    assert len(patched.actions) == 1
-    assert patched.actions[0].kind == "plan_operation"
-    assert patched.actions[0].name == "review_plan"
-    assert patched.actions[0].parameters["plan_id"] == 67

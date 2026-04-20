@@ -8,6 +8,7 @@ Uses the official 'claude' command-line tool.
 import logging
 import subprocess
 import json
+import fnmatch as _fnmatch
 import hashlib
 import os
 import re
@@ -27,6 +28,7 @@ from app.services.plans.acceptance_criteria import (
 )
 from app.services.plans.decomposition_jobs import get_current_job, log_job_event
 from app.services.session_paths import get_runtime_root, get_runtime_session_dir
+from app.services.path_router import get_path_router
 from app.config.executor_config import (
     DEFAULT_CODE_EXECUTION_DOCKER_IMAGE,
     DEFAULT_CODE_EXECUTION_LOCAL_RUNTIME,
@@ -1429,15 +1431,167 @@ def _prune_stale_session_root_results(
     return removed
 
 
+# Patterns to exclude from unified output promotion (debug/log artifacts)
+_UNIFIED_PROMOTE_EXCLUDE_PATTERNS = {"*_code_executor.log", "*_debug.*", "*_claude_debug.*", "*.pyc"}
+
+
+def _has_hidden_path_component(path: Path, *, relative_to: Path) -> bool:
+    try:
+        parts = path.relative_to(relative_to).parts
+    except ValueError:
+        parts = path.parts
+    return any(part.startswith(".") for part in parts)
+
+
+def _collect_non_semantic_run_files(
+    *,
+    run_dir: Path,
+    semantic_roots: Sequence[Path],
+) -> List[Path]:
+    if not run_dir.exists() or not run_dir.is_dir():
+        return []
+
+    collected: List[Path] = []
+    for path in sorted(run_dir.rglob("*")):
+        if not path.is_file():
+            continue
+        if any(_is_path_within(path, root) for root in semantic_roots):
+            continue
+        if _has_hidden_path_component(path, relative_to=run_dir):
+            continue
+        collected.append(path)
+    return collected
+
+
+def _should_skip_unified_promoted_file(path: Path, *, root: Path) -> bool:
+    if _has_hidden_path_component(path, relative_to=root):
+        return True
+    name = path.name
+    for pattern in _UNIFIED_PROMOTE_EXCLUDE_PATTERNS:
+        if _fnmatch.fnmatch(name, pattern):
+            return True
+    return False
+
+
+def _iter_promotable_run_files(
+    *,
+    scratch_dir: Path,
+    subdirs: Sequence[str],
+) -> List[tuple[Path, Path]]:
+    """Collect deliverable files from a run and map them to promoted paths."""
+    results: List[tuple[Path, Path]] = []
+    seen_sources: set[str] = set()
+
+    results_dir = (scratch_dir / "results").resolve()
+    source_dirs = [results_dir] if results_dir.is_dir() else []
+
+    for subdir_name in subdirs:
+        if subdir_name == "results":
+            continue
+        candidate = (scratch_dir / subdir_name).resolve()
+        if candidate.is_dir():
+            source_dirs.append(candidate)
+
+    for source_dir in source_dirs:
+        for path in sorted(source_dir.rglob("*")):
+            if not path.is_file() or _should_skip_unified_promoted_file(path, root=scratch_dir):
+                continue
+            source_key = str(path.resolve())
+            if source_key in seen_sources:
+                continue
+            try:
+                rel = path.relative_to(source_dir)
+            except ValueError:
+                continue
+
+            try:
+                subdir_rel = source_dir.relative_to(scratch_dir)
+                dest_subdir = str(subdir_rel)
+            except ValueError:
+                dest_subdir = ""
+
+            if dest_subdir == "results":
+                dest_rel = rel
+            else:
+                dest_rel = Path(dest_subdir) / rel if dest_subdir else rel
+            seen_sources.add(source_key)
+            results.append((path, dest_rel))
+
+    for path in _collect_non_semantic_run_files(run_dir=scratch_dir, semantic_roots=source_dirs):
+        if _should_skip_unified_promoted_file(path, root=scratch_dir):
+            continue
+        source_key = str(path.resolve())
+        if source_key in seen_sources:
+            continue
+        try:
+            rel = path.relative_to(scratch_dir)
+        except ValueError:
+            continue
+        seen_sources.add(source_key)
+        results.append((path, rel))
+
+    return results
+
+
+def _promote_results_to_unified_dir(
+    *,
+    scratch_dir: Path,
+    output_dir: Path,
+    subdirs: Sequence[str],
+    session_dir: Path,
+    max_files: int = 500,
+) -> List[str]:
+    """Promote final result files from scratch workspace to unified output dir.
+
+    Copies files from ``results/``, ``code/``, ``data/``, ``docs/`` subdirs
+    in the scratch workspace to the unified output directory, excluding
+    debug/log files.
+
+    Returns:
+        List of promoted file paths relative to the session root directory.
+    """
+    promoted: List[str] = []
+    count = 0
+
+    for path, rel in _iter_promotable_run_files(scratch_dir=scratch_dir, subdirs=subdirs):
+        if count >= max_files:
+            logger.warning(
+                "Unified promotion stopped after %s files (cap=%s)", count, max_files
+            )
+            break
+        dest = output_dir / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            shutil.copy2(path, dest)
+        except OSError as exc:
+            logger.warning("Failed to promote %s -> %s: %s", path, dest, exc)
+            continue
+        try:
+            rel_to_session = str(dest.relative_to(session_dir)).replace("\\", "/")
+        except ValueError:
+            rel_to_session = str(dest).replace("\\", "/")
+        promoted.append(rel_to_session)
+        count += 1
+
+    if promoted:
+        logger.info(
+            "Promoted %s file(s) to unified output dir %s",
+            len(promoted),
+            output_dir,
+        )
+    return promoted
+
+
 def _promote_task_results_to_session_root(
     *,
     session_dir: Path,
     task_work_dir: Path,
+    subdirs: Optional[Sequence[str]] = None,
     max_files: int = _MAX_SESSION_PROMOTE_FILES,
 ) -> List[str]:
     """
-    Copy everything under ``<run>/results/`` into a task/run-scoped namespace
-    under ``<session>/results/``.
+    Copy deliverable run outputs into a task/run-scoped namespace under
+    ``<session>/results/``.
 
     Claude Code cwd is an isolated ``run_<id>/`` tree; without this step outputs
     only exist under nested paths. We keep that nesting in the promoted session
@@ -1446,8 +1600,12 @@ def _promote_task_results_to_session_root(
     """
     session_resolved = session_dir.resolve()
     task_resolved = task_work_dir.resolve()
-    src_results = (task_resolved / "results").resolve()
-    if not src_results.is_dir() or not _is_path_within(src_results, task_resolved):
+    effective_subdirs = tuple(subdirs) if subdirs else _DEFAULT_TASK_SUBDIRECTORIES
+    promotable_files = _iter_promotable_run_files(
+        scratch_dir=task_resolved,
+        subdirs=effective_subdirs,
+    )
+    if not promotable_files:
         return []
 
     try:
@@ -1462,9 +1620,7 @@ def _promote_task_results_to_session_root(
     dst_root.mkdir(parents=True, exist_ok=True)
     promoted: List[str] = []
     count = 0
-    for path in sorted(src_results.rglob("*")):
-        if not path.is_file():
-            continue
+    for path, rel in promotable_files:
         if count >= max_files:
             logger.warning(
                 "Session results promotion stopped after %s files (cap=%s)",
@@ -1483,10 +1639,6 @@ def _promote_task_results_to_session_root(
                 size,
             )
             continue
-        try:
-            rel = path.relative_to(src_results)
-        except ValueError:
-            continue
         dest = (dst_root / rel).resolve()
         if not _is_path_within(dest, dst_root):
             logger.warning("Skipping promotion path outside results/: %s", rel)
@@ -1502,7 +1654,7 @@ def _promote_task_results_to_session_root(
 
     if promoted:
         logger.info(
-            "Promoted %s file(s) from %s/results/ to session results/%s for artifact URLs",
+            "Promoted %s file(s) from %s/ to session results/%s for artifact URLs",
             len(promoted),
             task_resolved.name,
             str(task_scope_rel).replace("\\", "/"),
@@ -1518,10 +1670,12 @@ def _collect_run_artifacts(
 ) -> List[str]:
     collected: List[str] = []
     seen = set()
+    semantic_roots: List[Path] = []
     for name in subdirs:
         root = (run_dir / str(name)).resolve()
         if not root.exists() or not root.is_dir():
             continue
+        semantic_roots.append(root)
         for path in sorted(root.rglob("*")):
             if not path.is_file():
                 continue
@@ -1532,6 +1686,14 @@ def _collect_run_artifacts(
             collected.append(resolved)
             if len(collected) >= max_files:
                 return collected
+    for path in _collect_non_semantic_run_files(run_dir=run_dir, semantic_roots=semantic_roots):
+        resolved = str(path.resolve())
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        collected.append(resolved)
+        if len(collected) >= max_files:
+            return collected
     return collected
 
 
@@ -2158,6 +2320,7 @@ async def code_executor_handler(
     session_id: Optional[str] = None,
     plan_id: Optional[int] = None,
     task_id: Optional[int] = None,
+    ancestor_chain: Optional[List[int]] = None,
     model: Optional[str] = None,
     setting_sources: Optional[str] = None,
     auth_mode: Optional[str] = None,
@@ -2246,6 +2409,22 @@ async def code_executor_handler(
 
         # Keep a stable per-task root and isolate each execution by run_<timestamp>.
         run_id = datetime.utcnow().strftime("%Y%m%d_%H%M%S_%f") + f"_{uuid4().hex[:8]}"
+
+        effective_session_id = session_id or "adhoc"
+
+        # --- Unified output path: determine final output directory via PathRouter ---
+        path_router = get_path_router()
+        unified_output_dir: Optional[Path] = None
+        if resolved_task_id is not None:
+            unified_output_dir = path_router.get_task_output_dir(
+                effective_session_id, resolved_task_id, ancestor_chain, create=True
+            )
+        else:
+            unified_output_dir = path_router.get_tmp_output_dir(
+                effective_session_id, run_id=run_id, create=True
+            )
+
+        # Legacy task_dir_base for scratch workspace naming (execution happens here)
         task_dir_base = None
         if resolved_task_id is not None:
             task_dir_base = f"task{resolved_task_id}"
@@ -2263,7 +2442,9 @@ async def code_executor_handler(
             task_text=task,
         )
 
-        task_root_dir = session_dir / task_dir_base
+        # Scratch workspace: execution happens here, results promoted to unified_output_dir
+        scratch_root = session_dir / "_scratch"
+        task_root_dir = scratch_root / task_dir_base
         task_root_dir.mkdir(parents=True, exist_ok=True)
 
         run_dir_name = f"run_{run_id}"
@@ -2277,6 +2458,8 @@ async def code_executor_handler(
         file_prefix = run_dir_name
 
         logger.info(f"Using task workspace: {task_work_dir}")
+        if unified_output_dir:
+            logger.info(f"Unified output directory: {unified_output_dir}")
 
         debug_log_path: Optional[Path] = None
 
@@ -2403,9 +2586,22 @@ async def code_executor_handler(
                 run_dir=task_work_dir,
                 produced_files=produced_files,
             )
+
+            # --- Promote results to unified output directory ---
+            unified_promoted_files: List[str] = []
+            if unified_output_dir:
+                unified_promoted_files = _promote_results_to_unified_dir(
+                    scratch_dir=task_work_dir,
+                    output_dir=unified_output_dir,
+                    subdirs=task_subdirs,
+                    session_dir=session_dir,
+                )
+
+            # Legacy promotion (backward compat)
             session_artifact_paths = _promote_task_results_to_session_root(
                 session_dir=session_dir,
                 task_work_dir=task_work_dir,
+                subdirs=task_subdirs,
             )
             verification_artifact_paths = _build_verification_artifact_paths(
                 task_work_dir=task_work_dir,
@@ -2454,6 +2650,15 @@ async def code_executor_handler(
                 "produced_files_count": len(produced_files),
                 "artifact_paths": verification_artifact_paths,
                 "session_artifact_paths": session_artifact_paths,
+                # Unified output path (new)
+                "output_location": {
+                    "type": "task" if resolved_task_id is not None else "tmp",
+                    "session_id": effective_session_id,
+                    "task_id": resolved_task_id,
+                    "ancestor_chain": ancestor_chain,
+                    "base_dir": str(unified_output_dir) if unified_output_dir else None,
+                    "files": unified_promoted_files,
+                },
             }
             if "docker_image_effective" in local_result:
                 result_payload["docker_image_effective"] = local_result.get("docker_image_effective")
@@ -2910,9 +3115,21 @@ async def code_executor_handler(
                 success = False
 
             produced_files = _collect_run_artifacts(run_dir=task_work_dir, subdirs=task_subdirs)
+
+            # --- Promote results to unified output directory ---
+            unified_promoted_files_qwen: List[str] = []
+            if unified_output_dir:
+                unified_promoted_files_qwen = _promote_results_to_unified_dir(
+                    scratch_dir=task_work_dir,
+                    output_dir=unified_output_dir,
+                    subdirs=task_subdirs,
+                    session_dir=session_dir,
+                )
+
             session_artifact_paths = _promote_task_results_to_session_root(
                 session_dir=session_dir,
                 task_work_dir=task_work_dir,
+                subdirs=task_subdirs,
             )
             verification_artifact_paths = _build_verification_artifact_paths(
                 task_work_dir=task_work_dir,
@@ -2980,9 +3197,18 @@ async def code_executor_handler(
                         if blocked_detail:
                             success = False
                         produced_files = _collect_run_artifacts(run_dir=task_work_dir, subdirs=task_subdirs)
+                        # Re-promote to unified output dir after repair
+                        if unified_output_dir:
+                            unified_promoted_files_qwen = _promote_results_to_unified_dir(
+                                scratch_dir=task_work_dir,
+                                output_dir=unified_output_dir,
+                                subdirs=task_subdirs,
+                                session_dir=session_dir,
+                            )
                         session_artifact_paths = _promote_task_results_to_session_root(
                             session_dir=session_dir,
                             task_work_dir=task_work_dir,
+                            subdirs=task_subdirs,
                         )
                         verification_artifact_paths = _build_verification_artifact_paths(
                             task_work_dir=task_work_dir,
@@ -3079,6 +3305,15 @@ async def code_executor_handler(
             "produced_files_count": len(produced_files),
             "artifact_paths": verification_artifact_paths,
             "session_artifact_paths": session_artifact_paths,
+            # Unified output path (new)
+            "output_location": {
+                "type": "task" if resolved_task_id is not None else "tmp",
+                "session_id": effective_session_id,
+                "task_id": resolved_task_id,
+                "ancestor_chain": ancestor_chain,
+                "base_dir": str(unified_output_dir) if unified_output_dir else None,
+                "files": unified_promoted_files_qwen,
+            },
             "execution_status": execution_status,
                 "verification_status": verification_status,
                 "failure_kind": failure_kind,

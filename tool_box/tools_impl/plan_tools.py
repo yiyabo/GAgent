@@ -17,6 +17,7 @@ from app.services.plans.plan_generation import (
     create_plan_and_generate,
     ensure_plan_generation_ready,
 )
+from app.services.plans.artifact_preflight import ArtifactPreflightService
 from app.services.plans.plan_optimizer import (
     auto_optimize_plan,
     capture_plan_optimization_outcome,
@@ -24,6 +25,7 @@ from app.services.plans.plan_optimizer import (
 )
 
 logger = logging.getLogger(__name__)
+_artifact_preflight_service = ArtifactPreflightService()
 
 
 def _build_session_context_from_tool_context(tool_context: Optional[Any]) -> Optional[Dict[str, Any]]:
@@ -81,6 +83,29 @@ def _supports_generation_readiness(repo: Any) -> bool:
     except (TypeError, ValueError):
         return False
     return "metadata" in create_task_sig.parameters
+
+
+def _preflight_failure_payload(
+    *,
+    operation: str,
+    plan_id: int,
+    decomposition_status: Optional[str],
+    result: Any,
+) -> Dict[str, Any]:
+    return {
+        "success": False,
+        "operation": operation,
+        "plan_id": plan_id,
+        "decomposition_status": decomposition_status,
+        "status": "artifact_preflight_failed",
+        "error": result.summary(),
+        "message": result.summary(),
+        "preflight": result.model_dump(),
+    }
+
+
+def _should_run_artifact_preflight(plan_tree: Any) -> bool:
+    return isinstance(getattr(plan_tree, "nodes", None), dict)
 
 
 async def plan_operation_handler(
@@ -145,10 +170,19 @@ async def plan_operation_handler(
                 target_task_id=kwargs.get("target_task_id"),
                 expand_composites=kwargs.get("expand_composites", True),
             )
+        elif operation == "execute_all":
+            return await _execute_all(plan_id, tool_context=tool_context)
+        elif operation == "update_task":
+            return await _update_task(
+                plan_id,
+                task_id=kwargs.get("target_task_id"),
+                new_status=kwargs.get("new_status"),
+                note=kwargs.get("note"),
+            )
         else:
             return {
                 "success": False,
-                "error": f"Unknown operation: {operation}. Supported: create, review, optimize, get, todo_list",
+                "error": f"Unknown operation: {operation}. Supported: create, review, optimize, get, todo_list, execute_all, update_task",
             }
     except Exception as e:
         logger.exception(f"Plan operation '{operation}' failed: {e}")
@@ -281,6 +315,8 @@ async def _review_plan(plan_id: Optional[int], tool_context: Optional[Any] = Non
                 decomposition_status="unavailable",
             )
         plan_tree = readiness.plan_tree
+        # NOTE: review skips artifact preflight — reviewing a plan with
+        # broken artifact contracts is fine; the review should report issues.
         
         issues: List[Dict[str, Any]] = []
         suggestions: List[str] = []
@@ -393,6 +429,12 @@ async def _review_plan(plan_id: Optional[int], tool_context: Optional[Any] = Non
                 "deepthink" if created_by == "deepthink_agent" else "standard"
             )
         merged_meta["plan_evaluation"] = rubric_result.to_dict()
+        # Sync plan_optimization.overall_score_after with latest review score
+        # so the frontend displays consistent numbers.
+        existing_optimization = merged_meta.get("plan_optimization")
+        if isinstance(existing_optimization, dict):
+            existing_optimization["overall_score_after"] = rubric_result.overall_score
+            merged_meta["plan_optimization"] = existing_optimization
         try:
             repo.update_plan_metadata(plan_id, merged_meta)
         except Exception as meta_exc:  # noqa: BLE001 - best effort persistence
@@ -629,6 +671,8 @@ async def _optimize_plan(
 
         # Verify plan exists
         plan_tree = readiness.plan_tree
+        # NOTE: optimize skips artifact preflight — the whole point of
+        # optimize is to fix issues including broken artifact contracts.
 
         if not changes or not isinstance(changes, list):
             outcome = await auto_optimize_plan(
@@ -1064,13 +1108,357 @@ async def _get_todo_list(
         return {"success": False, "error": f"Failed to build todo-list: {str(e)}"}
 
 
+async def _update_task(
+    plan_id: Optional[int],
+    task_id: Optional[int] = None,
+    new_status: Optional[str] = None,
+    note: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Update a task's status and/or add a note.
+
+    Intended for user-directed corrections — e.g., marking a failed task as
+    completed after manual review confirms the outputs are acceptable.
+    """
+    if plan_id is None:
+        return {"success": False, "error": "plan_id is required for update_task"}
+    if task_id is None:
+        return {"success": False, "error": "target_task_id is required for update_task"}
+
+    valid_statuses = {"completed", "failed", "pending", "skipped"}
+    if new_status and new_status not in valid_statuses:
+        return {
+            "success": False,
+            "error": f"Invalid status '{new_status}'. Must be one of: {sorted(valid_statuses)}",
+        }
+
+    try:
+        from app.repository.plan_repository import PlanRepository
+        from app.services.plans.task_verification import TaskVerificationService
+        import json
+
+        repo = PlanRepository()
+        tree = repo.get_plan_tree(plan_id)
+
+        if task_id not in tree.nodes:
+            return {"success": False, "error": f"Task {task_id} not found in plan {plan_id}"}
+
+        node = tree.nodes[task_id]
+        old_status = node.status or "pending"
+        updates: Dict[str, Any] = {}
+        changes_made: list = []
+        verifier = TaskVerificationService()
+
+        if new_status == "completed":
+            if not node.execution_result:
+                return {
+                    "success": False,
+                    "error": (
+                        "Cannot mark task completed without an execution result to review. "
+                        "Run the task first or only manually accept failed/skipped/errored results."
+                    ),
+                }
+
+            acceptance_reason = str(note or "").strip() or "Manually accepted after review."
+            finalization = verifier.accept_task_result(
+                repo,
+                plan_id=plan_id,
+                task_id=task_id,
+                reason=acceptance_reason,
+                accepted_by="plan_operation.update_task",
+                trigger="plan_operation.update_task",
+            )
+
+            reset_count = verifier.reset_downstream_skipped_tasks(
+                repo,
+                plan_id=plan_id,
+                task_id=task_id,
+            )
+
+            changes_made.append(f"status: {old_status} → completed")
+            changes_made.append("manual acceptance recorded")
+            if reset_count:
+                changes_made.append(f"reset {reset_count} downstream skipped task(s) to pending")
+
+            return {
+                "success": True,
+                "operation": "update_task",
+                "plan_id": plan_id,
+                "task_id": task_id,
+                "task_name": node.display_name(),
+                "changes": changes_made,
+                "manual_acceptance": finalization.payload.get("metadata", {}).get("manual_acceptance"),
+                "message": f"Task {task_id} updated: {', '.join(changes_made)}",
+            }
+
+        # Update status
+        if new_status and new_status != old_status:
+            updates["status"] = new_status
+            changes_made.append(f"status: {old_status} → {new_status}")
+
+            # Also update the execution_result payload status if it exists
+            if node.execution_result:
+                try:
+                    er = json.loads(node.execution_result) if isinstance(node.execution_result, str) else node.execution_result
+                    if isinstance(er, dict):
+                        er["status"] = new_status
+                        metadata = er.get("metadata", {})
+                        if not isinstance(metadata, dict):
+                            metadata = {}
+                        if note:
+                            metadata["user_override_note"] = note
+                        metadata["user_status_override"] = True
+                        metadata["original_status"] = old_status
+                        er["metadata"] = metadata
+                        updates["execution_result"] = json.dumps(er, ensure_ascii=False)
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+        # Add note to execution_result metadata
+        if note and "execution_result" not in updates:
+            if node.execution_result:
+                try:
+                    er = json.loads(node.execution_result) if isinstance(node.execution_result, str) else node.execution_result
+                    if isinstance(er, dict):
+                        metadata = er.get("metadata", {})
+                        if not isinstance(metadata, dict):
+                            metadata = {}
+                        metadata["user_override_note"] = note
+                        er["metadata"] = metadata
+                        updates["execution_result"] = json.dumps(er, ensure_ascii=False)
+                        changes_made.append("note added")
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+        if not updates:
+            return {
+                "success": True,
+                "operation": "update_task",
+                "plan_id": plan_id,
+                "task_id": task_id,
+                "message": "No changes needed.",
+            }
+
+        repo.update_task(plan_id, task_id, **updates)
+
+        return {
+            "success": True,
+            "operation": "update_task",
+            "plan_id": plan_id,
+            "task_id": task_id,
+            "task_name": node.display_name(),
+            "changes": changes_made,
+            "message": f"Task {task_id} updated: {', '.join(changes_made)}",
+        }
+
+    except Exception as e:
+        logger.exception(f"Failed to update task: {e}")
+        return {"success": False, "error": f"Failed to update task: {str(e)}"}
+
+
+async def _execute_all(
+    plan_id: Optional[int],
+    tool_context: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """Execute all pending tasks in the plan via the execute-full background job.
+
+    Creates a plan_execute job, launches a background thread that runs
+    _run_full_plan_job, and returns the job_id so the frontend can
+    subscribe to SSE progress via JobLogPanel.
+    """
+    if plan_id is None:
+        if tool_context is not None:
+            plan_id = getattr(tool_context, "plan_id", None)
+        if plan_id is None:
+            return {"success": False, "error": "plan_id is required for execute_all"}
+
+    try:
+        from app.repository.plan_repository import PlanRepository
+        from app.services.plans.todo_list import build_full_plan_todo_list
+        from app.services.plans.decomposition_jobs import plan_decomposition_jobs
+        from app.routers.plan_routes import (
+            _resolve_effective_task_states,
+            _todo_list_to_dict,
+            _run_full_plan_job,
+            _acquire_plan_execution_lock,
+            _release_plan_execution_lock,
+        )
+        import threading
+
+        repo = PlanRepository()
+        tree = repo.get_plan_tree(plan_id)
+
+        # Build todo list and get pending task order
+        # --- Artifact dependency enrichment ---
+        try:
+            from app.services.plans.dependency_enrichment import enrich_plan_dependencies, validate_plan_dag
+            _enrichment = enrich_plan_dependencies(tree)
+            if _enrichment.added_edges:
+                _persist_failures: List[int] = []
+                for _enode in tree.iter_nodes():
+                    try:
+                        repo.update_task(plan_id, _enode.id, dependencies=list(_enode.dependencies))
+                    except Exception as _persist_exc:
+                        _persist_failures.append(_enode.id)
+                        logger.warning(
+                            "Failed to persist dependencies for task %s in plan %s: %s",
+                            _enode.id, plan_id, _persist_exc,
+                        )
+                if _persist_failures:
+                    logger.warning(
+                        "Plan %s: %d/%d task dependency writes failed (task IDs: %s). "
+                        "In-memory tree may diverge from DB.",
+                        plan_id, len(_persist_failures), len(list(tree.iter_nodes())),
+                        _persist_failures[:10],
+                    )
+                else:
+                    logger.info("Enriched plan %s with %d implicit edges in execute_all.", plan_id, len(_enrichment.added_edges))
+            _dag_val = validate_plan_dag(tree)
+            if _dag_val.has_errors():
+                return {"success": False, "error": _dag_val.summary(), "operation": "execute_all", "plan_id": plan_id}
+        except Exception as _enrich_exc:
+            logger.warning("Dependency enrichment failed in execute_all: %s", _enrich_exc)
+
+        todo = build_full_plan_todo_list(tree, expand_composites=True)
+        state_by_task = _resolve_effective_task_states(plan_id, tree)
+        todo_dict = _todo_list_to_dict(todo, plan_id, state_by_task=state_by_task, tree=tree)
+        task_order = list(todo_dict.get("pending_order") or [])
+
+        if _should_run_artifact_preflight(tree):
+            preflight = _artifact_preflight_service.validate_plan(plan_id, tree)
+            if preflight.has_errors():
+                return _preflight_failure_payload(
+                    operation="execute_all",
+                    plan_id=plan_id,
+                    decomposition_status=None,
+                    result=preflight,
+                )
+
+        if not task_order:
+            return {
+                "success": True,
+                "operation": "execute_all",
+                "plan_id": plan_id,
+                "message": "No pending tasks to execute. All tasks may already be completed.",
+            }
+
+        # Acquire execution lock
+        execution_lock = _acquire_plan_execution_lock(plan_id, 0)
+        if execution_lock is None:
+            return {
+                "success": False,
+                "operation": "execute_all",
+                "plan_id": plan_id,
+                "message": f"Plan {plan_id} is already being executed. Please wait.",
+            }
+
+        # Resolve session context and owner
+        session_id = None
+        owner_id = None
+        if tool_context is not None:
+            session_id = getattr(tool_context, "session_id", None)
+            owner_id = getattr(tool_context, "owner_id", None)
+        if not owner_id and session_id:
+            try:
+                from app.routers.chat.session_helpers import lookup_session_owner
+                owner_id = lookup_session_owner(session_id)
+            except Exception:
+                pass
+
+        initial_completed_steps = int(todo_dict.get("completed_tasks") or 0)
+        overall_total_steps = int(todo_dict.get("total_tasks") or 0)
+
+        # Create background job
+        job = plan_decomposition_jobs.create_job(
+            plan_id=plan_id,
+            task_id=None,
+            mode="full_plan",
+            job_type="plan_execute",
+            owner_id=owner_id,
+            session_id=session_id,
+            params={
+                "include_dependencies": True,
+                "include_subtasks": True,
+                "deep_think": True,
+                "steps": len(task_order),
+                "overall_total_steps": overall_total_steps,
+                "initial_completed_steps": initial_completed_steps,
+                "stop_on_failure": False,
+            },
+            metadata={
+                "session_id": session_id,
+                "plan_id": plan_id,
+                "plan_title": tree.title,
+                "target_task_id": None,
+                "task_order": task_order,
+                "todo_phases": len(todo.phases),
+                "todo_total_tasks": overall_total_steps,
+                "todo_completed_tasks": initial_completed_steps,
+            },
+        )
+
+        # Launch background thread
+        def _locked_run(**kwargs):
+            try:
+                _run_full_plan_job(**kwargs)
+            finally:
+                _release_plan_execution_lock(plan_id, 0, execution_lock)
+
+        thread = threading.Thread(
+            target=_locked_run,
+            kwargs={
+                "job_id": job.job_id,
+                "plan_id": plan_id,
+                "task_order": task_order,
+                "initial_completed_steps": initial_completed_steps,
+                "overall_total_steps": overall_total_steps,
+                "deep_think": True,
+                "session_id": session_id,
+                "paper_mode": False,
+                "stop_on_failure": False,
+            },
+            daemon=True,
+        )
+        thread.start()
+
+        return {
+            "success": True,
+            "operation": "execute_all",
+            "plan_id": plan_id,
+            "job_id": job.job_id,
+            "pending_tasks": len(task_order),
+            "message": (
+                f"Full plan execution started in background ({len(task_order)} pending tasks). "
+                f"Job ID: {job.job_id}. Track progress via /jobs/{job.job_id}/stream."
+            ),
+        }
+    except Exception as e:
+        # Release execution lock if it was acquired but the thread was never started.
+        try:
+            if execution_lock is not None:  # noqa: F821
+                _release_plan_execution_lock(plan_id, 0, execution_lock)  # noqa: F821
+        except (NameError, UnboundLocalError):
+            pass  # Lock was never acquired
+        except Exception:
+            pass  # Best-effort release
+        logger.exception(f"execute_all failed for plan {plan_id}: {e}")
+        return {"success": False, "error": str(e), "operation": "execute_all", "plan_id": plan_id}
+
+
 # Tool definition for registration
 plan_operation_tool = {
     "name": "plan_operation",
-    "description": """Plan creation and optimization tool for DeepThink Agent.
+    "description": """Plan creation, optimization, and execution tool for DeepThink Agent.
 
-Supports creating plans, reviewing them for issues, and optimizing based on feedback.
+Supports creating plans, reviewing them, optimizing, and executing all tasks.
 Use this tool to create well-structured plans with iterative improvement.
+
+CRITICAL — EXECUTE_ALL:
+When the user wants to execute the entire plan, run all tasks, or start the plan execution,
+you MUST use operation="execute_all". Do NOT attempt to execute tasks one by one yourself.
+execute_all launches a background job that handles all tasks automatically in dependency order,
+with progress tracking and error handling. It returns a job_id for real-time monitoring.
+Trigger phrases: "执行全部任务", "执行整个计划", "开始吧", "跑起来", "execute all",
+"run the plan", "let's go", "start executing", "do all tasks", or any similar intent.
 
 WORKFLOW for Plan Creation:
 1. Use 'create' to generate the plan in one synchronous pass
@@ -1091,6 +1479,13 @@ TODO_LIST operation:
 - Shows phase labels (Data Preparation, Preprocessing, Analysis, etc.), completion status, and execution order
 - Use to understand overall progress and what remains before starting execution
 
+UPDATE_TASK operation:
+- Allows user-directed status corrections for individual tasks
+- Use when a task was incorrectly marked as failed but its outputs are acceptable after user review
+- Requires plan_id, target_task_id, and new_status (completed/failed/pending/skipped)
+- Optional note to document why the status was overridden
+- When changing from failed/skipped to completed, automatically resets downstream skipped tasks to pending
+
 Legacy compatibility:
 - Nested `updated_fields` / `updates` / `fields` payloads are accepted and flattened.
 - `task_name` / `task_instruction` aliases are accepted for add_task/update_task.""",
@@ -1101,7 +1496,7 @@ Legacy compatibility:
             "operation": {
                 "type": "string",
                 "description": "Operation type",
-                "enum": ["create", "review", "optimize", "get", "todo_list"],
+                "enum": ["create", "review", "optimize", "get", "todo_list", "execute_all", "update_task"],
             },
             "title": {
                 "type": "string",
@@ -1167,6 +1562,15 @@ Legacy compatibility:
                     "required": ["action"],
                 },
             },
+            "new_status": {
+                "type": "string",
+                "description": "New status for the task (for update_task). Must be one of: completed, failed, pending, skipped",
+                "enum": ["completed", "failed", "pending", "skipped"],
+            },
+            "note": {
+                "type": "string",
+                "description": "User override note explaining why the status was changed (for update_task)",
+            },
         },
         "required": ["operation"],
     },
@@ -1178,5 +1582,6 @@ Legacy compatibility:
         "Optimize plan #123 by adding a data collection task",
         "Get details of plan #123",
         "Get todo-list for task #35 in plan #1 to see phased execution plan",
+        "Update task #14 in plan #75 to completed with note 'User reviewed outputs, acceptable'",
     ],
 }

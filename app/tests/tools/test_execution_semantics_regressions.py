@@ -186,7 +186,10 @@ def test_optimize_plan_step_uses_atomic_repo_apply() -> None:
     agent._require_plan_bound = lambda: tree
     agent.plan_session = SimpleNamespace(
         plan_id=34,
-        repo=SimpleNamespace(apply_changes_atomically=_apply_changes),
+        repo=SimpleNamespace(
+            apply_changes_atomically=_apply_changes,
+            reindex_all_positions=lambda _plan_id: None,
+        ),
     )
     agent._refresh_plan_tree = lambda force_reload=True: refreshed.__setitem__("count", refreshed["count"] + 1)
     agent.session_id = "s1"
@@ -283,7 +286,7 @@ def test_tools_floor_allows_code_executor(
     agent = _build_minimal_agent()
     agent.session_id = None
     agent.extra_context = {
-        "capability_floor": "tools", "intent_type": "local_inspect",
+        "intent_type": "chat",
     }
 
     monkeypatch.setattr(action_handlers_module, "get_tool_policy", lambda: {})
@@ -306,9 +309,11 @@ def test_tools_floor_allows_code_executor(
 def test_local_read_blocks_file_operations_write(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Phase 2: intent_type-based file mutation guard was removed.
+    All tools are always available; the LLM decides what to use."""
     agent = _build_minimal_agent()
     agent.session_id = None
-    agent.extra_context = {"capability_floor": "tools", "intent_type": "local_read"}
+    agent.extra_context = {"intent_type": "chat"}
 
     action = LLMAction(
         kind="tool_operation",
@@ -321,12 +326,12 @@ def test_local_read_blocks_file_operations_write(
         agent, action, "file_operations", {"operation": "write", "path": "/tmp/demo.txt", "content": "x"},
     )
 
-    assert guard_result is not None
-    assert guard_result.success is False
-    assert guard_result.details["error"] == "operation_not_permitted"
+    # Phase 2: guard no longer blocks based on intent_type
+    assert guard_result is None
 
 
 def test_grounded_local_answer_overrides_unverified_success_claim() -> None:
+    """When there's failure evidence, the grounding layer appends a caveat."""
     agent = _build_minimal_agent()
     agent.extra_context = {
         "active_subject": {
@@ -356,14 +361,14 @@ def test_grounded_local_answer_overrides_unverified_success_claim() -> None:
         agent,
         "我已经读取了目录内容，并看到了 result.json 和 preview.json。",
         SimpleNamespace(
-            capability_floor="tools",
-            intent_type="local_inspect",
+            intent_type="chat",
             effective_user_message="都有哪些数据在里面哇",
         ),
     )
 
-    assert "不能确认" in grounded
+    # Grounding appends a caveat when failure evidence contradicts the answer
     assert "Directory not found" in grounded
+    assert "⚠️" in grounded
 
 
 def test_local_tool_path_alias_is_normalized_to_active_subject(
@@ -373,7 +378,7 @@ def test_local_tool_path_alias_is_normalized_to_active_subject(
     agent.session_id = None
     canonical_ref = str((Path.cwd() / "data/demo").resolve())
     agent.extra_context = {
-        "capability_floor": "tools", "intent_type": "local_inspect",
+        "intent_type": "chat",
         "active_subject": {
             "kind": "workspace",
             "canonical_ref": canonical_ref,
@@ -422,7 +427,7 @@ def test_tools_floor_allows_terminal_session(
     """With 2-mode routing, terminal_session is available at 'tools' floor."""
     agent = _build_minimal_agent()
     agent.session_id = None
-    agent.extra_context = {"capability_floor": "tools", "intent_type": "local_inspect"}
+    agent.extra_context = {"intent_type": "chat"}
 
     monkeypatch.setattr(action_handlers_module, "get_tool_policy", lambda: {})
     monkeypatch.setattr(action_handlers_module, "is_tool_allowed", lambda _name, _policy: True)
@@ -442,6 +447,7 @@ def test_tools_floor_allows_terminal_session(
 
 
 def test_grounded_local_mutation_failure_overrides_plain_success_claim() -> None:
+    """When there's mutation failure evidence, the grounding layer appends a caveat."""
     agent = _build_minimal_agent()
     agent.extra_context = {
         "active_subject": {
@@ -471,14 +477,14 @@ def test_grounded_local_mutation_failure_overrides_plain_success_claim() -> None
         agent,
         "我已经完成了解压，文件都放在原目录里了。",
         SimpleNamespace(
-            capability_floor="execute",
-            intent_type="local_mutation",
+            intent_type="execute_task",
             effective_user_message="你帮我直接解压吧，就放在对应的zip包那里即可",
         ),
     )
 
-    assert "本地修改" in grounded
+    # Grounding appends a caveat when failure evidence contradicts the answer
     assert "zip file not found" in grounded
+    assert "⚠️" in grounded
 
 
 def test_bio_tools_is_supported_in_tool_action_handler(

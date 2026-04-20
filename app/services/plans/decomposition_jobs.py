@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import threading
 import time
 import uuid
@@ -28,6 +29,7 @@ if TYPE_CHECKING:  # pragma: no cover
 
 MAX_LOG_ENTRIES = 400
 DEFAULT_TTL_SECONDS = 600
+logger = logging.getLogger(__name__)
 
 _job_context: ContextVar[Optional[str]] = ContextVar(
     "plan_decomposition_job_id", default=None
@@ -679,26 +681,29 @@ class PlanDecompositionJobManager:
             if job_id in self._jobs:
                 raise ValueError(f"Job {job_id} already exists.")
             self._jobs[job_id] = job
-        if plan_id is not None:
-            register_decomposition_job_index(
-                job_id,
+        try:
+            if plan_id is not None:
+                register_decomposition_job_index(
+                    job_id,
+                    plan_id,
+                    job_type=job_type,
+                    owner_id=job.owner_id,
+                    session_id=job.session_id,
+                )
+            record_decomposition_job(
                 plan_id,
+                job_id=job_id,
                 job_type=job_type,
+                mode=mode,
+                target_task_id=task_id,
                 owner_id=job.owner_id,
                 session_id=job.session_id,
+                status=job.status,
+                params=params or {},
+                metadata=sanitized_metadata,
             )
-        record_decomposition_job(
-            plan_id,
-            job_id=job_id,
-            job_type=job_type,
-            mode=mode,
-            target_task_id=task_id,
-            owner_id=job.owner_id,
-            session_id=job.session_id,
-            status=job.status,
-            params=params or {},
-            metadata=sanitized_metadata,
-        )
+        except Exception as exc:
+            logger.warning("Failed to persist decomposition job %s: %s", job_id, exc)
         start_owner_lease("job", job_id)
         return job
 
@@ -766,12 +771,15 @@ class PlanDecompositionJobManager:
             job.started_at = _utc_now()
             job.last_activity_at = job.started_at
             subscribers = list(job.subscribers)
-        update_decomposition_job_status(
-            job.plan_id,
-            job_id=job_id,
-            status="running",
-            started_at=job.started_at,
-        )
+        try:
+            update_decomposition_job_status(
+                job.plan_id,
+                job_id=job_id,
+                status="running",
+                started_at=job.started_at,
+            )
+        except Exception as exc:
+            logger.warning("Failed to persist running status for job %s: %s", job_id, exc)
         payload = {
             "job_id": job_id,
             "job_type": job.job_type,
@@ -804,14 +812,17 @@ class PlanDecompositionJobManager:
             subscribers = list(job.subscribers)
         result_payload = _coerce_result_payload(job.result)
         stats_payload = _coerce_stats_payload(job.stats)
-        update_decomposition_job_status(
-            job.plan_id,
-            job_id=job_id,
-            status="succeeded",
-            finished_at=job.finished_at,
-            stats=stats_payload,
-            result=result_payload,
-        )
+        try:
+            update_decomposition_job_status(
+                job.plan_id,
+                job_id=job_id,
+                status="succeeded",
+                finished_at=job.finished_at,
+                stats=stats_payload,
+                result=result_payload,
+            )
+        except Exception as exc:
+            logger.warning("Failed to persist success status for job %s: %s", job_id, exc)
         payload = {
             "job_id": job_id,
             "job_type": job.job_type,
@@ -849,15 +860,18 @@ class PlanDecompositionJobManager:
             subscribers = list(job.subscribers)
         stats_payload = _coerce_stats_payload(job.stats)
         result_payload = _coerce_result_payload(job.result)
-        update_decomposition_job_status(
-            job.plan_id,
-            job_id=job_id,
-            status="failed",
-            error=error,
-            finished_at=job.finished_at,
-            stats=stats_payload,
-            result=result_payload,
-        )
+        try:
+            update_decomposition_job_status(
+                job.plan_id,
+                job_id=job_id,
+                status="failed",
+                error=error,
+                finished_at=job.finished_at,
+                stats=stats_payload,
+                result=result_payload,
+            )
+        except Exception as exc:
+            logger.warning("Failed to persist failure status for job %s: %s", job_id, exc)
         payload = {
             "job_id": job_id,
             "job_type": job.job_type,
@@ -895,15 +909,18 @@ class PlanDecompositionJobManager:
                 "stats": dict(job.stats),
                 "metadata": dict(job.metadata),
             }
-            append_decomposition_job_log(
-                job.plan_id,
-                job_id=job_id,
-                timestamp=event.timestamp,
-                level=level,
-                message=message,
-                metadata=metadata,
-            )
-            job.persisted_log_count += 1
+            try:
+                append_decomposition_job_log(
+                    job.plan_id,
+                    job_id=job_id,
+                    timestamp=event.timestamp,
+                    level=level,
+                    message=message,
+                    metadata=metadata,
+                )
+                job.persisted_log_count += 1
+            except Exception as exc:
+                logger.warning("Failed to persist job log for %s: %s", job_id, exc)
         self._notify_subscribers(subscribers, payload)
         _fanout_job_event(job_id, payload)
 
@@ -932,16 +949,19 @@ class PlanDecompositionJobManager:
                 "stats": dict(job.stats),
                 "metadata": dict(job.metadata),
             }
-        update_decomposition_job_status(
-            job.plan_id,
-            job_id=job_id,
-            status=job.status,
-            error=job.error,
-            started_at=job.started_at,
-            finished_at=job.finished_at,
-            stats=_coerce_stats_payload(job.stats),
-            result=_coerce_result_payload(job.result),
-        )
+        try:
+            update_decomposition_job_status(
+                job.plan_id,
+                job_id=job_id,
+                status=job.status,
+                error=job.error,
+                started_at=job.started_at,
+                finished_at=job.finished_at,
+                stats=_coerce_stats_payload(job.stats),
+                result=_coerce_result_payload(job.result),
+            )
+        except Exception as exc:
+            logger.warning("Failed to persist stats for job %s: %s", job_id, exc)
         self._notify_subscribers(subscribers, payload)
         _fanout_job_event(job_id, payload)
 
@@ -1015,46 +1035,49 @@ class PlanDecompositionJobManager:
             if job is None:
                 return
             job.plan_id = plan_id
-            register_decomposition_job_index(
-                job_id,
-                plan_id,
-                job_type=job.job_type,
-                owner_id=job.owner_id,
-                session_id=job.session_id,
-            )
-            record_decomposition_job(
-                plan_id,
-                job_id=job_id,
-                job_type=job.job_type,
-                mode=job.mode,
-                target_task_id=job.task_id,
-                owner_id=job.owner_id,
-                session_id=job.session_id,
-                status=job.status,
-                params=job.params,
-                metadata=job.metadata,
-            )
-            update_decomposition_job_status(
-                plan_id,
-                job_id=job_id,
-                status=job.status,
-                error=job.error,
-                started_at=job.started_at,
-                finished_at=job.finished_at,
-                stats=_coerce_stats_payload(job.stats),
-                result=_coerce_result_payload(job.result),
-            )
-            pending_logs = list(job.logs)[job.persisted_log_count :]
-            for event in pending_logs:
-                append_decomposition_job_log(
+            try:
+                register_decomposition_job_index(
+                    job_id,
+                    plan_id,
+                    job_type=job.job_type,
+                    owner_id=job.owner_id,
+                    session_id=job.session_id,
+                )
+                record_decomposition_job(
                     plan_id,
                     job_id=job_id,
-                    timestamp=event.timestamp,
-                    level=event.level,
-                    message=event.message,
-                    metadata=event.metadata,
+                    job_type=job.job_type,
+                    mode=job.mode,
+                    target_task_id=job.task_id,
+                    owner_id=job.owner_id,
+                    session_id=job.session_id,
+                    status=job.status,
+                    params=job.params,
+                    metadata=job.metadata,
                 )
-                job.persisted_log_count += 1
+                update_decomposition_job_status(
+                    plan_id,
+                    job_id=job_id,
+                    status=job.status,
+                    error=job.error,
+                    started_at=job.started_at,
+                    finished_at=job.finished_at,
+                    stats=_coerce_stats_payload(job.stats),
+                    result=_coerce_result_payload(job.result),
+                )
+                pending_logs = list(job.logs)[job.persisted_log_count :]
+                for event in pending_logs:
+                    append_decomposition_job_log(
+                        plan_id,
+                        job_id=job_id,
+                        timestamp=event.timestamp,
+                        level=event.level,
+                        message=event.message,
+                        metadata=event.metadata,
+                    )
+                    job.persisted_log_count += 1
+            except Exception as exc:
+                logger.warning("Failed to attach persisted plan metadata for job %s: %s", job_id, exc)
 
     # ------------------------------------------------------------------
     # Internal helpers

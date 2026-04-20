@@ -219,6 +219,20 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* Active-step hint line — surfaces the backend's current phase/tool
+   (from deep_think_progress) when the step's own label is generic. */
+.tp-step-hint {
+  margin: 2px 0 4px 34px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-tertiary);
+  opacity: 0.85;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
 /* ================================================================
    LIVE STREAMING — real-time thought display with typewriter cursor
    ================================================================ */

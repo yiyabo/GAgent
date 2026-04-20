@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import {
   Avatar,
   Button,
@@ -7,6 +7,7 @@ import {
   List,
   MenuProps,
   Modal,
+  Spin,
   Tag,
   Typography,
   Tooltip,
@@ -19,7 +20,6 @@ import {
   MoreOutlined,
   EditOutlined,
   DeleteOutlined,
-  ExportOutlined,
   ExclamationCircleOutlined,
   InboxOutlined,
   ReloadOutlined,
@@ -28,41 +28,57 @@ import {
 import { useChatStore } from '@store/chat';
 import { useLayoutStore } from '@store/layout';
 import { ChatSession } from '@/types';
+import { shallow } from 'zustand/shallow';
 
 const { Text } = Typography;
 const { Search } = Input;
 
 const TITLE_SOURCE_HINT: Record<string, string> = {
-  plan: 'plan',
-  'plan_task': 'plantask',
-  heuristic: 'content',
-  llm: 'model',
-  default: 'default, recommendation',
-  local: ', recommendation',
+  plan: '由计划标题生成',
+  'plan_task': '由计划与任务上下文生成',
+  heuristic: '由近期对话内容生成',
+  llm: '由模型自动总结',
+  default: '默认标题，建议重新生成',
+  local: '临时标题，建议重新生成',
   user: '',
 };
 
-import { useSessions, useDeleteSession, useAutoTitleSession, useUpdateSession } from '@/hooks/useSessions';
-import { summaryToChatSession } from '@store/chatUtils';
-
 const ChatSidebar: React.FC = () => {
-  const { data: sessions = [], isLoading: isSessionsLoading } = useSessions();
-  const { mutateAsync: deleteSessionMutation } = useDeleteSession();
-  const { mutateAsync: autotitleMutation } = useAutoTitleSession();
-  const { mutateAsync: updateSessionMutation } = useUpdateSession();
-
   const {
+  sessions,
   currentSession,
   setCurrentSession,
   startNewSession,
+  deleteSession,
   loadChatHistory,
-  } = useChatStore();
+  autotitleSession,
+  renameSession,
+  } = useChatStore(
+  (state) => ({
+  sessions: state.sessions,
+  currentSession: state.currentSession,
+  setCurrentSession: state.setCurrentSession,
+  startNewSession: state.startNewSession,
+  deleteSession: state.deleteSession,
+  loadChatHistory: state.loadChatHistory,
+  autotitleSession: state.autotitleSession,
+  renameSession: state.renameSession,
+  }),
+  shallow
+  );
   const { toggleChatList } = useLayoutStore();
 
   const [searchQuery, setSearchQuery] = useState('');
+  const [renameModalOpen, setRenameModalOpen] = useState(false);
+  const [renameValue, setRenameValue] = useState('');
+  const [renameTarget, setRenameTarget] = useState<ChatSession | null>(null);
+  const [isRenaming, setIsRenaming] = useState(false);
 
+  const isSessionsLoading = !currentSession && sessions.length === 0;
+
+  const filteredSessions = useMemo(() => {
   const normalizedQuery = searchQuery.trim().toLowerCase();
-  const filteredSessions = sessions.filter((session) => {
+  return sessions.filter((session) => {
   if (!normalizedQuery) {
   return true;
   }
@@ -70,19 +86,23 @@ const ChatSidebar: React.FC = () => {
   const planTitle = session.plan_title?.toLowerCase?.() ?? '';
   return title.includes(normalizedQuery) || planTitle.includes(normalizedQuery);
   });
+  }, [searchQuery, sessions]);
 
   const handleNewChat = () => {
-  const newSession = startNewSession();
-  setCurrentSession(newSession);
+  startNewSession();
   };
 
   const handleSelectSession = async (session: ChatSession) => {
+  if (currentSession?.id === session.id && session.messages.length > 0) {
+  return;
+  }
   setCurrentSession(session);
 
-  if (session.messages.length === 0 && session.session_id) {
-  console.log('🔄 [ChatSidebar] loading session:', session.session_id);
+  const sessionId = session.session_id ?? session.id;
+  if (sessionId) {
+  console.log('🔄 [ChatSidebar] loading session:', sessionId);
   try {
-  await loadChatHistory(session.session_id);
+  await loadChatHistory(sessionId);
   } catch (err) {
   console.warn('Failed to load session history:', err);
   }
@@ -91,48 +111,80 @@ const ChatSidebar: React.FC = () => {
 
   const handleArchiveSession = async (session: ChatSession) => {
   try {
-  await deleteSessionMutation({ sessionId: session.id, options: { archive: true } });
-  message.success('Session archived');
+  await deleteSession(session.id, { archive: true });
+  message.success('对话已归档');
   } catch (error) {
   const errMsg = error instanceof Error ? error.message : String(error);
-  message.error(`Archive failed: ${errMsg}`);
-  }
-  };
-
-  const handleRenameSession = async (sessionId: string, newTitle: string) => {
-  try {
-  await updateSessionMutation({ sessionId, payload: { name: newTitle } });
-  message.success('Session renamed');
-  } catch (error) {
-  const errMsg = error instanceof Error ? error.message : String(error);
-  message.error(`Rename failed: ${errMsg}`);
+  message.error(`归档失败: ${errMsg}`);
   }
   };
 
   const performDeleteSession = async (session: ChatSession) => {
   try {
-  await deleteSessionMutation({ sessionId: session.id });
-  message.success('sessiondelete');
+  await deleteSession(session.id);
+  message.success('对话已删除');
   } catch (error) {
   const errMsg = error instanceof Error ? error.message : String(error);
-  message.error(`Delete failed: ${errMsg}`);
+  message.error(`删除失败: ${errMsg}`);
   throw error;
+  }
+  };
+
+  const openRenameModal = (session: ChatSession) => {
+  setRenameTarget(session);
+  setRenameValue(session.title || '');
+  setRenameModalOpen(true);
+  };
+
+  const closeRenameModal = () => {
+  setRenameModalOpen(false);
+  setRenameTarget(null);
+  setRenameValue('');
+  setIsRenaming(false);
+  };
+
+  const handleRenameConfirm = async () => {
+  if (!renameTarget) {
+  return;
+  }
+
+  const nextTitle = renameValue.trim();
+  if (!nextTitle) {
+  message.error('标题不能为空');
+  return;
+  }
+
+  const sessionId = renameTarget.session_id ?? renameTarget.id;
+  setIsRenaming(true);
+  try {
+  await renameSession(sessionId, nextTitle);
+  message.success('会话标题已更新');
+  closeRenameModal();
+  } catch (error) {
+  const errMsg = error instanceof Error ? error.message : String(error);
+  message.error(`重命名失败: ${errMsg}`);
+  setIsRenaming(false);
   }
   };
 
   const confirmDeleteSession = (session: ChatSession) => {
   Modal.confirm({
-  title: 'delete',
+  title: '删除会话',
   icon: <ExclamationCircleOutlined />,
-  content: `delete「${session.title || session.id}」, ？`,
-  okText: 'delete',
+  content: `确认删除「${session.title || session.id}」吗？`,
+  okText: '删除',
   okType: 'danger',
-  cancelText: 'cancel',
+  cancelText: '取消',
   onOk: () => performDeleteSession(session),
   });
   };
 
   const handleSessionMenuAction = async (session: ChatSession, key: string) => {
+  if (key === 'rename') {
+  openRenameModal(session);
+  return;
+  }
+
   if (key !== 'autotitle') {
   return;
   }
@@ -143,18 +195,18 @@ const ChatSidebar: React.FC = () => {
   }
 
   try {
-  const result = await autotitleMutation({ sessionId, options: { force: true } });
+  const result = await autotitleSession(sessionId, { force: true });
   if (!result) {
   return;
   }
   if (result.updated) {
-  message.success(`update「${result.title}」`);
+  message.success(`已更新标题为「${result.title}」`);
   } else {
-  message.info('');
+  message.info('标题无需更新');
   }
   } catch (error) {
   console.error('Session operation failed:', error);
-  message.error('failed, please');
+  message.error('自动命名失败，请稍后重试');
   }
   };
 
@@ -162,25 +214,20 @@ const ChatSidebar: React.FC = () => {
   const items: MenuProps['items'] = [
   {
   key: 'rename',
-  label: '',
+  label: '重命名',
   icon: <EditOutlined />,
   },
   {
   key: 'autotitle',
-  label: '',
+  label: '重新生成标题',
   icon: <ReloadOutlined />,
-  },
-  {
-  key: 'export',
-  label: '',
-  icon: <ExportOutlined />,
   },
   ];
 
   if (session.is_active !== false) {
   items.push({
   key: 'archive',
-  label: '',
+  label: '归档会话',
   icon: <InboxOutlined />,
   onClick: async (_info: any) => {
   _info?.domEvent?.stopPropagation?.();
@@ -192,7 +239,7 @@ const ChatSidebar: React.FC = () => {
   items.push({ type: 'divider' });
   items.push({
   key: 'delete',
-  label: 'delete',
+  label: '删除会话',
   icon: <DeleteOutlined />,
   danger: true,
   onClick: (_info: any) => {
@@ -218,9 +265,9 @@ const ChatSidebar: React.FC = () => {
   minute: '2-digit',
   });
   } else if (days === 1) {
-  return '';
+  return '昨天';
   } else if (days < 7) {
-  return `${days}`;
+  return `${days} 天前`;
   }
   return date.toLocaleDateString('zh-CN');
   };
@@ -237,10 +284,10 @@ const ChatSidebar: React.FC = () => {
   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
   <MessageOutlined style={{ color: 'var(--primary-color)' }} />
   <Text strong style={{ fontSize: 13, color: 'var(--text-primary)' }}>
-  
+  对话
   </Text>
   </div>
-  <Tooltip title="">
+  <Tooltip title="收起会话列表">
   <Button
   type="text"
   size="small"
@@ -263,14 +310,14 @@ const ChatSidebar: React.FC = () => {
   fontWeight: 500,
   }}
   >
-  
+  新建对话
   </Button>
   </div>
 
   {}
   <div style={{ marginBottom: 16 }}>
   <Search
-  placeholder="search..."
+  placeholder="搜索对话..."
   value={searchQuery}
   onChange={(e) => setSearchQuery(e.target.value)}
   style={{
@@ -282,9 +329,15 @@ const ChatSidebar: React.FC = () => {
 
   {}
   <div style={{ flex: 1, overflow: 'hidden' }}>
+  {isSessionsLoading ? (
+  <div style={{ display: 'flex', justifyContent: 'center', paddingTop: 24 }}>
+  <Spin size="small" />
+  </div>
+  ) : (
   <List
   style={{ height: '100%', overflow: 'auto' }}
   dataSource={filteredSessions}
+  locale={{ emptyText: '暂无会话' }}
   renderItem={(session) => {
   const lastTimestamp =
   session.last_message_at ?? session.updated_at ?? session.created_at;
@@ -395,9 +448,9 @@ const ChatSidebar: React.FC = () => {
   ellipsis
   style={{ fontSize: 12, color: 'var(--text-secondary)', flex: 1 }}
   >
-  {session.plan_title || 'plan'}
+  {session.plan_title || '未绑定计划'}
   </Text>
-  {session.is_active === false && <Tag color="gold"></Tag>}
+  {session.is_active === false && <Tag color="gold">已归档</Tag>}
   </div>
   </div>
   </div>
@@ -405,6 +458,7 @@ const ChatSidebar: React.FC = () => {
   );
   }}
   />
+  )}
   </div>
 
   {}
@@ -417,10 +471,30 @@ const ChatSidebar: React.FC = () => {
   textAlign: 'center'
   }}>
   <Text type="secondary" style={{ fontSize: 12 }}>
-  {sessions.length} 
+  共 {sessions.length} 个会话
   </Text>
   </div>
   )}
+
+  <Modal
+  title="重命名会话"
+  open={renameModalOpen}
+  onOk={() => void handleRenameConfirm()}
+  confirmLoading={isRenaming}
+  onCancel={closeRenameModal}
+  okText="保存"
+  cancelText="取消"
+  destroyOnClose
+  >
+  <Input
+  value={renameValue}
+  onChange={(e) => setRenameValue(e.target.value)}
+  placeholder="输入新的会话标题"
+  maxLength={120}
+  onPressEnter={() => void handleRenameConfirm()}
+  autoFocus
+  />
+  </Modal>
   </div>
   );
 };

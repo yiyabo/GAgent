@@ -37,8 +37,10 @@ export const createSessionSlice: ChatSliceCreator = (set, get) => ({
   historyLoading: false,
   });
 
-  if (session) {
-  SessionStorage.setCurrentSessionId(session.id);
+  const storageSessionId = session?.session_id ?? session?.id ?? null;
+
+  if (storageSessionId) {
+  SessionStorage.setCurrentSessionId(storageSessionId);
   } else {
   SessionStorage.clearCurrentSessionId();
   }
@@ -204,7 +206,7 @@ export const createSessionSlice: ChatSliceCreator = (set, get) => ({
   get().setCurrentSession(session);
   set({ currentWorkflowId: null });
 
-  SessionStorage.setCurrentSessionId(sessionId);
+  SessionStorage.setCurrentSessionId(session.session_id ?? sessionId);
 
   return session;
   },
@@ -242,7 +244,7 @@ export const createSessionSlice: ChatSliceCreator = (set, get) => ({
   }
 
   get().setCurrentSession(session);
-  SessionStorage.setCurrentSessionId(sessionId);
+  SessionStorage.setCurrentSessionId(session.session_id ?? sessionId);
 
   if (createdLocalSession) {
   return session;
@@ -296,7 +298,7 @@ export const createSessionSlice: ChatSliceCreator = (set, get) => ({
 
   const storedId = SessionStorage.getCurrentSessionId();
   const nextSession =
-  (storedId && normalized.find((s) => s.id === storedId)) ||
+  (storedId && normalized.find((s) => s.id === storedId || s.session_id === storedId)) ||
   normalized[0] ||
   null;
 
@@ -392,5 +394,55 @@ export const createSessionSlice: ChatSliceCreator = (set, get) => ({
   } finally {
   pendingAutotitleSessions.delete(sessionKey);
   }
+  },
+
+  renameSession: async (sessionId, title) => {
+  const sessionKey = sessionId?.trim();
+  if (!sessionKey) {
+  throw new Error('Missing session id.');
+  }
+
+  const nextTitle = (title ?? '').trim();
+  if (!nextTitle) {
+  throw new Error('Title cannot be empty.');
+  }
+
+  const updatedSummary = await chatApi.updateSession(sessionKey, {
+  name: nextTitle,
+  });
+  const normalized = summaryToChatSession(updatedSummary);
+
+  set((state) => {
+  const updateSession = (session: ChatSession): ChatSession => {
+  const matchId = session.session_id ?? session.id;
+  if (matchId !== sessionKey) {
+  return session;
+  }
+
+  return {
+  ...session,
+  title: normalized.title,
+  titleSource: normalized.titleSource ?? 'user',
+  isUserNamed: normalized.isUserNamed ?? true,
+  plan_id: normalized.plan_id ?? session.plan_id ?? null,
+  plan_title: normalized.plan_title ?? session.plan_title ?? null,
+  current_task_id: normalized.current_task_id ?? session.current_task_id ?? null,
+  current_task_name: normalized.current_task_name ?? session.current_task_name ?? null,
+  last_message_at: normalized.last_message_at ?? session.last_message_at ?? null,
+  updated_at: normalized.updated_at ?? session.updated_at,
+  is_active:
+  normalized.is_active === undefined
+  ? session.is_active
+  : normalized.is_active,
+  };
+  };
+
+  return {
+  currentSession: state.currentSession
+  ? updateSession(state.currentSession)
+  : state.currentSession,
+  sessions: state.sessions.map(updateSession),
+  };
+  });
   },
 });

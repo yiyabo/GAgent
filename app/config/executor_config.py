@@ -58,7 +58,7 @@ class ExecutorSettings:
     code_execution_local_runtime: str = DEFAULT_CODE_EXECUTION_LOCAL_RUNTIME
     code_execution_docker_image: str = DEFAULT_CODE_EXECUTION_DOCKER_IMAGE
     # --- Layer 4: configurable limits ---
-    deep_think_max_iterations: int = 12
+    deep_think_max_iterations: int = 24
     qc_max_session_turns: int = 50
     qc_shell_timeout_ms: int = 600000
     code_execution_timeout: int = 120
@@ -67,6 +67,12 @@ class ExecutorSettings:
     auto_recovery: bool = False
     max_recovery_attempts: int = 2
     autonomous: bool = False
+    # --- Plan authority rollout ---
+    # When False (the default), PlanExecutor no longer uses inferred contracts
+    # or runtime filesystem scans to decide dependency readiness or completion
+    # authority. Legacy plans that still rely on inference can set this to True
+    # via PLAN_ARTIFACT_BACKFILL_ENABLED=true as a compatibility switch.
+    artifact_backfill_enabled: bool = False
 
 
 @lru_cache(maxsize=1)
@@ -198,6 +204,9 @@ def get_executor_settings() -> ExecutorSettings:
             1, min(5, _env_int("PLAN_EXECUTOR_MAX_RECOVERY", defaults.max_recovery_attempts))
         ),
         autonomous=_env_bool("PLAN_EXECUTOR_AUTONOMOUS", defaults.autonomous),
+        artifact_backfill_enabled=_env_bool(
+            "PLAN_ARTIFACT_BACKFILL_ENABLED", defaults.artifact_backfill_enabled
+        ),
     )
 
 __all__ = [

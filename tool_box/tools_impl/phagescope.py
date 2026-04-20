@@ -428,6 +428,156 @@ def _resolve_session_phagescope_root(session_id: Optional[str]) -> Optional[Path
         return None
 
 
+def _resolve_session_root(session_id: Optional[str]) -> Optional[Path]:
+    token = str(session_id or "").strip()
+    if not token:
+        return None
+    try:
+        from app.services.session_paths import get_runtime_session_dir
+
+        return get_runtime_session_dir(token, create=True)
+    except Exception as exc:
+        logger.warning("Failed to resolve session root for %s: %s", token, exc)
+        return None
+
+
+def _dedupe_string_list(items: List[str]) -> List[str]:
+    deduped: List[str] = []
+    seen: set[str] = set()
+    for item in items:
+        text = str(item or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        deduped.append(text)
+    return deduped
+
+
+def _session_relative_path(path: Path, session_id: Optional[str]) -> Optional[str]:
+    session_root = _resolve_session_root(session_id)
+    if session_root is None:
+        return None
+    try:
+        return str(path.resolve().relative_to(session_root.resolve())).replace("\\", "/")
+    except Exception:
+        return None
+
+
+def _attach_output_location_fields(
+    result: Dict[str, Any],
+    *,
+    base_dir: Optional[Path],
+    session_id: Optional[str] = None,
+    task_id: Optional[int] = None,
+    ancestor_chain: Optional[List[int]] = None,
+) -> Dict[str, Any]:
+    if base_dir is None:
+        return result
+
+    resolved_base = base_dir.expanduser().resolve()
+    out = dict(result)
+    session_artifact_paths = [
+        str(item) for item in list(out.get("session_artifact_paths") or []) if str(item).strip()
+    ]
+    if not session_artifact_paths and resolved_base.exists() and resolved_base.is_dir():
+        for candidate in sorted(resolved_base.rglob("*")):
+            if not candidate.is_file():
+                continue
+            rel_path = _session_relative_path(candidate, session_id)
+            session_artifact_paths.append(rel_path or str(candidate.resolve()))
+    if session_artifact_paths:
+        out["session_artifact_paths"] = _dedupe_string_list(session_artifact_paths)
+
+    out["output_location"] = {
+        "type": "task" if task_id is not None else "tmp",
+        "session_id": session_id,
+        "task_id": task_id,
+        "ancestor_chain": ancestor_chain,
+        "base_dir": str(resolved_base),
+        "files": list(out.get("session_artifact_paths") or []),
+    }
+    return out
+
+
+def _attach_local_file_artifact_fields(
+    result: Dict[str, Any],
+    *,
+    local_path: Path,
+    session_id: Optional[str] = None,
+    task_id: Optional[int] = None,
+    ancestor_chain: Optional[List[int]] = None,
+    output_base_dir: Optional[Path] = None,
+) -> Dict[str, Any]:
+    resolved = local_path.expanduser().resolve()
+    out = dict(result)
+    out["saved_path"] = str(resolved)
+    out["output_file"] = str(resolved)
+    artifact_paths = list(out.get("artifact_paths") or [])
+    artifact_paths.append(str(resolved))
+    out["artifact_paths"] = _dedupe_string_list([str(item) for item in artifact_paths])
+    rel_path = _session_relative_path(resolved, session_id)
+    if rel_path:
+        out["saved_path_rel"] = rel_path
+        out["output_file_rel"] = rel_path
+        session_artifact_paths = list(out.get("session_artifact_paths") or [])
+        session_artifact_paths.append(rel_path)
+        out["session_artifact_paths"] = _dedupe_string_list(
+            [str(item) for item in session_artifact_paths]
+        )
+    return _attach_output_location_fields(
+        out,
+        base_dir=output_base_dir or resolved.parent,
+        session_id=session_id,
+        task_id=task_id,
+        ancestor_chain=ancestor_chain,
+    )
+
+
+def _attach_local_bundle_artifact_fields(
+    result: Dict[str, Any],
+    *,
+    output_dir: Path,
+    saved_files: Dict[str, str],
+    summary_file: Optional[Path] = None,
+    session_id: Optional[str] = None,
+    task_id: Optional[int] = None,
+    ancestor_chain: Optional[List[int]] = None,
+) -> Dict[str, Any]:
+    out = dict(result)
+    artifact_paths: List[str] = [str(item) for item in list(out.get("artifact_paths") or [])]
+    session_artifact_paths: List[str] = [
+        str(item) for item in list(out.get("session_artifact_paths") or [])
+    ]
+    candidates: List[Path] = []
+    if summary_file is not None:
+        candidates.append(summary_file.expanduser().resolve())
+    for raw_path in saved_files.values():
+        if not isinstance(raw_path, str) or not raw_path.strip():
+            continue
+        candidate = Path(raw_path).expanduser()
+        if not candidate.is_absolute():
+            candidate = (output_dir / candidate).resolve()
+        else:
+            candidate = candidate.resolve()
+        candidates.append(candidate)
+    for candidate in candidates:
+        artifact_paths.append(str(candidate))
+        rel_path = _session_relative_path(candidate, session_id)
+        if rel_path:
+            session_artifact_paths.append(rel_path)
+    if artifact_paths:
+        out["artifact_paths"] = _dedupe_string_list(artifact_paths)
+    if session_artifact_paths:
+        out["session_artifact_paths"] = _dedupe_string_list(session_artifact_paths)
+    return _attach_output_location_fields(
+        out,
+        base_dir=output_dir,
+        session_id=session_id,
+        task_id=task_id,
+        ancestor_chain=ancestor_chain,
+    )
+
+
 def _get_manifests_directory(session_id: Optional[str]) -> Tuple[Path, Optional[str]]:
     """Return ``.../work/phagescope/manifests`` under the session, or ``runtime/phagescope/manifests`` fallback."""
     warning: Optional[str] = None
@@ -1688,6 +1838,8 @@ async def phagescope_handler(
     download_path: Optional[str] = None,
     save_path: Optional[str] = None,
     session_id: Optional[str] = None,
+    task_id: Optional[int] = None,
+    ancestor_chain: Optional[List[int]] = None,
     preview_bytes: int = 4096,
     sequence: Optional[str] = None,
     file_path: Optional[str] = None,
@@ -2496,17 +2648,23 @@ async def phagescope_handler(
                                 dest.parent.mkdir(parents=True, exist_ok=True)
                                 dest.write_bytes(content)
                                 return _with_api_only_artifact_hint(
-                                    {
+                                    _attach_local_file_artifact_fields(
+                                        {
                                         "success": True,
                                         "status_code": 200,
                                         "action": action,
-                                        "saved_path": str(dest),
                                         "content_type": content_type,
                                         "content_length": len(content),
                                         "fallback": "result_api_tsv",
                                         "taskid": str(taskid),
                                         "dynamic_rebuild_attempted": dynamic_rebuild_attempted,
-                                    },
+                                        },
+                                        local_path=dest,
+                                        session_id=session_id,
+                                        task_id=task_id,
+                                        ancestor_chain=ancestor_chain,
+                                        output_base_dir=dest.parent,
+                                    ),
                                     str(taskid),
                                 )
                             preview = content[: max(preview_bytes, 0)]
@@ -2547,14 +2705,20 @@ async def phagescope_handler(
                 dest = Path(save_path).expanduser().resolve()
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.write_bytes(content)
-                dl_ok = {
+                dl_ok = _attach_local_file_artifact_fields(
+                    {
                     "success": response.status_code < 400,
                     "status_code": response.status_code,
                     "action": action,
-                    "saved_path": str(dest),
                     "content_type": content_type,
                     "content_length": len(content),
-                }
+                    },
+                    local_path=dest,
+                    session_id=session_id,
+                    task_id=task_id,
+                    ancestor_chain=ancestor_chain,
+                    output_base_dir=dest.parent,
+                )
                 if taskid:
                     dl_ok["taskid"] = str(taskid)
                 return _with_api_only_artifact_hint(dl_ok, str(taskid) if taskid else None)
@@ -2607,7 +2771,17 @@ async def phagescope_handler(
             # Determine output directory
             timestamp_str = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
             session_root = _resolve_session_phagescope_root(session_id)
-            if session_root is not None:
+            if session_id and task_id is not None and not save_path:
+                from app.services.path_router import get_path_router
+
+                router = get_path_router()
+                default_output_dir = router.get_task_output_dir(
+                    session_id,
+                    task_id,
+                    ancestor_chain,
+                    create=True,
+                )
+            elif session_root is not None:
                 default_output_dir = session_root / f"task_{taskid}_{timestamp_str}"
             else:
                 default_output_dir = Path("runtime/phagescope") / f"task_{taskid}_{timestamp_str}"
@@ -2918,7 +3092,8 @@ async def phagescope_handler(
                     + ("..." if len(missing_artifacts) > 6 else "")
                 )
 
-            return {
+            return _attach_local_bundle_artifact_fields(
+                {
                 "success": True if (core_saved or len(errors) == 0) else False,
                 "status_code": 200 if len(errors) == 0 else 207,  # 207 = Multi-Status
                 "action": action,
@@ -2933,7 +3108,14 @@ async def phagescope_handler(
                 "warnings": warnings if warnings else None,
                 "summary_file": str(summary_file.resolve()),
                 "summary_file_rel": str(summary_file),
-            }
+                },
+                output_dir=output_dir,
+                saved_files=saved_files,
+                summary_file=summary_file,
+                session_id=session_id,
+                task_id=task_id,
+                ancestor_chain=ancestor_chain,
+            )
 
         return {"success": False, "status_code": 400, "error": f"unsupported action: {action}", "action": action}
     except httpx.TimeoutException:

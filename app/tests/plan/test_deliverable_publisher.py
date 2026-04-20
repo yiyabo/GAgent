@@ -3,12 +3,20 @@ from pathlib import Path
 
 import pytest
 
-from app.config.deliverable_config import DeliverableSettings, DeliverablesIngestMode, RESEARCH_MODULES
+from app.config.deliverable_config import (
+    DeliverableConflictStrategy,
+    DeliverableSettings,
+    DeliverablesIngestMode,
+    RESEARCH_MODULES,
+)
 from app.services.deliverables.publisher import DeliverablePublisher
 
 
 def _build_publisher(
-    tmp_path: Path, *, ingest_mode: DeliverablesIngestMode = "legacy"
+    tmp_path: Path,
+    *,
+    ingest_mode: DeliverablesIngestMode = "legacy",
+    conflict_strategy: DeliverableConflictStrategy = "error",
 ) -> DeliverablePublisher:
     settings = DeliverableSettings(
         enabled=True,
@@ -18,6 +26,7 @@ def _build_publisher(
         single_version_only=True,
         modules=RESEARCH_MODULES,
         ingest_mode=ingest_mode,
+        basename_conflict_strategy=conflict_strategy,
     )
     return DeliverablePublisher(
         settings=settings,
@@ -952,6 +961,133 @@ def test_publish_rejects_conflicting_figure_basenames_from_different_sources(tmp
             raw_result={"output_path": str(figure_b)},
             summary="Generated conflicting figure.",
         )
+
+
+def test_publish_rejects_conflicting_doc_basenames_from_different_sources(tmp_path: Path) -> None:
+    publisher = _build_publisher(tmp_path)
+    doc_a = tmp_path / "workspace" / "draft_a" / "report.md"
+    doc_b = tmp_path / "workspace" / "draft_b" / "report.md"
+    doc_a.parent.mkdir(parents=True, exist_ok=True)
+    doc_b.parent.mkdir(parents=True, exist_ok=True)
+    doc_a.write_text("# Draft A\n", encoding="utf-8")
+    doc_b.write_text("# Draft B\n", encoding="utf-8")
+
+    first = publisher.publish_from_tool_result(
+        session_id="doc_conflict001",
+        tool_name="deliverable_submit",
+        raw_result={
+            "success": True,
+            "deliverable_submit": {
+                "publish": True,
+                "artifacts": [{"path": str(doc_a), "module": "docs"}],
+            },
+        },
+        summary="Published first draft.",
+    )
+    assert first is not None
+
+    with pytest.raises(ValueError, match="Conflicting deliverable basename 'report.md'"):
+        publisher.publish_from_tool_result(
+            session_id="doc_conflict001",
+            tool_name="deliverable_submit",
+            raw_result={
+                "success": True,
+                "deliverable_submit": {
+                    "publish": True,
+                    "artifacts": [{"path": str(doc_b), "module": "docs"}],
+                },
+            },
+            summary="Published conflicting draft.",
+        )
+
+
+def test_publish_renames_conflicting_doc_basenames_when_strategy_is_rename(tmp_path: Path) -> None:
+    publisher = _build_publisher(tmp_path, conflict_strategy="rename")
+    doc_a = tmp_path / "workspace" / "draft_a" / "report.md"
+    doc_b = tmp_path / "workspace" / "draft_b" / "report.md"
+    doc_a.parent.mkdir(parents=True, exist_ok=True)
+    doc_b.parent.mkdir(parents=True, exist_ok=True)
+    doc_a.write_text("# Draft A\n", encoding="utf-8")
+    doc_b.write_text("# Draft B\n", encoding="utf-8")
+
+    first = publisher.publish_from_tool_result(
+        session_id="doc_rename001",
+        tool_name="deliverable_submit",
+        raw_result={
+            "success": True,
+            "deliverable_submit": {
+                "publish": True,
+                "artifacts": [{"path": str(doc_a), "module": "docs"}],
+            },
+        },
+        summary="Published first draft.",
+    )
+    assert first is not None
+
+    second = publisher.publish_from_tool_result(
+        session_id="doc_rename001",
+        tool_name="deliverable_submit",
+        raw_result={
+            "success": True,
+            "deliverable_submit": {
+                "publish": True,
+                "artifacts": [{"path": str(doc_b), "module": "docs"}],
+            },
+        },
+        summary="Published renamed draft.",
+    )
+
+    assert second is not None
+    latest_root = tmp_path / "runtime" / "session_doc_rename001" / "deliverables" / "latest" / "docs"
+    assert (latest_root / "report.md").read_text(encoding="utf-8") == "# Draft A\n"
+    assert (latest_root / "report__2.md").read_text(encoding="utf-8") == "# Draft B\n"
+
+
+def test_publish_keep_first_skips_conflicting_doc_basename_with_warning(tmp_path: Path) -> None:
+    publisher = _build_publisher(tmp_path, conflict_strategy="keep_first")
+    doc_a = tmp_path / "workspace" / "draft_a" / "report.md"
+    doc_b = tmp_path / "workspace" / "draft_b" / "report.md"
+    doc_a.parent.mkdir(parents=True, exist_ok=True)
+    doc_b.parent.mkdir(parents=True, exist_ok=True)
+    doc_a.write_text("# Draft A\n", encoding="utf-8")
+    doc_b.write_text("# Draft B\n", encoding="utf-8")
+
+    first = publisher.publish_from_tool_result(
+        session_id="doc_keep001",
+        tool_name="deliverable_submit",
+        raw_result={
+            "success": True,
+            "deliverable_submit": {
+                "publish": True,
+                "artifacts": [{"path": str(doc_a), "module": "docs"}],
+            },
+        },
+        summary="Published first draft.",
+    )
+    assert first is not None
+
+    second = publisher.publish_from_tool_result(
+        session_id="doc_keep001",
+        tool_name="deliverable_submit",
+        raw_result={
+            "success": True,
+            "deliverable_submit": {
+                "publish": True,
+                "artifacts": [{"path": str(doc_b), "module": "docs"}],
+            },
+        },
+        summary="Attempted conflicting draft.",
+    )
+
+    assert second is not None
+    assert second.submit_artifacts_requested == 1
+    assert second.submit_artifacts_published == 0
+    assert second.submit_artifacts_skipped == 1
+    assert second.warnings
+    assert "kept existing deliverable per conflict strategy" in second.warnings[0]
+    latest_root = tmp_path / "runtime" / "session_doc_keep001" / "deliverables" / "latest" / "docs"
+    assert (latest_root / "report.md").read_text(encoding="utf-8") == "# Draft A\n"
+    assert not (latest_root / "report__2.md").exists()
 
 
 def test_publish_uses_previous_manifest_source_for_legacy_figure_updates(tmp_path: Path):

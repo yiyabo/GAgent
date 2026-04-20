@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from types import SimpleNamespace
 
 from app.prompts import prompt_manager
@@ -130,7 +131,9 @@ def test_deep_think_prompts_require_structured_plan_tool_for_explicit_plan_reque
         assert "prose-only pseudo-plan" in prompt
 
 
-def test_deep_think_prompts_pin_real_structured_plan_actions_when_required() -> None:
+def test_deep_think_prompts_no_longer_pin_structured_plan_actions() -> None:
+    # Phase 1: _requires_structured_plan() always returns False,
+    # so the STRUCTURED PLAN REQUIREMENT block is never injected.
     agent = _build_deep_think_agent(
         {
             "requires_structured_plan": True,
@@ -142,9 +145,7 @@ def test_deep_think_prompts_pin_real_structured_plan_actions_when_required() -> 
     legacy_prompt = agent._build_system_prompt()
 
     for prompt in (native_prompt, legacy_prompt):
-        assert "STRUCTURED PLAN REQUIREMENT" in prompt
-        assert "prose-only answer does NOT satisfy this request" in prompt
-        assert "bound plan_id is 42" in prompt
+        assert "STRUCTURED PLAN REQUIREMENT" not in prompt
 
 
 def test_plan_operation_guidance_makes_research_optional() -> None:
@@ -152,7 +153,8 @@ def test_plan_operation_guidance_makes_research_optional() -> None:
     native_prompt = agent._build_native_system_prompt()
     legacy_prompt = agent._build_system_prompt()
 
-    assert "research is optional" in native_prompt
+    # Both native and legacy prompts should contain plan creation guidance
+    assert "PLAN CREATION RULE" in legacy_prompt
     assert "Research before planning only when current external best practices" in legacy_prompt
 
 
@@ -472,6 +474,36 @@ def test_deep_think_emit_artifacts_skips_internal_storage_files() -> None:
 
     assert len(seen) == 1
     assert seen[0]["path"].endswith("/report.csv")
+
+
+def test_deep_think_emit_artifacts_uses_explicit_bundle_paths() -> None:
+    seen: list[dict[str, str]] = []
+
+    async def _on_artifact(meta: dict[str, str]) -> None:
+        seen.append(meta)
+
+    agent = DeepThinkAgent(
+        llm_client=SimpleNamespace(),
+        available_tools=["phagescope"],
+        tool_executor=_noop_tool_executor,
+        on_artifact=_on_artifact,
+    )
+
+    payload = {
+        "output_directory": "/tmp/phagescope_bundle",
+        "files_saved": {
+            "quality": "metadata/quality.json",
+            "proteins": "annotation/proteins.tsv",
+        },
+    }
+
+    asyncio.run(agent._emit_artifacts("phagescope", payload, 1))
+
+    bundle_root = Path("/tmp/phagescope_bundle").resolve()
+    assert [item["path"] for item in seen] == [
+        str((bundle_root / "metadata" / "quality.json").resolve()),
+        str((bundle_root / "annotation" / "proteins.tsv").resolve()),
+    ]
 
 
 def test_phagescope_prompt_and_schema_mark_proteins_as_result_not_submit_module() -> None:

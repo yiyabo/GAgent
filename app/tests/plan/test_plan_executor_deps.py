@@ -3,13 +3,15 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import replace
 from typing import Any, Dict, List, Optional
 from unittest.mock import MagicMock
 
 import pytest
 
-from app.services.plans.plan_executor import ExecutionConfig, ExecutionResponse, PlanExecutor
-from app.services.plans.artifact_contracts import infer_artifact_namespace
+from app.config.executor_config import ExecutorSettings, get_executor_settings
+from app.services.plans.plan_executor import ExecutionConfig, ExecutionResponse, ExecutionResult, PlanExecutor
+from app.services.plans.artifact_contracts import infer_artifact_namespace, save_artifact_manifest
 from app.services.plans.plan_models import PlanNode, PlanTree
 
 
@@ -25,13 +27,22 @@ def _make_tree(plan_id: int, nodes: List[PlanNode]) -> PlanTree:
     return tree
 
 
-def _make_executor(repo=None) -> PlanExecutor:
-    """Create a PlanExecutor with a mock repo and stub LLM."""
+def _make_executor(repo=None, *, artifact_backfill_enabled: bool = False) -> PlanExecutor:
+    """Create a PlanExecutor with a mock repo and stub LLM.
+
+    Pass ``artifact_backfill_enabled=True`` to exercise the legacy compatibility
+    path where runtime filesystem scans may publish inferred aliases.
+    """
     if repo is None:
         repo = MagicMock()
+    settings = replace(
+        get_executor_settings(),
+        artifact_backfill_enabled=artifact_backfill_enabled,
+    )
     return PlanExecutor(
         repo=repo,
         llm_service=MagicMock(),
+        settings=settings,
     )
 
 
@@ -577,7 +588,7 @@ class TestArtifactContracts:
         tree = _make_tree(7, [producer, consumer])
         repo = MagicMock()
         repo.get_plan_tree.return_value = tree
-        executor = _make_executor(repo)
+        executor = _make_executor(repo, artifact_backfill_enabled=True)
         executor._should_use_deep_think = lambda _config: False
         executor._llm.generate.return_value = ExecutionResponse(
             status="success",
@@ -655,7 +666,7 @@ class TestArtifactContracts:
         tree = _make_tree(7, [producer, consumer])
         repo = MagicMock()
         repo.get_plan_tree.return_value = tree
-        executor = _make_executor(repo)
+        executor = _make_executor(repo, artifact_backfill_enabled=True)
 
         result = executor.execute_task(7, 2, config=ExecutionConfig(session_context={}))
 
@@ -673,6 +684,172 @@ class TestArtifactContracts:
         assert result.metadata["missing_artifact_aliases"] == ["nmr_cryo_msm.structured_evidence_json"]
         assert canonical.exists() is False
 
+    def test_execute_plan_does_not_skip_false_completed_task_missing_canonical_publish(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        monkeypatch.chdir(tmp_path)
+        # Seed a manifest with a placeholder entry so artifact tracking is
+        # considered active and the resolver can detect the missing publish.
+        save_artifact_manifest(7, {
+            "plan_id": 7,
+            "artifacts": {
+                "other.placeholder": {
+                    "alias": "other.placeholder",
+                    "path": "/tmp/placeholder",
+                    "producer_task_id": 999,
+                }
+            },
+        })
+        node = PlanNode(
+            id=1,
+            plan_id=7,
+            name="Produce evidence",
+            status="completed",
+            metadata={"artifact_contract": {"publishes": ["general.evidence_md"]}},
+            execution_result=json.dumps({"status": "completed", "content": "ok"}),
+        )
+        tree = _make_tree(7, [node])
+        repo = MagicMock()
+        repo.get_plan_tree.return_value = tree
+        executor = _make_executor(repo)
+        calls: list[int] = []
+
+        monkeypatch.setattr(executor, "_infer_missing_dependencies", lambda current_tree: current_tree)
+        monkeypatch.setattr(
+            executor,
+            "_run_task",
+            lambda _plan_id, current_node, _tree, _cfg: calls.append(current_node.id)
+            or ExecutionResult(
+                plan_id=_plan_id,
+                task_id=current_node.id,
+                status="completed",
+                content="ok",
+            ),
+        )
+
+        summary = executor.execute_plan(7, config=ExecutionConfig(session_context={}))
+
+        assert calls == [1]
+        assert summary.executed_task_ids == [1]
+
     def test_infer_artifact_namespace_does_not_match_ai_inside_other_words(self):
         assert infer_artifact_namespace("Train and evaluate baseline", "") == "general"
         assert infer_artifact_namespace("AI-driven classifier", "") == "ai_dl"
+
+
+    def test_resolve_required_artifacts_skips_backfill_when_flag_off(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        """When artifact_backfill_enabled=False (default), _resolve_required_artifacts
+        does NOT call _backfill_task_artifacts for dependency nodes."""
+        monkeypatch.chdir(tmp_path)
+
+        producer = PlanNode(
+            id=1,
+            plan_id=7,
+            name="Produce evidence",
+            status="completed",
+            metadata={"artifact_contract": {"publishes": ["general.evidence_md"]}},
+            execution_result=json.dumps({"status": "completed", "content": "ok"}),
+        )
+        consumer = PlanNode(
+            id=2,
+            plan_id=7,
+            name="Consume evidence",
+            status="pending",
+            metadata={"artifact_contract": {"requires": ["general.evidence_md"]}},
+            dependencies=[1],
+        )
+        tree = _make_tree(7, [producer, consumer])
+        repo = MagicMock()
+        repo.get_plan_tree.return_value = tree
+
+        # Default: artifact_backfill_enabled=False
+        executor = _make_executor(repo, artifact_backfill_enabled=False)
+
+        backfill_calls: list[int] = []
+        original_backfill = executor._backfill_task_artifacts
+
+        def _tracking_backfill(plan_id, node, manifest, session_context):
+            backfill_calls.append(node.id)
+            return original_backfill(plan_id, node, manifest, session_context)
+
+        monkeypatch.setattr(executor, "_backfill_task_artifacts", _tracking_backfill)
+
+        _contract, _resolved, _missing, _producers = executor._resolve_required_artifacts(
+            7,
+            consumer,
+            dependencies=[producer],
+            tree=tree,
+            session_context={},
+        )
+
+        # No backfill calls should have been made for the producer
+        assert 1 not in backfill_calls
+
+    def test_resolve_required_artifacts_backfills_when_flag_on(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        """When artifact_backfill_enabled=True, _resolve_required_artifacts
+        DOES call _backfill_task_artifacts for completed dependency nodes."""
+        monkeypatch.chdir(tmp_path)
+
+        # Create the canonical artifact so backfill can find it
+        evidence_dir = tmp_path / "results" / "plans" / "plan_7" / "general"
+        evidence_dir.mkdir(parents=True, exist_ok=True)
+        (evidence_dir / "evidence.md").write_text("# Evidence\n", encoding="utf-8")
+
+        # Producer has NO explicit publish contract (so status resolver won't demote it)
+        # but the consumer requires the alias, and the producer's execution_result
+        # contains the artifact path so backfill can discover it.
+        producer = PlanNode(
+            id=1,
+            plan_id=7,
+            name="Produce evidence",
+            status="completed",
+            metadata={},
+            execution_result=json.dumps({
+                "status": "completed",
+                "content": "ok",
+                "metadata": {"artifact_paths": [str(evidence_dir / "evidence.md")]},
+            }),
+        )
+        consumer = PlanNode(
+            id=2,
+            plan_id=7,
+            name="Consume evidence",
+            status="pending",
+            metadata={"artifact_contract": {"requires": ["general.evidence_md"]}},
+            dependencies=[1],
+        )
+        tree = _make_tree(7, [producer, consumer])
+        repo = MagicMock()
+        repo.get_plan_tree.return_value = tree
+
+        executor = _make_executor(repo, artifact_backfill_enabled=True)
+
+        backfill_calls: list[int] = []
+        original_backfill = executor._backfill_task_artifacts
+
+        def _tracking_backfill(plan_id, node, manifest, session_context):
+            backfill_calls.append(node.id)
+            return original_backfill(plan_id, node, manifest, session_context)
+
+        monkeypatch.setattr(executor, "_backfill_task_artifacts", _tracking_backfill)
+
+        _contract, _resolved, _missing, _producers = executor._resolve_required_artifacts(
+            7,
+            consumer,
+            dependencies=[producer],
+            tree=tree,
+            session_context={},
+        )
+
+        # Backfill should have been called for the producer
+        assert 1 in backfill_calls

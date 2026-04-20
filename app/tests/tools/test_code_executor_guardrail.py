@@ -493,6 +493,35 @@ def test_promote_task_results_to_session_root_keeps_runs_isolated(tmp_path: Path
     assert (session_dir / "results" / "t" / "run_b" / "plot.png").read_bytes() == b"v2"
 
 
+def test_promote_task_results_to_session_root_includes_run_root_and_custom_dirs(
+    tmp_path: Path,
+) -> None:
+    session_dir = tmp_path / "session_demo"
+    run_dir = session_dir / "plan7_task9" / "run_1"
+    (run_dir / "results").mkdir(parents=True)
+    (run_dir / "results" / "plot.png").write_bytes(b"png")
+    (run_dir / "summary.md").write_text("done\n", encoding="utf-8")
+    figures_dir = run_dir / "figures_raw"
+    figures_dir.mkdir(parents=True)
+    (figures_dir / "manifest.log").write_text("2 figures\n", encoding="utf-8")
+
+    rels = _promote_task_results_to_session_root(
+        session_dir=session_dir,
+        task_work_dir=run_dir,
+        subdirs=("results", "figures_raw"),
+    )
+
+    assert set(rels) == {
+        "results/plan7_task9/run_1/plot.png",
+        "results/plan7_task9/run_1/summary.md",
+        "results/plan7_task9/run_1/figures_raw/manifest.log",
+    }
+    assert (session_dir / "results" / "plan7_task9" / "run_1" / "summary.md").read_text(encoding="utf-8") == "done\n"
+    assert (
+        session_dir / "results" / "plan7_task9" / "run_1" / "figures_raw" / "manifest.log"
+    ).read_text(encoding="utf-8") == "2 figures\n"
+
+
 def test_prune_stale_session_root_results_removes_only_flat_empty_files(tmp_path: Path) -> None:
     session_dir = tmp_path / "session_x"
     results_dir = session_dir / "results"
@@ -566,6 +595,22 @@ def test_extract_task_artifact_paths_prefers_deliverable_files_over_workspace_di
     assert "/tmp/runtime/session_x/plan68_task37/run_1/results" not in extracted
     assert "/tmp/runtime/session_x/plan68_task37/run_1/code" not in extracted
     assert "/tmp/runtime/session_x/plan68_task37/run_1/code/format_and_validate_input.R" not in extracted
+
+
+def test_extract_task_artifact_paths_skips_current_workspace_and_runtime_root() -> None:
+    payload = {
+        "artifact_paths": [
+            "/Users/apple/LLM/agent/runtime",
+            "/Users/apple/LLM/agent/runtime/session_current/workspace/task17.md",
+            "/tmp/runtime/session_x/results/plan68_task37/run_1/evidence.md",
+        ]
+    }
+
+    extracted = extract_task_artifact_paths(payload)
+
+    assert "/tmp/runtime/session_x/results/plan68_task37/run_1/evidence.md" in extracted
+    assert "/Users/apple/LLM/agent/runtime" not in extracted
+    assert "/Users/apple/LLM/agent/runtime/session_current/workspace/task17.md" not in extracted
 
 def test_collect_completed_task_outputs_includes_artifact_paths() -> None:
     node_2 = PlanNode(
@@ -696,12 +741,66 @@ def test_local_backend_returns_promoted_artifact_paths(
     assert result["execution_mode"] == "code_executor_docker"
     assert result["docker_image_effective"] == "gagent-python-runtime:latest"
     promoted = result["session_artifact_paths"][0]
-    assert promoted.startswith("results/plan1_task2/run_")
+    assert promoted.startswith("results/_scratch/plan1_task2/run_")
     assert promoted.endswith("/plot.png")
     assert any(str(path).endswith("/results/plot.png") or str(path).endswith("plot.png") for path in result["artifact_paths"])
     assert any(path.endswith("plot.png") for path in result["produced_files"])
     session_dir = (tmp_path / "runtime" / "session_adhoc").resolve()
     assert (session_dir / promoted).read_bytes() == b"png"
+    assert result["output_location"]["session_id"] == "adhoc"
+    assert result["output_location"]["base_dir"] is not None
+    output_base = Path(result["output_location"]["base_dir"])
+    assert (output_base / "plot.png").read_bytes() == b"png"
+    assert any(path.endswith("/plot.png") for path in result["output_location"]["files"])
+
+
+def test_local_backend_promotes_run_root_and_custom_dir_outputs(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(code_executor_module, "_RUNTIME_DIR", tmp_path / "runtime")
+    _force_local_backend(monkeypatch)
+
+    async def _fake_local(*, work_dir: str, **_kwargs):
+        run_dir = Path(work_dir)
+        (run_dir / "summary.md").write_text("done\n", encoding="utf-8")
+        custom_dir = run_dir / "figures_raw"
+        custom_dir.mkdir(parents=True, exist_ok=True)
+        (custom_dir / "manifest.log").write_text("2 figures\n", encoding="utf-8")
+        return {
+            "success": True,
+            "stdout": "ok\n",
+            "stderr": "",
+            "exit_code": 0,
+            "code_file": str(run_dir / "task_code.py"),
+            "result": "generated summary and manifest",
+            "execution_mode": "code_executor_docker",
+            "docker_image_effective": "gagent-python-runtime:latest",
+        }
+
+    monkeypatch.setattr(code_executor_module, "_execute_task_locally", _fake_local)
+
+    result = asyncio.run(
+        code_executor_module.code_executor_handler(
+            task="summarize the run",
+            session_id="demo",
+            plan_id=7,
+            task_id=9,
+            require_task_context=True,
+        )
+    )
+
+    assert result["success"] is True
+    assert any(path.endswith("summary.md") for path in result["produced_files"])
+    assert any(path.endswith("figures_raw/manifest.log") for path in result["produced_files"])
+    assert any(path.endswith("summary.md") for path in result["session_artifact_paths"])
+    assert any(path.endswith("figures_raw/manifest.log") for path in result["session_artifact_paths"])
+    assert any(path.endswith("summary.md") for path in result["output_location"]["files"])
+    assert any(path.endswith("figures_raw/manifest.log") for path in result["output_location"]["files"])
+    output_base = Path(result["output_location"]["base_dir"])
+    assert output_base.name == "task_9"
+    assert (output_base / "summary.md").read_text(encoding="utf-8") == "done\n"
+    assert (output_base / "figures_raw" / "manifest.log").read_text(encoding="utf-8") == "2 figures\n"
 
 
 def test_local_backend_collects_custom_acceptance_output_dirs(

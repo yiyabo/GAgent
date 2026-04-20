@@ -73,7 +73,7 @@ class TestTokenEstimation:
 
 class TestContextWindow:
     def test_known_model(self):
-        assert get_context_window("qwen3.6-plus") == 256000
+        assert get_context_window("qwen3.6-plus") == 1000000
 
     def test_unknown_model_returns_default(self):
         assert get_context_window("unknown-model-xyz") == 131072

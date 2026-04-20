@@ -8,6 +8,8 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
+from pydantic import BaseModel, Field
+
 _ARTIFACT_SPECS: Dict[str, tuple[str, str]] = {
     "general.evidence_md": ("general", "evidence.md"),
     "general.references_bib": ("general", "references.bib"),
@@ -197,39 +199,150 @@ def infer_artifact_contract(
     instruction: str,
     metadata: Optional[Dict[str, Any]],
 ) -> Dict[str, List[str]]:
+    """Compatibility wrapper returning combined requires/publishes as a dict.
+
+    Prefer :func:`resolve_artifact_contract_with_provenance` for new call sites
+    that need to distinguish explicit declarations from inferred fallbacks.
+    """
+    resolved = resolve_artifact_contract_with_provenance(
+        task_name=task_name,
+        instruction=instruction,
+        metadata=metadata,
+    )
+    return resolved.as_contract_dict()
+
+
+class ArtifactContractProvenance(BaseModel):
+    """Structured artifact contract with provenance tracking.
+
+    ``explicit_*`` aliases come from the task metadata's ``artifact_contract``
+    block and are the authoritative intent. ``inferred_*`` aliases are derived
+    from free-text paths (paper_context_paths, instruction text,
+    acceptance_criteria.checks) and are kept as compatibility fallbacks.
+    ``runtime_*`` aliases are added after runtime filesystem scans and should
+    be treated as the weakest signal.
+    """
+
+    explicit_requires: List[str] = Field(default_factory=list)
+    explicit_publishes: List[str] = Field(default_factory=list)
+    inferred_requires: List[str] = Field(default_factory=list)
+    inferred_publishes: List[str] = Field(default_factory=list)
+    runtime_requires: List[str] = Field(default_factory=list)
+    runtime_publishes: List[str] = Field(default_factory=list)
+
+    def requires(self) -> List[str]:
+        return _merge_unique(
+            self.explicit_requires, self.inferred_requires, self.runtime_requires
+        )
+
+    def publishes(self) -> List[str]:
+        return _merge_unique(
+            self.explicit_publishes, self.inferred_publishes, self.runtime_publishes
+        )
+
+    @property
+    def has_explicit(self) -> bool:
+        return bool(self.explicit_requires or self.explicit_publishes)
+
+    @property
+    def has_inferred(self) -> bool:
+        return bool(self.inferred_requires or self.inferred_publishes)
+
+    @property
+    def has_runtime(self) -> bool:
+        return bool(self.runtime_requires or self.runtime_publishes)
+
+    @property
+    def contract_source(self) -> str:
+        has_explicit = self.has_explicit
+        has_fallback = self.has_inferred or self.has_runtime
+        if has_explicit and has_fallback:
+            return "mixed"
+        if has_explicit:
+            return "explicit"
+        if self.has_runtime and not self.has_inferred:
+            return "runtime"
+        if has_fallback:
+            return "inferred"
+        return "none"
+
+    def as_contract_dict(self) -> Dict[str, List[str]]:
+        return {"requires": self.requires(), "publishes": self.publishes()}
+
+
+def _merge_unique(*buckets: Iterable[str]) -> List[str]:
+    seen: set[str] = set()
+    merged: List[str] = []
+    for bucket in buckets:
+        for alias in bucket:
+            text = str(alias or "").strip()
+            if text and text not in seen:
+                seen.add(text)
+                merged.append(text)
+    return merged
+
+
+def _extract_explicit_aliases(raw_items: Any) -> List[str]:
+    if not isinstance(raw_items, list):
+        return []
+    aliases: List[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        text = str(item or "").strip()
+        if text and text in _ARTIFACT_SPECS and text not in seen:
+            seen.add(text)
+            aliases.append(text)
+    return aliases
+
+
+def resolve_artifact_contract_with_provenance(
+    *,
+    task_name: str,
+    instruction: str,
+    metadata: Optional[Dict[str, Any]],
+) -> ArtifactContractProvenance:
+    """Resolve a task's artifact contract while tracking provenance.
+
+    Explicit declarations from ``metadata.artifact_contract`` are authoritative.
+    Inferred aliases from paper_context_paths / instruction / acceptance
+    criteria checks remain as compatibility fallbacks and are flagged as such
+    on the returned object.
+    """
     payload = metadata if isinstance(metadata, dict) else {}
-    contract = payload.get("artifact_contract") if isinstance(payload.get("artifact_contract"), dict) else {}
+    raw_contract = payload.get("artifact_contract")
+    if not isinstance(raw_contract, dict):
+        raw_contract = {}
     preferred_namespace = infer_artifact_namespace(task_name, instruction)
 
-    requires: List[str] = []
-    publishes: List[str] = []
-    seen_requires: set[str] = set()
-    seen_publishes: set[str] = set()
+    explicit_requires = _extract_explicit_aliases(raw_contract.get("requires"))
+    explicit_publishes = _extract_explicit_aliases(raw_contract.get("publishes"))
+    explicit_require_set = set(explicit_requires)
+    explicit_publish_set = set(explicit_publishes)
 
-    for key, bucket, seen in (
-        ("requires", requires, seen_requires),
-        ("publishes", publishes, seen_publishes),
-    ):
-        raw_items = contract.get(key)
-        if isinstance(raw_items, list):
-            for item in raw_items:
-                text = str(item or "").strip()
-                if text and text in _ARTIFACT_SPECS and text not in seen:
-                    seen.add(text)
-                    bucket.append(text)
+    inferred_requires: List[str] = []
+    seen_inferred_req: set[str] = set()
 
     raw_context_paths = payload.get("paper_context_paths")
     if isinstance(raw_context_paths, list):
         for item in raw_context_paths:
-            for alias in aliases_for_path_text(str(item or ""), preferred_namespace=preferred_namespace):
-                if alias not in seen_requires:
-                    seen_requires.add(alias)
-                    requires.append(alias)
+            for alias in aliases_for_path_text(
+                str(item or ""), preferred_namespace=preferred_namespace
+            ):
+                if alias in explicit_require_set or alias in seen_inferred_req:
+                    continue
+                seen_inferred_req.add(alias)
+                inferred_requires.append(alias)
 
-    for alias in aliases_for_path_text(instruction, preferred_namespace=preferred_namespace):
-        if alias not in seen_requires:
-            seen_requires.add(alias)
-            requires.append(alias)
+    for alias in aliases_for_path_text(
+        instruction, preferred_namespace=preferred_namespace
+    ):
+        if alias in explicit_require_set or alias in seen_inferred_req:
+            continue
+        seen_inferred_req.add(alias)
+        inferred_requires.append(alias)
+
+    inferred_publishes: List[str] = []
+    seen_inferred_pub: set[str] = set()
 
     acceptance = payload.get("acceptance_criteria")
     checks = acceptance.get("checks") if isinstance(acceptance, dict) else None
@@ -238,13 +351,43 @@ def infer_artifact_contract(
             if not isinstance(check, dict):
                 continue
             raw_path = check.get("path")
-            if raw_path:
-                for alias in aliases_for_path_text(str(raw_path), preferred_namespace=preferred_namespace):
-                    if alias not in seen_publishes:
-                        seen_publishes.add(alias)
-                        publishes.append(alias)
+            if not raw_path:
+                continue
+            for alias in aliases_for_path_text(
+                str(raw_path), preferred_namespace=preferred_namespace
+            ):
+                if alias in explicit_publish_set or alias in seen_inferred_pub:
+                    continue
+                seen_inferred_pub.add(alias)
+                inferred_publishes.append(alias)
 
-    return {"requires": requires, "publishes": publishes}
+    return ArtifactContractProvenance(
+        explicit_requires=explicit_requires,
+        explicit_publishes=explicit_publishes,
+        inferred_requires=inferred_requires,
+        inferred_publishes=inferred_publishes,
+    )
+
+
+def extend_contract_with_runtime_candidates(
+    provenance: ArtifactContractProvenance,
+    *,
+    task_name: str,
+    instruction: str,
+    candidate_paths: Iterable[str],
+) -> ArtifactContractProvenance:
+    """Return a new provenance with runtime-discovered publish aliases added."""
+    preferred_namespace = infer_artifact_namespace(task_name, instruction)
+    already = set(provenance.publishes())
+    runtime_publishes = list(provenance.runtime_publishes)
+    for raw_path in candidate_paths:
+        for alias in aliases_for_file_name(
+            raw_path, preferred_namespace=preferred_namespace
+        ):
+            if alias in already or alias in runtime_publishes:
+                continue
+            runtime_publishes.append(alias)
+    return provenance.model_copy(update={"runtime_publishes": runtime_publishes})
 
 
 def published_artifact_paths_for_task(manifest: Dict[str, Any], task_id: int) -> List[str]:

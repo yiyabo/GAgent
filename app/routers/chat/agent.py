@@ -33,7 +33,7 @@ from app.services.plans.decomposition_jobs import (
     start_phagescope_track_job_thread,
 )
 from app.services.plans.plan_decomposer import DecompositionResult, PlanDecomposer
-from app.services.plans.plan_executor import PlanExecutor, PlanExecutorLLMService
+from app.services.plans.plan_executor import ExecutionConfig, PlanExecutor, PlanExecutorLLMService
 from app.services.plans.plan_models import PlanNode
 from app.services.plans.plan_session import PlanSession
 from app.services.plans.task_verification import TaskVerificationService
@@ -468,6 +468,7 @@ from .action_handlers import (
     handle_plan_action as _handle_plan_action_fn,
     handle_system_action as _handle_system_action_fn,
     handle_task_action as _handle_task_action_fn,
+    handle_task_action_async as _handle_task_action_async_fn,
     handle_tool_action as _handle_tool_action_fn,
     handle_unknown_action as _handle_unknown_action_fn,
     maybe_synthesize_phagescope_saveall_analysis as _maybe_synthesize_phagescope_saveall_analysis_fn,
@@ -485,7 +486,6 @@ from .code_executor_helpers import (
 )
 from .guardrail_handlers import (
     apply_completion_claim_guardrail as _apply_completion_claim_guardrail_fn,
-    apply_explicit_plan_review_guardrail as _apply_explicit_plan_review_guardrail_fn,
     apply_experiment_fallback as _apply_experiment_fallback_fn,
     apply_phagescope_fallback as _apply_phagescope_fallback_fn,
     apply_plan_first_guardrail as _apply_plan_first_guardrail_fn,
@@ -574,13 +574,6 @@ _RUNTIME_CONTEXT_KEYS = (
     "last_subject_action_class",
     "recent_image_artifacts",
 )
-_LOCAL_INTENT_TYPES = {"local_read", "local_inspect"}
-_BRIEF_EXECUTE_INTENT_TYPES = {
-    "execute_task",
-    "local_mutation",
-    "local_read",
-    "local_inspect",
-}
 _CONTINUATION_FILENAME_RE = re.compile(
     r"(?<![A-Za-z0-9_/.-])([A-Za-z0-9][A-Za-z0-9_.-]{1,120}\.(?:tsv|csv|txt|json|ya?ml|gff3?|fa|fasta|faa|fna|fastq|fq|md|pdf|png|jpe?g|svg|xlsx?|zip|gz|tar))",
     flags=re.IGNORECASE,
@@ -616,6 +609,17 @@ _IMAGE_LATEST_SELECTION_PHRASES = (
     "latest image",
     "last image",
 )
+
+
+async def _emit_event(event_sink: Optional[Callable], event: Dict[str, Any]) -> None:
+    """Helper to emit an SSE event via the event_sink callback."""
+    if event_sink is not None:
+        try:
+            result = event_sink(event)
+            if asyncio.iscoroutine(result):
+                await result
+        except Exception:
+            pass
 
 
 def _build_simple_chat_thinking_process(reasoning_text: str) -> Optional[Dict[str, Any]]:
@@ -663,13 +667,8 @@ def _is_brief_execute_followup_request(
     if routing_decision is None:
         return False
     request_tier = str(getattr(routing_decision, "request_tier", "") or "").strip().lower()
-    intent_type = str(getattr(routing_decision, "intent_type", "") or "").strip().lower()
     brevity_hint = bool(getattr(routing_decision, "brevity_hint", False))
-    return (
-        request_tier == "execute"
-        and brevity_hint
-        and intent_type in _BRIEF_EXECUTE_INTENT_TYPES
-    )
+    return request_tier == "execute" and brevity_hint
 
 
 def _clip_continuation_text(value: Any, *, limit: int = 240) -> str:
@@ -1027,141 +1026,49 @@ def _seed_active_subject_from_routing(
     agent.extra_context["active_subject"] = active_subject
 
 
-def _build_grounded_local_failure_message(
-    *,
-    failure_state: Dict[str, Any],
-    active_subject: Optional[Dict[str, Any]],
-    query: str,
-) -> str:
-    language = detect_reasoning_language(query or "")
-    subject_ref = ""
-    if isinstance(active_subject, dict):
-        subject_ref = str(
-            active_subject.get("display_ref") or active_subject.get("canonical_ref") or ""
-        ).strip()
-    if not subject_ref:
-        subject_ref = str(failure_state.get("subject_ref") or "该路径").strip() or "该路径"
-    error_message = str(failure_state.get("error_message") or "").strip() or "unknown error"
-    lowered_error = error_message.lower()
-    if language == "zh":
-        if "not found" in lowered_error or "不存在" in error_message:
-            return (
-                f"我目前还不能确认 `{subject_ref}` 里面有哪些数据。"
-                f"刚才对该路径的真实检查返回了 `{error_message}`，所以现在没有足够证据说已经读到了目录或文件内容。"
-            )
-        if "permission" in lowered_error or "权限" in error_message:
-            return (
-                f"我目前还不能确认 `{subject_ref}` 的内容。"
-                f"真实工具调用返回了权限相关失败：`{error_message}`。"
-            )
-        if "tool_not_available" in lowered_error or "not available" in lowered_error:
-            return (
-                f"我目前还不能确认 `{subject_ref}` 的内容。"
-                f"这轮请求需要本地只读探索能力，但实际可用工具不足：`{error_message}`。"
-            )
-        return (
-            f"我目前还不能确认 `{subject_ref}` 的内容。"
-            f"刚才的真实工具结果是失败：`{error_message}`，因此现在证据不足，不能说已经读到了文件或目录内容。"
-        )
-    if "not found" in lowered_error:
-        return (
-            f"I cannot confirm what is inside `{subject_ref}` yet. "
-            f"The real tool result for that path was `{error_message}`, so there is not enough evidence to claim the file or directory was read."
-        )
-    if "permission" in lowered_error:
-        return (
-            f"I cannot confirm the contents of `{subject_ref}` yet. "
-            f"The real tool result was a permission failure: `{error_message}`."
-        )
-    if "tool_not_available" in lowered_error or "not available" in lowered_error:
-        return (
-            f"I cannot confirm the contents of `{subject_ref}` yet. "
-            f"This request requires local inspection, but the required tool capability was unavailable: `{error_message}`."
-        )
-    return (
-        f"I cannot confirm the contents of `{subject_ref}` yet. "
-        f"The real tool result failed with `{error_message}`, so there is not enough evidence to claim the file or directory was read."
-    )
-
-
 def _apply_grounded_local_answer(
     agent: Any,
     answer: str,
     routing_decision: RequestRoutingDecision,
 ) -> str:
-    intent_type = str(getattr(routing_decision, "intent_type", "") or "").strip().lower()
-    if (
-        intent_type not in _LOCAL_INTENT_TYPES
-        and intent_type != "local_mutation"
-    ):
-        return str(answer or "").strip()
-    evidence_state = (getattr(agent, "extra_context", {}) or {}).get("last_evidence_state")
-    active_subject = (getattr(agent, "extra_context", {}) or {}).get("active_subject")
-    if intent_type == "local_mutation" and isinstance(evidence_state, dict):
-        st = str(evidence_state.get("status") or "").strip().lower()
-        if st == "unverified":
-            subject_ref = ""
-            if isinstance(active_subject, dict):
-                subject_ref = str(
-                    active_subject.get("display_ref") or active_subject.get("canonical_ref") or ""
-                ).strip()
-            if not subject_ref:
-                subject_ref = "当前目标路径"
-            language = detect_reasoning_language(routing_decision.effective_user_message or "")
-            if language == "zh":
-                return (
-                    f"命令已发送到终端，但还没有足够证据确认本地修改已经完成（例如解压/移动/删除是否真正成功）。"
-                    f"目标：`{subject_ref}`。请稍后重试 `terminal_session replay` 或用 `file_operations` 检查路径。"
-                )
-            return (
-                f"The command was sent to the terminal, but there is not enough evidence yet to confirm "
-                f"the local file change completed successfully. Subject: `{subject_ref}`. "
-                f"Retry `terminal_session replay` or verify paths with `file_operations`."
-            )
-    if isinstance(evidence_state, dict):
-        verified_facts = evidence_state.get("verified_facts")
-        est = str(evidence_state.get("status") or "").strip().lower()
-        if est == "verified" and isinstance(verified_facts, list) and verified_facts:
-            return str(answer or "").strip()
-    failure_state = (getattr(agent, "extra_context", {}) or {}).get("last_failure_state")
-    if not isinstance(failure_state, dict):
-        return str(answer or "").strip()
-    if intent_type == "local_mutation":
-        subject_ref = ""
-        if isinstance(active_subject, dict):
-            subject_ref = str(
-                active_subject.get("display_ref") or active_subject.get("canonical_ref") or ""
-            ).strip()
-        if not subject_ref:
-            subject_ref = str(failure_state.get("subject_ref") or "当前目标路径").strip() or "当前目标路径"
-        error_message = str(failure_state.get("error_message") or "unknown error").strip()
-        language = detect_reasoning_language(routing_decision.effective_user_message or "")
-        lowered_error = error_message.lower()
-        if language == "zh":
-            if "not found" in lowered_error or "不存在" in error_message:
-                return (
-                    f"我还没有成功完成对 `{subject_ref}` 的本地修改。"
-                    f"真实工具调用返回了 `{error_message}`，所以目标 zip 或目录目前没有被成功处理。"
-                )
-            return (
-                f"我还没有成功完成对 `{subject_ref}` 的本地修改。"
-                f"真实工具调用失败：`{error_message}`。"
-            )
-        if "not found" in lowered_error:
-            return (
-                f"I could not complete the requested local file change for `{subject_ref}`. "
-                f"The real tool result was `{error_message}`, so the target zip or directory was not processed."
-            )
-        return (
-            f"I could not complete the requested local file change for `{subject_ref}`. "
-            f"The real tool result failed with `{error_message}`."
-        )
+    """Lightweight evidence-based grounding for local tool results.
 
-    return _build_grounded_local_failure_message(
-        failure_state=failure_state,
-        active_subject=active_subject if isinstance(active_subject, dict) else None,
-        query=routing_decision.effective_user_message,
-    )
+    Phase 2 removed the full intent-type-driven grounding. This version only
+    appends a caveat when there is concrete failure evidence that contradicts
+    the LLM's answer, regardless of intent_type.
+    """
+    text = str(answer or "").strip()
+    if not text:
+        return text
+
+    extra = getattr(agent, "extra_context", {}) or {}
+    failure_state = extra.get("last_failure_state")
+    evidence_state = extra.get("last_evidence_state")
+
+    # If the last evidence shows verified success, trust the answer
+    if isinstance(evidence_state, dict):
+        if str(evidence_state.get("status") or "").strip().lower() == "verified":
+            verified_facts = evidence_state.get("verified_facts")
+            if isinstance(verified_facts, list) and verified_facts:
+                return text
+
+    # If there's a recent failure and the answer doesn't acknowledge it,
+    # append a caveat so the user knows the tool result was actually a failure.
+    if isinstance(failure_state, dict) and isinstance(evidence_state, dict):
+        ev_status = str(evidence_state.get("status") or "").strip().lower()
+        if ev_status in ("failed", "unverified"):
+            error_msg = str(failure_state.get("error_message") or "").strip()
+            if error_msg and error_msg.lower() not in text.lower():
+                language = detect_reasoning_language(
+                    routing_decision.effective_user_message or ""
+                )
+                if language == "zh":
+                    caveat = f"\n\n⚠️ 注意：最近一次工具调用返回了错误（`{error_msg}`），上述回答可能不准确。"
+                else:
+                    caveat = f"\n\n⚠️ Note: the most recent tool call returned an error (`{error_msg}`). The above answer may not be accurate."
+                return text + caveat
+
+    return text
 
 
 def _structured_plan_metadata_from_result(
@@ -1373,11 +1280,9 @@ def _build_deep_think_response_metadata(
 def _should_bind_created_plan(
     *,
     existing_plan_id: Optional[int],
-    plan_request_mode: Optional[str],
 ) -> bool:
-    if existing_plan_id is None:
-        return True
-    return str(plan_request_mode or "").strip().lower() == "create_new"
+    # Phase 1: routing no longer signals "create_new" intent; bind iff no plan is currently bound.
+    return existing_plan_id is None
 
 
 def _build_existing_plan_create_result(
@@ -1452,6 +1357,227 @@ def _sanitize_deep_think_tool_params(params: Any) -> Dict[str, Any]:
         return {}
     sanitized = _sanitize_chat_metadata_value(params)
     return sanitized if isinstance(sanitized, dict) else {}
+
+
+def _extract_rerun_task_result_payload(step: Any) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    details = step.details if hasattr(step, "details") and isinstance(step.details, dict) else {}
+
+    result_payload = details.get("result")
+    if isinstance(result_payload, dict):
+        normalized_result = dict(result_payload)
+    elif any(
+        key in details
+        for key in ("plan_id", "task_id", "status", "content", "metadata", "raw_response")
+    ):
+        normalized_result = {
+            key: value
+            for key, value in details.items()
+            if key not in {"job", "attempt", "max_attempts", "retry_policy"}
+        }
+    else:
+        normalized_result = {}
+
+    execution_payload: Dict[str, Any] = {}
+    raw_response = normalized_result.get("raw_response")
+    if isinstance(raw_response, str) and raw_response.strip():
+        try:
+            parsed = json.loads(raw_response)
+        except Exception:
+            parsed = None
+        if isinstance(parsed, dict):
+            execution_payload = parsed
+
+    return normalized_result, execution_payload
+
+
+def _normalize_deterministic_execute_status(status: Any) -> Optional[str]:
+    value = str(status or "").strip().lower()
+    if not value:
+        return None
+    if value in {"queued", "pending"}:
+        return "pending"
+    if value in {"active", "running", "in_progress"}:
+        return "running"
+    if value in {"done", "success", "succeeded", "completed"}:
+        return "completed"
+    if value in {"error", "failed"}:
+        return "failed"
+    return value
+
+
+def _build_deterministic_execute_fallback_text(
+    *,
+    task_id: Optional[int],
+    status: Optional[str],
+    language: str,
+) -> str:
+    if language == "zh":
+        target = f"任务 {task_id}" if task_id is not None else "当前任务"
+        if status in {"pending", "running"}:
+            return f"{target} 已开始执行。"
+        if status == "completed":
+            return f"{target} 执行已完成。"
+        if status == "failed":
+            return f"{target} 执行失败。"
+        return f"{target} 执行状态已更新。"
+
+    target = f"Task {task_id}" if task_id is not None else "The task"
+    if status in {"pending", "running"}:
+        return f"{target} has started running."
+    if status == "completed":
+        return f"{target} completed."
+    if status == "failed":
+        return f"{target} failed."
+    return f"{target} status was updated."
+
+
+def _build_deterministic_execute_placeholder_step(
+    *,
+    language: str,
+    status: str,
+    started_at: str,
+    finished_at: Optional[str] = None,
+) -> Dict[str, Any]:
+    if language == "zh":
+        if status == "done":
+            display_text = "任务上下文已就绪"
+            thought = "已完成任务上下文、依赖产物与执行约束的准备，开始进入深度思考执行。"
+        elif status == "error":
+            display_text = "任务执行准备失败"
+            thought = "任务上下文准备阶段发生错误，未能继续进入深度思考执行。"
+        else:
+            display_text = "准备任务上下文"
+            thought = "正在加载任务上下文、依赖产物与执行约束。"
+    else:
+        if status == "done":
+            display_text = "Task context ready"
+            thought = "Task context, dependency artifacts, and execution constraints are ready. Starting DeepThink execution."
+        elif status == "error":
+            display_text = "Task preparation failed"
+            thought = "The task preparation phase failed before DeepThink execution could continue."
+        else:
+            display_text = "Preparing task context"
+            thought = "Loading task context, dependency artifacts, and execution constraints."
+
+    payload: Dict[str, Any] = {
+        "iteration": 0,
+        "status": status,
+        "display_text": display_text,
+        "thought": thought,
+        "kind": "reasoning",
+        "started_at": started_at,
+        "timestamp": started_at,
+    }
+    if finished_at:
+        payload["finished_at"] = finished_at
+    return payload
+
+
+def _build_deterministic_execute_final_payload(
+    result: "AgentResult",
+    *,
+    plan_id: Optional[int],
+    language: str,
+) -> Dict[str, Any]:
+    response_text = str(result.reply or "").strip()
+    metadata: Dict[str, Any] = {}
+    serialized_actions: List[Dict[str, Any]] = []
+    derived_task_id: Optional[int] = None
+    if plan_id is not None:
+        metadata["plan_id"] = plan_id
+
+    for step in result.steps:
+        action_payload = _sanitize_chat_metadata_value(step.action_payload)
+        if isinstance(action_payload, dict) and action_payload:
+            serialized_actions.append(action_payload)
+            if derived_task_id is None:
+                parameters = action_payload.get("parameters")
+                if isinstance(parameters, dict):
+                    try:
+                        derived_task_id = int(parameters.get("task_id"))
+                    except (TypeError, ValueError):
+                        derived_task_id = None
+
+    if result.steps:
+        last_step = result.steps[-1]
+        rerun_result, execution_payload = _extract_rerun_task_result_payload(last_step)
+
+        source_metadata = execution_payload.get("metadata")
+        if not isinstance(source_metadata, dict):
+            source_metadata = rerun_result.get("metadata") if isinstance(rerun_result.get("metadata"), dict) else {}
+        sanitized_source_metadata = _sanitize_chat_metadata_value(source_metadata)
+        if isinstance(sanitized_source_metadata, dict):
+            metadata.update(sanitized_source_metadata)
+
+        for source in (execution_payload, rerun_result):
+            if not isinstance(source, dict):
+                continue
+            for key in ("artifact_paths", "session_artifact_paths", "output_location"):
+                value = _sanitize_chat_metadata_value(source.get(key))
+                if value not in (None, [], {}):
+                    metadata[key] = value
+
+        step_details = last_step.details if isinstance(last_step.details, dict) else {}
+        job_payload = _sanitize_chat_metadata_value(step_details.get("job"))
+        if isinstance(job_payload, dict) and job_payload:
+            metadata["job"] = job_payload
+
+        for candidate in (
+            execution_payload.get("content") if isinstance(execution_payload, dict) else None,
+            rerun_result.get("content") if isinstance(rerun_result, dict) else None,
+            last_step.message,
+            response_text,
+        ):
+            text = str(candidate or "").strip()
+            if text:
+                response_text = text
+                break
+
+        status_value = str(
+            (execution_payload.get("status") if isinstance(execution_payload, dict) else None)
+            or rerun_result.get("status")
+            or metadata.get("status")
+            or ("completed" if result.success else "failed")
+        ).strip()
+        normalized_status = _normalize_deterministic_execute_status(status_value)
+        if normalized_status:
+            metadata["status"] = normalized_status
+
+        for candidate in (
+            rerun_result.get("task_id") if isinstance(rerun_result, dict) else None,
+            metadata.get("task_id"),
+            derived_task_id,
+        ):
+            try:
+                if candidate is not None:
+                    derived_task_id = int(candidate)
+                    break
+            except (TypeError, ValueError):
+                continue
+
+    if serialized_actions:
+        metadata["actions"] = serialized_actions
+        metadata["action_list"] = serialized_actions
+
+    metadata["deterministic_execute_shortcut"] = True
+    if not response_text:
+        response_text = _build_deterministic_execute_fallback_text(
+            task_id=derived_task_id,
+            status=_normalize_deterministic_execute_status(metadata.get("status")),
+            language=language,
+        )
+    if response_text:
+        metadata.setdefault("analysis_text", response_text)
+        metadata.setdefault("final_summary", response_text)
+
+    return {
+        "type": "final",
+        "payload": {
+            "response": response_text,
+            "actions": serialized_actions,
+            "metadata": metadata,
+        },
+    }
 
 
 class StructuredChatAgent:
@@ -1561,10 +1687,11 @@ class StructuredChatAgent:
         routing_decision, _route_profile = self._resolve_request_routing(user_message)
         effective_user_message = routing_decision.effective_user_message
         self._update_routing_context(routing_decision)
-        structured = await self._invoke_llm(effective_user_message)
+        structured = self._build_deterministic_execute_task_structured()
+        if structured is None:
+            structured = await self._invoke_llm(effective_user_message)
         structured = await self._apply_experiment_fallback(structured)
         structured = self._apply_plan_first_guardrail(structured)
-        structured = self._apply_explicit_plan_review_guardrail(structured)
         structured = self._apply_phagescope_fallback(structured)
         structured = self._apply_task_execution_followthrough_guardrail(structured)
         structured = self._apply_completion_claim_guardrail(structured)
@@ -1575,10 +1702,11 @@ class StructuredChatAgent:
         routing_decision, _route_profile = self._resolve_request_routing(user_message)
         effective_user_message = routing_decision.effective_user_message
         self._update_routing_context(routing_decision)
-        structured = await self._invoke_llm(effective_user_message)
+        structured = self._build_deterministic_execute_task_structured()
+        if structured is None:
+            structured = await self._invoke_llm(effective_user_message)
         structured = await self._apply_experiment_fallback(structured)
         structured = self._apply_plan_first_guardrail(structured)
-        structured = self._apply_explicit_plan_review_guardrail(structured)
         structured = self._apply_phagescope_fallback(structured)
         structured = self._apply_task_execution_followthrough_guardrail(structured)
         return self._apply_completion_claim_guardrail(structured)
@@ -1593,7 +1721,13 @@ class StructuredChatAgent:
             return None
         if self.plan_session.plan_id is None:
             return None
-        if bool(self.extra_context.get("requires_structured_plan")):
+        # Do not short-circuit to manuscript assembly when the user explicitly
+        # requested a plan review or optimize — those take priority.
+        reason_codes = self.extra_context.get("route_reason_codes")
+        if isinstance(reason_codes, list) and (
+            "intent_plan_review_request" in reason_codes
+            or "intent_plan_optimize_request" in reason_codes
+        ):
             return None
         if not _local_manuscript_assembly_request_fn(
             user_message,
@@ -1683,8 +1817,6 @@ class StructuredChatAgent:
         if not bool(self.extra_context.get("explicit_task_override")):
             return None
         if self.plan_session.plan_id is None:
-            return None
-        if bool(self.extra_context.get("requires_structured_plan")):
             return None
         if bool(self.extra_context.get("explicit_scope_all_blocked")):
             return None
@@ -1779,12 +1911,6 @@ class StructuredChatAgent:
         self, structured: LLMStructuredResponse,
     ) -> LLMStructuredResponse:
         return _apply_plan_first_guardrail_fn(self, structured)
-
-    def _apply_explicit_plan_review_guardrail(
-        self, structured: LLMStructuredResponse,
-    ) -> LLMStructuredResponse:
-        return _apply_explicit_plan_review_guardrail_fn(self, structured)
-
 
     def _resolve_code_executor_task_context(self):
         return _resolve_code_executor_task_context_fn(self)
@@ -2072,6 +2198,16 @@ class StructuredChatAgent:
             logger.info(
                 "[TASK_SYNC] Skipping task status sync for exploratory %s execution",
                 tool_name,
+            )
+            return
+
+        if (
+            tool_name == "file_operations"
+            and str((self.extra_context or {}).get("intent_type") or "").strip().lower()
+            == "execute_task"
+        ):
+            logger.info(
+                "[TASK_SYNC] Skipping task status sync for file_operations during execute_task flow"
             )
             return
 
@@ -2466,8 +2602,6 @@ class StructuredChatAgent:
 
         return result
 
-        return result
-
     def _maybe_synthesize_phagescope_saveall_analysis(self, steps):
         return _maybe_synthesize_phagescope_saveall_analysis_fn(self, steps)
 
@@ -2492,15 +2626,6 @@ class StructuredChatAgent:
         routing_decision, route_profile = self._resolve_request_routing(user_message)
         effective_user_message = routing_decision.effective_user_message
         self._update_routing_context(routing_decision)
-        if routing_decision.requires_structured_plan:
-            logger.info(
-                "[CHAT][ROUTING][PLAN] session=%s mode=%s plan_id=%s route=%s tier=%s",
-                self.session_id,
-                routing_decision.plan_request_mode,
-                self.plan_session.plan_id,
-                routing_decision.request_route_mode,
-                routing_decision.request_tier,
-            )
         _seed_active_subject_from_routing(self, routing_decision)
         if self.session_id:
             try:
@@ -2542,223 +2667,245 @@ class StructuredChatAgent:
             yield _sse_message(payload)
             return
 
-        deterministic_manuscript = self._build_deterministic_local_manuscript_structured(
-            effective_user_message
-        )
-        if deterministic_manuscript is not None:
+        deterministic_execute = self._build_deterministic_execute_task_structured()
+        if deterministic_execute is not None:
+            queue: asyncio.Queue[Any] = asyncio.Queue()
+            rerun_task_job_id: Optional[str] = None
+            rerun_task_job_queue: Optional[asyncio.Queue[Any]] = None
+            reasoning_language = detect_reasoning_language(effective_user_message)
+            synthetic_step_started_at: Optional[str] = None
+            synthetic_step_finalized = False
+            extra_context = self.extra_context if isinstance(self.extra_context, dict) else {}
+            if not isinstance(self.extra_context, dict):
+                self.extra_context = extra_context
+            previous_rerun_job_id = extra_context.get("_rerun_task_execution_job_id")
+
+            deterministic_task_id: Optional[int] = None
+            deterministic_task_label = (
+                "当前任务" if reasoning_language == "zh" else "the task"
+            )
+            if deterministic_execute.actions:
+                try:
+                    deterministic_task_id = int(
+                        deterministic_execute.actions[0].parameters.get("task_id")
+                    )
+                except (TypeError, ValueError, AttributeError):
+                    deterministic_task_id = None
+            if deterministic_task_id is not None:
+                deterministic_task_label = (
+                    f"任务 {deterministic_task_id}"
+                    if reasoning_language == "zh"
+                    else f"Task {deterministic_task_id}"
+                )
+
+            if deterministic_task_id is not None and self.plan_session.plan_id is not None:
+                rerun_task_job_id = f"plan_execute_{run_id or uuid4().hex}"
+                task_name = f"Task {deterministic_task_id}"
+                try:
+                    if self.plan_tree and self.plan_tree.has_node(deterministic_task_id):
+                        task_name = self.plan_tree.get_node(deterministic_task_id).display_name()
+                except Exception:
+                    task_name = f"Task {deterministic_task_id}"
+                deterministic_task_label = task_name
+                try:
+                    plan_decomposition_jobs.create_job(
+                        plan_id=self.plan_session.plan_id,
+                        task_id=deterministic_task_id,
+                        mode="single_task",
+                        job_type="plan_execute",
+                        params={
+                            "session_id": self.session_id,
+                            "task_id": deterministic_task_id,
+                            "mode": "rerun_task",
+                        },
+                        metadata={
+                            "session_id": self.session_id,
+                            "conversation_id": getattr(self, "conversation_id", None),
+                            "source": "deterministic_execute_shortcut",
+                            "target_task_name": task_name,
+                        },
+                        session_id=self.session_id,
+                        job_id=rerun_task_job_id,
+                    )
+                except Exception:
+                    pass
+                try:
+                    rerun_task_job_queue = plan_decomposition_jobs.register_subscriber(
+                        rerun_task_job_id,
+                        asyncio.get_running_loop(),
+                    )
+                except Exception:
+                    rerun_task_job_queue = None
+
+            if rerun_task_job_id:
+                extra_context["_rerun_task_execution_job_id"] = rerun_task_job_id
+
+            async def emit_synthetic_prethink_step(status: str) -> None:
+                nonlocal synthetic_step_started_at, synthetic_step_finalized
+                now_iso = datetime.now(timezone.utc).isoformat()
+                if synthetic_step_started_at is None:
+                    synthetic_step_started_at = now_iso
+                if status in {"done", "error"}:
+                    if synthetic_step_finalized:
+                        return
+                    synthetic_step_finalized = True
+                await queue.put(
+                    {
+                        "type": "thinking_step",
+                        "step": _build_deterministic_execute_placeholder_step(
+                            language=reasoning_language,
+                            status=status,
+                            started_at=synthetic_step_started_at,
+                            finished_at=now_iso if status in {"done", "error"} else None,
+                        ),
+                    }
+                )
+
+            async def relay_rerun_task_job_events() -> None:
+                nonlocal synthetic_step_finalized
+                if rerun_task_job_queue is None:
+                    return
+                while True:
+                    payload = await rerun_task_job_queue.get()
+                    if not isinstance(payload, dict):
+                        continue
+                    event_payload = payload.get("event")
+                    if not isinstance(event_payload, dict):
+                        continue
+                    metadata = (
+                        event_payload.get("metadata")
+                        if isinstance(event_payload.get("metadata"), dict)
+                        else {}
+                    )
+                    sub_type = str(metadata.get("sub_type") or "").strip().lower()
+                    if sub_type == "thinking_step":
+                        step_payload = metadata.get("step")
+                        if isinstance(step_payload, dict):
+                            if not synthetic_step_finalized:
+                                await emit_synthetic_prethink_step("done")
+                            await queue.put({"type": "thinking_step", "step": step_payload})
+                        continue
+                    if sub_type == "thinking_delta":
+                        delta = str(metadata.get("delta") or "")
+                        if not delta:
+                            continue
+                        if not synthetic_step_finalized:
+                            await emit_synthetic_prethink_step("done")
+                        await queue.put(
+                            {
+                                "type": "thinking_delta",
+                                "iteration": metadata.get("iteration"),
+                                "delta": delta,
+                            }
+                        )
+
+            async def run_deterministic_execute() -> None:
+                relay_task: Optional[asyncio.Task[Any]] = None
+                try:
+                    await queue.put(
+                        {
+                            "type": "progress_status",
+                            "phase": "planning",
+                            "label": (
+                                f"准备执行 {deterministic_task_label}，正在加载任务上下文"
+                                if reasoning_language == "zh"
+                                else f"Preparing {deterministic_task_label}; loading task context"
+                            ),
+                            "status": "running",
+                            "iteration": 0,
+                        }
+                    )
+                    await emit_synthetic_prethink_step("thinking")
+                    if rerun_task_job_queue is not None:
+                        relay_task = asyncio.create_task(relay_rerun_task_job_events())
+                    result = await self.execute_structured(deterministic_execute)
+                    if relay_task is not None:
+                        await asyncio.sleep(0)
+                    if not synthetic_step_finalized:
+                        await emit_synthetic_prethink_step("done")
+                    await queue.put({"type": "result", "result": result})
+                except Exception as exc:  # pragma: no cover - defensive
+                    if synthetic_step_started_at is not None and not synthetic_step_finalized:
+                        await emit_synthetic_prethink_step("error")
+                    await queue.put({"type": "error", "message": str(exc)})
+                finally:
+                    if relay_task is not None:
+                        relay_task.cancel()
+                        await asyncio.gather(relay_task, return_exceptions=True)
+                    if rerun_task_job_id and rerun_task_job_queue is not None:
+                        plan_decomposition_jobs.unregister_subscriber(
+                            rerun_task_job_id,
+                            rerun_task_job_queue,
+                        )
+                    if previous_rerun_job_id is None:
+                        extra_context.pop("_rerun_task_execution_job_id", None)
+                    else:
+                        extra_context["_rerun_task_execution_job_id"] = previous_rerun_job_id
+                    await queue.put(None)
+
+            asyncio.create_task(run_deterministic_execute())
+
             async def _through_sink(payload: Dict[str, Any]) -> str:
                 if event_sink is not None:
                     await event_sink(payload)
                 return _sse_message(payload)
 
-            if routing_decision.thinking_visibility == "progress":
-                label = (
-                    "整合已完成任务结果"
-                    if detect_reasoning_language(effective_user_message) == "zh"
-                    else "Assembling completed task outputs"
-                )
-                yield await _through_sink(
-                    {
-                        "type": "progress_status",
-                        "phase": "planning",
-                        "label": label,
-                        "status": "active",
-                    }
-                )
+            while True:
+                item = await queue.get()
+                if item is None:
+                    break
 
-            result = await self.execute_structured(deterministic_manuscript)
-            tool_results = [
-                {
-                    "name": step.action.name,
-                    "summary": step.details.get("summary"),
-                    "parameters": step.details.get("parameters"),
-                    "result": step.details.get("result"),
-                }
-                for step in result.steps
-                if step.action.kind == "tool_operation"
-            ]
-            response_text = str(result.reply or "").strip() or (
-                result.summarize_steps() or ""
-            )
-            shortcut_reply = str(
-                deterministic_manuscript.llm_reply.message or ""
-            ).strip()
-            manuscript_result = next(
-                (
-                    entry
-                    for entry in tool_results
-                    if entry.get("name") == "manuscript_writer"
-                    and isinstance(entry.get("result"), dict)
-                ),
-                None,
-            )
-            if manuscript_result is not None and (
-                not response_text or response_text == shortcut_reply
-            ):
-                result_payload = manuscript_result.get("result") or {}
-                parameter_payload = (
-                    manuscript_result.get("parameters")
-                    if isinstance(manuscript_result.get("parameters"), dict)
-                    else {}
-                )
-                summary_text = str(manuscript_result.get("summary") or "").strip()
-                output_path = str(
-                    result_payload.get("output_path")
-                    or result_payload.get("effective_output_path")
-                    or parameter_payload.get("output_path")
-                    or ""
-                ).strip()
-                analysis_path = str(
-                    result_payload.get("analysis_path")
-                    or result_payload.get("effective_analysis_path")
-                    or ""
-                ).strip()
-                if not analysis_path and output_path:
-                    analysis_path = f"{output_path}.analysis.md"
-                run_stats = (
-                    result_payload.get("run_stats")
-                    if isinstance(result_payload.get("run_stats"), dict)
-                    else {}
-                )
-                source_count = (
-                    int(run_stats.get("source_file_count"))
-                    if str(run_stats.get("source_file_count") or "").isdigit()
-                    else None
-                )
-                if source_count is None and isinstance(
-                    parameter_payload.get("context_paths"), list
-                ):
-                    source_count = len(
-                        [
-                            path
-                            for path in parameter_payload.get("context_paths", [])
-                            if isinstance(path, str) and path.strip()
-                        ]
+                event_type = item.get("type")
+                if event_type in {"thinking_step", "thinking_delta", "progress_status"}:
+                    out = await _through_sink(item)
+                    yield out
+                    continue
+                if event_type == "error":
+                    err_payload = {"type": "error", "message": item.get("message") or "Unknown error"}
+                    out = await _through_sink(err_payload)
+                    yield out
+                    continue
+                if event_type == "result":
+                    final_payload = _build_deterministic_execute_final_payload(
+                        item["result"],
+                        plan_id=self.plan_session.plan_id,
+                        language=reasoning_language,
                     )
-                method_sources = (
-                    int(run_stats.get("method_sources"))
-                    if str(run_stats.get("method_sources") or "").isdigit()
-                    else None
-                )
-                result_sources = (
-                    int(run_stats.get("result_sources"))
-                    if str(run_stats.get("result_sources") or "").isdigit()
-                    else None
-                )
-                supplementary_sources = (
-                    int(run_stats.get("supplementary_sources"))
-                    if str(run_stats.get("supplementary_sources") or "").isdigit()
-                    else None
-                )
-                if detect_reasoning_language(effective_user_message) == "zh":
-                    lines = ["已完成本地论文草稿整合。", ""]
-                    if output_path:
-                        lines.append(f"- 草稿文件：`{output_path}`")
-                    if analysis_path:
-                        lines.append(f"- 分析备忘：`{analysis_path}`")
-                    if source_count is not None:
-                        counts_line = f"- 来源文件：{source_count} 个"
-                        detail_parts = []
-                        if method_sources is not None:
-                            detail_parts.append(f"Methods {method_sources}")
-                        if result_sources is not None:
-                            detail_parts.append(f"Results {result_sources}")
-                        if supplementary_sources is not None:
-                            detail_parts.append(f"Supplementary {supplementary_sources}")
-                        if detail_parts:
-                            counts_line += f"（{'，'.join(detail_parts)}）"
-                        lines.append(counts_line)
-                    lines.append("- 说明：直接复用已完成任务输出，未重新分析，也未额外检索文献。")
-                    if summary_text:
-                        lines.extend(["", f"> {summary_text}"])
-                else:
-                    lines = ["Completed the local manuscript draft assembly.", ""]
-                    if output_path:
-                        lines.append(f"- Draft: `{output_path}`")
-                    if analysis_path:
-                        lines.append(f"- Analysis memo: `{analysis_path}`")
-                    if source_count is not None:
-                        counts_line = f"- Source files used: {source_count}"
-                        detail_parts = []
-                        if method_sources is not None:
-                            detail_parts.append(f"Methods {method_sources}")
-                        if result_sources is not None:
-                            detail_parts.append(f"Results {result_sources}")
-                        if supplementary_sources is not None:
-                            detail_parts.append(
-                                f"Supplementary {supplementary_sources}"
+                    out = await _through_sink(final_payload)
+                    yield out
+                    if self.session_id:
+                        try:
+                            _persist_runtime_context(self)
+                            payload = final_payload.get("payload") if isinstance(final_payload, dict) else {}
+                            payload = payload if isinstance(payload, dict) else {}
+                            response_text = str(payload.get("response") or "")
+                            metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+                            _save_chat_message(
+                                self.session_id,
+                                "assistant",
+                                response_text,
+                                metadata=metadata,
                             )
-                        if detail_parts:
-                            counts_line += f" ({', '.join(detail_parts)})"
-                        lines.append(counts_line)
-                    lines.append(
-                        "- Notes: reused completed task outputs directly without re-analysis or additional literature retrieval."
-                    )
-                    if summary_text:
-                        lines.extend(["", f"> {summary_text}"])
-                response_text = "\n".join(lines).strip()
-            if not response_text:
-                response_text = (
-                    "已完成本地论文草稿整合。"
-                    if detect_reasoning_language(effective_user_message) == "zh"
-                    else "Completed the local manuscript draft assembly."
-                )
-            resolved_plan_id = result.bound_plan_id or self.plan_session.plan_id
-            metadata_payload: Dict[str, Any] = {
-                "plan_id": resolved_plan_id,
-                "plan_outline": result.plan_outline,
-                "plan_persisted": result.plan_persisted,
-                "success": result.success,
-                "errors": result.errors,
-                "status": "completed" if result.success else "failed",
-                "analysis_text": response_text,
-                "final_summary": response_text,
-                "shortcut_used": "local_manuscript_assembly",
-                "raw_actions": [step.action.model_dump() for step in result.steps],
-                **routing_decision.metadata(),
-            }
-            metadata_payload["thinking_display_mode"] = "final_answer"
-            if tool_results:
-                metadata_payload["tool_results"] = [
-                    entry
-                    for entry in tool_results
-                    if entry and isinstance(entry.get("result"), dict)
-                ]
-            if result.actions_summary:
-                metadata_payload["actions_summary"] = result.actions_summary
-            if result.job_id:
-                metadata_payload["job_id"] = result.job_id
-                metadata_payload["job_type"] = result.job_type or "chat_action"
+                        except Exception as save_err:
+                            logger.warning(
+                                "[CHAT][DETERMINISTIC_EXECUTE] Failed to save response: %s",
+                                save_err,
+                            )
+            return
 
-            if self.session_id and response_text:
-                try:
-                    _persist_runtime_context(self)
-                    save_metadata = dict(metadata_payload)
-                    save_metadata["analysis_text"] = response_text
-                    save_metadata["final_summary"] = response_text
-                    _save_chat_message(
-                        self.session_id,
-                        "assistant",
-                        response_text,
-                        metadata=save_metadata,
-                    )
-                except Exception as save_err:  # pragma: no cover - defensive
-                    logger.warning(
-                        "[CHAT][MANUSCRIPT_SHORTCUT] Failed to save response: %s",
-                        save_err,
-                    )
-
-            yield await _through_sink(
-                {
-                    "type": "final",
-                    "payload": {
-                        "response": response_text,
-                        "llm_reply": {"message": response_text},
-                        "actions": [step.action_payload for step in result.steps],
-                        "metadata": metadata_payload,
-                    },
-                }
-            )
+        # ── Full plan execution via PlanExecutor ──────────────────────
+        # When _full_plan_executor_delegate is set, delegate to PlanExecutor
+        # instead of the DeepThink cascade.  PlanExecutor handles DAG ordering,
+        # artifact manifest registration, task verification, and deliverable
+        # publishing.
+        if self.extra_context.get("_full_plan_executor_delegate"):
+            async for event in self._run_full_plan_via_executor(
+                user_message=effective_user_message,
+                routing_decision=routing_decision,
+                event_sink=event_sink,
+                run_id=run_id,
+            ):
+                yield event
             return
 
         queue: asyncio.Queue[Any] = asyncio.Queue()
@@ -3296,7 +3443,6 @@ class StructuredChatAgent:
                             existing_plan_id is not None
                             and not _should_bind_created_plan(
                                 existing_plan_id=existing_plan_id,
-                                plan_request_mode=routing_decision.plan_request_mode,
                             )
                         ):
                             plan_tree = getattr(self, "plan_tree", None)
@@ -3693,7 +3839,6 @@ class StructuredChatAgent:
                                 existing_plan_id = self.plan_session.plan_id
                                 if not _should_bind_created_plan(
                                     existing_plan_id=existing_plan_id,
-                                    plan_request_mode=routing_decision.plan_request_mode,
                                 ):
                                     logger.warning(
                                         "[DeepThink] plan_operation create returned plan %s "
@@ -3983,6 +4128,10 @@ class StructuredChatAgent:
                         "pending_scope_task_ids": list(
                             self.extra_context.get("pending_scope_task_ids") or []
                         ),
+                        "session_id": self.session_id,
+                        "owner_id": str(
+                            self.extra_context.get("owner_id") or ""
+                        ).strip() or None,
                     }
                 dt_agent = dt_agent_cls(**dt_agent_kwargs)
 
@@ -4206,18 +4355,6 @@ class StructuredChatAgent:
                             "[CHAT][DEEP_THINK] Response saved to database for session=%s",
                             self.session_id,
                         )
-                        if res.structured_plan_required:
-                            logger.info(
-                                "[CHAT][DEEP_THINK][PLAN] session=%s required=%s mode=%s state=%s satisfied=%s plan_id=%s operation=%s message=%s",
-                                self.session_id,
-                                res.structured_plan_required,
-                                routing_decision.plan_request_mode,
-                                res.structured_plan_state,
-                                res.structured_plan_satisfied,
-                                resolved_plan_id,
-                                res.structured_plan_operation,
-                                res.structured_plan_message,
-                            )
                     except Exception as save_err:
                         logger.warning(
                             "[CHAT][DEEP_THINK] Failed to save response: %s",
@@ -4428,21 +4565,210 @@ class StructuredChatAgent:
         )
         return decision, profile
 
+    # ------------------------------------------------------------------
+    # Full plan execution via PlanExecutor
+    # ------------------------------------------------------------------
+
+    async def _run_full_plan_via_executor(
+        self,
+        *,
+        user_message: str,
+        routing_decision: "RequestRoutingDecision",
+        event_sink: Optional[Callable] = None,
+        run_id: Optional[str] = None,
+    ) -> AsyncIterator[str]:
+        """Execute the entire plan via PlanExecutor, bridging progress into SSE.
+
+        This replaces the old DeepThink cascade for full_plan_execution requests.
+        PlanExecutor handles DAG ordering, artifact manifest registration, task
+        verification, and deliverable publishing.
+        """
+        plan_id = self.plan_session.plan_id
+        if plan_id is None:
+            payload = {
+                "type": "final",
+                "payload": {
+                    "response": "No plan is bound to this session. Please create or select a plan first.",
+                    "actions": [],
+                    "metadata": {"full_plan_execution": True, "error": "no_plan_bound"},
+                },
+            }
+            if event_sink is not None:
+                await event_sink(payload)
+            yield _sse_message(payload)
+            return
+
+        # Build execution config with session context
+        session_ctx: Dict[str, Any] = {
+            "session_id": self.session_id,
+            "owner_id": str(
+                self.extra_context.get("owner_id") or ""
+            ).strip() or None,
+            "user_message": user_message,
+            "chat_history": list(self.history[-20:]) if self.history else [],
+            "recent_tool_results": [],
+            "deep_think_enabled": True,
+            "paper_mode": bool(self.extra_context.get("paper_mode", False)),
+        }
+
+        completed_ids: List[int] = []
+        failed_ids: List[int] = []
+        skipped_ids: List[int] = []
+        loop = asyncio.get_running_loop()
+
+        def on_task_complete(result: Any, step: int, total: int) -> None:
+            """Callback from PlanExecutor after each task finishes."""
+            task_id = getattr(result, "task_id", 0)
+            status = getattr(result, "status", "unknown")
+            if status == "completed":
+                completed_ids.append(task_id)
+            elif status == "skipped":
+                skipped_ids.append(task_id)
+            else:
+                failed_ids.append(task_id)
+
+            # Push SSE event for task completion
+            event = {
+                "type": "full_plan_task_complete",
+                "task_id": task_id,
+                "status": status,
+                "step": step,
+                "total": total,
+                "content": str(getattr(result, "content", "") or "")[:200],
+            }
+            try:
+                # Schedule SSE emission from the sync callback
+                asyncio.run_coroutine_threadsafe(
+                    _emit_event(event_sink, event), loop
+                )
+            except Exception:
+                pass
+
+        config = ExecutionConfig(
+            session_context=session_ctx,
+            paper_mode=bool(session_ctx.get("paper_mode", False)),
+            dependency_throttle=False,  # Don't stop on first failure for full plan
+            auto_recovery=True,
+            skip_preflight=True,  # LLM-generated artifact contracts may have issues; don't block execution
+            on_task_complete=on_task_complete,
+        )
+
+        # Emit start event
+        start_payload = {
+            "type": "full_plan_start",
+            "plan_id": plan_id,
+            "message": "Starting full plan execution via PlanExecutor...",
+        }
+        if event_sink is not None:
+            await event_sink(start_payload)
+        yield _sse_message(start_payload)
+
+        # Run PlanExecutor in a thread (it's synchronous internally)
+        try:
+            from app.services.plans.plan_executor import PlanExecutor, PlanExecutorLLMService
+            executor = PlanExecutor(
+                repo=self.plan_session.repo,
+                llm_service=PlanExecutorLLMService(),
+            )
+            summary = await asyncio.to_thread(
+                executor.execute_plan,
+                plan_id,
+                config=config,
+            )
+        except Exception as exc:
+            logger.exception(
+                "[CHAT][FULL_PLAN_EXECUTOR] PlanExecutor.execute_plan failed: %s", exc
+            )
+            error_payload = {
+                "type": "final",
+                "payload": {
+                    "response": f"Full plan execution failed: {exc}",
+                    "actions": [],
+                    "metadata": {
+                        "full_plan_execution": True,
+                        "error": str(exc),
+                    },
+                },
+            }
+            if event_sink is not None:
+                await event_sink(error_payload)
+            yield _sse_message(error_payload)
+            return
+
+        # Build final summary
+        completed_count = len(summary.executed_task_ids)
+        failed_count = len(summary.failed_task_ids)
+        skipped_count = len(summary.skipped_task_ids)
+        total_count = completed_count + failed_count + skipped_count
+
+        parts = []
+        if completed_count:
+            parts.append(f"{completed_count} completed")
+        if failed_count:
+            parts.append(f"{failed_count} failed")
+        if skipped_count:
+            parts.append(f"{skipped_count} skipped")
+        summary_text = f"Full plan execution finished: {', '.join(parts) or 'no tasks processed'}."
+        if total_count > 0:
+            summary_text += f" ({total_count} tasks total)"
+
+        # Refresh plan tree to pick up updated statuses
+        try:
+            _refresh_plan_tree_fn(self, force_reload=True)
+        except Exception:
+            pass
+
+        # Dispatch tasksUpdated event for frontend refresh
+        try:
+            if self.session_id:
+                _save_chat_message(
+                    self.session_id,
+                    "assistant",
+                    summary_text,
+                    metadata={
+                        "full_plan_execution": True,
+                        "plan_id": plan_id,
+                        "completed_count": completed_count,
+                        "failed_count": failed_count,
+                        "skipped_count": skipped_count,
+                        "execution_summary": summary.to_dict(),
+                    },
+                )
+        except Exception as save_err:
+            logger.warning("[CHAT][FULL_PLAN_EXECUTOR] Failed to save summary: %s", save_err)
+
+        final_payload = {
+            "type": "final",
+            "payload": {
+                "response": summary_text,
+                "actions": [],
+                "metadata": {
+                    "full_plan_execution": True,
+                    "plan_id": plan_id,
+                    "completed_count": completed_count,
+                    "failed_count": failed_count,
+                    "skipped_count": skipped_count,
+                    "executed_task_ids": list(summary.executed_task_ids),
+                    "failed_task_ids": list(summary.failed_task_ids),
+                    "skipped_task_ids": list(summary.skipped_task_ids),
+                },
+            },
+        }
+        if event_sink is not None:
+            await event_sink(final_payload)
+        yield _sse_message(final_payload)
+
     def _update_routing_context(self, routing_decision: RequestRoutingDecision) -> None:
         self.extra_context.update(
             {
                 "request_tier": routing_decision.request_tier,
                 "request_route_mode": routing_decision.request_route_mode,
                 "intent_type": routing_decision.intent_type,
-                "capability_floor": routing_decision.capability_floor,
+                "route_reason_codes": list(routing_decision.route_reason_codes),
                 "subject_resolution": dict(routing_decision.subject_resolution),
                 "brevity_hint": routing_decision.brevity_hint,
                 "explicit_task_ids": list(routing_decision.explicit_task_ids),
                 "explicit_task_override": routing_decision.explicit_task_override,
-                "requires_structured_plan": routing_decision.requires_structured_plan,
-                "plan_request_mode": routing_decision.plan_request_mode,
-                "requires_plan_review": routing_decision.requires_plan_review,
-                "requires_plan_optimize": routing_decision.requires_plan_optimize,
                 "full_plan_execution": routing_decision.full_plan_execution,
                 "current_user_turn_index": _current_user_turn_index_from_history(self.history),
             }
@@ -4450,53 +4776,29 @@ class StructuredChatAgent:
 
         # ── Full plan execution ───────────────────────────────────────
         # When user requests "执行整个计划" / "complete all tasks",
-        # resolve ALL executable leaves across the entire plan tree
-        # and feed them into the cascade pipeline.
+        # delegate to PlanExecutor which handles DAG ordering, artifact
+        # manifest registration, task verification, and deliverable
+        # publishing.  PlanExecutor has its own resume logic for
+        # running/skipped/failed tasks, so we always delegate when a
+        # plan is bound — no need to pre-check pending_order.
         if routing_decision.full_plan_execution:
             self.extra_context["_current_task_source"] = "full_plan"
             if self.plan_session.plan_id is not None:
-                try:
-                    tree = self.plan_session.repo.get_plan_tree(self.plan_session.plan_id)
-                    all_targets = _resolve_full_plan_executable_targets_fn(tree)
-                except Exception:
-                    all_targets = []
-
-                if all_targets:
-                    self.extra_context.pop("explicit_scope_all_blocked", None)
-                    self.extra_context.pop("explicit_scope_block_reason", None)
-                    self.extra_context.pop("explicit_scope_blocked_task_ids", None)
-                    first_target = all_targets[0]
-                    self.extra_context["current_task_id"] = int(first_target)
-                    self.extra_context["task_id"] = int(first_target)
-                    remaining = all_targets[1:]
-                    if remaining:
-                        self.extra_context["pending_scope_task_ids"] = remaining
-                    else:
-                        self.extra_context.pop("pending_scope_task_ids", None)
-                    # Synthesize explicit_task_override so the deterministic
-                    # shortcut fires (rerun_task → cascade loop).
-                    self.extra_context["explicit_task_override"] = True
-                    self.extra_context["explicit_task_ids"] = all_targets
-                    logger.info(
-                        "[CHAT][ROUTING][FULL_PLAN] Full plan execution: "
-                        "total=%d first=%s pending=%d plan_id=%s",
-                        len(all_targets),
-                        first_target,
-                        len(remaining),
-                        self.plan_session.plan_id,
-                    )
-                else:
-                    # No executable tasks remain
-                    self.extra_context.pop("pending_scope_task_ids", None)
-                    self.extra_context.pop("current_task_id", None)
-                    self.extra_context.pop("task_id", None)
-                    self.extra_context["explicit_scope_all_blocked"] = True
-                    self.extra_context["explicit_scope_block_reason"] = "all_completed"
-                    logger.info(
-                        "[CHAT][ROUTING][FULL_PLAN] No executable tasks "
-                        "remain in plan %s",
-                        self.plan_session.plan_id,
-                    )
+                self.extra_context["_full_plan_executor_delegate"] = True
+                self.extra_context.pop("explicit_scope_all_blocked", None)
+                self.extra_context.pop("explicit_scope_block_reason", None)
+                self.extra_context.pop("explicit_scope_blocked_task_ids", None)
+                self.extra_context.pop("explicit_task_override", None)
+                self.extra_context.pop("explicit_task_ids", None)
+                self.extra_context.pop("current_task_id", None)
+                self.extra_context.pop("task_id", None)
+                self.extra_context.pop("pending_scope_task_ids", None)
+                logger.info(
+                    "[CHAT][ROUTING][FULL_PLAN] Delegating to PlanExecutor: plan_id=%s",
+                    self.plan_session.plan_id,
+                )
+            else:
+                self.extra_context["_full_plan_executor_delegate"] = False
             return
 
         if routing_decision.explicit_task_override:
@@ -4575,12 +4877,6 @@ class StructuredChatAgent:
 
     async def _invoke_llm(self, user_message: str) -> LLMStructuredResponse:
         self._current_user_message = user_message
-        deterministic = self._build_deterministic_execute_task_structured()
-        if deterministic is not None:
-            return deterministic
-        deterministic = self._build_deterministic_local_manuscript_structured(user_message)
-        if deterministic is not None:
-            return deterministic
         prompt = self._build_prompt(user_message)
         model_override = self.extra_context.get("default_base_model")
         raw = await self.llm_service.chat_async(
@@ -4747,6 +5043,12 @@ class StructuredChatAgent:
         return await _handle_plan_action_fn(self, action)
 
     def _handle_task_action(self, action):
+        if getattr(action, "name", None) == "rerun_task":
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                return _handle_task_action_fn(self, action)
+            return _handle_task_action_async_fn(self, action)
         return _handle_task_action_fn(self, action)
 
     def _handle_context_request(self, action):
@@ -4843,22 +5145,10 @@ class StructuredChatAgent:
         return dict(review_result)
 
     def _start_background_created_plan_auto_review(self, plan_id: int) -> bool:
-        try:
-            thread = threading.Thread(
-                target=self._run_created_plan_auto_review_sync,
-                args=(plan_id,),
-                name=f"deepthink-plan-review-{plan_id}",
-                daemon=True,
-            )
-            thread.start()
-        except Exception as exc:
-            logger.warning(
-                "[DeepThink] Failed to start background auto-review for plan %s: %s",
-                plan_id,
-                exc,
-            )
-            return False
-        return True
+        # Disabled: auto-review/optimize after plan creation causes confusion
+        # when users start interacting before it completes. Users can manually
+        # trigger review/optimize when they want it.
+        return False
 
     def _auto_decompose_plan(
         self,

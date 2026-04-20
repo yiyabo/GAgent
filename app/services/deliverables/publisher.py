@@ -11,7 +11,11 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 from uuid import uuid4
 
-from app.config.deliverable_config import DeliverableSettings, get_deliverable_settings
+from app.config.deliverable_config import (
+    DeliverableConflictStrategy,
+    DeliverableSettings,
+    get_deliverable_settings,
+)
 from app.services.session_paths import normalize_session_base
 
 from .paper_builder import PaperBuilder
@@ -297,6 +301,12 @@ def format_deliverable_submit_summary(report: Optional[PublishReport]) -> Option
     if report is None:
         return None
     return report.submit_summary()
+
+
+class _KeepFirstConflict(Exception):
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
 
 
 class DeliverablePublisher:
@@ -1594,6 +1604,9 @@ class DeliverablePublisher:
         if path.is_absolute():
             candidates.append(path)
         else:
+            # Prioritize unified raw_files/ path structure
+            raw_files_candidate = session_dir / "raw_files" / path
+            candidates.append(raw_files_candidate)
             candidates.append(session_dir / path)
             candidates.append(self._project_root / path)
 
@@ -1870,18 +1883,17 @@ class DeliverablePublisher:
                 "updated_at": now,
                 "source_path": self._to_project_relative(file_path),
             }, None
-        source_identity = (
-            self._source_identity(file_path)
-            if module_key == "image_tabular" and file_path.suffix.lower() in IMAGE_EXTS
-            else None
-        )
-        target = self._copy_to_module(
-            source_path=file_path,
-            module_dir=(latest_root / module_key),
-            source_identity=source_identity,
-            latest_root=latest_root,
-            previous_manifest=previous_manifest,
-        )
+        source_identity = self._source_identity(file_path)
+        try:
+            target = self._copy_to_module(
+                source_path=file_path,
+                module_dir=(latest_root / module_key),
+                source_identity=source_identity,
+                latest_root=latest_root,
+                previous_manifest=previous_manifest,
+            )
+        except _KeepFirstConflict as exc:
+            return None, exc.message
         rel_path = str(target.relative_to(latest_root))
         return {
             "module": module_key,
@@ -2090,6 +2102,45 @@ class DeliverablePublisher:
             return candidate
         return None
 
+    @staticmethod
+    def _split_name_suffix(file_name: str) -> Tuple[str, str]:
+        path = Path(file_name)
+        suffix = "".join(path.suffixes)
+        if suffix and file_name.endswith(suffix):
+            return file_name[: -len(suffix)], suffix
+        return file_name, ""
+
+    def _next_conflict_target_name(
+        self,
+        *,
+        file_name: str,
+        module_dir: Path,
+        owners: Dict[str, str],
+        latest_root: Optional[Path],
+        previous_manifest: Optional[Dict[str, Any]],
+    ) -> str:
+        stem, suffix = self._split_name_suffix(file_name)
+        for index in range(2, 10000):
+            candidate_name = f"{stem}__{index}{suffix}"
+            candidate_target = module_dir / candidate_name
+            if candidate_target.exists():
+                continue
+            if candidate_name in owners:
+                continue
+            if latest_root is not None and previous_manifest:
+                manifest_owner = self._manifest_source_identity(
+                    latest_root=latest_root,
+                    module_dir=module_dir,
+                    file_name=candidate_name,
+                    previous_manifest=previous_manifest,
+                )
+                if manifest_owner is not None:
+                    continue
+            return candidate_name
+        raise ValueError(
+            f"Unable to find available deliverable basename for '{file_name}' in {module_dir}"
+        )
+
     def _copy_to_module(
         self,
         *,
@@ -2102,6 +2153,7 @@ class DeliverablePublisher:
         module_dir.mkdir(parents=True, exist_ok=True)
         target = module_dir / source_path.name
         owners: Dict[str, str] = {}
+        existing_owner: Optional[str] = None
         if source_identity:
             owners = self._load_source_ownership(module_dir)
             existing_owner = owners.get(source_path.name)
@@ -2112,24 +2164,45 @@ class DeliverablePublisher:
                     file_name=source_path.name,
                     previous_manifest=previous_manifest,
                 )
-            if existing_owner and existing_owner != source_identity:
-                raise ValueError(
-                    f"Conflicting deliverable basename '{source_path.name}' from "
-                    f"'{existing_owner}' and '{source_identity}'"
-                )
-            if target.exists() and existing_owner is None and not self._same_file(source_path, target):
-                raise ValueError(
-                    f"Conflicting deliverable basename '{source_path.name}' with unknown existing source in "
-                    f"{module_dir}"
-                )
         if target.exists() and self._same_file(source_path, target):
             if source_identity and owners.get(source_path.name) != source_identity:
                 owners[source_path.name] = source_identity
                 self._write_source_ownership(module_dir, owners)
             return target
+
+        conflict_message: Optional[str] = None
+        if target.exists():
+            if source_identity and existing_owner and existing_owner != source_identity:
+                conflict_message = (
+                    f"Conflicting deliverable basename '{source_path.name}' from "
+                    f"'{existing_owner}' and '{source_identity}'"
+                )
+            elif existing_owner is None and not self._same_file(source_path, target):
+                conflict_message = (
+                    f"Conflicting deliverable basename '{source_path.name}' with unknown existing source in "
+                    f"{module_dir}"
+                )
+
+        if conflict_message:
+            strategy: DeliverableConflictStrategy = self._settings.basename_conflict_strategy
+            if strategy == "keep_first":
+                raise _KeepFirstConflict(
+                    f"{conflict_message}; kept existing deliverable per conflict strategy"
+                )
+            if strategy == "rename":
+                renamed_name = self._next_conflict_target_name(
+                    file_name=source_path.name,
+                    module_dir=module_dir,
+                    owners=owners,
+                    latest_root=latest_root,
+                    previous_manifest=previous_manifest,
+                )
+                target = module_dir / renamed_name
+            else:
+                raise ValueError(conflict_message)
         shutil.copy2(source_path, target)
         if source_identity:
-            owners[source_path.name] = source_identity
+            owners[target.name] = source_identity
             self._write_source_ownership(module_dir, owners)
         return target
 
@@ -2173,15 +2246,18 @@ class DeliverablePublisher:
                 continue
             if resolved.suffix.lower() not in IMAGE_EXTS:
                 continue
-            staged.append(
-                self._copy_to_module(
+            try:
+                staged.append(
+                    self._copy_to_module(
                     source_path=resolved,
                     module_dir=latest_root / "image_tabular",
                     source_identity=self._source_identity(resolved),
                     latest_root=latest_root,
                     previous_manifest=previous_manifest,
+                    )
                 )
-            )
+            except _KeepFirstConflict:
+                continue
         return staged
 
     def _same_file(self, source_path: Path, target: Path) -> bool:

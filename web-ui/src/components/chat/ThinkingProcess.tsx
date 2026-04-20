@@ -34,6 +34,15 @@ interface ThinkingProcessProps {
   controlBusy?: boolean;
   controlBusyAction?: 'pause' | 'resume' | 'skip_step' | null;
   cancelRunBusy?: boolean;
+  /** Optional backend-reported progress (deep_think_progress). Surfaces the
+   *  current tool/phase when the active step label is generic (e.g. "处理当前步骤"). */
+  progressHint?: {
+    label?: string | null;
+    tool?: string | null;
+    phase?: string | null;
+    details?: string | null;
+    updated_at?: string | null;
+  } | null;
 }
 
 interface ToolSemantic {
@@ -179,7 +188,11 @@ function _toMs(value?: string): number | null {
 function formatDurationMs(ms: number | null): string {
   if (ms === null || !Number.isFinite(ms)) return '--';
   if (ms < 1000) return `${Math.max(1, Math.round(ms))}ms`;
-  return `${(ms / 1000).toFixed(1)}s`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  const totalSeconds = Math.floor(ms / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}m${seconds.toString().padStart(2, '0')}s`;
 }
 
 function stepDurationMs(step: ThinkingStep): number | null {
@@ -187,6 +200,34 @@ function stepDurationMs(step: ThinkingStep): number | null {
   const end = _toMs(step.finished_at) ?? _toMs(step.timestamp);
   if (start === null || end === null) return null;
   return Math.max(0, end - start);
+}
+
+/** Returns the best-effort start timestamp (ms) for an in-progress step. */
+function stepStartMs(step: ThinkingStep): number | null {
+  return _toMs(step.started_at) ?? _toMs(step.timestamp);
+}
+
+/** Earliest known start across a step list (ms). */
+function earliestStepStartMs(steps: ThinkingStep[]): number | null {
+  let earliest: number | null = null;
+  for (const step of steps) {
+    const start = stepStartMs(step);
+    if (start === null) continue;
+    if (earliest === null || start < earliest) earliest = start;
+  }
+  return earliest;
+}
+
+/** Ticks `Date.now()` every second while `active`, so elapsed counters stay live. */
+function useLiveNow(active: boolean): number {
+  const [now, setNow] = useState<number>(() => Date.now());
+  useEffect(() => {
+    if (!active) return;
+    setNow(Date.now());
+    const handle = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(handle);
+  }, [active]);
+  return now;
 }
 
 function isGenericText(text: string | null | undefined, language: 'zh' | 'en'): boolean {
@@ -242,7 +283,9 @@ const ThinkingStepItem: React.FC<{
   isProcessActive?: boolean;
   nextStep?: ThinkingStep;
   language: 'zh' | 'en';
-}> = ({ step, isLast, isFinished, isProcessActive, nextStep, language }) => {
+  liveNow?: number;
+  hintText?: string | null;
+}> = ({ step, isLast, isFinished, isProcessActive, nextStep, language, liveNow, hintText }) => {
   const [detailExpanded, setDetailExpanded] = useState(false);
   const streamRef = useRef<HTMLDivElement>(null);
 
@@ -259,7 +302,24 @@ const ThinkingStepItem: React.FC<{
 
   const semantic = useMemo(() => extractSemanticLabel(step.action, language), [step.action, language]);
   const label = useMemo(() => getDisplayLabel(step, language), [step, language]);
+  const labelIsGeneric = useMemo(() => isGenericText(label, language), [label, language]);
   const resultSummary = useMemo(() => extractResultSummary(step.action_result), [step.action_result]);
+
+  // Live elapsed for the in-progress step — shows "… 3.2s" next to the label
+  // so the user sees something is happening even before the step finishes.
+  const liveElapsedMs = useMemo(() => {
+    if (!isStepActive) return null;
+    const start = stepStartMs(step);
+    if (start === null || typeof liveNow !== 'number') return null;
+    return Math.max(0, liveNow - start);
+  }, [isStepActive, step, liveNow]);
+
+  // Show hint only for the active step and only when the step's own label is
+  // generic (otherwise the hint would duplicate / distract from real info).
+  const activeHintText =
+    isStepActive && labelIsGeneric && typeof hintText === 'string' && hintText.trim().length > 0
+      ? hintText.trim()
+      : null;
 
   const actionDetails = useMemo(() => {
     if (!step.action) return null;
@@ -341,10 +401,20 @@ const ThinkingStepItem: React.FC<{
         </div>
         <span className="tp-step-label">{label}</span>
         {renderStatus()}
-        {(isStepComplete || isFinished) && (
+        {isStepActive && liveElapsedMs !== null && (
+          <span className="tp-step-duration" aria-label="elapsed">
+            {formatDurationMs(liveElapsedMs)}
+          </span>
+        )}
+        {(isStepComplete || isFinished) && !isStepActive && (
           <span className="tp-step-duration">{formatDurationMs(duration)}</span>
         )}
       </div>
+
+      {/* ===== ACTIVE HINT (from deep_think_progress) — only when step label is generic ===== */}
+      {activeHintText && (
+        <div className="tp-step-hint">{activeHintText}</div>
+      )}
 
       {/* ===== LIVE STREAMING: Active reasoning step — show thought as it streams ===== */}
       {showLiveStream && liveThought && (
@@ -480,6 +550,7 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
   controlBusy = false,
   controlBusyAction = null,
   cancelRunBusy = false,
+  progressHint = null,
 }) => {
   const [isExpanded, setIsExpanded] = useState(!isFinished && process.status === 'active');
   const language = useMemo(() => detectLanguage(process), [process]);
@@ -488,12 +559,47 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
   const isActive = process.status === 'active' && !isFinished;
   const summaryText = useMemo(() => getProcessSummary(process, language), [process, language]);
   const stepsEndRef = useRef<HTMLDivElement>(null);
+  const liveNow = useLiveNow(isActive);
 
   const totalDuration = useMemo(() => {
     let total = 0;
-    for (const step of process.steps) total += stepDurationMs(step) || 0;
-    return formatDurationMs(total || null);
-  }, [process.steps]);
+    let hasKnown = false;
+    for (const step of process.steps) {
+      const d = stepDurationMs(step);
+      if (d !== null) {
+        total += d;
+        hasKnown = true;
+      }
+    }
+    if (isActive) {
+      // While running: extend the last (in-progress) step with live elapsed,
+      // so the header clock keeps ticking even before any step has `finished_at`.
+      const earliest = earliestStepStartMs(process.steps);
+      if (earliest !== null) {
+        const liveElapsed = Math.max(0, liveNow - earliest);
+        return formatDurationMs(liveElapsed);
+      }
+    }
+    return formatDurationMs(hasKnown ? total : null);
+  }, [process.steps, isActive, liveNow]);
+
+  // Normalized hint text — surfaced when the active step label is too generic.
+  const hintText = useMemo(() => {
+    if (!progressHint) return null;
+    const label = typeof progressHint.label === 'string' ? progressHint.label.trim() : '';
+    const tool = typeof progressHint.tool === 'string' ? progressHint.tool.trim() : '';
+    const details = typeof progressHint.details === 'string' ? progressHint.details.trim() : '';
+    const pieces: string[] = [];
+    if (tool) pieces.push(tool);
+    if (label && label.toLowerCase() !== tool.toLowerCase()) pieces.push(label);
+    if (details && !pieces.some((p) => p.toLowerCase() === details.toLowerCase())) {
+      pieces.push(details.length > 80 ? `${details.slice(0, 77)}…` : details);
+    }
+    const joined = pieces.join(' · ').trim();
+    if (!joined) return null;
+    if (isGenericText(joined, language)) return null;
+    return joined;
+  }, [progressHint, language]);
 
   // Auto-expand when active, auto-collapse when done
   useEffect(() => {
@@ -612,6 +718,8 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
                   isProcessActive={isActive}
                   nextStep={idx < mainSteps.length - 1 ? mainSteps[idx + 1] : undefined}
                   language={language}
+                  liveNow={liveNow}
+                  hintText={hintText}
                 />
               ))}
 
@@ -628,7 +736,7 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
                       <LoadingOutlined spin style={{ fontSize: 10 }} />
                     </div>
                     <span className="tp-step-label" style={{ color: 'var(--text-quaternary)' }}>
-                      {localize(language, '准备下一步...', 'Preparing next step...')}
+                      {hintText || localize(language, '准备下一步...', 'Preparing next step...')}
                     </span>
                   </div>
                 </motion.div>
@@ -647,7 +755,7 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
                       <LoadingOutlined spin style={{ fontSize: 10 }} />
                     </div>
                     <span className="tp-step-label" style={{ color: 'var(--text-quaternary)' }}>
-                      {localize(language, '正在分析问题...', 'Analyzing the question...')}
+                      {hintText || localize(language, '正在分析问题...', 'Analyzing the question...')}
                     </span>
                   </div>
                 </motion.div>

@@ -20,6 +20,57 @@ logger = logging.getLogger(__name__)
 MAX_READ_CHARS = 100_000   # 100K character cap (~25K-50K tokens)
 MAX_READ_LINES = 2_000     # 2K line cap (covers most source files)
 
+
+def _redirect_session_workspace_path(
+    raw_path: Optional[str],
+    *,
+    tool_context: Optional[ToolContext],
+    require_existing: bool = False,
+) -> Optional[str]:
+    text = str(raw_path or "").strip()
+    if not text or tool_context is None:
+        return raw_path
+
+    session_id = str(tool_context.session_id or "").strip()
+    work_dir = str(tool_context.work_dir or "").strip()
+    if not session_id or not work_dir:
+        return raw_path
+
+    candidate = Path(text).expanduser()
+    if not candidate.is_absolute():
+        return raw_path
+
+    try:
+        from app.services.session_paths import get_runtime_session_dir
+
+        session_dir = get_runtime_session_dir(session_id, create=True).resolve()
+    except Exception:
+        return raw_path
+
+    workspace_dir = (session_dir / "workspace").resolve()
+    resolved_candidate = candidate.resolve(strict=False)
+    try:
+        rel_workspace_path = resolved_candidate.relative_to(workspace_dir)
+    except ValueError:
+        return raw_path
+
+    task_output_dir = Path(work_dir).expanduser().resolve(strict=False)
+    redirected = (task_output_dir / rel_workspace_path).resolve(strict=False)
+    try:
+        redirected.relative_to(task_output_dir)
+    except ValueError:
+        return raw_path
+
+    if require_existing and not redirected.exists():
+        return raw_path
+
+    logger.info(
+        "Redirecting session workspace path into task work_dir: %s -> %s",
+        resolved_candidate,
+        redirected,
+    )
+    return str(redirected)
+
 def _normalize_allowed_base_paths() -> List[str]:
     cwd = Path(os.getcwd()).resolve()
     defaults = [
@@ -153,14 +204,33 @@ async def file_operations_handler(
         Dict containing operation results
     """
     try:
+        rewritten_path = path
+        rewritten_destination = destination
+        if operation == "write":
+            rewritten_path = _redirect_session_workspace_path(
+                path,
+                tool_context=tool_context,
+            )
+        elif operation in {"copy", "move", "delete"}:
+            rewritten_path = _redirect_session_workspace_path(
+                path,
+                tool_context=tool_context,
+                require_existing=True,
+            )
+        if operation in {"copy", "move"}:
+            rewritten_destination = _redirect_session_workspace_path(
+                destination,
+                tool_context=tool_context,
+            )
+
         resolved_path = resolve_tool_path_str(
-            path,
+            rewritten_path,
             tool_context=tool_context,
             treat_bare_as_results_output=operation == "write",
         )
         resolved_destination = (
             resolve_tool_path_str(
-                destination,
+                rewritten_destination,
                 tool_context=tool_context,
                 treat_bare_as_results_output=True,
             )
@@ -495,7 +565,7 @@ async def _get_file_info(target_path: str) -> Dict[str, Any]:
 # Tool definition for file operations
 file_operations_tool = {
     "name": "file_operations",
-    "description": "Perform file system operations (read, write, list, delete, copy, move, etc.)",
+    "description": "Perform file system operations (read, write, list, delete, copy, move, etc.). In task execution, prefer relative output paths so writes land in the current task output directory.",
     "category": "file_management",
     "parameters_schema": {
         "type": "object",
@@ -505,9 +575,9 @@ file_operations_tool = {
                 "description": "Operation type",
                 "enum": ["read", "write", "list", "delete", "copy", "move", "exists", "info"],
             },
-            "path": {"type": "string", "description": "Target file/directory path"},
+            "path": {"type": "string", "description": "Target file or directory path. Prefer relative paths or bare filenames for task outputs; avoid absolute session workspace paths for final deliverables."},
             "content": {"type": "string", "description": "Content to write (required for write operation)"},
-            "destination": {"type": "string", "description": "Destination path (required for copy/move operations)"},
+            "destination": {"type": "string", "description": "Destination path (required for copy/move operations). Prefer task-relative destinations for final outputs."},
             "pattern": {"type": "string", "description": "File matching pattern (optional for list operation)"},
         },
         "required": ["operation", "path"],
