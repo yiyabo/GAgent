@@ -23,6 +23,7 @@ import asyncio
 import json
 import io
 import logging
+import os
 import re
 import tarfile
 from dataclasses import dataclass
@@ -1238,6 +1239,24 @@ def _normalize_output_dir(raw_dir: Optional[str], *, default_dir: Path) -> Path:
     return (_PROJECT_ROOT / candidate).resolve()
 
 
+def _resolve_effective_proxy(explicit_proxy: Optional[str]) -> Optional[str]:
+    proxy_text = str(explicit_proxy or "").strip()
+    if proxy_text:
+        return proxy_text
+    for env_name in ("LITERATURE_PIPELINE_PROXY", "LITERATURE_PROXY"):
+        env_value = str(os.getenv(env_name) or "").strip()
+        if env_value:
+            return env_value
+    return None
+
+
+def _redact_proxy_url(proxy: str) -> str:
+    text = str(proxy or "").strip()
+    if not text:
+        return ""
+    return re.sub(r"://([^:@/]+):([^@/]+)@", r"://\1:***@", text)
+
+
 def _is_within_root(path: Path, root: Path) -> bool:
     resolved_path = path.resolve()
     resolved_root = root.resolve()
@@ -1309,6 +1328,7 @@ async def literature_pipeline_handler(
 
     max_results = max(1, min(int(max_results), 500))
     max_pdfs = max(0, min(int(max_pdfs), 200))
+    effective_proxy = _resolve_effective_proxy(proxy)
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     # --- Unified output path: use PathRouter when task_id is available ---
@@ -1386,14 +1406,16 @@ async def literature_pipeline_handler(
     downloaded: List[Dict[str, Any]] = []
     study_cards: List[Dict[str, Any]] = []
 
-    # Prefer explicit proxy (tool-level) over environment proxy to avoid impacting other HTTP clients (e.g. LLM).
+    # Prefer explicit or tool-scoped env proxy over environment proxy to avoid impacting other HTTP clients (e.g. LLM).
     effective_query = query
     fallback_query_used: Optional[str] = None
+    if effective_proxy:
+        logger.info("[LITERATURE] Using proxy %s", _redact_proxy_url(effective_proxy))
     async with httpx.AsyncClient(
         headers=headers,
         follow_redirects=True,
-        proxy=proxy,
-        trust_env=False if proxy else True,
+        proxy=effective_proxy,
+        trust_env=False if effective_proxy else True,
     ) as client:
         # 1) PubMed search
         try:
@@ -1642,6 +1664,7 @@ async def literature_pipeline_handler(
         "progress_bar": _bar(done=len(progress_steps), total=len(progress_steps)),
         "progress_steps": progress_steps,
         "coverage_report": coverage_report,
+        "proxy_configured": bool(effective_proxy),
     }
 
     # --- Unified output_location block (dual-write) ---

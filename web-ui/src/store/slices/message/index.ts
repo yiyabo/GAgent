@@ -379,13 +379,17 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   workflow_id: metadata?.workflow_id ?? currentWorkflowId ?? undefined,
   attachments,
   };
+  const clientMessageId = `client_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 
   const userMessage: ChatMessage = {
   id: `msg_${Date.now()}_user`,
   type: 'user',
   content,
   timestamp: new Date(),
-  metadata: mergedMetadata,
+  metadata: {
+  ...mergedMetadata,
+  client_message_id: clientMessageId,
+  },
   };
   get().addMessage(userMessage);
 
@@ -429,6 +433,7 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   mode: 'assistant' as const,
   history: recentMessages,
   session_id: currentSession?.session_id,
+  client_message_id: clientMessageId,
   context: {
   plan_id: mergedMetadata.plan_id,
   task_id: mergedMetadata.task_id,

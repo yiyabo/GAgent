@@ -1557,7 +1557,13 @@ class TaskVerificationService:
         if path.suffix.lower() not in _SEMANTIC_DELIVERABLE_SUFFIXES:
             return False
         lowered = path.stem.lower()
-        return any(keyword in lowered for keyword in _SEMANTIC_DELIVERABLE_KEYWORDS)
+        if any(keyword in lowered for keyword in _SEMANTIC_DELIVERABLE_KEYWORDS):
+            return True
+        return any(
+            keyword in part.lower()
+            for part in path.parts[:-1]
+            for keyword in _SEMANTIC_DELIVERABLE_KEYWORDS
+        )
 
     @staticmethod
     def _resolve_semantic_materialization_target(expected: str, base_dir: Path) -> Optional[Path]:

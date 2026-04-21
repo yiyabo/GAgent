@@ -1404,7 +1404,7 @@ class PlanExecutor:
         last_error: Optional[Exception] = None
         raw_response: Optional[str] = None
         try:
-            self._repo.update_task(plan_id, node.id, status="running")
+            self._repo.update_task(plan_id, node.id, status="running", execution_result="")
             node.status = "running"
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning(
@@ -2021,7 +2021,7 @@ class PlanExecutor:
         config: ExecutionConfig,
     ) -> ExecutionResult:
         try:
-            self._repo.update_task(plan_id, node.id, status="running")
+            self._repo.update_task(plan_id, node.id, status="running", execution_result="")
             node.status = "running"
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning(
@@ -2936,8 +2936,13 @@ class PlanExecutor:
                     extended.runtime_publishes,
                 )
         else:
-            # Authority path: only publish aliases the task explicitly declared.
+            # Default path: honor explicit publishes when present. For older
+            # plans (or tasks that persisted an empty artifact_contract block),
+            # fall back to acceptance/instruction-derived publish aliases so
+            # canonical artifacts still land in the manifest.
             publishes_to_backfill = list(provenance.explicit_publishes)
+            if not publishes_to_backfill:
+                publishes_to_backfill = list(provenance.inferred_publishes)
 
         published: Dict[str, Dict[str, Any]] = {}
         manifest_changed = False

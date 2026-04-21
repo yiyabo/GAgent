@@ -18,6 +18,31 @@ BACKEND_PORT=${BACKEND_PORT:-9000}
 BACKEND_RELOAD=${BACKEND_RELOAD:-true}
 # Suppress per-request "GET /jobs/... 200 OK" noise by default; set ACCESS_LOG=true to re-enable.
 ACCESS_LOG=${ACCESS_LOG:-false}
+BACKEND_PROXY_ON=${BACKEND_PROXY_ON:-false}
+BACKEND_PROXY_URL=${BACKEND_PROXY_URL:-http://127.0.0.1:7890}
+BACKEND_ALL_PROXY=${BACKEND_ALL_PROXY:-}
+
+case "$BACKEND_PROXY_ON" in
+  true|TRUE|1|yes|YES|on|ON)
+    export http_proxy="$BACKEND_PROXY_URL"
+    export https_proxy="$BACKEND_PROXY_URL"
+    export HTTP_PROXY="$BACKEND_PROXY_URL"
+    export HTTPS_PROXY="$BACKEND_PROXY_URL"
+    if [ -n "$BACKEND_ALL_PROXY" ]; then
+      export all_proxy="$BACKEND_ALL_PROXY"
+      export ALL_PROXY="$BACKEND_ALL_PROXY"
+    else
+      export all_proxy="$BACKEND_PROXY_URL"
+      export ALL_PROXY="$BACKEND_PROXY_URL"
+    fi
+    export no_proxy=${no_proxy:-localhost,127.0.0.1,192.168.*,10.*,*.local}
+    export NO_PROXY=${NO_PROXY:-$no_proxy}
+    echo "🌐 Backend proxy enabled: $BACKEND_PROXY_URL"
+    if [ -n "$BACKEND_ALL_PROXY" ]; then
+      echo "🧦 Backend ALL_PROXY enabled: $BACKEND_ALL_PROXY"
+    fi
+    ;;
+esac
 
 echo "🚀 Starting backend server..."
 echo "📍 Host: $BACKEND_HOST"
@@ -25,6 +50,9 @@ echo "🔌 Port: $BACKEND_PORT"
 echo "🌐 CORS Origins: $CORS_ORIGINS"
 echo "♻️  Reload enabled: $BACKEND_RELOAD"
 echo "📂 Project root: $ROOT_DIR"
+if [ -n "${LITERATURE_PIPELINE_PROXY:-}" ]; then
+  echo "📚 literature_pipeline proxy: $LITERATURE_PIPELINE_PROXY"
+fi
 
 #  FastAPI 
 RELOAD_ARGS=()

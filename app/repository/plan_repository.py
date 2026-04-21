@@ -305,6 +305,48 @@ class PlanRepository:
         )
         return len(updates)
 
+    def _reconcile_active_task_statuses_from_execution_results(self, conn, plan_id: int) -> int:
+        """Recover interrupted running/queued tasks when a terminal payload already exists.
+
+        This is intended for restart recovery only. During a fresh execution attempt,
+        the executor now clears the previous execution_result before marking the task
+        as running, so a terminal payload on an active task row means the previous run
+        already reached a terminal result but the status update was interrupted.
+        """
+
+        self._ensure_task_columns(conn, plan_id)
+        rows = conn.execute(
+            """
+            SELECT id, status, execution_result
+            FROM tasks
+            WHERE status IN ('running', 'queued')
+              AND execution_result IS NOT NULL
+              AND TRIM(execution_result) != ''
+            """
+        ).fetchall()
+
+        updates: List[Tuple[str, int]] = []
+        for row in rows:
+            current = self._normalize_persisted_status(row["status"])
+            inferred = self._infer_status_from_execution_result(row["execution_result"])
+            if inferred is None or inferred == current:
+                continue
+            updates.append((inferred, int(row["id"])))
+
+        if not updates:
+            return 0
+
+        conn.executemany(
+            "UPDATE tasks SET status=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+            updates,
+        )
+        logger.info(
+            "Recovered %s interrupted active task status(es) from execution_result for plan %s",
+            len(updates),
+            plan_id,
+        )
+        return len(updates)
+
     def _maybe_autocomplete_ancestors(self, conn, task_id: int) -> int:
         """Mark ancestor nodes as completed if all their direct children are completed/skipped.
 
@@ -1563,6 +1605,34 @@ def _resolve_owner(owner: Optional[str]) -> Optional[str]:
     return current.owner_id
 
 
+def fix_stale_plan_task_statuses_on_startup() -> int:
+    """Recover interrupted task rows whose execution_result already reached a terminal state."""
+
+    repo = PlanRepository()
+    with get_db() as conn:
+        rows = conn.execute("SELECT id FROM plans ORDER BY id ASC").fetchall()
+
+    recovered = 0
+    for row in rows:
+        plan_id = int(row["id"])
+        plan_path = get_plan_db_path(plan_id)
+        if not plan_path.exists():
+            continue
+        try:
+            with plan_db_connection(plan_path) as conn:
+                recovered += repo._reconcile_active_task_statuses_from_execution_results(
+                    conn,
+                    plan_id,
+                )
+        except Exception:
+            logger.warning(
+                "Failed to recover stale task statuses for plan %s",
+                plan_id,
+                exc_info=True,
+            )
+    return recovered
+
+
 def _loads_json(raw: Optional[str]) -> Dict[str, Any]:
     if not raw:
         return {}
@@ -1602,6 +1672,24 @@ def _merge_metadata(
     dependencies: Optional[List[int]],
 ) -> Dict[str, Any]:
     base = dict(metadata or {})
+    artifact_contract = base.get("artifact_contract")
+    if isinstance(artifact_contract, dict):
+        normalized_contract: Dict[str, List[str]] = {}
+        for field in ("requires", "publishes"):
+            raw_items = artifact_contract.get(field)
+            if not isinstance(raw_items, list):
+                continue
+            cleaned = [
+                str(item).strip()
+                for item in raw_items
+                if str(item).strip()
+            ]
+            if cleaned:
+                normalized_contract[field] = cleaned
+        if normalized_contract:
+            base["artifact_contract"] = normalized_contract
+        else:
+            base.pop("artifact_contract", None)
     if dependencies is not None:
         sanitized = _sanitize_dependencies(dependencies) or []
         base["dependencies"] = sanitized

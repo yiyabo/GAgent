@@ -60,7 +60,18 @@ def start_background_chat_run(
     create_chat_run(run_id, session_id, request_json, owner_id=owner_id)
     hub.ensure_cancel_event(run_id)
     hub.ensure_steer_queue(run_id)
-    _save_chat_message(session_id, "user", request.message, owner_id=owner_id)
+    user_message_metadata = (
+        {"client_message_id": request.client_message_id}
+        if request.client_message_id
+        else None
+    )
+    _save_chat_message(
+        session_id,
+        "user",
+        request.message,
+        user_message_metadata,
+        owner_id=owner_id,
+    )
     loop = asyncio.get_running_loop()
     task = loop.create_task(execute_chat_run(run_id))
     hub.register_worker_task(run_id, task)

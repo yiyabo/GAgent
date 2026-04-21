@@ -135,6 +135,7 @@ class ChatRequest(BaseModel):
     context: Optional[Dict[str, Any]] = None
     mode: Optional[str] = "assistant"
     session_id: Optional[str] = None
+    client_message_id: Optional[str] = None
 
 
 class ChatResponse(BaseModel):

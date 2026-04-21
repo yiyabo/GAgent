@@ -24,6 +24,9 @@ FRONTEND_USE_STATIC=${FRONTEND_USE_STATIC:-false}
 FRONTEND_USE_DOCKER=${FRONTEND_USE_DOCKER:-false}
 FRONTEND_DOCKER_IMAGE=${FRONTEND_DOCKER_IMAGE:-node:18-bullseye}
 FRONTEND_DOCKER_CONTAINER=${FRONTEND_DOCKER_CONTAINER:-gagent-frontend-dev}
+FRONTEND_NODE_BIN_DIR=${FRONTEND_NODE_BIN_DIR:-}
+FRONTEND_NODE_VERSION=${FRONTEND_NODE_VERSION:-v20.20.2}
+FRONTEND_NODE_MIRROR=${FRONTEND_NODE_MIRROR:-https://npmmirror.com/mirrors/node}
 VITE_DEV_SERVER_PORT=${VITE_DEV_SERVER_PORT:-3001}
 _truthy_start_amem() {
   case "${START_AMEM}" in
@@ -141,7 +144,13 @@ if _truthy_frontend_static; then
 elif _truthy_frontend_docker; then
   start_frontend_docker
 else
-  start_bg "frontend" "cd \"$ROOT_DIR/web-ui\" && exec npm run dev"
+  if [ -n "${FRONTEND_NODE_BIN_DIR}" ] && [ -x "${FRONTEND_NODE_BIN_DIR}/node" ] && [ -x "${FRONTEND_NODE_BIN_DIR}/npm" ]; then
+    start_bg "frontend" "export PATH=\"${FRONTEND_NODE_BIN_DIR}:\$PATH\" && hash -r && echo \"Using frontend Node: \$(node -v) (\$(command -v node))\" && echo \"Using frontend npm: \$(npm -v) (\$(command -v npm))\" && cd \"$ROOT_DIR/web-ui\" && exec npm run dev"
+  elif [ -s "${HOME}/.nvm/nvm.sh" ]; then
+    start_bg "frontend" "export NVM_NODEJS_ORG_MIRROR=\"${FRONTEND_NODE_MIRROR}\" && . \"${HOME}/.nvm/nvm.sh\" && nvm use \"${FRONTEND_NODE_VERSION}\" >/dev/null && hash -r && echo \"Using frontend Node: \$(node -v) (\$(command -v node))\" && echo \"Using frontend npm: \$(npm -v) (\$(command -v npm))\" && cd \"$ROOT_DIR/web-ui\" && exec npm run dev"
+  else
+    start_bg "frontend" "cd \"$ROOT_DIR/web-ui\" && exec npm run dev"
+  fi
 fi
 
 echo "All services started."

@@ -264,6 +264,49 @@ def test_task_verifier_materializes_nested_current_research_evidence_output(tmp_
     assert expected.read_text(encoding="utf-8") == actual.read_text(encoding="utf-8")
 
 
+def test_task_verifier_materializes_nested_evidence_dir_output_without_evidence_token(tmp_path):
+    task_dir = tmp_path / "task_18"
+    actual = task_dir / "foundational_papers_ncAA_history.md"
+    actual.parent.mkdir(parents=True, exist_ok=True)
+    actual.write_text("# foundational ncAA history\n", encoding="utf-8")
+    node = PlanNode(
+        id=18,
+        plan_id=74,
+        name="Collect Foundational ncAA History Evidence",
+        metadata={
+            "acceptance_criteria": {
+                "category": "file_data",
+                "blocking": True,
+                "checks": [
+                    {"type": "file_exists", "path": "evidence/foundational_ncAA_history.md"},
+                    {"type": "file_nonempty", "path": "evidence/foundational_ncAA_history.md"},
+                ],
+            }
+        },
+    )
+    verifier = TaskVerificationService()
+
+    finalization = verifier.finalize_payload(
+        node,
+        {
+            "status": "completed",
+            "content": "foundational history generated",
+            "metadata": {
+                "artifact_paths": [str(actual)],
+                "task_directory_full": str(task_dir),
+            },
+        },
+        execution_status="completed",
+    )
+
+    expected = task_dir / "evidence" / "foundational_ncAA_history.md"
+    assert finalization.final_status == "completed"
+    assert finalization.verification is not None
+    assert finalization.verification["status"] == "passed"
+    assert expected.exists()
+    assert expected.read_text(encoding="utf-8") == actual.read_text(encoding="utf-8")
+
+
 def test_task_verifier_prefers_best_semantic_evidence_candidate(tmp_path):
     task_dir = tmp_path / "task_19"
     less_specific = task_dir / "challenges_limitations_evidence_summary.md"

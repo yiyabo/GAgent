@@ -171,6 +171,39 @@ def test_reconcile_running_status_from_structured_execution_result():
     assert row["status"] == "running"
 
 
+def test_reconcile_active_status_from_execution_result_for_startup_recovery():
+    conn = _make_tasks_conn()
+    conn.execute(
+        "INSERT INTO tasks (id, parent_id, status, execution_result, updated_at) VALUES (?, ?, ?, ?, ?)",
+        (
+            31,
+            None,
+            "running",
+            json.dumps(
+                {"status": "failed", "content": "server restarted; run interrupted"},
+                ensure_ascii=False,
+            ),
+            "",
+        ),
+    )
+
+    repo = PlanRepository()
+    updated = repo._reconcile_active_task_statuses_from_execution_results(conn, 1)
+
+    assert updated == 1
+    row = conn.execute("SELECT status FROM tasks WHERE id=?", (31,)).fetchone()
+    assert row["status"] == "failed"
+
+
+def test_merge_metadata_drops_empty_artifact_contract() -> None:
+    merged = plan_repository_module._merge_metadata(
+        {"artifact_contract": {"requires": [], "publishes": []}},
+        None,
+    )
+
+    assert "artifact_contract" not in merged
+
+
 def test_apply_changes_atomically_reorders_within_same_parent(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

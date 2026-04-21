@@ -874,6 +874,15 @@ def summarize_tool_result(tool_name: str, result: Dict[str, Any]) -> str:
     if tool_name == "manuscript_writer":
         if result.get("success") is False:
             error = result.get("error") or "Manuscript writing failed"
+            release_summary = ""
+            if isinstance(result.get("deliverables"), dict):
+                release_summary = str(result["deliverables"].get("release_summary") or "").strip()
+            if not release_summary:
+                release_summary = str(result.get("release_summary") or "").strip()
+            if not release_summary:
+                release_summary = str(result.get("coverage_summary") or "").strip()
+            if release_summary and release_summary.lower() != str(error).strip().lower():
+                return f"Manuscript writer failed: {release_summary}"
             return f"Manuscript writer failed: {error}"
         output_path = result.get("output_path") or ""
         analysis_path = result.get("analysis_path") or ""

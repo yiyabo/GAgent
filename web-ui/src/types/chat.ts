@@ -172,6 +172,7 @@ export interface ChatMessage {
     task_name?: string | null;
     workflow_id?: string | null;
     session_id?: string;
+    client_message_id?: string;
     backend_id?: number;
     plan_id?: number | null;
     plan_creation_state?: 'created' | 'updated' | 'text_only' | 'failed' | null;

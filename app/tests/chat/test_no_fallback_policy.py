@@ -7,6 +7,7 @@ from fastapi import BackgroundTasks, HTTPException
 from starlette.requests import Request
 
 from app.routers import chat_routes
+from app.routers.chat import agent as chat_agent_module
 from app.execution.assemblers import CompositeAssembler
 from app.execution.adversarial_execution_strategy import AdversarialExecutionStrategy
 from app.routers.chat_routes import (
@@ -485,6 +486,59 @@ class _DeepThinkToolContextLeakProbe(_DeepThinkProbeBase):
         )
 
 
+class _DeepThinkPlanOperationContextProbe(_DeepThinkProbeBase):
+    def __init__(
+        self,
+        *,
+        llm_client,
+        available_tools,
+        tool_executor,
+        max_iterations,
+        tool_timeout,
+        on_thinking,
+        on_thinking_delta,
+        on_final_delta,
+        on_tool_start=None,
+        on_tool_result=None,
+        on_artifact=None,
+        **_kwargs,
+    ) -> None:
+        _ = (
+            llm_client,
+            available_tools,
+            max_iterations,
+            tool_timeout,
+            on_thinking,
+            on_thinking_delta,
+            on_final_delta,
+            on_tool_start,
+            on_tool_result,
+            on_artifact,
+        )
+        self._tool_executor = tool_executor
+
+    async def think(self, user_query: str, context: dict | None = None, task_context=None) -> DeepThinkResult:
+        _ = (user_query, context, task_context)
+        from tool_box.context import ToolContext
+
+        tool_result = await self._tool_executor(
+            "plan_operation",
+            {
+                "operation": "execute_all",
+                "plan_id": 77,
+                "tool_context": ToolContext(session_id="session-plan-exec"),
+            },
+        )
+        return DeepThinkResult(
+            final_answer=json.dumps({"tool_result": tool_result}, ensure_ascii=False),
+            thinking_steps=[],
+            total_iterations=1,
+            tools_used=["plan_operation"],
+            confidence=1.0,
+            thinking_summary="ok",
+        )
+
+
 class _DeepThinkToolResultProtocolProbe(_DeepThinkProbeBase):
     def __init__(
         self,
@@ -911,6 +965,45 @@ def test_deep_think_strips_runtime_tool_context_from_metadata(
     events = asyncio.run(_collect_deep_think_events(agent, "analyze deeply"))
     error_events = [evt for evt in events if evt.get("type") == "error"]
     assert not error_events, "DeepThink final event should remain serializable."
+    final_events = [evt for evt in events if evt.get("type") == "final"]
+    assert final_events, "Expected a final DeepThink SSE event."
+    final_metadata = final_events[-1]["payload"]["metadata"]
+    tool_results = final_metadata.get("tool_results")
+    assert isinstance(tool_results, list) and tool_results
+    tool_params = tool_results[0].get("parameters")
+    assert isinstance(tool_params, dict)
+    assert "tool_context" not in tool_params
+
+
+def test_deep_think_preserves_runtime_tool_context_for_plan_operation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(chat_routes, "DeepThinkAgent", _DeepThinkPlanOperationContextProbe)
+
+    captured: dict[str, object] = {}
+
+    async def _fake_execute_tool(name: str, **kwargs):  # type: ignore[no-untyped-def]
+        captured["name"] = name
+        captured["tool_context"] = kwargs.get("tool_context")
+        return {
+            "success": True,
+            "operation": kwargs.get("operation"),
+            "plan_id": kwargs.get("plan_id"),
+            "session_id": getattr(kwargs.get("tool_context"), "session_id", None),
+        }
+
+    monkeypatch.setattr(chat_agent_module, "execute_tool", _fake_execute_tool)
+
+    agent = _build_deep_think_test_agent()
+    agent.session_id = "session-plan-exec"
+
+    events = asyncio.run(_collect_deep_think_events(agent, "执行全部任务"))
+    error_events = [evt for evt in events if evt.get("type") == "error"]
+    assert not error_events, "DeepThink final event should remain serializable."
+    assert captured.get("name") == "plan_operation"
+    tool_context = captured.get("tool_context")
+    assert tool_context is not None
+    assert getattr(tool_context, "session_id", None) == "session-plan-exec"
     final_events = [evt for evt in events if evt.get("type") == "final"]
     assert final_events, "Expected a final DeepThink SSE event."
     final_metadata = final_events[-1]["payload"]["metadata"]
