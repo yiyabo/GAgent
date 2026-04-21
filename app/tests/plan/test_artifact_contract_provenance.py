@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from app.services.plans.artifact_contracts import (
     ArtifactContractProvenance,
+    artifact_path_matches_alias,
     extend_contract_with_runtime_candidates,
     infer_artifact_contract,
     resolve_artifact_contract_with_provenance,
@@ -158,3 +159,23 @@ def test_invalid_explicit_alias_is_dropped() -> None:
     )
 
     assert resolved.explicit_requires == ["ai_dl.references_bib"]
+
+
+def test_runtime_candidates_infer_semantic_general_evidence_markdown() -> None:
+    provenance = ArtifactContractProvenance()
+
+    extended = extend_contract_with_runtime_candidates(
+        provenance,
+        task_name="Gather key evidence for abstract",
+        instruction="Summarize evidence from recent review papers.",
+        candidate_paths=["/tmp/task_9/ncAA_abstract_evidence_summary.md"],
+    )
+
+    assert extended.runtime_publishes == ["general.evidence_md"]
+
+
+def test_artifact_path_matches_semantic_general_evidence_alias() -> None:
+    assert artifact_path_matches_alias(
+        "/tmp/task_9/ncAA_abstract_evidence_summary.md",
+        "general.evidence_md",
+    ) is True

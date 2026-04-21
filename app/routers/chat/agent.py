@@ -2025,6 +2025,10 @@ class StructuredChatAgent:
                 "plan_tree_unavailable": "Unable to load the current plan tree. Please retry after refreshing plan state.",
                 "target_task_not_found": "The selected task was not found in the current plan.",
                 "target_task_not_atomic": "code_executor can only execute atomic tasks. Please decompose this task and execute a leaf task.",
+                "explicit_task_scope_completed": (
+                    "All tasks in the explicit set are already completed. "
+                    "No re-execution is needed unless you explicitly ask to rerun them."
+                ),
                 "explicit_task_scope_blocked": (
                     "All tasks in the explicit set are currently blocked by unmet out-of-scope "
                     "dependencies. Report this blocker directly with the specific task IDs — "

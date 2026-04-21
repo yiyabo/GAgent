@@ -6,6 +6,7 @@ import {
   Input,
   Segmented,
   Space,
+  Switch,
   Table,
   Tag,
   Tooltip,
@@ -191,12 +192,13 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
     selectedTaskId: state.selectedTaskId,
   }));
   const [mode, setMode] = React.useState<PanelMode>('deliverables');
+  const [showAllRawFiles, setShowAllRawFiles] = React.useState(true);
   const [keyword, setKeyword] = React.useState('');
   const [selectedPath, setSelectedPath] = React.useState<string | null>(null);
   const [previewOpen, setPreviewOpen] = React.useState(false);
   const [showSource, setShowSource] = React.useState(false); // Toggle for renderable files
 
-  const rawPathPrefix = React.useMemo(() => {
+  const taskScopedRawPathPrefix = React.useMemo(() => {
     if (!Array.isArray(tasks) || tasks.length === 0 || selectedTaskId == null) {
       return 'raw_files';
     }
@@ -224,6 +226,8 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
 
     return ['raw_files', ...ancestors.map((id) => `task_${id}`), `task_${selectedTaskId}`].join('/');
   }, [selectedTaskId, tasks]);
+
+  const rawPathPrefix = showAllRawFiles ? 'raw_files' : taskScopedRawPathPrefix;
 
   const {
     data: rawData,
@@ -528,6 +532,8 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
               <Text type="secondary" style={{ fontSize: 12 }}>
                 {mode === 'deliverables'
                   ? 'Deliverables'
+                  : showAllRawFiles
+                  ? 'Raw Files · All Tasks'
                   : selectedTaskId != null
                   ? `Raw Files · Task #${selectedTaskId}`
                   : 'Raw Files'}
@@ -581,6 +587,32 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
             }}
             block
           />
+
+          {mode === 'raw' && (
+            <Space size={8} wrap align="center">
+              <Switch
+                size="small"
+                checked={showAllRawFiles}
+                disabled={selectedTaskId == null}
+                aria-label="All Raw Files"
+                onChange={(checked) => {
+                  setShowAllRawFiles(checked);
+                  setSelectedPath(null);
+                  setPreviewOpen(false);
+                }}
+              />
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                All Raw Files
+              </Text>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                {showAllRawFiles
+                  ? 'Showing the full raw_files tree.'
+                  : selectedTaskId != null
+                  ? `Showing only Task #${selectedTaskId}.`
+                  : 'Select a task to scope raw files.'}
+              </Text>
+            </Space>
+          )}
 
           <Input.Search
             placeholder="Search file paths"

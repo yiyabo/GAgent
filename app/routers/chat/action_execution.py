@@ -88,6 +88,7 @@ _AUTO_DEEP_THINK_RETRY_AVAILABLE_TOOLS: List[str] = [
     "web_search",
     "graph_rag",
     "sequence_fetch",
+    "url_fetch",
     "code_executor",
     "file_operations",
     "document_reader",

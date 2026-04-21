@@ -40,6 +40,7 @@ class UnifiedToolExecutor:
         "code_executor": 1200,
         "web_search": 180,
         "sequence_fetch": 120,
+        "url_fetch": 180,
         "document_reader": 200,
         "graph_rag": 600,
         "file_operations": 90,

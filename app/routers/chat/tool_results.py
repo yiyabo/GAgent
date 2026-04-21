@@ -950,6 +950,22 @@ def summarize_tool_result(tool_name: str, result: Dict[str, Any]) -> str:
             parts.append(f"saved to {output_file}")
         return "; ".join(parts) + "."
 
+    if tool_name == "url_fetch":
+        if result.get("success") is False:
+            error = result.get("error") or "URL download failed"
+            return f"URL download failed: {error}"
+        output_file = result.get("output_file") or result.get("output_file_rel")
+        content_type = result.get("content_type")
+        byte_count = result.get("bytes")
+        parts: List[str] = ["URL download succeeded"]
+        if isinstance(content_type, str) and content_type:
+            parts.append(f"content_type={content_type}")
+        if isinstance(byte_count, int):
+            parts.append(f"bytes={byte_count}")
+        if isinstance(output_file, str) and output_file:
+            parts.append(f"saved to {output_file}")
+        return "; ".join(parts) + "."
+
     if tool_name == "result_interpreter":
         operation = str(result.get("operation") or "operation").strip() or "operation"
         if result.get("success") is False:

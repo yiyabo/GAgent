@@ -142,6 +142,219 @@ def test_task_verifier_records_contract_diff_for_mismatch(tmp_path):
     assert metadata["plan_patch_suggestion"]
 
 
+def test_task_verifier_accepts_semantic_general_evidence_alias_match(tmp_path):
+    actual = tmp_path / "task_9" / "ncAA_abstract_evidence_summary.md"
+    actual.parent.mkdir(parents=True, exist_ok=True)
+    actual.write_text("# evidence\n", encoding="utf-8")
+    node = PlanNode(
+        id=9,
+        plan_id=72,
+        name="Gather Key Evidence for Abstract",
+        metadata={
+            "acceptance_criteria": {
+                "category": "file_data",
+                "blocking": True,
+                "checks": [
+                    {"type": "file_exists", "path": "general.evidence_md"},
+                    {"type": "file_nonempty", "path": "general.evidence_md"},
+                ],
+            }
+        },
+    )
+    verifier = TaskVerificationService()
+
+    finalization = verifier.finalize_payload(
+        node,
+        {
+            "status": "completed",
+            "content": "summary generated",
+            "metadata": {"artifact_paths": [str(actual)]},
+        },
+        execution_status="completed",
+    )
+
+    assert finalization.final_status == "completed"
+    assert finalization.verification is not None
+    assert finalization.verification["status"] == "passed"
+
+
+def test_task_verifier_materializes_semantic_introduction_evidence_output(tmp_path):
+    task_dir = tmp_path / "task_11"
+    actual = task_dir / "historical_evidence_summary.md"
+    actual.parent.mkdir(parents=True, exist_ok=True)
+    actual.write_text("# introduction evidence\n", encoding="utf-8")
+    node = PlanNode(
+        id=11,
+        plan_id=72,
+        name="Gather Historical Background Evidence",
+        metadata={
+            "acceptance_criteria": {
+                "category": "file_data",
+                "blocking": True,
+                "checks": [
+                    {"type": "file_exists", "path": "introduction_evidence.md"},
+                    {"type": "file_nonempty", "path": "introduction_evidence.md"},
+                ],
+            }
+        },
+    )
+    verifier = TaskVerificationService()
+
+    finalization = verifier.finalize_payload(
+        node,
+        {
+            "status": "completed",
+            "content": "historical summary generated",
+            "metadata": {
+                "artifact_paths": [str(actual)],
+                "task_directory_full": str(task_dir),
+            },
+        },
+        execution_status="completed",
+    )
+
+    expected = task_dir / "introduction_evidence.md"
+    assert finalization.final_status == "completed"
+    assert finalization.verification is not None
+    assert finalization.verification["status"] == "passed"
+    assert expected.exists()
+    assert expected.read_text(encoding="utf-8") == actual.read_text(encoding="utf-8")
+
+
+def test_task_verifier_materializes_nested_current_research_evidence_output(tmp_path):
+    task_dir = tmp_path / "task_15"
+    actual = task_dir / "task_15_current_research_directions_evidence.md"
+    actual.parent.mkdir(parents=True, exist_ok=True)
+    actual.write_text("# current research evidence\n", encoding="utf-8")
+    node = PlanNode(
+        id=15,
+        plan_id=72,
+        name="Gather Current Research Directions Evidence",
+        metadata={
+            "acceptance_criteria": {
+                "category": "file_data",
+                "blocking": True,
+                "checks": [
+                    {"type": "file_exists", "path": "evidence/current_research_evidence.md"},
+                    {"type": "file_nonempty", "path": "evidence/current_research_evidence.md"},
+                ],
+            }
+        },
+    )
+    verifier = TaskVerificationService()
+
+    finalization = verifier.finalize_payload(
+        node,
+        {
+            "status": "completed",
+            "content": "research directions summary generated",
+            "metadata": {
+                "artifact_paths": [str(actual)],
+                "task_directory_full": str(task_dir),
+            },
+        },
+        execution_status="completed",
+    )
+
+    expected = task_dir / "evidence" / "current_research_evidence.md"
+    assert finalization.final_status == "completed"
+    assert finalization.verification is not None
+    assert finalization.verification["status"] == "passed"
+    assert expected.exists()
+    assert expected.read_text(encoding="utf-8") == actual.read_text(encoding="utf-8")
+
+
+def test_task_verifier_prefers_best_semantic_evidence_candidate(tmp_path):
+    task_dir = tmp_path / "task_19"
+    less_specific = task_dir / "challenges_limitations_evidence_summary.md"
+    best = task_dir / "challenges_evidence_summary.md"
+    upstream = tmp_path / "task_9" / "general_evidence_summary.md"
+    task_dir.mkdir(parents=True, exist_ok=True)
+    upstream.parent.mkdir(parents=True, exist_ok=True)
+    less_specific.write_text("# limitations\n", encoding="utf-8")
+    best.write_text("# selected challenge evidence\n", encoding="utf-8")
+    upstream.write_text("# upstream evidence\n", encoding="utf-8")
+    node = PlanNode(
+        id=19,
+        plan_id=72,
+        name="Gather Challenges Evidence",
+        metadata={
+            "acceptance_criteria": {
+                "category": "file_data",
+                "blocking": True,
+                "checks": [
+                    {"type": "file_exists", "path": "challenges_evidence.md"},
+                    {"type": "file_nonempty", "path": "challenges_evidence.md"},
+                ],
+            }
+        },
+    )
+    verifier = TaskVerificationService()
+
+    finalization = verifier.finalize_payload(
+        node,
+        {
+            "status": "completed",
+            "content": "challenges summary generated",
+            "metadata": {
+                "artifact_paths": [str(upstream), str(less_specific), str(best)],
+                "task_directory_full": str(task_dir),
+            },
+        },
+        execution_status="completed",
+    )
+
+    expected = task_dir / "challenges_evidence.md"
+    assert finalization.final_status == "completed"
+    assert finalization.verification is not None
+    assert finalization.verification["status"] == "passed"
+    assert expected.exists()
+    assert expected.read_text(encoding="utf-8") == best.read_text(encoding="utf-8")
+
+
+def test_task_verifier_materializes_summary_without_evidence_token_for_conclusion(tmp_path):
+    task_dir = tmp_path / "task_22"
+    actual = task_dir / "key_advances_and_future_outlook_summary.md"
+    actual.parent.mkdir(parents=True, exist_ok=True)
+    actual.write_text("# conclusion evidence\n", encoding="utf-8")
+    node = PlanNode(
+        id=22,
+        plan_id=72,
+        name="Gather Conclusion Evidence",
+        metadata={
+            "acceptance_criteria": {
+                "category": "file_data",
+                "blocking": True,
+                "checks": [
+                    {"type": "file_exists", "path": "conclusion_evidence.md"},
+                    {"type": "file_nonempty", "path": "conclusion_evidence.md"},
+                ],
+            }
+        },
+    )
+    verifier = TaskVerificationService()
+
+    finalization = verifier.finalize_payload(
+        node,
+        {
+            "status": "completed",
+            "content": "future outlook summary generated",
+            "metadata": {
+                "artifact_paths": [str(actual)],
+                "task_directory_full": str(task_dir),
+            },
+        },
+        execution_status="completed",
+    )
+
+    expected = task_dir / "conclusion_evidence.md"
+    assert finalization.final_status == "completed"
+    assert finalization.verification is not None
+    assert finalization.verification["status"] == "passed"
+    assert expected.exists()
+    assert expected.read_text(encoding="utf-8") == actual.read_text(encoding="utf-8")
+
+
 def test_task_verifier_derives_acceptance_criteria_from_instruction(tmp_path):
     actual = tmp_path / "results" / "terminal_code_stats.csv"
     actual.parent.mkdir(parents=True, exist_ok=True)
@@ -615,6 +828,301 @@ def test_non_blocking_verification_failure_still_completes(tmp_path):
     assert fin.final_status == "completed"
     assert fin.verification["status"] == "failed"
     assert fin.verification["blocking"] is False
+
+
+def test_task_verifier_does_not_materialize_generic_notes_file_as_evidence(tmp_path):
+    task_dir = tmp_path / "task_11"
+    actual = task_dir / "notes.md"
+    actual.parent.mkdir(parents=True, exist_ok=True)
+    actual.write_text("# scratch notes\n", encoding="utf-8")
+    node = PlanNode(
+        id=11,
+        plan_id=72,
+        name="Gather Historical Background Evidence",
+        metadata={
+            "acceptance_criteria": {
+                "category": "file_data",
+                "blocking": True,
+                "checks": [
+                    {"type": "file_exists", "path": "introduction_evidence.md"},
+                    {"type": "file_nonempty", "path": "introduction_evidence.md"},
+                ],
+            }
+        },
+    )
+    verifier = TaskVerificationService()
+
+    finalization = verifier.finalize_payload(
+        node,
+        {
+            "status": "completed",
+            "content": "notes captured",
+            "metadata": {
+                "artifact_paths": [str(actual)],
+                "task_directory_full": str(task_dir),
+            },
+        },
+        execution_status="completed",
+    )
+
+    expected = task_dir / "introduction_evidence.md"
+    assert finalization.final_status == "failed"
+    assert finalization.verification is not None
+    assert finalization.verification["status"] == "failed"
+    assert not expected.exists()
+
+
+def test_task_verifier_does_not_materialize_generic_notes_summary_as_evidence(tmp_path):
+    task_dir = tmp_path / "task_11"
+    actual = task_dir / "notes_summary.md"
+    actual.parent.mkdir(parents=True, exist_ok=True)
+    actual.write_text("# scratch notes summary\n", encoding="utf-8")
+    node = PlanNode(
+        id=11,
+        plan_id=72,
+        name="Gather Historical Background Evidence",
+        metadata={
+            "acceptance_criteria": {
+                "category": "file_data",
+                "blocking": True,
+                "checks": [
+                    {"type": "file_exists", "path": "introduction_evidence.md"},
+                    {"type": "file_nonempty", "path": "introduction_evidence.md"},
+                ],
+            }
+        },
+    )
+    verifier = TaskVerificationService()
+
+    finalization = verifier.finalize_payload(
+        node,
+        {
+            "status": "completed",
+            "content": "notes summarized",
+            "metadata": {
+                "artifact_paths": [str(actual)],
+                "task_directory_full": str(task_dir),
+            },
+        },
+        execution_status="completed",
+    )
+
+    expected = task_dir / "introduction_evidence.md"
+    assert finalization.final_status == "failed"
+    assert finalization.verification is not None
+    assert finalization.verification["status"] == "failed"
+    assert not expected.exists()
+
+
+def test_task_verifier_does_not_materialize_unrelated_singleton_summary_as_evidence(tmp_path):
+    task_dir = tmp_path / "task_22"
+    actual = task_dir / "meeting_minutes_summary.md"
+    actual.parent.mkdir(parents=True, exist_ok=True)
+    actual.write_text("# meeting minutes\n", encoding="utf-8")
+    node = PlanNode(
+        id=22,
+        plan_id=72,
+        name="Gather Conclusion Evidence",
+        metadata={
+            "acceptance_criteria": {
+                "category": "file_data",
+                "blocking": True,
+                "checks": [
+                    {"type": "file_exists", "path": "conclusion_evidence.md"},
+                    {"type": "file_nonempty", "path": "conclusion_evidence.md"},
+                ],
+            }
+        },
+    )
+    verifier = TaskVerificationService()
+
+    finalization = verifier.finalize_payload(
+        node,
+        {
+            "status": "completed",
+            "content": "meeting minutes summarized",
+            "metadata": {
+                "artifact_paths": [str(actual)],
+                "task_directory_full": str(task_dir),
+            },
+        },
+        execution_status="completed",
+    )
+
+    expected = task_dir / "conclusion_evidence.md"
+    assert finalization.final_status == "failed"
+    assert finalization.verification is not None
+    assert finalization.verification["status"] == "failed"
+    assert not expected.exists()
+
+
+def test_task_verifier_does_not_materialize_semantic_target_outside_task_workspace(tmp_path):
+    task_dir = tmp_path / "task_11"
+    shared_target = tmp_path / "shared" / "introduction_evidence.md"
+    actual = task_dir / "historical_evidence_summary.md"
+    actual.parent.mkdir(parents=True, exist_ok=True)
+    actual.write_text("# historical evidence\n", encoding="utf-8")
+    node = PlanNode(
+        id=11,
+        plan_id=72,
+        name="Gather Historical Background Evidence",
+        metadata={
+            "acceptance_criteria": {
+                "category": "file_data",
+                "blocking": True,
+                "checks": [
+                    {"type": "file_exists", "path": "../shared/introduction_evidence.md"},
+                    {"type": "file_nonempty", "path": "../shared/introduction_evidence.md"},
+                ],
+            }
+        },
+    )
+    verifier = TaskVerificationService()
+
+    finalization = verifier.finalize_payload(
+        node,
+        {
+            "status": "completed",
+            "content": "historical evidence summarized",
+            "metadata": {
+                "artifact_paths": [str(actual)],
+                "task_directory_full": str(task_dir),
+            },
+        },
+        execution_status="completed",
+    )
+
+    assert finalization.final_status == "failed"
+    assert finalization.verification is not None
+    assert finalization.verification["status"] == "failed"
+    assert not shared_target.exists()
+
+
+def test_task_verifier_does_not_materialize_semantic_absolute_target(tmp_path):
+    task_dir = tmp_path / "task_11"
+    absolute_target = tmp_path / "shared_abs" / "introduction_evidence.md"
+    actual = task_dir / "historical_evidence_summary.md"
+    actual.parent.mkdir(parents=True, exist_ok=True)
+    actual.write_text("# historical evidence\n", encoding="utf-8")
+    node = PlanNode(
+        id=11,
+        plan_id=72,
+        name="Gather Historical Background Evidence",
+        metadata={
+            "acceptance_criteria": {
+                "category": "file_data",
+                "blocking": True,
+                "checks": [
+                    {"type": "file_exists", "path": str(absolute_target)},
+                    {"type": "file_nonempty", "path": str(absolute_target)},
+                ],
+            }
+        },
+    )
+    verifier = TaskVerificationService()
+
+    finalization = verifier.finalize_payload(
+        node,
+        {
+            "status": "completed",
+            "content": "historical evidence summarized",
+            "metadata": {
+                "artifact_paths": [str(actual)],
+                "task_directory_full": str(task_dir),
+            },
+        },
+        execution_status="completed",
+    )
+
+    assert finalization.final_status == "failed"
+    assert finalization.verification is not None
+    assert finalization.verification["status"] == "failed"
+    assert not absolute_target.exists()
+
+
+def test_task_verifier_materializes_topic_aligned_singleton_evidence_file(tmp_path):
+    task_dir = tmp_path / "task_11"
+    actual = task_dir / "historical_evidence.md"
+    actual.parent.mkdir(parents=True, exist_ok=True)
+    actual.write_text("# historical evidence\n", encoding="utf-8")
+    node = PlanNode(
+        id=11,
+        plan_id=72,
+        name="Gather Historical Background Evidence",
+        metadata={
+            "acceptance_criteria": {
+                "category": "file_data",
+                "blocking": True,
+                "checks": [
+                    {"type": "file_exists", "path": "introduction_evidence.md"},
+                    {"type": "file_nonempty", "path": "introduction_evidence.md"},
+                ],
+            }
+        },
+    )
+    verifier = TaskVerificationService()
+
+    finalization = verifier.finalize_payload(
+        node,
+        {
+            "status": "completed",
+            "content": "historical evidence captured",
+            "metadata": {
+                "artifact_paths": [str(actual)],
+                "task_directory_full": str(task_dir),
+            },
+        },
+        execution_status="completed",
+    )
+
+    expected = task_dir / "introduction_evidence.md"
+    assert finalization.final_status == "completed"
+    assert finalization.verification is not None
+    assert finalization.verification["status"] == "passed"
+    assert expected.exists()
+    assert expected.read_text(encoding="utf-8") == actual.read_text(encoding="utf-8")
+
+
+def test_task_verifier_does_not_materialize_unrelated_singleton_evidence_file(tmp_path):
+    task_dir = tmp_path / "task_11"
+    actual = task_dir / "meeting_evidence.md"
+    actual.parent.mkdir(parents=True, exist_ok=True)
+    actual.write_text("# meeting evidence\n", encoding="utf-8")
+    node = PlanNode(
+        id=11,
+        plan_id=72,
+        name="Gather Historical Background Evidence",
+        metadata={
+            "acceptance_criteria": {
+                "category": "file_data",
+                "blocking": True,
+                "checks": [
+                    {"type": "file_exists", "path": "introduction_evidence.md"},
+                    {"type": "file_nonempty", "path": "introduction_evidence.md"},
+                ],
+            }
+        },
+    )
+    verifier = TaskVerificationService()
+
+    finalization = verifier.finalize_payload(
+        node,
+        {
+            "status": "completed",
+            "content": "meeting evidence captured",
+            "metadata": {
+                "artifact_paths": [str(actual)],
+                "task_directory_full": str(task_dir),
+            },
+        },
+        execution_status="completed",
+    )
+
+    expected = task_dir / "introduction_evidence.md"
+    assert finalization.final_status == "failed"
+    assert finalization.verification is not None
+    assert finalization.verification["status"] == "failed"
+    assert not expected.exists()
 
 
 def test_execution_not_completed_skips_verification():

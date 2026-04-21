@@ -1270,6 +1270,67 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
 
         params = clean_params
 
+    elif tool_name == "url_fetch":
+        clean_params = {}
+        url_value = params.get("url")
+        if isinstance(url_value, str) and url_value.strip():
+            clean_params["url"] = url_value.strip()
+        else:
+            return AgentStep(
+                action=action,
+                success=False,
+                message="url_fetch requires `url`.",
+                details={"error": "missing_url", "tool": tool_name},
+            )
+
+        output_name_value = params.get("output_name")
+        if isinstance(output_name_value, str) and output_name_value.strip():
+            clean_params["output_name"] = output_name_value.strip()
+
+        timeout_sec = params.get("timeout_sec")
+        if timeout_sec is not None:
+            try:
+                clean_params["timeout_sec"] = float(timeout_sec)
+            except (TypeError, ValueError):
+                pass
+
+        max_bytes = params.get("max_bytes")
+        if max_bytes is not None:
+            try:
+                clean_params["max_bytes"] = int(max_bytes)
+            except (TypeError, ValueError):
+                pass
+
+        allowed_types = params.get("allowed_content_types")
+        if isinstance(allowed_types, str):
+            cleaned_allowed = [
+                chunk.strip()
+                for chunk in allowed_types.split(",")
+                if chunk.strip()
+            ]
+            if cleaned_allowed:
+                clean_params["allowed_content_types"] = cleaned_allowed
+        elif isinstance(allowed_types, list):
+            cleaned_allowed = [
+                str(item).strip()
+                for item in allowed_types
+                if str(item).strip()
+            ]
+            if cleaned_allowed:
+                clean_params["allowed_content_types"] = cleaned_allowed
+
+        sha256_value = params.get("sha256")
+        if isinstance(sha256_value, str) and sha256_value.strip():
+            clean_params["sha256"] = sha256_value.strip()
+
+        session_id_value = params.get("session_id")
+        if isinstance(session_id_value, str) and session_id_value.strip():
+            clean_params["session_id"] = session_id_value.strip()
+        elif isinstance(agent.session_id, str) and agent.session_id.strip():
+            clean_params["session_id"] = agent.session_id.strip()
+
+        params = clean_params
+
     elif tool_name == "code_executor":
         seq_block_payload = agent.extra_context.get(_SEQUENCE_FETCH_NO_CLAUDE_FALLBACK_KEY)
         if seq_block_payload:
