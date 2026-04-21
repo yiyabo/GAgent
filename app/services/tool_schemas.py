@@ -68,6 +68,7 @@ def build_tool_schemas(available_tools: List[str]) -> List[Dict[str, Any]]:
 EXECUTOR_AVAILABLE_TOOLS: List[str] = [
     "web_search",
     "sequence_fetch",
+    "url_fetch",
     "bio_tools",
     "code_executor",
     "graph_rag",
@@ -207,6 +208,51 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
                     {"required": ["accession"]},
                     {"required": ["accessions"]},
                 ],
+            },
+        },
+    },
+    "url_fetch": {
+        "type": "function",
+        "function": {
+            "name": "url_fetch",
+            "description": (
+                "Download a file from a public http/https URL into the current task/session output directory. "
+                "Use this for direct public link downloads instead of code_executor."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "Public http/https URL to download.",
+                    },
+                    "output_name": {
+                        "type": "string",
+                        "description": "Optional output filename.",
+                    },
+                    "session_id": {
+                        "type": "string",
+                        "description": "Optional session id for session-scoped output storage.",
+                    },
+                    "timeout_sec": {
+                        "type": "number",
+                        "description": "Network timeout in seconds.",
+                    },
+                    "max_bytes": {
+                        "type": "integer",
+                        "description": "Maximum response size in bytes.",
+                    },
+                    "allowed_content_types": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Optional allowed MIME types (for example application/pdf or text/*).",
+                    },
+                    "sha256": {
+                        "type": "string",
+                        "description": "Optional expected sha256 hex digest.",
+                    },
+                },
+                "required": ["url"],
             },
         },
     },

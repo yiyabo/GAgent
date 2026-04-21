@@ -329,7 +329,7 @@ def summarize_tool_step_display(step: ThinkingStep, *, language: str) -> str:
         return _localized_text(language, "处理文件内容", "Working with files")
     if tool_name == "code_executor":
         return _localized_text(language, "执行代码与分析", "Executing code and analysis")
-    if tool_name in {"bio_tools", "phagescope", "deeppl", "sequence_fetch"}:
+    if tool_name in {"bio_tools", "phagescope", "deeppl", "sequence_fetch", "url_fetch"}:
         return _localized_text(language, "运行分析工具", "Running analysis tools")
     if tool_name == "vision_reader":
         return _localized_text(language, "分析图像内容", "Analyzing visual content")
@@ -988,6 +988,7 @@ class DeepThinkAgent:
         "manuscript_writer",
         "review_pack_writer",
         "sequence_fetch",
+        "url_fetch",
         "bio_tools",
         "phagescope",
         "deeppl",
@@ -1016,6 +1017,8 @@ class DeepThinkAgent:
             "搜索文献": "web_search",
             "网络搜索": "web_search",
             "序列获取": "sequence_fetch",
+            "下载链接": "url_fetch",
+            "下载文件": "url_fetch",
             "生物工具": "bio_tools",
         }
         for alias, tool in _TOOL_ALIASES.items():
@@ -3692,17 +3695,26 @@ class DeepThinkAgent:
         if not final_answer and _explicit_override and _scope_all_blocked:
             _blocked_ids = list(getattr(task_context, "explicit_task_ids", None) or [])
             _id_str = ", ".join(str(t) for t in _blocked_ids) if _blocked_ids else "the requested tasks"
-            final_answer = (
-                f"Tasks [{_id_str}] could not be executed in this turn: "
-                f"all tasks in the explicit set are blocked by unmet out-of-scope dependencies. "
-                f"Please check the dependency status of the listed tasks and retry "
-                f"after resolving any upstream blockers."
-            )
+            _block_reason = str((context or {}).get("explicit_scope_block_reason") or "blocked_deps").strip().lower()
+            if _block_reason == "all_completed":
+                final_answer = (
+                    f"Tasks [{_id_str}] are already completed — "
+                    f"no re-execution is needed. "
+                    f"If you want to re-run them, please say so explicitly."
+                )
+            else:
+                final_answer = (
+                    f"Tasks [{_id_str}] could not be executed in this turn: "
+                    f"all tasks in the explicit set are blocked by unmet out-of-scope dependencies. "
+                    f"Please check the dependency status of the listed tasks and retry "
+                    f"after resolving any upstream blockers."
+                )
             fallback_used = True
             logger.info(
                 "[DEEP_THINK_NATIVE] explicit_scope_all_blocked: skipping forced synthesis, "
-                "emitting structured blocker for task_ids=%s",
+                "emitting structured blocker for task_ids=%s reason=%s",
                 _blocked_ids,
+                _block_reason,
             )
             if self.on_final_delta:
                 await self._stream_final_answer(final_answer)
@@ -5277,6 +5289,13 @@ Respond with ONLY a JSON object:
                 "{\"accessions\": [\"NC_001416.1\", \"NC_001417.1\"], "
                 "\"database\": \"nuccore|protein\", \"format\": \"fasta\"}. "
                 "Do not use code_executor as fallback when sequence_fetch fails."
+            ),
+            "url_fetch": (
+                "Public file downloader for direct http/https links. "
+                "Use this for downloading a file from a public URL into the current task/session output directory. "
+                "Params: {\"url\": \"https://example.com/file.csv\", optional "
+                "\"output_name\", \"allowed_content_types\", \"sha256\", \"timeout_sec\", \"max_bytes\"}. "
+                "Do not use code_executor for simple public-link downloads."
             ),
             "code_executor": "Execute Python/shell code. FALLBACK TOOL: Use this ONLY when bio_tools cannot handle the task (e.g., custom analysis scripts, complex data processing). For FASTA/FASTQ sequence stats or standard bioinformatics tasks, ALWAYS try bio_tools first. For local CSV/TSV overview/schema/count requests, prefer result_interpreter profile first. Params: {\"task\": \"description\"}",
             "web_search": "Search the internet for information. USE THIS ONLY for web-based queries, NOT for local files. For broad comparisons, prefer focused parallel subqueries with Params: {\"query\": \"original request\", \"queries\": [\"focused query 1\", \"focused query 2\"]}.",

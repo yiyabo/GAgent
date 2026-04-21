@@ -106,6 +106,13 @@ describe('ArtifactsPanel', () => {
 
     fireEvent.click(screen.getByRole('radio', { name: 'Raw Files' }));
 
+    await waitFor(() => {
+      expect(mockedArtifactsApi.listSessionArtifacts).toHaveBeenCalledWith(
+        'session_1776695619644_hb1elmfc0',
+        expect.objectContaining({ pathPrefix: 'raw_files' })
+      );
+    });
+
     const fileNode = await screen.findByText('coverage_report.json');
     fireEvent.click(fileNode);
 
@@ -119,6 +126,32 @@ describe('ArtifactsPanel', () => {
 
     await waitFor(() => {
       expect(screen.queryByText('Select a file to preview')).not.toBeInTheDocument();
+    });
+  });
+
+  it('defaults raw browsing to all raw files and can toggle back to the selected task subtree', async () => {
+    renderPanel();
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Raw Files' }));
+
+    expect(await screen.findByText('Raw Files · All Tasks')).toBeInTheDocument();
+
+    await waitFor(() => {
+      expect(mockedArtifactsApi.listSessionArtifacts).toHaveBeenCalledWith(
+        'session_1776695619644_hb1elmfc0',
+        expect.objectContaining({ pathPrefix: 'raw_files' })
+      );
+    });
+
+    fireEvent.click(screen.getByRole('switch', { name: 'All Raw Files' }));
+
+    expect(await screen.findByText('Raw Files · Task #34')).toBeInTheDocument();
+
+    await waitFor(() => {
+      expect(mockedArtifactsApi.listSessionArtifacts).toHaveBeenLastCalledWith(
+        'session_1776695619644_hb1elmfc0',
+        expect.objectContaining({ pathPrefix: 'raw_files/task_1/task_8/task_34' })
+      );
     });
   });
 });

@@ -794,6 +794,7 @@ ALL_TOOLS: List[str] = [
     "review_pack_writer",
     "manuscript_writer",
     "sequence_fetch",
+    "url_fetch",
     "bio_tools",
     "deeppl",
     "phagescope",

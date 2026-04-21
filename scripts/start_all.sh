@@ -20,8 +20,27 @@ mkdir -p "$LOG_DIR"
 
 # A-mem loads embedding models and is slow; off by default. Set START_AMEM=true to enable.
 START_AMEM=${START_AMEM:-false}
+FRONTEND_USE_STATIC=${FRONTEND_USE_STATIC:-false}
+FRONTEND_USE_DOCKER=${FRONTEND_USE_DOCKER:-false}
+FRONTEND_DOCKER_IMAGE=${FRONTEND_DOCKER_IMAGE:-node:18-bullseye}
+FRONTEND_DOCKER_CONTAINER=${FRONTEND_DOCKER_CONTAINER:-gagent-frontend-dev}
+VITE_DEV_SERVER_PORT=${VITE_DEV_SERVER_PORT:-3001}
 _truthy_start_amem() {
   case "${START_AMEM}" in
+    1|true|TRUE|yes|YES|on|ON) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+_truthy_frontend_docker() {
+  case "${FRONTEND_USE_DOCKER}" in
+    1|true|TRUE|yes|YES|on|ON) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+_truthy_frontend_static() {
+  case "${FRONTEND_USE_STATIC}" in
     1|true|TRUE|yes|YES|on|ON) return 0 ;;
     *) return 1 ;;
   esac
@@ -83,6 +102,33 @@ start_bg() {
   sleep 1
 }
 
+start_frontend_docker() {
+  local log_file="$LOG_DIR/frontend.log"
+  local pid_file="$LOG_DIR/frontend.pid"
+  local frontend_port="$VITE_DEV_SERVER_PORT"
+
+  docker rm -f "$FRONTEND_DOCKER_CONTAINER" >/dev/null 2>&1 || true
+  docker volume create gagent_frontend_node_modules >/dev/null 2>&1 || true
+  docker volume create gagent_frontend_npm_cache >/dev/null 2>&1 || true
+
+  local container_id
+  container_id="$(docker run -d \
+    --name "$FRONTEND_DOCKER_CONTAINER" \
+    -p "${frontend_port}:${frontend_port}" \
+    -v "$ROOT_DIR/web-ui:/app" \
+    -v gagent_frontend_node_modules:/app/node_modules \
+    -v gagent_frontend_npm_cache:/root/.npm \
+    -w /app \
+    "$FRONTEND_DOCKER_IMAGE" \
+    bash -lc "npm install && exec npm run dev -- --host 0.0.0.0 --port ${frontend_port}")"
+
+  echo "$container_id" > "$pid_file"
+  echo "frontend started (container $container_id)"
+  echo "log: docker logs -f $FRONTEND_DOCKER_CONTAINER"
+
+  nohup bash -lc "docker logs -f '$FRONTEND_DOCKER_CONTAINER'" > "$log_file" 2>&1 < /dev/null &
+}
+
 if _truthy_start_amem; then
   start_bg "amem" "exec bash \"$ROOT_DIR/scripts/start_amem.sh\""
 else
@@ -90,7 +136,13 @@ else
 fi
 # Login shell helps conda when only initialized in ~/.bash_profile; start_backend.sh also sources conda.sh + conda activate LLM.
 start_bg "backend" "bash -lc 'cd \"${ROOT_DIR}\" && export BACKEND_RELOAD=false && exec bash \"${ROOT_DIR}/start_backend.sh\"'"
-start_bg "frontend" "cd \"$ROOT_DIR/web-ui\" && exec npm run dev"
+if _truthy_frontend_static; then
+  start_bg "frontend" "cd \"$ROOT_DIR\" && exec python3 \"$ROOT_DIR/scripts/serve_frontend_dist.py\""
+elif _truthy_frontend_docker; then
+  start_frontend_docker
+else
+  start_bg "frontend" "cd \"$ROOT_DIR/web-ui\" && exec npm run dev"
+fi
 
 echo "All services started."
 echo "Running health checks..."

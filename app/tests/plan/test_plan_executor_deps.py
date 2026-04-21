@@ -11,7 +11,7 @@ import pytest
 
 from app.config.executor_config import ExecutorSettings, get_executor_settings
 from app.services.plans.plan_executor import ExecutionConfig, ExecutionResponse, ExecutionResult, PlanExecutor
-from app.services.plans.artifact_contracts import infer_artifact_namespace, save_artifact_manifest
+from app.services.plans.artifact_contracts import canonical_artifact_path, infer_artifact_namespace, save_artifact_manifest
 from app.services.plans.plan_models import PlanNode, PlanTree
 
 
@@ -683,6 +683,63 @@ class TestArtifactContracts:
         assert result.metadata["blocked_by_dependencies"] is True
         assert result.metadata["missing_artifact_aliases"] == ["nmr_cryo_msm.structured_evidence_json"]
         assert canonical.exists() is False
+
+    def test_execute_plan_publishes_semantic_evidence_markdown_for_explicit_alias(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        monkeypatch.chdir(tmp_path)
+        runtime_file = (
+            tmp_path
+            / "runtime"
+            / "session_task9"
+            / "raw_files"
+            / "task_1"
+            / "task_2"
+            / "task_9"
+            / "ncAA_abstract_evidence_summary.md"
+        )
+        runtime_file.parent.mkdir(parents=True, exist_ok=True)
+        runtime_file.write_text("# Key evidence\n", encoding="utf-8")
+
+        node = PlanNode(
+            id=1,
+            plan_id=7,
+            name="Gather key evidence for abstract",
+            status="completed",
+            metadata={"artifact_contract": {"publishes": ["general.evidence_md"]}},
+        )
+        repo = MagicMock()
+        executor = _make_executor(repo)
+        payload = {
+            "status": "completed",
+            "content": "ok",
+            "metadata": {"artifact_paths": [str(runtime_file)]},
+        }
+
+        finalization = executor._task_verifier.finalize_payload(
+            node,
+            payload,
+            execution_status="completed",
+        )
+        finalization, _ = executor._materialize_finalization(
+            7,
+            node,
+            finalization,
+            session_context={},
+        )
+
+        canonical = canonical_artifact_path(7, "general.evidence_md")
+        assert canonical is not None
+        manifest = tmp_path / "results" / "plans" / "plan_7" / "artifacts_manifest.json"
+
+        assert finalization.final_status == "completed"
+        assert canonical.exists() is True
+        assert canonical.read_text(encoding="utf-8") == "# Key evidence\n"
+        assert manifest.exists() is True
+        assert finalization.payload["status"] == "completed"
+        assert finalization.payload["metadata"]["artifact_authority"]["published_aliases"] == ["general.evidence_md"]
 
     def test_execute_plan_does_not_skip_false_completed_task_missing_canonical_publish(
         self,

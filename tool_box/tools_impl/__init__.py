@@ -20,6 +20,7 @@ from .phagescope import phagescope_tool
 from .result_interpreter import result_interpreter_tool
 from .plan_tools import plan_operation_tool
 from .sequence_fetch import sequence_fetch_tool
+from .url_fetch import url_fetch_tool
 from .deeppl import deeppl_tool
 from .terminal_session import terminal_session_tool
 
@@ -39,6 +40,7 @@ __all__ = [
     "result_interpreter_tool",
     "plan_operation_tool",
     "sequence_fetch_tool",
+    "url_fetch_tool",
     "deeppl_tool",
     "terminal_session_tool",
 ]

@@ -25,7 +25,7 @@ phagescope
 .claude/
 strict_analysis/
 
-# Bio Tools - Test Data & Logs
+# Bio Tools - Test Data & ogs
 logs/
 tool_box/bio_tools/test_data/
 tool_box/bio_tools/scripts/*.log
@@ -58,8 +58,7 @@ results
 
 # local Claude worktrees / external reference checkout
 .claude/worktrees/
-reference/result-interpreter/
-reference/claude-code/
+reference/
 
 # Local editor config, drafts, misc
 .qwen/

@@ -15,7 +15,10 @@ from app.services.plans.acceptance_criteria import (
 )
 from app.services.foundation.settings import CHAT_HISTORY_ABS_MAX, get_settings
 
-from .guardrail_handlers import resolve_explicit_task_scope_target
+from .guardrail_handlers import (
+    classify_explicit_scope_none_reason,
+    resolve_explicit_task_scope_target,
+)
 from .session_helpers import _find_key_recursive
 
 if TYPE_CHECKING:
@@ -437,7 +440,25 @@ def resolve_code_executor_task_context(agent: Any) -> Tuple[Optional["PlanNode"]
             full_plan_execution=full_plan_exec,
         )
         if explicit_target is None:
+            try:
+                block_reason = classify_explicit_scope_none_reason(
+                    tree,
+                    list(explicit_task_ids),
+                )
+            except Exception:
+                block_reason = "blocked_deps"
+
+            agent.extra_context["explicit_scope_all_blocked"] = True
+            agent.extra_context["explicit_scope_blocked_task_ids"] = list(explicit_task_ids)
+            agent.extra_context["explicit_scope_block_reason"] = block_reason
+
+            if block_reason == "all_completed":
+                return None, "explicit_task_scope_completed"
             return None, "explicit_task_scope_blocked"
+
+        agent.extra_context.pop("explicit_scope_all_blocked", None)
+        agent.extra_context.pop("explicit_scope_blocked_task_ids", None)
+        agent.extra_context.pop("explicit_scope_block_reason", None)
         agent.extra_context["current_task_id"] = int(explicit_target)
         agent.extra_context["task_id"] = int(explicit_target)
         agent.extra_context["_current_task_source"] = "request"

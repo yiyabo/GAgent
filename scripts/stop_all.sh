@@ -13,7 +13,8 @@ fi
 
 AMEM_PORT=${AMEM_PORT:-8001}
 BACKEND_PORT=${BACKEND_PORT:-9000}
-VITE_DEV_SERVER_PORT=${VITE_DEV_SERVER_PORT:-3000}
+VITE_DEV_SERVER_PORT=${VITE_DEV_SERVER_PORT:-3001}
+FRONTEND_DOCKER_CONTAINER=${FRONTEND_DOCKER_CONTAINER:-gagent-frontend-dev}
 
 kill_pid() {
   local name="$1"
@@ -131,6 +132,18 @@ stop_service() {
   kill_by_port "$name" "$port" || true
 }
 
+stop_frontend_container() {
+  if ! command -v docker >/dev/null 2>&1; then
+    return 0
+  fi
+
+  if docker ps -a --format '{{.Names}}' | grep -Fxq "$FRONTEND_DOCKER_CONTAINER"; then
+    echo "frontend-container: stopping $FRONTEND_DOCKER_CONTAINER"
+    docker rm -f "$FRONTEND_DOCKER_CONTAINER" >/dev/null 2>&1 || true
+  fi
+}
+
 stop_service "frontend" "$VITE_DEV_SERVER_PORT"
+stop_frontend_container
 stop_service "backend" "$BACKEND_PORT"
 stop_service "amem" "$AMEM_PORT"

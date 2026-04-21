@@ -126,6 +126,7 @@ _NON_CONCURRENT_TOOLS = {
     "code_executor",
     "phagescope",
     "bio_tools",
+    "url_fetch",
     "terminal_session",
     "plan_operation",
     "manuscript_writer",
