@@ -3438,6 +3438,7 @@ class StructuredChatAgent:
                     nonlocal deep_think_tool_order, deep_think_bg_category
                     nonlocal bio_failure_active, failed_tool_name
                     nonlocal help_seen_after_failure, retry_seen_after_help
+                    runtime_tool_context = params.get("tool_context") if isinstance(params, dict) else None
                     safe_params = _sanitize_deep_think_tool_params(params)
                     requested_operation = str(safe_params.get("operation") or "").strip().lower()
 
@@ -3833,7 +3834,14 @@ class StructuredChatAgent:
                         )
                         return result
 
-                    result = await execute_tool(name, **safe_params)
+                    if runtime_tool_context is not None:
+                        result = await execute_tool(
+                            name,
+                            tool_context=runtime_tool_context,
+                            **safe_params,
+                        )
+                    else:
+                        result = await execute_tool(name, **safe_params)
 
                     # Special handling: bind Plan to session after successful creation
                     if name == "plan_operation" and isinstance(result, dict):

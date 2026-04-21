@@ -277,10 +277,16 @@ async def chat_message(
             )
 
         if request.session_id:
+            user_message_metadata = (
+                {"client_message_id": request.client_message_id}
+                if request.client_message_id
+                else None
+            )
             _save_chat_message(
                 request.session_id,
                 "user",
                 request.message,
+                user_message_metadata,
                 owner_id=owner_id,
             )
             session_settings = _get_session_settings(
