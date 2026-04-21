@@ -388,8 +388,21 @@ class PlanStatusResolver:
                 reason_code = preflight_issues[0].code
             elif verification_status == "failed":
                 effective_status = "failed"
-                status_reason = _truncate_reason(content or raw_result_text) or "Verification failed."
-                reason_code = "verification_failed"
+                if (
+                    failure_kind == "contract_mismatch"
+                    and (raw_status in _COMPLETED_LIKE or payload_status in _COMPLETED_LIKE)
+                ):
+                    status_reason = (
+                        "Execution completed, but generated outputs did not match the expected "
+                        "deliverables contract."
+                    )
+                    reason_code = "contract_mismatch_after_execution"
+                elif raw_status in _COMPLETED_LIKE or payload_status in _COMPLETED_LIKE:
+                    status_reason = "Execution completed, but verification failed."
+                    reason_code = "verification_failed_after_execution"
+                else:
+                    status_reason = _truncate_reason(content or raw_result_text) or "Verification failed."
+                    reason_code = "verification_failed"
             elif payload_status in _FAILED_LIKE:
                 effective_status = "failed"
                 status_reason = _truncate_reason(content or raw_result_text) or "Task failed."

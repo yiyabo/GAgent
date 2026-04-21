@@ -28,6 +28,7 @@ from .tools_impl import (
     result_interpreter_tool,
     review_pack_writer_tool,
     sequence_fetch_tool,
+    url_fetch_tool,
     terminal_session_tool,
     vision_reader_tool,
     web_search_tool,
@@ -73,6 +74,9 @@ _TOOL_METADATA: Dict[str, Dict[str, Any]] = {
         "is_read_only": True,
         "is_concurrent_safe": True,
         "search_hint": "ncbi genbank sequence fasta accession fetch",
+    },
+    "url_fetch": {
+        "search_hint": "download public url link file http https fetch",
     },
 
     "deeppl": {
@@ -144,6 +148,7 @@ _STANDARD_TOOLS: List[Dict[str, Any]] = [
     phagescope_tool,
     deeppl_tool,
     sequence_fetch_tool,
+    url_fetch_tool,
     terminal_session_tool,
     bio_tools_tool,
     result_interpreter_tool,

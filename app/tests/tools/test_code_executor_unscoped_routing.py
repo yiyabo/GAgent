@@ -201,6 +201,93 @@ def test_prepare_code_executor_params_routes_unscoped_for_session_deliverable_co
     assert prepared_params.get("allowed_tools") == "Write,Bash,Read"
 
 
+def test_resolve_code_executor_task_context_marks_explicit_completed_scope() -> None:
+    root = PlanNode(
+        id=1,
+        plan_id=49,
+        name="Root",
+        status="pending",
+    )
+    completed_leaf = PlanNode(
+        id=22,
+        plan_id=49,
+        name="Completed conclusion task",
+        parent_id=1,
+        status="completed",
+    )
+    tree = PlanTree(
+        id=49,
+        title="Plan 49",
+        nodes={1: root, 22: completed_leaf},
+        adjacency={None: [1], 1: [22], 22: []},
+    )
+    agent = StructuredChatAgent.__new__(StructuredChatAgent)
+    agent.plan_session = SimpleNamespace(plan_id=49, repo=_RepoStub(tree))
+    agent.extra_context = {
+        "explicit_task_ids": [22],
+        "explicit_task_override": True,
+    }
+
+    node, error = agent._resolve_code_executor_task_context()
+
+    assert node is None
+    assert error == "explicit_task_scope_completed"
+    assert agent.extra_context.get("explicit_scope_all_blocked") is True
+    assert agent.extra_context.get("explicit_scope_block_reason") == "all_completed"
+    assert agent.extra_context.get("explicit_scope_blocked_task_ids") == [22]
+
+
+def test_prepare_code_executor_params_reports_explicit_completed_scope() -> None:
+    root = PlanNode(
+        id=1,
+        plan_id=49,
+        name="Root",
+        status="pending",
+    )
+    completed_leaf = PlanNode(
+        id=22,
+        plan_id=49,
+        name="Completed conclusion task",
+        parent_id=1,
+        status="completed",
+    )
+    tree = PlanTree(
+        id=49,
+        title="Plan 49",
+        nodes={1: root, 22: completed_leaf},
+        adjacency={None: [1], 1: [22], 22: []},
+    )
+    agent = StructuredChatAgent.__new__(StructuredChatAgent)
+    agent.plan_session = SimpleNamespace(plan_id=49, repo=_RepoStub(tree))
+    agent.extra_context = {
+        "explicit_task_ids": [22],
+        "explicit_task_override": True,
+    }
+    agent.session_id = "session_test"
+    agent.mode = "assistant"
+    agent._sync_job_id = None
+    agent.conversation_id = "conv_test"
+
+    action = LLMAction(
+        kind="tool_operation",
+        name="code_executor",
+        parameters={"task": "Execute task 22"},
+        order=1,
+    )
+
+    prepared = asyncio.run(
+        agent._prepare_code_executor_params(
+            action=action,
+            tool_name="code_executor",
+            params=dict(action.parameters),
+        )
+    )
+
+    assert prepared.success is False
+    assert "already completed" in prepared.message
+    assert prepared.details.get("error") == "explicit_task_scope_completed"
+
+
 def test_sync_task_status_skips_for_unscoped_code_executor() -> None:
     repo = _RepoTaskSyncStub()
     agent = StructuredChatAgent.__new__(StructuredChatAgent)

@@ -179,6 +179,12 @@ def aliases_for_file_name(file_name: str, *, preferred_namespace: str) -> List[s
         alias = f"{preferred_namespace}.{_GENERIC_BASENAME_TO_SLOT[lowered]}"
         if alias in _ARTIFACT_SPECS and alias not in aliases:
             aliases.append(alias)
+    for alias in _semantic_aliases_for_file_name(
+        lowered,
+        preferred_namespace=preferred_namespace,
+    ):
+        if alias not in aliases:
+            aliases.append(alias)
     return aliases
 
 
@@ -191,6 +197,79 @@ def candidate_filenames_for_alias(alias: str) -> List[str]:
         if alias in aliases and basename.lower() not in names:
             names.append(basename.lower())
     return names
+
+
+def is_artifact_alias(value: str) -> bool:
+    return str(value or "").strip() in _ARTIFACT_SPECS
+
+
+def _semantic_basename_matches_alias(*, basename: str, alias: str) -> bool:
+    spec = _ARTIFACT_SPECS.get(alias)
+    if spec is None:
+        return False
+
+    namespace, _ = spec
+    slot = alias.split(".", 1)[1] if "." in alias else ""
+    lowered = Path(str(basename or "")).name.lower()
+    if not lowered:
+        return False
+    if lowered.endswith(".analysis.md") or lowered.endswith(".partial.md"):
+        return False
+
+    suffix = Path(lowered).suffix.lower()
+    stem = Path(lowered).stem.lower()
+    tokens = [token for token in re.split(r"[^a-z0-9]+", stem) if token]
+    token_set = set(tokens)
+
+    if slot == "evidence_md":
+        if suffix != ".md" or "evidence" not in token_set:
+            return False
+    elif slot == "references_bib":
+        if suffix != ".bib" or not token_set.intersection({"reference", "references", "refs", "bibliography", "citations"}):
+            return False
+    elif slot == "library_jsonl":
+        if suffix != ".jsonl" or "library" not in token_set:
+            return False
+    elif slot == "structured_evidence_json":
+        if suffix != ".json" or not {"structured", "evidence"}.issubset(token_set):
+            return False
+    elif slot == "outline_json":
+        if suffix != ".json" or "outline" not in token_set:
+            return False
+    else:
+        return False
+
+    if namespace == "general":
+        return True
+
+    keyword_text = f"{' '.join(tokens)} {lowered}"
+    return any(
+        _text_contains_namespace_keyword(keyword_text, keyword)
+        for keyword in _NAMESPACE_KEYWORDS.get(namespace, ())
+    )
+
+
+def artifact_path_matches_alias(path_text: str, alias: str) -> bool:
+    basename = Path(str(path_text or "")).name.lower()
+    if not basename or alias not in _ARTIFACT_SPECS:
+        return False
+    if basename in candidate_filenames_for_alias(alias):
+        return True
+    return _semantic_basename_matches_alias(basename=basename, alias=alias)
+
+
+def _semantic_aliases_for_file_name(
+    file_name: str,
+    *,
+    preferred_namespace: str,
+) -> List[str]:
+    aliases: List[str] = []
+    for alias, (namespace, _) in _ARTIFACT_SPECS.items():
+        if namespace != preferred_namespace:
+            continue
+        if artifact_path_matches_alias(file_name, alias):
+            aliases.append(alias)
+    return aliases
 
 
 def infer_artifact_contract(
@@ -510,6 +589,12 @@ def find_candidate_source_for_alias(
     for raw_path in reversed(deduped):
         basename = Path(raw_path).name.lower()
         if basename in wanted and Path(raw_path).exists():
+            return raw_path
+    for raw_path in reversed(deduped):
+        candidate = Path(raw_path)
+        if not candidate.exists() or not candidate.is_file():
+            continue
+        if artifact_path_matches_alias(raw_path, alias):
             return raw_path
     return None
 

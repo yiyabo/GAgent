@@ -1,5 +1,6 @@
 import React from 'react';
 import {
+  Alert,
   Button,
   Collapse,
   Descriptions,
@@ -425,6 +426,29 @@ export const ExecutionResult: React.FC<ExecutionResultProps> = ({
     return <Text type="secondary">No execution result available</Text>;
   }
   const verification = getVerificationView(result);
+  const executionStatus = String(
+    result.metadata?.execution_status ?? result.status ?? ''
+  )
+    .trim()
+    .toLowerCase();
+  const failureKind = String(result.metadata?.failure_kind ?? '')
+    .trim()
+    .toLowerCase();
+  const executionCompleted = executionStatus === 'completed' || executionStatus === 'done' || executionStatus === 'success';
+  const artifactVerification =
+    result.metadata && typeof result.metadata.artifact_verification === 'object'
+      ? (result.metadata.artifact_verification as Record<string, any>)
+      : null;
+  const producedFiles = Array.isArray(artifactVerification?.actual_outputs)
+    ? (artifactVerification?.actual_outputs as unknown[])
+        .map((item) => String(item ?? '').trim())
+        .filter((item) => item.length > 0)
+    : [];
+  const expectedFiles = Array.isArray(artifactVerification?.expected_deliverables)
+    ? (artifactVerification?.expected_deliverables as unknown[])
+        .map((item) => String(item ?? '').trim())
+        .filter((item) => item.length > 0)
+    : [];
   const manualAcceptance =
     result.metadata && typeof result.metadata.manual_acceptance === 'object'
       ? (result.metadata.manual_acceptance as Record<string, any>)
@@ -472,10 +496,62 @@ export const ExecutionResult: React.FC<ExecutionResultProps> = ({
           </Descriptions.Item>
         </Descriptions>
       )}
+      {executionCompleted && verification.status === 'failed' && (
+        <Alert
+          type="warning"
+          showIcon
+          message="Execution completed, but verification failed"
+          description={
+            failureKind === 'contract_mismatch'
+              ? 'The task produced files, but they did not match the expected deliverable contract, so the task remains failed until the outputs are corrected or accepted manually.'
+              : 'The task produced output, but deterministic verification did not pass, so the task remains failed until the result is corrected or accepted manually.'
+          }
+        />
+      )}
       {result.content && (
         <Paragraph style={{ whiteSpace: 'pre-wrap' }} copyable>
           {result.content}
         </Paragraph>
+      )}
+      {producedFiles.length > 0 && (
+        <Collapse
+          size="small"
+          items={[
+            {
+              key: 'produced-files',
+              label: `Produced files (${producedFiles.length})`,
+              children: (
+                <Space direction="vertical" style={{ width: '100%' }}>
+                  {producedFiles.map((item) => (
+                    <Paragraph key={item} copyable style={{ whiteSpace: 'pre-wrap', marginBottom: 8 }}>
+                      {item}
+                    </Paragraph>
+                  ))}
+                </Space>
+              ),
+            },
+          ]}
+        />
+      )}
+      {expectedFiles.length > 0 && verification.status === 'failed' && (
+        <Collapse
+          size="small"
+          items={[
+            {
+              key: 'expected-files',
+              label: `Expected deliverables (${expectedFiles.length})`,
+              children: (
+                <Space direction="vertical" style={{ width: '100%' }}>
+                  {expectedFiles.map((item) => (
+                    <Paragraph key={item} copyable style={{ whiteSpace: 'pre-wrap', marginBottom: 8 }}>
+                      {item}
+                    </Paragraph>
+                  ))}
+                </Space>
+              ),
+            },
+          ]}
+        />
       )}
       {verification.failures.length > 0 && (
         <Collapse

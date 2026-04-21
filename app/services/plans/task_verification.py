@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import re
+import shutil
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,8 +22,10 @@ from .acceptance_criteria import (
     resolve_glob_pattern,
 )
 from .artifact_contracts import (
+    artifact_path_matches_alias,
     artifact_manifest_path,
     infer_artifact_contract,
+    is_artifact_alias,
     load_artifact_manifest,
     resolve_artifact_contract_with_provenance,
     resolve_manifest_aliases,
@@ -69,6 +72,58 @@ _INTERNAL_TOOL_OUTPUT_RE = re.compile(
     re.IGNORECASE,
 )
 _TABULAR_ROW_COUNT_KEYS = {"row_count", "rows", "record_count"}
+_SEMANTIC_DELIVERABLE_SUFFIXES = {".md"}
+_SEMANTIC_DELIVERABLE_KEYWORDS = {"evidence"}
+_SEMANTIC_FILENAME_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "draft",
+    "evidence",
+    "file",
+    "final",
+    "for",
+    "key",
+    "md",
+    "of",
+    "output",
+    "outputs",
+    "report",
+    "section",
+    "sections",
+    "summary",
+    "summaries",
+    "task",
+    "the",
+    "v2",
+    "v3",
+}
+_SEMANTIC_SINGLETON_FALLBACK_GENERIC_TOKENS = {
+    "memo",
+    "memos",
+    "misc",
+    "miscellaneous",
+    "note",
+    "notes",
+    "placeholder",
+    "scratch",
+    "temp",
+    "tmp",
+    "todo",
+    "todos",
+}
+_SEMANTIC_TOPIC_ALIASES = {
+    "conclusion": {
+        "advance",
+        "advances",
+        "future",
+        "outlook",
+        "perspective",
+        "perspectives",
+        "prospect",
+        "prospects",
+    },
+}
 
 
 @dataclass
@@ -182,6 +237,15 @@ class TaskVerificationService:
             local_artifact_paths,
             payload=normalized_payload,
         )
+        local_artifact_paths = self._materialize_semantic_expected_deliverables(
+            node=node,
+            criteria=effective_criteria,
+            artifact_paths=local_artifact_paths,
+            base_dir=base_dir,
+        )
+        if local_artifact_paths:
+            normalized_payload["artifact_paths"] = list(dict.fromkeys(local_artifact_paths))[:80]
+            metadata["artifact_paths"] = list(normalized_payload["artifact_paths"])
         blocking = bool(effective_criteria.get("blocking", True))
         failures: List[Dict[str, Any]] = []
         checks = effective_criteria.get("checks") or []
@@ -269,7 +333,7 @@ class TaskVerificationService:
         ----------
         override_criteria:
             If provided, this ``acceptance_criteria`` dict takes precedence over
-            whatever is stored in the task's metadata.  When an LLM passes
+            whatever is stored in the task's metadata. When an LLM passes
             ``verification_criteria`` via action params, the handler converts
             them and injects here so that the verifier actually runs checks
             instead of skipping.
@@ -291,7 +355,10 @@ class TaskVerificationService:
                 len(override_criteria.get("checks", [])),
             )
 
-        raw_payload = self._parse_execution_result(node.execution_result, fallback_status=node.status)
+        raw_payload = self._parse_execution_result(
+            node.execution_result,
+            fallback_status=node.status,
+        )
         finalization = self.finalize_payload(
             node,
             raw_payload,
@@ -1105,6 +1172,8 @@ class TaskVerificationService:
         expected_name = expected_path.name.lower()
 
         basename_hit: Optional[Path] = None
+        alias_hit: Optional[Path] = None
+        expected_alias = expected_name if is_artifact_alias(expected_name) else None
 
         for raw in artifact_paths:
             ap = Path(raw)
@@ -1112,10 +1181,16 @@ class TaskVerificationService:
                 continue
             if basename_hit is None and ap.name.lower() == expected_name:
                 basename_hit = ap
+            if alias_hit is None and expected_alias and artifact_path_matches_alias(str(ap), expected_alias):
+                alias_hit = ap
 
         if basename_hit:
             logger.info("[Verification] Fallback basename match: %s -> %s", expected_path, basename_hit)
             return basename_hit
+
+        if alias_hit:
+            logger.info("[Verification] Fallback alias match: %s -> %s", expected_path, alias_hit)
+            return alias_hit
 
         return None
 
@@ -1407,6 +1482,281 @@ class TaskVerificationService:
 
     def _expected_deliverables(self, criteria: Optional[Dict[str, Any]]) -> List[str]:
         return derive_expected_deliverables(criteria)
+
+    def _materialize_semantic_expected_deliverables(
+        self,
+        *,
+        node: PlanNode,
+        criteria: Optional[Dict[str, Any]],
+        artifact_paths: Sequence[str],
+        base_dir: Path,
+    ) -> List[str]:
+        updated_paths: List[str] = []
+        seen: set[str] = set()
+        for raw in artifact_paths:
+            text = str(raw or "").strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            updated_paths.append(text)
+
+        for expected in self._expected_deliverables(criteria):
+            if not self._should_semantically_materialize_expected(expected):
+                continue
+            target = self._resolve_semantic_materialization_target(expected, base_dir)
+            if target is None:
+                logger.info(
+                    "Skipping semantic materialization for unsafe target %r (task=%s, base_dir=%s)",
+                    expected,
+                    node.id,
+                    base_dir,
+                )
+                continue
+            if target.exists() and target.is_file() and target.stat().st_size > 0:
+                target_text = str(target)
+                if target_text not in seen:
+                    seen.add(target_text)
+                    updated_paths.append(target_text)
+                continue
+
+            candidate = self._select_semantic_expected_candidate(
+                node=node,
+                expected=expected,
+                artifact_paths=updated_paths,
+            )
+            if candidate is None:
+                continue
+
+            target.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                if candidate.resolve() != target.resolve():
+                    shutil.copy2(candidate, target)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to materialize semantic deliverable %s from %s for task %s: %s",
+                    target,
+                    candidate,
+                    node.id,
+                    exc,
+                )
+                continue
+
+            target_text = str(target)
+            if target_text not in seen:
+                seen.add(target_text)
+                updated_paths.append(target_text)
+
+        return updated_paths[:80]
+
+    @staticmethod
+    def _should_semantically_materialize_expected(expected: str) -> bool:
+        text = str(expected or "").strip().replace("\\", "/")
+        if not text or any(token in text for token in ("*", "?", "[")):
+            return False
+        path = Path(text)
+        if path.suffix.lower() not in _SEMANTIC_DELIVERABLE_SUFFIXES:
+            return False
+        lowered = path.stem.lower()
+        return any(keyword in lowered for keyword in _SEMANTIC_DELIVERABLE_KEYWORDS)
+
+    @staticmethod
+    def _resolve_semantic_materialization_target(expected: str, base_dir: Path) -> Optional[Path]:
+        text = str(expected or "").strip()
+        if not text:
+            return None
+
+        raw_target = Path(text).expanduser()
+        if raw_target.is_absolute():
+            return None
+
+        try:
+            resolved_base = base_dir.expanduser().resolve()
+        except Exception:
+            resolved_base = base_dir.expanduser()
+
+        try:
+            resolved_target = (resolved_base / raw_target).resolve()
+        except Exception:
+            resolved_target = resolved_base / raw_target
+
+        try:
+            resolved_target.relative_to(resolved_base)
+        except ValueError:
+            return None
+        return resolved_target
+
+    def _select_semantic_expected_candidate(
+        self,
+        *,
+        node: PlanNode,
+        expected: str,
+        artifact_paths: Sequence[str],
+    ) -> Optional[Path]:
+        candidates = self._semantic_candidate_files(node=node, artifact_paths=artifact_paths)
+        if not candidates:
+            return None
+
+        expected_name = Path(str(expected or "")).name.lower()
+        expected_core = self._semantic_core_tokens(expected_name)
+        task_core = self._semantic_task_tokens(node)
+        topic_core = self._semantic_topic_tokens(
+            expected_core=expected_core,
+            task_core=task_core,
+        )
+
+        best_score: Optional[tuple[int, int, int, int]] = None
+        best_path: Optional[Path] = None
+        for candidate in candidates:
+            score = self._semantic_candidate_score(
+                expected_name=expected_name,
+                expected_core=expected_core,
+                candidate_name=candidate.name.lower(),
+                candidate_count=len(candidates),
+                topic_core=topic_core,
+            )
+            if score is None:
+                continue
+            if best_score is None or score > best_score:
+                best_score = score
+                best_path = candidate
+        return best_path
+
+    def _semantic_candidate_files(
+        self,
+        *,
+        node: PlanNode,
+        artifact_paths: Sequence[str],
+    ) -> List[Path]:
+        all_files: List[Path] = []
+        current_task_files: List[Path] = []
+        seen: set[str] = set()
+        task_marker = f"/task_{node.id}/"
+
+        for raw in artifact_paths:
+            path = Path(str(raw)).expanduser()
+            if not path.exists() or not path.is_file():
+                continue
+            if self._is_internal_artifact_path(str(path)):
+                continue
+            lowered_name = path.name.lower()
+            if lowered_name.endswith(".analysis.md") or lowered_name.endswith(".partial.md"):
+                continue
+            if path.suffix.lower() not in _SEMANTIC_DELIVERABLE_SUFFIXES:
+                continue
+            try:
+                resolved = path.resolve()
+            except Exception:
+                resolved = path
+            key = str(resolved)
+            if key in seen:
+                continue
+            seen.add(key)
+            all_files.append(resolved)
+            if task_marker in str(resolved).replace("\\", "/"):
+                current_task_files.append(resolved)
+
+        return current_task_files or all_files
+
+    @staticmethod
+    def _semantic_text_tokens(text: str) -> set[str]:
+        tokens = [
+            token
+            for token in re.split(r"[^a-z0-9]+", str(text or "").lower())
+            if token and not token.isdigit()
+        ]
+        return {
+            token
+            for token in tokens
+            if token not in _SEMANTIC_FILENAME_STOPWORDS
+        }
+
+    @classmethod
+    def _semantic_core_tokens(cls, file_name: str) -> set[str]:
+        stem = Path(str(file_name or "")).stem.lower()
+        return cls._semantic_text_tokens(stem)
+
+    @classmethod
+    def _semantic_task_tokens(cls, node: PlanNode) -> set[str]:
+        return cls._semantic_text_tokens(
+            " ".join(
+                part
+                for part in (
+                    str(getattr(node, "name", "") or "").strip(),
+                    str(getattr(node, "instruction", "") or "").strip(),
+                )
+                if part
+            )
+        )
+
+    @classmethod
+    def _semantic_topic_tokens(
+        cls,
+        *,
+        expected_core: set[str],
+        task_core: set[str],
+    ) -> set[str]:
+        topic_core = set(expected_core) | set(task_core)
+        expanded = set(topic_core)
+        for token in list(topic_core):
+            expanded.update(_SEMANTIC_TOPIC_ALIASES.get(token, set()))
+        return expanded
+
+    @staticmethod
+    def _allow_singleton_semantic_fallback(
+        *,
+        candidate_core: set[str],
+        topic_core: set[str],
+    ) -> bool:
+        informative_core = candidate_core - _SEMANTIC_SINGLETON_FALLBACK_GENERIC_TOKENS
+        return bool(informative_core & topic_core)
+
+    def _semantic_candidate_score(
+        self,
+        *,
+        expected_name: str,
+        expected_core: set[str],
+        candidate_name: str,
+        candidate_count: int,
+        topic_core: set[str],
+    ) -> Optional[tuple[int, int, int, int]]:
+        if candidate_name == expected_name:
+            return (1000, 0, 0, 0)
+
+        candidate_core = self._semantic_core_tokens(candidate_name)
+        overlap = len(expected_core & candidate_core)
+        extras = len(candidate_core - expected_core)
+        missing = len(expected_core - candidate_core)
+
+        base_score = 0
+        if expected_core:
+            if overlap == 0:
+                if candidate_count == 1:
+                    if not self._allow_singleton_semantic_fallback(
+                        candidate_core=candidate_core,
+                        topic_core=topic_core,
+                    ):
+                        return None
+                    base_score = 1
+                else:
+                    return None
+            else:
+                base_score = overlap * 10 - extras - missing
+        elif candidate_count == 1:
+            base_score = 1
+        else:
+            return None
+
+        if "evidence" in expected_name and "evidence" in candidate_name:
+            base_score += 3
+        if candidate_name.endswith("_summary.md"):
+            base_score += 1
+        if re.search(r"(?:^|[_-])v\d+$", Path(candidate_name).stem):
+            base_score -= 1
+
+        if base_score <= 0 and candidate_count > 1:
+            return None
+
+        return (base_score, overlap, -extras, -len(candidate_name))
 
     def _actual_outputs(self, artifact_paths: Sequence[str], *, base_dir: Path) -> List[str]:
         outputs: List[str] = []

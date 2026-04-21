@@ -175,6 +175,47 @@ async def sequence_fetch_api(payload: Dict[str, Any] = Body(...)):
         raise HTTPException(status_code=500, detail=f"sequence_fetch execution failed: {str(e)}") from e
 
 
+@router.post("/tools/url-fetch")
+async def url_fetch_api(payload: Dict[str, Any] = Body(...)):
+    """Download a file from a public URL."""
+    try:
+        from tool_box import execute_tool
+
+        url = payload.get("url")
+        output_name = payload.get("output_name")
+        session_id = payload.get("session_id")
+        timeout_sec = payload.get("timeout_sec")
+        max_bytes = payload.get("max_bytes")
+        allowed_content_types = payload.get("allowed_content_types")
+        sha256 = payload.get("sha256")
+
+        kwargs: Dict[str, Any] = {}
+        if isinstance(url, str) and url.strip():
+            kwargs["url"] = url.strip()
+        if isinstance(output_name, str) and output_name.strip():
+            kwargs["output_name"] = output_name.strip()
+        if isinstance(session_id, str) and session_id.strip():
+            kwargs["session_id"] = session_id.strip()
+        if timeout_sec is not None:
+            kwargs["timeout_sec"] = timeout_sec
+        if max_bytes is not None:
+            kwargs["max_bytes"] = max_bytes
+        if isinstance(allowed_content_types, list):
+            kwargs["allowed_content_types"] = allowed_content_types
+        if isinstance(sha256, str) and sha256.strip():
+            kwargs["sha256"] = sha256.strip()
+
+        result = await execute_tool("url_fetch", **kwargs)
+        if not isinstance(result, dict):
+            raise HTTPException(status_code=500, detail="Invalid url_fetch payload")
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"url_fetch execution failed: {str(e)}") from e
+
+
 @router.post("/tools/bio-tools")
 async def execute_bio_tools(payload: Dict[str, Any] = Body(...)):
     """
