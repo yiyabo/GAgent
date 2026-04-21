@@ -791,6 +791,64 @@ class TestArtifactContracts:
         assert calls == [1]
         assert summary.executed_task_ids == [1]
 
+    def test_materialize_finalization_publishes_inferred_alias_when_explicit_contract_empty(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        monkeypatch.chdir(tmp_path)
+        runtime_file = (
+            tmp_path
+            / "runtime"
+            / "session_test"
+            / "raw_files"
+            / "task_1"
+            / "evidence.md"
+        )
+        runtime_file.parent.mkdir(parents=True, exist_ok=True)
+        runtime_file.write_text("# Recent review evidence\n", encoding="utf-8")
+
+        node = PlanNode(
+            id=1,
+            plan_id=7,
+            name="Collect recent review papers",
+            status="completed",
+            metadata={
+                "artifact_contract": {"requires": [], "publishes": []},
+                "acceptance_criteria": {
+                    "checks": [
+                        {"type": "file_nonempty", "path": "evidence.md"},
+                    ]
+                },
+            },
+        )
+        repo = MagicMock()
+        executor = _make_executor(repo, artifact_backfill_enabled=False)
+        payload = {
+            "status": "completed",
+            "content": "ok",
+            "metadata": {"artifact_paths": [str(runtime_file)]},
+        }
+
+        finalization = executor._task_verifier.finalize_payload(
+            node,
+            payload,
+            execution_status="completed",
+        )
+        finalization, _ = executor._materialize_finalization(
+            7,
+            node,
+            finalization,
+            session_context={},
+        )
+
+        canonical = canonical_artifact_path(7, "general.evidence_md")
+        assert canonical is not None
+        assert canonical.exists() is True
+        assert canonical.read_text(encoding="utf-8") == "# Recent review evidence\n"
+        published = finalization.payload["metadata"]["published_artifacts"]
+        assert published["general.evidence_md"]["producer_task_id"] == 1
+
     def test_infer_artifact_namespace_does_not_match_ai_inside_other_words(self):
         assert infer_artifact_namespace("Train and evaluate baseline", "") == "general"
         assert infer_artifact_namespace("AI-driven classifier", "") == "ai_dl"

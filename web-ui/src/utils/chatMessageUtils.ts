@@ -35,6 +35,17 @@ export function isLikelyPersistedDuplicateMessage(
   if ((persistedMessage.metadata as any)?.backend_id == null) {
     return false;
   }
+
+  const liveClientMessageId = (liveMessage.metadata as any)?.client_message_id;
+  const persistedClientMessageId = (persistedMessage.metadata as any)?.client_message_id;
+  if (
+    typeof liveClientMessageId === 'string' &&
+    liveClientMessageId.length > 0 &&
+    liveClientMessageId === persistedClientMessageId
+  ) {
+    return true;
+  }
+
   if (liveMessage.type !== persistedMessage.type) {
     return false;
   }

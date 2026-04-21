@@ -103,7 +103,17 @@ def build_agent_for_chat_request(
 
     if request.session_id:
         if save_user_message:
-            _save_chat_message(request.session_id, "user", request.message)
+            user_message_metadata = (
+                {"client_message_id": request.client_message_id}
+                if request.client_message_id
+                else None
+            )
+            _save_chat_message(
+                request.session_id,
+                "user",
+                request.message,
+                user_message_metadata,
+            )
         session_settings = _get_session_settings(request.session_id)
         runtime_context = _load_session_runtime_context(request.session_id)
         for key, value in runtime_context.items():

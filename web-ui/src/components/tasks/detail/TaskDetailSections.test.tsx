@@ -55,4 +55,34 @@ describe('ExecutionResult', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Re-verify' }));
     expect(onReverify).toHaveBeenCalledTimes(1);
   });
+
+  it('separates completed execution from published artifacts', () => {
+    render(
+      <ExecutionResult
+        resultLoading={false}
+        taskResult={{
+          task_id: 19,
+          status: 'completed',
+          content: 'Collected recent review metadata.',
+          metadata: {
+            execution_status: 'completed',
+            verification: {
+              status: 'passed',
+              checks_total: 2,
+              checks_passed: 2,
+              blocking: true,
+              generated: false,
+              failures: [],
+            },
+          },
+        }}
+        cachedResult={undefined}
+      />
+    );
+
+    expect(screen.getByText('No published artifact')).toBeInTheDocument();
+    expect(
+      screen.getByText('Execution finished without a published artifact')
+    ).toBeInTheDocument();
+  });
 });

@@ -36,6 +36,7 @@ from .services.realtime_bus import close_realtime_bus, init_realtime_bus
 # Import router function
 from .routers import get_all_routers
 from .repository.chat_runs import fix_stale_chat_runs_on_startup
+from .repository.plan_repository import fix_stale_plan_task_statuses_on_startup
 from .repository.plan_storage import fix_stale_jobs_on_startup
 from .services.foundation.logging_config import setup_logging
 from .services.foundation.settings import get_settings
@@ -106,6 +107,16 @@ async def lifespan(_fastapi_app: FastAPI):
             )
     except Exception as e:
         logging.getLogger("app.main").warning("Failed to fix stale chat runs: %s", e)
+
+    try:
+        task_fixed = fix_stale_plan_task_statuses_on_startup()
+        if task_fixed > 0:
+            logging.getLogger("app.main").info(
+                "Recovered %d interrupted task status(es) from execution results after restart",
+                task_fixed,
+            )
+    except Exception as e:
+        logging.getLogger("app.main").warning("Failed to fix stale plan task statuses: %s", e)
 
     # Resume any PhageScope tracking threads that were running before restart
     try:

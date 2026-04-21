@@ -439,6 +439,15 @@ export const ExecutionResult: React.FC<ExecutionResultProps> = ({
     result.metadata && typeof result.metadata.artifact_verification === 'object'
       ? (result.metadata.artifact_verification as Record<string, any>)
       : null;
+  const artifactAuthority =
+    result.metadata && typeof result.metadata.artifact_authority === 'object'
+      ? (result.metadata.artifact_authority as Record<string, any>)
+      : null;
+  const publishedArtifacts =
+    result.metadata && typeof result.metadata.published_artifacts === 'object'
+      ? Object.values(result.metadata.published_artifacts as Record<string, unknown>)
+          .filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null)
+      : [];
   const producedFiles = Array.isArray(artifactVerification?.actual_outputs)
     ? (artifactVerification?.actual_outputs as unknown[])
         .map((item) => String(item ?? '').trim())
@@ -449,6 +458,18 @@ export const ExecutionResult: React.FC<ExecutionResultProps> = ({
         .map((item) => String(item ?? '').trim())
         .filter((item) => item.length > 0)
     : [];
+  const expectedPublishAliases = Array.isArray(artifactAuthority?.expected_publish_aliases)
+    ? (artifactAuthority?.expected_publish_aliases as unknown[])
+        .map((item) => String(item ?? '').trim())
+        .filter((item) => item.length > 0)
+    : [];
+  const publishedArtifactLabels = publishedArtifacts
+    .map((item) => {
+      const alias = String(item.alias ?? '').trim();
+      const path = String(item.path ?? item.source_path ?? '').trim();
+      return alias || path;
+    })
+    .filter((item) => item.length > 0);
   const manualAcceptance =
     result.metadata && typeof result.metadata.manual_acceptance === 'object'
       ? (result.metadata.manual_acceptance as Record<string, any>)
@@ -472,6 +493,12 @@ export const ExecutionResult: React.FC<ExecutionResultProps> = ({
           <Tag color={verification.color}>{verification.label}</Tag>
         )}
         {manualAccepted && <Tag color="blue">Manually accepted</Tag>}
+        {executionCompleted && publishedArtifactLabels.length > 0 && (
+          <Tag color="green">Published artifacts: {publishedArtifactLabels.length}</Tag>
+        )}
+        {executionCompleted && publishedArtifactLabels.length === 0 && (
+          <Tag>No published artifact</Tag>
+        )}
         {canVerify && onReverify && (
           <Button size="small" onClick={onReverify} loading={verifyLoading}>
             Re-verify
@@ -508,10 +535,46 @@ export const ExecutionResult: React.FC<ExecutionResultProps> = ({
           }
         />
       )}
+      {executionCompleted && verification.status !== 'failed' && publishedArtifactLabels.length === 0 && (
+        <Alert
+          type={expectedPublishAliases.length > 0 ? 'warning' : 'info'}
+          showIcon
+          message={
+            expectedPublishAliases.length > 0
+              ? 'Execution finished, but no canonical artifact was published'
+              : 'Execution finished without a published artifact'
+          }
+          description={
+            expectedPublishAliases.length > 0
+              ? 'This task reported completion, but the plan artifact registry has no published output yet. Check the produced files or rerun after fixing the output location.'
+              : 'This task may have produced only raw files or summary text. Completion and published artifacts are tracked separately.'
+          }
+        />
+      )}
       {result.content && (
         <Paragraph style={{ whiteSpace: 'pre-wrap' }} copyable>
           {result.content}
         </Paragraph>
+      )}
+      {publishedArtifactLabels.length > 0 && (
+        <Collapse
+          size="small"
+          items={[
+            {
+              key: 'published-artifacts',
+              label: `Published artifacts (${publishedArtifactLabels.length})`,
+              children: (
+                <Space direction="vertical" style={{ width: '100%' }}>
+                  {publishedArtifactLabels.map((item) => (
+                    <Paragraph key={item} copyable style={{ whiteSpace: 'pre-wrap', marginBottom: 8 }}>
+                      {item}
+                    </Paragraph>
+                  ))}
+                </Space>
+              ),
+            },
+          ]}
+        />
       )}
       {producedFiles.length > 0 && (
         <Collapse
