@@ -88,8 +88,10 @@ _MODEL_CONTEXT_WINDOWS: Dict[str, int] = {
     "qwen-long": 1000000,
 }
 
-# Fallback — qwen3.6-plus is the only active model.
-_DEFAULT_CONTEXT_WINDOW = 1000000
+# Conservative fallback for unknown or empty model names.  Using 128K
+# instead of 1M avoids suppressing compaction on smaller-context backends
+# that would hit their real API limit long before the manager warns.
+_DEFAULT_CONTEXT_WINDOW = 131072
 
 
 def get_context_window(model: str) -> int:
