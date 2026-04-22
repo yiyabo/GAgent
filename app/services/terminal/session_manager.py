@@ -61,6 +61,7 @@ class TerminalSession:
     pending_approvals: Dict[str, PendingApproval] = field(default_factory=dict)
     output_task: Optional[asyncio.Task] = None
     command_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    ready_event: asyncio.Event = field(default_factory=asyncio.Event)
 
 
 class TerminalSessionManager:
@@ -180,16 +181,10 @@ class TerminalSessionManager:
         if not owner:
             raise ValueError("session_id is required")
 
-        async with self._lock:
-            active_count = sum(1 for s in self._sessions.values() if s.state != "closed")
-            if active_count >= self._max_sessions:
-                raise ValueError("Maximum number of terminal sessions reached")
-
         workspace = self._workspace_path(owner)
         terminal_id = str(uuid4())
         created_at = self._now()
         backend: Union[PTYBackend, SSHBackend, DockerPTYBackend]
-        audit_logger = AuditLogger(terminal_id)
 
         if mode == "sandbox":
             backend = PTYBackend()
@@ -200,55 +195,81 @@ class TerminalSessionManager:
         else:
             raise ValueError(f"Unsupported terminal mode: {mode}")
 
-        session = TerminalSession(
-            session_id=owner,
-            terminal_id=terminal_id,
-            mode=mode,
-            backend=backend,
-            created_at=created_at,
-            last_activity=created_at,
-            state="creating",
-            env={},
-            cwd=str(Path(workspace).resolve()),
-            audit_logger=audit_logger,
-        )
+        # Reserve the slot under the lock *before* spawning so that
+        # concurrent callers see this session in the count and cannot
+        # exceed max_sessions.  AuditLogger is created only after
+        # admission to avoid orphan SQLite files on rejection.
+        async with self._lock:
+            active_count = sum(1 for s in self._sessions.values() if s.state != "closed")
+            if active_count >= self._max_sessions:
+                raise ValueError("Maximum number of terminal sessions reached")
 
-        if mode == "sandbox":
-            await backend.spawn(
-                shell="/bin/bash",
-                cwd=session.cwd,
-                env=session.env,
-                command_handler=lambda command: self._handle_command_check(session, command),
+            audit_logger = AuditLogger(terminal_id)
+            session = TerminalSession(
+                session_id=owner,
+                terminal_id=terminal_id,
+                mode=mode,
+                backend=backend,
+                created_at=created_at,
+                last_activity=created_at,
+                state="creating",
+                env={},
+                cwd=str(Path(workspace).resolve()),
+                audit_logger=audit_logger,
             )
-        elif mode == "qwen_code":
-            qwen_mount_plan = self._build_qwen_mount_plan(
-                extra_mounts=qwen_extra_mounts,
-            )
-            qwen_add_dir_list = self._build_qwen_add_dirs(qwen_mount_plan)
-            for raw_dir in qwen_add_dirs or ():
-                dir_token = os.path.normpath(str(raw_dir or "").strip())
-                if dir_token and dir_token not in qwen_add_dir_list:
-                    qwen_add_dir_list.append(dir_token)
-            await backend.spawn(
-                cwd=session.cwd,
-                env=session.env,
-                extra_mounts=qwen_mount_plan,
-                qwen_session_id=qwen_session_id or owner,
-                exec_args=DockerPTYBackend.build_qwen_exec_args(
+            self._sessions[session.terminal_id] = session
+
+        try:
+            if mode == "sandbox":
+                await backend.spawn(
+                    shell="/bin/bash",
+                    cwd=session.cwd,
+                    env=session.env,
+                    command_handler=lambda command: self._handle_command_check(session, command),
+                )
+            elif mode == "qwen_code":
+                qwen_mount_plan = self._build_qwen_mount_plan(
+                    extra_mounts=qwen_extra_mounts,
+                )
+                qwen_add_dir_list = self._build_qwen_add_dirs(qwen_mount_plan)
+                for raw_dir in qwen_add_dirs or ():
+                    dir_token = os.path.normpath(str(raw_dir or "").strip())
+                    if dir_token and dir_token not in qwen_add_dir_list:
+                        qwen_add_dir_list.append(dir_token)
+                await backend.spawn(
+                    cwd=session.cwd,
+                    env=session.env,
+                    extra_mounts=qwen_mount_plan,
                     qwen_session_id=qwen_session_id or owner,
-                    extra_dirs=qwen_add_dir_list,
-                ),
-            )
-        else:
-            cfg = ssh_config
-            if cfg is None:
-                if RemoteExecutionConfig is None:
-                    raise RuntimeError("RemoteExecutionConfig is unavailable")
-                remote = RemoteExecutionConfig.from_env()
-                cfg = SSHConfig.from_remote_execution_config(remote)
-            await backend.connect(cfg)
+                    exec_args=DockerPTYBackend.build_qwen_exec_args(
+                        qwen_session_id=qwen_session_id or owner,
+                        extra_dirs=qwen_add_dir_list,
+                    ),
+                )
+            else:
+                cfg = ssh_config
+                if cfg is None:
+                    if RemoteExecutionConfig is None:
+                        raise RuntimeError("RemoteExecutionConfig is unavailable")
+                    remote = RemoteExecutionConfig.from_env()
+                    cfg = SSHConfig.from_remote_execution_config(remote)
+                await backend.connect(cfg)
+        except BaseException:
+            # Spawn failed — release the reserved slot so the cap stays accurate.
+            async with self._lock:
+                self._sessions.pop(session.terminal_id, None)
+            # Clean up the orphan audit DB.
+            try:
+                session.audit_logger.close()
+                session.audit_logger.db_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+            # Wake any waiters so they don't hang; they'll see the session is gone.
+            session.ready_event.set()
+            raise
 
         session.state = "active"
+        session.ready_event.set()
         session.audit_logger.log_event(
             "session_created",
             metadata={
@@ -260,9 +281,6 @@ class TerminalSessionManager:
         )
 
         session.output_task = asyncio.create_task(self._pump_output(session))
-
-        async with self._lock:
-            self._sessions[session.terminal_id] = session
 
         return session
 
@@ -279,6 +297,7 @@ class TerminalSessionManager:
         if mode == "qwen_code":
             return await self.ensure_qwen_code_session(target_id)
 
+        session: Optional[TerminalSession] = None
         async with self._lock:
             candidates = [
                 s
@@ -287,7 +306,19 @@ class TerminalSessionManager:
             ]
             if candidates:
                 candidates.sort(key=lambda s: s.last_activity, reverse=True)
-                return candidates[0]
+                session = candidates[0]
+
+        if session is not None:
+            # If the session is still spawning, wait for it to become ready.
+            if session.state == "creating":
+                await session.ready_event.wait()
+            # After waiting, verify the session actually became usable.
+            if session.state in {"active", "idle"}:
+                return session
+            # Spawn failed and the slot was removed.  Re-enter the full
+            # ensure path so that only one waiter creates the replacement
+            # session while the others see it via the normal lookup.
+            return await self.ensure_session_for_chat(target_id, mode=mode)
 
         return await self.create_session(target_id, mode=mode)
 
@@ -315,11 +346,26 @@ class TerminalSessionManager:
             ]
             candidates.sort(key=lambda s: s.last_activity, reverse=True)
 
+        # Wait for any "creating" candidates to finish spawning before reuse.
+        for candidate in list(candidates):
+            if candidate.state == "creating":
+                await candidate.ready_event.wait()
+            # If spawn failed, the session was removed; drop from candidates.
+            if candidate.state not in {"active", "idle"}:
+                candidates.remove(candidate)
+
+        # If all candidates were lost to failed spawns, re-enter the full
+        # ensure path so only one caller creates the replacement session.
+        if not candidates:
+            return await self.ensure_qwen_code_session(target_id, required_paths=required_paths)
+
         for candidate in candidates:
             if self._qwen_session_covers_paths(candidate, normalized_required):
                 return candidate
 
-        if candidates and candidates[0].subscribers:
+        # Only reuse an active-subscriber session if it actually covers the
+        # required paths; otherwise fall through to create a new session.
+        if candidates and candidates[0].subscribers and self._qwen_session_covers_paths(candidates[0], normalized_required):
             return candidates[0]
 
         qwen_extra_mounts = self._qwen_required_same_path_mounts(normalized_required)

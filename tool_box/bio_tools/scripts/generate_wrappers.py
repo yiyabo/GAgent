@@ -29,9 +29,13 @@ import os
 from pathlib import Path
 from typing import List, Optional, Union
 
-def _run_docker_cmd(image: str, cmd_args: List[str], mounts: List[str] = [], envs: List[str] = []):
+def _run_docker_cmd(image: str, cmd_args: List[str], mounts: Optional[List[str]] = None, envs: Optional[List[str]] = None):
     """Internal helper to run docker commands."""
-    
+    if mounts is None:
+        mounts = []
+    if envs is None:
+        envs = []
+
     # Base command
     docker_cmd = ["docker", "run", "--rm"]
     

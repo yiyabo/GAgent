@@ -1031,7 +1031,7 @@ def _build_study_card(
         "pmid": record.pmid,
         "pmcid": record.pmcid,
         "url": record.url,
-        "pdf_path": str(pdf_path.relative_to(_PROJECT_ROOT)) if isinstance(pdf_path, Path) and pdf_path.exists() else None,
+        "pdf_path": _safe_relative_to(pdf_path, _PROJECT_ROOT) if isinstance(pdf_path, Path) and pdf_path.exists() else None,
         "evidence_tier": evidence_tier,
         "study_type": _pick_study_type(source_text),
         "model_system": _extract_tag_values(source_text, _MODEL_SYSTEM_PATTERNS),
@@ -1267,6 +1267,14 @@ def _is_within_root(path: Path, root: Path) -> bool:
         return False
 
 
+def _safe_relative_to(path: Path, root: Path) -> str:
+    """Return a relative path string when *path* is under *root*, else absolute."""
+    try:
+        return str(path.resolve().relative_to(root.resolve()))
+    except ValueError:
+        return str(path.resolve())
+
+
 def _build_evidence_md(records: List[PaperRecord], topic: str) -> str:
     # Simple grouping: host-interaction vs omics/database by keyword.
     host_kw = re.compile(r"\b(host|receptor|adsorption|infection|lysogen|temperate|CRISPR|immunity)\b", re.I)
@@ -1338,14 +1346,6 @@ async def literature_pipeline_handler(
         path_router = get_path_router()
         unified_output_dir = path_router.get_task_output_dir(
             session_id, task_id, ancestor_chain, create=True
-        )
-        output_dir = unified_output_dir
-    elif out_dir is None and session_id and not task_id:
-        # Ad-hoc execution without task context → use PathRouter tmp
-        from app.services.path_router import get_path_router
-        path_router = get_path_router()
-        unified_output_dir = path_router.get_tmp_output_dir(
-            session_id, run_id=timestamp, create=True
         )
         output_dir = unified_output_dir
     else:
@@ -1569,7 +1569,7 @@ async def literature_pipeline_handler(
                     "citekey": rec.citekey,
                     "pmcid": rec.pmcid,
                     "ok": ok,
-                    "path": str(out_pdf.relative_to(_PROJECT_ROOT)) if ok and out_pdf.exists() else None,
+                    "path": _safe_relative_to(out_pdf, _PROJECT_ROOT) if ok and out_pdf.exists() else None,
                     "error": err,
                     "full_text": downloaded_full_text,
                 }
@@ -1628,19 +1628,19 @@ async def literature_pipeline_handler(
         "query": query,
         "effective_query": effective_query,
         "fallback_query_used": fallback_query_used,
-        "output_dir": str(output_dir.relative_to(_PROJECT_ROOT)),
+        "output_dir": _safe_relative_to(output_dir, _PROJECT_ROOT),
         "evidence_coverage_passed": bool(coverage_report.get("pass")),
         "coverage_summary": str(coverage_report.get("summary") or "").strip(),
-        "coverage_report_path": str(coverage_report_path.relative_to(_PROJECT_ROOT)),
+        "coverage_report_path": _safe_relative_to(coverage_report_path, _PROJECT_ROOT),
         "outputs": {
-            "library_jsonl": str(library_path.relative_to(_PROJECT_ROOT)),
-            "study_cards_jsonl": str(study_cards_path.relative_to(_PROJECT_ROOT)),
-            "coverage_report_json": str(coverage_report_path.relative_to(_PROJECT_ROOT)),
-            "references_bib": str(bib_path.relative_to(_PROJECT_ROOT)),
-            "evidence_md": str(evidence_path.relative_to(_PROJECT_ROOT)),
-            "evidence_coverage_md": str(evidence_coverage_path.relative_to(_PROJECT_ROOT)),
-            "study_matrix_md": str(study_matrix_path.relative_to(_PROJECT_ROOT)),
-            "pdf_dir": str(pdf_dir.relative_to(_PROJECT_ROOT)),
+            "library_jsonl": _safe_relative_to(library_path, _PROJECT_ROOT),
+            "study_cards_jsonl": _safe_relative_to(study_cards_path, _PROJECT_ROOT),
+            "coverage_report_json": _safe_relative_to(coverage_report_path, _PROJECT_ROOT),
+            "references_bib": _safe_relative_to(bib_path, _PROJECT_ROOT),
+            "evidence_md": _safe_relative_to(evidence_path, _PROJECT_ROOT),
+            "evidence_coverage_md": _safe_relative_to(evidence_coverage_path, _PROJECT_ROOT),
+            "study_matrix_md": _safe_relative_to(study_matrix_path, _PROJECT_ROOT),
+            "pdf_dir": _safe_relative_to(pdf_dir, _PROJECT_ROOT),
         },
         "counts": {
             "pmids": len(pmids),

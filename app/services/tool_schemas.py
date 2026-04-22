@@ -595,11 +595,19 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
                             "batch_submit",
                             "batch_reconcile",
                             "batch_retry",
+                            "bulk_download",
                         ],
                         "description": (
                             "PhageScope action. Use ping for connectivity/API checks (no other params required). "
                             "Use task_list with userid to verify account-scoped access when ping succeeds. "
-                            "Use batch_submit/batch_reconcile/batch_retry for multi-strain workflows with manifest persistence."
+                            "Use batch_submit/batch_reconcile/batch_retry for multi-strain workflows with manifest persistence. "
+                            "Use bulk_download to download public datasets from the PhageScope download page; "
+                            "pass data type names via modulelist (valid: phage_meta_data, annotated_protein, "
+                            "transcription_terminator, trna_tmrna, anticrispr_protein, crispr_array, "
+                            "antimicrobial_resistance_gene, virulent_factor, transmembrane_protein, "
+                            "phage_fasta, protein_fasta, gff3) and datasource names via phage_ids "
+                            "(valid: refseq, genbank, embl, ddbj, phagesdb, gvd, gpd, mgv, temphd, "
+                            "chvd, igvd, img_vr, gov2, stv). Omit both for all."
                         ),
                     },
                     "base_url": {
@@ -627,11 +635,16 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
                     "modulelist": {
                         "type": "string",
                         "description": (
-                            "Comma-separated submit modules only. For Annotation Pipline, use real submit "
-                            "modules such as quality, annotation, host, lifestyle, terminator, taxonomic, "
+                            "Comma-separated module names. For submit/batch_submit (Annotation Pipeline), use: "
+                            "quality, annotation, host, lifestyle, terminator, taxonomic, "
                             "trna, anticrispr, crispr, arvf, transmembrane. Do not use result/output names "
                             "such as proteins, phage_detail, phagefasta, or tree in submit modulelist. "
-                            "For action=batch_submit, if omitted the backend defaults to [quality]."
+                            "For action=batch_submit, if omitted the backend defaults to [quality]. "
+                            "For action=bulk_download, use dataset data-type names instead: "
+                            "phage_meta_data, annotated_protein, transcription_terminator, trna_tmrna, "
+                            "anticrispr_protein, crispr_array, antimicrobial_resistance_gene, "
+                            "virulent_factor, transmembrane_protein, phage_fasta, protein_fasta, gff3. "
+                            "Omit for all data types."
                         ),
                     },
                     "result_kind": {
@@ -640,7 +653,12 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
                         "description": "Type of result to retrieve.",
                     },
                     "phage_ids": {
-                        "description": "For batch_submit: array of accessions or a single string with semicolons/newlines.",
+                        "description": (
+                            "For batch_submit: array of phage accessions or a single string with semicolons/newlines. "
+                            "For bulk_download: datasource names to download (e.g. 'refseq', 'genbank;embl'). "
+                            "Valid datasources: refseq, genbank, embl, ddbj, phagesdb, gvd, gpd, mgv, "
+                            "temphd, chvd, igvd, img_vr, gov2, stv. Omit for all datasources."
+                        ),
                     },
                     "batch_id": {
                         "type": "string",
