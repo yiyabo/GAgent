@@ -5347,11 +5347,12 @@ Parameter rules (CRITICAL):
 - Use `phageid` or `phageids`; do NOT use `sequence` for accession IDs.
 - `submit` requires `userid` + `modulelist` + `phageid/phageids`.
 - `modulelist` for `submit` must contain real submit modules only. Do NOT put result/output names like `proteins`, `phage_detail`, `phagefasta`, or `tree` into `modulelist`. If protein annotations are needed, request `annotation` and later fetch `result_kind=proteins` or use `save_all`.
+- For `bulk_download`, pass datasource names via `phage_ids` (e.g. refseq, genbank) and data type names via `modulelist` (e.g. phage_meta_data, gff3, protein_fasta). Omit both for all datasets.
 - `input_check` requires `phageid/phageids`.
 - `result` requires `taskid` + `result_kind` (quality/proteins/phage_detail/modules/tree/phagefasta).
 - `taskid` must be the numeric remote task id (e.g., 37468), not a local job id like `act_xxx`.
 
-Params: {"action": "submit|task_list|task_detail|result|save_all|download|batch_submit|batch_reconcile|batch_retry", "userid": "...", "phageid": "...", "phageids": "...", "phage_ids": [...], "batch_id": "...", "taskid": "...", "result_kind": "..."}""",
+Params: {"action": "submit|task_list|task_detail|result|save_all|download|batch_submit|batch_reconcile|batch_retry|bulk_download", "userid": "...", "phageid": "...", "phageids": "...", "phage_ids": [...], "batch_id": "...", "taskid": "...", "result_kind": "..."}""",
             "deeppl": """DeepPL lifecycle prediction tool (DNABERT-based).
 
 Actions:

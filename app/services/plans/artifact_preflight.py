@@ -108,19 +108,17 @@ class ArtifactPreflightService:
                 continue
             consumers = consumer_map.get(alias) or []
             related_task_ids = sorted(set(publishers + consumers))
-            # Downgrade to warning: multiple producers for the same alias is
-            # common when decomposer assigns generic aliases (e.g. evidence_md)
-            # to parallel tasks that produce different files.  Blocking all of
-            # them is too aggressive — each task's output is path-isolated.
-            warnings.append(
+            # Ambiguous producers must block execution: downstream consumers
+            # cannot deterministically resolve which task's output to use.
+            errors.append(
                 ArtifactPreflightIssue(
                     code="ambiguous_producer",
-                    severity="warning",
+                    severity="error",
                     alias=alias,
                     related_task_ids=related_task_ids,
                     message=(
                         f"Artifact alias '{alias}' has multiple producer tasks {sorted(publishers)}; "
-                        "canonical authority prefers a single producer."
+                        "canonical authority requires a single producer."
                     ),
                 )
             )

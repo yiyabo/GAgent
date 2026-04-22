@@ -49,7 +49,7 @@ class CacheEntry:
                 return len(json.dumps(obj).encode("utf-8"))
             else:
                 return len(str(obj).encode("utf-8"))
-        except:
+        except Exception:
             return 100  # Default size
 
     def is_expired(self) -> bool:

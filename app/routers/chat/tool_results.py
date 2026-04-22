@@ -194,6 +194,22 @@ def sanitize_tool_result(tool_name: str, raw_result: Any) -> Dict[str, Any]:
                     for item in rr[:40]
                     if isinstance(item, dict)
                 ]
+        elif act_l == "bulk_download":
+            for key in (
+                "output_dir",
+                "manifest_path",
+                "total_files",
+                "ok",
+                "skipped",
+                "failed",
+                "total_bytes",
+                "elapsed_sec",
+                "errors",
+                "available_datasources",
+                "available_data_types",
+            ):
+                if key in raw_result:
+                    sanitized[key] = raw_result.get(key)
         # Keep key local artifact paths for save_all so follow-up file reads can work.
         if str(raw_result.get("action") or "").strip().lower() == "save_all":
             for key in (
@@ -679,6 +695,19 @@ def summarize_tool_result(tool_name: str, result: Dict[str, Any]) -> str:
             if status_code == 207 and out_dir:
                 return f"PhageScope save_all completed (partial): saved to {out_dir}; but marked failed: {error}"
             return f"PhageScope save_all failed: {error}"
+
+        if str(action).strip().lower() == "bulk_download":
+            out_dir = result.get("output_dir") or "unknown"
+            total = result.get("total_files") or 0
+            ok = result.get("ok") or 0
+            failed = result.get("failed") or 0
+            skipped = result.get("skipped") or 0
+            if result.get("success") is False:
+                error = result.get("error") or "Execution failed"
+                if ok or skipped:
+                    return f"PhageScope bulk_download partial: {ok} ok, {failed} failed, {skipped} skipped → {out_dir}; error: {error}"
+                return f"PhageScope bulk_download failed: {error}"
+            return f"PhageScope bulk_download completed: {ok}/{total} files → {out_dir} (skipped={skipped}, failed={failed})"
 
         if result.get("success") is False:
             error = result.get("error") or "Execution failed"

@@ -1944,6 +1944,35 @@ async def phagescope_handler(
             manifest_path_override=manifest_path,
         )
 
+    if action == "bulk_download":
+        from .phagescope_bulk_download import phagescope_bulk_download
+
+        # Parse datasources / data_types from various input shapes
+        def _coerce_list(val: Any) -> Optional[List[str]]:
+            if val is None:
+                return None
+            if isinstance(val, (list, tuple)):
+                return [str(v).strip() for v in val if str(v).strip()]
+            if isinstance(val, str):
+                text = val.strip()
+                if not text or text.lower() == "all":
+                    return None
+                return [s.strip() for s in re.split(r"[;,\s]+", text) if s.strip()]
+            return None
+
+        return await phagescope_bulk_download(
+            datasources=_coerce_list(phage_ids or phageids or phageid),
+            data_types=_coerce_list(modulelist),
+            base_url=base_url,
+            proxy=None,  # resolved from env vars inside bulk_download
+            session_id=session_id,
+            task_id=task_id,
+            ancestor_chain=ancestor_chain,
+            save_path=save_path,
+            concurrency=int(pagesize) if pagesize and int(pagesize) > 0 else 4,
+            timeout=timeout,
+        )
+
     # "download" without a concrete path is a common LLM mistake; batch-fetch artifacts instead.
     if action == "download" and not download_path and taskid:
         action = "save_all"
@@ -3127,7 +3156,7 @@ async def phagescope_handler(
 
 phagescope_tool = {
     "name": "phagescope",
-    "description": "Access PhageScope phage database and analysis service. Supports annotation pipelines, genome comparison (clustering, phylogenetic tree, alignment), and various analysis types.",
+    "description": "Access PhageScope phage database and analysis service. Supports annotation pipelines, genome comparison (clustering, phylogenetic tree, alignment), bulk dataset download from the PhageScope download page, and various analysis types.",
     "category": "bioinformatics",
     "parameters_schema": {
         "type": "object",
@@ -3151,6 +3180,7 @@ phagescope_tool = {
                     "batch_submit",
                     "batch_reconcile",
                     "batch_retry",
+                    "bulk_download",
                 ],
             },
             "base_url": {"type": "string", "description": "API base URL"},
@@ -3176,11 +3206,16 @@ phagescope_tool = {
             "userid": {"type": "string", "description": "User ID"},
             "modulelist": {
                 "description": (
-                    "Submit modules only (array/object/string supported). "
-                    "For Annotation Pipline use real submit modules such as quality, annotation, host, "
+                    "Module names (array/object/string supported). "
+                    "For submit/batch_submit (Annotation Pipeline), use real submit modules: quality, annotation, host, "
                     "lifestyle, terminator, taxonomic, trna, anticrispr, crispr, arvf, transmembrane. "
                     "Do not pass result/output names such as proteins, phage_detail, phagefasta, or tree; "
-                    "proteins are derived from annotation outputs."
+                    "proteins are derived from annotation outputs. "
+                    "For action=bulk_download, pass dataset data-type names instead: "
+                    "phage_meta_data, annotated_protein, transcription_terminator, trna_tmrna, "
+                    "anticrispr_protein, crispr_array, antimicrobial_resistance_gene, "
+                    "virulent_factor, transmembrane_protein, phage_fasta, protein_fasta, gff3. "
+                    "Omit for all data types."
                 ),
             },
             "rundemo": {"type": "string", "description": "Run demo task flag", "default": "false"},
@@ -3224,7 +3259,12 @@ phagescope_tool = {
                 "description": "Number of results to return (for cluster_submit)",
             },
             "phage_ids": {
-                "description": "For batch_submit: list of phage accessions or semicolon/newline-separated string (use with batch_submit).",
+                "description": (
+                    "For batch_submit: list of phage accessions or semicolon/newline-separated string. "
+                    "For bulk_download: datasource names to download (e.g. 'refseq', 'genbank;embl'). "
+                    "Valid datasources: refseq, genbank, embl, ddbj, phagesdb, gvd, gpd, mgv, "
+                    "temphd, chvd, igvd, img_vr, gov2, stv. Omit for all datasources."
+                ),
             },
             "batch_id": {
                 "type": "string",
@@ -3257,5 +3297,7 @@ phagescope_tool = {
         "Fetch quality results for a completed task",
         "Retrieve task logs or download result files",
         "Save all results from a completed task to local files (save_all)",
+        "Download all PhageScope datasets: action=bulk_download",
+        "Download RefSeq meta data and GFF3: action=bulk_download, phageids='refseq', modulelist='phage_meta_data,gff3'",
     ],
 }

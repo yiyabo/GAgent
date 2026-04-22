@@ -54,7 +54,13 @@ class PTYBackend:
         self._loop = asyncio.get_running_loop()
         self._command_handler = command_handler
 
-        master_fd, slave_fd = pty.openpty()
+        try:
+            master_fd, slave_fd = pty.openpty()
+        except OSError as exc:
+            raise RuntimeError(
+                f"Failed to allocate PTY device: {exc}. "
+                "The system may be out of available PTY devices."
+            ) from exc
         self._set_winsize(slave_fd, cols, rows)
 
         cmd_read_fd, cmd_write_fd = os.pipe()
