@@ -887,29 +887,56 @@ def _fallback_pubmed_query(raw_query: str) -> Optional[str]:
 async def _download_pmc_pdf(
     client: httpx.AsyncClient, pmcid: str, out_path: Path
 ) -> Tuple[bool, Optional[str], Optional[str]]:
-    oa_pdf_path, oa_full_text, oa_error = await _download_pmc_oa_fulltext(client, pmcid, out_path)
-    if oa_pdf_path is not None:
-        return True, None, None
-    if oa_full_text and oa_full_text.strip():
-        return True, None, oa_full_text
+    oa_error: Optional[str] = None
+    try:
+        oa_pdf_path, oa_full_text, oa_error = await _download_pmc_oa_fulltext(client, pmcid, out_path)
+        if oa_pdf_path is not None:
+            return True, None, None
+        if oa_full_text and oa_full_text.strip():
+            return True, None, oa_full_text
+    except Exception as exc:
+        oa_error = f"OA utility error: {type(exc).__name__}: {exc}"
+        logger.debug("OA utility failed for %s: %s", pmcid, oa_error)
 
-    page_url = f"https://pmc.ncbi.nlm.nih.gov/articles/{pmcid}/"
-    r = await client.get(page_url, timeout=_PMC_ARTICLE_PAGE_TIMEOUT)
-    if r.status_code >= 400:
-        return False, oa_error or f"PMC page HTTP {r.status_code}", None
-    pdf_url = _find_pmc_pdf_link(r.text or "", page_url)
-    if not pdf_url:
-        return False, oa_error or "PDF link not found on PMC page", None
-    pr = await client.get(pdf_url, timeout=_PMC_LEGACY_PDF_TIMEOUT)
-    if pr.status_code >= 400:
-        return False, oa_error or f"PDF HTTP {pr.status_code}", None
-    ctype = pr.headers.get("content-type")
-    if not _is_pdf_payload(pr.content, ctype, pdf_url):
-        logger.warning("Downloaded content-type not pdf: %s (%s)", ctype, pdf_url)
-        return False, oa_error or f"Downloaded non-PDF payload from PMC page ({ctype or 'unknown'})", None
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_bytes(pr.content)
-    return True, None, None
+    # Fallback: Europe PMC full-text XML API.
+    # This is not blocked by reCAPTCHA and works reliably through proxies.
+    # Prioritize this over PMC PDF page scraping since PMC now uses reCAPTCHA.
+    epmc_id = pmcid if pmcid.upper().startswith("PMC") else f"PMC{pmcid}"
+    epmc_xml_url = f"https://www.ebi.ac.uk/europepmc/webservices/rest/{epmc_id}/fullTextXML"
+    try:
+        xr = await client.get(epmc_xml_url, timeout=_PMC_ARTICLE_PAGE_TIMEOUT)
+        if xr.status_code < 400 and xr.content:
+            full_text = _extract_text_from_oa_xml(xr.content)
+            if full_text and len(full_text.strip()) > 200:
+                logger.info("Europe PMC XML fallback succeeded for %s (%d chars)", pmcid, len(full_text))
+                return True, None, full_text
+    except Exception as exc:
+        logger.debug("Europe PMC XML fallback failed for %s: %s", pmcid, exc)
+
+    # Last resort: try PMC PDF page with browser headers (may hit reCAPTCHA).
+    _browser_headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+        ),
+        "Accept": "application/pdf,*/*",
+    }
+    direct_pdf_url = f"https://pmc.ncbi.nlm.nih.gov/articles/{pmcid}/pdf/"
+    try:
+        dr = await client.get(
+            direct_pdf_url,
+            timeout=_PMC_LEGACY_PDF_TIMEOUT,
+            headers=_browser_headers,
+            follow_redirects=True,
+        )
+        if dr.status_code < 400 and _is_pdf_payload(dr.content, dr.headers.get("content-type"), direct_pdf_url):
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            out_path.write_bytes(dr.content)
+            return True, None, None
+    except Exception:
+        pass
+
+    return False, oa_error or f"All PDF/fulltext sources failed for {pmcid}", None
 
 
 def _write_jsonl(path: Path, items: Iterable[Dict[str, Any]]) -> None:

@@ -24,6 +24,7 @@ phagescope
 .pytest_cache/
 .claude/
 strict_analysis/
+reports/
 
 # Bio Tools - Test Data & ogs
 logs/
