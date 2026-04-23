@@ -1152,10 +1152,11 @@ def _build_qwen_container_mounts(
             continue
         try:
             resolved = Path(token).resolve()
-        except Exception:
+            if not resolved.exists() or not resolved.is_dir():
+                continue
+        except OSError:
             continue
-        if resolved.exists() and resolved.is_dir():
-            candidates.append(resolved)
+        candidates.append(resolved)
 
     ordered: List[Path] = []
     seen: set[str] = set()
@@ -1803,17 +1804,17 @@ def _extract_task_referenced_read_dirs(
 
     def _register(raw_path: str) -> None:
         token = str(raw_path or "").strip()
-        if not token:
+        if not token or len(token) > 1024:
             return
         candidate = Path(token)
         if not candidate.is_absolute():
             candidate = _PROJECT_ROOT / candidate
         try:
             resolved = candidate.resolve()
-        except Exception:
-            return
-        target_dir = resolved if resolved.is_dir() else resolved.parent
-        if not target_dir.exists() or not target_dir.is_dir():
+            target_dir = resolved if resolved.is_dir() else resolved.parent
+            if not target_dir.exists() or not target_dir.is_dir():
+                return
+        except OSError:
             return
         if not (
             _is_path_within(target_dir, _PROJECT_ROOT)
@@ -2517,11 +2518,11 @@ async def code_executor_handler(
                     candidate = _PROJECT_ROOT / dir_path
                 try:
                     resolved = candidate.resolve()
-                except Exception:
+                    if not resolved.exists() or not resolved.is_dir():
+                        logger.warning("Ignoring non-directory add_dir path: %s", resolved)
+                        continue
+                except (OSError, Exception):
                     logger.warning("Ignoring invalid add_dir path: %s", dir_path)
-                    continue
-                if not resolved.exists() or not resolved.is_dir():
-                    logger.warning("Ignoring non-directory add_dir path: %s", resolved)
                     continue
                 if require_task_context:
                     if not (

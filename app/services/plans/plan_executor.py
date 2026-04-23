@@ -2508,6 +2508,66 @@ class PlanExecutor:
             )
             raise
 
+        # When a task completes successfully, clear stale "skipped" status on
+        # downstream tasks that were blocked by this task's previous failure.
+        # Without this, re-executing a failed task leaves its dependents stuck
+        # in "skipped" even though the dependency is now satisfied.
+        if status in ("completed", "done", "success"):
+            self._clear_stale_skipped_dependents(plan_id, task_id)
+
+    def _clear_stale_skipped_dependents(
+        self,
+        plan_id: int,
+        completed_task_id: int,
+    ) -> None:
+        """Reset downstream tasks stuck in 'skipped' because this task previously failed.
+
+        When a task is re-executed and succeeds, any direct dependents that were
+        skipped due to ``blocked_by_dependencies`` should be reset to ``pending``
+        so they can be re-executed.
+        """
+        try:
+            tree = self._repo.get_plan_tree(plan_id)
+        except Exception:
+            return
+
+        for node in tree.nodes.values():
+            if str(getattr(node, "status", "") or "").strip().lower() != "skipped":
+                continue
+            deps = getattr(node, "dependencies", []) or []
+            if completed_task_id not in [int(d) for d in deps if str(d).strip().isdigit()]:
+                continue
+
+            # Confirm it was blocked by dependencies (not skipped for other reasons)
+            exec_result = getattr(node, "execution_result", None)
+            if isinstance(exec_result, str):
+                try:
+                    exec_data = json.loads(exec_result)
+                except (json.JSONDecodeError, TypeError):
+                    exec_data = {}
+            else:
+                exec_data = exec_result if isinstance(exec_result, dict) else {}
+            meta = exec_data.get("metadata", {}) if isinstance(exec_data, dict) else {}
+            if not (isinstance(meta, dict) and meta.get("blocked_by_dependencies")):
+                continue
+
+            try:
+                self._repo.update_task(plan_id, node.id, status="pending", execution_result="")
+                logger.info(
+                    "[TASK_RECOVERY] Reset skipped task %s to pending "
+                    "(dependency task %s now completed, plan %s)",
+                    node.id,
+                    completed_task_id,
+                    plan_id,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to reset skipped task %s for plan %s: %s",
+                    node.id,
+                    plan_id,
+                    exc,
+                )
+
     def _promote_workspace_artifacts_to_task_dir(
         self,
         *,
