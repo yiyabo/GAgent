@@ -308,6 +308,65 @@ class TaskVerificationService:
         metadata["verification"] = verification
         verification["artifact_verification"] = copy.deepcopy(artifact_verification)
         normalized_payload["metadata"] = metadata
+
+        # When auto-derived (generated) acceptance criteria fail but the task
+        # execution itself succeeded, invoke a lightweight LLM call to judge
+        # whether the actual outputs semantically satisfy the task requirements.
+        # This avoids false-positive failures from heuristic filename extraction
+        # (e.g. task instruction mentions "_summary.csv" but output is ".parquet").
+        if failures and generated and normalized_execution_status in _COMPLETED_LIKE:
+            llm_verdict = self._llm_arbitrate_verification(
+                node=node,
+                failures=failures,
+                artifact_paths=local_artifact_paths,
+                payload=normalized_payload,
+            )
+            if llm_verdict is True:
+                # LLM judged the outputs satisfy the task requirements.
+                # Update all status fields so consumers (UI, API, status resolver)
+                # see a consistent "passed" state.
+                metadata["verification_overridden_by_llm"] = True
+                metadata["verification_status"] = "passed"
+                metadata.pop("failure_kind", None)
+                metadata.pop("contract_diff", None)
+                metadata.pop("plan_patch_suggestion", None)
+                verification["status"] = "passed"
+                verification["llm_override"] = True
+                verification["failures"] = []
+                verification["checks_passed"] = verification.get("checks_total", 0)
+                if isinstance(verification.get("artifact_verification"), dict):
+                    verification["artifact_verification"]["status"] = "passed"
+                    verification["artifact_verification"]["tags"] = []
+                if isinstance(metadata.get("artifact_verification"), dict):
+                    metadata["artifact_verification"]["status"] = "passed"
+                    metadata["artifact_verification"]["tags"] = []
+                normalized_payload["metadata"] = metadata
+                normalized_payload["status"] = "completed"
+                logger.info(
+                    "[Verification] LLM arbitration overrode auto-derived criteria failure "
+                    "for task %s — outputs judged sufficient.",
+                    getattr(node, "id", "?"),
+                )
+                return VerificationFinalization(
+                    final_status="completed",
+                    execution_status=normalized_execution_status,
+                    payload=normalized_payload,
+                    verification=verification,
+                    artifact_paths=local_artifact_paths,
+                )
+            elif llm_verdict is None:
+                # LLM call failed — preserve the verification failure as-is.
+                # Do NOT silently pass; the static check result stands.
+                logger.warning(
+                    "[Verification] LLM arbitration unavailable for task %s; "
+                    "preserving static verification failure.",
+                    getattr(node, "id", "?"),
+                )
+                metadata["verification_llm_unavailable"] = True
+                normalized_payload["metadata"] = metadata
+            # llm_verdict is False — LLM confirmed the outputs are insufficient,
+            # fall through to normal failure handling below.
+
         normalized_payload["status"] = "failed" if failures and blocking else "completed"
 
         return VerificationFinalization(
@@ -1147,6 +1206,145 @@ class TaskVerificationService:
         if os.path.isabs(text):
             return text
         return str((base_dir / text).resolve())
+
+    def _llm_arbitrate_verification(
+        self,
+        *,
+        node: Any,
+        failures: List[Dict[str, Any]],
+        artifact_paths: Sequence[str],
+        payload: Dict[str, Any],
+    ) -> Optional[bool]:
+        """Use a lightweight LLM call to judge whether actual outputs satisfy the task.
+
+        Returns:
+            True  — LLM judged outputs are sufficient (override failure)
+            False — LLM judged outputs are insufficient (keep failure)
+            None  — LLM call failed (caller should use fallback logic)
+        """
+        try:
+            from app.llm import get_default_client
+        except Exception:
+            logger.warning("[Verification] Cannot import LLM client for arbitration.")
+            return None
+
+        task_instruction = str(getattr(node, "instruction", "") or "").strip()
+        if not task_instruction:
+            task_instruction = str(getattr(node, "name", "") or "").strip()
+        if not task_instruction:
+            return None
+
+        # Build a concise list of actual output files (name + size)
+        actual_files: List[str] = []
+        for raw_path in artifact_paths:
+            p = Path(raw_path)
+            try:
+                if p.exists() and p.is_file():
+                    size_kb = p.stat().st_size / 1024
+                    actual_files.append(f"{p.name} ({size_kb:.0f} KB)")
+                else:
+                    actual_files.append(p.name)
+            except OSError:
+                actual_files.append(p.name)
+        # Deduplicate by name while preserving order
+        seen_names: set = set()
+        deduped_files: List[str] = []
+        for item in actual_files:
+            name_part = item.split(" (")[0]
+            if name_part not in seen_names:
+                seen_names.add(name_part)
+                deduped_files.append(item)
+        actual_files_text = "\n".join(f"  - {f}" for f in deduped_files[:20]) or "  (none)"
+
+        # Build failure summary
+        failure_descriptions = []
+        for f in failures[:5]:
+            check_type = f.get("type", "unknown")
+            message = f.get("message", "")
+            path = f.get("path", "")
+            failure_descriptions.append(f"  - [{check_type}] {path}: {message}")
+        failures_text = "\n".join(failure_descriptions)
+
+        # Extract execution stdout summary if available
+        exec_stdout = ""
+        metadata = payload.get("metadata", {})
+        content = str(payload.get("content", "")).strip()
+        if content and len(content) > 20:
+            exec_stdout = content[:1500]
+
+        prompt = (
+            "You are a task verification judge. A task has been executed and produced output files, "
+            "but the automated file-name check failed. Your job is to determine whether the actual "
+            "outputs semantically satisfy the task requirements, even if the filenames differ.\n\n"
+            f"## Task Instruction\n{task_instruction}\n\n"
+            f"## Automated Check Failures\n{failures_text}\n\n"
+            f"## Actual Output Files\n{actual_files_text}\n\n"
+        )
+        if exec_stdout:
+            prompt += f"## Execution Summary\n{exec_stdout[:1000]}\n\n"
+        prompt += (
+            "## Your Judgment\n"
+            "Based on the task instruction and actual outputs, do the outputs satisfy the task requirements?\n"
+            "Consider: format equivalence (csv≈parquet≈tsv), naming variations, and whether the data content "
+            "matches what was requested.\n\n"
+            'Respond with EXACTLY one line in this format:\n'
+            'VERDICT: pass\n'
+            'or\n'
+            'VERDICT: fail\n\n'
+            'Then on the next line, briefly explain your reasoning (one sentence).'
+        )
+
+        try:
+            client = get_default_client()
+            response = client.chat(prompt, max_tokens=256, timeout=15)
+            response_text = str(response or "").strip()
+
+            # Parse verdict
+            for line in response_text.splitlines():
+                line_stripped = line.strip().upper()
+                if line_stripped.startswith("VERDICT:"):
+                    verdict_value = line_stripped[len("VERDICT:"):].strip()
+                    if verdict_value == "PASS":
+                        # Extract reasoning
+                        reasoning_lines = [
+                            l.strip() for l in response_text.splitlines()
+                            if l.strip() and not l.strip().upper().startswith("VERDICT:")
+                        ]
+                        reasoning = reasoning_lines[0] if reasoning_lines else ""
+                        logger.info(
+                            "[Verification] LLM arbitration PASS for task %s: %s",
+                            getattr(node, "id", "?"),
+                            reasoning[:200],
+                        )
+                        return True
+                    elif verdict_value == "FAIL":
+                        reasoning_lines = [
+                            l.strip() for l in response_text.splitlines()
+                            if l.strip() and not l.strip().upper().startswith("VERDICT:")
+                        ]
+                        reasoning = reasoning_lines[0] if reasoning_lines else ""
+                        logger.info(
+                            "[Verification] LLM arbitration FAIL for task %s: %s",
+                            getattr(node, "id", "?"),
+                            reasoning[:200],
+                        )
+                        return False
+
+            # Could not parse verdict
+            logger.warning(
+                "[Verification] LLM arbitration returned unparseable response for task %s: %s",
+                getattr(node, "id", "?"),
+                response_text[:200],
+            )
+            return None
+
+        except Exception as exc:
+            logger.warning(
+                "[Verification] LLM arbitration call failed for task %s: %s",
+                getattr(node, "id", "?"),
+                exc,
+            )
+            return None
 
     def _fallback_artifact_match(
         self,

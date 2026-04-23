@@ -10,15 +10,21 @@ Multi-agent coordination with tool integration and LLM capabilities.
 执行 `git push` 前必须先设置代理：
 
 ```bash
-export https_proxy=http://127.0.0.1:7897
-export http_proxy=http://127.0.0.1:7897
-export all_proxy=socks5://127.0.0.1:7897
+export https_proxy=http://127.0.0.1:10808
+export http_proxy=http://127.0.0.1:10808
+export all_proxy=socks5://127.0.0.1:10808
 ```
 
 或一行：
 ```bash
-export https_proxy=http://127.0.0.1:7897;export http_proxy=http://127.0.0.1:7897;export all_proxy=socks5://127.0.0.1:7897
+export https_proxy=http://127.0.0.1:10808;export http_proxy=http://127.0.0.1:10808;export all_proxy=socks5://127.0.0.1:10808
 ```
+
+远端服务器访问 GitHub 时，优先使用显式代理参数，例如：
+```bash
+git -c http.proxy=socks5h://119.147.24.196:10800 -c https.proxy=socks5h://119.147.24.196:10800 pull
+```
+`proxy_on` 仅导出环境变量，在该服务器上对 GitHub HTTPS 并不总是可靠。
 
 ---
 
@@ -30,6 +36,7 @@ export https_proxy=http://127.0.0.1:7897;export http_proxy=http://127.0.0.1:7897
 # - Runs scripts/stop_all.sh first, then scripts/sync_skills.sh, then health_check.sh
 # - Backend: invokes start_backend.sh (conda activate LLM; see that script). Sets BACKEND_RELOAD=false for stable prod-style runs.
 # - Frontend: cd web-ui && npm run dev (port 3001; proxies /api→:9000, /ws→ws://:9000)
+# - Server runtime note: frontend is currently pinned via .env to Node 16 on the deployment host because newer Node builds require unavailable GLIBC versions there.
 # - Logs: log/backend.log, log/frontend.log (PIDs in .pid files alongside)
 # - Optional slow service: START_AMEM=true ./scripts/start_all.sh  # also starts A-mem (embedding load)
 
@@ -169,13 +176,15 @@ Tool categories: `information_retrieval`, `document_writing`, `file_management`,
 - **Error handling:** Custom exceptions in `app/errors/`, catch specific exceptions
 - **Async:** All service calls are async; use `await` consistently
 
-### Remote deployment server (GAgent)
+### Remote deployment server (Phage-Agent)
 
 - **SSH:** `zczhao@119.147.24.196`
-- **仓库目录:** `~/GAgent`（即 `/home/zczhao/GAgent`）
+- **仓库目录:** `~/Phage-Agent`（即 `/home/zczhao/Phage-Agent`）
 - **网络:** 仅在内网或指定网络下可直连；从本机执行 `ssh` 时需具备网络权限与 **本机已配置的认证方式**（密钥或交互式密码）。**勿将密码写入本仓库、规则文件或 `CLAUDE.md`。**
-- **标准更新与重启:** `cd ~/GAgent && git pull && ./scripts/start_all.sh`（脚本行为与 **§1 `./scripts/start_all.sh`** 一致：后端走 conda `LLM`、默认关 reload；遇本地未提交冲突可先对冲突路径 `git stash` 再拉取，见项目部署约定）
-- **日志:** `~/GAgent/log/`（如 `backend.log`、`frontend.log`）
+- **标准更新与重启:** `cd ~/Phage-Agent && git pull && ./scripts/start_all.sh`（脚本行为与 **§1 `./scripts/start_all.sh`** 一致：后端走 conda `LLM`、默认关 reload；遇本地未提交冲突可先对冲突路径 `git stash` 再拉取，见项目部署约定）
+- **GitHub 代理:** 在该主机上，优先使用显式 `socks5h://119.147.24.196:10800` 作为 `git` 的 `http.proxy` / `https.proxy`；不要默认假设 `proxy_on` 足够稳定。
+- **前端运行时:** 当前线上通过 `.env` 中的 `FRONTEND_NODE_BIN_DIR=/home/zczhao/.local/node-v16.20.2-linux-x64/bin` 与 `FRONTEND_NODE_VERSION=v16.20.2` 固定到 Node 16。
+- **日志:** `~/Phage-Agent/log/`（如 `backend.log`、`frontend.log`）
 
 ---
 

@@ -109,28 +109,28 @@ _DATA_TYPES: Dict[str, Dict[str, str]] = {
         "subdir": "meta_data",
     },
     "annotated_protein": {
-        "url": "{base}/files/Download/Annotated_protein_meta_data_v2/{ds}_annotated_protein_meta_data.tsv",
-        "filename": "{ds}_annotated_protein_meta_data.tsv",
+        "url": "{base}/files/Download/Annotated_protein_meta_data_v2/{ds}_phage_annotated_protein_meta_data.tsv",
+        "filename": "{ds}_phage_annotated_protein_meta_data.tsv",
         "subdir": "annotated_protein",
     },
     "transcription_terminator": {
-        "url": "{base}/files/Download/Transcription_terminators_meta_data/{ds}_transcription_terminator_meta_data.tsv",
-        "filename": "{ds}_transcription_terminator_meta_data.tsv",
+        "url": "{base}/files/Download/Transcription_terminators_meta_data/{ds}_phage_transcription_terminator_meta_data.tsv",
+        "filename": "{ds}_phage_transcription_terminator_meta_data.tsv",
         "subdir": "transcription_terminator",
     },
     "trna_tmrna": {
-        "url": "{base}/files/Download/tRNA_tmRNA_gene_meta_data_v2/{ds}_trna_gene_meta_data.tsv",
-        "filename": "{ds}_trna_gene_meta_data.tsv",
+        "url": "{base}/files/Download/tRNA_tmRNA_gene_meta_data_v2/{ds}_phage_trna_gene_meta_data.tsv",
+        "filename": "{ds}_phage_trna_gene_meta_data.tsv",
         "subdir": "trna_tmrna",
     },
     "anticrispr_protein": {
-        "url": "{base}/files/Download/AntiCRISPR_protein_meta_data_v2/{ds}_anticrispr_protein_meta_data.tsv",
-        "filename": "{ds}_anticrispr_protein_meta_data.tsv",
+        "url": "{base}/files/Download/AntiCRISPR_protein_meta_data_v2/{ds}_phage_anticrispr_protein_meta_data.tsv",
+        "filename": "{ds}_phage_anticrispr_protein_meta_data.tsv",
         "subdir": "anticrispr_protein",
     },
     "crispr_array": {
-        "url": "{base}/files/Download/CRISPR_array_meta_data/{ds}_crispr_array_meta_data.tsv",
-        "filename": "{ds}_crispr_array_meta_data.tsv",
+        "url": "{base}/files/Download/CRISPR_array_meta_data/{ds}_phage_crispr_array_meta_data.tsv",
+        "filename": "{ds}_phage_crispr_array_meta_data.tsv",
         "subdir": "crispr_array",
     },
     "antimicrobial_resistance_gene": {
@@ -144,13 +144,13 @@ _DATA_TYPES: Dict[str, Dict[str, str]] = {
         "subdir": "virulent_factor",
     },
     "transmembrane_protein": {
-        "url": "{base}/files/Download/Transmembrane_protein_meta_data/{ds}_transmembrane_protein_meta_data.tsv",
-        "filename": "{ds}_transmembrane_protein_meta_data.tsv",
+        "url": "{base}/files/Download/Transmembrane_protein_meta_data/{ds}_phage_transmembrane_protein_meta_data.tsv",
+        "filename": "{ds}_phage_transmembrane_protein_meta_data.tsv",
         "subdir": "transmembrane_protein",
     },
     "phage_fasta": {
-        "url": "{base}/fasta/phage_sequence/phage_fasta/{DS}.fasta",
-        "filename": "{DS}_phage.fasta",
+        "url": "{base}/download/phage/fasta/?datasource={DS}",
+        "filename": "{DS}_phage_fasta.tar.gz",
         "subdir": "phage_fasta",
     },
     "protein_fasta": {
