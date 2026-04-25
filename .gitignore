@@ -5,6 +5,7 @@ data/
 example/
 *.pyc
 .env
+.env.bak*
 *.env
 web-ui/.env
 web-ui/.env.development
