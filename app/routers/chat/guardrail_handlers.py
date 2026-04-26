@@ -289,6 +289,12 @@ def apply_phagescope_fallback(
     if not user_message.strip():
         return structured
 
+    actions = list(structured.actions or [])
+    if any(getattr(action, "kind", "") == "plan_operation" for action in actions):
+        return structured
+    if should_force_plan_first(user_message, actions):
+        return structured
+
     def _wants_results(text: str) -> bool:
         text_lower = text.lower()
         triggers = [
@@ -1857,8 +1863,20 @@ def apply_plan_review_optimize_guardrail(
     if not isinstance(reason_codes, list):
         return structured
 
-    wants_review = "intent_plan_review_request" in reason_codes
-    wants_optimize = "intent_plan_optimize_request" in reason_codes
+    message_lower = str(getattr(agent, "_current_user_message", "") or "").lower()
+    wants_review = (
+        "intent_plan_review_request" in reason_codes
+        or "review_plan" in message_lower
+        or "plan_operation review" in message_lower
+        or "review the plan" in message_lower
+    )
+    wants_optimize = (
+        "intent_plan_optimize_request" in reason_codes
+        or "optimize_plan" in message_lower
+        or "plan_operation optimize" in message_lower
+        or "optimize it" in message_lower
+        or "optimize the plan" in message_lower
+    )
     if not wants_review and not wants_optimize:
         return structured
 

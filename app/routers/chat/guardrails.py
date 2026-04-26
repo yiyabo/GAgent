@@ -416,6 +416,23 @@ def should_force_plan_first(
     if not lowered:
         return False
 
+    explicit_plan_workflow_keywords = (
+        "plan_operation",
+        "create_plan",
+        "review_plan",
+        "optimize_plan",
+        "execute_plan",
+        "execute_all",
+        "plan system",
+        "structured plan",
+        "build a plan",
+        "create a plan",
+        "review the plan",
+        "optimize the plan",
+    )
+    if any(token in lowered for token in explicit_plan_workflow_keywords):
+        return True
+
     project_keywords = (
         "task graph",
         "project",
