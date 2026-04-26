@@ -223,7 +223,7 @@ def _build_phagescope_research_seed_tasks(goal: Any) -> List[Dict[str, Any]]:
             "name": "Task 2: Prepare Host-derived genus metadata table",
             "instruction": (
                 "Run phagescope_research action=prepare_metadata_table with label_level=genus, "
-                "Host-derived labels only, leakage-aware split_group=subcluster, and no Taxonomy-derived genus labels. "
+                "Host-derived labels only, leakage-aware split_group=cluster, and no Taxonomy-derived genus labels. "
                 "Save curated_metadata.tsv, label_counts.tsv, and metadata_summary.json; require rows_written > 0 "
                 "and labels_kept > 0."
             ),
@@ -240,7 +240,8 @@ def _build_phagescope_research_seed_tasks(goal: Any) -> List[Dict[str, Any]]:
             "instruction": (
                 "Validate train/validation/test split integrity from curated_metadata.tsv. Report split counts, "
                 "Host_label counts per split, subcluster/cluster leakage checks, smallest/largest class ratio, and "
-                "limitations for rare genera. Save split_quality.json."
+                "limitations for rare genera. Cluster-level leakage must be zero for the final publishability gate. "
+                "Save split_quality.json."
             ),
             "criteria": [
                 {"type": "file_nonempty", "path": "split_quality.json"},
@@ -2950,6 +2951,7 @@ async def handle_plan_action(agent: Any, action: LLMAction) -> AgentStep:
             seed_tasks = _build_phagescope_research_seed_tasks(goal)
             if seed_tasks:
                 metadata.setdefault("plan_seed_source", "phagescope_research_seed_plan")
+                metadata.setdefault("skip_auto_decomposition", True)
         generation = await create_plan_and_generate(
             title=title,
             description=description,

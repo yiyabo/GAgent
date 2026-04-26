@@ -152,6 +152,8 @@ def test_phagescope_research_paper_goal_gets_strict_seed_plan():
     for required in (
         "metadata_rows",
         "Host-derived labels only",
+        "split_group=cluster",
+        "Cluster-level leakage must be zero",
         "RandomForest",
         "ExtraTrees",
         "model_metrics.json",

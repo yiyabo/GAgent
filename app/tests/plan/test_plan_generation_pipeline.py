@@ -2,8 +2,13 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
+from typing import Any
 
+from app.config.decomposer_config import DecomposerSettings
+from app.repository.plan_repository import PlanRepository
 from app.services.plans.artifact_preflight import ArtifactPreflightIssue, ArtifactPreflightResult
+from app.services.plans.plan_decomposer import PlanDecomposer
+from app.services.plans.plan_generation import create_plan_and_generate
 from app.services.plans.plan_models import PlanNode, PlanTree
 from app.services.plans.plan_rubric_evaluator import PlanRubricResult
 from tool_box.tools_impl.plan_tools import _create_plan, _optimize_plan, _review_plan
@@ -115,6 +120,119 @@ class _OptimizeRepoStub:
         node.position = new_position
 
 
+class _GenerationRepoStub(PlanRepository):
+    def __init__(self) -> None:
+        super().__init__()
+        self.next_plan_id = 1
+        self.next_task_id = 1
+        self.tree: PlanTree | None = None
+        self.metadata_updates = []
+
+    def create_plan(
+        self,
+        title: str,
+        *,
+        owner: str | None = None,
+        description: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> PlanTree:
+        _ = owner
+        tree = PlanTree(id=self.next_plan_id, title=title, description=description, metadata=dict(metadata or {}))
+        self.tree = tree
+        return tree
+
+    def create_task(
+        self,
+        plan_id: int,
+        *,
+        name: str,
+        status: str = "pending",
+        instruction: str | None = None,
+        parent_id: int | None = None,
+        metadata: dict[str, Any] | None = None,
+        dependencies: list[int] | None = None,
+        position: int | None = None,
+        anchor_task_id: int | None = None,
+        anchor_position: str | None = None,
+    ) -> PlanNode:
+        _ = position, anchor_task_id, anchor_position
+        assert self.tree is not None
+        assert plan_id == self.tree.id
+        node = PlanNode(
+            id=self.next_task_id,
+            plan_id=plan_id,
+            name=name,
+            status=status,
+            instruction=instruction,
+            parent_id=parent_id,
+            metadata=dict(metadata or {}),
+            dependencies=list(dependencies or []),
+        )
+        self.next_task_id += 1
+        self.tree.nodes[node.id] = node
+        self.tree.rebuild_adjacency()
+        return node
+
+    def update_task(
+        self,
+        plan_id: int,
+        task_id: int,
+        *,
+        name: str | None = None,
+        status: str | None = None,
+        instruction: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        dependencies: list[int] | None = None,
+        context_combined: str | None = None,
+        context_sections: list[Any] | None = None,
+        context_meta: dict[str, Any] | None = None,
+        execution_result: str | None = None,
+    ) -> PlanNode:
+        assert self.tree is not None
+        assert plan_id == self.tree.id
+        node = self.tree.nodes[task_id]
+        updates = {
+            "name": name,
+            "status": status,
+            "instruction": instruction,
+            "metadata": metadata,
+            "dependencies": dependencies,
+            "context_combined": context_combined,
+            "context_sections": context_sections,
+            "context_meta": context_meta,
+            "execution_result": execution_result,
+        }
+        for key, value in updates.items():
+            if value is not None:
+                setattr(node, key, value)
+        self.tree.rebuild_adjacency()
+        return node
+
+    def get_plan_tree(self, plan_id: int) -> PlanTree:
+        assert self.tree is not None
+        assert plan_id == self.tree.id
+        self.tree.rebuild_adjacency()
+        return self.tree
+
+    def update_plan_metadata(self, plan_id: int, metadata) -> None:
+        assert self.tree is not None
+        assert plan_id == self.tree.id
+        self.metadata_updates.append((plan_id, metadata))
+        self.tree.metadata = dict(metadata or {})
+
+
+class _FailingDecomposerStub(PlanDecomposer):
+    def __init__(self) -> None:
+        self._settings = DecomposerSettings(model="configured", max_depth=2, total_node_budget=25)
+
+    @property
+    def settings(self) -> DecomposerSettings:
+        return self._settings
+
+    def run_plan(self, *_args, **_kwargs):
+        raise AssertionError("run_plan should be skipped for strict seeded plans")
+
+
 def test_create_plan_uses_integrated_generation_and_allows_missing_seed_tasks(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
@@ -168,6 +286,48 @@ def test_create_plan_uses_integrated_generation_and_allows_missing_seed_tasks(mo
     assert result["material_collection"]["used"] is True
     assert captured["tasks"] is None
     assert captured["owner"] == "alice"
+
+
+def test_create_plan_and_generate_skips_decomposition_for_seeded_plan(monkeypatch) -> None:
+    async def _no_materials(**kwargs):
+        return kwargs["session_context"], []
+
+    repo = _GenerationRepoStub()
+    monkeypatch.setattr("app.services.plans.plan_generation.collect_plan_generation_materials", _no_materials)
+
+    outcome = asyncio.run(
+        create_plan_and_generate(
+            title="Strict PhageScope Plan",
+            description="Use the strict seeded workflow.",
+            tasks=[
+                {
+                    "name": "Audit PhageScope metadata",
+                    "instruction": "Run phagescope_research audit and require metadata_rows.",
+                    "metadata": {"source": "phagescope_research_seed_plan"},
+                },
+                {
+                    "name": "Prepare Host-derived labels",
+                    "instruction": "Prepare metadata table with Host-derived genus labels only.",
+                    "dependencies": ["Audit PhageScope metadata"],
+                    "metadata": {"source": "phagescope_research_seed_plan"},
+                },
+            ],
+            metadata={"skip_auto_decomposition": True, "plan_seed_source": "phagescope_research_seed_plan"},
+            repo=repo,
+            decomposer=_FailingDecomposerStub(),
+            session_context={"session_id": "strict-seed"},
+        )
+    )
+
+    assert outcome.decomposition is None
+    assert outcome.decomposition_status == "skipped_seeded"
+    assert len(outcome.seeded_tasks) == 2
+    assert outcome.plan_tree.node_count() == 3
+    assert outcome.plan_tree.metadata["skip_auto_decomposition"] is True
+    assert outcome.plan_tree.metadata["plan_generation"]["decomposition_status"] == "skipped_seeded"
+    assert outcome.plan_tree.metadata["plan_generation"]["seed_task_count"] == 2
+    assert outcome.seeded_tasks[0].metadata["source"] == "phagescope_research_seed_plan"
+    assert outcome.seeded_tasks[1].dependencies == [outcome.seeded_tasks[0].id]
 
 
 def test_review_plan_ensures_generation_ready_before_scoring(monkeypatch) -> None:

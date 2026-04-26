@@ -600,7 +600,10 @@ async def create_plan_and_generate(
 
     decomposition: Optional[DecompositionResult] = None
     decomposition_status = "skipped"
-    if decomposer.settings.model is not None:
+    skip_decomposition = bool(effective_metadata.get("skip_auto_decomposition"))
+    if skip_decomposition:
+        decomposition_status = "skipped_seeded"
+    elif decomposer.settings.model is not None:
         decomposition = await asyncio.to_thread(
             decomposer.run_plan,
             plan_id,
