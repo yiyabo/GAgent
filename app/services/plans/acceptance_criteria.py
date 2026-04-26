@@ -333,9 +333,11 @@ def _content_checks_for_deliverable(candidate: str) -> List[Dict[str, Any]]:
             "min_text_chars": 200,
             "hard": True,
         })
-    if lowered.endswith(".json") and (
-        "audit" in basename or basename in {"data_audit.json", "audit_result.json"}
-    ):
+    if lowered.endswith(".json") and basename in {
+        "data_audit.json",
+        "audit_result.json",
+        "phagescope_data_audit.json",
+    }:
         checks.append({
             "type": "json_field_at_least",
             "path": candidate,
