@@ -322,8 +322,22 @@ Execute a 3-node phage QC pipeline.
         "blocking": True,
         "checks": [
             {"type": "file_nonempty", "path": "results/subset_manifest.csv"},
+            {
+                "type": "json_field_at_least",
+                "path": "results/subset_manifest.csv",
+                "key_path": "row_count",
+                "min_value": 1,
+                "hard": True,
+            },
             {"type": "file_nonempty", "path": "results/qc_summary.md"},
             {"type": "file_nonempty", "path": "results/qc_report.pdf"},
+            {
+                "type": "pdf_valid",
+                "path": "results/qc_report.pdf",
+                "min_pages": 1,
+                "min_text_chars": 200,
+                "hard": True,
+            },
         ],
     }
 

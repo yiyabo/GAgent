@@ -565,6 +565,113 @@ def test_task_verifier_pdb_residue_present_avoids_text_false_positive(tmp_path):
     assert failed.verification["failures"][0]["type"] == "pdb_residue_present"
 
 
+def test_derived_criteria_reject_header_only_tsv(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        TaskVerificationService,
+        "_llm_arbitrate_verification",
+        lambda *args, **kwargs: True,
+    )
+    table = tmp_path / "curated_metadata.tsv"
+    table.write_text("Phage_ID\tHost_label\n", encoding="utf-8")
+    node = PlanNode(
+        id=45,
+        plan_id=9,
+        name="Prepare metadata",
+        instruction="Generate and save curated_metadata.tsv",
+        metadata={},
+    )
+    verifier = TaskVerificationService()
+
+    finalization = verifier.finalize_payload(
+        node,
+        {"status": "completed", "metadata": {"artifact_paths": [str(table)], "run_directory": str(tmp_path)}},
+        execution_status="completed",
+    )
+
+    assert finalization.final_status == "failed"
+    failures = finalization.payload["metadata"]["verification"]["failures"]
+    assert any(item["type"] == "json_field_at_least" and item.get("actual") == 0 for item in failures)
+    assert finalization.payload["metadata"].get("verification_overridden_by_llm") is None
+
+
+def test_derived_criteria_reject_audit_json_without_metadata_rows(tmp_path):
+    audit = tmp_path / "data_audit.json"
+    audit.write_text(json.dumps({"success": True, "metadata_files": 14}), encoding="utf-8")
+    node = PlanNode(
+        id=46,
+        plan_id=9,
+        name="Audit data",
+        instruction="Write data_audit.json with audit results",
+        metadata={},
+    )
+    verifier = TaskVerificationService()
+
+    finalization = verifier.finalize_payload(
+        node,
+        {"status": "completed", "metadata": {"artifact_paths": [str(audit)], "run_directory": str(tmp_path)}},
+        execution_status="completed",
+    )
+
+    assert finalization.final_status == "failed"
+    assert any(item["type"] == "json_field_at_least" for item in finalization.payload["metadata"]["verification"]["failures"])
+
+
+def test_derived_criteria_reject_metrics_json_without_tree_metrics(tmp_path):
+    metrics = tmp_path / "model_metrics.json"
+    metrics.write_text(json.dumps({"status": "completed"}), encoding="utf-8")
+    node = PlanNode(
+        id=47,
+        plan_id=9,
+        name="Train models",
+        instruction="Save model_metrics.json after RandomForest and ExtraTrees evaluation",
+        metadata={},
+    )
+    verifier = TaskVerificationService()
+
+    finalization = verifier.finalize_payload(
+        node,
+        {"status": "completed", "metadata": {"artifact_paths": [str(metrics)], "run_directory": str(tmp_path)}},
+        execution_status="completed",
+    )
+
+    assert finalization.final_status == "failed"
+    assert finalization.payload["metadata"]["verification"]["failures"][0]["type"] == "model_metrics_valid"
+
+    metrics.write_text(
+        json.dumps({"models": {"ExtraTrees": {"accuracy": 0.2, "macro_f1": 0.1}}}),
+        encoding="utf-8",
+    )
+    passed = verifier.finalize_payload(
+        node,
+        {"status": "completed", "metadata": {"artifact_paths": [str(metrics)], "run_directory": str(tmp_path)}},
+        execution_status="completed",
+    )
+    assert passed.final_status == "completed"
+
+
+def test_derived_criteria_reject_fake_pdf(tmp_path):
+    pdf = tmp_path / "phagescope_research_topic1_production_report.pdf"
+    pdf.write_text("not a real pdf", encoding="utf-8")
+    node = PlanNode(
+        id=48,
+        plan_id=9,
+        name="Write PDF",
+        instruction="Generate phagescope_research_topic1_production_report.pdf",
+        metadata={},
+    )
+    verifier = TaskVerificationService()
+
+    finalization = verifier.finalize_payload(
+        node,
+        {"status": "completed", "metadata": {"artifact_paths": [str(pdf)], "run_directory": str(tmp_path)}},
+        execution_status="completed",
+    )
+
+    assert finalization.final_status == "failed"
+    failures = finalization.payload["metadata"]["verification"]["failures"]
+    assert any(item["type"] == "pdf_valid" for item in failures)
+
+
 def test_plan_executor_marks_task_failed_when_verification_fails(tmp_path, monkeypatch):
     output_path = tmp_path / "report.json"
     tree = PlanTree(id=1, title="Verification Plan")
