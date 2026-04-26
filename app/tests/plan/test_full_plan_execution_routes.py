@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import threading
 from types import SimpleNamespace
 
@@ -854,6 +855,25 @@ def test_get_plan_tree_preserves_retryable_skipped_status_and_summary(
     assert payload["nodes"]["1"]["effective_status"] == "skipped"
     assert summary.skipped == 1
     assert summary.pending == 0
+
+
+def test_get_plan_execution_summary_handles_locked_plan_database(monkeypatch) -> None:
+    monkeypatch.setattr(
+        plan_routes,
+        "_load_authorized_plan_tree",
+        lambda _plan_id, _request: (_ for _ in ()).throw(sqlite3.OperationalError("database is locked")),
+    )
+    monkeypatch.setattr(
+        plan_routes,
+        "_build_plan_execution_snapshot",
+        lambda _plan_id: {"active_task_ids": {4, 6}, "active_jobs": []},
+    )
+
+    summary = plan_routes.get_plan_execution_summary(7, _build_request("alice"))
+
+    assert summary.plan_id == 7
+    assert summary.total_tasks == 0
+    assert summary.running == 2
 
 
 def test_execute_full_plan_reruns_false_completed_tasks_with_retry_text(

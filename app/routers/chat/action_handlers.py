@@ -181,6 +181,165 @@ def _extract_explicit_plan_tasks_from_goal(goal: Any) -> List[Dict[str, Any]]:
         previous_name = name
     return tasks
 
+
+def _looks_like_phagescope_research_paper_goal(goal: Any) -> bool:
+    if not isinstance(goal, str) or not goal.strip():
+        return False
+    text = goal.lower()
+    if "phagescope" not in text:
+        return False
+    research_tokens = ("research", "topic", "host", "genus", "prediction", "predict")
+    paper_tokens = ("paper", "pdf", "report", "publish", "发表", "论文")
+    return any(token in text for token in research_tokens) and any(token in text for token in paper_tokens)
+
+
+def _build_phagescope_research_seed_tasks(goal: Any) -> List[Dict[str, Any]]:
+    """Create a strict executable skeleton for PhageScope paper-generation plans.
+
+    Generic decomposition tends to collapse this workflow into a few vague
+    planning tasks.  For a publishable research paper, the system needs an
+    audit→data→split→model→figure→report→verification chain with concrete
+    artifact contracts from the start.
+    """
+    if not _looks_like_phagescope_research_paper_goal(goal):
+        return []
+
+    data_dir = "/home/zczhao/Phage-Agent/phagescope"
+    output_pdf = "phagescope_research_topic1_production_report.pdf"
+    specs: List[Dict[str, Any]] = [
+        {
+            "name": "Task 1: Audit PhageScope dataset",
+            "instruction": (
+                f"Run phagescope_research action=audit on {data_dir}. Save data_audit.json and require "
+                "metadata_rows >= 1, metadata_files >= 1, unique_phage_ids >= 1, plus provenance for the "
+                "resolved data directory."
+            ),
+            "criteria": [
+                {"type": "file_nonempty", "path": "data_audit.json"},
+                {"type": "json_field_at_least", "path": "data_audit.json", "key_path": "metadata_rows", "min_value": 1, "hard": True},
+            ],
+        },
+        {
+            "name": "Task 2: Prepare Host-derived genus metadata table",
+            "instruction": (
+                "Run phagescope_research action=prepare_metadata_table with label_level=genus, "
+                "Host-derived labels only, leakage-aware split_group=subcluster, and no Taxonomy-derived genus labels. "
+                "Save curated_metadata.tsv, label_counts.tsv, and metadata_summary.json; require rows_written > 0 "
+                "and labels_kept > 0."
+            ),
+            "criteria": [
+                {"type": "file_nonempty", "path": "curated_metadata.tsv"},
+                {"type": "json_field_at_least", "path": "curated_metadata.tsv", "key_path": "row_count", "min_value": 1, "hard": True},
+                {"type": "file_nonempty", "path": "metadata_summary.json"},
+                {"type": "json_field_at_least", "path": "metadata_summary.json", "key_path": "rows_written", "min_value": 1, "hard": True},
+                {"type": "json_field_at_least", "path": "metadata_summary.json", "key_path": "labels_kept", "min_value": 1, "hard": True},
+            ],
+        },
+        {
+            "name": "Task 3: Validate split leakage and class balance",
+            "instruction": (
+                "Validate train/validation/test split integrity from curated_metadata.tsv. Report split counts, "
+                "Host_label counts per split, subcluster/cluster leakage checks, smallest/largest class ratio, and "
+                "limitations for rare genera. Save split_quality.json."
+            ),
+            "criteria": [
+                {"type": "file_nonempty", "path": "split_quality.json"},
+                {"type": "json_field_at_least", "path": "split_quality.json", "key_path": "total_rows", "min_value": 1, "hard": True},
+            ],
+        },
+        {
+            "name": "Task 4: Train RandomForest and ExtraTrees baselines",
+            "instruction": (
+                "Train metadata-only RandomForest and ExtraTrees baselines using the fixed Split column. Save "
+                "model_metrics.json with numeric accuracy, macro_f1, weighted_f1, and top_k accuracy for each model; "
+                "include baseline/majority-class comparison and random seed."
+            ),
+            "criteria": [
+                {"type": "file_nonempty", "path": "model_metrics.json"},
+                {"type": "model_metrics_valid", "path": "model_metrics.json", "hard": True},
+            ],
+        },
+        {
+            "name": "Task 5: Generate figures and result tables",
+            "instruction": (
+                "Generate publication-ready class distribution, model comparison, top-k performance, and confusion "
+                "or error-analysis figures/tables. Save at least four figures or tables plus figure_manifest.json."
+            ),
+            "criteria": [
+                {"type": "glob_count_at_least", "path": "figures/*", "count": 4},
+                {"type": "file_nonempty", "path": "figure_manifest.json"},
+            ],
+        },
+        {
+            "name": "Task 6: Write reproducibility package",
+            "instruction": (
+                "Write reproducibility_manifest.json and methods_reproducibility.md covering data provenance, "
+                "software versions, random seeds, exact commands, environment, and generated artifact paths."
+            ),
+            "criteria": [
+                {"type": "file_nonempty", "path": "reproducibility_manifest.json"},
+                {"type": "file_nonempty", "path": "methods_reproducibility.md"},
+            ],
+        },
+        {
+            "name": "Task 7: Draft publishable PhageScope report PDF",
+            "instruction": (
+                f"Write {output_pdf} as a publishable-paper-quality report with abstract, data provenance, methods, "
+                "results, class imbalance, split leakage controls, metrics, figures/tables, limitations, and "
+                "reproducibility sections."
+            ),
+            "criteria": [
+                {"type": "file_nonempty", "path": output_pdf},
+                {"type": "pdf_valid", "path": output_pdf, "min_pages": 4, "min_text_chars": 3000, "hard": True},
+            ],
+        },
+        {
+            "name": "Task 8: Run final report quality audit",
+            "instruction": (
+                "Audit the final PDF and all supporting artifacts against publishable-paper gates: dataset provenance, "
+                "split leakage, class imbalance, baselines, metrics, figures/tables, limitations, and reproducibility. "
+                "Save report_quality_audit.json with pass/fail flags and no unchecked mandatory gates."
+            ),
+            "criteria": [
+                {"type": "file_nonempty", "path": "report_quality_audit.json"},
+                {"type": "json_field_equals", "path": "report_quality_audit.json", "key_path": "mandatory_gates_passed", "expected": True, "hard": True},
+            ],
+        },
+        {
+            "name": "Task 9: Submit verified report deliverables",
+            "instruction": (
+                f"Submit {output_pdf}, model_metrics.json, report_quality_audit.json, and reproducibility artifacts "
+                "through deliverable_submit only after verification passes."
+            ),
+            "criteria": [
+                {"type": "file_nonempty", "path": output_pdf},
+                {"type": "pdf_valid", "path": output_pdf, "min_pages": 4, "min_text_chars": 3000, "hard": True},
+            ],
+        },
+    ]
+
+    tasks: List[Dict[str, Any]] = []
+    previous_name: Optional[str] = None
+    for index, spec in enumerate(specs, start=1):
+        task = {
+            "name": spec["name"],
+            "instruction": spec["instruction"],
+            "metadata": {
+                "task_type": "composite",
+                "source": "phagescope_research_seed_plan",
+                "explicit_task_number": index,
+                "acceptance_criteria": {
+                    "category": "file_data",
+                    "blocking": True,
+                    "checks": spec["criteria"],
+                },
+            },
+            "dependencies": [previous_name] if previous_name else [],
+        }
+        tasks.append(task)
+        previous_name = spec["name"]
+    return tasks
+
 _PHAGESCOPE_RESEARCH_ACTIONS = {"audit", "research_plan", "prepare_metadata_table"}
 _artifact_preflight_service = ArtifactPreflightService()
 
@@ -2787,6 +2946,10 @@ async def handle_plan_action(agent: Any, action: LLMAction) -> AgentStep:
         metadata.setdefault("created_by", "structured_agent")
         raw_tasks = params.get("tasks")
         seed_tasks = raw_tasks if isinstance(raw_tasks, list) else _extract_explicit_plan_tasks_from_goal(goal)
+        if not seed_tasks:
+            seed_tasks = _build_phagescope_research_seed_tasks(goal)
+            if seed_tasks:
+                metadata.setdefault("plan_seed_source", "phagescope_research_seed_plan")
         generation = await create_plan_and_generate(
             title=title,
             description=description,

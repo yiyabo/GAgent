@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import sqlite3
 import threading
 import heapq
 import os
@@ -1818,8 +1819,29 @@ def execute_task_with_dependencies(
     summary="Get plan execution status summary",
 )
 def get_plan_execution_summary(plan_id: int, request: Request):
-    tree = _load_authorized_plan_tree(plan_id, request)
-    state_by_task = _resolve_effective_task_states(plan_id, tree)
+    try:
+        tree = _load_authorized_plan_tree(plan_id, request)
+        state_by_task = _resolve_effective_task_states(plan_id, tree)
+    except sqlite3.OperationalError as exc:
+        if "database is locked" not in str(exc).lower():
+            raise
+        logger.warning(
+            "Plan %s execution summary unavailable because plan database is locked; "
+            "returning active execution snapshot.",
+            plan_id,
+        )
+        snapshot = _build_plan_execution_snapshot(plan_id)
+        running = len(snapshot.get("active_task_ids") or [])
+        return PlanExecutionSummary(
+            plan_id=plan_id,
+            total_tasks=0,
+            completed=0,
+            failed=0,
+            skipped=0,
+            blocked=0,
+            running=running,
+            pending=0,
+        )
 
     total = tree.node_count()
     status_counts = {

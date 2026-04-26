@@ -21,6 +21,7 @@ from .acceptance_criteria import (
     derive_relative_output_dirs,
     resolve_glob_min_count,
     resolve_glob_pattern,
+    strengthen_acceptance_criteria,
 )
 from .artifact_contracts import (
     artifact_path_matches_alias,
@@ -725,7 +726,7 @@ class TaskVerificationService:
         metadata = node.metadata if isinstance(node.metadata, dict) else {}
         criteria = metadata.get("acceptance_criteria")
         if isinstance(criteria, dict):
-            return copy.deepcopy(criteria), False
+            return strengthen_acceptance_criteria(copy.deepcopy(criteria)), False
         exec_result = node.execution_result
         if isinstance(exec_result, str):
             try:
@@ -737,7 +738,7 @@ class TaskVerificationService:
             if isinstance(exec_meta, dict):
                 criteria = exec_meta.get("acceptance_criteria")
                 if isinstance(criteria, dict):
-                    return copy.deepcopy(criteria), False
+                    return strengthen_acceptance_criteria(copy.deepcopy(criteria)), False
         derived = derive_acceptance_criteria_from_text(getattr(node, "instruction", None))
         if isinstance(derived, dict) and self._has_checks(derived):
             return derived, True
