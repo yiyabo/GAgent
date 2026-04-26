@@ -2382,6 +2382,19 @@ async def manuscript_writer_handler(
                 )
 
         if draft_only:
+            if output_file.suffix.lower() == ".pdf":
+                return {
+                    "tool": "manuscript_writer",
+                    "success": False,
+                    "error": "draft_only_pdf_output_not_supported",
+                    "message": (
+                        "draft_only mode writes Markdown/text drafts and must not create a file "
+                        "with a .pdf suffix. Use a real PDF conversion step for PDF deliverables."
+                    ),
+                    "output_path": _to_rel(output_file),
+                    "effective_output_path": _to_rel(output_file),
+                    "analysis_path": _to_rel(analysis_file),
+                }
             draft_text, analysis_memo, used_sources, section_counts, section_text_map = _assemble_local_draft_from_context(
                 task=task,
                 context_paths=context_paths,
