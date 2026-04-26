@@ -24,6 +24,7 @@ from .tools_impl import (
     manuscript_writer_tool,
     paper_replication_tool,
     phagescope_tool,
+    phagescope_research_tool,
     plan_operation_tool,
     result_interpreter_tool,
     review_pack_writer_tool,
@@ -97,6 +98,9 @@ _TOOL_METADATA: Dict[str, Dict[str, Any]] = {
     "phagescope": {
         "search_hint": "phage bacteriophage annotation pipeline submit",
     },
+    "phagescope_research": {
+        "search_hint": "phagescope local dataset host taxonomy machine learning audit split",
+    },
     "bio_tools": {
         "search_hint": "bioinformatics blast assembly alignment annotation",
     },
@@ -146,6 +150,7 @@ _STANDARD_TOOLS: List[Dict[str, Any]] = [
     graph_rag_tool,
     manuscript_writer_tool,
     phagescope_tool,
+    phagescope_research_tool,
     deeppl_tool,
     sequence_fetch_tool,
     url_fetch_tool,
