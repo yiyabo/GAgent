@@ -1516,6 +1516,112 @@ def test_glob_count_at_least_matches_relocated_artifact_paths(tmp_path):
     assert finalization.verification["checks_passed"] == 2
 
 
+def test_glob_count_at_least_matches_flattened_promoted_raw_files(tmp_path):
+    promoted_dir = tmp_path / "runtime" / "session_phagescope" / "raw_files" / "task_1" / "task_6"
+    promoted_dir.mkdir(parents=True)
+    for index in range(6):
+        (promoted_dir / f"figure_{index}.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+    manifest = promoted_dir / "figure_manifest.json"
+    manifest.write_text('{"figures": 6}\n', encoding="utf-8")
+
+    verifier = TaskVerificationService()
+    node = PlanNode(
+        id=6,
+        plan_id=85,
+        name="Generate figures and result tables",
+        metadata={
+            "acceptance_criteria": {
+                "category": "file_data",
+                "blocking": True,
+                "checks": [
+                    {"type": "glob_count_at_least", "path": "figures/*.png", "count": 6},
+                    {"type": "file_exists", "path": "figure_manifest.json"},
+                ],
+            }
+        },
+    )
+
+    artifact_paths = [str(path) for path in sorted(promoted_dir.iterdir())]
+    finalization = verifier.finalize_payload(
+        node,
+        {
+            "status": "completed",
+            "content": "Promoted 7 file(s) to unified output dir.",
+            "metadata": {
+                "run_directory": str(tmp_path / "scratch" / "run_without_figures"),
+                "artifact_paths": artifact_paths,
+            },
+        },
+        execution_status="completed",
+    )
+
+    assert finalization.final_status == "completed"
+    assert finalization.verification is not None
+    assert finalization.verification["status"] == "passed"
+    assert finalization.verification["checks_passed"] == 2
+
+
+def test_json_field_equals_derives_mandatory_gates_passed(tmp_path):
+    audit = tmp_path / "report_quality_audit.json"
+    audit.write_text(
+        json.dumps(
+            {
+                "overall_status": "PASS",
+                "mandatory_gates_summary": {
+                    "total_mandatory": 8,
+                    "passed": 8,
+                    "failed": 0,
+                    "unchecked": 0,
+                },
+                "gates": {
+                    "dataset_provenance": {"status": "PASS", "mandatory": True, "checked": True},
+                    "split_leakage": {"status": "PASS", "mandatory": True, "checked": True},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    verifier = TaskVerificationService()
+    node = PlanNode(
+        id=9,
+        plan_id=85,
+        name="Run final report quality audit",
+        metadata={
+            "acceptance_criteria": {
+                "category": "file_data",
+                "blocking": True,
+                "checks": [
+                    {"type": "file_nonempty", "path": "report_quality_audit.json"},
+                    {
+                        "type": "json_field_equals",
+                        "path": "report_quality_audit.json",
+                        "key_path": "mandatory_gates_passed",
+                        "expected": True,
+                    },
+                ],
+            }
+        },
+    )
+
+    finalization = verifier.finalize_payload(
+        node,
+        {
+            "status": "completed",
+            "content": "audit complete",
+            "metadata": {
+                "run_directory": str(tmp_path),
+                "artifact_paths": [str(audit)],
+            },
+        },
+        execution_status="completed",
+    )
+
+    assert finalization.final_status == "completed"
+    assert finalization.verification is not None
+    assert finalization.verification["status"] == "passed"
+    assert finalization.verification["checks_passed"] == 2
+
+
 def test_is_local_path_filtering():
     """_is_local_path should reject URLs, plain text, and accept real paths."""
     verifier = TaskVerificationService()
