@@ -246,12 +246,80 @@ def derive_acceptance_criteria_from_text(
             checks.append({"type": "glob_count_at_least", "path": candidate, "count": 1})
         else:
             checks.append({"type": "file_nonempty", "path": candidate})
+            checks.extend(_content_checks_for_deliverable(candidate))
 
     return {
         "category": "file_data",
         "blocking": bool(blocking),
         "checks": checks,
     }
+
+
+def _content_checks_for_deliverable(candidate: str) -> List[Dict[str, Any]]:
+    """Add format-aware checks for common data/report artifacts.
+
+    A non-empty file is not enough for plan execution: header-only TSVs,
+    placeholder PDFs, and metrics-free JSON files were previously able to pass
+    generated criteria.  These checks are intentionally deterministic and hard,
+    so downstream LLM arbitration cannot wave them through.
+    """
+    lowered = str(candidate or "").strip().lower()
+    if not lowered:
+        return []
+
+    checks: List[Dict[str, Any]] = []
+    if lowered.endswith((".tsv", ".csv")):
+        checks.append({
+            "type": "json_field_at_least",
+            "path": candidate,
+            "key_path": "row_count",
+            "min_value": 1,
+            "hard": True,
+        })
+
+    basename = lowered.rsplit("/", 1)[-1]
+    if lowered.endswith(".pdf"):
+        checks.append({
+            "type": "pdf_valid",
+            "path": candidate,
+            "min_pages": 1,
+            "min_text_chars": 200,
+            "hard": True,
+        })
+    if lowered.endswith(".json") and (
+        "audit" in basename or basename in {"data_audit.json", "audit_result.json"}
+    ):
+        checks.append({
+            "type": "json_field_at_least",
+            "path": candidate,
+            "key_path": "metadata_rows",
+            "min_value": 1,
+            "hard": True,
+        })
+    if lowered.endswith(".json") and (
+        "metadata" in basename and "summary" in basename
+    ):
+        checks.extend([
+            {
+                "type": "json_field_at_least",
+                "path": candidate,
+                "key_path": "rows_written",
+                "min_value": 1,
+                "hard": True,
+            },
+            {
+                "type": "json_field_at_least",
+                "path": candidate,
+                "key_path": "labels_kept",
+                "min_value": 1,
+                "hard": True,
+            },
+        ])
+    if lowered.endswith(".json") and (
+        "metric" in basename or "model" in basename or "baseline" in basename
+    ):
+        checks.append({"type": "model_metrics_valid", "path": candidate, "hard": True})
+    return checks
 
 
 def resolve_glob_pattern(raw_check: Optional[Dict[str, Any]]) -> Optional[str]:
