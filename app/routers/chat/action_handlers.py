@@ -108,6 +108,80 @@ from .background import (
 )
 
 logger = logging.getLogger(__name__)
+
+_EXPLICIT_PLAN_TASK_RE = re.compile(
+    r"^\s*(?:[-*]\s*)?(?:task\s*)?(?P<num>\d{1,3})\s*[:.)-]\s*(?P<body>\S.*)$",
+    re.IGNORECASE,
+)
+
+_EXPLICIT_PLAN_TASK_BLOCK_RE = re.compile(
+    r"(?:^|\n|\s)(?:[-*]\s*)?task\s*(?P<num>\d{1,3})\s*[:.)-]\s*(?P<body>.*?)(?=(?:\s+(?:[-*]\s*)?task\s*\d{1,3}\s*[:.)-])|$)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _coerce_plan_description(description: Any, goal: Any) -> Optional[str]:
+    if isinstance(description, str) and description.strip():
+        return description.strip()
+    if isinstance(goal, str) and goal.strip():
+        return goal.strip()
+    return None
+
+
+def _extract_explicit_plan_tasks_from_goal(goal: Any) -> List[Dict[str, Any]]:
+    if not isinstance(goal, str) or not goal.strip():
+        return []
+
+    extracted: List[Tuple[int, str]] = []
+    for match in _EXPLICIT_PLAN_TASK_BLOCK_RE.finditer(goal):
+        try:
+            number = int(match.group("num"))
+        except (TypeError, ValueError):
+            continue
+        body = re.sub(r"\s+", " ", str(match.group("body") or "")).strip()
+        if body:
+            extracted.append((number, body))
+
+    if len(extracted) < 2:
+        extracted = []
+        for line in goal.splitlines():
+            match = _EXPLICIT_PLAN_TASK_RE.match(line)
+            if not match:
+                continue
+            try:
+                number = int(match.group("num"))
+            except (TypeError, ValueError):
+                continue
+            body = str(match.group("body") or "").strip()
+            if body:
+                extracted.append((number, body))
+
+    if len(extracted) < 2:
+        return []
+
+    extracted.sort(key=lambda item: item[0])
+    tasks: List[Dict[str, Any]] = []
+    previous_name: Optional[str] = None
+    for number, body in extracted:
+        name_body = re.split(r"[.;]", body, maxsplit=1)[0].strip() or body
+        name = f"Task {number}: {name_body}"
+        if len(name) > 96:
+            name = name[:93].rstrip() + "..."
+        task: Dict[str, Any] = {
+            "name": name,
+            "instruction": body,
+            "metadata": {
+                "task_type": "composite",
+                "source": "explicit_create_plan_goal",
+                "explicit_task_number": number,
+            },
+            "dependencies": [previous_name] if previous_name else [],
+        }
+        tasks.append(task)
+        previous_name = name
+    return tasks
+
+_PHAGESCOPE_RESEARCH_ACTIONS = {"audit", "research_plan", "prepare_metadata_table"}
 _artifact_preflight_service = ArtifactPreflightService()
 
 # ---------------------------------------------------------------------------
@@ -898,6 +972,18 @@ def _capability_guard_failure(
     )
 
 
+def _clean_existing_path_param(value: str) -> str:
+    cleaned = value.strip()
+    stripped = cleaned.rstrip(".。；;，,、")
+    if stripped != cleaned:
+        try:
+            if not Path(cleaned).exists() and Path(stripped).exists():
+                return stripped
+        except Exception:
+            pass
+    return cleaned
+
+
 def _enforce_capability_guard(
     agent: Any,
     action: LLMAction,
@@ -947,6 +1033,19 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
             message="Tool action is missing a name.",
             details={"error": "missing_tool_name"},
         )
+    params = dict(action.parameters or {})
+    action_value = str(params.get("action") or "").strip().lower()
+    if tool_name == "phagescope" and action_value in _PHAGESCOPE_RESEARCH_ACTIONS:
+        logger.info(
+            "[CHAT][TOOL_ALIAS] routing phagescope.%s to phagescope_research",
+            action_value,
+        )
+        tool_name = "phagescope_research"
+        try:
+            action.name = tool_name
+        except Exception:
+            pass
+
     policy = get_tool_policy()
     if not is_tool_allowed(tool_name, policy):
         return AgentStep(
@@ -956,7 +1055,6 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
             details={"error": "tool_not_allowed", "tool": tool_name},
         )
 
-    params = dict(action.parameters or {})
     params = _normalize_local_tool_params(agent, tool_name, params)
     original_task: Optional[str] = None
 
@@ -1544,7 +1642,10 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
         for key in ("input_file", "output_file", "job_id"):
             value = params.get(key)
             if isinstance(value, str) and value.strip():
-                clean_params[key] = value.strip()
+                if key in {"data_dir", "output_dir"}:
+                    clean_params[key] = _clean_existing_path_param(value)
+                else:
+                    clean_params[key] = value.strip()
 
         sequence_text = params.get("sequence_text")
         if isinstance(sequence_text, str) and sequence_text.strip():
@@ -1777,6 +1878,47 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
             clean_params.setdefault("wait", True)
             clean_params.setdefault("poll_interval", 2.0)
             clean_params.setdefault("poll_timeout", 120.0)
+
+        params = clean_params
+
+    elif tool_name == "phagescope_research":
+        action_value = params.get("action", "audit")
+        if not isinstance(action_value, str) or not action_value.strip():
+            return AgentStep(
+                action=action,
+                success=False,
+                message="phagescope_research requires a non-empty `action` string.",
+                details={"error": "missing_action", "tool": tool_name},
+            )
+
+        clean_params: Dict[str, Any] = {"action": action_value.strip()}
+        for key in (
+            "data_dir",
+            "output_dir",
+            "session_id",
+            "label_level",
+            "split_group",
+        ):
+            value = params.get(key)
+            if isinstance(value, str) and value.strip():
+                if key in {"data_dir", "output_dir"}:
+                    clean_params[key] = _clean_existing_path_param(value)
+                else:
+                    clean_params[key] = value.strip()
+
+        for int_key in ("min_label_count", "max_rows", "top_n"):
+            if int_key in params and params.get(int_key) is not None:
+                try:
+                    clean_params[int_key] = int(params[int_key])
+                except (TypeError, ValueError):
+                    pass
+
+        completeness = params.get("completeness")
+        if completeness is not None:
+            clean_params["completeness"] = completeness
+
+        if isinstance(agent.session_id, str) and agent.session_id.strip():
+            clean_params.setdefault("session_id", agent.session_id.strip())
 
         params = clean_params
 
@@ -2631,7 +2773,7 @@ async def handle_plan_action(agent: Any, action: LLMAction) -> AgentStep:
                 title = goal.strip()[:80]
             else:
                 title = f"Plan-{agent.conversation_id or 'new'}"
-        description = params.get("description")
+        description = _coerce_plan_description(params.get("description"), goal)
         owner = params.get("owner")
         if not owner:
             owner = agent.extra_context.get("owner_id")
@@ -2644,10 +2786,11 @@ async def handle_plan_action(agent: Any, action: LLMAction) -> AgentStep:
         metadata.setdefault("plan_origin", "standard")
         metadata.setdefault("created_by", "structured_agent")
         raw_tasks = params.get("tasks")
+        seed_tasks = raw_tasks if isinstance(raw_tasks, list) else _extract_explicit_plan_tasks_from_goal(goal)
         generation = await create_plan_and_generate(
             title=title,
             description=description,
-            tasks=raw_tasks if isinstance(raw_tasks, list) else None,
+            tasks=seed_tasks if isinstance(seed_tasks, list) and seed_tasks else None,
             owner=owner,
             metadata=metadata,
             repo=agent.plan_session.repo,
