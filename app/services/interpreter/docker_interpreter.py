@@ -12,6 +12,7 @@ import shutil
 import subprocess
 import sys
 import time
+from pathlib import Path
 from urllib.parse import urlparse
 from typing import Dict, Optional, Sequence
 
@@ -192,6 +193,18 @@ class DockerCodeInterpreter:
         except ValueError:
             return False
 
+    @staticmethod
+    def _path_has_symlink(path: str) -> bool:
+        """Return True when the directory path itself or one component is a symlink."""
+        current = Path(path).anchor
+        for part in Path(path).parts:
+            if part == Path(path).anchor:
+                continue
+            current = os.path.join(current, part) if current else part
+            if os.path.islink(current):
+                return True
+        return False
+
     def _build_env(self) -> dict:
         # Build a minimal, explicit environment for the container.
         # IMPORTANT: we do NOT inherit os.environ here — this is intentional.
@@ -290,10 +303,14 @@ os.makedirs(_NUMBA_CACHE_PATH, exist_ok=True)
         for candidate in sorted(self._normalize_dirs(readonly_candidates), key=lambda value: (len(value), value)):
             if _should_skip_readonly(candidate):
                 continue
-            if any(self._is_same_or_child(candidate, mounted) for mounted in mounts):
+            is_symlink_mount = self._path_has_symlink(candidate)
+            if (
+                not is_symlink_mount
+                and any(self._is_same_or_child(candidate, mounted) for mounted in mounts)
+            ):
                 continue
             for mounted in list(mounts):
-                if self._is_same_or_child(mounted, candidate):
+                if self._is_same_or_child(mounted, candidate) and not self._path_has_symlink(mounted):
                     del mounts[mounted]
             mounts[candidate] = {"bind": candidate, "mode": "ro"}
 

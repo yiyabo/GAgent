@@ -1151,12 +1151,15 @@ def _build_qwen_container_mounts(
         if not token:
             continue
         try:
-            resolved = Path(token).resolve()
-            if not resolved.exists() or not resolved.is_dir():
+            raw_path = Path(token).absolute()
+            if not raw_path.exists() or not raw_path.is_dir():
                 continue
+            candidates.append(raw_path)
+            resolved = raw_path.resolve()
+            if resolved != raw_path:
+                candidates.append(resolved)
         except OSError:
             continue
-        candidates.append(resolved)
 
     ordered: List[Path] = []
     seen: set[str] = set()
@@ -1166,7 +1169,18 @@ def _build_qwen_container_mounts(
             continue
         if _is_path_within(candidate, task_root):
             continue
-        if any(_is_path_within(candidate, mounted_parent) for mounted_parent in ordered):
+        # Do not let a parent repository mount hide a symlinked child directory.
+        # PhageScope is commonly checked out as <repo>/phagescope -> /mnt/sdm/...
+        # Mounting only <repo> leaves that symlink broken inside the container.
+        is_symlink_mount = candidate.is_symlink()
+        if (
+            not is_symlink_mount
+            and any(
+                _is_path_within(candidate, mounted_parent)
+                and not mounted_parent.is_symlink()
+                for mounted_parent in ordered
+            )
+        ):
             continue
         ordered.append(candidate)
         seen.add(candidate_str)
@@ -1776,6 +1790,25 @@ def _is_path_within(child: Path, parent: Path) -> bool:
         return False
 
 
+def _is_path_within_lexical(child: Path, parent: Path) -> bool:
+    """Return True when *child* is lexically under *parent* without resolving symlinks."""
+    try:
+        child.absolute().relative_to(parent.absolute())
+        return True
+    except Exception:
+        return False
+
+
+def _is_allowed_task_read_path(path: Path, session_dir: Path) -> bool:
+    """Allow paths in the project/session, including project-local symlink aliases."""
+    return (
+        _is_path_within(path, _PROJECT_ROOT)
+        or _is_path_within(path, session_dir)
+        or _is_path_within_lexical(path, _PROJECT_ROOT)
+        or _is_path_within_lexical(path, session_dir)
+    )
+
+
 def _extract_task_referenced_read_dirs(
     task: str,
     *,
@@ -1810,16 +1843,13 @@ def _extract_task_referenced_read_dirs(
         if not candidate.is_absolute():
             candidate = _PROJECT_ROOT / candidate
         try:
-            resolved = candidate.resolve()
-            target_dir = resolved if resolved.is_dir() else resolved.parent
+            lexical = candidate.absolute()
+            target_dir = lexical if lexical.is_dir() else lexical.parent
             if not target_dir.exists() or not target_dir.is_dir():
                 return
         except OSError:
             return
-        if not (
-            _is_path_within(target_dir, _PROJECT_ROOT)
-            or _is_path_within(target_dir, session_dir)
-        ):
+        if not _is_allowed_task_read_path(target_dir, session_dir):
             return
         dir_str = str(target_dir)
         if dir_str in seen:
@@ -2517,28 +2547,36 @@ async def code_executor_handler(
                 if not candidate.is_absolute():
                     candidate = _PROJECT_ROOT / dir_path
                 try:
-                    resolved = candidate.resolve()
-                    if not resolved.exists() or not resolved.is_dir():
-                        logger.warning("Ignoring non-directory add_dir path: %s", resolved)
+                    lexical = candidate.absolute()
+                    if not lexical.exists() or not lexical.is_dir():
+                        logger.warning("Ignoring non-directory add_dir path: %s", lexical)
                         continue
                 except (OSError, Exception):
                     logger.warning("Ignoring invalid add_dir path: %s", dir_path)
                     continue
-                if require_task_context:
-                    if not (
-                        _is_path_within(resolved, _PROJECT_ROOT)
-                        or _is_path_within(resolved, session_dir)
-                    ):
-                        logger.warning(
-                            "Ignoring add_dir outside strict task scope: %s",
-                            resolved,
-                        )
-                        continue
+                if require_task_context and not _is_allowed_task_read_path(lexical, session_dir):
+                    logger.warning(
+                        "Ignoring add_dir outside strict task scope: %s",
+                        lexical,
+                    )
+                    continue
+                lexical_str = str(lexical)
+                if lexical_str not in allowed_dirs:
+                    allowed_dirs.append(lexical_str)
+                if lexical_str not in resolved_add_dirs:
+                    resolved_add_dirs.append(lexical_str)
+
+                # If this is a project-local symlink to a large external data
+                # mount, expose the resolved target too.  This gives generated
+                # code a stable direct path while preserving the in-project alias.
+                try:
+                    resolved = lexical.resolve()
+                except OSError:
+                    resolved = lexical
                 resolved_str = str(resolved)
-                if resolved_str not in allowed_dirs:
-                    allowed_dirs.append(resolved_str)
-                if resolved_str not in resolved_add_dirs:
-                    resolved_add_dirs.append(resolved_str)
+                if resolved != lexical and resolved.exists() and resolved.is_dir():
+                    if resolved_str not in allowed_dirs:
+                        allowed_dirs.append(resolved_str)
 
         inferred_task_dirs = _extract_task_referenced_read_dirs(
             task,
