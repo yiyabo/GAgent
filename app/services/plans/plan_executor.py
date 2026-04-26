@@ -1505,6 +1505,21 @@ class PlanExecutor:
                     response.content = final_content
 
                 result_payload = response.model_dump()
+                response_paths = self._extract_path_like_values(response.content)
+                if response_paths:
+                    existing_paths = [
+                        str(item).strip()
+                        for item in list(result_payload.get("artifact_paths") or [])
+                        if str(item).strip()
+                    ]
+                    result_payload["artifact_paths"] = list(
+                        dict.fromkeys([*existing_paths, *response_paths])
+                    )[:40]
+                    metadata = result_payload.get("metadata")
+                    if not isinstance(metadata, dict):
+                        metadata = {}
+                        result_payload["metadata"] = metadata
+                    metadata["artifact_paths"] = list(result_payload["artifact_paths"])
                 raw_response = json.dumps(result_payload, ensure_ascii=False)
                 task_status = self._normalize_status(response.status)
                 finalization, _ = self._finalize_task_execution(
@@ -2113,7 +2128,7 @@ class PlanExecutor:
             t for t in [
                 "literature_pipeline", "web_search", "code_executor", "bio_tools",
                 "sequence_fetch", "document_reader", "vision_reader", "graph_rag",
-                "phagescope", "deeppl", "manuscript_writer", "review_pack_writer",
+                "phagescope_research", "phagescope", "deeppl", "manuscript_writer", "review_pack_writer",
                 "file_operations", "terminal_session", "deliverable_submit",
             ]
             if t in _instruction_lower
@@ -2330,6 +2345,7 @@ class PlanExecutor:
                 "bio_tools",
                 "literature_pipeline",
                 "review_pack_writer",
+                "phagescope_research",
                 "phagescope",
                 "deeppl",
                 "plan_operation",
@@ -2392,6 +2408,16 @@ class PlanExecutor:
                     },
                 },
             }
+            final_answer_paths = self._extract_path_like_values(result.final_answer)
+            if final_answer_paths:
+                existing_paths = [
+                    str(item).strip()
+                    for item in list(tool_result_context.get("artifact_paths") or [])
+                    if str(item).strip()
+                ]
+                tool_result_context["artifact_paths"] = list(
+                    dict.fromkeys([*final_answer_paths, *existing_paths])
+                )[:40]
             for key in (
                 "run_directory",
                 "working_directory",
@@ -3329,6 +3355,9 @@ class PlanExecutor:
             if isinstance(value, str) and key:
                 if key in path_keys or key.endswith("_path") or key.endswith("_file") or key.endswith("_dir"):
                     _add(value)
+            elif isinstance(value, str):
+                for match in _PATH_LIKE_RE.finditer(value):
+                    _add(match.group(1))
 
         _visit(payload)
         return found[:40]

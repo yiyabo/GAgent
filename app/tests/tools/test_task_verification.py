@@ -705,6 +705,46 @@ def test_derived_criteria_reject_fake_pdf(tmp_path):
     assert any(item["type"] == "pdf_valid" for item in failures)
 
 
+def test_plan_executor_verifies_artifact_path_mentioned_in_final_answer(tmp_path, monkeypatch):
+    output_path = tmp_path / "raw_files" / "task_1" / "task_2" / "data_audit.json"
+    output_path.parent.mkdir(parents=True)
+    output_path.write_text(json.dumps({"metadata": {"metadata_rows": 5}, "metadata_rows": 5}), encoding="utf-8")
+    tree = PlanTree(id=1, title="PhageScope verification plan")
+    tree.nodes = {
+        2: PlanNode(
+            id=2,
+            plan_id=1,
+            name="Audit PhageScope dataset",
+            status="pending",
+            instruction="Run phagescope_research action=audit and save data_audit.json.",
+            metadata={
+                "acceptance_criteria": {
+                    "category": "file_data",
+                    "blocking": True,
+                    "checks": [
+                        {"type": "file_nonempty", "path": "data_audit.json"},
+                        {"type": "json_field_at_least", "path": "data_audit.json", "key_path": "metadata_rows", "min_value": 1, "hard": True},
+                    ],
+                }
+            },
+        ),
+    }
+    tree.rebuild_adjacency()
+    repo = _RepoStub(tree)
+    response = ExecutionResponse(
+        status="success",
+        content=f"Audit completed. Output file: `{output_path}`",
+    )
+    executor = PlanExecutor(repo=repo, llm_service=_LLMStub(response))
+    monkeypatch.setattr(executor, "_should_use_deep_think", lambda _cfg: False)
+
+    result = executor.execute_task(1, 2, config=ExecutionConfig(enable_skills=False))
+
+    assert result.status == "completed"
+    assert str(output_path) in result.metadata["artifact_paths"]
+    assert result.metadata["verification_status"] == "passed"
+
+
 def test_plan_executor_marks_task_failed_when_verification_fails(tmp_path, monkeypatch):
     output_path = tmp_path / "report.json"
     tree = PlanTree(id=1, title="Verification Plan")

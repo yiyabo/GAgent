@@ -6,6 +6,17 @@ from tool_box.tools_impl.code_executor import _build_qwen_container_mounts
 from tool_box.tools_impl.phagescope_research import phagescope_research_handler
 
 
+def test_phagescope_research_available_to_plan_executor() -> None:
+    from app.services.tool_schemas import EXECUTOR_AVAILABLE_TOOLS, build_executor_tool_schemas
+
+    assert "phagescope_research" in EXECUTOR_AVAILABLE_TOOLS
+    executor_tool_names = {
+        schema.get("function", {}).get("name")
+        for schema in build_executor_tool_schemas()
+    }
+    assert "phagescope_research" in executor_tool_names
+
+
 def _write_metadata(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     rows = [

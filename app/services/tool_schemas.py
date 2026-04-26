@@ -12,6 +12,8 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from tool_box.tools_impl.phagescope_research import phagescope_research_tool
+
 logger = logging.getLogger(__name__)
 
 
@@ -75,6 +77,7 @@ EXECUTOR_AVAILABLE_TOOLS: List[str] = [
     "document_reader",
     "vision_reader",
     "phagescope",
+    "phagescope_research",
     "deeppl",
     "literature_pipeline",
     "review_pack_writer",
@@ -679,6 +682,14 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
                 },
                 "required": ["action"],
             },
+        },
+    },
+    "phagescope_research": {
+        "type": "function",
+        "function": {
+            "name": "phagescope_research",
+            "description": phagescope_research_tool["description"],
+            "parameters": phagescope_research_tool["parameters_schema"],
         },
     },
     "deeppl": {
