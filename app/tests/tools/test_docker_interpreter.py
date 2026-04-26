@@ -92,6 +92,27 @@ def test_build_volume_mounts_use_same_host_paths_and_dedupe(tmp_path: Path) -> N
     assert str(work_child) not in mounts
 
 
+def test_build_volume_mounts_preserves_symlink_child_and_resolved_target(tmp_path: Path) -> None:
+    work_dir = tmp_path / "work"
+    repo_dir = tmp_path / "repo"
+    real_data = tmp_path / "real_phagescope"
+    for path in (work_dir, repo_dir, real_data):
+        path.mkdir(parents=True, exist_ok=True)
+    phagescope_link = repo_dir / "phagescope"
+    phagescope_link.symlink_to(real_data, target_is_directory=True)
+
+    interpreter = DockerCodeInterpreter(
+        work_dir=str(work_dir),
+        extra_read_dirs=[str(repo_dir), str(phagescope_link), str(real_data)],
+    )
+
+    mounts = interpreter._build_volume_mounts()
+
+    assert mounts[str(repo_dir)] == {"bind": str(repo_dir), "mode": "ro"}
+    assert mounts[str(phagescope_link)] == {"bind": str(phagescope_link), "mode": "ro"}
+    assert mounts[str(real_data.resolve())] == {"bind": str(real_data.resolve()), "mode": "ro"}
+
+
 def test_build_volume_mounts_promotes_parent_write_mounts_over_readonly_parent(tmp_path: Path) -> None:
     session_dir = tmp_path / "session"
     work_dir = session_dir / "task" / "run"
