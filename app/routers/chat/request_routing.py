@@ -798,6 +798,7 @@ ALL_TOOLS: List[str] = [
     "bio_tools",
     "deeppl",
     "phagescope",
+    "phagescope_research",
     "code_executor",
     "plan_operation",
     "deliverable_submit",
