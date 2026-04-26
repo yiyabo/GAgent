@@ -594,6 +594,39 @@ def test_derived_criteria_reject_header_only_tsv(tmp_path, monkeypatch):
     assert finalization.payload["metadata"].get("verification_overridden_by_llm") is None
 
 
+def test_explicit_weak_criteria_are_strengthened_for_header_only_tsv(tmp_path):
+    table = tmp_path / "results" / "smoke_metadata.tsv"
+    table.parent.mkdir(parents=True, exist_ok=True)
+    table.write_text("Phage_ID\tHost_label\n", encoding="utf-8")
+    node = PlanNode(
+        id=49,
+        plan_id=9,
+        name="Create empty TSV file with header",
+        instruction="Create results/smoke_metadata.tsv with only the header line and no data rows.",
+        metadata={
+            "acceptance_criteria": {
+                "category": "file_data",
+                "blocking": True,
+                "checks": [
+                    {"type": "file_exists", "path": "results/smoke_metadata.tsv"},
+                    {"type": "file_nonempty", "path": "results/smoke_metadata.tsv"},
+                ],
+            }
+        },
+    )
+    verifier = TaskVerificationService()
+
+    finalization = verifier.finalize_payload(
+        node,
+        {"status": "completed", "metadata": {"artifact_paths": [str(table)], "run_directory": str(tmp_path)}},
+        execution_status="completed",
+    )
+
+    assert finalization.final_status == "failed"
+    failures = finalization.payload["metadata"]["verification"]["failures"]
+    assert any(item["type"] == "json_field_at_least" and item.get("actual") == 0 for item in failures)
+
+
 def test_derived_criteria_reject_audit_json_without_metadata_rows(tmp_path):
     audit = tmp_path / "data_audit.json"
     audit.write_text(json.dumps({"success": True, "metadata_files": 14}), encoding="utf-8")
@@ -1389,7 +1422,7 @@ def test_glob_count_at_least_legacy_path_count_shape(tmp_path):
     assert finalization.final_status == "completed"
     assert finalization.verification is not None
     assert finalization.verification["status"] == "passed"
-    assert finalization.verification["checks_passed"] == 2
+    assert finalization.verification["checks_passed"] == 3
 
 
 def test_glob_count_at_least_matches_relocated_artifact_paths(tmp_path):

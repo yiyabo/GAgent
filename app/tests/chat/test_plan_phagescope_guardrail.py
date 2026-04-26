@@ -133,3 +133,35 @@ def test_inline_explicit_task_blocks_in_create_plan_goal_become_seed_tasks():
     assert "prepare_metadata_table" in tasks[1]["instruction"]
     assert "Write PDF report" in tasks[2]["instruction"]
 
+
+def test_phagescope_research_paper_goal_gets_strict_seed_plan():
+    from app.routers.chat.action_handlers import _build_phagescope_research_seed_tasks
+
+    goal = (
+        "Create a rigorous executable research plan for PhageScope Research Topic 1: predict host genus labels "
+        "from /home/zczhao/Phage-Agent/phagescope and produce phagescope_research_topic1_production_report.pdf "
+        "as a publishable paper."
+    )
+
+    tasks = _build_phagescope_research_seed_tasks(goal)
+
+    assert len(tasks) == 9
+    assert tasks[0]["dependencies"] == []
+    assert tasks[-1]["dependencies"] == [tasks[-2]["name"]]
+    all_text = "\n".join(task["instruction"] for task in tasks)
+    for required in (
+        "metadata_rows",
+        "Host-derived labels only",
+        "RandomForest",
+        "ExtraTrees",
+        "model_metrics.json",
+        "report_quality_audit.json",
+        "phagescope_research_topic1_production_report.pdf",
+    ):
+        assert required in all_text
+    checks = tasks[1]["metadata"]["acceptance_criteria"]["checks"]
+    assert any(check["type"] == "json_field_at_least" and check["key_path"] == "rows_written" for check in checks)
+    assert any(
+        check["type"] == "pdf_valid" and check["min_text_chars"] >= 3000
+        for check in tasks[6]["metadata"]["acceptance_criteria"]["checks"]
+    )

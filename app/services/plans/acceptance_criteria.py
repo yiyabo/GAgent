@@ -255,6 +255,53 @@ def derive_acceptance_criteria_from_text(
     }
 
 
+def strengthen_acceptance_criteria(criteria: Any) -> Any:
+    """Return criteria with deterministic content gates added where missing.
+
+    LLM-generated plans often provide explicit but weak checks such as only
+    ``file_exists``/``file_nonempty`` for a TSV or PDF.  Treating those as fully
+    authoritative recreates the false-success class this verifier is meant to
+    prevent, so explicit criteria are normalized through the same format-aware
+    gate catalog used for generated criteria.
+    """
+    if not isinstance(criteria, dict):
+        return criteria
+    checks = criteria.get("checks")
+    if not isinstance(checks, list):
+        return criteria
+
+    strengthened = dict(criteria)
+    updated_checks: List[Dict[str, Any]] = []
+    seen_signatures: set[tuple[str, str, str]] = set()
+
+    def _add_check(check: Any) -> None:
+        if not isinstance(check, dict):
+            return
+        path = str(check.get("path") or check.get("glob") or "").strip()
+        signature = (
+            str(check.get("type") or "").strip(),
+            path,
+            str(check.get("key_path") or check.get("field") or "").strip(),
+        )
+        if signature in seen_signatures:
+            return
+        seen_signatures.add(signature)
+        updated_checks.append(dict(check))
+
+    for raw_check in checks:
+        _add_check(raw_check)
+        if not isinstance(raw_check, dict):
+            continue
+        path = str(raw_check.get("path") or "").strip()
+        if not path or any(token in path for token in ("*", "?", "[")):
+            continue
+        for content_check in _content_checks_for_deliverable(path):
+            _add_check(content_check)
+
+    strengthened["checks"] = updated_checks
+    return strengthened
+
+
 def _content_checks_for_deliverable(candidate: str) -> List[Dict[str, Any]]:
     """Add format-aware checks for common data/report artifacts.
 
