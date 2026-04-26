@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -309,6 +310,9 @@ def _prepare_metadata_table(
     table_path = output_dir / f"{stem}.tsv"
     counts_path = output_dir / f"{stem}_label_counts.tsv"
     summary_path = output_dir / f"{stem}_summary.json"
+    canonical_table_path = output_dir / "curated_metadata.tsv"
+    canonical_counts_path = output_dir / "label_counts.tsv"
+    canonical_summary_path = output_dir / "metadata_summary.json"
 
     columns = [
         "Phage_ID",
@@ -382,6 +386,9 @@ def _prepare_metadata_table(
         "output_table": str(table_path),
         "label_counts_path": str(counts_path),
         "summary_path": str(summary_path),
+        "canonical_output_table": str(canonical_table_path),
+        "canonical_label_counts_path": str(canonical_counts_path),
+        "canonical_summary_path": str(canonical_summary_path),
         "label_level": label_level,
         "min_label_count": min_label_count,
         "completeness": list(completeness),
@@ -398,10 +405,26 @@ def _prepare_metadata_table(
         ),
     }
     summary_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
+    shutil.copy2(table_path, canonical_table_path)
+    shutil.copy2(counts_path, canonical_counts_path)
+    canonical_summary_path.write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
 
     return {
         "success": True,
         **summary,
+        "artifact_paths": [
+            str(canonical_table_path),
+            str(canonical_counts_path),
+            str(canonical_summary_path),
+            str(table_path),
+            str(counts_path),
+            str(summary_path),
+        ],
+        "session_artifact_paths": [
+            str(canonical_table_path),
+            str(canonical_counts_path),
+            str(canonical_summary_path),
+        ],
         "output_table_rows": _count_lines(table_path),
     }
 

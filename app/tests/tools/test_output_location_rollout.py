@@ -46,6 +46,34 @@ def test_manuscript_writer_draft_only_sets_task_output_location(monkeypatch, tmp
     assert any(path.endswith("draft.md") for path in result["output_location"]["files"])
 
 
+def test_manuscript_writer_draft_only_rejects_pdf_output(monkeypatch, tmp_path: Path) -> None:
+    repo_root = tmp_path / "repo"
+    runtime_root = repo_root / "runtime"
+    repo_root.mkdir(parents=True, exist_ok=True)
+    runtime_root.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setenv("APP_RUNTIME_ROOT", str(runtime_root.resolve()))
+    monkeypatch.setattr(manuscript_writer_module, "_PROJECT_ROOT", repo_root.resolve())
+    monkeypatch.setattr(manuscript_writer_module, "_RUNTIME_DIR", runtime_root.resolve())
+    monkeypatch.setattr(path_router_module, "_default_router", None)
+
+    result = asyncio.run(
+        manuscript_writer_module.manuscript_writer_handler(
+            task="Write a PDF report.",
+            output_path="report.pdf",
+            draft_only=True,
+            keep_workspace=True,
+            session_id="demo",
+            task_id=12,
+            ancestor_chain=[5],
+        )
+    )
+
+    assert result["success"] is False
+    assert result["error"] == "draft_only_pdf_output_not_supported"
+    assert not (runtime_root / "session_demo" / "report.pdf").exists()
+
+
 def test_manuscript_writer_promotes_workspace_output_into_task_output_location(
     monkeypatch,
     tmp_path: Path,
