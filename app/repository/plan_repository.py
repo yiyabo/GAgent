@@ -1281,7 +1281,7 @@ class PlanRepository:
         if instruction is not None:
             sets.append("instruction=?")
             params.append(instruction)
-        if metadata is not None or dependencies is not None:
+        if metadata is not None:
             merged_metadata = _merge_metadata(metadata, dependencies)
             sets.append("metadata=?")
             params.append(_dump_json(merged_metadata))

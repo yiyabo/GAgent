@@ -277,6 +277,55 @@ def test_apply_changes_atomically_skips_invalid_change_and_applies_valid_ones(
     assert rows[2]["name"] == "New Task"
 
 
+def test_update_task_dependencies_preserves_existing_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    plan_path = tmp_path / "plan.sqlite"
+    conn = _make_plan_db(plan_path)
+    _insert_task(conn, task_id=1, name="Root", parent_id=None, position=0, path="/1", depth=0)
+    _insert_task(conn, task_id=2, name="Audit", parent_id=1, position=0, path="/1/2", depth=1)
+    _insert_task(conn, task_id=3, name="Prepare", parent_id=1, position=1, path="/1/3", depth=1)
+    conn.execute(
+        "UPDATE tasks SET metadata=? WHERE id=?",
+        (
+            json.dumps(
+                {
+                    "source": "phagescope_research_seed_plan",
+                    "acceptance_criteria": {
+                        "category": "file_data",
+                        "blocking": True,
+                        "checks": [
+                            {
+                                "type": "json_field_at_least",
+                                "path": "metadata_summary.json",
+                                "key_path": "rows_written",
+                                "min_value": 1,
+                                "hard": True,
+                            }
+                        ],
+                    },
+                },
+                ensure_ascii=False,
+            ),
+            3,
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    repo = PlanRepository()
+    monkeypatch.setattr(plan_repository_module, "get_plan_db_path", lambda _plan_id: plan_path)
+    monkeypatch.setattr(repo, "_touch_plan", lambda _plan_id: None)
+
+    updated = repo.update_task(7, 3, dependencies=[2])
+
+    assert updated.dependencies == [2]
+    assert updated.metadata["source"] == "phagescope_research_seed_plan"
+    checks = updated.metadata["acceptance_criteria"]["checks"]
+    assert checks[0]["type"] == "json_field_at_least"
+
+
 def test_apply_changes_atomically_updates_plan_description_and_root_instruction(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
