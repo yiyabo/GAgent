@@ -4,6 +4,7 @@ import copy
 import csv
 import fnmatch
 import glob
+import importlib
 import json
 import logging
 import os
@@ -12,7 +13,7 @@ import shutil
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from .acceptance_criteria import (
     derive_acceptance_criteria_from_text,
@@ -248,6 +249,7 @@ class TaskVerificationService:
             metadata["artifact_paths"] = list(normalized_payload["artifact_paths"])
         blocking = bool(effective_criteria.get("blocking", True))
         failures: List[Dict[str, Any]] = []
+        hard_failures: List[Dict[str, Any]] = []
         checks = effective_criteria.get("checks") or []
         checks_passed = 0
         checks_executed = 0
@@ -269,6 +271,8 @@ class TaskVerificationService:
                 checks_passed += 1
             else:
                 failures.append(outcome)
+                if isinstance(raw_check, dict) and bool(raw_check.get("hard")):
+                    hard_failures.append(outcome)
 
         verification_status = "passed" if not failures else "failed"
         verification = self._build_verification_record(
@@ -314,7 +318,7 @@ class TaskVerificationService:
         # whether the actual outputs semantically satisfy the task requirements.
         # This avoids false-positive failures from heuristic filename extraction
         # (e.g. task instruction mentions "_summary.csv" but output is ".parquet").
-        if failures and generated and normalized_execution_status in _COMPLETED_LIKE:
+        if failures and generated and normalized_execution_status in _COMPLETED_LIKE and not hard_failures:
             llm_verdict = self._llm_arbitrate_verification(
                 node=node,
                 failures=failures,
@@ -751,6 +755,8 @@ class TaskVerificationService:
             - ``text_contains:<path>:<pattern>``
             - ``json_field_equals:<path>:<key_path>:<expected>``
             - ``json_field_at_least:<path>:<key_path>:<min_value>``
+            - ``pdf_valid:<path>``
+            - ``model_metrics_valid:<path>``
             - ``pdb_residue_present:<path>:<residue>``
 
         Returns a well-formed ``acceptance_criteria`` dict with ``checks`` list.
@@ -803,6 +809,9 @@ class TaskVerificationService:
                         "key_path": segments[1].strip(),
                         "min_value": float(segments[2].strip()),
                     })
+            elif check_type in {"pdf_valid", "model_metrics_valid"}:
+                if rest:
+                    checks.append({"type": check_type, "path": rest, "hard": True})
             elif check_type == "pdb_residue_present":
                 segments = rest.split(":", maxsplit=1)
                 if len(segments) == 2:
@@ -1177,6 +1186,20 @@ class TaskVerificationService:
                     message=None if success else f"{residue} residue not found in structure records.",
                     extra={"residue": residue},
                 )
+            if check_type == "pdf_valid":
+                path = self._resolve_path(raw_check.get("path"), base_dir)
+                if not path.exists() and artifact_paths:
+                    fallback = self._fallback_artifact_match(path, artifact_paths, lenient=False)
+                    if fallback:
+                        path = fallback
+                return self._pdf_valid_result(path, raw_check)
+            if check_type == "model_metrics_valid":
+                path = self._resolve_path(raw_check.get("path"), base_dir)
+                if not path.exists() and artifact_paths:
+                    fallback = self._fallback_artifact_match(path, artifact_paths, lenient=False)
+                    if fallback:
+                        path = fallback
+                return self._model_metrics_valid_result(path)
         except Exception as exc:
             logger.warning("Verification check %s failed with exception: %s", check_type, exc)
             return {
@@ -1529,6 +1552,162 @@ class TaskVerificationService:
             except StopIteration:
                 return 0
             return sum(1 for row in reader if any(str(cell).strip() for cell in row))
+
+    @staticmethod
+    def _pdf_valid_result(path: Path, raw_check: Dict[str, Any]) -> Dict[str, Any]:
+        min_pages = int(raw_check.get("min_pages") or 1)
+        min_text_chars = int(raw_check.get("min_text_chars") or 0)
+        if not path.exists() or not path.is_file():
+            return TaskVerificationService._check_result(
+                "pdf_valid",
+                False,
+                path=path,
+                message="PDF file does not exist.",
+            )
+        if path.stat().st_size <= 0:
+            return TaskVerificationService._check_result(
+                "pdf_valid",
+                False,
+                path=path,
+                message="PDF file is empty.",
+            )
+        with path.open("rb") as handle:
+            header = handle.read(5)
+        if header != b"%PDF-":
+            return TaskVerificationService._check_result(
+                "pdf_valid",
+                False,
+                path=path,
+                message="File does not start with a PDF header.",
+                extra={"header": header.decode("latin-1", errors="replace")},
+            )
+
+        pages: Optional[int] = None
+        text_chars: Optional[int] = None
+        if min_pages > 0 or min_text_chars > 0:
+            try:
+                pypdf = importlib.import_module("pypdf")
+
+                with path.open("rb") as handle:
+                    reader = pypdf.PdfReader(handle)
+                    pages = len(reader.pages)
+                    if min_text_chars > 0:
+                        extracted: List[str] = []
+                        for page in reader.pages[:20]:
+                            extracted.append(page.extract_text() or "")
+                        text_chars = len("\n".join(extracted).strip())
+            except Exception as exc:
+                return TaskVerificationService._check_result(
+                    "pdf_valid",
+                    False,
+                    path=path,
+                    message=f"Unable to parse PDF: {exc}",
+                )
+
+        if pages is not None and pages < min_pages:
+            return TaskVerificationService._check_result(
+                "pdf_valid",
+                False,
+                path=path,
+                message=f"Expected at least {min_pages} PDF page(s), got {pages}.",
+                extra={"pages": pages, "min_pages": min_pages},
+            )
+        if text_chars is not None and text_chars < min_text_chars:
+            return TaskVerificationService._check_result(
+                "pdf_valid",
+                False,
+                path=path,
+                message=f"Expected at least {min_text_chars} extracted text characters, got {text_chars}.",
+                extra={"pages": pages, "text_chars": text_chars, "min_text_chars": min_text_chars},
+            )
+        return TaskVerificationService._check_result(
+            "pdf_valid",
+            True,
+            path=path,
+            message=None,
+            extra={"pages": pages, "text_chars": text_chars},
+        )
+
+    @staticmethod
+    def _model_metrics_valid_result(path: Path) -> Dict[str, Any]:
+        if not path.exists() or not path.is_file() or path.stat().st_size <= 0:
+            return TaskVerificationService._check_result(
+                "model_metrics_valid",
+                False,
+                path=path,
+                message="Metrics JSON is missing or empty.",
+            )
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        model_entries = TaskVerificationService._collect_metric_model_entries(payload)
+        required_metrics = {"accuracy", "macro_f1"}
+        valid_models: List[str] = []
+        missing: Dict[str, List[str]] = {}
+        for name, metrics in model_entries.items():
+            if not isinstance(metrics, dict):
+                continue
+            missing_fields = [
+                field
+                for field in required_metrics
+                if not TaskVerificationService._is_finite_number(metrics.get(field))
+            ]
+            if missing_fields:
+                missing[name] = missing_fields
+            else:
+                valid_models.append(name)
+
+        has_tree_model = any(
+            any(
+                token in name.lower()
+                for token in ("randomforest", "random_forest", "extra", "extratrees", "extra_trees")
+            )
+            for name in valid_models
+        )
+        success = len(valid_models) >= 1 and has_tree_model
+        message = None
+        if not success:
+            message = (
+                "Metrics JSON must contain at least one tree-model entry with numeric "
+                "accuracy and macro_f1 values."
+            )
+        return TaskVerificationService._check_result(
+            "model_metrics_valid",
+            success,
+            path=path,
+            message=message,
+            extra={"valid_models": valid_models, "missing_metrics": missing},
+        )
+
+    @staticmethod
+    def _collect_metric_model_entries(payload: Any) -> Dict[str, Dict[str, Any]]:
+        entries: Dict[str, Dict[str, Any]] = {}
+        if not isinstance(payload, dict):
+            return entries
+
+        def _add(name: Any, metrics: Any) -> None:
+            if isinstance(name, str) and name.strip() and isinstance(metrics, dict):
+                entries[name.strip()] = metrics
+
+        for key in ("models", "model_metrics", "metrics", "results", "test_metrics"):
+            value = payload.get(key)
+            if isinstance(value, dict):
+                for model_name, metrics in value.items():
+                    _add(model_name, metrics)
+            elif isinstance(value, list):
+                for item in value:
+                    if isinstance(item, dict):
+                        _add(item.get("model") or item.get("name") or item.get("estimator"), item)
+        for model_name, metrics in payload.items():
+            if isinstance(metrics, dict):
+                _add(model_name, metrics)
+        return entries
+
+    @staticmethod
+    def _is_finite_number(value: Any) -> bool:
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return False
+        return number == number and number not in {float("inf"), float("-inf")}
 
     @staticmethod
     def _check_result(
@@ -2002,7 +2181,15 @@ class TaskVerificationService:
             if not isinstance(raw_check, dict):
                 continue
             check_type = str(raw_check.get("type") or "").strip()
-            if check_type in {"file_exists", "file_nonempty", "text_contains", "json_field_equals", "json_field_at_least"}:
+            if check_type in {
+                "file_exists",
+                "file_nonempty",
+                "text_contains",
+                "json_field_equals",
+                "json_field_at_least",
+                "pdf_valid",
+                "model_metrics_valid",
+            }:
                 candidate = str(raw_check.get("path") or "").strip()
                 resolved = str(self._resolve_path(candidate, base_dir)) if candidate else ""
             elif check_type == "glob_count_at_least":
