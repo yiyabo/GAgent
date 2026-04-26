@@ -122,6 +122,13 @@ def test_phagescope_research_audit_and_prepare_metadata_table(tmp_path: Path) ->
     assert prepared["split_group"] == "subcluster"
     table_path = Path(prepared["output_table"])
     assert table_path.exists()
+    assert Path(prepared["canonical_output_table"]).name == "curated_metadata.tsv"
+    assert Path(prepared["canonical_output_table"]).exists()
+    assert Path(prepared["canonical_label_counts_path"]).name == "label_counts.tsv"
+    assert Path(prepared["canonical_label_counts_path"]).exists()
+    assert Path(prepared["canonical_summary_path"]).name == "metadata_summary.json"
+    assert Path(prepared["canonical_summary_path"]).exists()
+    assert str(Path(prepared["canonical_output_table"])) in prepared["artifact_paths"]
     with table_path.open("r", encoding="utf-8", newline="") as fh:
         rows = list(csv.DictReader(fh, delimiter="\t"))
     assert {row["Host_label"] for row in rows} == {"Escherichia"}
