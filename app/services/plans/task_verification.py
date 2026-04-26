@@ -1449,17 +1449,48 @@ class TaskVerificationService:
 
         matched: List[str] = []
         seen_matches: set[str] = set()
+        basename_patterns = self._promoted_artifact_basename_patterns(patterns)
         for raw in artifact_paths:
             artifact = Path(str(raw)).expanduser()
             if not artifact.exists() or not artifact.is_file():
                 continue
             candidates = self._artifact_glob_match_candidates(artifact, base_dir=base_dir)
-            if any(fnmatch.fnmatch(candidate, pattern) for candidate in candidates for pattern in patterns):
+            direct_match = any(fnmatch.fnmatch(candidate, pattern) for candidate in candidates for pattern in patterns)
+            flattened_promoted_match = (
+                not direct_match
+                and basename_patterns
+                and self._looks_like_promoted_task_artifact(artifact)
+                and any(fnmatch.fnmatch(artifact.name, pattern) for pattern in basename_patterns)
+            )
+            if direct_match or flattened_promoted_match:
                 artifact_text = str(artifact)
                 if artifact_text not in seen_matches:
                     seen_matches.add(artifact_text)
                     matched.append(artifact_text)
         return matched
+
+    @staticmethod
+    def _promoted_artifact_basename_patterns(patterns: Sequence[str]) -> List[str]:
+        basename_patterns: List[str] = []
+        seen: set[str] = set()
+        for pattern in patterns:
+            text = str(pattern or "").strip().replace("\\", "/")
+            if not text or not glob.has_magic(text):
+                continue
+            basename = text.rsplit("/", 1)[-1]
+            if not basename or basename == text or not glob.has_magic(basename):
+                continue
+            if basename not in seen:
+                seen.add(basename)
+                basename_patterns.append(basename)
+        return basename_patterns
+
+    @staticmethod
+    def _looks_like_promoted_task_artifact(path: Path) -> bool:
+        parts = [part.lower() for part in path.parts]
+        if "raw_files" not in parts:
+            return False
+        return any(part.startswith("task_") for part in parts)
 
     def _artifact_glob_match_candidates(self, artifact_path: Path, *, base_dir: Path) -> List[str]:
         candidates: List[str] = []
@@ -2369,6 +2400,10 @@ class TaskVerificationService:
 
     @staticmethod
     def _get_json_value(payload: Any, key_path: str) -> Any:
+        if key_path == "mandatory_gates_passed" and isinstance(payload, dict):
+            derived = TaskVerificationService._derive_mandatory_gates_passed(payload)
+            if derived is not None:
+                return derived
         current = payload
         for part in [segment for segment in key_path.split(".") if segment]:
             if isinstance(current, list):
@@ -2386,6 +2421,39 @@ class TaskVerificationService:
                 raise KeyError(f"Missing key: {part}")
             current = current[part]
         return current
+
+    @staticmethod
+    def _derive_mandatory_gates_passed(payload: Dict[str, Any]) -> Optional[bool]:
+        summary = payload.get("mandatory_gates_summary")
+        if isinstance(summary, dict):
+            failed = summary.get("failed")
+            unchecked = summary.get("unchecked")
+            passed = summary.get("passed")
+            total = summary.get("total_mandatory")
+            try:
+                if int(failed or 0) == 0 and int(unchecked or 0) == 0:
+                    if total is None or int(passed or 0) >= int(total or 0):
+                        return True
+                return False
+            except (TypeError, ValueError):
+                pass
+
+        gates = payload.get("gates")
+        if isinstance(gates, dict) and gates:
+            mandatory = [gate for gate in gates.values() if isinstance(gate, dict) and gate.get("mandatory") is True]
+            if mandatory:
+                return all(
+                    str(gate.get("status") or "").strip().upper() == "PASS"
+                    and gate.get("checked") is not False
+                    for gate in mandatory
+                )
+
+        status = str(payload.get("overall_status") or "").strip().upper()
+        if status in {"PASS", "PASSED"}:
+            return True
+        if status in {"FAIL", "FAILED"}:
+            return False
+        return None
 
     def _pdb_residue_present(self, path: Path, residue: str) -> bool:
         if not residue:
