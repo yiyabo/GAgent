@@ -430,7 +430,18 @@ class PlanStatusResolver:
                     status_reason = "Execution interrupted."
                     reason_code = "running_interrupted"
             elif raw_status in _COMPLETED_LIKE or payload_status in _COMPLETED_LIKE:
-                if _looks_like_retry_or_blocked_failure_text(content or raw_result_text):
+                # Structured execution payloads are the authoritative task
+                # outcome.  The fallback text heuristic exists for legacy
+                # plain-text results, but completed reports often discuss
+                # failed gates, blocked states, or retry policy as analysis
+                # context.  Do not demote an explicit completed payload based
+                # on prose alone; verification/artifact branches above still
+                # fail the task when deterministic checks actually fail.
+                if (
+                    payload_status not in _COMPLETED_LIKE
+                    and verification_status != "passed"
+                    and _looks_like_retry_or_blocked_failure_text(content or raw_result_text)
+                ):
                     effective_status = "failed"
                     status_reason = _truncate_reason(content or raw_result_text) or "Task failed."
                     reason_code = "retry_or_blocked_failure"

@@ -122,6 +122,39 @@ def test_status_resolver_keeps_legacy_completed_task_completed_without_publish_c
     assert state["contract_source"] == "none"
 
 
+def test_status_resolver_keeps_structured_completed_report_completed_when_prose_mentions_failures(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    resolver = PlanStatusResolver()
+    tree = _tree(
+        29,
+        PlanNode(
+            id=1,
+            plan_id=29,
+            name="Submit verified report",
+            status="completed",
+            execution_result=json.dumps(
+                {
+                    "status": "completed",
+                    "content": (
+                        "# Task Complete: Verified Report Deliverables Successfully Submitted\n\n"
+                        "The quality audit confirmed all publishable-paper gates passed. "
+                        "The report also documents failed intermediate checks, blocked "
+                        "release states, and retry guidance for reproducibility."
+                    ),
+                }
+            ),
+        ),
+    )
+
+    state = resolver.resolve_plan_states(29, tree)[1]
+
+    assert state["effective_status"] == "completed"
+    assert state["reason_code"] == "completed"
+
+
 def test_status_resolver_marks_verification_failure_failed(monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
     resolver = PlanStatusResolver()
