@@ -157,13 +157,25 @@ def test_phagescope_research_paper_goal_gets_strict_seed_plan():
         "RandomForest",
         "ExtraTrees",
         "model_metrics.json",
+        "manuscript.md",
+        "MESM/BMC Biology-style",
+        "PDF is a later rendering target",
         "report_quality_audit.json",
-        "phagescope_research_topic1_production_report.pdf",
     ):
         assert required in all_text
     checks = tasks[1]["metadata"]["acceptance_criteria"]["checks"]
     assert any(check["type"] == "json_field_at_least" and check["key_path"] == "rows_written" for check in checks)
+    figure_checks = tasks[4]["metadata"]["acceptance_criteria"]["checks"]
     assert any(
-        check["type"] == "pdf_valid" and check["min_text_chars"] >= 3000
+        check["type"] == "glob_count_at_least" and check["path"] == "figures/*.png" and check["count"] >= 3
+        for check in figure_checks
+    )
+    assert any(check["type"] == "file_nonempty" and check["path"] == "results/model_comparison.csv" for check in figure_checks)
+    assert any(
+        check["type"] == "manuscript_markdown_quality" and check["min_text_chars"] >= 12000
+        for check in tasks[6]["metadata"]["acceptance_criteria"]["checks"]
+    )
+    assert not any(
+        check["type"] == "pdf_valid"
         for check in tasks[6]["metadata"]["acceptance_criteria"]["checks"]
     )
