@@ -681,6 +681,29 @@ def test_derived_criteria_reject_metrics_json_without_tree_metrics(tmp_path):
     )
     assert passed.final_status == "completed"
 
+    metrics.write_text(
+        json.dumps(
+            {
+                "models": {
+                    "RandomForest": {
+                        "train": {"accuracy": 0.9, "macro_f1": 0.8},
+                        "test": {"accuracy": 0.4, "macro_f1": 0.15, "weighted_f1": 0.37},
+                    },
+                    "ExtraTrees": {
+                        "validation": {"accuracy": 0.35, "macro_f1": 0.11},
+                    },
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    nested = verifier.finalize_payload(
+        node,
+        {"status": "completed", "metadata": {"artifact_paths": [str(metrics)], "run_directory": str(tmp_path)}},
+        execution_status="completed",
+    )
+    assert nested.final_status == "completed"
+
 
 def test_derived_criteria_reject_fake_pdf(tmp_path):
     pdf = tmp_path / "phagescope_research_topic1_production_report.pdf"
@@ -1620,6 +1643,114 @@ def test_json_field_equals_derives_mandatory_gates_passed(tmp_path):
     assert finalization.verification is not None
     assert finalization.verification["status"] == "passed"
     assert finalization.verification["checks_passed"] == 2
+
+
+def test_manuscript_markdown_quality_passes_for_prose_first_paper(tmp_path):
+    manuscript = tmp_path / "manuscript.md"
+    long_para = (
+        "This section develops a claim through evidence rather than listing artifacts. "
+        "The analysis explains why the dataset construction matters, how the leakage-aware split constrains the "
+        "interpretation, and why model metrics must be interpreted alongside class-wise behavior. "
+        "It also connects the figure callouts to the scientific argument so the text reads like a manuscript, "
+        "not like a generated checklist. "
+    ) * 3
+    manuscript.write_text(
+        "\n\n".join(
+            [
+                "# Feature-leakage-aware PhageScope manuscript",
+                "## Background\n\n" + long_para,
+                "## Results\n\n### Benchmark construction\n\n" + long_para + "\n\nFigure 1 shows the dataset curation and Table 1 summarizes the split.",
+                "### Ablation analysis\n\n" + long_para + "\n\nFigure 2 compares proxy-inclusive and leakage-controlled models.",
+                "### Class-wise error analysis\n\n" + long_para + "\n\nFigure 3 and Table 2 report class-wise macro F1 behavior.",
+                "## Discussion\n\n" + long_para + "\n\nFigure 4 supports the confusion analysis.",
+                "## Methods\n\n" + long_para,
+                "## Evidence boundary\n\n" + long_para + "\n\nFigure 5 summarizes the manuscript claim.",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    verifier = TaskVerificationService()
+    node = PlanNode(
+        id=7,
+        plan_id=85,
+        name="Draft manuscript",
+        metadata={
+            "acceptance_criteria": {
+                "category": "file_data",
+                "blocking": True,
+                "checks": [
+                    {
+                        "type": "manuscript_markdown_quality",
+                        "path": "manuscript.md",
+                        "min_text_chars": 4000,
+                        "min_sections": 6,
+                        "min_long_paragraphs": 5,
+                        "max_bullet_ratio": 0.12,
+                        "min_figure_callouts": 5,
+                        "min_table_callouts": 2,
+                        "min_results_subsections": 3,
+                        "required_terms": ["Results", "Discussion", "Methods", "ablation", "class-wise", "Evidence boundary"],
+                    }
+                ],
+            }
+        },
+    )
+
+    finalization = verifier.finalize_payload(
+        node,
+        {"status": "completed", "metadata": {"run_directory": str(tmp_path), "artifact_paths": [str(manuscript)]}},
+        execution_status="completed",
+    )
+
+    assert finalization.final_status == "completed"
+    assert finalization.verification is not None
+    assert finalization.verification["status"] == "passed"
+
+
+def test_manuscript_markdown_quality_rejects_report_style_bullets(tmp_path):
+    manuscript = tmp_path / "manuscript.md"
+    manuscript.write_text(
+        "# Report\n\n## Results\n\n- accuracy: high\n- macro F1: ok\n- figure made\n- table made\n",
+        encoding="utf-8",
+    )
+    verifier = TaskVerificationService()
+    node = PlanNode(
+        id=7,
+        plan_id=85,
+        name="Draft manuscript",
+        metadata={
+            "acceptance_criteria": {
+                "category": "file_data",
+                "blocking": True,
+                "checks": [
+                    {
+                        "type": "manuscript_markdown_quality",
+                        "path": "manuscript.md",
+                        "min_text_chars": 1000,
+                        "min_sections": 4,
+                        "min_long_paragraphs": 2,
+                        "max_bullet_ratio": 0.12,
+                        "min_figure_callouts": 1,
+                        "min_results_subsections": 1,
+                        "required_terms": ["Discussion", "Evidence boundary"],
+                    }
+                ],
+            }
+        },
+    )
+
+    finalization = verifier.finalize_payload(
+        node,
+        {"status": "completed", "metadata": {"run_directory": str(tmp_path), "artifact_paths": [str(manuscript)]}},
+        execution_status="completed",
+    )
+
+    assert finalization.final_status == "failed"
+    assert finalization.verification is not None
+    assert finalization.verification["status"] == "failed"
+    failure = finalization.verification["failures"][0]
+    assert failure["type"] == "manuscript_markdown_quality"
+    assert "bullet_ratio" in failure["message"] or "text_chars" in failure["message"]
 
 
 def test_is_local_path_filtering():

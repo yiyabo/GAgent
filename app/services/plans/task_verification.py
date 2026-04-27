@@ -810,7 +810,7 @@ class TaskVerificationService:
                         "key_path": segments[1].strip(),
                         "min_value": float(segments[2].strip()),
                     })
-            elif check_type in {"pdf_valid", "model_metrics_valid"}:
+            elif check_type in {"pdf_valid", "model_metrics_valid", "manuscript_markdown_quality"}:
                 if rest:
                     checks.append({"type": check_type, "path": rest, "hard": True})
             elif check_type == "pdb_residue_present":
@@ -1201,6 +1201,13 @@ class TaskVerificationService:
                     if fallback:
                         path = fallback
                 return self._model_metrics_valid_result(path)
+            if check_type == "manuscript_markdown_quality":
+                path = self._resolve_path(raw_check.get("path"), base_dir)
+                if not path.exists() and artifact_paths:
+                    fallback = self._fallback_artifact_match(path, artifact_paths, lenient=False)
+                    if fallback:
+                        path = fallback
+                return self._manuscript_markdown_quality_result(path, raw_check)
         except Exception as exc:
             logger.warning("Verification check %s failed with exception: %s", check_type, exc)
             return {
@@ -1710,6 +1717,97 @@ class TaskVerificationService:
         )
 
     @staticmethod
+    def _manuscript_markdown_quality_result(path: Path, raw_check: Dict[str, Any]) -> Dict[str, Any]:
+        if not path.exists() or not path.is_file() or path.stat().st_size <= 0:
+            return TaskVerificationService._check_result(
+                "manuscript_markdown_quality",
+                False,
+                path=path,
+                message="Markdown manuscript is missing or empty.",
+            )
+
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        min_text_chars = int(raw_check.get("min_text_chars") or 0)
+        min_sections = int(raw_check.get("min_sections") or 0)
+        min_long_paragraphs = int(raw_check.get("min_long_paragraphs") or 0)
+        max_bullet_ratio = float(raw_check.get("max_bullet_ratio") if raw_check.get("max_bullet_ratio") is not None else 1.0)
+        min_figure_callouts = int(raw_check.get("min_figure_callouts") or 0)
+        min_table_callouts = int(raw_check.get("min_table_callouts") or 0)
+        min_results_subsections = int(raw_check.get("min_results_subsections") or 0)
+        required_terms = raw_check.get("required_terms") or []
+        if isinstance(required_terms, str):
+            required_terms = [term.strip() for term in required_terms.split(",") if term.strip()]
+
+        nonempty_lines = [line.strip() for line in text.splitlines() if line.strip()]
+        bullet_lines = [
+            line for line in nonempty_lines
+            if re.match(r"^(?:[-*+•]|\d+[.)])\s+", line)
+        ]
+        bullet_ratio = len(bullet_lines) / max(len(nonempty_lines), 1)
+        headings = re.findall(r"(?m)^#{1,4}\s+(.+?)\s*$", text)
+        paragraph_blocks = [
+            block.strip() for block in re.split(r"\n\s*\n", text)
+            if block.strip() and not block.lstrip().startswith("#") and not block.lstrip().startswith("|")
+        ]
+        long_paragraphs = [block for block in paragraph_blocks if len(re.sub(r"\s+", " ", block)) >= 450]
+        figure_callouts = re.findall(
+            r"(?:\bfig(?:ure)?\.?)\s*\d+|!\[[^\]]*\]\([^\)]*\)",
+            text,
+            flags=re.IGNORECASE,
+        )
+        table_callouts = re.findall(
+            r"\btable\s*\d+|^\|.+\|$",
+            text,
+            flags=re.IGNORECASE | re.MULTILINE,
+        )
+        results_match = re.search(
+            r"^##\s+Results\b(.*?)(?=^##\s+|\Z)",
+            text,
+            flags=re.IGNORECASE | re.MULTILINE | re.DOTALL,
+        )
+        results_subsections = 0
+        if results_match:
+            results_subsections = len(re.findall(r"(?m)^#{3,4}\s+", results_match.group(1)))
+        lowered = text.lower()
+        missing_terms = [str(term) for term in required_terms if str(term).strip().lower() not in lowered]
+
+        failures: List[str] = []
+        if len(text.strip()) < min_text_chars:
+            failures.append(f"text_chars {len(text.strip())} < {min_text_chars}")
+        if len(headings) < min_sections:
+            failures.append(f"sections {len(headings)} < {min_sections}")
+        if len(long_paragraphs) < min_long_paragraphs:
+            failures.append(f"long_paragraphs {len(long_paragraphs)} < {min_long_paragraphs}")
+        if bullet_ratio > max_bullet_ratio:
+            failures.append(f"bullet_ratio {bullet_ratio:.3f} > {max_bullet_ratio:.3f}")
+        if len(figure_callouts) < min_figure_callouts:
+            failures.append(f"figure_callouts {len(figure_callouts)} < {min_figure_callouts}")
+        if len(table_callouts) < min_table_callouts:
+            failures.append(f"table_callouts {len(table_callouts)} < {min_table_callouts}")
+        if results_subsections < min_results_subsections:
+            failures.append(f"results_subsections {results_subsections} < {min_results_subsections}")
+        if missing_terms:
+            failures.append(f"missing required terms: {', '.join(missing_terms[:10])}")
+
+        success = not failures
+        return TaskVerificationService._check_result(
+            "manuscript_markdown_quality",
+            success,
+            path=path,
+            message=None if success else "; ".join(failures),
+            extra={
+                "text_chars": len(text.strip()),
+                "sections": len(headings),
+                "long_paragraphs": len(long_paragraphs),
+                "bullet_ratio": round(bullet_ratio, 4),
+                "figure_callouts": len(figure_callouts),
+                "table_callouts": len(table_callouts),
+                "results_subsections": results_subsections,
+                "missing_terms": missing_terms,
+            },
+        )
+
+    @staticmethod
     def _collect_metric_model_entries(payload: Any) -> Dict[str, Dict[str, Any]]:
         entries: Dict[str, Dict[str, Any]] = {}
         if not isinstance(payload, dict):
@@ -1717,7 +1815,7 @@ class TaskVerificationService:
 
         def _add(name: Any, metrics: Any) -> None:
             if isinstance(name, str) and name.strip() and isinstance(metrics, dict):
-                entries[name.strip()] = metrics
+                entries[name.strip()] = TaskVerificationService._select_model_metric_entry(metrics)
 
         for key in ("models", "model_metrics", "metrics", "results", "test_metrics"):
             value = payload.get(key)
@@ -1732,6 +1830,26 @@ class TaskVerificationService:
             if isinstance(metrics, dict):
                 _add(model_name, metrics)
         return entries
+
+    @staticmethod
+    def _select_model_metric_entry(metrics: Dict[str, Any]) -> Dict[str, Any]:
+        """Return the metric dict to validate for flat or split-nested schemas.
+
+        Some executors write ``{"models": {"RandomForest": {"test": {...}}}}``
+        so the numeric model metrics live under a split key rather than directly
+        under the model name.  Prefer held-out splits over train metrics because
+        those are the publishable values.
+        """
+        if any(
+            TaskVerificationService._is_finite_number(metrics.get(field))
+            for field in ("accuracy", "macro_f1")
+        ):
+            return metrics
+        for split_name in ("test", "validation", "val", "holdout", "eval"):
+            split_metrics = metrics.get(split_name)
+            if isinstance(split_metrics, dict):
+                return split_metrics
+        return metrics
 
     @staticmethod
     def _is_finite_number(value: Any) -> bool:
