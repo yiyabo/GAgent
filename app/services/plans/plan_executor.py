@@ -2165,6 +2165,7 @@ class PlanExecutor:
                     "When resolved_input_artifacts or absolute paper_context_paths are provided, treat them as the canonical source of truth instead of guessing filenames.",
                     "Do not claim completion without explicit citation integrity checks against provided reference files.",
                     "CRITICAL TOOL SELECTION: For writing ANY paper content (sections, drafts, revisions, full assembly), you MUST use manuscript_writer. Do NOT use code_executor to write paper text. code_executor may only be used for data analysis, code generation, or non-writing tasks.",
+                    "MD-FIRST MANUSCRIPT RULE: write the manuscript source as Markdown (.md) first and make it pass manuscript quality gates before attempting PDF rendering. PDF is a derived deliverable, not the source of truth.",
                 ]
             )
         # --- Skill content injection ---
