@@ -205,6 +205,7 @@ def _build_phagescope_research_seed_tasks(goal: Any) -> List[Dict[str, Any]]:
         return []
 
     data_dir = "/home/zczhao/Phage-Agent/phagescope"
+    output_md = "manuscript.md"
     output_pdf = "phagescope_research_topic1_production_report.pdf"
     specs: List[Dict[str, Any]] = [
         {
@@ -267,7 +268,8 @@ def _build_phagescope_research_seed_tasks(goal: Any) -> List[Dict[str, Any]]:
                 "or error-analysis figures/tables. Save at least four figures or tables plus figure_manifest.json."
             ),
             "criteria": [
-                {"type": "glob_count_at_least", "path": "figures/*", "count": 4},
+                {"type": "glob_count_at_least", "path": "figures/*.png", "count": 3},
+                {"type": "file_nonempty", "path": "results/model_comparison.csv"},
                 {"type": "file_nonempty", "path": "figure_manifest.json"},
             ],
         },
@@ -283,22 +285,47 @@ def _build_phagescope_research_seed_tasks(goal: Any) -> List[Dict[str, Any]]:
             ],
         },
         {
-            "name": "Task 7: Draft publishable PhageScope report PDF",
+            "name": "Task 7: Draft publishable PhageScope manuscript Markdown",
             "instruction": (
-                f"Write {output_pdf} as a publishable-paper-quality report with abstract, data provenance, methods, "
-                "results, class imbalance, split leakage controls, metrics, figures/tables, limitations, and "
-                "reproducibility sections."
+                f"Write {output_md} as the primary publishable-paper-quality manuscript in Markdown before any PDF rendering. "
+                "Use a MESM/BMC Biology-style structure: structured abstract, long Background, multi-subsection Results, "
+                "Discussion, Conclusions, Methods, and Evidence boundary. The Results must integrate figure/table callouts "
+                "with long-form analysis, include feature-leakage or ablation analysis, class-wise/error analysis, class "
+                "imbalance interpretation, split leakage controls, metrics, limitations, and reproducibility. Avoid report-style "
+                "bullet lists; write prose-first paragraphs. PDF is a later rendering target, not the source manuscript."
             ),
             "criteria": [
-                {"type": "file_nonempty", "path": output_pdf},
-                {"type": "pdf_valid", "path": output_pdf, "min_pages": 4, "min_text_chars": 3000, "hard": True},
+                {"type": "file_nonempty", "path": output_md},
+                {
+                    "type": "manuscript_markdown_quality",
+                    "path": output_md,
+                    "min_text_chars": 12000,
+                    "min_sections": 6,
+                    "min_long_paragraphs": 8,
+                    "max_bullet_ratio": 0.12,
+                    "min_figure_callouts": 4,
+                    "min_table_callouts": 2,
+                    "min_results_subsections": 3,
+                    "required_terms": [
+                        "Background",
+                        "Results",
+                        "Discussion",
+                        "Methods",
+                        "ablation",
+                        "class-wise",
+                        "leakage",
+                        "Evidence boundary",
+                    ],
+                    "hard": True,
+                },
             ],
         },
         {
             "name": "Task 8: Run final report quality audit",
             "instruction": (
-                "Audit the final PDF and all supporting artifacts against publishable-paper gates: dataset provenance, "
-                "split leakage, class imbalance, baselines, metrics, figures/tables, limitations, and reproducibility. "
+                f"Audit {output_md} and all supporting artifacts against publishable-paper gates: dataset provenance, "
+                "split leakage, class imbalance, baselines, metrics, figure/table integration, ablation or leakage-control "
+                "analysis, class-wise/error analysis, limitations, and reproducibility. "
                 "Save report_quality_audit.json with pass/fail flags and no unchecked mandatory gates."
             ),
             "criteria": [
@@ -309,12 +336,25 @@ def _build_phagescope_research_seed_tasks(goal: Any) -> List[Dict[str, Any]]:
         {
             "name": "Task 9: Submit verified report deliverables",
             "instruction": (
-                f"Submit {output_pdf}, model_metrics.json, report_quality_audit.json, and reproducibility artifacts "
-                "through deliverable_submit only after verification passes."
+                f"Submit {output_md} as the primary manuscript deliverable, plus model_metrics.json, report_quality_audit.json, "
+                f"and reproducibility artifacts through deliverable_submit only after verification passes. If a stable Markdown-to-PDF "
+                f"renderer produced {output_pdf}, include it as a secondary rendered artifact; do not treat PDF as the source of truth."
             ),
             "criteria": [
-                {"type": "file_nonempty", "path": output_pdf},
-                {"type": "pdf_valid", "path": output_pdf, "min_pages": 4, "min_text_chars": 3000, "hard": True},
+                {"type": "file_nonempty", "path": output_md},
+                {
+                    "type": "manuscript_markdown_quality",
+                    "path": output_md,
+                    "min_text_chars": 12000,
+                    "min_sections": 6,
+                    "min_long_paragraphs": 8,
+                    "max_bullet_ratio": 0.12,
+                    "min_figure_callouts": 4,
+                    "min_table_callouts": 2,
+                    "min_results_subsections": 3,
+                    "required_terms": ["Results", "Discussion", "Methods", "ablation", "class-wise", "Evidence boundary"],
+                    "hard": True,
+                },
             ],
         },
     ]

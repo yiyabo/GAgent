@@ -810,7 +810,8 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
             "name": "manuscript_writer",
             "description": (
                 "Write a research manuscript or section with citation-aware drafting, "
-                "evaluation, and merge support."
+                "evaluation, and merge support. Author manuscript content as Markdown first; "
+                "use .md outputs as the source of truth and render PDF only in a later conversion step."
             ),
             "parameters": {
                 "type": "object",
@@ -821,7 +822,7 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
                     },
                     "output_path": {
                         "type": "string",
-                        "description": "Project-relative output file path.",
+                        "description": "Project-relative output file path. Prefer .md for manuscripts; do not use .pdf for draft_only outputs.",
                     },
                     "context_paths": {
                         "type": "array",
