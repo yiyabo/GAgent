@@ -79,3 +79,7 @@ codex_tmp/left_tall.png
 
 # 卵巢癌单细胞分析项目
 task/
+# Local backup/temp artifacts
+*.bak_*
+app_patch_tmp/
+
