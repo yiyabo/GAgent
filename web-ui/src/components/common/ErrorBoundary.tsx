@@ -19,6 +19,15 @@ interface State {
  */
 const IS_DEV = import.meta.env.DEV;
 
+const isModuleImportError = (error: Error | null): boolean => {
+  const message = error?.message.toLowerCase() ?? '';
+  return (
+    message.includes('importing a module script failed') ||
+    message.includes('failed to fetch dynamically imported module') ||
+    message.includes('loading chunk')
+  );
+};
+
 class ErrorBoundary extends Component<Props, State> {
   constructor(props: Props) {
   super(props);
@@ -49,6 +58,11 @@ class ErrorBoundary extends Component<Props, State> {
   }
 
   handleReset = () => {
+  if (isModuleImportError(this.state.error)) {
+  window.location.reload();
+  return;
+  }
+
   this.setState({
   hasError: false,
   error: null,
@@ -62,6 +76,7 @@ class ErrorBoundary extends Component<Props, State> {
 
   render() {
   if (this.state.hasError) {
+  const moduleImportError = isModuleImportError(this.state.error);
   if (this.props.fallback) {
   return this.props.fallback;
   }
@@ -72,10 +87,10 @@ class ErrorBoundary extends Component<Props, State> {
   status="error"
   icon={<CloseCircleOutlined style={{ color: '#ff4d4f' }} />}
   title="Component crashed"
-  subTitle="A rendering error occurred in this component. Try reset or reload."
+  subTitle={moduleImportError ? 'A page module failed to load. This is usually caused by a stale dev-server module cache or a temporary network hiccup; reload the page to fetch the latest module graph.' : 'A rendering error occurred in this component. Try reset or reload.'}
   extra={[
   <Button type="primary" key="reset" onClick={this.handleReset}>
-  Reset component
+  {moduleImportError ? 'Reload page' : 'Reset component'}
   </Button>,
   <Button key="reload" icon={<ReloadOutlined />} onClick={this.handleReload}>
   Reload page

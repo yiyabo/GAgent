@@ -1,4 +1,4 @@
-import { Suspense, lazy, useEffect } from 'react';
+import { Suspense, useEffect } from 'react';
 import { App as AntdApp, Layout, Spin } from 'antd';
 import { Navigate, Outlet, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { checkApiHealth } from '@api/client';
@@ -8,15 +8,16 @@ import ErrorBoundary from '@components/common/ErrorBoundary';
 import { useAuthStore } from '@store/auth';
 import { useSystemStore } from '@store/system';
 import { ENV } from '@/config/env';
+import { retryLazy } from '@/utils/retryLazy';
 
-const ChatLayout = lazy(() => import('@components/layout/ChatLayout'));
-const Dashboard = lazy(() => import('@pages/Dashboard'));
-const Tasks = lazy(() => import('@pages/Tasks'));
-const Plans = lazy(() => import('@pages/Plans'));
-const Memory = lazy(() => import('@pages/Memory'));
-const System = lazy(() => import('@pages/System'));
-const Login = lazy(() => import('@pages/Login'));
-const Register = lazy(() => import('@pages/Register'));
+const ChatLayout = retryLazy(() => import('@components/layout/ChatLayout'));
+const Dashboard = retryLazy(() => import('@pages/Dashboard'));
+const Tasks = retryLazy(() => import('@pages/Tasks'));
+const Plans = retryLazy(() => import('@pages/Plans'));
+const Memory = retryLazy(() => import('@pages/Memory'));
+const System = retryLazy(() => import('@pages/System'));
+const Login = retryLazy(() => import('@pages/Login'));
+const Register = retryLazy(() => import('@pages/Register'));
 
 const FullPageLoading = () => (
   <div

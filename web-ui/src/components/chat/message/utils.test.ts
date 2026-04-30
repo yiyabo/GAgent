@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   resolveMessageCopyText,
   shouldShowStreamingCursor,
+  resolveRequestFailureMessage,
 } from './utils';
 
 describe('resolveMessageCopyText', () => {
@@ -48,5 +49,23 @@ describe('resolveMessageCopyText', () => {
         backgroundCategory: null,
       }),
     ).toBe(true);
+  });
+});
+
+
+describe('resolveRequestFailureMessage', () => {
+  it('explains oversized user queries', () => {
+    expect(resolveRequestFailureMessage(new Error('User query too long (max 10000 chars)')))
+      .toContain('max 10,000 characters');
+  });
+
+  it('explains LLM quota and rate limit failures', () => {
+    expect(resolveRequestFailureMessage(new Error('LLM HTTPError: 429 {"code":"insufficient_quota"}')))
+      .toContain('quota or rate limit');
+  });
+
+  it('keeps the generic fallback for unknown failures', () => {
+    expect(resolveRequestFailureMessage(new Error('unexpected failure')))
+      .toContain('Request failed. Please check');
   });
 });

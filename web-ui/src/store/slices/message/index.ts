@@ -13,7 +13,6 @@ import {
 } from '../../chatUtils';
 import { memoryApi } from '@api/memory';
 import { chatApi } from '@api/chat';
-import { ENV } from '@/config/env';
 import {
   collectArtifactGallery,
   mergeArtifactGalleries,
@@ -21,6 +20,7 @@ import {
 import { resolveChatSessionProcessingKey } from '@/utils/chatSessionKeys';
 import { recoverPlanBindingFromMessages } from './planRecovery';
 import { hydratePersistedMessage } from './historyHydration';
+import { resolveRequestFailureMessage } from '@/components/chat/message/utils';
 
 /** Recent turns attached to each API request. Align with backend `CHAT_HISTORY_MAX_MESSAGES` (default 80, cap 200). */
 const CHAT_REQUEST_HISTORY_LIMIT = 80;
@@ -229,11 +229,13 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   if (beforeId !== null && beforeId !== undefined) {
   query.set('before_id', String(beforeId));
   }
-  const response = await fetch(
-  `${ENV.API_BASE_URL}/chat/history/${sessionId}?${query.toString()}`
-  );
-
-  if (!response.ok) {
+  let data: any;
+  try {
+  const response = await chatApi.getHistory(sessionId, Object.fromEntries(query.entries()));
+  data = response.data;
+  } catch (err: any) {
+  const status = err?.response?.status;
+  if (status === 404) {
   const targetSession = get().sessions.find(
   (session) => (session.session_id ?? session.id) === sessionId || session.id === sessionId
   );
@@ -242,7 +244,7 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   targetSession.titleSource === 'local' &&
   (targetSession.messages?.length ?? 0) === 0
   );
-  if (response.status === 404 && isUnsyncedLocalSession) {
+  if (isUnsyncedLocalSession) {
   set({
   messages: [],
   historyBeforeId: null,
@@ -250,10 +252,9 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   });
   return;
   }
-  throw new Error(`HTTP error! status: ${response.status}`);
   }
-
-  const data = await response.json();
+  throw err;
+  }
   const hasMore =
   typeof data.has_more === 'boolean'
   ? data.has_more
@@ -527,19 +528,17 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   if (!apiSid) {
   return;
   }
-  let res: Response;
+  let res: any;
   try {
-  res = await fetch(
-  `${ENV.API_BASE_URL}/chat/sessions/${encodeURIComponent(apiSid)}/runs?status=running&limit=1`
-  );
+  const response = await chatApi.getActiveRun(apiSid);
+  res = response.data;
   } catch {
   return;
   }
-  if (!res.ok) {
+  if (!res) {
   return;
   }
-  const data = await res.json();
-  const run = data?.runs?.[0];
+  const run = res?.runs?.[0];
   if (!run?.run_id) {
   // Server has no active run; client may still show "running" after backend restart.
   if (processingSessionIds.has(resumeKey)) {
