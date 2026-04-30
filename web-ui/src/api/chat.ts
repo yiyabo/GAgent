@@ -120,6 +120,17 @@ export class ChatApi extends BaseApi {
   cancelRun = async (runId: string): Promise<{ run_id: string; status: string }> => {
     return this.post<{ run_id: string; status: string }>(`/chat/runs/${encodeURIComponent(runId)}/cancel`, {});
   };
+
+  getHistory = async (sessionId: string, params?: Record<string, any>) => {
+    return this.client.get(`/chat/history/${sessionId}`, { params });
+  };
+
+  getActiveRun = async (sessionId: string) => {
+    return this.client.get(
+      `/chat/sessions/${encodeURIComponent(sessionId)}/runs`,
+      { params: { status: 'running', limit: 1 } }
+    );
+  };
 }
 
 export const chatApi = new ChatApi();
