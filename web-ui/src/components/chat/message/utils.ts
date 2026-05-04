@@ -18,12 +18,16 @@ export const resolveRequestFailureMessage = (error: unknown): string => {
   const message = getErrorMessage(error);
   const normalized = message.toLowerCase();
 
-  if (normalized.includes('user query too long') || normalized.includes('max 10000 chars')) {
-    return 'Your message is too long for the current backend limit (max 10,000 characters). Please shorten it or split it into smaller requests, then retry.';
+  if (normalized.includes("user query too long")) {
+    const maxMatch = message.match(/max\s+([0-9,]+)\s+chars?/i);
+    const maxText = maxMatch?.[1] ? `${maxMatch[1].replace(/,/g, "")} characters` : "the configured character limit";
+    return `Your message is too long for the current backend limit (max ${maxText}). Please shorten it or split it into smaller requests, then retry.`;
   }
 
   if (
     normalized.includes('insufficient_quota') ||
+    normalized.includes("quota is insufficient") ||
+    (normalized.includes("quota") && normalized.includes("insufficient")) ||
     normalized.includes('too many requests') ||
     normalized.includes('exceeded your current quota') ||
     normalized.includes('429')

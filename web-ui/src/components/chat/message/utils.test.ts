@@ -56,7 +56,7 @@ describe('resolveMessageCopyText', () => {
 describe('resolveRequestFailureMessage', () => {
   it('explains oversized user queries', () => {
     expect(resolveRequestFailureMessage(new Error('User query too long (max 10000 chars)')))
-      .toContain('max 10,000 characters');
+      .toContain('max 10000 characters');
   });
 
   it('explains LLM quota and rate limit failures', () => {

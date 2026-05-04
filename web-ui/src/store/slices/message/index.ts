@@ -508,8 +508,7 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   console.error('Failed to send message:', error);
   get().setActiveRunId(processingKey, null);
   get().setSessionProcessing(processingKey, false);
-  const errorContent =
-  'Request failed. Please check:\n\n1. Backend service availability\n2. LLM API configuration\n3. Network connectivity\n\nThen retry the request.';
+  const errorContent = resolveRequestFailureMessage(error);
   if (assistantMessageAdded) {
   get().updateMessage(assistantMessageId, { content: errorContent, metadata: { status: 'failed', errors: [error instanceof Error ? error.message : String(error)] } });
   } else {
