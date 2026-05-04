@@ -237,6 +237,46 @@ def test_resolve_code_executor_task_context_marks_explicit_completed_scope() -> 
     assert agent.extra_context.get("explicit_scope_blocked_task_ids") == [22]
 
 
+def test_resolve_code_executor_task_context_allows_explicit_completed_force_rerun() -> None:
+    root = PlanNode(
+        id=1,
+        plan_id=49,
+        name="Root",
+        status="pending",
+    )
+    completed_leaf = PlanNode(
+        id=22,
+        plan_id=49,
+        name="Completed conclusion task",
+        parent_id=1,
+        status="completed",
+    )
+    tree = PlanTree(
+        id=49,
+        title="Plan 49",
+        nodes={1: root, 22: completed_leaf},
+        adjacency={None: [1], 1: [22], 22: []},
+    )
+    agent = StructuredChatAgent.__new__(StructuredChatAgent)
+    agent.plan_session = SimpleNamespace(plan_id=49, repo=_RepoStub(tree))
+    agent.extra_context = {
+        "explicit_task_ids": [22],
+        "explicit_task_override": True,
+        "request_tier": "execute",
+        "intent_type": "execute_task",
+    }
+    agent._current_user_message = "I explicitly want to re-run completed Task 22. Force re-run it."
+
+    node, error = agent._resolve_code_executor_task_context()
+
+    assert error is None
+    assert node is completed_leaf
+    assert agent.extra_context.get("task_id") == 22
+    assert agent.extra_context.get("current_task_id") == 22
+    assert agent.extra_context.get("force_rerun_completed") is True
+    assert agent.extra_context.get("explicit_scope_all_blocked") is None
+
+
 def test_prepare_code_executor_params_reports_explicit_completed_scope() -> None:
     root = PlanNode(
         id=1,
@@ -286,6 +326,66 @@ def test_prepare_code_executor_params_reports_explicit_completed_scope() -> None
     assert prepared.success is False
     assert "already completed" in prepared.message
     assert prepared.details.get("error") == "explicit_task_scope_completed"
+
+
+def test_prepare_code_executor_params_allows_explicit_completed_force_rerun() -> None:
+    root = PlanNode(
+        id=1,
+        plan_id=49,
+        name="Root",
+        status="pending",
+    )
+    completed_leaf = PlanNode(
+        id=22,
+        plan_id=49,
+        name="Completed conclusion task",
+        instruction="Write conclusion",
+        parent_id=1,
+        status="completed",
+    )
+    tree = PlanTree(
+        id=49,
+        title="Plan 49",
+        nodes={1: root, 22: completed_leaf},
+        adjacency={None: [1], 1: [22], 22: []},
+    )
+    agent = StructuredChatAgent.__new__(StructuredChatAgent)
+    agent.plan_session = SimpleNamespace(plan_id=49, repo=_RepoStub(tree))
+    agent.plan_tree = tree
+    agent.extra_context = {
+        "explicit_task_ids": [22],
+        "explicit_task_override": True,
+        "request_tier": "execute",
+        "intent_type": "execute_task",
+    }
+    agent._current_user_message = "Force re-run completed Task 22 using code_executor."
+    agent.history = []
+    agent.session_id = "session_test"
+    agent.mode = "assistant"
+    agent._sync_job_id = None
+    agent.conversation_id = "conv_test"
+
+    action = LLMAction(
+        kind="tool_operation",
+        name="code_executor",
+        parameters={"task": "Execute task 22"},
+        order=1,
+    )
+
+    prepared = asyncio.run(
+        agent._prepare_code_executor_params(
+            action=action,
+            tool_name="code_executor",
+            params=dict(action.parameters),
+        )
+    )
+
+    assert isinstance(prepared, tuple)
+    prepared_params, _original_task = prepared
+    assert prepared_params["task_id"] == 22
+    assert prepared_params["plan_id"] == 49
+    assert prepared_params["require_task_context"] is True
+    assert agent.extra_context.get("force_rerun_completed") is True
 
 
 def test_sync_task_status_skips_for_unscoped_code_executor() -> None:
