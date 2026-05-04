@@ -104,6 +104,9 @@ def test_phagescope_research_audit_and_prepare_metadata_table(tmp_path: Path) ->
     assert audit["metadata_rows"] == 5
     assert audit["unique_phage_ids"] == 5
     assert audit["code_executor_add_dirs"] == [str(data_dir), str(data_dir.resolve())]
+    assert audit["resource_contract"] == {"requires": ["resource:phagescope.sequence_corpus"]}
+    assert "phagescope.sequence_corpus" in audit["resources"]
+    assert any("tarfile.open" in note for note in audit["notes"])
 
     prepared = asyncio.run(
         phagescope_research_handler(

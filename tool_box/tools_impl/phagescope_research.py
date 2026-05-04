@@ -18,6 +18,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
+from app.services.resources.resource_registry import resolve_resource
+
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _DEFAULT_DATA_DIR = _PROJECT_ROOT / "phagescope"
@@ -241,6 +243,8 @@ def _audit(data_dir: Path, *, top_n: int = 30) -> Dict[str, Any]:
         for p in sorted(data_dir.rglob(".fuse_hidden*"))
         if p.is_file()
     ]
+    resource = resolve_resource("phagescope.sequence_corpus")
+    resources = {"phagescope.sequence_corpus": resource.to_dict()} if resource else {}
 
     return {
         "success": True,
@@ -263,11 +267,13 @@ def _audit(data_dir: Path, *, top_n: int = 30) -> Dict[str, Any]:
         "host_top": host_counts.most_common(top_n),
         "hidden_fuse_files": hidden_files[:20],
         "hidden_fuse_file_count": len(hidden_files),
+        "resources": resources,
+        "resource_contract": {"requires": ["resource:phagescope.sequence_corpus"]},
         "code_executor_add_dirs": [str(data_dir), str(data_dir.resolve())],
         "notes": [
             "Use the listed code_executor_add_dirs for Docker/Qwen tasks; the project phagescope path may be a symlink.",
             "Do not use random splits as the primary result; use Cluster/Subcluster-aware splits.",
-            "Some phage_fasta files are gzip-compressed tar archives, not plain gzipped FASTA streams.",
+            "Some phage_fasta files use a .fasta extension but are gzip-compressed tar archives; use tarfile.open(path, \"r:*\") and stream FASTA members.",
         ],
     }
 
