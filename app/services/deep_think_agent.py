@@ -2791,8 +2791,13 @@ class DeepThinkAgent:
         """
         if not user_query or not user_query.strip():
             raise ValueError("User query cannot be empty")
-        if len(user_query) > 10000:
-            raise ValueError("User query too long (max 10000 chars)")
+        max_user_query_chars = int(
+            getattr(get_settings(), "deep_think_max_user_query_chars", 50000)
+        )
+        if len(user_query) > max_user_query_chars:
+            raise ValueError(
+                f"User query too long (max {max_user_query_chars} chars)"
+            )
 
         if self._supports_native_tools():
             logger.info("[DEEP_THINK] Using native tool calling path")
