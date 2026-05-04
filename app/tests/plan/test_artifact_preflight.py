@@ -139,3 +139,145 @@ def test_preflight_tracks_inferred_contract_provenance(monkeypatch, tmp_path) ->
     snapshot = result.task_contracts[0]
     assert snapshot.contract_source == "inferred"
     assert "ai_dl.references_bib" in snapshot.requires
+
+
+def test_preflight_resolves_equivalent_hybrid_matrix_aliases(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    service = ArtifactPreflightService()
+    tree = _tree(
+        93,
+        PlanNode(
+            id=18,
+            plan_id=93,
+            name="Construct Hybrid Feature Matrix",
+            metadata={"artifact_contract": {"publishes": ["phage_ml.hybrid_features_final_npz"]}},
+        ),
+        PlanNode(
+            id=19,
+            plan_id=93,
+            name="Train traditional models",
+            metadata={"artifact_contract": {"requires": ["ml_features.hybrid_matrix_npz"]}},
+        ),
+        PlanNode(
+            id=24,
+            plan_id=93,
+            name="Train deep learning models",
+            metadata={"artifact_contract": {"requires": ["phage_features.hybrid_matrix_npz"]}},
+        ),
+        PlanNode(
+            id=32,
+            plan_id=93,
+            name="Kmer enrichment",
+            metadata={"artifact_contract": {"requires": ["ml_phage.features_hybrid_matrix"]}},
+        ),
+    )
+
+    result = service.validate_plan(93, tree)
+
+    assert result.ok is True
+    assert not [issue for issue in result.errors if issue.code == "missing_producer"]
+
+
+def test_preflight_resolves_equivalent_model_directory_alias(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    service = ArtifactPreflightService()
+    tree = _tree(
+        94,
+        PlanNode(
+            id=19,
+            plan_id=94,
+            name="Train traditional models",
+            metadata={"artifact_contract": {"publishes": ["ml_traditional.model_checkpoints_dir"]}},
+        ),
+        PlanNode(
+            id=27,
+            plan_id=94,
+            name="Evaluate models",
+            metadata={"artifact_contract": {"requires": ["phage_ml.trained_models_dir"]}},
+        ),
+        PlanNode(
+            id=39,
+            plan_id=94,
+            name="Package deployment",
+            metadata={"artifact_contract": {"requires": ["ml_phage.best_model_pkl"]}},
+        ),
+    )
+
+    result = service.validate_plan(94, tree)
+
+    assert result.ok is True
+    assert not [issue for issue in result.errors if issue.code == "missing_producer"]
+
+
+def test_supervised_ml_contract_requires_label_and_row_id_artifacts(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    service = ArtifactPreflightService()
+    tree = _tree(
+        95,
+        PlanNode(
+            id=14,
+            plan_id=95,
+            name="Prepare training metadata",
+            metadata={"artifact_contract": {"publishes": ["phage_ml.training_metadata_parquet"]}},
+        ),
+        PlanNode(
+            id=15,
+            plan_id=95,
+            name="Extract feature row IDs",
+            metadata={"artifact_contract": {"publishes": ["phage_ml.feature_row_ids_json"]}},
+        ),
+        PlanNode(
+            id=18,
+            plan_id=95,
+            name="Construct feature matrix",
+            metadata={"artifact_contract": {"publishes": ["phage_ml.hybrid_features_final_npz"]}},
+        ),
+        PlanNode(
+            id=19,
+            plan_id=95,
+            name="Train supervised classifiers",
+            metadata={"artifact_contract": {
+                "requires": ["ml_features.hybrid_matrix_npz"],
+                "publishes": ["ml_traditional.validation_metrics_json", "ml_traditional.model_checkpoints_dir"],
+            }},
+        ),
+    )
+
+    result = service.validate_plan(95, tree)
+
+    assert result.ok is True
+    task19 = next(snapshot for snapshot in result.task_contracts if snapshot.task_id == 19)
+    assert "phage_ml.hybrid_features_final_npz" in task19.requires
+    assert "phage_ml.training_metadata_parquet" in task19.requires
+    assert "phage_ml.feature_row_ids_json" in task19.requires
+    assert "phage_ml.label_alignment_json" in task19.publishes
+
+
+def test_supervised_ml_contract_blocks_missing_label_inputs(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    service = ArtifactPreflightService()
+    tree = _tree(
+        96,
+        PlanNode(
+            id=18,
+            plan_id=96,
+            name="Construct feature matrix",
+            metadata={"artifact_contract": {"publishes": ["phage_ml.hybrid_features_final_npz"]}},
+        ),
+        PlanNode(
+            id=19,
+            plan_id=96,
+            name="Train supervised classifiers",
+            metadata={"artifact_contract": {
+                "requires": ["ml_features.hybrid_matrix_npz"],
+                "publishes": ["ml_traditional.validation_metrics_json", "ml_traditional.model_checkpoints_dir"],
+            }},
+        ),
+    )
+
+    result = service.validate_plan(96, tree)
+
+    missing = [issue.alias for issue in result.errors if issue.code == "missing_producer"]
+    assert result.ok is False
+    assert "phage_ml.training_metadata_parquet" in missing
+    assert "phage_ml.feature_row_ids_json" in missing

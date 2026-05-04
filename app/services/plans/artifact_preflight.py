@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 
 from .artifact_contracts import (
     canonical_artifact_path,
+    canonicalize_artifact_alias,
     infer_artifact_contract,
     load_artifact_manifest,
     resolve_manifest_aliases,
@@ -95,9 +96,9 @@ class ArtifactPreflightService:
                     errors.append(issue)
                 else:
                     warnings.append(issue)
-            for alias in snapshot.explicit_requires:
+            for alias in snapshot.requires:
                 consumer_map.setdefault(alias, []).append(node.id)
-            for alias in snapshot.explicit_publishes:
+            for alias in snapshot.publishes:
                 publisher_map.setdefault(alias, []).append(node.id)
 
         aliases_to_resolve = set(consumer_map) | set(publisher_map)
@@ -311,7 +312,7 @@ class ArtifactPreflightService:
         errors: List[ArtifactPreflightIssue] = []
         seen: Set[str] = set()
         for item in raw_items:
-            alias = str(item or "").strip()
+            alias = canonicalize_artifact_alias(str(item or "").strip())
             if not alias or alias in seen:
                 continue
             if canonical_artifact_path(plan_id, alias) is None:
