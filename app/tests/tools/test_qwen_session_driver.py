@@ -205,3 +205,33 @@ class TestSharedTerminalReuse:
         )
 
         assert container == "gagent-qc-agent-chat-123"
+
+
+class TestTTLReaper:
+    @pytest.mark.asyncio
+    async def test_ttl_reaper_skips_active_execution_lock(self, monkeypatch):
+        driver = QwenSessionDriver()
+        driver._ttl_seconds = 0.01
+        driver._ttl_check_interval = 0.01
+        driver._containers["chat-123"] = "container-123"
+        driver._last_used["chat-123"] = 0.0
+        lock = asyncio.Lock()
+        driver._locks["chat-123"] = lock
+        removed = {"called": False}
+
+        async def _fake_cleanup(_session_id: str) -> None:
+            removed["called"] = True
+
+        monkeypatch.setattr(driver, "cleanup", _fake_cleanup)
+
+        async with lock:
+            task = asyncio.create_task(driver._ttl_reaper_loop())
+            await asyncio.sleep(0.03)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+        assert removed["called"] is False
+        assert driver._last_used["chat-123"] > 0
