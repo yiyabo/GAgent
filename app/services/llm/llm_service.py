@@ -19,6 +19,58 @@ from app.services.foundation.settings import get_settings
 logger = logging.getLogger(__name__)
 
 
+class LLMProviderError(RuntimeError):
+    """Structured LLM provider failure for retry and SSE handling."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        error_code: str = "llm_provider_error",
+        category: str = "llm_provider",
+        provider: str = "llm",
+        retryable: bool = True,
+        status_code: Optional[int] = None,
+        raw_error: Optional[str] = None,
+    ):
+        super().__init__(message)
+        self.error_code = error_code
+        self.category = category
+        self.provider = provider
+        self.retryable = retryable
+        self.status_code = status_code
+        self.raw_error = raw_error
+
+
+def _classify_llm_exception(exc: Exception) -> Optional[LLMProviderError]:
+    raw = str(exc)
+    lowered = raw.lower()
+    status_code: Optional[int] = None
+    if "llm httperror: 429" in lowered or "429 too many requests" in lowered:
+        status_code = 429
+    if "insufficient_quota" in lowered:
+        return LLMProviderError(
+            "DashScope/Qwen quota is insufficient. Please check the plan or billing details before retrying.",
+            error_code="llm_insufficient_quota",
+            category="llm_quota",
+            provider="dashscope",
+            retryable=False,
+            status_code=status_code or 429,
+            raw_error=raw,
+        )
+    if status_code == 429:
+        return LLMProviderError(
+            "DashScope/Qwen rate limit was exceeded. Please wait before retrying.",
+            error_code="llm_rate_limited",
+            category="llm_rate_limit",
+            provider="dashscope",
+            retryable=True,
+            status_code=429,
+            raw_error=raw,
+        )
+    return None
+
+
 class LLMService:
     """Unified service for all LLM interactions with consistent error handling"""
     
@@ -69,11 +121,20 @@ class LLMService:
             try:
                 return self._execute_chat(prompt, **kwargs)
             except Exception as e:
+                classified = _classify_llm_exception(e)
+                if classified is not None and not classified.retryable:
+                    logger.error(
+                        "LLM chat failed with non-retryable provider error: %s",
+                        classified.raw_error or classified,
+                    )
+                    raise classified
                 logger.warning(f"LLM chat attempt {attempt + 1} failed: {e}")
                 if attempt < retry_attempts - 1:
                     time.sleep(retry_delay * (attempt + 1))
                 else:
                     logger.error(f"All LLM chat attempts failed for prompt: {prompt[:100]}...")
+                    if classified is not None:
+                        raise classified
                     raise RuntimeError(f"LLM chat failed after {retry_attempts} attempts: {e}")
         
         # This should never be reached
@@ -108,11 +169,20 @@ class LLMService:
             try:
                 return await self._execute_chat_async(prompt, **kwargs)
             except Exception as e:
+                classified = _classify_llm_exception(e)
+                if classified is not None and not classified.retryable:
+                    logger.error(
+                        "Async LLM chat failed with non-retryable provider error: %s",
+                        classified.raw_error or classified,
+                    )
+                    raise classified
                 logger.warning(f"Async LLM chat attempt {attempt + 1} failed: {e}")
                 if attempt < retry_attempts - 1:
                     await asyncio.sleep(retry_delay * (attempt + 1))
                 else:
                     logger.error(f"All async LLM chat attempts failed for prompt: {prompt[:100]}...")
+                    if classified is not None:
+                        raise classified
                     raise RuntimeError(f"Async LLM chat failed after {retry_attempts} attempts: {e}")
         
         # This should never be reached
