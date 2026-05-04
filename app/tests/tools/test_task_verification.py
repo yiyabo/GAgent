@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 from app.routers import plan_routes
+from app.services.plans.artifact_contracts import find_candidate_source_for_alias
 from app.services.plans.acceptance_criteria import extract_explicit_deliverables_from_text
 from app.services.plans.plan_executor import ExecutionConfig, ExecutionResponse, PlanExecutor
 from app.services.plans.plan_models import PlanNode, PlanTree
@@ -41,6 +42,160 @@ class _LLMStub:
 
     def generate(self, _prompt: str, _config=None, **kwargs):
         return self._response
+
+
+def _write_valid_ml_metrics(path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({
+            "models": {"RandomForest": {"accuracy": 0.91, "macro_f1": 0.82}},
+            "metadata": {
+                "label_source": "phage_ml.training_metadata_parquet:host_label",
+                "row_ids_source": "phage_ml.feature_row_ids_json",
+            },
+        }),
+        encoding="utf-8",
+    )
+
+
+def _write_valid_label_alignment(path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps({
+            "label_source": "phage_ml.training_metadata_parquet:host_label",
+            "label_alignment": "inner join on feature_row_ids_json",
+            "training_samples": 2,
+            "is_synthetic": False,
+        }),
+        encoding="utf-8",
+    )
+
+
+def test_find_candidate_source_for_alias_searches_nested_parent_directory(tmp_path):
+    parent = tmp_path / "task_19"
+    metrics = parent / "ml_traditional" / "validation_metrics.json"
+    label_alignment = parent / "phage_ml" / "metadata" / "label_alignment.json"
+    _write_valid_ml_metrics(metrics)
+    _write_valid_label_alignment(label_alignment)
+
+    assert find_candidate_source_for_alias(
+        alias="ml_traditional.validation_metrics_json",
+        candidate_paths=[str(parent)],
+    ) == str(metrics)
+    assert find_candidate_source_for_alias(
+        alias="phage_ml.label_alignment_json",
+        candidate_paths=[str(parent)],
+    ) == str(label_alignment)
+
+
+def test_task_verifier_allows_artifact_contract_override_for_matching_publish_failures(tmp_path):
+    parent = tmp_path / "raw_files" / "task_19"
+    _write_valid_ml_metrics(parent / "ml_traditional" / "validation_metrics.json")
+    _write_valid_label_alignment(parent / "phage_ml" / "metadata" / "label_alignment.json")
+    node = PlanNode(
+        id=19,
+        plan_id=93,
+        name="Train traditional ML models",
+        metadata={
+            "artifact_contract": {
+                "publishes": [
+                    "ml_traditional.validation_metrics_json",
+                    "phage_ml.label_alignment_json",
+                ]
+            },
+            "acceptance_criteria": {
+                "category": "file_data",
+                "blocking": True,
+                "checks": [
+                    {"type": "file_exists", "path": str(tmp_path / "expected" / "ml_traditional" / "validation_metrics.json")},
+                    {"type": "file_nonempty", "path": str(tmp_path / "expected" / "phage_ml" / "metadata" / "label_alignment.json")},
+                ],
+            },
+        },
+    )
+
+    finalization = TaskVerificationService().finalize_payload(
+        node,
+        {"status": "completed", "metadata": {"artifact_paths": [str(parent)]}},
+        execution_status="completed",
+    )
+
+    metadata = finalization.payload["metadata"]
+    assert finalization.final_status == "completed"
+    assert metadata["verification_status"] == "passed"
+    assert metadata["artifact_contract_satisfied_verification"] is True
+    assert metadata["verification"]["failures"] == []
+
+
+def test_task_verifier_does_not_override_unrelated_missing_deliverable(tmp_path):
+    parent = tmp_path / "raw_files" / "task_19"
+    _write_valid_ml_metrics(parent / "ml_traditional" / "validation_metrics.json")
+    _write_valid_label_alignment(parent / "phage_ml" / "metadata" / "label_alignment.json")
+    node = PlanNode(
+        id=19,
+        plan_id=93,
+        name="Train traditional ML models and report",
+        metadata={
+            "artifact_contract": {
+                "publishes": [
+                    "ml_traditional.validation_metrics_json",
+                    "phage_ml.label_alignment_json",
+                ]
+            },
+            "acceptance_criteria": {
+                "category": "file_data",
+                "blocking": True,
+                "checks": [{"type": "file_exists", "path": str(tmp_path / "final_report.pdf")}],
+            },
+        },
+    )
+
+    finalization = TaskVerificationService().finalize_payload(
+        node,
+        {"status": "completed", "metadata": {"artifact_paths": [str(parent)]}},
+        execution_status="completed",
+    )
+
+    metadata = finalization.payload["metadata"]
+    assert finalization.final_status == "failed"
+    assert metadata["verification_status"] == "failed"
+    assert metadata.get("artifact_contract_satisfied_verification") is None
+
+
+def test_task_verifier_does_not_override_when_explicit_publish_missing(tmp_path):
+    parent = tmp_path / "raw_files" / "task_19"
+    _write_valid_ml_metrics(parent / "ml_traditional" / "validation_metrics.json")
+    _write_valid_label_alignment(parent / "phage_ml" / "metadata" / "label_alignment.json")
+    node = PlanNode(
+        id=19,
+        plan_id=93,
+        name="Train traditional ML models",
+        metadata={
+            "artifact_contract": {
+                "publishes": [
+                    "ml_traditional.validation_metrics_json",
+                    "ml_traditional.model_checkpoints_dir",
+                    "phage_ml.label_alignment_json",
+                ]
+            },
+            "acceptance_criteria": {
+                "category": "file_data",
+                "blocking": True,
+                "checks": [{"type": "file_exists", "path": str(tmp_path / "expected" / "ml_traditional" / "validation_metrics.json")}],
+            },
+        },
+    )
+
+    finalization = TaskVerificationService().finalize_payload(
+        node,
+        {"status": "completed", "metadata": {"artifact_paths": [str(parent)]}},
+        execution_status="completed",
+    )
+
+    metadata = finalization.payload["metadata"]
+    assert finalization.final_status == "failed"
+    assert metadata["verification_status"] == "failed"
+    assert metadata.get("artifact_contract_satisfied_verification") is None
 
 
 def test_task_verifier_skips_auto_verification_without_explicit_criteria(tmp_path):
@@ -140,6 +295,166 @@ def test_task_verifier_records_contract_diff_for_mismatch(tmp_path):
     ]
     assert "results/NK_cell_upregulated_genes.csv" in metadata["contract_diff"]["unexpected_outputs"]
     assert metadata["plan_patch_suggestion"]
+
+
+def test_task_verifier_accepts_source_discovery_with_actual_source_dir_and_format_alternative(tmp_path):
+    source_dir = tmp_path / "results" / "05_CellChat"
+    source_dir.mkdir(parents=True)
+    for name in [
+        "network_circle_OC.png",
+        "bubble_all_OC.png",
+        "compare_interactions_barplot.png",
+        "compare_info_flow.png",
+        "chord_TGFb_OC.png",
+    ]:
+        (source_dir / name).write_bytes(b"png-data")
+    signaling_pdf = source_dir / "signaling_role_OC.pdf"
+    signaling_pdf.write_bytes(b"%PDF-1.4\n")
+
+    stale_dir = tmp_path / "cellchat"
+    expected = [
+        stale_dir / "network_circle_OC.png",
+        stale_dir / "bubble_all_OC.png",
+        stale_dir / "compare_interactions_barplot.png",
+        stale_dir / "compare_info_flow.png",
+        stale_dir / "chord_TGFb_OC.png",
+        stale_dir / "signaling_role_OC.png",
+    ]
+    node = PlanNode(
+        id=28,
+        plan_id=95,
+        name="Locate existing CellChat plot files",
+        instruction="Search the expected input directories for existing CellChat plot files before copying them.",
+        metadata={
+            "acceptance_criteria": {
+                "category": "file_data",
+                "blocking": True,
+                "checks": [{"type": "file_exists", "path": str(path)} for path in expected],
+            }
+        },
+    )
+    verifier = TaskVerificationService()
+
+    finalization = verifier.finalize_payload(
+        node,
+        {
+            "status": "completed",
+            "content": (
+                "All CellChat files found in results/05_CellChat.\n"
+                "network_circle_OC.png FOUND\n"
+                "bubble_all_OC.png FOUND\n"
+                "compare_interactions_barplot.png FOUND\n"
+                "compare_info_flow.png FOUND\n"
+                "chord_TGFb_OC.png FOUND\n"
+                "signaling_role_OC FOUND as signaling_role_OC.pdf, not PNG\n"
+            ),
+            "metadata": {
+                "artifact_paths": [str(path) for path in source_dir.iterdir()],
+            },
+        },
+        execution_status="completed",
+    )
+
+    metadata = finalization.payload["metadata"]
+    assert finalization.final_status == "completed"
+    assert finalization.verification is not None
+    assert finalization.verification["status"] == "passed"
+    assert metadata["verification_overridden_by_source_discovery"] is True
+    assert metadata["source_discovery_verification"]["status"] == "passed"
+    assert metadata["source_discovery_verification"]["format_alternatives"] == [
+        {"expected": "signaling_role_OC.png", "actual": str(signaling_pdf)}
+    ]
+    assert "failure_kind" not in metadata
+
+
+def test_task_verifier_does_not_apply_source_discovery_override_to_copy_tasks(tmp_path):
+    source_dir = tmp_path / "results" / "05_CellChat"
+    source_dir.mkdir(parents=True)
+    for name in [
+        "network_circle_OC.png",
+        "bubble_all_OC.png",
+        "compare_interactions_barplot.png",
+        "compare_info_flow.png",
+        "chord_TGFb_OC.png",
+    ]:
+        (source_dir / name).write_bytes(b"png-data")
+    (source_dir / "signaling_role_OC.pdf").write_bytes(b"%PDF-1.4\n")
+
+    figures_dir = tmp_path / "cellchat" / "figures"
+    expected = [
+        figures_dir / "network_circle_OC.png",
+        figures_dir / "bubble_all_OC.png",
+        figures_dir / "compare_interactions_barplot.png",
+        figures_dir / "compare_info_flow.png",
+        figures_dir / "chord_TGFb_OC.png",
+        figures_dir / "signaling_role_OC.png",
+    ]
+    node = PlanNode(
+        id=30,
+        plan_id=95,
+        name="Copy CellChat plots to output figures directory",
+        instruction="Copy the verified CellChat plot files from their source location to the figures output directory.",
+        metadata={
+            "acceptance_criteria": {
+                "category": "file_data",
+                "blocking": True,
+                "checks": [{"type": "file_exists", "path": str(path)} for path in expected],
+            }
+        },
+    )
+    verifier = TaskVerificationService()
+
+    finalization = verifier.finalize_payload(
+        node,
+        {
+            "status": "completed",
+            "content": "Source files were available, but target copy output was not materialized.",
+            "metadata": {"artifact_paths": [str(path) for path in source_dir.iterdir()]},
+        },
+        execution_status="completed",
+    )
+
+    assert finalization.final_status == "failed"
+    assert finalization.payload["metadata"]["failure_kind"] == "contract_mismatch"
+    assert "source_discovery_verification" not in finalization.payload["metadata"]
+
+
+def test_task_verifier_keeps_source_discovery_failed_when_expected_identity_missing(tmp_path):
+    source_dir = tmp_path / "results" / "05_CellChat"
+    source_dir.mkdir(parents=True)
+    (source_dir / "network_circle_OC.png").write_bytes(b"png-data")
+
+    stale_dir = tmp_path / "cellchat"
+    node = PlanNode(
+        id=28,
+        plan_id=95,
+        name="Locate existing CellChat plot files",
+        instruction="Search existing source directories for CellChat plot files.",
+        metadata={
+            "acceptance_criteria": {
+                "category": "file_data",
+                "blocking": True,
+                "checks": [
+                    {"type": "file_exists", "path": str(stale_dir / "network_circle_OC.png")},
+                    {"type": "file_exists", "path": str(stale_dir / "bubble_all_OC.png")},
+                ],
+            }
+        },
+    )
+    verifier = TaskVerificationService()
+
+    finalization = verifier.finalize_payload(
+        node,
+        {
+            "status": "completed",
+            "content": "network_circle_OC.png FOUND\nbubble_all_OC.png missing",
+            "metadata": {"artifact_paths": [str(source_dir / "network_circle_OC.png")]},
+        },
+        execution_status="completed",
+    )
+
+    assert finalization.final_status == "failed"
+    assert finalization.payload["metadata"]["failure_kind"] == "contract_mismatch"
 
 
 def test_task_verifier_accepts_semantic_general_evidence_alias_match(tmp_path):
@@ -2653,3 +2968,87 @@ def test_artifact_authority_combined_publish_and_require(tmp_path):
     # Missing publish demotes completed → failed
     assert result.final_status == "failed"
     assert result.payload["metadata"]["failure_kind"] == "artifact_publish_missing"
+
+
+
+def test_task_verifier_rejects_invalid_sparse_npz_schema(tmp_path):
+    from scipy import sparse
+
+    artifact = tmp_path / "features" / "kmer_46.npz"
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    sparse.save_npz(str(artifact), sparse.csr_matrix((0, 0)))
+
+    node = PlanNode(
+        id=15,
+        plan_id=93,
+        name="Extract k-mer Frequency Profiles",
+        instruction="Generate k-mer feature matrix.",
+        metadata={
+            "artifact_contract": {"publishes": ["phage_ml.kmer_features_npz"]},
+            "acceptance_criteria": {
+                "category": "file_data",
+                "blocking": True,
+                "checks": [
+                    {"type": "file_exists", "path": "features/kmer_46.npz"},
+                    {"type": "file_nonempty", "path": "features/kmer_46.npz"},
+                ],
+            },
+        },
+    )
+    verifier = TaskVerificationService()
+
+    finalization = verifier.finalize_payload(
+        node,
+        {
+            "status": "completed",
+            "metadata": {
+                "run_directory": str(tmp_path),
+                "artifact_paths": [str(artifact)],
+            },
+        },
+        execution_status="completed",
+    )
+
+    metadata = finalization.payload["metadata"]
+    assert finalization.final_status == "failed"
+    assert metadata["verification_status"] == "failed"
+    assert metadata["failure_kind"] == "contract_mismatch"
+    schema = metadata["artifact_schema_validation"]["phage_ml.kmer_features_npz"]
+    assert schema["validated"] is False
+    assert "shape" in schema["failure_reason"]
+    assert "artifact_schema_invalid" in metadata["artifact_verification"]["tags"]
+    assert metadata["contract_diff"]["invalid_artifacts"]
+
+
+def test_task_verifier_accepts_valid_sparse_npz_schema(tmp_path):
+    from scipy import sparse
+
+    artifact = tmp_path / "features" / "kmer_46.npz"
+    artifact.parent.mkdir(parents=True, exist_ok=True)
+    sparse.save_npz(str(artifact), sparse.csr_matrix([[1, 0], [0, 2]]))
+
+    node = PlanNode(
+        id=15,
+        plan_id=93,
+        name="Extract k-mer Frequency Profiles",
+        instruction="Generate k-mer feature matrix.",
+        metadata={
+            "artifact_contract": {"publishes": ["phage_ml.kmer_features_npz"]},
+            "acceptance_criteria": {
+                "category": "file_data",
+                "blocking": True,
+                "checks": [{"type": "file_nonempty", "path": "features/kmer_46.npz"}],
+            },
+        },
+    )
+
+    finalization = TaskVerificationService().finalize_payload(
+        node,
+        {"status": "completed", "metadata": {"run_directory": str(tmp_path), "artifact_paths": [str(artifact)]}},
+        execution_status="completed",
+    )
+
+    assert finalization.final_status == "completed"
+    schema = finalization.payload["metadata"]["artifact_schema_validation"]["phage_ml.kmer_features_npz"]
+    assert schema["validated"] is True
+    assert schema["metadata"]["shape"] == [2, 2]
