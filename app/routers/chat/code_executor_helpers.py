@@ -45,6 +45,26 @@ _LEGACY_SESSION_WORKSPACE_RE = re.compile(
 )
 _USELESS_RUNTIME_ROOT_RE = re.compile(r"(?:^|/)runtime/?$", re.IGNORECASE)
 
+_FORCE_RERUN_COMPLETED_RE = re.compile(
+    r"(?:\bforce\s+(?:re[-\s]?run|rerun)\b|\bexplicitly\s+(?:want\s+to\s+)?(?:re[-\s]?run|rerun)\b|\b(?:re[-\s]?run|rerun)\s+completed\b|强制(?:重跑|重新执行|再跑)|(?:重跑|重新执行|再跑)已完成)",
+    re.IGNORECASE,
+)
+
+
+def _explicitly_requests_completed_task_rerun(agent: Any) -> bool:
+    """Return True when the user explicitly asks to re-run completed tasks."""
+    context = getattr(agent, "extra_context", {}) or {}
+    if bool(context.get("force_rerun_completed") or context.get("force_rerun")):
+        return True
+    message = str(getattr(agent, "_current_user_message", "") or "")
+    if _FORCE_RERUN_COMPLETED_RE.search(message):
+        return True
+    intent = str(context.get("intent_type") or "").strip().lower()
+    tier = str(context.get("request_tier") or "").strip().lower()
+    if intent == "execute_task" and tier == "execute" and re.search(r"\b(?:re[-\s]?run|rerun|retry)\b", message, re.IGNORECASE):
+        return True
+    return False
+
 # ---------------------------------------------------------------------------
 # Conversation summary builder for CC context injection
 # ---------------------------------------------------------------------------
@@ -448,13 +468,35 @@ def resolve_code_executor_task_context(agent: Any) -> Tuple[Optional["PlanNode"]
             except Exception:
                 block_reason = "blocked_deps"
 
-            agent.extra_context["explicit_scope_all_blocked"] = True
-            agent.extra_context["explicit_scope_blocked_task_ids"] = list(explicit_task_ids)
-            agent.extra_context["explicit_scope_block_reason"] = block_reason
+            if block_reason == "all_completed" and _explicitly_requests_completed_task_rerun(agent):
+                for raw_task_id in explicit_task_ids:
+                    try:
+                        completed_task_id = int(raw_task_id)
+                    except (TypeError, ValueError):
+                        continue
+                    if tree.has_node(completed_task_id) and not tree.children_ids(completed_task_id):
+                        agent.extra_context.pop("explicit_scope_all_blocked", None)
+                        agent.extra_context.pop("explicit_scope_blocked_task_ids", None)
+                        agent.extra_context.pop("explicit_scope_block_reason", None)
+                        agent.extra_context["current_task_id"] = completed_task_id
+                        agent.extra_context["task_id"] = completed_task_id
+                        agent.extra_context["_current_task_source"] = "request"
+                        agent.extra_context["force_rerun_completed"] = True
+                        explicit_target = completed_task_id
+                        break
+                else:
+                    explicit_target = None
+                if explicit_target is None:
+                    return None, "explicit_task_scope_completed"
+                task_id = explicit_target
+            else:
+                agent.extra_context["explicit_scope_all_blocked"] = True
+                agent.extra_context["explicit_scope_blocked_task_ids"] = list(explicit_task_ids)
+                agent.extra_context["explicit_scope_block_reason"] = block_reason
 
-            if block_reason == "all_completed":
-                return None, "explicit_task_scope_completed"
-            return None, "explicit_task_scope_blocked"
+                if block_reason == "all_completed":
+                    return None, "explicit_task_scope_completed"
+                return None, "explicit_task_scope_blocked"
 
         agent.extra_context.pop("explicit_scope_all_blocked", None)
         agent.extra_context.pop("explicit_scope_blocked_task_ids", None)
