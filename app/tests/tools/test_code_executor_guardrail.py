@@ -39,6 +39,8 @@ from tool_box.tools_impl.code_executor import (
     _resolve_setting_sources,
     _sanitize_task_dir_component,
     _iter_stream_lines_unbounded,
+    _is_qwen_container_infrastructure_error,
+    _qwen_infrastructure_fallback_allowed,
     _looks_like_engineering_task,
     _execute_task_locally,
     _resolve_code_executor_backend,
@@ -155,6 +157,20 @@ def test_build_cli_failure_error_prefers_real_qwen_stderr_over_debug_banner() ->
     assert message.startswith("Qwen Code execution failed:")
     assert "stderr=Error: Session Id abc is already in use." in message
     assert "debug_log=" not in message
+
+
+def test_qwen_container_infrastructure_error_detects_container_loss() -> None:
+    stderr = "Error response from daemon: No such container: gagent-qc-agent-session-abc"
+
+    assert _is_qwen_container_infrastructure_error(stderr)
+
+
+def test_qwen_infrastructure_fallback_allowed_only_for_auto_routing() -> None:
+    assert _qwen_infrastructure_fallback_allowed("qwen_primary", "code task routed to qwen_code primary lane")
+    assert not _qwen_infrastructure_fallback_allowed(
+        "configured_backend",
+        "CODE_EXECUTION_BACKEND=qwen_code",
+    )
 
 
 def test_extract_readable_error_does_not_default_http_400_to_missing_api_key() -> None:
@@ -1130,16 +1146,15 @@ def test_code_executor_qwen_container_mounts_allowed_dirs_and_passes_session_id(
     assert (str(extra_dir), str(extra_dir)) in mounts
 
     command = captured["command"]
-    assert command[:8] == [
+    assert command[:4] == [
         "docker",
         "exec",
         "-e",
         "PATH=/opt/conda/bin:/opt/conda/condabin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-        "-w",
-        captured["host_work_dir"],
-        "test-container",
-        "/opt/conda/bin/qwen",
     ]
+    assert command[command.index("-w") + 1] == captured["host_work_dir"]
+    assert "test-container" in command
+    assert "/opt/conda/bin/qwen" in command
     assert "--session-id" in command
     assert command[command.index("--session-id") + 1] == _build_qwen_execution_session_id(
         "chat-xyz",
@@ -2091,3 +2106,64 @@ def test_engineering_task_matcher_ignores_analysis_like_requests(task_text: str)
 )
 def test_engineering_task_matcher_detects_engineering_requests(task_text: str) -> None:
     assert _looks_like_engineering_task(task_text) is True
+
+
+def test_resolved_resources_are_re_resolved_from_registry() -> None:
+    from tool_box.tools_impl.code_executor import (
+        _build_cli_task_contract,
+        _normalize_resolved_resources,
+        _resource_read_dirs,
+        code_executor_tool,
+    )
+
+    malicious = {
+        "phagescope.sequence_corpus": {
+            "root": "/etc",
+            "resolved_root": "/etc",
+            "required_paths": ["/etc"],
+        }
+    }
+
+    normalized = _normalize_resolved_resources(malicious)
+    dirs = _resource_read_dirs(normalized)
+
+    assert not any(path == "/etc" or path.startswith("/etc/") for path in dirs)
+    assert any(path.endswith("/phagescope") for path in dirs)
+    assert any(path.endswith("/phage_fasta") for path in dirs)
+    assert "resolved_resources" not in code_executor_tool["parameters"]["properties"]
+
+    prompt = _build_cli_task_contract(
+        "Run k-mer smoke",
+        {
+            "task_id": 15,
+            "task_name": "kmer",
+            "task_instruction": "Use PhageScope corpus",
+            "acceptance_criteria": {"checks": []},
+        },
+        normalized,
+    )
+    assert "Available external resources" in prompt
+    assert "phage_fasta" in prompt
+    assert "tarfile.open" in prompt
+
+
+
+def test_build_cli_task_contract_includes_artifact_schema_guidance() -> None:
+    from tool_box.tools_impl.code_executor import _build_cli_task_contract
+
+    prompt = _build_cli_task_contract(
+        "Generate kmer matrix",
+        {
+            "task_id": 15,
+            "task_name": "Extract k-mer Frequency Profiles",
+            "task_instruction": "Create features/kmer_46.npz",
+            "artifact_contract": {"publishes": ["phage_ml.kmer_features_npz"]},
+            "acceptance_criteria": {"checks": [{"type": "file_nonempty", "path": "features/kmer_46.npz"}]},
+        },
+    )
+
+    assert "Expected artifact schemas" in prompt
+    assert "phage_ml.kmer_features_npz" in prompt
+    assert "sparse_npz" in prompt
+    assert "scipy.sparse.save_npz" in prompt
+    assert "non-zero" in prompt

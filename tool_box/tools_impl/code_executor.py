@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Optional, Callable, Awaitable, Sequence
 import asyncio
 from uuid import uuid4
+from app.services.plans.artifact_validation import get_artifact_validation_prompt_specs
 from app.services.plans.acceptance_criteria import (
     derive_acceptance_criteria_from_text,
     derive_relative_output_dirs,
@@ -29,6 +30,7 @@ from app.services.plans.acceptance_criteria import (
 from app.services.plans.decomposition_jobs import get_current_job, log_job_event
 from app.services.session_paths import get_runtime_root, get_runtime_session_dir
 from app.services.path_router import get_path_router
+from app.services.resources.resource_registry import resolve_resources as _resolve_registered_resources
 from app.config.executor_config import (
     DEFAULT_CODE_EXECUTION_DOCKER_IMAGE,
     DEFAULT_CODE_EXECUTION_LOCAL_RUNTIME,
@@ -965,6 +967,28 @@ def _is_qwen_session_in_use_error(stderr_text: Any) -> bool:
     return "session id" in text and "already in use" in text
 
 
+def _is_qwen_container_infrastructure_error(stderr_text: Any, stdout_text: Any = "") -> bool:
+    """Return True for qwen Docker/container failures that are safe to retry elsewhere."""
+    text = f"{stderr_text or ''}\n{stdout_text or ''}".lower()
+    patterns = (
+        "no such container",
+        "container is not running",
+        "cannot connect to the docker daemon",
+        "error response from daemon",
+        "context deadline exceeded",
+    )
+    return any(pattern in text for pattern in patterns)
+
+
+def _qwen_infrastructure_fallback_allowed(execution_lane: str, execution_lane_reason: str) -> bool:
+    """Only auto-fallback when qwen was selected by auto-routing, not explicit config."""
+    lane = str(execution_lane or "").strip().lower()
+    reason = str(execution_lane_reason or "").strip().lower()
+    if lane == "configured_backend" or "code_execution_backend=qwen_code" in reason:
+        return False
+    return True
+
+
 def _qwen_code_cli_available() -> bool:
     if shutil.which("qwen") is None:
         return False
@@ -1026,9 +1050,10 @@ def _build_qwen_code_command(
     qwen_session_id: Optional[str] = None,
     task_subdirs: Sequence[str] = _DEFAULT_TASK_SUBDIRECTORIES,
     execution_spec: Optional[Dict[str, Any]] = None,
+    resolved_resources: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> List[str]:
     """Build the ``qwen`` CLI command for non-interactive prompt execution."""
-    task_text = _build_cli_task_contract(task, execution_spec)
+    task_text = _build_cli_task_contract(task, execution_spec, resolved_resources)
     writable_dirs = [name for name in task_subdirs if str(name).strip().lower() != "code"]
     try:
         from app.config.executor_config import get_executor_settings as _get_settings
@@ -1253,9 +1278,132 @@ def _format_cli_acceptance_checks(criteria: Optional[Dict[str, Any]]) -> List[st
     return formatted
 
 
+
+def _normalize_resolved_resources(value: Any) -> Dict[str, Dict[str, Any]]:
+    """Normalize resource context by re-resolving IDs through the trusted registry.
+
+    ``resolved_resources`` is an orchestration field, but tool parameters can be
+    produced by an LLM. Never trust caller-provided paths here; only resource IDs
+    are accepted and paths/hints are rebuilt from the registry.
+    """
+    if not isinstance(value, dict):
+        return {}
+    resource_ids = [str(raw_id or "").strip() for raw_id in value.keys() if str(raw_id or "").strip()]
+    resolved, missing = _resolve_registered_resources(resource_ids)
+    if missing:
+        logger.warning("Ignoring unresolved code_executor resource IDs: %s", missing)
+    return resolved
+
+
+def _resource_read_dirs(resolved_resources: Dict[str, Dict[str, Any]]) -> List[str]:
+    dirs: List[str] = []
+    seen: set[str] = set()
+    for info in resolved_resources.values():
+        candidates: List[Any] = [info.get("root"), info.get("resolved_root")]
+        required_paths = info.get("required_paths")
+        if isinstance(required_paths, list):
+            candidates.extend(required_paths)
+        for raw_path in candidates:
+            token = str(raw_path or "").strip()
+            if not token or token in seen:
+                continue
+            try:
+                path = Path(token).absolute()
+                if not path.exists() or not path.is_dir():
+                    continue
+            except OSError:
+                continue
+            text = str(path)
+            if text not in seen:
+                seen.add(text)
+                dirs.append(text)
+    return dirs
+
+
+def _format_resolved_resources_for_prompt(resolved_resources: Dict[str, Dict[str, Any]]) -> str:
+    if not resolved_resources:
+        return ""
+    lines: List[str] = ["", "Available external resources:"]
+    for resource_id, info in sorted(resolved_resources.items()):
+        name = str(info.get("name") or resource_id).strip()
+        root = str(info.get("root") or "").strip()
+        resolved_root = str(info.get("resolved_root") or "").strip()
+        lines.append(f"- resource:{resource_id} ({name})")
+        if root:
+            lines.append(f"  root: {root}")
+        if resolved_root and resolved_root != root:
+            lines.append(f"  resolved_root: {resolved_root}")
+        required_paths = info.get("required_paths")
+        if isinstance(required_paths, list) and required_paths:
+            lines.append("  required paths:")
+            for path in required_paths[:8]:
+                lines.append(f"    - {path}")
+        hints = info.get("format_hints")
+        if isinstance(hints, list) and hints:
+            lines.append("  format hints:")
+            for hint in hints[:8]:
+                lines.append(f"    - {hint}")
+        metadata = info.get("metadata")
+        if isinstance(metadata, dict):
+            primary = str(metadata.get("primary_subdir") or "").strip()
+            file_glob = str(metadata.get("file_glob") or "").strip()
+            if primary:
+                lines.append(f"  primary_subdir: {primary}")
+            if file_glob:
+                lines.append(f"  file_glob: {file_glob}")
+    return "\n".join(lines)
+
+
+_SUPERVISED_ML_PROMPT_ALIASES = {
+    "ml_traditional.validation_metrics_json",
+    "ml_traditional.model_checkpoints_dir",
+    "phage_ml.cv_metrics_json",
+    "phage_ml.trained_models_dir",
+    "phage_ml.training_metadata_parquet",
+    "phage_ml.feature_row_ids_json",
+    "phage_ml.label_alignment_json",
+}
+
+
+def _format_supervised_ml_contract_for_prompt(
+    artifact_contract: Optional[Dict[str, Any]],
+    resolved_inputs: Optional[Dict[str, str]],
+) -> str:
+    if not isinstance(artifact_contract, dict):
+        return ""
+    aliases = {
+        str(item).strip()
+        for item in [
+            *(artifact_contract.get("requires") or []),
+            *(artifact_contract.get("publishes") or []),
+        ]
+        if str(item).strip()
+    }
+    if not aliases.intersection(_SUPERVISED_ML_PROMPT_ALIASES):
+        return ""
+    resolved = resolved_inputs if isinstance(resolved_inputs, dict) else {}
+    lines = [
+        "",
+        "Supervised ML contract requirements:",
+        "- Use only real labels from required label/metadata artifacts. Do NOT synthesize, randomize, balance-fabricate, or dummy-generate labels.",
+        "- Align labels to feature rows using the required row-id/alignment artifacts; if alignment cannot be proven, fail explicitly instead of training.",
+        "- Metrics must record label_source, label_alignment, and training_samples so downstream verification can audit provenance.",
+    ]
+    for alias in ("phage_ml.training_metadata_parquet", "phage_ml.feature_row_ids_json"):
+        if alias in aliases:
+            path = str(resolved.get(alias) or "").strip()
+            if path:
+                lines.append(f"- Required supervised input {alias}: {path}")
+            else:
+                lines.append(f"- Required supervised input {alias} must resolve before valid training; report BLOCKED_DEPENDENCY if unavailable.")
+    if "phage_ml.label_alignment_json" in aliases:
+        lines.append("- Publish phage_ml.label_alignment_json with real label provenance and row-alignment evidence.")
+    return "\n".join(lines)
+
 def _build_cli_task_contract(
     task: str,
     execution_spec: Optional[Dict[str, Any]],
+    resolved_resources: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> str:
     task_text = str(task or "").strip()
     if not isinstance(execution_spec, dict):
@@ -1296,6 +1444,29 @@ def _build_cli_task_contract(
             else:
                 lines.append(f"- {dep_name} [{dep_status}]")
 
+    artifact_contract = execution_spec.get("artifact_contract")
+    if isinstance(artifact_contract, dict):
+        requires = [str(item).strip() for item in artifact_contract.get("requires") or [] if str(item).strip()]
+        publishes = [str(item).strip() for item in artifact_contract.get("publishes") or [] if str(item).strip()]
+        if requires or publishes:
+            lines.extend(["", "Artifact contract aliases:"])
+            if requires:
+                lines.append("- requires: " + ", ".join(requires))
+            if publishes:
+                lines.append("- publishes: " + ", ".join(publishes))
+    resolved_inputs = execution_spec.get("resolved_input_artifacts")
+    if isinstance(resolved_inputs, dict) and resolved_inputs:
+        lines.extend(["", "Resolved required input artifacts:"])
+        for alias, path in list(resolved_inputs.items())[:12]:
+            lines.append(f"- {alias}: {path}")
+    dependency_paths = execution_spec.get("dependency_artifact_paths")
+    if isinstance(dependency_paths, list) and dependency_paths:
+        lines.extend(["", "Dependency artifact paths:"])
+        for path in dependency_paths[:12]:
+            text = str(path or "").strip()
+            if text:
+                lines.append(f"- {text}")
+
     formatted_checks = _format_cli_acceptance_checks(
         execution_spec.get("acceptance_criteria")
     )
@@ -1306,6 +1477,28 @@ def _build_cli_task_contract(
             "- The plan contract is authoritative: required deliverables must match these criteria exactly.",
             "- Extra outputs are allowed, but they do NOT substitute for missing required outputs.",
         ])
+
+    artifact_contract = execution_spec.get("artifact_contract")
+    publishes = artifact_contract.get("publishes") if isinstance(artifact_contract, dict) else None
+    schema_specs = get_artifact_validation_prompt_specs(publishes or [])
+    if schema_specs:
+        lines.extend(["", "Expected artifact schemas:"])
+        for alias, spec in sorted(schema_specs.items()):
+            lines.append(f"- {alias}: {json.dumps(spec, ensure_ascii=False)}")
+        lines.extend([
+            "- These schemas are authoritative: artifacts must be structurally loadable, not merely present/non-empty.",
+            "- For sparse_npz outputs, write a SciPy sparse matrix using scipy.sparse.save_npz and ensure shape rows/columns are non-zero.",
+            "- For numpy_npy outputs, write a non-empty NumPy array with numpy.save.",
+            "- For directory_glob outputs, create the directory and at least the required checkpoint/metric files inside it.",
+        ])
+
+    supervised_text = _format_supervised_ml_contract_for_prompt(artifact_contract, resolved_inputs if isinstance(resolved_inputs, dict) else {})
+    if supervised_text:
+        lines.append(supervised_text)
+
+    resource_text = _format_resolved_resources_for_prompt(resolved_resources or {})
+    if resource_text:
+        lines.append(resource_text)
 
     return "\n".join(lines).strip() or task_text
 
@@ -1329,6 +1522,7 @@ def _format_contract_diff_for_cli(contract_diff: Optional[Dict[str, Any]]) -> st
     for label, key in (
         ("Expected deliverables", "expected_deliverables"),
         ("Missing required outputs", "missing_required_outputs"),
+        ("Invalid artifacts", "invalid_artifacts"),
         ("Wrong-format outputs", "wrong_format_outputs"),
         ("Unexpected extra outputs", "unexpected_outputs"),
         ("Actual outputs observed", "actual_outputs"),
@@ -2041,6 +2235,11 @@ def _build_execution_spec(
     try:
         from app.routers.chat.code_executor_helpers import extract_task_artifact_paths
         from app.routers.chat.services import plan_repository
+        from app.services.plans.artifact_contracts import (
+            load_artifact_manifest,
+            resolve_artifact_contract_with_provenance,
+            resolve_manifest_aliases,
+        )
     except Exception as exc:
         logger.warning("Failed to load plan-aware execution context: %s", exc)
         return None
@@ -2055,10 +2254,26 @@ def _build_execution_spec(
         return None
 
     node = tree.get_node(int(task_id))
+    node_metadata = node.metadata if isinstance(getattr(node, "metadata", None), dict) else {}
+    artifact_contract = resolve_artifact_contract_with_provenance(
+        task_name=str(node.display_name()).strip(),
+        instruction=str(getattr(node, "instruction", "") or ""),
+        metadata=node_metadata,
+    ).as_contract_dict()
+    manifest = load_artifact_manifest(int(plan_id))
+    resolved_input_artifacts = resolve_manifest_aliases(
+        manifest,
+        list(artifact_contract.get("requires") or []),
+    )
     dependency_outputs: List[Dict[str, Any]] = []
     dependency_artifact_paths: List[str] = []
     dependency_blockers: List[Dict[str, Any]] = []
     seen_paths: set[str] = set()
+    for path in resolved_input_artifacts.values():
+        text = str(path or "").strip()
+        if text and text not in seen_paths:
+            seen_paths.add(text)
+            dependency_artifact_paths.append(text)
 
     for dep_id in list(getattr(node, "dependencies", []) or []):
         try:
@@ -2093,6 +2308,8 @@ def _build_execution_spec(
         "task_name": str(node.display_name()).strip(),
         "task_instruction": str(getattr(node, "instruction", "") or "").strip(),
         "acceptance_criteria": _extract_acceptance_criteria_from_node(node),
+        "artifact_contract": artifact_contract,
+        "resolved_input_artifacts": resolved_input_artifacts,
         "dependency_outputs": dependency_outputs,
         "dependency_artifact_paths": dependency_artifact_paths,
         "dependency_blockers": dependency_blockers,
@@ -2130,6 +2347,7 @@ async def _execute_task_locally(
     auto_fix: bool = True,
     session_dir: Optional[str] = None,
     execution_spec: Optional[Dict[str, Any]] = None,
+    resolved_resources: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Execute a task using the unified local code execution backend.
 
@@ -2201,6 +2419,9 @@ async def _execute_task_locally(
                 )
     if data_dir:
         task_desc += f"\nPrimary data directory: {data_dir}"
+    resource_text = _format_resolved_resources_for_prompt(resolved_resources or {})
+    if resource_text:
+        task_desc += "\n" + resource_text
     if execution_spec and execution_spec.get("dependency_artifact_paths"):
         dependency_paths = execution_spec.get("dependency_artifact_paths") or []
         task_desc += (
@@ -2235,6 +2456,9 @@ async def _execute_task_locally(
     await _report("running", f"Executing generated code via {effective_runtime_mode} runtime")
     structured_spec = None
     if execution_spec:
+        metadata = dict(execution_spec.get("metadata") or {})
+        if resolved_resources:
+            metadata["resolved_resources"] = resolved_resources
         structured_spec = CodeExecutionSpec(
             plan_id=execution_spec.get("plan_id"),
             task_id=execution_spec.get("task_id"),
@@ -2243,6 +2467,7 @@ async def _execute_task_locally(
             acceptance_criteria=execution_spec.get("acceptance_criteria"),
             dependency_outputs=list(execution_spec.get("dependency_outputs") or []),
             dependency_artifact_paths=list(execution_spec.get("dependency_artifact_paths") or []),
+            metadata=metadata,
         )
     try:
         from app.config.executor_config import get_executor_settings as _get_exec_settings
@@ -2360,6 +2585,7 @@ async def code_executor_handler(
     on_stderr: Optional[Callable[[str], Awaitable[None]]] = None,
     tool_context: Optional[Any] = None,
     auto_fix: bool = True,
+    resolved_resources: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Execute a task using Claude Code (official CLI) with local file access.
@@ -2525,6 +2751,8 @@ async def code_executor_handler(
                 "task": task,
             }
         normalized_add_dirs = _normalize_csv_values(add_dirs)
+        normalized_resources = _normalize_resolved_resources(resolved_resources)
+        resource_add_dirs = _resource_read_dirs(normalized_resources)
         # Process additional directories to allow access, convert to absolute paths
         allowed_dirs = []
         resolved_add_dirs: List[str] = []
@@ -2578,6 +2806,13 @@ async def code_executor_handler(
                     if resolved_str not in allowed_dirs:
                         allowed_dirs.append(resolved_str)
 
+        for resource_dir in resource_add_dirs:
+            if resource_dir not in allowed_dirs:
+                allowed_dirs.append(resource_dir)
+                logger.info("Auto-added resolved resource directory: %s", resource_dir)
+            if resource_dir not in resolved_add_dirs:
+                resolved_add_dirs.append(resource_dir)
+
         inferred_task_dirs = _extract_task_referenced_read_dirs(
             task,
             execution_spec=execution_spec,
@@ -2603,7 +2838,7 @@ async def code_executor_handler(
         elif not resolved_add_dirs and default_data_dir.exists():
             local_data_dir = str(default_data_dir)
 
-        cli_task = _build_cli_task_contract(task, execution_spec)
+        cli_task = _build_cli_task_contract(task, execution_spec, normalized_resources)
 
         if use_local_backend:
             local_result = await _execute_task_locally(
@@ -2616,6 +2851,7 @@ async def code_executor_handler(
                 auto_fix=auto_fix,
                 session_dir=str(session_dir),
                 execution_spec=execution_spec,
+                resolved_resources=normalized_resources,
             )
             produced_files = _collect_run_artifacts(
                 run_dir=task_work_dir,
@@ -2703,6 +2939,9 @@ async def code_executor_handler(
                 result_payload["docker_image_effective"] = local_result.get("docker_image_effective")
             if "runtime_failure" in local_result:
                 result_payload["runtime_failure"] = bool(local_result.get("runtime_failure"))
+            for key in ("error_category", "error_summary", "fix_guidance"):
+                if key in local_result and local_result.get(key) is not None:
+                    result_payload[key] = local_result.get(key)
             for key in (
                 "execution_status",
                 "verification_status",
@@ -2785,6 +3024,7 @@ async def code_executor_handler(
                     qwen_session_id=_qwen_session_id,
                     task_subdirs=task_subdirs,
                     execution_spec=execution_spec,
+                    resolved_resources=normalized_resources,
                 )
                 # Wrap with docker exec if running inside a container
                 if _docker_container_name:
@@ -2792,17 +3032,33 @@ async def code_executor_handler(
                         CONTAINER_EXEC_PATH,
                         QWEN_EXECUTABLE,
                     )
-
-                    return [
+                    docker_exec_cmd = [
                         "docker",
                         "exec",
                         "-e",
                         f"PATH={CONTAINER_EXEC_PATH}",
+                    ]
+                    # The project .env may contain host-local proxy settings such
+                    # as 127.0.0.1:7890. Inside the qwen_code container that
+                    # address points at the container itself and breaks Node/OpenAI
+                    # fetches. Clear proxy variables for the qwen process while
+                    # preserving the container's OPENAI_* credentials.
+                    for _proxy_key in (
+                        "HTTP_PROXY",
+                        "HTTPS_PROXY",
+                        "ALL_PROXY",
+                        "http_proxy",
+                        "https_proxy",
+                        "all_proxy",
+                    ):
+                        docker_exec_cmd.extend(["-e", f"{_proxy_key}="])
+                    docker_exec_cmd.extend([
                         "-w",
                         str(task_work_dir),
                         _docker_container_name,
                         QWEN_EXECUTABLE,
-                    ] + bare_cmd[1:]
+                    ])
+                    return docker_exec_cmd + bare_cmd[1:]
                 return bare_cmd
             cmd = _rebuild_cli_command(task)
             _cli_label = "Qwen Code"
@@ -2895,7 +3151,7 @@ async def code_executor_handler(
                 f"{allowed_dirs_info}"
             )
             def _rebuild_cli_command(task_override: str) -> List[str]:
-                cli_task_override = _build_cli_task_contract(task_override, execution_spec)
+                cli_task_override = _build_cli_task_contract(task_override, execution_spec, normalized_resources)
                 enhanced_task_override = (
                     f"[ATOMIC TASK]\n"
                     f"Execute only the task below. Do not broaden scope or create extra tasks.\n"
@@ -3153,6 +3409,53 @@ async def code_executor_handler(
             if blocked_detail:
                 success = False
 
+            qwen_infra_failure_detected = (
+                use_qwen_code_backend
+                and not success
+                and _is_qwen_container_infrastructure_error(stderr, stdout)
+            )
+            qwen_infra_fallback_used = False
+            if qwen_infra_failure_detected and _qwen_infrastructure_fallback_allowed(execution_lane, execution_lane_reason):
+                logger.warning(
+                    "[CODE_EXECUTOR_FALLBACK] qwen_code infrastructure failure detected; "
+                    "retrying task with local executor (session=%s run=%s)",
+                    effective_execution_session_id,
+                    run_id,
+                )
+                if log_file:
+                    try:
+                        async with log_lock:
+                            log_file.write(
+                                f"[{datetime.utcnow().isoformat()}Z] "
+                                "qwen_code infrastructure failure detected; retrying with local executor\n"
+                            )
+                            log_file.flush()
+                    except Exception:
+                        pass
+                local_result = await _execute_task_locally(
+                    task=task,
+                    work_dir=str(task_work_dir),
+                    data_dir=local_data_dir,
+                    extra_dirs=allowed_dirs,
+                    docker_image=docker_image,
+                    tool_context=tool_context,
+                    auto_fix=auto_fix,
+                    session_dir=str(session_dir),
+                    execution_spec=execution_spec,
+                    resolved_resources=normalized_resources,
+                )
+                fallback_stdout = str(local_result.get("stdout") or "")
+                fallback_stderr = str(local_result.get("stderr") or "")
+                stdout = (stdout + "\n" if stdout else "") + "[fallback:local] " + fallback_stdout
+                stderr = (stderr + "\n" if stderr else "") + fallback_stderr
+                return_code = int(local_result.get("exit_code", 0 if local_result.get("success") else 1) or 0)
+                success = bool(local_result.get("success", False))
+                qwen_infra_fallback_used = True
+                output_data = local_result.get("output_data") or output_data
+                blocked_detail = _detect_scope_blocked(stdout, output_data)
+                if blocked_detail:
+                    success = False
+
             produced_files = _collect_run_artifacts(run_dir=task_work_dir, subdirs=task_subdirs)
 
             # --- Promote results to unified output directory ---
@@ -3366,6 +3669,17 @@ async def code_executor_handler(
                 "repair_attempts": repair_attempts,
                 "plan_patch_suggestion": plan_patch_suggestion,
             }
+        if "qwen_infra_failure_detected" in locals() and qwen_infra_failure_detected and not qwen_infra_fallback_used:
+            result_payload["runtime_failure"] = True
+            result_payload["error_category"] = "executor_infrastructure"
+            result_payload["error_summary"] = _extract_readable_error(stderr) or "qwen_code container infrastructure failure"
+        if "local_result" in locals() and qwen_infra_fallback_used:
+            result_payload["fallback_used"] = True
+            result_payload["fallback_backend"] = str(local_result.get("execution_backend") or local_result.get("execution_mode") or "local")
+            result_payload["fallback_reason"] = "qwen_code_container_infrastructure_failure"
+            for key in ("docker_image_effective", "runtime_failure", "error_category", "error_summary", "fix_guidance"):
+                if key in local_result and local_result.get(key) is not None and key not in result_payload:
+                    result_payload[key] = local_result.get(key)
         if contract_error_summary:
             result_payload["error_category"] = "acceptance_criteria_failed"
             result_payload["error_summary"] = contract_error_summary
