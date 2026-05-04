@@ -9,7 +9,7 @@ import logging
 import os
 import shutil
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from tool_box.context import ToolContext
 from tool_box.path_resolution import resolve_tool_path_str
@@ -19,6 +19,8 @@ logger = logging.getLogger(__name__)
 # Security configuration
 MAX_READ_CHARS = 100_000   # 100K character cap (~25K-50K tokens)
 MAX_READ_LINES = 2_000     # 2K line cap (covers most source files)
+MAX_READ_FILE_BYTES = 50 * 1024 * 1024
+MAX_COPY_MOVE_FILE_BYTES = 500 * 1024 * 1024
 
 
 def _redirect_session_workspace_path(
@@ -86,9 +88,16 @@ def _normalize_allowed_base_paths() -> List[str]:
         cwd / "runtime",  # Runtime directory
     ]
 
+    extra_paths: List[Path] = []
+    raw_extra = os.getenv("FILE_OPERATIONS_ALLOWED_BASE_PATHS", "")
+    for part in raw_extra.split(os.pathsep):
+        value = part.strip()
+        if value:
+            extra_paths.append(Path(os.path.expanduser(value)))
+
     normalized: List[str] = []
     seen: set[str] = set()
-    for path in defaults:
+    for path in [*defaults, *extra_paths]:
         variants = [path]
         try:
             variants.append(path.resolve())
@@ -112,7 +121,7 @@ def _path_is_within(candidate: Path, base: Path) -> bool:
         return False
 
 
-def _validate_path_security(file_path: str) -> tuple[bool, str]:
+def _validate_path_security(file_path: str, *, enforce_file_size_limit: bool = False) -> Tuple[bool, str]:
     """
     Validate file path for security
 
@@ -139,9 +148,10 @@ def _validate_path_security(file_path: str) -> tuple[bool, str]:
                 break
         
         if is_in_allowed:
-            # Path is explicitly allowed, only check file size
-            if resolved_abs.exists() and resolved_abs.is_file():
-                if resolved_abs.stat().st_size > 50 * 1024 * 1024:  # 50MB limit
+            # Size limits are only for read-like operations. Copy/move of large
+            # binary artifacts must remain possible inside allowed workspaces.
+            if enforce_file_size_limit and resolved_abs.exists() and resolved_abs.is_file():
+                if resolved_abs.stat().st_size > MAX_READ_FILE_BYTES:
                     return False, "File too large (>50MB)"
             return True, ""
 
@@ -166,13 +176,23 @@ def _validate_path_security(file_path: str) -> tuple[bool, str]:
             if _path_is_within(resolved_abs, Path(dangerous)):
                 return False, f"Access to {dangerous} is not allowed"
 
-        # Check file size for read operations (prevent reading huge files)
-        if resolved_abs.exists() and resolved_abs.is_file():
+        # Check file size only for read-like operations (prevent dumping huge files).
+        if enforce_file_size_limit and resolved_abs.exists() and resolved_abs.is_file():
             if resolved_abs.stat().st_size > 50 * 1024 * 1024:  # 50MB limit
                 return False, "File too large (>50MB)"
 
         return True, ""
 
+    except Exception as e:
+        return False, f"Path validation error: {str(e)}"
+
+
+def _validate_copy_move_size(file_path: str) -> Tuple[bool, str]:
+    try:
+        path = Path(file_path).expanduser().resolve(strict=False)
+        if path.exists() and path.is_file() and path.stat().st_size > MAX_COPY_MOVE_FILE_BYTES:
+            return False, "File too large for copy/move (>500MB)"
+        return True, ""
     except Exception as e:
         return False, f"Path validation error: {str(e)}"
 
@@ -442,6 +462,15 @@ async def _copy_path(source: str, destination: str) -> Dict[str, Any]:
                 "success": False,
                 "error": f"Source security violation: {error_msg_src}",
             }
+        is_size_safe, size_error = _validate_copy_move_size(source)
+        if not is_size_safe:
+            return {
+                "operation": "copy",
+                "source": source,
+                "destination": destination,
+                "success": False,
+                "error": f"Source security violation: {size_error}",
+            }
 
         is_safe_dest, error_msg_dest = _validate_path_security(destination)
         if not is_safe_dest:
@@ -491,6 +520,15 @@ async def _move_path(source: str, destination: str) -> Dict[str, Any]:
                 "destination": destination,
                 "success": False,
                 "error": f"Source security violation: {error_msg_src}",
+            }
+        is_size_safe, size_error = _validate_copy_move_size(source)
+        if not is_size_safe:
+            return {
+                "operation": "move",
+                "source": source,
+                "destination": destination,
+                "success": False,
+                "error": f"Source security violation: {size_error}",
             }
 
         is_safe_dest, error_msg_dest = _validate_path_security(destination)
