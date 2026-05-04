@@ -26,12 +26,14 @@ from .acceptance_criteria import (
 from .artifact_contracts import (
     artifact_path_matches_alias,
     artifact_manifest_path,
+    candidate_filenames_for_alias,
     infer_artifact_contract,
     is_artifact_alias,
     load_artifact_manifest,
     resolve_artifact_contract_with_provenance,
     resolve_manifest_aliases,
 )
+from .artifact_validation import validate_artifact
 from .plan_models import PlanNode
 
 logger = logging.getLogger(__name__)
@@ -125,6 +127,52 @@ _SEMANTIC_TOPIC_ALIASES = {
         "prospect",
         "prospects",
     },
+}
+
+
+_SOURCE_DISCOVERY_POSITIVE_CUES = {
+    "locate",
+    "located",
+    "find",
+    "found",
+    "search",
+    "inventory",
+    "catalog",
+    "catalogue",
+    "list",
+    "verify presence",
+    "confirm presence",
+}
+_SOURCE_DISCOVERY_CONTEXT_CUES = {
+    "existing",
+    "pre-existing",
+    "preexisting",
+    "source",
+    "input",
+    "reuse",
+    "reusable",
+    "already generated",
+    "already exists",
+}
+_SOURCE_DISCOVERY_LINE_FOUND_CUES = {
+    "found",
+    "exists",
+    "present",
+    "located",
+    "available",
+}
+_SOURCE_DISCOVERY_LINE_MISSING_CUES = {
+    "not found",
+    "missing",
+    "does not exist",
+    "doesn't exist",
+    "absent",
+    "unavailable",
+}
+_SOURCE_DISCOVERY_PATH_CHECKS = {
+    "file_exists",
+    "file_nonempty",
+    "pdf_valid",
 }
 
 
@@ -302,6 +350,75 @@ class TaskVerificationService:
             if plan_patch_suggestion:
                 metadata["plan_patch_suggestion"] = plan_patch_suggestion
                 verification["plan_patch_suggestion"] = plan_patch_suggestion
+        artifact_schema_results = self._validate_published_artifact_schemas(
+            node=node,
+            artifact_paths=local_artifact_paths,
+            base_dir=base_dir,
+        )
+        schema_failures = [
+            result for result in artifact_schema_results.values()
+            if not bool(result.get("validated") and result.get("schema_valid"))
+        ]
+        if schema_failures and verification_status == "passed":
+            failures.extend(
+                {
+                    "type": "artifact_schema",
+                    "success": False,
+                    "path": result.get("path"),
+                    "alias": result.get("alias"),
+                    "message": result.get("failure_reason") or "Artifact schema validation failed.",
+                }
+                for result in schema_failures
+            )
+            verification_status = "failed"
+            metadata["verification_status"] = verification_status
+            metadata["failure_kind"] = "contract_mismatch"
+            verification["status"] = verification_status
+            verification["failures"] = failures
+            verification["checks_total"] = int(verification.get("checks_total") or checks_executed) + len(schema_failures)
+            verification["checks_passed"] = checks_passed
+        if schema_failures:
+            if contract_diff is None:
+                contract_diff = self._build_contract_diff(
+                    criteria=effective_criteria,
+                    failures=failures,
+                    artifact_paths=local_artifact_paths,
+                    base_dir=base_dir,
+                )
+            invalid_outputs = contract_diff.setdefault("invalid_artifacts", [])
+            for result in schema_failures:
+                label = str(result.get("path") or result.get("alias") or "").strip()
+                reason = str(result.get("failure_reason") or "schema validation failed").strip()
+                if label:
+                    invalid_outputs.append(f"{label}: {reason}")
+            metadata["contract_diff"] = contract_diff
+            verification["contract_diff"] = copy.deepcopy(contract_diff)
+            plan_patch_suggestion = self._build_plan_patch_suggestion(contract_diff)
+            if plan_patch_suggestion:
+                metadata["plan_patch_suggestion"] = plan_patch_suggestion
+                verification["plan_patch_suggestion"] = plan_patch_suggestion
+        if (
+            verification_status == "failed"
+            and self._failures_are_validated_explicit_publish_failures(
+                node=node,
+                failures=failures,
+                artifact_schema_results=artifact_schema_results,
+            )
+        ):
+            verification_status = "passed"
+            metadata["verification_status"] = verification_status
+            metadata["artifact_contract_satisfied_verification"] = True
+            metadata.pop("failure_kind", None)
+            metadata.pop("contract_diff", None)
+            metadata.pop("plan_patch_suggestion", None)
+            verification["status"] = verification_status
+            verification["failures"] = []
+            verification["checks_passed"] = verification.get("checks_total", checks_executed)
+            verification.pop("contract_diff", None)
+            verification.pop("plan_patch_suggestion", None)
+            failures = []
+            contract_diff = None
+
         artifact_verification = self._build_artifact_verification_summary(
             criteria=effective_criteria,
             artifact_paths=local_artifact_paths,
@@ -309,10 +426,61 @@ class TaskVerificationService:
             verification_status=verification_status,
             contract_diff=contract_diff,
         )
+        if artifact_schema_results:
+            artifact_verification["schema_results"] = artifact_schema_results
+            if schema_failures and "artifact_schema_invalid" not in artifact_verification["tags"]:
+                artifact_verification["tags"].append("artifact_schema_invalid")
+        metadata["artifact_schema_validation"] = artifact_schema_results
         metadata["artifact_verification"] = artifact_verification
         metadata["verification"] = verification
         verification["artifact_verification"] = copy.deepcopy(artifact_verification)
         normalized_payload["metadata"] = metadata
+
+
+        if failures and normalized_execution_status in _COMPLETED_LIKE and not hard_failures:
+            source_discovery_verification = self._source_discovery_verification(
+                node=node,
+                criteria=effective_criteria,
+                failures=failures,
+                artifact_paths=local_artifact_paths,
+                payload=normalized_payload,
+            )
+            if isinstance(source_discovery_verification, dict) and source_discovery_verification.get("status") == "passed":
+                metadata["source_discovery_verification"] = source_discovery_verification
+                metadata["verification_overridden_by_source_discovery"] = True
+                metadata["verification_status"] = "passed"
+                metadata.pop("failure_kind", None)
+                metadata.pop("contract_diff", None)
+                metadata.pop("plan_patch_suggestion", None)
+                verification["status"] = "passed"
+                verification["source_discovery_override"] = True
+                verification["source_discovery_verification"] = copy.deepcopy(source_discovery_verification)
+                verification["failures"] = []
+                verification["checks_passed"] = verification.get("checks_total", 0)
+                artifact_summary = verification.get("artifact_verification")
+                if isinstance(artifact_summary, dict):
+                    artifact_summary["status"] = "passed"
+                    artifact_summary["tags"] = ["source_discovery_verified"]
+                    artifact_summary["source_discovery_verification"] = copy.deepcopy(source_discovery_verification)
+                    artifact_summary["missing_required_outputs"] = []
+                    artifact_summary["wrong_format_outputs"] = []
+                    artifact_summary["unexpected_outputs"] = []
+                if isinstance(metadata.get("artifact_verification"), dict):
+                    metadata["artifact_verification"] = copy.deepcopy(artifact_summary)
+                normalized_payload["metadata"] = metadata
+                normalized_payload["status"] = "completed"
+                logger.info(
+                    "[Verification] Source-discovery criteria override accepted task %s: %s",
+                    getattr(node, "id", "?"),
+                    source_discovery_verification.get("summary"),
+                )
+                return VerificationFinalization(
+                    final_status="completed",
+                    execution_status=normalized_execution_status,
+                    payload=normalized_payload,
+                    verification=verification,
+                    artifact_paths=local_artifact_paths,
+                )
 
         # When auto-derived (generated) acceptance criteria fail but the task
         # execution itself succeeded, invoke a lightweight LLM call to judge
@@ -1238,6 +1406,219 @@ class TaskVerificationService:
             return text
         return str((base_dir / text).resolve())
 
+
+    def _source_discovery_verification(
+        self,
+        *,
+        node: PlanNode,
+        criteria: Optional[Dict[str, Any]],
+        failures: Sequence[Dict[str, Any]],
+        artifact_paths: Sequence[str],
+        payload: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        """Verify source-discovery tasks by found-file evidence, not stale source paths.
+
+        A locate/search/inventory task is allowed to complete when it reports
+        where existing inputs actually live.  This intentionally does *not*
+        relax copy/generate tasks: those must still materialize their declared
+        deliverables at the requested output path.
+        """
+        if not self._looks_like_source_discovery_task(node):
+            return None
+        if not self._failures_are_source_path_checks(failures):
+            return None
+
+        expected_targets = self._source_discovery_expected_targets(criteria)
+        if not expected_targets:
+            return None
+
+        discovered_files = self._source_discovery_discovered_files(artifact_paths)
+        evidence_text = self._source_discovery_payload_text(payload)
+        evidence_lines = [line.strip() for line in evidence_text.splitlines() if line.strip()]
+
+        matched: List[Dict[str, Any]] = []
+        missing: List[str] = []
+        format_alternatives: List[Dict[str, str]] = []
+
+        for expected in expected_targets:
+            match = self._match_source_discovery_target(
+                expected,
+                discovered_files=discovered_files,
+                evidence_lines=evidence_lines,
+            )
+            if match is None:
+                missing.append(expected)
+                continue
+            matched.append(match)
+            if match.get("match_type") == "alternate_format":
+                format_alternatives.append({
+                    "expected": str(match.get("expected") or expected),
+                    "actual": str(match.get("actual") or ""),
+                })
+
+        if missing:
+            return {
+                "status": "failed",
+                "expected": expected_targets,
+                "matched": matched,
+                "missing": missing,
+            }
+
+        warnings: List[str] = []
+        if format_alternatives:
+            warnings.append(
+                "Some discovered source files use a different format than the stale acceptance criteria; downstream tasks must convert or preserve the alternate format."
+            )
+
+        return {
+            "status": "passed",
+            "summary": "source discovery found all expected file identities",
+            "expected": expected_targets,
+            "matched": matched,
+            "format_alternatives": format_alternatives,
+            "warnings": warnings,
+        }
+
+    @staticmethod
+    def _looks_like_source_discovery_task(node: PlanNode) -> bool:
+        text = "\n".join(
+            part
+            for part in (
+                str(getattr(node, "name", "") or ""),
+                str(getattr(node, "instruction", "") or ""),
+            )
+            if part
+        ).lower()
+        if not text:
+            return False
+        has_discovery_cue = any(cue in text for cue in _SOURCE_DISCOVERY_POSITIVE_CUES)
+        has_context_cue = any(cue in text for cue in _SOURCE_DISCOVERY_CONTEXT_CUES)
+        return has_discovery_cue and has_context_cue
+
+    @staticmethod
+    def _failures_are_source_path_checks(failures: Sequence[Dict[str, Any]]) -> bool:
+        if not failures:
+            return False
+        for failure in failures:
+            if not isinstance(failure, dict):
+                return False
+            check_type = str(failure.get("type") or "").strip().lower()
+            if check_type not in _SOURCE_DISCOVERY_PATH_CHECKS:
+                return False
+        return True
+
+    @staticmethod
+    def _source_discovery_expected_targets(criteria: Optional[Dict[str, Any]]) -> List[str]:
+        targets: List[str] = []
+        seen: set[str] = set()
+        checks = criteria.get("checks") if isinstance(criteria, dict) else None
+        if not isinstance(checks, list):
+            return targets
+        for raw_check in checks:
+            if not isinstance(raw_check, dict):
+                continue
+            check_type = str(raw_check.get("type") or "").strip().lower()
+            if check_type not in _SOURCE_DISCOVERY_PATH_CHECKS:
+                continue
+            candidate = str(raw_check.get("path") or "").strip()
+            if not candidate or any(token in candidate for token in ("*", "?", "[")):
+                continue
+            name = Path(candidate).name
+            if not name or "." not in name:
+                continue
+            key = name.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            targets.append(name)
+        return targets
+
+    @staticmethod
+    def _source_discovery_discovered_files(artifact_paths: Sequence[str]) -> List[Path]:
+        discovered: List[Path] = []
+        seen: set[str] = set()
+        for raw in artifact_paths:
+            path = Path(str(raw or "")).expanduser()
+            try:
+                exists = path.exists() and path.is_file()
+            except OSError:
+                exists = False
+            if not exists:
+                continue
+            try:
+                resolved = path.resolve()
+            except Exception:
+                resolved = path
+            key = str(resolved)
+            if key in seen:
+                continue
+            seen.add(key)
+            discovered.append(resolved)
+        return discovered
+
+    @staticmethod
+    def _source_discovery_payload_text(payload: Dict[str, Any]) -> str:
+        parts: List[str] = []
+        content = payload.get("content") if isinstance(payload, dict) else None
+        if isinstance(content, str) and content.strip():
+            parts.append(content)
+        metadata = payload.get("metadata") if isinstance(payload, dict) else None
+        if isinstance(metadata, dict):
+            for key in ("plot_inventory", "file_inventory", "inventory", "source_inventory"):
+                value = metadata.get(key)
+                if value is not None:
+                    try:
+                        parts.append(json.dumps(value, ensure_ascii=False))
+                    except TypeError:
+                        parts.append(str(value))
+        return "\n".join(parts)
+
+    def _match_source_discovery_target(
+        self,
+        expected: str,
+        *,
+        discovered_files: Sequence[Path],
+        evidence_lines: Sequence[str],
+    ) -> Optional[Dict[str, Any]]:
+        expected_name = Path(expected).name.lower()
+        expected_stem = Path(expected_name).stem.lower()
+        expected_suffix = Path(expected_name).suffix.lower()
+
+        for actual in discovered_files:
+            actual_name = actual.name.lower()
+            if actual_name == expected_name:
+                return {
+                    "expected": expected,
+                    "actual": str(actual),
+                    "match_type": "exact_path_artifact",
+                }
+
+        for actual in discovered_files:
+            if actual.stem.lower() == expected_stem and actual.suffix.lower() != expected_suffix:
+                return {
+                    "expected": expected,
+                    "actual": str(actual),
+                    "match_type": "alternate_format",
+                }
+
+        for line in evidence_lines:
+            lowered = line.lower()
+            if expected_name not in lowered and expected_stem not in lowered:
+                continue
+            if any(cue in lowered for cue in _SOURCE_DISCOVERY_LINE_MISSING_CUES):
+                continue
+            if any(cue in lowered for cue in _SOURCE_DISCOVERY_LINE_FOUND_CUES):
+                match_type = "text_reported_found"
+                if expected_name not in lowered:
+                    match_type = "alternate_format"
+                return {
+                    "expected": expected,
+                    "actual": line[:500],
+                    "match_type": match_type,
+                }
+
+        return None
+
     def _llm_arbitrate_verification(
         self,
         *,
@@ -2009,6 +2390,156 @@ class TaskVerificationService:
 
     def _expected_deliverables(self, criteria: Optional[Dict[str, Any]]) -> List[str]:
         return derive_expected_deliverables(criteria)
+
+    def _validate_published_artifact_schemas(
+        self,
+        *,
+        node: PlanNode,
+        artifact_paths: Sequence[str],
+        base_dir: Path,
+    ) -> Dict[str, Dict[str, Any]]:
+        contract = infer_artifact_contract(
+            task_name=node.display_name(),
+            instruction=node.instruction or "",
+            metadata=node.metadata if isinstance(node.metadata, dict) else {},
+        )
+        aliases = [str(alias).strip() for alias in contract.get("publishes", []) if str(alias).strip()]
+        if not aliases:
+            return {}
+        results: Dict[str, Dict[str, Any]] = {}
+        for alias in aliases:
+            source = self._find_artifact_path_for_alias(alias, artifact_paths, base_dir)
+            if source is None:
+                continue
+            results[alias] = validate_artifact(alias, str(source)).to_dict()
+        return results
+
+    def _find_artifact_path_for_alias(
+        self,
+        alias: str,
+        artifact_paths: Sequence[str],
+        base_dir: Path,
+    ) -> Optional[Path]:
+        candidates: List[Path] = []
+        for raw_path in artifact_paths:
+            text = str(raw_path or "").strip()
+            if not text:
+                continue
+            path = Path(text).expanduser()
+            if not path.is_absolute():
+                path = base_dir / path
+            candidates.append(path)
+
+        wanted = set(candidate_filenames_for_alias(alias))
+        for candidate in reversed(candidates):
+            if candidate.exists() and artifact_path_matches_alias(str(candidate), alias):
+                return candidate
+            if candidate.exists() and candidate.name.lower() in wanted:
+                return candidate
+
+        for candidate in reversed(candidates):
+            if not candidate.exists() or not candidate.is_dir():
+                continue
+            for basename in wanted:
+                direct = candidate / basename
+                if direct.exists() and (direct.is_file() or direct.is_dir()):
+                    return direct
+            for child in candidate.rglob("*"):
+                if child.name.lower() in wanted and (child.is_file() or child.is_dir()):
+                    return child
+        return None
+
+    def _failures_are_validated_explicit_publish_failures(
+        self,
+        *,
+        node: PlanNode,
+        failures: Sequence[Dict[str, Any]],
+        artifact_schema_results: Dict[str, Dict[str, Any]],
+    ) -> bool:
+        if not failures:
+            return False
+        provenance = resolve_artifact_contract_with_provenance(
+            task_name=node.display_name(),
+            instruction=node.instruction or "",
+            metadata=node.metadata if isinstance(node.metadata, dict) else {},
+        )
+        aliases = [
+            str(alias).strip()
+            for alias in provenance.explicit_publishes
+            if str(alias).strip()
+        ]
+        if not aliases:
+            return False
+
+        for alias in aliases:
+            result = artifact_schema_results.get(alias)
+            if not isinstance(result, dict):
+                return False
+            if not bool(result.get("validated") and result.get("schema_valid")):
+                return False
+
+        return all(
+            self._artifact_output_presence_failure_matches_alias(failure, aliases)
+            for failure in failures
+        )
+
+    @staticmethod
+    def _artifact_output_presence_failure_matches_alias(
+        failure: Dict[str, Any],
+        aliases: Sequence[str],
+    ) -> bool:
+        if not isinstance(failure, dict):
+            return False
+        allowed = {
+            "file_exists",
+            "file_nonempty",
+            "glob_count_at_least",
+            "model_metrics_valid",
+        }
+        check_type = str(failure.get("type") or "").strip()
+        if check_type not in allowed:
+            return False
+        target = str(failure.get("path") or failure.get("glob") or "").strip()
+        if not target:
+            return False
+        return any(
+            TaskVerificationService._artifact_failure_target_matches_alias(target, alias)
+            for alias in aliases
+        )
+
+    @staticmethod
+    def _artifact_failure_target_matches_alias(target: str, alias: str) -> bool:
+        target_text = str(target or "").strip()
+        alias_text = str(alias or "").strip()
+        if not target_text or not alias_text:
+            return False
+        if target_text == alias_text:
+            return True
+        if artifact_path_matches_alias(target_text, alias_text):
+            return True
+
+        normalized = target_text.replace(chr(92), "/").strip("/").lower()
+        alias_normalized = alias_text.lower()
+        if normalized == alias_normalized:
+            return True
+        padded = f"/{normalized}/"
+        for candidate in candidate_filenames_for_alias(alias_text):
+            candidate_text = str(candidate or "").replace(chr(92), "/").strip("/").lower()
+            if not candidate_text:
+                continue
+            candidate_basename = candidate_text.rsplit("/", 1)[-1]
+            if normalized == candidate_text or normalized.endswith(f"/{candidate_text}"):
+                return True
+            if f"/{candidate_text}/" in padded:
+                return True
+            if candidate_basename and (
+                normalized == candidate_basename
+                or normalized.endswith(f"/{candidate_basename}")
+                or f"/{candidate_basename}/" in padded
+            ):
+                return True
+        return False
+
 
     def _materialize_semantic_expected_deliverables(
         self,
