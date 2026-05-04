@@ -19,6 +19,7 @@ from app.config.executor_config import get_executor_settings
 from app.repository.chat_action_runs import create_action_run, fetch_action_run, update_action_run
 from app.repository.plan_storage import append_action_log_entry, update_decomposition_job_status
 from app.llm import LLMClient
+from app.services.llm.llm_service import LLMProviderError
 from app.services.foundation.settings import CHAT_HISTORY_ABS_MAX, get_settings
 from app.services.llm.decomposer_service import PlanDecomposerLLMService
 from app.services.llm.llm_service import LLMService, get_llm_service
@@ -480,6 +481,7 @@ from .code_executor_helpers import (
     normalize_csv_arg as _normalize_csv_arg_fn,
     resolve_action_placeholders as _resolve_action_placeholders_fn,
     resolve_code_executor_task_context as _resolve_code_executor_task_context_fn,
+    _explicitly_requests_completed_task_rerun as _explicitly_requests_completed_task_rerun_fn,
     resolve_placeholders_in_value as _resolve_placeholders_in_value_fn,
     resolve_previous_path as _resolve_previous_path_fn,
     summarize_amem_experiences_for_cc as _summarize_amem_experiences_for_cc_fn,
@@ -1684,6 +1686,7 @@ class StructuredChatAgent:
         self._task_verifier = TaskVerificationService()
 
     async def handle(self, user_message: str) -> AgentResult:
+        self._current_user_message = user_message
         routing_decision, _route_profile = self._resolve_request_routing(user_message)
         effective_user_message = routing_decision.effective_user_message
         self._update_routing_context(routing_decision)
@@ -1699,6 +1702,7 @@ class StructuredChatAgent:
 
     async def get_structured_response(self, user_message: str) -> LLMStructuredResponse:
         """Return the raw structured response without executing actions."""
+        self._current_user_message = user_message
         routing_decision, _route_profile = self._resolve_request_routing(user_message)
         effective_user_message = routing_decision.effective_user_message
         self._update_routing_context(routing_decision)
@@ -4234,14 +4238,34 @@ class StructuredChatAgent:
                             },
                         )
             except Exception as e:
-                logger.exception("Deep think execution failed")
+                error_message = str(e) or type(e).__name__
+                error_payload: Dict[str, Any] = {
+                    "type": "error",
+                    "error": error_message,
+                    "error_type": type(e).__name__,
+                }
+                if isinstance(e, LLMProviderError):
+                    error_payload.update(
+                        {
+                            "error_code": e.error_code,
+                            "category": e.category,
+                            "provider": e.provider,
+                            "retryable": e.retryable,
+                            "status_code": e.status_code,
+                        }
+                    )
+                logger.exception(
+                    "Deep think execution failed: %s: %s",
+                    type(e).__name__,
+                    error_message,
+                )
                 if deep_think_job_created and deep_think_job_id:
                     plan_decomposition_jobs.mark_failure(
                         deep_think_job_id,
-                        str(e),
-                        result={"error": str(e)},
+                        error_message,
+                        result={k: v for k, v in error_payload.items() if k != "type"},
                     )
-                await queue.put({"type": "error", "error": str(e)})
+                await queue.put(error_payload)
             finally:
                 if relay_task is not None:
                     relay_task.cancel()
@@ -4286,6 +4310,16 @@ class StructuredChatAgent:
                 yield out
             elif event_type == "error":
                 err_payload = {"type": "error", "message": item["error"]}
+                for key in (
+                    "error_type",
+                    "error_code",
+                    "category",
+                    "provider",
+                    "retryable",
+                    "status_code",
+                ):
+                    if key in item:
+                        err_payload[key] = item[key]
                 out = await _through_sink(err_payload)
                 yield out
             elif event_type == "result":
@@ -4872,18 +4906,50 @@ class StructuredChatAgent:
                         )
                     except Exception:
                         block_reason = "blocked_deps"
-                    self.extra_context["explicit_scope_all_blocked"] = True
-                    self.extra_context["explicit_scope_blocked_task_ids"] = list(
-                        routing_decision.explicit_task_ids
-                    )
-                    self.extra_context["explicit_scope_block_reason"] = block_reason
-                    logger.info(
-                        "[CHAT][ROUTING][EXPLICIT_SCOPE] All tasks unexecutable; "
-                        "reason=%s explicit_task_ids=%s plan_id=%s",
-                        block_reason,
-                        list(routing_decision.explicit_task_ids),
-                        self.plan_session.plan_id,
-                    )
+                    if block_reason == "all_completed" and _explicitly_requests_completed_task_rerun_fn(self):
+                        forced_task_id = None
+                        for raw_task_id in routing_decision.explicit_task_ids:
+                            try:
+                                candidate_task_id = int(raw_task_id)
+                            except (TypeError, ValueError):
+                                continue
+                            if tree.has_node(candidate_task_id) and not tree.children_ids(candidate_task_id):
+                                forced_task_id = candidate_task_id
+                                break
+                        if forced_task_id is not None:
+                            self.extra_context["current_task_id"] = int(forced_task_id)
+                            self.extra_context["task_id"] = int(forced_task_id)
+                            self.extra_context["force_rerun_completed"] = True
+                            self.extra_context.pop("pending_scope_task_ids", None)
+                            self.extra_context.pop("explicit_scope_all_blocked", None)
+                            self.extra_context.pop("explicit_scope_block_reason", None)
+                            self.extra_context.pop("explicit_scope_blocked_task_ids", None)
+                            logger.info(
+                                "[CHAT][ROUTING][EXPLICIT_SCOPE] Force-rerun completed task: "
+                                "task_id=%s plan_id=%s",
+                                forced_task_id,
+                                self.plan_session.plan_id,
+                            )
+                        else:
+                            self.extra_context["explicit_scope_all_blocked"] = True
+                            self.extra_context["explicit_scope_blocked_task_ids"] = list(
+                                routing_decision.explicit_task_ids
+                            )
+                            self.extra_context["explicit_scope_block_reason"] = block_reason
+                    else:
+                        self.extra_context["explicit_scope_all_blocked"] = True
+                        self.extra_context["explicit_scope_blocked_task_ids"] = list(
+                            routing_decision.explicit_task_ids
+                        )
+                        self.extra_context["explicit_scope_block_reason"] = block_reason
+                    if self.extra_context.get("explicit_scope_all_blocked"):
+                        logger.info(
+                            "[CHAT][ROUTING][EXPLICIT_SCOPE] All tasks unexecutable; "
+                            "reason=%s explicit_task_ids=%s plan_id=%s",
+                            block_reason,
+                            list(routing_decision.explicit_task_ids),
+                            self.plan_session.plan_id,
+                        )
         else:
             self.extra_context.setdefault("_current_task_source", "session")
 
