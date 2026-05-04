@@ -61,7 +61,7 @@ class ExecutorSettings:
     deep_think_max_iterations: int = 24
     qc_max_session_turns: int = 50
     qc_shell_timeout_ms: int = 600000
-    code_execution_timeout: int = 120
+    code_execution_timeout: int = 7200
     # --- Layer 1/3: auto-execution and recovery ---
     force_rerun: bool = False
     auto_recovery: bool = False
@@ -196,7 +196,7 @@ def get_executor_settings() -> ExecutorSettings:
             1000, min(600000, _env_int("QC_SHELL_TIMEOUT_MS", defaults.qc_shell_timeout_ms))
         ),
         code_execution_timeout=max(
-            30, min(3600, _env_int("CODE_EXECUTION_TIMEOUT", defaults.code_execution_timeout))
+            30, min(86400, _env_int("CODE_EXECUTION_TIMEOUT", defaults.code_execution_timeout))
         ),
         force_rerun=_env_bool("PLAN_EXECUTOR_FORCE_RERUN", defaults.force_rerun),
         auto_recovery=_env_bool("PLAN_EXECUTOR_AUTO_RECOVERY", defaults.auto_recovery),
