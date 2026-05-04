@@ -437,6 +437,14 @@ class QwenSessionDriver:
                         if session_id not in self._containers:
                             self._last_used.pop(session_id, None)
                             continue
+                        execution_lock = self._locks.get(session_id)
+                        if execution_lock is not None and execution_lock.locked():
+                            self._touch(session_id)
+                            logger.debug(
+                                "Skipping TTL reap for active qwen container session %s",
+                                session_id,
+                            )
+                            continue
                         to_cleanup.append(session_id)
                 for session_id in to_cleanup:
                     logger.info(

@@ -354,11 +354,6 @@ class TerminalSessionManager:
             if candidate.state not in {"active", "idle"}:
                 candidates.remove(candidate)
 
-        # If all candidates were lost to failed spawns, re-enter the full
-        # ensure path so only one caller creates the replacement session.
-        if not candidates:
-            return await self.ensure_qwen_code_session(target_id, required_paths=required_paths)
-
         for candidate in candidates:
             if self._qwen_session_covers_paths(candidate, normalized_required):
                 return candidate
