@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field, ValidationError
 from ...config.executor_config import ExecutorSettings, get_executor_settings
 from ...llm import LLMClient, NativeStreamResult
 from ..tool_schemas import build_executor_tool_schemas, EXECUTOR_AVAILABLE_TOOLS
+from app.services.resources.resource_registry import resolve_resources
 from ..deep_think_agent import (
     DeepThinkAgent,
     TaskExecutionContext,
@@ -79,6 +80,73 @@ def _log_job(level: str, message: str, metadata: Optional[Dict[str, Any]] = None
     except Exception:  # pragma: no cover - defensive
         return
     log_job_event(level, message, metadata)
+
+
+_BLOCKED_DEPENDENCY_MARKER_RE = re.compile(
+    r"(?:^|\b)(?:STATUS\s*:\s*)?BLOCKED_DEPENDENCY(?:\b|$)",
+    re.IGNORECASE,
+)
+
+
+def _extract_blocked_dependency_detail(text: str) -> Optional[str]:
+    raw = str(text or "")
+    if not _BLOCKED_DEPENDENCY_MARKER_RE.search(raw):
+        return None
+
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if stripped.lower().startswith("detail:"):
+            detail = stripped.split(":", 1)[1].strip()
+            if detail:
+                return detail
+
+    compact = " ".join(part.strip() for part in raw.splitlines() if part.strip())
+    return compact[:500] if compact else "Blocked by missing prerequisite data or upstream artifacts."
+
+
+def _coerce_blocked_dependency_payload(payload: Dict[str, Any]) -> Tuple[Dict[str, Any], str]:
+    text_parts: List[str] = []
+    for key in ("content", "stdout", "stderr", "error", "error_summary"):
+        value = payload.get(key)
+        if value:
+            text_parts.append(str(value))
+
+    notes = payload.get("notes")
+    if isinstance(notes, list):
+        text_parts.extend(str(item) for item in notes if item is not None)
+    elif notes:
+        text_parts.append(str(notes))
+
+    output_data = payload.get("output_data")
+    if isinstance(output_data, list):
+        for item in output_data:
+            if isinstance(item, dict):
+                for key in ("result", "content", "text"):
+                    value = item.get(key)
+                    if value:
+                        text_parts.append(str(value))
+            elif item is not None:
+                text_parts.append(str(item))
+
+    detail = _extract_blocked_dependency_detail("\n".join(text_parts))
+    if not detail:
+        return payload, "completed"
+    coerced = dict(payload)
+    metadata = coerced.get("metadata") if isinstance(coerced.get("metadata"), dict) else {}
+    metadata = dict(metadata)
+    metadata["blocked_by_dependencies"] = True
+    metadata["blocked_dependency_reported_by_task"] = True
+    metadata["blocked_dependency_detail"] = detail
+    coerced["metadata"] = metadata
+    coerced["status"] = "skipped"
+
+    existing_notes = coerced.get("notes")
+    normalized_notes = list(existing_notes) if isinstance(existing_notes, list) else []
+    note = "Task reported BLOCKED_DEPENDENCY; execution was not treated as a contract failure."
+    if note not in normalized_notes:
+        normalized_notes.append(note)
+    coerced["notes"] = normalized_notes
+    return coerced, "skipped"
 
 
 def _summarize_tool_params(params: Optional[Dict[str, Any]], max_length: int = 200) -> str:
@@ -1357,8 +1425,32 @@ class PlanExecutor:
                     merged_paths.append(path)
             if merged_paths:
                 node.metadata["paper_context_paths"] = merged_paths[:40]
+        resolved_resources: Dict[str, Dict[str, Any]] = {}
+        missing_resources: List[str] = []
+        resource_ids = list(artifact_contract.get("resources") or []) if isinstance(artifact_contract, dict) else []
+        if resource_ids:
+            resolved_resources, missing_resources = resolve_resources(resource_ids)
         if session_context is not None:
             session_context["resolved_input_artifacts"] = dict(resolved_input_artifacts)
+            session_context["resolved_resources"] = dict(resolved_resources)
+            session_context["required_resources"] = list(resource_ids)
+        if missing_resources:
+            _log_job(
+                "warning",
+                f"Task {node.id} blocked: required external resources unavailable",
+                {
+                    "task_id": node.id,
+                    "missing_resources": missing_resources,
+                    "required_resources": resource_ids,
+                },
+            )
+            return self._block_for_missing_resources(
+                plan_id=plan_id,
+                node=node,
+                tree=tree,
+                missing_resources=missing_resources,
+                resolved_resources=resolved_resources,
+            )
         if missing_aliases:
             _log_job(
                 "warning",
@@ -2156,7 +2248,10 @@ class PlanExecutor:
             constraints.append(
                 f"Task output directory: {task_work_dir} — write final task files here. "
                 "Prefer relative paths or bare filenames so file_operations resolves into this directory. "
-                "Do NOT place final deliverables under session workspace/."
+                "Do NOT place final deliverables under session workspace/. "
+                "If the task instruction or user goal explicitly names an absolute final output directory, "
+                "also copy the final deliverables there; the task output directory is a canonical staging/fallback location, not a replacement for a user-requested output directory. "
+                "After producing publication-ready files, call deliverable_submit with those final file paths so they appear in the session Deliverables panel."
             )
         if paper_mode:
             constraints.extend(
@@ -2330,6 +2425,7 @@ class PlanExecutor:
                     work_dir=task_work_dir,
                     channel="plan_executor",
                     mode="task_execution",
+                    resolved_resources=(config.session_context or {}).get("resolved_resources") if config.session_context else None,
                 ),
             )
 
@@ -2439,11 +2535,12 @@ class PlanExecutor:
             if isinstance(session_artifact_paths, list) and session_artifact_paths:
                 payload["session_artifact_paths"] = session_artifact_paths[:40]
                 payload["metadata"]["session_artifact_paths"] = session_artifact_paths[:40]
+            payload, effective_execution_status = _coerce_blocked_dependency_payload(payload)
             finalization, _ = self._finalize_task_execution(
                 plan_id,
                 node,
                 payload,
-                execution_status="completed",
+                execution_status=effective_execution_status,
             )
             finalization, raw_response = self._materialize_finalization(
                 plan_id,
@@ -3119,7 +3216,11 @@ class PlanExecutor:
 
         resolved = resolve_manifest_aliases(manifest, required_aliases)
         missing_for_resolution = [alias for alias in required_aliases if alias not in resolved]
-        missing = [alias for alias in explicit_required_aliases if alias not in resolved]
+        # Treat both explicit and inferred artifact requirements as blocking.
+        # The artifact gate is the last deterministic guard before execution; if
+        # a required alias cannot be resolved from the manifest, running the task
+        # only produces an avoidable contract failure or fabricated substitute.
+        missing = list(missing_for_resolution)
         if not missing_for_resolution:
             return contract, resolved, [], {}
 
@@ -3142,8 +3243,63 @@ class PlanExecutor:
                 if refreshed:
                     resolved[alias] = refreshed
 
-        final_missing = [alias for alias in explicit_required_aliases if alias not in resolved]
+        final_missing = [alias for alias in required_aliases if alias not in resolved]
         return contract, resolved, final_missing, producer_map
+
+    def _block_for_missing_resources(
+        self,
+        *,
+        plan_id: int,
+        node: PlanNode,
+        tree: PlanTree,
+        missing_resources: List[str],
+        resolved_resources: Dict[str, Dict[str, Any]],
+    ) -> ExecutionResult:
+        reason = (
+            f"Blocked by dependencies: task #{node.id} is missing required external resources "
+            f"{missing_resources}. Configure or mount the resource before execution."
+        )
+        notes = [
+            "This task was not executed because required external data resources are unavailable.",
+            f"Missing resources: {', '.join(missing_resources)}",
+        ]
+        metadata = {
+            "blocked_by_dependencies": True,
+            "missing_resources": list(missing_resources),
+            "resolved_resources": dict(resolved_resources),
+            "incomplete_dependencies": [],
+            "incomplete_dependency_info": [],
+        }
+        payload = {
+            "status": "skipped",
+            "content": reason,
+            "notes": notes,
+            "metadata": metadata,
+        }
+        finalization = self._task_verifier.finalize_payload(
+            node,
+            payload,
+            execution_status="skipped",
+        )
+        raw_response = json.dumps(finalization.payload, ensure_ascii=False)
+        self._persist_execution(
+            plan_id,
+            node.id,
+            finalization.payload,
+            status=finalization.final_status,
+        )
+        node.status = finalization.final_status
+        node.execution_result = raw_response
+        tree.nodes[node.id] = node
+        return ExecutionResult(
+            plan_id=plan_id,
+            task_id=node.id,
+            status=finalization.final_status,
+            content=reason,
+            notes=notes,
+            metadata=finalization.payload.get("metadata") or {},
+            raw_response=raw_response,
+        )
 
     def _block_for_missing_artifacts(
         self,
@@ -3597,6 +3753,7 @@ class PlanExecutor:
                     work_dir=task_work_dir,
                     channel="plan_executor",
                     mode="task_execution",
+                    resolved_resources=(config.session_context or {}).get("resolved_resources") if config.session_context else None,
                 ),
             )
             logger.info(

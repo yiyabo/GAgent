@@ -968,3 +968,54 @@ class TestArtifactContracts:
 
         # Backfill should have been called for the producer
         assert 1 in backfill_calls
+
+
+
+def test_resolve_required_artifacts_ignores_invalid_manifest_entry(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    producer = PlanNode(
+        id=1,
+        plan_id=7,
+        name="Produce kmer",
+        status="completed",
+        metadata={"artifact_contract": {"publishes": ["phage_ml.kmer_features_npz"]}},
+    )
+    consumer = PlanNode(
+        id=2,
+        plan_id=7,
+        name="Consume kmer",
+        status="pending",
+        metadata={"artifact_contract": {"requires": ["phage_ml.kmer_features_npz"]}},
+        dependencies=[1],
+    )
+    tree = _make_tree(7, [producer, consumer])
+    repo = MagicMock()
+    executor = _make_executor(repo)
+
+    bad_artifact = tmp_path / "bad_kmer.npz"
+    bad_artifact.write_bytes(b"not a sparse npz")
+    save_artifact_manifest(
+        7,
+        {
+            "plan_id": 7,
+            "artifacts": {
+                "phage_ml.kmer_features_npz": {
+                    "alias": "phage_ml.kmer_features_npz",
+                    "path": str(bad_artifact),
+                    "producer_task_id": 1,
+                    "validation": {"validated": False, "schema_valid": False},
+                }
+            },
+        },
+    )
+
+    _contract, resolved, missing, _producers = executor._resolve_required_artifacts(
+        7,
+        consumer,
+        dependencies=[producer],
+        tree=tree,
+        session_context={},
+    )
+
+    assert resolved == {}
+    assert missing == ["phage_ml.kmer_features_npz"]
