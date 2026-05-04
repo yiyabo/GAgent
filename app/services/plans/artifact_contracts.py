@@ -8,6 +8,9 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
+from app.services.resources.resource_registry import get_resource_spec, normalize_resource_id
+from .artifact_validation import artifact_entry_is_valid, validate_artifact
+
 from pydantic import BaseModel, Field
 
 _ARTIFACT_SPECS: Dict[str, tuple[str, str]] = {
@@ -24,7 +27,72 @@ _ARTIFACT_SPECS: Dict[str, tuple[str, str]] = {
     "nmr_cryo_msm.outline_json": ("nmr_cryo_msm", "outline.json"),
     "industry.structured_evidence_json": ("industry", "structured_evidence.json"),
     "industry.outline_json": ("industry", "outline.json"),
+    "phage_ml.kmer_features_npz": ("phage_ml", "features/kmer_46.npz"),
+    "phage_ml.genome_embeddings_npy": ("phage_ml", "features/genome_embeddings.npy"),
+    "phage_ml.functional_features_csv": ("phage_ml", "features/functional_annotations.csv"),
+    "phage_ml.hybrid_features_final_npz": ("phage_ml", "features/hybrid_features_final.npz"),
+    "phage_ml.training_metadata_parquet": ("phage_ml", "metadata/training_metadata.parquet"),
+    "phage_ml.feature_row_ids_json": ("phage_ml", "features/feature_row_ids.json"),
+    "phage_ml.label_alignment_json": ("phage_ml", "metadata/label_alignment.json"),
+    "ml_features.hybrid_matrix_npz": ("ml_features", "hybrid_features_final.npz"),
+    "phage_features.hybrid_matrix_npz": ("phage_features", "hybrid_features_final.npz"),
+    "ml_phage.features_hybrid_matrix": ("ml_phage", "hybrid_features_final.npz"),
+    "ml_phage.hybrid_feature_matrix_npz": ("ml_phage", "hybrid_features_final.npz"),
+    "ml_traditional.validation_metrics_json": ("ml_traditional", "validation_metrics.json"),
+    "ml_traditional.model_checkpoints_dir": ("ml_traditional", "model_checkpoints"),
+    "phage_dl.trained_models_dir": ("phage_dl", "models"),
+    "phage_dl.training_logs_csv": ("phage_dl", "training_logs.csv"),
+    "phage_ml.cv_splits_json": ("phage_ml", "cv_splits.json"),
+    "phage_ml.trained_models_dir": ("phage_ml", "trained_models"),
+    "phage_ml.cv_metrics_json": ("phage_ml", "cv_metrics.json"),
+    "ml_phage.kmer_enrichment_results": ("ml_phage", "kmer_enrichment_by_genus.csv"),
+    "phage_host.transfer_learning_checkpoints": ("phage_host", "transfer_learning"),
+    "ml_phage.best_model_pkl": ("ml_phage", "best_model.pkl"),
+    "ml_phage.prediction_service_docker": ("ml_phage", "deployment/phage_host_predictor.tar"),
 }
+
+_ARTIFACT_ALIAS_CANONICAL: Dict[str, str] = {
+    "ml_features.hybrid_matrix_npz": "phage_ml.hybrid_features_final_npz",
+    "phage_features.hybrid_matrix_npz": "phage_ml.hybrid_features_final_npz",
+    "ml_phage.features_hybrid_matrix": "phage_ml.hybrid_features_final_npz",
+    "ml_phage.hybrid_feature_matrix_npz": "phage_ml.hybrid_features_final_npz",
+    "phage_host.hybrid_feature_matrix": "phage_ml.hybrid_features_final_npz",
+    "phage_features.genome_embeddings_npy": "phage_ml.genome_embeddings_npy",
+    "phage_ml.trained_models_dir": "ml_traditional.model_checkpoints_dir",
+    "phage_ml.tuned_models_dir": "ml_traditional.model_checkpoints_dir",
+    "ml_phage.best_model_pkl": "ml_traditional.model_checkpoints_dir",
+    "ml_phage.model_evaluations_json": "ml_traditional.validation_metrics_json",
+    "ml_phage.cross_validation_report_json": "phage_ml.cv_metrics_json",
+    "phage_eval.cv_splits_json": "phage_ml.cv_splits_json",
+    "ml_phage.biological_interpretation_md": "ml_phage.host_specificity_interpretation_md",
+    "ml_phage.functional_annotations": "phage_ml.functional_features_csv",
+    "phage_ml.modeling_metadata_parquet": "phage_ml.training_metadata_parquet",
+    "ml_features.training_metadata_parquet": "phage_ml.training_metadata_parquet",
+    "ml_features.feature_row_ids_json": "phage_ml.feature_row_ids_json",
+    "ml_features.label_alignment_json": "phage_ml.label_alignment_json",
+    "ml_supervised.training_metadata_parquet": "phage_ml.training_metadata_parquet",
+    "ml_supervised.feature_row_ids_json": "phage_ml.feature_row_ids_json",
+    "ml_supervised.label_alignment_json": "phage_ml.label_alignment_json",
+}
+
+
+def canonicalize_artifact_alias(alias: str) -> str:
+    text = str(alias or "").strip()
+    seen: set[str] = set()
+    while text in _ARTIFACT_ALIAS_CANONICAL and text not in seen:
+        seen.add(text)
+        text = _ARTIFACT_ALIAS_CANONICAL[text]
+    return text
+
+
+def expand_artifact_aliases(alias: str) -> List[str]:
+    canonical = canonicalize_artifact_alias(alias)
+    aliases = [canonical]
+    for source, target in sorted(_ARTIFACT_ALIAS_CANONICAL.items()):
+        if canonicalize_artifact_alias(target) == canonical and source not in aliases:
+            aliases.append(source)
+    return aliases
+
 
 _LEGACY_BASENAME_TO_ALIASES: Dict[str, List[str]] = {
     "enhanced_sampling_evidence.md": ["enhanced_sampling.evidence_md"],
@@ -39,6 +107,12 @@ _LEGACY_BASENAME_TO_ALIASES: Dict[str, List[str]] = {
     "industry_outline.json": ["industry.outline_json"],
     "industrial_outline.json": ["industry.outline_json"],
     "structured_evidence_industry.json": ["industry.structured_evidence_json"],
+    "modeling_metadata.parquet": ["phage_ml.training_metadata_parquet"],
+    "training_metadata.parquet": ["phage_ml.training_metadata_parquet"],
+    "genome_ids.json": ["phage_ml.feature_row_ids_json"],
+    "feature_row_ids.json": ["phage_ml.feature_row_ids_json"],
+    "row_ids.json": ["phage_ml.feature_row_ids_json"],
+    "label_alignment.json": ["phage_ml.label_alignment_json"],
 }
 
 _GENERIC_BASENAME_TO_SLOT = {
@@ -126,12 +200,12 @@ def save_artifact_manifest(plan_id: int, manifest: Dict[str, Any]) -> Path:
 
 
 def canonical_artifact_path(plan_id: int, alias: str) -> Optional[Path]:
+    alias = canonicalize_artifact_alias(alias)
     spec = _ARTIFACT_SPECS.get(alias)
     if not spec:
         return None
     namespace, filename = spec
     return canonical_plan_root(plan_id) / namespace / filename
-
 
 def _text_contains_namespace_keyword(text: str, keyword: str) -> bool:
     lowered_text = str(text or "").lower()
@@ -189,19 +263,23 @@ def aliases_for_file_name(file_name: str, *, preferred_namespace: str) -> List[s
 
 
 def candidate_filenames_for_alias(alias: str) -> List[str]:
+    alias = canonicalize_artifact_alias(alias)
     spec = _ARTIFACT_SPECS.get(alias)
     names: List[str] = []
     if spec:
-        names.append(spec[1].lower())
+        filename = spec[1].lower().strip("/\\")
+        if filename:
+            names.append(filename)
+            basename = Path(filename).name.lower()
+            if basename and basename not in names:
+                names.append(basename)
     for basename, aliases in _LEGACY_BASENAME_TO_ALIASES.items():
         if alias in aliases and basename.lower() not in names:
             names.append(basename.lower())
     return names
 
-
 def is_artifact_alias(value: str) -> bool:
-    return str(value or "").strip() in _ARTIFACT_SPECS
-
+    return canonicalize_artifact_alias(str(value or "").strip()) in _ARTIFACT_SPECS
 
 def _semantic_basename_matches_alias(*, basename: str, alias: str) -> bool:
     spec = _ARTIFACT_SPECS.get(alias)
@@ -250,13 +328,15 @@ def _semantic_basename_matches_alias(*, basename: str, alias: str) -> bool:
 
 
 def artifact_path_matches_alias(path_text: str, alias: str) -> bool:
-    basename = Path(str(path_text or "")).name.lower()
+    alias = canonicalize_artifact_alias(alias)
+    normalized = str(path_text or "").strip().replace("\\", "/").strip("/").lower()
+    basename = Path(normalized).name.lower()
     if not basename or alias not in _ARTIFACT_SPECS:
         return False
-    if basename in candidate_filenames_for_alias(alias):
+    candidates = candidate_filenames_for_alias(alias)
+    if basename in candidates or normalized in candidates:
         return True
     return _semantic_basename_matches_alias(basename=basename, alias=alias)
-
 
 def _semantic_aliases_for_file_name(
     file_name: str,
@@ -308,6 +388,7 @@ class ArtifactContractProvenance(BaseModel):
     inferred_publishes: List[str] = Field(default_factory=list)
     runtime_requires: List[str] = Field(default_factory=list)
     runtime_publishes: List[str] = Field(default_factory=list)
+    resource_requires: List[str] = Field(default_factory=list)
 
     def requires(self) -> List[str]:
         return _merge_unique(
@@ -318,6 +399,9 @@ class ArtifactContractProvenance(BaseModel):
         return _merge_unique(
             self.explicit_publishes, self.inferred_publishes, self.runtime_publishes
         )
+
+    def required_resources(self) -> List[str]:
+        return _merge_unique(self.resource_requires)
 
     @property
     def has_explicit(self) -> bool:
@@ -346,7 +430,11 @@ class ArtifactContractProvenance(BaseModel):
         return "none"
 
     def as_contract_dict(self) -> Dict[str, List[str]]:
-        return {"requires": self.requires(), "publishes": self.publishes()}
+        contract = {"requires": self.requires(), "publishes": self.publishes()}
+        resources = self.required_resources()
+        if resources:
+            contract["resources"] = resources
+        return contract
 
 
 def _merge_unique(*buckets: Iterable[str]) -> List[str]:
@@ -355,11 +443,187 @@ def _merge_unique(*buckets: Iterable[str]) -> List[str]:
     for bucket in buckets:
         for alias in bucket:
             text = str(alias or "").strip()
+            if text:
+                canonical_text = canonicalize_artifact_alias(text)
+                if canonical_text in _ARTIFACT_SPECS:
+                    text = canonical_text
             if text and text not in seen:
                 seen.add(text)
                 merged.append(text)
     return merged
 
+
+_RESOURCE_REF_RE = re.compile(r"\bresource:([A-Za-z0-9_.-]+)\b")
+
+
+def _extract_resource_requires(raw_items: Any, *, allow_unknown: bool = False) -> List[str]:
+    resources: List[str] = []
+    seen: set[str] = set()
+
+    def add(value: Any) -> None:
+        text = str(value or "").strip()
+        if not text:
+            return
+        has_resource_prefix = text.startswith("resource:")
+        resource_id = normalize_resource_id(text)
+        if not allow_unknown and not has_resource_prefix and get_resource_spec(resource_id) is None:
+            return
+        if resource_id and resource_id not in seen:
+            seen.add(resource_id)
+            resources.append(resource_id)
+
+    if isinstance(raw_items, list):
+        for item in raw_items:
+            add(item)
+    elif isinstance(raw_items, str):
+        add(raw_items)
+    elif isinstance(raw_items, dict):
+        for key in ("requires", "resources"):
+            nested = raw_items.get(key)
+            if isinstance(nested, list):
+                for item in nested:
+                    add(item)
+            elif isinstance(nested, str):
+                add(nested)
+    return resources
+
+
+def _extract_resource_refs_from_text(*values: Any) -> List[str]:
+    resources: List[str] = []
+    seen: set[str] = set()
+    for value in values:
+        text = str(value or "")
+        for match in _RESOURCE_REF_RE.finditer(text):
+            resource_id = normalize_resource_id(match.group(1))
+            if resource_id and resource_id not in seen:
+                seen.add(resource_id)
+                resources.append(resource_id)
+    return resources
+
+
+def _infer_known_resource_requires(task_name: str, instruction: str, metadata: Dict[str, Any]) -> List[str]:
+    haystack = " ".join([
+        str(task_name or ""),
+        str(instruction or ""),
+        json.dumps(metadata, ensure_ascii=False, default=str),
+    ]).lower()
+    if (
+        "phagescope" in haystack
+        or "phage_fasta" in haystack
+        or ("k-mer" in haystack and "phage" in haystack)
+        or ("kmer" in haystack and "phage" in haystack)
+        or ("genome embedding" in haystack and "phage" in haystack)
+        or ("genome embeddings" in haystack and "phage" in haystack)
+        or ("dna language model" in haystack and "phage" in haystack)
+        or ("hyenadna" in haystack and "phage" in haystack)
+        or ("nucleotide transformer" in haystack and "phage" in haystack)
+        or "phage_ml.genome_embeddings_npy" in haystack
+    ):
+        return ["phagescope.sequence_corpus"]
+    return []
+
+
+_SUPERVISED_ML_OUTPUT_ALIASES = {
+    "ml_traditional.validation_metrics_json",
+    "phage_ml.cv_metrics_json",
+}
+
+_PHAGE_SUPERVISED_FEATURE_ALIASES = {
+    "phage_ml.hybrid_features_final_npz",
+    "phage_ml.kmer_features_npz",
+    "phage_ml.genome_embeddings_npy",
+    "phage_ml.functional_features_csv",
+}
+
+
+def _known_artifact_alias(value: Any) -> Optional[str]:
+    alias = canonicalize_artifact_alias(str(value or "").strip())
+    return alias if alias in _ARTIFACT_SPECS else None
+
+
+def _collect_alias_fields(mapping: Dict[str, Any], field_names: Iterable[str]) -> List[str]:
+    aliases: List[str] = []
+    seen: set[str] = set()
+    for field_name in field_names:
+        raw_value = mapping.get(field_name)
+        values = raw_value if isinstance(raw_value, list) else [raw_value]
+        for value in values:
+            alias = _known_artifact_alias(value)
+            if alias and alias not in seen:
+                seen.add(alias)
+                aliases.append(alias)
+    return aliases
+
+
+def _infer_supervised_learning_artifacts(
+    raw_contract: Dict[str, Any],
+    *,
+    requires: Iterable[str],
+    publishes: Iterable[str],
+) -> tuple[List[str], List[str]]:
+    """Compile supervised-learning semantics into ordinary artifact aliases.
+
+    This intentionally keys off explicit contract metadata and canonical ML output
+    aliases rather than task IDs or free-text task names.  The returned aliases
+    flow through the existing preflight, prompt injection, and verification path.
+    """
+
+    block = raw_contract.get("supervised_learning") or raw_contract.get("supervised_ml")
+    block_enabled = isinstance(block, dict) and block.get("enabled", True) is not False
+    require_set = {canonicalize_artifact_alias(str(item or "").strip()) for item in requires}
+    publish_set = {canonicalize_artifact_alias(str(item or "").strip()) for item in publishes}
+    has_supervised_outputs = bool(publish_set.intersection(_SUPERVISED_ML_OUTPUT_ALIASES))
+    if not block_enabled and not has_supervised_outputs:
+        return [], []
+
+    semantic_requires: List[str] = []
+    semantic_publishes: List[str] = []
+
+    if isinstance(block, dict):
+        semantic_requires.extend(_collect_alias_fields(block, (
+            "feature_alias",
+            "features_alias",
+            "feature_matrix_alias",
+            "label_alias",
+            "labels_alias",
+            "label_table_alias",
+            "metadata_alias",
+            "row_ids_alias",
+            "feature_row_ids_alias",
+        )))
+        semantic_publishes.extend(_collect_alias_fields(block, (
+            "alignment_alias",
+            "label_alignment_alias",
+            "metrics_alias",
+            "model_alias",
+            "models_alias",
+        )))
+
+    phage_feature_context = bool(require_set.intersection(_PHAGE_SUPERVISED_FEATURE_ALIASES))
+    phage_output_context = bool(publish_set.intersection({
+        "ml_traditional.validation_metrics_json",
+        "phage_ml.cv_metrics_json",
+    }))
+    if phage_feature_context or phage_output_context:
+        semantic_requires.extend([
+            "phage_ml.training_metadata_parquet",
+            "phage_ml.feature_row_ids_json",
+        ])
+        publish_alignment = not (isinstance(block, dict) and block.get("publish_alignment") is False)
+        if publish_alignment:
+            semantic_publishes.append("phage_ml.label_alignment_json")
+
+    def dedupe(values: Iterable[str], existing: set[str]) -> List[str]:
+        result: List[str] = []
+        seen = set(existing)
+        for value in values:
+            alias = _known_artifact_alias(value)
+            if alias and alias not in seen:
+                seen.add(alias)
+                result.append(alias)
+        return result
+
+    return dedupe(semantic_requires, require_set), dedupe(semantic_publishes, publish_set)
 
 def _extract_explicit_aliases(raw_items: Any) -> List[str]:
     if not isinstance(raw_items, list):
@@ -367,12 +631,11 @@ def _extract_explicit_aliases(raw_items: Any) -> List[str]:
     aliases: List[str] = []
     seen: set[str] = set()
     for item in raw_items:
-        text = str(item or "").strip()
+        text = canonicalize_artifact_alias(str(item or "").strip())
         if text and text in _ARTIFACT_SPECS and text not in seen:
             seen.add(text)
             aliases.append(text)
     return aliases
-
 
 def resolve_artifact_contract_with_provenance(
     *,
@@ -395,6 +658,13 @@ def resolve_artifact_contract_with_provenance(
 
     explicit_requires = _extract_explicit_aliases(raw_contract.get("requires"))
     explicit_publishes = _extract_explicit_aliases(raw_contract.get("publishes"))
+    resource_requires = _merge_unique(
+        _extract_resource_requires(raw_contract.get("resources"), allow_unknown=True),
+        _extract_resource_requires(raw_contract.get("requires"), allow_unknown=False),
+        _extract_resource_requires(payload.get("resource_contract"), allow_unknown=True),
+        _extract_resource_refs_from_text(task_name, instruction, payload.get("resource_contract"), raw_contract),
+        _infer_known_resource_requires(task_name, instruction, payload),
+    )
     explicit_require_set = set(explicit_requires)
     explicit_publish_set = set(explicit_publishes)
 
@@ -407,6 +677,7 @@ def resolve_artifact_contract_with_provenance(
             for alias in aliases_for_path_text(
                 str(item or ""), preferred_namespace=preferred_namespace
             ):
+                alias = canonicalize_artifact_alias(alias)
                 if alias in explicit_require_set or alias in seen_inferred_req:
                     continue
                 seen_inferred_req.add(alias)
@@ -415,6 +686,7 @@ def resolve_artifact_contract_with_provenance(
     for alias in aliases_for_path_text(
         instruction, preferred_namespace=preferred_namespace
     ):
+        alias = canonicalize_artifact_alias(alias)
         if alias in explicit_require_set or alias in seen_inferred_req:
             continue
         seen_inferred_req.add(alias)
@@ -435,16 +707,32 @@ def resolve_artifact_contract_with_provenance(
             for alias in aliases_for_path_text(
                 str(raw_path), preferred_namespace=preferred_namespace
             ):
+                alias = canonicalize_artifact_alias(alias)
                 if alias in explicit_publish_set or alias in seen_inferred_pub:
                     continue
                 seen_inferred_pub.add(alias)
                 inferred_publishes.append(alias)
+
+    semantic_requires, semantic_publishes = _infer_supervised_learning_artifacts(
+        raw_contract,
+        requires=[*explicit_requires, *inferred_requires],
+        publishes=[*explicit_publishes, *inferred_publishes],
+    )
+    for alias in semantic_requires:
+        if alias not in explicit_require_set and alias not in seen_inferred_req:
+            seen_inferred_req.add(alias)
+            inferred_requires.append(alias)
+    for alias in semantic_publishes:
+        if alias not in explicit_publish_set and alias not in seen_inferred_pub:
+            seen_inferred_pub.add(alias)
+            inferred_publishes.append(alias)
 
     return ArtifactContractProvenance(
         explicit_requires=explicit_requires,
         explicit_publishes=explicit_publishes,
         inferred_requires=inferred_requires,
         inferred_publishes=inferred_publishes,
+        resource_requires=resource_requires,
     )
 
 
@@ -493,26 +781,38 @@ def publish_artifact(
     producer_task_id: int,
     manifest: Dict[str, Any],
 ) -> Optional[Dict[str, Any]]:
+    requested_alias = str(alias or "").strip()
+    alias = canonicalize_artifact_alias(requested_alias)
     canonical = canonical_artifact_path(plan_id, alias)
     if canonical is None:
         return None
     source = Path(str(source_path or "").strip()).expanduser()
-    if not source.exists() or not source.is_file():
+    if not source.exists() or not (source.is_file() or source.is_dir()):
         return None
     canonical.parent.mkdir(parents=True, exist_ok=True)
     if source.resolve() != canonical.resolve():
-        shutil.copy2(source, canonical)
+        if source.is_dir():
+            if canonical.exists() and canonical.is_file():
+                canonical.unlink()
+            if canonical.exists() and canonical.is_dir():
+                shutil.rmtree(canonical)
+            shutil.copytree(source, canonical)
+        else:
+            shutil.copy2(source, canonical)
+    validation = validate_artifact(alias, str(canonical.resolve())).to_dict()
     entry = {
         "alias": alias,
+        "requested_alias": requested_alias,
         "path": str(canonical.resolve()),
         "producer_task_id": producer_task_id,
         "source_path": str(source.resolve()),
         "updated_at": time.time(),
+        "validation": validation,
+        "validated": bool(validation.get("validated") and validation.get("schema_valid")),
     }
     artifacts = manifest.setdefault("artifacts", {})
     artifacts[alias] = entry
     return entry
-
 
 def resolve_manifest_aliases(
     manifest: Dict[str, Any],
@@ -523,14 +823,15 @@ def resolve_manifest_aliases(
     if not isinstance(artifacts, dict):
         return resolved
     for alias in aliases:
-        entry = artifacts.get(alias)
+        alias_text = str(alias or "").strip()
+        canonical_alias = canonicalize_artifact_alias(alias_text)
+        entry = artifacts.get(canonical_alias) or artifacts.get(alias_text)
         if not isinstance(entry, dict):
             continue
         path = str(entry.get("path") or "").strip()
-        if path and Path(path).exists():
-            resolved[alias] = path
+        if path and Path(path).exists() and artifact_entry_is_valid(entry):
+            resolved[alias_text] = path
     return resolved
-
 
 def find_runtime_candidates(plan_id: int, task_id: int, alias: str) -> List[str]:
     runtime_root = _repo_root() / "runtime" / "session_adhoc"
@@ -579,6 +880,7 @@ def find_candidate_source_for_alias(
     wanted = set(candidate_filenames_for_alias(alias))
     if not wanted:
         return None
+
     deduped: List[str] = []
     seen: set[str] = set()
     for raw_path in candidate_paths:
@@ -586,21 +888,43 @@ def find_candidate_source_for_alias(
         if text and text not in seen:
             seen.add(text)
             deduped.append(text)
+
+    # Prefer explicit artifact paths reported by the executor. Iterate from the
+    # end because later repair attempts append newer candidates after older
+    # failed attempts.
     for raw_path in reversed(deduped):
-        basename = Path(raw_path).name.lower()
-        if basename in wanted and Path(raw_path).exists():
-            return raw_path
+        candidate = Path(raw_path).expanduser()
+        basename = candidate.name.lower()
+        if basename in wanted and candidate.exists():
+            return str(candidate)
+
+    # Some tools report only a parent output directory. Search inside such
+    # directories for canonical filenames/directories derived from the alias so
+    # reconciliation remains generic instead of plan/task-specific.
     for raw_path in reversed(deduped):
-        candidate = Path(raw_path)
-        if not candidate.exists() or not candidate.is_file():
+        candidate = Path(raw_path).expanduser()
+        if not candidate.exists() or not candidate.is_dir():
             continue
-        if artifact_path_matches_alias(raw_path, alias):
-            return raw_path
+        for basename in wanted:
+            direct = candidate / basename
+            if direct.exists() and (direct.is_file() or direct.is_dir()):
+                return str(direct)
+        for child in candidate.rglob("*"):
+            if child.name.lower() in wanted and (child.is_file() or child.is_dir()):
+                return str(child)
+
+    for raw_path in reversed(deduped):
+        candidate = Path(raw_path).expanduser()
+        if not candidate.exists() or not (candidate.is_file() or candidate.is_dir()):
+            continue
+        if artifact_path_matches_alias(str(candidate), alias):
+            return str(candidate)
     return None
 
 
 def producer_candidates_for_alias(alias: str, nodes: Iterable[Any]) -> List[int]:
     candidates: List[int] = []
+    canonical_alias = canonicalize_artifact_alias(alias)
     for node in nodes:
         metadata = node.metadata if isinstance(getattr(node, "metadata", None), dict) else {}
         contract = infer_artifact_contract(
@@ -608,6 +932,7 @@ def producer_candidates_for_alias(alias: str, nodes: Iterable[Any]) -> List[int]
             instruction=str(getattr(node, "instruction", "") or ""),
             metadata=metadata,
         )
-        if alias in contract.get("publishes", []):
+        published = [canonicalize_artifact_alias(item) for item in contract.get("publishes", [])]
+        if canonical_alias in published:
             candidates.append(int(getattr(node, "id")))
     return candidates
