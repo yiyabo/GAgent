@@ -32,12 +32,13 @@ class ToolExecutionContext:
     mode: str = "task_execution"
     on_stdout: Optional[Callable[[str], Awaitable[None]]] = None
     on_stderr: Optional[Callable[[str], Awaitable[None]]] = None
+    resolved_resources: Optional[Dict[str, Any]] = None
 
 
 class UnifiedToolExecutor:
     DEFAULT_TIMEOUT_SECONDS = 60
     TOOL_TIMEOUTS = {
-        "code_executor": 1200,
+        "code_executor": 7200,
         "web_search": 180,
         "sequence_fetch": 120,
         "url_fetch": 180,
@@ -233,6 +234,7 @@ class UnifiedToolExecutor:
                 "model",
                 "setting_sources",
                 "auth_mode",
+                "resolved_resources",
             ):
                 safe_params.pop(key, None)
             legacy_target_task_id = safe_params.pop("target_task_id", None)
@@ -251,6 +253,8 @@ class UnifiedToolExecutor:
                 safe_params["on_stdout"] = context.on_stdout
             if context.on_stderr:
                 safe_params["on_stderr"] = context.on_stderr
+            if context.resolved_resources is not None:
+                safe_params["resolved_resources"] = context.resolved_resources
         else:
             safe_params.pop("target_task_id", None)
 

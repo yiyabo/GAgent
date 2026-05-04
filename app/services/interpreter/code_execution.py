@@ -91,6 +91,7 @@ class CodeExecutionSpec:
     acceptance_criteria: Optional[Dict[str, Any]] = None
     dependency_outputs: List[Dict[str, Any]] = field(default_factory=list)
     dependency_artifact_paths: List[str] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
