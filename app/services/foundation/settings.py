@@ -183,6 +183,9 @@ if _USE_PYDANTIC:
         deep_think_confidence_threshold: float = Field(default=0.5, env="DEEP_THINK_CONFIDENCE_THRESHOLD")
         # Legacy min-length setting; may be used by compatibility paths.
         deep_think_min_message_length: int = Field(default=8, env="DEEP_THINK_MIN_MESSAGE_LENGTH")
+        deep_think_max_user_query_chars: int = Field(
+            default=50000, env="DEEP_THINK_MAX_USER_QUERY_CHARS"
+        )
 
         # Extended Thinking (enable_thinking) configuration
         thinking_enabled: bool = Field(default=True, env="THINKING_ENABLED")
@@ -412,6 +415,14 @@ else:
                 )
             except Exception:
                 self.deep_think_min_message_length = 8
+            try:
+                self.deep_think_max_user_query_chars = int(
+                    os.getenv("DEEP_THINK_MAX_USER_QUERY_CHARS", "50000")
+                )
+            except Exception:
+                self.deep_think_max_user_query_chars = 50000
+            if self.deep_think_max_user_query_chars < 1000:
+                self.deep_think_max_user_query_chars = 1000
 
             # Extended Thinking settings
             self.thinking_enabled = os.getenv("THINKING_ENABLED", "1").strip().lower() in {
