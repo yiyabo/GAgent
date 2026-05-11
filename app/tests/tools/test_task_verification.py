@@ -821,6 +821,122 @@ def test_task_verifier_marks_cross_extension_outputs_as_wrong_format(tmp_path):
     ]
 
 
+def test_task_verifier_accepts_runtime_artifact_directory_for_stale_absolute_contract(tmp_path):
+    runtime_task_dir = tmp_path / "runtime" / "session_test" / "raw_files" / "task_1" / "task_3" / "task_13"
+    runtime_task_dir.mkdir(parents=True, exist_ok=True)
+    artifact = runtime_task_dir / "ovarian_cancer_annotated.h5ad"
+    artifact.write_bytes(b"h5ad payload")
+    stale_external_path = tmp_path / "GAgent_backup_20260421_233939" / "data" / artifact.name
+
+    node = PlanNode(
+        id=13,
+        plan_id=99,
+        name="Identify cluster-specific marker genes using scanpy rank_genes_groups",
+        metadata={
+            "acceptance_criteria": {
+                "category": "file_data",
+                "blocking": True,
+                "checks": [
+                    {"type": "file_exists", "path": str(stale_external_path)},
+                    {"type": "file_nonempty", "path": str(stale_external_path)},
+                ],
+            }
+        },
+    )
+
+    finalization = TaskVerificationService().finalize_payload(
+        node,
+        {
+            "status": "completed",
+            "content": "rank_genes_groups completed; authoritative outputs are in the task runtime directory",
+            "metadata": {"artifact_paths": [str(runtime_task_dir)]},
+        },
+        execution_status="completed",
+    )
+
+    metadata = finalization.payload["metadata"]
+    assert finalization.final_status == "completed"
+    assert metadata["verification_status"] == "passed"
+    assert str(runtime_task_dir) in metadata["artifact_paths"]
+    assert "failure_kind" not in metadata
+
+
+def test_task_verifier_resolves_session_relative_task_artifacts_for_stale_contract(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    runtime_task_dir = tmp_path / "runtime" / "session_test" / "raw_files" / "task_1" / "task_3" / "task_15"
+    runtime_task_dir.mkdir(parents=True, exist_ok=True)
+    validation_pdf = runtime_task_dir / "cell_type_annotation_validation.pdf"
+    from pypdf import PdfWriter
+    from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
+
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=612, height=792)
+    font = DictionaryObject({
+        NameObject("/Type"): NameObject("/Font"),
+        NameObject("/Subtype"): NameObject("/Type1"),
+        NameObject("/BaseFont"): NameObject("/Helvetica"),
+    })
+    page[NameObject("/Resources")] = DictionaryObject({
+        NameObject("/Font"): DictionaryObject({NameObject("/F1"): writer._add_object(font)})
+    })
+    stream = DecodedStreamObject()
+    stream.set_data(
+        (
+            "BT /F1 12 Tf 50 740 Td ("
+            + "Cell type annotation validation dotplot violin marker expression " * 8
+            + ") Tj ET"
+        ).encode("latin-1")
+    )
+    page[NameObject("/Contents")] = writer._add_object(stream)
+    with validation_pdf.open("wb") as handle:
+        writer.write(handle)
+    annotated_h5ad = runtime_task_dir / "ovarian_cancer_annotated.h5ad"
+    annotated_h5ad.write_bytes(b"h5ad payload")
+    stale_backup = tmp_path / "GAgent_backup_20260421_233939"
+
+    node = PlanNode(
+        id=15,
+        plan_id=99,
+        name="Validate and refine annotations using dotplot and violin plots",
+        metadata={
+            "acceptance_criteria": {
+                "category": "file_data",
+                "blocking": True,
+                "checks": [
+                    {"type": "file_exists", "path": str(stale_backup / "figures" / validation_pdf.name)},
+                    {"type": "pdf_valid", "path": str(stale_backup / "figures" / validation_pdf.name)},
+                    {"type": "file_nonempty", "path": str(stale_backup / "data" / annotated_h5ad.name)},
+                ],
+            }
+        },
+    )
+
+    finalization = TaskVerificationService().finalize_payload(
+        node,
+        {
+            "status": "completed",
+            "content": "validation outputs are in raw_files task directory",
+            "metadata": {
+                "artifact_paths": [
+                    "/task_1/task_3/task_15/cell_type_annotation_validation.pdf",
+                    "/task_1/task_3/task_15/ovarian_cancer_annotated.h5ad",
+                    "/task_1/task_3/task_15/",
+                ]
+            },
+        },
+        execution_status="completed",
+    )
+
+    metadata = finalization.payload["metadata"]
+    assert finalization.final_status == "completed"
+    assert metadata["verification_status"] == "passed"
+    assert metadata["verification"]["checks_passed"] == 3
+    assert str(runtime_task_dir) in metadata["artifact_paths"]
+    assert str(validation_pdf) in metadata["artifact_paths"]
+    assert str(annotated_h5ad) in metadata["artifact_paths"]
+    assert "failure_kind" not in metadata
+
+
 def test_task_verifier_pdb_residue_present_avoids_text_false_positive(tmp_path):
     valid = tmp_path / "valid_sec.pdb"
     valid.write_text(
@@ -1205,9 +1321,9 @@ def test_verify_task_route_fails_when_artifact_authority_demotes_result(tmp_path
     response = plan_routes.verify_task_result(23, request=None, plan_id=56)
 
     assert response.success is False
-    assert response.result.status == "completed"
+    assert response.result.status == "failed"
     assert "artifact authority failed" in response.message.lower()
-    assert repo.update_calls[-1][2]["status"] == "completed"
+    assert repo.update_calls[-1][2]["status"] == "failed"
 
 
 def test_parse_shorthand_criteria_basic():
@@ -3052,3 +3168,92 @@ def test_task_verifier_accepts_valid_sparse_npz_schema(tmp_path):
     schema = finalization.payload["metadata"]["artifact_schema_validation"]["phage_ml.kmer_features_npz"]
     assert schema["validated"] is True
     assert schema["metadata"]["shape"] == [2, 2]
+
+
+
+def test_output_matches_expected_accepts_absolute_suffix_path() -> None:
+    assert TaskVerificationService._output_matches_expected(
+        "/tmp/run_123/qc_results/filtered_adata.h5ad",
+        ["qc_results/filtered_adata.h5ad"],
+    ) is True
+
+
+def test_task_verifier_accepts_contract_required_file_from_run_directory(tmp_path) -> None:
+    run_dir = tmp_path / "run"
+    artifact = run_dir / "qc_results" / "filtered_adata.h5ad"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_bytes(b"non-empty h5ad placeholder")
+    node = PlanNode(
+        id=11,
+        plan_id=96,
+        name="Load QC-filtered AnnData object",
+        metadata={
+            "acceptance_criteria": {
+                "blocking": True,
+                "checks": [
+                    {"type": "file_exists", "path": "qc_results/filtered_adata.h5ad"},
+                    {"type": "file_nonempty", "path": "qc_results/filtered_adata.h5ad"},
+                ],
+            }
+        },
+    )
+
+    finalization = TaskVerificationService().finalize_payload(
+        node,
+        {
+            "status": "completed",
+            "metadata": {
+                "run_directory": str(run_dir),
+                "artifact_paths": [str(run_dir), str(artifact)],
+            },
+        },
+        execution_status="completed",
+    )
+
+    assert finalization.final_status == "completed"
+    metadata = finalization.payload["metadata"]
+    assert metadata["verification_status"] == "passed"
+    assert metadata["verification"]["checks_passed"] == 2
+
+
+def test_task_verifier_resolves_relative_checks_against_task_raw_files_dir(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    task_dir = tmp_path / "runtime" / "session_test" / "raw_files" / "task_1" / "task_13" / "task_56"
+    deliverable = task_dir / "Deliverables" / "docs" / "cell_communication_summary.txt"
+    deliverable.parent.mkdir(parents=True)
+    deliverable.write_text("cell communication summary\n", encoding="utf-8")
+    session_root = tmp_path / "runtime" / "session_test"
+
+    node = PlanNode(
+        id=56,
+        plan_id=100,
+        name="Verify existence and non-emptiness of all analysis outputs",
+        path="/1/13/56",
+        metadata={
+            "acceptance_criteria": {
+                "category": "file_data",
+                "blocking": True,
+                "checks": [
+                    {"type": "file_exists", "path": "Deliverables/docs/cell_communication_summary.txt"},
+                    {"type": "file_nonempty", "path": "Deliverables/docs/cell_communication_summary.txt"},
+                ],
+            }
+        },
+    )
+
+    finalization = TaskVerificationService().finalize_payload(
+        node,
+        {
+            "status": "completed",
+            "metadata": {
+                "artifact_paths": [str(session_root), str(task_dir)],
+            },
+        },
+        execution_status="completed",
+    )
+
+    metadata = finalization.payload["metadata"]
+    assert finalization.final_status == "completed"
+    assert metadata["verification_status"] == "passed"
+    assert metadata["verification"]["checks_passed"] == 2
+    assert metadata["verification"]["failures"] == []
