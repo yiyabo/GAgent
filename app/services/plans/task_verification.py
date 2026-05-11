@@ -230,7 +230,10 @@ class TaskVerificationService:
         metadata.pop("plan_patch_suggestion", None)
 
         artifact_paths = self._extract_artifact_paths(normalized_payload)
-        local_artifact_paths = [path for path in artifact_paths if self._is_local_path(path)]
+        local_artifact_paths = self._normalize_artifact_paths(
+            artifact_paths,
+            payload=normalized_payload,
+        )
 
         if normalized_execution_status not in _COMPLETED_LIKE:
             metadata["failure_kind"] = self._derive_failure_kind(
@@ -286,6 +289,7 @@ class TaskVerificationService:
             effective_criteria,
             local_artifact_paths,
             payload=normalized_payload,
+            node=node,
         )
         local_artifact_paths = self._materialize_semantic_expected_deliverables(
             node=node,
@@ -845,42 +849,19 @@ class TaskVerificationService:
 
         manual_acceptance_active = self.is_manual_acceptance_active(metadata)
 
-        # Demote completed → failed if publish contract unsatisfied.
-        # However, if verification already passed, a publish-only failure
-        # (artifact exists but wasn't registered in the manifest) should not
-        # override the verification result.  This prevents plan-time path
-        # guesses or missing publish steps from blocking the entire plan
-        # when the task actually produced its outputs.
+        # Demote completed → failed if an explicit publish contract is not
+        # present in the manifest. Verification can prove local files exist,
+        # but downstream dependency authority must come from the published
+        # artifact registry, not from prose or basename guesses.
         if (
             not manual_acceptance_active
             and publish_aliases
             and finalization.final_status in _COMPLETED_LIKE
             and missing_publish_aliases
         ):
-            verification = metadata.get("verification")
-            verification_passed = (
-                isinstance(verification, dict)
-                and str(verification.get("status") or "").strip().lower() == "passed"
-            )
-            if verification_passed:
-                # Verification confirmed the task produced valid outputs.
-                # Record the publish gap as a warning, not a hard failure.
-                metadata["failure_kind"] = "artifact_publish_warning"
-                metadata["artifact_authority_warning"] = (
-                    f"Publish contract unsatisfied for aliases {missing_publish_aliases}, "
-                    "but verification passed. Treating as completed with warning."
-                )
-                logger.warning(
-                    "Task %s: publish contract unsatisfied %s but verification passed; "
-                    "keeping completed status (plan_id=%s)",
-                    node.id,
-                    missing_publish_aliases,
-                    plan_id,
-                )
-            else:
-                metadata["failure_kind"] = "artifact_publish_missing"
-                payload["status"] = "failed"
-                finalization.final_status = "failed"
+            metadata["failure_kind"] = "artifact_publish_missing"
+            payload["status"] = "failed"
+            finalization.final_status = "failed"
 
         if manual_acceptance_active:
             payload["status"] = "completed"
@@ -1035,6 +1016,7 @@ class TaskVerificationService:
         artifact_paths: Sequence[str],
         *,
         payload: Optional[Dict[str, Any]] = None,
+        node: Optional[PlanNode] = None,
     ) -> Path:
         if isinstance(criteria, dict):
             raw_base_dir = criteria.get("base_dir")
@@ -1083,6 +1065,13 @@ class TaskVerificationService:
         # expose verification artifacts via ``tool_outputs/...`` while the real
         # deliverables live under ``<run>/results``.
         if self._criteria_uses_relative_paths(criteria):
+            for candidate in self._task_raw_files_base_dir_candidates(
+                node=node,
+                payload=payload,
+                artifact_paths=artifact_paths,
+            ):
+                if candidate.exists() and candidate.is_dir():
+                    return candidate
             for candidate in self._payload_base_dir_candidates(payload):
                 if candidate.exists() and candidate.is_dir():
                     return candidate
@@ -1105,6 +1094,133 @@ class TaskVerificationService:
             except Exception:
                 return Path(candidate_dirs[0])
         return Path.cwd()
+
+    @classmethod
+    def _task_raw_files_base_dir_candidates(
+        cls,
+        *,
+        node: Optional[PlanNode],
+        payload: Optional[Dict[str, Any]],
+        artifact_paths: Sequence[str],
+    ) -> List[Path]:
+        if node is None:
+            return []
+
+        task_suffix = cls._task_raw_files_suffix(node)
+        if task_suffix is None:
+            return []
+
+        candidates = cls._task_raw_files_candidates_from_artifact_paths(
+            task_suffix=task_suffix,
+            artifact_paths=artifact_paths,
+        )
+        seen: set[str] = {str(candidate) for candidate in candidates}
+        roots = cls._runtime_session_roots_from_payload_and_artifacts(
+            payload=payload,
+            artifact_paths=artifact_paths,
+        )
+        for root in roots:
+            candidate = root / "raw_files" / task_suffix
+            key = str(candidate)
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append(candidate)
+        return candidates
+
+    @staticmethod
+    def _task_raw_files_candidates_from_artifact_paths(
+        *,
+        task_suffix: Path,
+        artifact_paths: Sequence[str],
+    ) -> List[Path]:
+        suffix_parts = tuple(task_suffix.parts)
+        candidates: List[Path] = []
+        seen: set[str] = set()
+
+        def _add(candidate: Path) -> None:
+            key = str(candidate)
+            if key in seen:
+                return
+            seen.add(key)
+            candidates.append(candidate)
+
+        for raw in artifact_paths:
+            if not isinstance(raw, str) or not raw.strip():
+                continue
+            path = Path(raw.strip()).expanduser()
+            parts = tuple(path.parts)
+            try:
+                raw_index = parts.index("raw_files")
+            except ValueError:
+                continue
+            after_raw = parts[raw_index + 1:]
+            if len(after_raw) < len(suffix_parts):
+                continue
+            if after_raw[:len(suffix_parts)] != suffix_parts:
+                continue
+            candidate = Path(*parts[:raw_index + 1 + len(suffix_parts)])
+            _add(candidate)
+
+        return candidates
+
+    @staticmethod
+    def _task_raw_files_suffix(node: PlanNode) -> Optional[Path]:
+        raw_path = str(getattr(node, "path", "") or "").strip()
+        parts = [part for part in raw_path.strip("/").split("/") if part]
+        if not parts:
+            parts = [str(getattr(node, "id", "") or "").strip()]
+        task_parts: List[str] = []
+        for part in parts:
+            try:
+                task_id = int(part)
+            except (TypeError, ValueError):
+                return None
+            task_parts.append(f"task_{task_id}")
+        if not task_parts:
+            return None
+        return Path(*task_parts)
+
+    @classmethod
+    def _runtime_session_roots_from_payload_and_artifacts(
+        cls,
+        *,
+        payload: Optional[Dict[str, Any]],
+        artifact_paths: Sequence[str],
+    ) -> List[Path]:
+        roots: List[Path] = []
+        seen: set[str] = set()
+
+        def _add(root: Path) -> None:
+            try:
+                resolved = root.expanduser().resolve()
+            except Exception:
+                resolved = root.expanduser()
+            if not resolved.exists() or not resolved.is_dir():
+                return
+            key = str(resolved)
+            if key in seen:
+                return
+            seen.add(key)
+            roots.append(resolved)
+
+        for raw in artifact_paths:
+            if not isinstance(raw, str) or not raw.strip():
+                continue
+            path = Path(raw.strip()).expanduser()
+            for candidate in (path, *path.parents):
+                if candidate.name.startswith("session_") and candidate.parent.name == "runtime":
+                    _add(candidate)
+                    break
+
+        for candidate in cls._payload_base_dir_candidates(payload):
+            path = candidate.expanduser()
+            for parent in (path, *path.parents):
+                if parent.name.startswith("session_") and parent.parent.name == "runtime":
+                    _add(parent)
+                    break
+
+        return roots
 
     @staticmethod
     def _criteria_uses_relative_paths(criteria: Optional[Dict[str, Any]]) -> bool:
@@ -1785,9 +1901,15 @@ class TaskVerificationService:
         alias_hit: Optional[Path] = None
         expected_alias = expected_name if is_artifact_alias(expected_name) else None
 
+        artifact_dirs: List[Path] = []
         for raw in artifact_paths:
             ap = Path(raw)
-            if not ap.exists() or not ap.is_file():
+            if not ap.exists():
+                continue
+            if ap.is_dir():
+                artifact_dirs.append(ap)
+                continue
+            if not ap.is_file():
                 continue
             if basename_hit is None and ap.name.lower() == expected_name:
                 basename_hit = ap
@@ -1801,6 +1923,16 @@ class TaskVerificationService:
         if alias_hit:
             logger.info("[Verification] Fallback alias match: %s -> %s", expected_path, alias_hit)
             return alias_hit
+
+        for artifact_dir in reversed(artifact_dirs):
+            direct = artifact_dir / expected_path.name
+            if direct.exists() and direct.is_file():
+                logger.info(
+                    "[Verification] Fallback basename match inside artifact directory: %s -> %s",
+                    expected_path,
+                    direct,
+                )
+                return direct
 
         return None
 
@@ -2899,6 +3031,7 @@ class TaskVerificationService:
             parts = [part for part in suffix_source.split("/") if part and part != "."]
             for index in range(1, len(parts)):
                 output_candidates.append("/".join(parts[index:]))
+        output_candidates = [candidate for candidate in dict.fromkeys(output_candidates) if candidate]
         for expected in expected_deliverables:
             text = TaskVerificationService._normalize_glob_text(expected)
             if not text:
@@ -2906,7 +3039,7 @@ class TaskVerificationService:
             if any(token in text for token in ("*", "?", "[")):
                 if any(fnmatch.fnmatch(candidate, text) for candidate in output_candidates):
                     return True
-            elif normalized_output == text:
+            elif text in output_candidates:
                 return True
         return False
 
@@ -2993,6 +3126,123 @@ class TaskVerificationService:
         if len(found) > 40:
             logger.debug("Artifact paths truncated: %d -> 40", len(found))
         return found[:40]
+
+    def _normalize_artifact_paths(
+        self,
+        artifact_paths: Sequence[str],
+        *,
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> List[str]:
+        normalized: List[str] = []
+        seen: set[str] = set()
+
+        def _add(value: Any) -> None:
+            if not isinstance(value, str):
+                return
+            text = value.strip()
+            if (
+                not text
+                or text in seen
+                or not self._is_local_path(text)
+                or self._is_internal_artifact_path(text)
+            ):
+                return
+            seen.add(text)
+            normalized.append(text)
+
+        session_roots = self._runtime_session_roots(payload)
+        for raw in artifact_paths:
+            _add(raw)
+            for candidate in self._resolve_session_relative_artifact_paths(raw, session_roots):
+                _add(str(candidate))
+
+        return normalized[:80]
+
+    @staticmethod
+    def _runtime_session_roots(payload: Optional[Dict[str, Any]] = None) -> List[Path]:
+        roots: List[Path] = []
+        seen: set[str] = set()
+
+        def _add(root: Path) -> None:
+            try:
+                resolved = root.expanduser().resolve()
+            except Exception:
+                resolved = root.expanduser()
+            if not resolved.exists() or not resolved.is_dir():
+                return
+            key = str(resolved)
+            if key in seen:
+                return
+            seen.add(key)
+            roots.append(resolved)
+
+        for candidate in TaskVerificationService._payload_base_dir_candidates(payload):
+            path = candidate.expanduser()
+            for parent in (path, *path.parents):
+                if parent.name.startswith("session_") and parent.parent.name == "runtime":
+                    _add(parent)
+                    break
+
+        if roots:
+            return roots
+
+        runtime_root = Path.cwd() / "runtime"
+        if runtime_root.exists() and runtime_root.is_dir():
+            for session_dir in runtime_root.glob("session_*"):
+                _add(session_dir)
+
+        return roots
+
+    @staticmethod
+    def _resolve_session_relative_artifact_paths(
+        raw_path: Any,
+        session_roots: Sequence[Path],
+    ) -> List[Path]:
+        if not isinstance(raw_path, str) or not session_roots:
+            return []
+        text = raw_path.strip().replace("\\", "/")
+        if not text:
+            return []
+        if Path(text).expanduser().exists():
+            return []
+
+        parts = [part for part in text.lstrip("/").split("/") if part and part != "."]
+        if not parts or ".." in parts:
+            return []
+        if "raw_files" in parts:
+            index = parts.index("raw_files")
+            suffix_parts = parts[index + 1:]
+        elif parts[0].startswith("task_"):
+            suffix_parts = parts
+        else:
+            return []
+        if not suffix_parts or not suffix_parts[0].startswith("task_"):
+            return []
+
+        suffix = Path(*suffix_parts)
+        resolved: List[Path] = []
+        seen: set[str] = set()
+        for session_root in session_roots:
+            candidate = session_root / "raw_files" / suffix
+            if not candidate.exists():
+                continue
+            try:
+                candidate = candidate.resolve()
+            except Exception:
+                pass
+            key = str(candidate)
+            if key in seen:
+                continue
+            seen.add(key)
+            resolved.append(candidate)
+        if len(resolved) > 1:
+            logger.warning(
+                "Ambiguous session-relative artifact path %s matched %d runtime sessions; ignoring fallback.",
+                raw_path,
+                len(resolved),
+            )
+            return []
+        return resolved
 
     @staticmethod
     def _is_internal_artifact_path(value: str) -> bool:
