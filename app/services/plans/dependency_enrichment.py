@@ -12,6 +12,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from .dependency_validation import normalize_plan_dependencies
 from .plan_models import PlanNode, PlanTree
 
 logger = logging.getLogger(__name__)
@@ -564,7 +565,31 @@ def validate_plan_dag(
                 result.warnings.append(issue)
                 logger.warning(issue.message)
 
-    # Check 2: Cycle detection via DFS
+    # Check 2: Generic structural dependency validation
+    normalization = normalize_plan_dependencies(tree)
+    structural_codes = {
+        "self_dependency",
+        "ancestor_dependency",
+        "descendant_dependency",
+        "missing_dependency",
+        "invalid_dependency",
+    }
+    for structural_issue in normalization.issues:
+        if structural_issue.code not in structural_codes:
+            continue
+        issue = DagValidationIssue(
+            code=structural_issue.code,
+            severity="error",
+            message=structural_issue.message,
+            task_ids=[
+                task_id for task_id in (structural_issue.task_id, structural_issue.dependency_id)
+                if task_id is not None
+            ],
+        )
+        result.errors.append(issue)
+        logger.error(issue.message)
+
+    # Check 3: Cycle detection via DFS
     cycles = _detect_cycles(tree)
     for cycle in cycles:
         issue = DagValidationIssue(

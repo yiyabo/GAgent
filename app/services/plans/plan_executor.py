@@ -31,6 +31,7 @@ from ..llm.llm_service import LLMService
 from ..skills import get_skills_loader
 from .artifact_contracts import (
     artifact_manifest_path,
+    canonicalize_artifact_alias,
     extend_contract_with_runtime_candidates,
     find_candidate_source_for_alias,
     find_runtime_candidates,
@@ -44,6 +45,10 @@ from .artifact_contracts import (
     save_artifact_manifest,
 )
 from .artifact_preflight import ArtifactPreflightService
+from .dependency_validation import (
+    normalize_dependencies_for_task,
+    normalize_plan_dependencies,
+)
 from .plan_models import PlanNode, PlanTree
 from .status_resolver import PlanStatusResolver
 from .task_verification import TaskVerificationService, VerificationFinalization
@@ -338,6 +343,7 @@ class ExecutionConfig:
     force_rerun: bool = False
     auto_recovery: bool = False
     max_recovery_attempts: int = 2
+    contract_repair_attempts: int = 1
     autonomous: bool = False
     on_task_complete: Optional[Callable[["ExecutionResult", int, int], None]] = None
     enable_skills: bool = True
@@ -367,6 +373,7 @@ class ExecutionConfig:
             force_rerun=getattr(settings, "force_rerun", False),
             auto_recovery=getattr(settings, "auto_recovery", False),
             max_recovery_attempts=max(1, getattr(settings, "max_recovery_attempts", 2)),
+            contract_repair_attempts=max(0, getattr(settings, "contract_repair_attempts", 1)),
             autonomous=getattr(settings, "autonomous", False),
             enable_skills=settings.enable_skills,
             skill_budget_chars=settings.skill_budget_chars,
@@ -523,11 +530,40 @@ class ExecutorPromptBuilder:
             else []
         )
         artifact_contract = node_metadata.get("artifact_contract") if isinstance(node_metadata.get("artifact_contract"), dict) else {}
+        acceptance_criteria = node_metadata.get("acceptance_criteria") if isinstance(node_metadata.get("acceptance_criteria"), dict) else {}
         resolved_input_artifacts = (
             (session_context or {}).get("resolved_input_artifacts")
             if isinstance((session_context or {}).get("resolved_input_artifacts"), dict)
             else {}
         )
+        required_output_paths: List[str] = []
+        criteria_checks = acceptance_criteria.get("checks") if isinstance(acceptance_criteria, dict) else None
+        if isinstance(criteria_checks, list):
+            for check in criteria_checks:
+                if not isinstance(check, dict):
+                    continue
+                check_type = str(check.get("type") or "").strip()
+                if check_type not in {"file_exists", "file_nonempty"}:
+                    continue
+                raw_path = str(check.get("path") or "").strip()
+                if raw_path and raw_path not in required_output_paths:
+                    required_output_paths.append(raw_path)
+        if acceptance_criteria or artifact_contract:
+            lines.append("\n=== OUTPUT CONTRACT ===")
+            if required_output_paths:
+                lines.append("Required output files that must exist before the task can complete:")
+                for path in required_output_paths[:20]:
+                    lines.append(f"- {path}")
+            if isinstance(artifact_contract.get("requires"), list) and artifact_contract["requires"]:
+                lines.append(f"Required artifact aliases: {artifact_contract['requires']}")
+            if isinstance(artifact_contract.get("publishes"), list) and artifact_contract["publishes"]:
+                lines.append(f"Published artifact aliases: {artifact_contract['publishes']}")
+            lines.extend(
+                [
+                    "Contract rule: completion is based on these exact files/artifact aliases, not on similar filenames or prose claims.",
+                    "If a required file is named, create that exact file path or explicitly report why it cannot be created.",
+                ]
+            )
         if paper_mode:
             lines.append("\n=== PAPER MODE ===")
             if paper_section:
@@ -922,7 +958,9 @@ class PlanExecutor:
                     "issue_count": len(preflight.errors),
                 },
             )
+        tree = self._normalize_plan_dependency_edges(tree)
         tree = self._infer_missing_dependencies(tree)
+        tree = self._normalize_plan_dependency_edges(tree)
         order = list(self._execution_order(tree))
 
         if cfg.max_tasks is not None:
@@ -1283,6 +1321,11 @@ class PlanExecutor:
         tree = self._repo.get_plan_tree(plan_id)
         if task_id not in tree.nodes:
             raise ValueError(f"Task {task_id} not found in plan {plan_id}")
+        tree = self._normalize_plan_dependency_edges(tree)
+        tree = self._infer_missing_dependencies(tree)
+        tree = self._normalize_plan_dependency_edges(tree)
+        if task_id not in tree.nodes:
+            raise ValueError(f"Task {task_id} not found in plan {plan_id}")
         node = tree.get_node(task_id)
         return self._run_task(plan_id, node, tree, cfg)
 
@@ -1299,21 +1342,57 @@ class PlanExecutor:
     ) -> ExecutionResult:
         parent = tree.nodes.get(node.parent_id) if node.parent_id else None
         dependencies = self._resolve_dependencies(tree, node)
+        plan_state_by_task = self._status_resolver.resolve_plan_states(
+            plan_id,
+            tree,
+            manifest=self._get_artifact_manifest(plan_id, config.session_context),
+        )
 
         incomplete_deps = []
+        dep_status_by_id: Dict[int, str] = {}
         for dep in dependencies:
-            dep_status = (dep.status or "pending").strip().lower()
-            if dep_status not in ("completed", "done"):
+            dep_state = plan_state_by_task.get(dep.id) or {}
+            dep_status = str(dep_state.get("effective_status") or dep.status or "pending").strip().lower()
+            dep_status_by_id[dep.id] = dep_status
+            if dep_status != "completed":
                 incomplete_deps.append(dep)
                 logger.warning(
                     "Dependency %s (status=%s) not completed before executing task %s",
-                    dep.id, dep.status, node.id
+                    dep.id, dep_status, node.id
                 )
 
+        if config.session_context is None:
+            config.session_context = {}
+        session_context = config.session_context if isinstance(config.session_context, dict) else {}
+        artifact_contract, resolved_input_artifacts, missing_aliases, producer_map = self._resolve_required_artifacts(
+            plan_id,
+            node,
+            dependencies=dependencies,
+            tree=tree,
+            session_context=session_context,
+        )
+        if missing_aliases:
+            _log_job(
+                "warning",
+                f"Task {node.id} blocked: required artifacts not published",
+                {
+                    "task_id": node.id,
+                    "missing_artifact_aliases": missing_aliases,
+                    "producer_task_candidates": producer_map,
+                },
+            )
+            return self._block_for_missing_artifacts(
+                plan_id=plan_id,
+                node=node,
+                tree=tree,
+                missing_aliases=missing_aliases,
+                producer_candidates=producer_map,
+                resolved_input_artifacts=resolved_input_artifacts,
+            )
         if incomplete_deps and config.enforce_dependencies:
             incomplete_ids = [d.id for d in incomplete_deps]
             incomplete_display = ", ".join(
-                f"#{d.id}({(d.status or 'pending').strip()})" for d in incomplete_deps
+                f"#{d.id}({dep_status_by_id.get(d.id) or (d.status or 'pending').strip()})" for d in incomplete_deps
             )
             skip_reason = (
                 f"Blocked by dependencies: task #{node.id} requires completed outputs from "
@@ -1402,16 +1481,6 @@ class PlanExecutor:
                 },
             )
 
-        if config.session_context is None:
-            config.session_context = {}
-        session_context = config.session_context if isinstance(config.session_context, dict) else {}
-        artifact_contract, resolved_input_artifacts, missing_aliases, producer_map = self._resolve_required_artifacts(
-            plan_id,
-            node,
-            dependencies=dependencies,
-            tree=tree,
-            session_context=session_context,
-        )
         if isinstance(node.metadata, dict):
             node.metadata.setdefault("artifact_contract", artifact_contract)
             raw_paths = node.metadata.get("paper_context_paths")
@@ -1451,25 +1520,6 @@ class PlanExecutor:
                 missing_resources=missing_resources,
                 resolved_resources=resolved_resources,
             )
-        if missing_aliases:
-            _log_job(
-                "warning",
-                f"Task {node.id} blocked: required artifacts not published",
-                {
-                    "task_id": node.id,
-                    "missing_artifact_aliases": missing_aliases,
-                    "producer_task_candidates": producer_map,
-                },
-            )
-            return self._block_for_missing_artifacts(
-                plan_id=plan_id,
-                node=node,
-                tree=tree,
-                missing_aliases=missing_aliases,
-                producer_candidates=producer_map,
-                resolved_input_artifacts=resolved_input_artifacts,
-            )
-
         outline = tree.to_outline(max_depth=4, max_nodes=80) if config.include_plan_outline else None
 
         if self._should_use_deep_think(config):
@@ -1738,10 +1788,14 @@ class PlanExecutor:
             producer_map: Dict[str, int] = {}
             producer_all: Dict[str, List[int]] = {}  # for warning on conflicts
             for node in tree.nodes.values():
+                if tree.children_ids(node.id):
+                    continue
                 metadata = node.metadata if isinstance(node.metadata, dict) else {}
                 contract = self._resolve_task_artifact_contract(node)
                 for alias in contract.get("publishes", []):
-                    producer_all.setdefault(alias, []).append(node.id)
+                    producer_all.setdefault(alias, [])
+                    if node.id not in producer_all[alias]:
+                        producer_all[alias].append(node.id)
                     if alias not in producer_map or node.id > producer_map[alias]:
                         producer_map[alias] = node.id
                 criteria = metadata.get("acceptance_criteria")
@@ -1762,20 +1816,23 @@ class PlanExecutor:
                     basename = os.path.basename(raw_path.strip())
                     if not basename:
                         continue
-                    producer_all.setdefault(basename, []).append(node.id)
+                    producer_all.setdefault(basename, [])
+                    if node.id not in producer_all[basename]:
+                        producer_all[basename].append(node.id)
                     # Take task_id with the largest value (latest created)
                     if basename not in producer_map or node.id > producer_map[basename]:
                         producer_map[basename] = node.id
 
             # Log warnings for multi-producer basenames / aliases
+            ambiguous_keys = set()
             for basename, ids in producer_all.items():
                 if len(ids) > 1:
-                    chosen = producer_map[basename]
+                    ambiguous_keys.add(basename)
+                    producer_map.pop(basename, None)
                     logger.warning(
-                        "Multiple producers for '%s': tasks %s, using task %d",
+                        "Multiple producers for '%s': tasks %s; dependency inference skipped",
                         basename,
                         sorted(ids),
-                        chosen,
                     )
 
             # Step 2: Find missing dependencies
@@ -1784,6 +1841,8 @@ class PlanExecutor:
                 metadata = node.metadata if isinstance(node.metadata, dict) else {}
                 contract = self._resolve_task_artifact_contract(node)
                 for alias in contract.get("requires", []):
+                    if alias in ambiguous_keys:
+                        continue
                     producer_id = producer_map.get(alias)
                     if producer_id is None or producer_id == node.id or producer_id in node.dependencies:
                         continue
@@ -1795,6 +1854,8 @@ class PlanExecutor:
                     if not isinstance(raw_path, str) or not raw_path.strip():
                         continue
                     basename = os.path.basename(raw_path.strip())
+                    if basename in ambiguous_keys:
+                        continue
                     producer_id = producer_map.get(basename)
                     if producer_id is None:
                         continue
@@ -1815,7 +1876,16 @@ class PlanExecutor:
                 for dep_id in additions:
                     if dep_id not in new_deps:
                         new_deps.append(dep_id)
-                self._repo.update_task(tree.id, consumer_id, dependencies=new_deps)
+                normalized = normalize_dependencies_for_task(tree, consumer_id, new_deps)
+                for issue in normalized.issues:
+                    logger.warning("Dependency edge rejected or normalized: %s", issue.message)
+                if normalized.normalized_dependencies == list(node.dependencies):
+                    continue
+                self._repo.update_task(
+                    tree.id,
+                    consumer_id,
+                    dependencies=normalized.normalized_dependencies,
+                )
                 for producer_id in additions:
                     # Find the basename that triggered this edge
                     metadata = node.metadata if isinstance(node.metadata, dict) else {}
@@ -1852,6 +1922,58 @@ class PlanExecutor:
 
         except Exception as exc:
             logger.warning("Failed to infer missing dependencies: %s", exc)
+            return tree
+
+    def _normalize_plan_dependency_edges(self, tree: PlanTree) -> PlanTree:
+        """Persist a generic normalized dependency graph before execution.
+
+        This is intentionally structural and task-agnostic: it removes invalid
+        ancestor/descendant/self/cyclic dependencies and expands dependencies on
+        composite nodes to executable leaf tasks.
+        """
+        try:
+            normalization = normalize_plan_dependencies(tree)
+        except Exception as exc:
+            logger.warning("Failed to validate plan dependencies: %s", exc)
+            return tree
+
+        for issue in normalization.issues:
+            level = logging.INFO if issue.code == "composite_dependency_expanded" else logging.WARNING
+            logger.log(level, "Plan dependency normalization: %s", issue.message)
+            _log_job(
+                "info" if level == logging.INFO else "warning",
+                "Plan dependency normalization applied.",
+                {
+                    "plan_id": tree.id,
+                    "task_id": issue.task_id,
+                    "dependency_id": issue.dependency_id,
+                    "code": issue.code,
+                    "message": issue.message,
+                    "replacement_ids": list(issue.replacement_ids),
+                },
+            )
+
+        if not normalization.dependencies_by_task:
+            return tree
+
+        changed_ids: List[int] = []
+        for task_id, deps in normalization.dependencies_by_task.items():
+            try:
+                self._repo.update_task(tree.id, task_id, dependencies=list(deps))
+                changed_ids.append(task_id)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to persist normalized dependencies for plan %s task %s: %s",
+                    tree.id,
+                    task_id,
+                    exc,
+                )
+        if not changed_ids:
+            return tree
+        try:
+            return self._repo.get_plan_tree(tree.id)
+        except Exception as exc:
+            logger.warning("Failed to reload plan after dependency normalization: %s", exc)
             return tree
 
     def _preselect_skills_for_plan(
@@ -1953,24 +2075,14 @@ class PlanExecutor:
         For each relative path, search *dep_artifacts* for a basename match.
 
         Conflict resolution:
-          - **Cross-dependency**: if multiple deps have the same basename, pick
-            the artifact from the dep with the largest ``dep_id``.
-          - **Same-dependency**: if one dep exposes multiple artifacts with the
-            same basename, pick by path priority: paths containing
-            ``deliverable/`` win over ``results/``, which win over anything
-            else (fallback: last match in the list).
+          - **Unique basename**: resolved to the matching dependency artifact.
+          - **Ambiguous basename**: preserved unresolved and logged. Callers
+            must use explicit artifact aliases or exact paths for ambiguous
+            artifacts; silently picking the latest producer can mix data
+            sources.
 
         Absolute paths are kept as-is.  Unmatched relative paths are preserved.
         """
-        _PRIORITY_SEGMENTS = ("deliverable", "results")
-
-        def _path_priority(p: str) -> int:
-            lowered = p.lower()
-            for idx, segment in enumerate(_PRIORITY_SEGMENTS):
-                if f"/{segment}/" in lowered or lowered.startswith(f"{segment}/"):
-                    return idx
-            return len(_PRIORITY_SEGMENTS)
-
         resolved: List[str] = []
         for raw_path in context_paths:
             text = raw_path.strip()
@@ -2002,31 +2114,13 @@ class PlanExecutor:
                 resolved.append(matches[0][1])
                 continue
 
-            # Multiple matches — group by dep_id, pick max dep_id
-            max_dep_id = max(dep_id for dep_id, _ in matches)
-            same_dep_matches = [ap for dep_id, ap in matches if dep_id == max_dep_id]
-
-            # Cross-dependency conflict: warn
             dep_ids_with_match = sorted(set(dep_id for dep_id, _ in matches))
-            if len(dep_ids_with_match) > 1:
-                logger.warning(
-                    "Multiple dependencies have artifact '%s': deps %s, using dep %d",
-                    target_basename,
-                    dep_ids_with_match,
-                    max_dep_id,
-                )
-
-            if len(same_dep_matches) == 1:
-                resolved.append(same_dep_matches[0])
-                continue
-
-            # Same-dependency internal conflict: pick by path priority.
-            # Among candidates with the same priority, take the last one in the
-            # artifact list (later entries are typically more final).
-            best_priority = min(_path_priority(p) for p in same_dep_matches)
-            candidates_at_best = [p for p in same_dep_matches if _path_priority(p) == best_priority]
-            best = candidates_at_best[-1]
-            resolved.append(best)
+            logger.warning(
+                "Ambiguous dependency artifact basename '%s' from deps %s; preserving unresolved path.",
+                target_basename,
+                dep_ids_with_match,
+            )
+            resolved.append(text)
 
         return resolved
 
@@ -2115,6 +2209,47 @@ class PlanExecutor:
     def _should_use_deep_think(self, config: ExecutionConfig) -> bool:
         _ = config
         return True
+
+    @staticmethod
+    def _build_output_contract_constraints(node_metadata: Dict[str, Any]) -> List[str]:
+        metadata = node_metadata if isinstance(node_metadata, dict) else {}
+        acceptance = metadata.get("acceptance_criteria") if isinstance(metadata.get("acceptance_criteria"), dict) else {}
+        contract = metadata.get("artifact_contract") if isinstance(metadata.get("artifact_contract"), dict) else {}
+        required_paths: List[str] = []
+        checks = acceptance.get("checks") if isinstance(acceptance, dict) else None
+        if isinstance(checks, list):
+            for check in checks:
+                if not isinstance(check, dict):
+                    continue
+                check_type = str(check.get("type") or "").strip().lower()
+                if check_type not in {"file_exists", "file_nonempty"}:
+                    continue
+                path = str(check.get("path") or "").strip()
+                if path and path not in required_paths:
+                    required_paths.append(path)
+
+        lines: List[str] = []
+        if required_paths:
+            lines.append(
+                "OUTPUT CONTRACT: before claiming completion, create these exact required file(s): "
+                + ", ".join(required_paths[:20])
+                + ". Similar filenames do not satisfy the contract."
+            )
+        publishes = contract.get("publishes") if isinstance(contract, dict) else None
+        if isinstance(publishes, list) and publishes:
+            lines.append(
+                "ARTIFACT CONTRACT: this task publishes logical artifact alias(es): "
+                + ", ".join(str(item) for item in publishes[:20])
+                + ". Ensure the required output files exist so the executor can validate and register them."
+            )
+        requires = contract.get("requires") if isinstance(contract, dict) else None
+        if isinstance(requires, list) and requires:
+            lines.append(
+                "ARTIFACT INPUTS: use resolved_input_artifacts for required alias(es): "
+                + ", ".join(str(item) for item in requires[:20])
+                + "; do not resolve ambiguous basenames by guessing."
+            )
+        return lines
 
     def _run_task_with_deep_think(
         self,
@@ -2208,12 +2343,14 @@ class PlanExecutor:
             if dependency_paths:
                 session_context["paper_context_paths"] = dependency_paths[:40]
 
+        output_contract_lines = self._build_output_contract_constraints(node_metadata)
         constraints = [
             "You are in TASK EXECUTION mode, not conversational chat. Complete the task using tools, then produce the output file/result.",
             "Produce actionable output for this task only.",
             "Honor dependency outputs and do not redo completed dependencies.",
             "Do NOT call submit_final_answer — task completion is determined by producing the required output.",
         ]
+        constraints.extend(output_contract_lines)
         # Extract tool names mentioned in the instruction and enforce priority
         _instruction_lower = (node.instruction or "").lower()
         _tool_names_in_instruction = [
@@ -2542,6 +2679,15 @@ class PlanExecutor:
                 payload,
                 execution_status=effective_execution_status,
             )
+            finalization = self._attempt_contract_repair_with_deep_think(
+                plan_id=plan_id,
+                node=node,
+                task_context=task_context,
+                session_context=session_context,
+                deep_think_agent=deep_think_agent,
+                finalization=finalization,
+                tool_result_context=tool_result_context,
+            )
             finalization, raw_response = self._materialize_finalization(
                 plan_id,
                 node,
@@ -2607,6 +2753,145 @@ class PlanExecutor:
 
     def _run_coroutine_sync(self, coro: Any) -> Any:
         return _run_coroutine_sync(coro)
+
+    def _attempt_contract_repair_with_deep_think(
+        self,
+        *,
+        plan_id: int,
+        node: PlanNode,
+        task_context: TaskExecutionContext,
+        session_context: Dict[str, Any],
+        deep_think_agent: DeepThinkAgent,
+        finalization: VerificationFinalization,
+        tool_result_context: Dict[str, Any],
+    ) -> VerificationFinalization:
+        max_attempts = max(0, int(getattr(self._settings, "contract_repair_attempts", 1)))
+        if max_attempts <= 0:
+            return finalization
+
+        for attempt in range(1, max_attempts + 1):
+            metadata = finalization.payload.get("metadata") if isinstance(finalization.payload, dict) else {}
+            if not isinstance(metadata, dict):
+                return finalization
+            if str(metadata.get("failure_kind") or "").strip().lower() != "contract_mismatch":
+                return finalization
+            contract_diff = metadata.get("contract_diff")
+            if not isinstance(contract_diff, dict):
+                return finalization
+
+            repair_query = self._build_contract_repair_query(
+                node=node,
+                attempt=attempt,
+                contract_diff=contract_diff,
+            )
+            repair_context = dict(session_context)
+            repair_context["contract_repair"] = {
+                "attempt": attempt,
+                "max_attempts": max_attempts,
+                "contract_diff": contract_diff,
+            }
+            try:
+                _log_job(
+                    "warning",
+                    "Contract repair attempt started.",
+                    {"plan_id": plan_id, "task_id": node.id, "attempt": attempt},
+                )
+                result = self._run_coroutine_sync(
+                    deep_think_agent.think(
+                        repair_query,
+                        context=repair_context,
+                        task_context=task_context,
+                    )
+                )
+            except Exception as exc:
+                logger.warning("Contract repair attempt failed for task %s: %s", node.id, exc)
+                metadata["contract_repair_error"] = str(exc)
+                finalization.payload["metadata"] = metadata
+                return finalization
+
+            repair_payload: Dict[str, Any] = {
+                "status": "success",
+                "content": result.final_answer,
+                "notes": [result.thinking_summary] if result.thinking_summary else [],
+                "metadata": {
+                    "deep_think": True,
+                    "contract_repair": True,
+                    "repair_attempts": attempt,
+                    "confidence": result.confidence,
+                    "tools_used": result.tools_used,
+                },
+            }
+            final_answer_paths = self._extract_path_like_values(result.final_answer)
+            if final_answer_paths:
+                existing_paths = [
+                    str(item).strip()
+                    for item in list(tool_result_context.get("artifact_paths") or [])
+                    if str(item).strip()
+                ]
+                tool_result_context["artifact_paths"] = list(
+                    dict.fromkeys([*final_answer_paths, *existing_paths])
+                )[:40]
+            artifact_paths = tool_result_context.get("artifact_paths")
+            if isinstance(artifact_paths, list) and artifact_paths:
+                repair_payload["artifact_paths"] = artifact_paths[:40]
+                repair_payload["metadata"]["artifact_paths"] = artifact_paths[:40]
+
+            repair_payload, execution_status = _coerce_blocked_dependency_payload(repair_payload)
+            repaired, _ = self._finalize_task_execution(
+                plan_id,
+                node,
+                repair_payload,
+                execution_status=execution_status,
+                trigger="contract_repair",
+            )
+            repaired_meta = repaired.payload.get("metadata") if isinstance(repaired.payload, dict) else {}
+            if isinstance(repaired_meta, dict):
+                repaired_meta["repair_attempts"] = attempt
+                repaired.payload["metadata"] = repaired_meta
+            finalization = repaired
+            _log_job(
+                "info" if repaired.final_status == "completed" else "warning",
+                "Contract repair attempt finished.",
+                {
+                    "plan_id": plan_id,
+                    "task_id": node.id,
+                    "attempt": attempt,
+                    "status": repaired.final_status,
+                },
+            )
+            if repaired.final_status == "completed":
+                return repaired
+        return finalization
+
+    @staticmethod
+    def _build_contract_repair_query(
+        *,
+        node: PlanNode,
+        attempt: int,
+        contract_diff: Dict[str, Any],
+    ) -> str:
+        expected = contract_diff.get("expected_deliverables") or []
+        missing = contract_diff.get("missing_required_outputs") or []
+        wrong_format = contract_diff.get("wrong_format_outputs") or []
+        actual = contract_diff.get("actual_outputs") or []
+        lines = [
+            f"Repair contract mismatch for task #{node.id}: {node.display_name()}.",
+            f"Repair attempt: {attempt}.",
+            "The previous execution did not satisfy the output contract. Do not redo unrelated work.",
+            "First check whether the required artifact already exists in the current task runtime/workspace output directory.",
+            "If a valid runtime/workspace artifact exists, report that path as the authoritative output instead of copying it to an external absolute path.",
+            "Only create missing outputs inside the current task output directory; do not copy large artifacts to historical backup, upload, or user-environment absolute paths.",
+        ]
+        if expected:
+            lines.append(f"Expected deliverables: {expected}")
+        if missing:
+            lines.append(f"Missing required outputs: {missing}")
+        if wrong_format:
+            lines.append(f"Wrong-format outputs: {wrong_format}")
+        if actual:
+            lines.append(f"Actual outputs currently present: {actual}")
+        lines.append("Completion requires passing verification; similar filenames or prose claims are insufficient.")
+        return "\n".join(lines)
 
     def _persist_execution(
         self,
@@ -3017,6 +3302,7 @@ class PlanExecutor:
         tree: Optional[PlanTree] = None,
         state_by_task: Optional[Dict[int, Dict[str, Any]]] = None,
         session_context: Optional[Dict[str, Any]] = None,
+        allow_publish_contract_backfill: bool = False,
     ) -> bool:
         if state_by_task is None and tree is not None:
             state_by_task = self._status_resolver.resolve_plan_states(
@@ -3025,11 +3311,20 @@ class PlanExecutor:
                 manifest=self._get_artifact_manifest(plan_id, session_context),
             )
         if isinstance(state_by_task, dict):
+            state = state_by_task.get(node.id) or {}
             effective_status = str(
-                (state_by_task.get(node.id) or {}).get("effective_status") or ""
+                state.get("effective_status") or ""
             ).strip().lower()
             if effective_status:
-                return effective_status == "completed"
+                if effective_status == "completed":
+                    return True
+                can_backfill_publish_gap = (
+                    allow_publish_contract_backfill
+                    and effective_status == "failed"
+                    and str(state.get("reason_code") or "").strip() == "publish_contract_missing"
+                )
+                if not can_backfill_publish_gap:
+                    return False
 
         raw_status = str(getattr(node, "status", "") or "").strip().lower()
         if raw_status in {"done", "success"}:
@@ -3135,6 +3430,8 @@ class PlanExecutor:
             artifact_registry = session_context.get("_artifact_registry")
 
         for alias in publishes_to_backfill:
+            if provenance.explicit_publishes and alias not in provenance.explicit_publishes:
+                continue
             existing_entry = manifest.get("artifacts", {}).get(alias) if isinstance(manifest.get("artifacts"), dict) else None
             source = find_candidate_source_for_alias(alias=alias, candidate_paths=candidate_paths)
             if source is None and backfill_enabled:
@@ -3211,23 +3508,32 @@ class PlanExecutor:
                     plan_id,
                     dep,
                     state_by_task=state_by_task,
+                    allow_publish_contract_backfill=True,
                 ):
                     self._backfill_task_artifacts(plan_id, dep, manifest, session_context)
 
         resolved = resolve_manifest_aliases(manifest, required_aliases)
         missing_for_resolution = [alias for alias in required_aliases if alias not in resolved]
-        # Treat both explicit and inferred artifact requirements as blocking.
-        # The artifact gate is the last deterministic guard before execution; if
-        # a required alias cannot be resolved from the manifest, running the task
-        # only produces an avoidable contract failure or fabricated substitute.
-        missing = list(missing_for_resolution)
         if not missing_for_resolution:
+            return contract, resolved, [], {}
+
+        authoritative_required_aliases = [
+            canonicalize_artifact_alias(alias)
+            for alias in explicit_required_aliases
+            if str(alias or "").strip()
+        ]
+        missing = [
+            alias
+            for alias in missing_for_resolution
+            if alias in authoritative_required_aliases
+        ]
+        if not missing:
             return contract, resolved, [], {}
 
         # Producer scan: only attempt backfill when compat flag is on
         producer_map: Dict[str, List[int]] = {}
         all_nodes = list(tree.nodes.values())
-        for alias in missing_for_resolution:
+        for alias in missing:
             producer_map[alias] = producer_candidates_for_alias(alias, all_nodes)
             if backfill_enabled:
                 for producer_id in producer_map[alias]:
@@ -3236,6 +3542,7 @@ class PlanExecutor:
                         plan_id,
                         producer,
                         state_by_task=state_by_task,
+                        allow_publish_contract_backfill=True,
                     ):
                         continue
                     self._backfill_task_artifacts(plan_id, producer, manifest, session_context)
@@ -3243,7 +3550,7 @@ class PlanExecutor:
                 if refreshed:
                     resolved[alias] = refreshed
 
-        final_missing = [alias for alias in required_aliases if alias not in resolved]
+        final_missing = [alias for alias in authoritative_required_aliases if alias not in resolved]
         return contract, resolved, final_missing, producer_map
 
     def _block_for_missing_resources(
@@ -3411,9 +3718,82 @@ class PlanExecutor:
             }
         )
         published = self._backfill_task_artifacts(plan_id, temp_node, manifest, session_context)
+
+        contract_records = metadata.get("contract_artifacts")
+        if not isinstance(contract_records, list):
+            top_level_contract_records = payload.get("contract_artifacts") if isinstance(payload, dict) else None
+            if isinstance(top_level_contract_records, list):
+                contract_records = top_level_contract_records
+                metadata["contract_artifacts"] = top_level_contract_records
+        if isinstance(contract_records, list):
+            contract_published: Dict[str, Dict[str, Any]] = {}
+            missing_contract_artifacts: List[Dict[str, Any]] = []
+            for index, record in enumerate(contract_records):
+                if not isinstance(record, dict):
+                    continue
+                path = str(record.get("path") or "").strip()
+                expected = str(record.get("expected") or record.get("relative_to_task") or "").strip()
+                if not path:
+                    missing_contract_artifacts.append({
+                        "expected": expected,
+                        "reason": "missing_path",
+                    })
+                    continue
+                candidate = Path(path).expanduser()
+                try:
+                    exists = candidate.exists() and candidate.is_file()
+                    size = candidate.stat().st_size if exists else record.get("size")
+                    resolved_path = str(candidate.resolve()) if exists else path
+                except OSError as exc:
+                    exists = False
+                    size = record.get("size")
+                    resolved_path = path
+                    missing_contract_artifacts.append({
+                        "expected": expected,
+                        "path": path,
+                        "reason": f"stat_failed: {exc}",
+                    })
+                if not exists:
+                    if not any(item.get("path") == path for item in missing_contract_artifacts):
+                        missing_contract_artifacts.append({
+                            "expected": expected,
+                            "path": path,
+                            "reason": "not_found",
+                        })
+                    continue
+                try:
+                    size_int = int(size) if size is not None else 0
+                except (TypeError, ValueError):
+                    size_int = 0
+                promotion_skipped = size_int > 250 * 1024 * 1024
+                expected = expected or candidate.name
+                key = f"contract:{expected or index}"
+                contract_published[key] = {
+                    "alias": key,
+                    "path": resolved_path,
+                    "producer_task_id": node.id,
+                    "source": "contract_artifacts",
+                    "expected": expected,
+                    "size": size,
+                    "exists": True,
+                    "promotion_skipped": promotion_skipped,
+                    "promotion_skipped_reason": "large_file" if promotion_skipped else None,
+                }
+            if missing_contract_artifacts:
+                metadata["missing_contract_artifacts"] = missing_contract_artifacts
+                logger.warning(
+                    "Task %s reported contract artifacts that were not publishable: %s",
+                    node.id,
+                    missing_contract_artifacts[:5],
+                )
+            if contract_published:
+                manifest.setdefault("artifacts", {}).update(contract_published)
+                published = {**published, **contract_published}
+
         if published:
             metadata["published_artifacts"] = published
-            metadata["artifact_manifest_path"] = str(artifact_manifest_path(plan_id))
+            if bool(manifest.get("artifacts")):
+                metadata["artifact_manifest_path"] = str(artifact_manifest_path(plan_id))
             self._save_artifact_manifest(plan_id, manifest, session_context)
         return payload
 

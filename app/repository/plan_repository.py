@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple, Set
 
 from ..database import get_db, plan_db_connection
 from ..services.request_principal import get_current_principal
+from ..services.plans.dependency_validation import normalize_dependencies_for_task
 from ..services.plans.plan_models import PlanNode, PlanSummary, PlanTree
 from .plan_storage import (
     get_plan_db_path,
@@ -1449,6 +1450,46 @@ class PlanRepository:
         ).fetchone()
         if not task_exists:
             return
+
+        task_row = conn.execute(
+            """
+            SELECT id, name, status, instruction, parent_id, position, depth, path,
+                   metadata, execution_result, context_combined, context_sections,
+                   context_meta, context_updated_at
+            FROM tasks WHERE id=?
+            """,
+            (task_id,),
+        ).fetchone()
+        all_task_rows = conn.execute(
+            """
+            SELECT id, name, status, instruction, parent_id, position, depth, path,
+                   metadata, execution_result, context_combined, context_sections,
+                   context_meta, context_updated_at
+            FROM tasks
+            """
+        ).fetchall()
+        dependency_map = self._load_dependencies_map(conn)
+        if task_row is not None:
+            safe_requested_deps: List[int] = []
+            for dep in dependencies:
+                try:
+                    safe_requested_deps.append(int(dep))
+                except (TypeError, ValueError):
+                    continue
+            dependency_map[int(task_id)] = safe_requested_deps
+        try:
+            tree = _rows_to_plan_tree(
+                0,
+                {"title": "", "description": None, "metadata": "{}"},
+                all_task_rows,
+                dependency_map,
+            )
+            normalized = normalize_dependencies_for_task(tree, int(task_id), dependencies)
+            dependencies = normalized.normalized_dependencies
+            for issue in normalized.issues:
+                logger.warning("Dependency filtering for task %s: %s", task_id, issue.message)
+        except Exception as exc:
+            logger.warning("Generic dependency validation failed for task %s: %s", task_id, exc)
 
         def has_dep_path(start: int, target: int) -> bool:
             # BFS over dependency edges: does start ->* target exist?
