@@ -11,7 +11,8 @@ import pytest
 
 from app.config.executor_config import ExecutorSettings, get_executor_settings
 from app.services.plans.plan_executor import ExecutionConfig, ExecutionResponse, ExecutionResult, PlanExecutor
-from app.services.plans.artifact_contracts import canonical_artifact_path, infer_artifact_namespace, save_artifact_manifest
+from app.services.plans.artifact_contracts import canonical_artifact_path, infer_artifact_namespace, load_artifact_manifest, resolve_manifest_aliases, save_artifact_manifest
+from app.services.plans.dependency_validation import normalize_plan_dependencies
 from app.services.plans.plan_models import PlanNode, PlanTree
 
 
@@ -161,8 +162,8 @@ class TestInferMissingDepsLogic:
         repo.update_task.assert_not_called()
         assert result is tree
 
-    def test_multiple_producers_warns(self, caplog):
-        """Multiple producers for same basename should log warning and pick max task_id."""
+    def test_multiple_producers_warns_and_does_not_guess(self, caplog):
+        """Multiple producers for same basename should be ambiguous, not guessed by task id."""
         producer_a = PlanNode(
             id=10, plan_id=1, name="Producer A",
             metadata={
@@ -186,20 +187,15 @@ class TestInferMissingDepsLogic:
         )
         tree = _make_tree(1, [producer_a, producer_b, consumer])
 
-        updated_consumer = consumer.model_copy(update={"dependencies": [20]})
-        updated_tree = _make_tree(1, [producer_a, producer_b, updated_consumer])
         repo = MagicMock()
-        repo.get_plan_tree.return_value = updated_tree
         executor = _make_executor(repo)
 
         with caplog.at_level(logging.WARNING):
             result = executor._infer_missing_dependencies(tree)
 
         assert any("Multiple producers" in msg for msg in caplog.messages)
-        # Should pick task_id 20 (max)
-        call_deps = repo.update_task.call_args[1]["dependencies"]
-        assert 20 in call_deps
-        assert 10 not in call_deps
+        repo.update_task.assert_not_called()
+        assert result is tree
 
     def test_failure_returns_original_tree(self):
         """Internal exception should return original tree unchanged."""
@@ -221,6 +217,41 @@ class TestInferMissingDepsLogic:
 # ---------------------------------------------------------------------------
 # Part B: integration tests (real SQLite + PlanRepository)
 # ---------------------------------------------------------------------------
+
+
+class TestDependencyValidation:
+    def test_child_parent_dependency_is_removed(self):
+        root = PlanNode(id=1, plan_id=1, name="Root")
+        child = PlanNode(id=2, plan_id=1, name="Child", parent_id=1, dependencies=[1])
+        tree = _make_tree(1, [root, child])
+
+        normalization = normalize_plan_dependencies(tree)
+
+        assert normalization.dependencies_by_task[2] == []
+        assert any(issue.code == "ancestor_dependency" for issue in normalization.issues)
+
+    def test_composite_dependency_expands_to_leaf_children(self):
+        root = PlanNode(id=1, plan_id=1, name="Root")
+        composite = PlanNode(id=2, plan_id=1, name="Composite", parent_id=1)
+        leaf_a = PlanNode(id=3, plan_id=1, name="Leaf A", parent_id=2)
+        leaf_b = PlanNode(id=4, plan_id=1, name="Leaf B", parent_id=2)
+        consumer = PlanNode(id=5, plan_id=1, name="Consumer", parent_id=1, dependencies=[2])
+        tree = _make_tree(1, [root, composite, leaf_a, leaf_b, consumer])
+
+        normalization = normalize_plan_dependencies(tree)
+
+        assert normalization.dependencies_by_task[5] == [3, 4]
+        assert any(issue.code == "composite_dependency_expanded" for issue in normalization.issues)
+
+    def test_cycle_edge_is_removed(self):
+        a = PlanNode(id=1, plan_id=1, name="A", dependencies=[2])
+        b = PlanNode(id=2, plan_id=1, name="B", dependencies=[1])
+        tree = _make_tree(1, [a, b])
+
+        normalization = normalize_plan_dependencies(tree)
+
+        assert normalization.dependencies_by_task
+        assert any(issue.code == "dependency_cycle" for issue in normalization.issues)
 
 class TestInferMissingDepsIntegration:
     """Integration tests using real SQLite database and PlanRepository."""
@@ -402,8 +433,8 @@ class TestResolveContextPathsFromDeps:
         )
         assert result == ["missing.json"]
 
-    def test_conflict_takes_max_dep_id(self, caplog):
-        """When multiple deps have the same basename, pick the one with max dep_id."""
+    def test_conflict_preserves_unresolved_basename(self, caplog):
+        """When multiple deps have the same basename, do not guess a producer."""
         result = PlanExecutor._resolve_context_paths_from_deps(
             context_paths=["outline.json"],
             dep_artifacts=[
@@ -411,10 +442,10 @@ class TestResolveContextPathsFromDeps:
                 (20, ["/dep20/results/outline.json"]),
             ],
         )
-        assert result == ["/dep20/results/outline.json"]
+        assert result == ["outline.json"]
 
-    def test_same_dep_multiple_artifacts_picks_deliverable(self):
-        """Same dep with results/ and deliverable/ versions should pick deliverable/."""
+    def test_same_dep_multiple_artifacts_preserves_ambiguous_basename(self):
+        """Same dep with duplicate basenames is ambiguous without an exact path."""
         result = PlanExecutor._resolve_context_paths_from_deps(
             context_paths=["data.json"],
             dep_artifacts=[
@@ -424,10 +455,10 @@ class TestResolveContextPathsFromDeps:
                 ]),
             ],
         )
-        assert result == ["/run/results/deliverable/data.json"]
+        assert result == ["data.json"]
 
-    def test_same_dep_results_over_unknown(self):
-        """Same dep with results/ and root-level versions should pick results/."""
+    def test_same_dep_results_over_unknown_preserves_ambiguous_basename(self):
+        """Duplicate basename inside one dependency is ambiguous."""
         result = PlanExecutor._resolve_context_paths_from_deps(
             context_paths=["data.json"],
             dep_artifacts=[
@@ -437,7 +468,7 @@ class TestResolveContextPathsFromDeps:
                 ]),
             ],
         )
-        assert result == ["/run/results/data.json"]
+        assert result == ["data.json"]
 
     def test_mixed_paths(self):
         """Mix of absolute, matched relative, and unmatched relative paths."""
@@ -469,8 +500,8 @@ class TestResolveContextPathsFromDeps:
         )
         assert result == ["file.json"]
 
-    def test_same_dep_same_priority_takes_last(self):
-        """When same dep has multiple artifacts at the same priority level, take the last one."""
+    def test_same_dep_same_priority_preserves_ambiguous_basename(self):
+        """When same dep has duplicate basename artifacts, preserve unresolved path."""
         result = PlanExecutor._resolve_context_paths_from_deps(
             context_paths=["data.json"],
             dep_artifacts=[
@@ -480,7 +511,18 @@ class TestResolveContextPathsFromDeps:
                 ]),
             ],
         )
-        # Both are under results/ (same priority), should take the last one
+        assert result == ["data.json"]
+
+    def test_exact_absolute_path_preserved_for_duplicate_basename(self):
+        result = PlanExecutor._resolve_context_paths_from_deps(
+            context_paths=["/run/results/new/data.json"],
+            dep_artifacts=[
+                (10, [
+                    "/run/results/old/data.json",
+                    "/run/results/new/data.json",
+                ]),
+            ],
+        )
         assert result == ["/run/results/new/data.json"]
 
 
@@ -569,6 +611,7 @@ class TestArtifactContracts:
             name="提取NMR动态结构表征相关证据点",
             status="completed",
             metadata={
+                "artifact_contract": {"publishes": ["nmr_cryo_msm.structured_evidence_json"]},
                 "acceptance_criteria": {
                     "checks": [
                         {"type": "file_exists", "path": "structured_evidence_nmr_cryo_msm.json"}
@@ -747,18 +790,6 @@ class TestArtifactContracts:
         tmp_path,
     ):
         monkeypatch.chdir(tmp_path)
-        # Seed a manifest with a placeholder entry so artifact tracking is
-        # considered active and the resolver can detect the missing publish.
-        save_artifact_manifest(7, {
-            "plan_id": 7,
-            "artifacts": {
-                "other.placeholder": {
-                    "alias": "other.placeholder",
-                    "path": "/tmp/placeholder",
-                    "producer_task_id": 999,
-                }
-            },
-        })
         node = PlanNode(
             id=1,
             plan_id=7,
@@ -790,6 +821,114 @@ class TestArtifactContracts:
 
         assert calls == [1]
         assert summary.executed_task_ids == [1]
+
+    def test_run_task_blocks_dependency_with_failed_effective_status(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        monkeypatch.chdir(tmp_path)
+        dep = PlanNode(
+            id=1,
+            plan_id=7,
+            name="Upstream",
+            status="completed",
+            execution_result=json.dumps({
+                "status": "completed",
+                "content": "bad output",
+                "metadata": {"verification_status": "failed"},
+            }),
+        )
+        node = PlanNode(
+            id=2,
+            plan_id=7,
+            name="Downstream",
+            status="pending",
+            dependencies=[1],
+        )
+        tree = _make_tree(7, [dep, node])
+        repo = MagicMock()
+        executor = _make_executor(repo)
+
+        result = executor._run_task(
+            7,
+            node,
+            tree,
+            ExecutionConfig(session_context={}, enforce_dependencies=True),
+        )
+
+        assert result.status == "skipped"
+        assert result.metadata["incomplete_dependencies"] == [1]
+        assert result.metadata["incomplete_dependency_info"] == [
+            {"id": 1, "name": "Upstream", "status": "completed"}
+        ]
+        assert "#1(failed)" in result.content
+
+
+def test_save_artifact_manifest_merges_existing_artifacts(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    save_artifact_manifest(
+        123,
+        {
+            "plan_id": 123,
+            "artifacts": {
+                "general.evidence_md": {
+                    "alias": "general.evidence_md",
+                    "path": "/tmp/evidence.md",
+                    "producer_task_id": 1,
+                }
+            },
+        },
+    )
+    save_artifact_manifest(
+        123,
+        {
+            "plan_id": 123,
+            "artifacts": {
+                "general.references_bib": {
+                    "alias": "general.references_bib",
+                    "path": "/tmp/references.bib",
+                    "producer_task_id": 2,
+                }
+            },
+        },
+    )
+
+    manifest = load_artifact_manifest(123)
+
+    assert set(manifest["artifacts"]) == {
+        "general.evidence_md",
+        "general.references_bib",
+    }
+
+
+def test_contract_repair_query_prefers_runtime_artifacts_over_external_copy():
+    node = PlanNode(
+        id=13,
+        plan_id=99,
+        name="Identify cluster-specific marker genes",
+    )
+
+    query = PlanExecutor._build_contract_repair_query(
+        node=node,
+        attempt=1,
+        contract_diff={
+            "expected_deliverables": [
+                "/home/zczhao/GAgent_backup_20260421_233939/data/ovarian_cancer_annotated.h5ad"
+            ],
+            "missing_required_outputs": [
+                "/home/zczhao/GAgent_backup_20260421_233939/data/ovarian_cancer_annotated.h5ad"
+            ],
+            "actual_outputs": [
+                "runtime/session_test/raw_files/task_1/task_3/task_13/ovarian_cancer_annotated.h5ad"
+            ],
+        },
+    )
+
+    assert "runtime/workspace artifact exists" in query
+    assert "instead of copying it to an external absolute path" in query
+    assert "do not copy large artifacts" in query
+    assert "Create the exact missing required output files" not in query
 
     def test_materialize_finalization_publishes_inferred_alias_when_explicit_contract_empty(
         self,
@@ -1019,3 +1158,105 @@ def test_resolve_required_artifacts_ignores_invalid_manifest_entry(monkeypatch, 
 
     assert resolved == {}
     assert missing == ["phage_ml.kmer_features_npz"]
+
+
+def test_resolve_manifest_aliases_accepts_dynamic_directory_artifact(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    alias = "analysis_ccc.evidence_dataframes"
+    data_dir = tmp_path / "results" / "evidence_data"
+    data_dir.mkdir(parents=True)
+    (data_dir / "lr_pairs.tsv").write_text("ligand\treceptor\nMIF\tCD74\n", encoding="utf-8")
+    manifest = {
+        "plan_id": 7,
+        "artifacts": {
+            alias: {
+                "alias": alias,
+                "path": str(data_dir.resolve()),
+                "producer_task_id": 3,
+                "validation": {"validated": True, "kind": "directory"},
+            }
+        },
+    }
+
+    assert canonical_artifact_path(7, alias) == tmp_path / "results" / "plans" / "plan_7" / "analysis_ccc" / "evidence_dataframes"
+    assert resolve_manifest_aliases(manifest, [alias]) == {alias: str(data_dir.resolve())}
+
+
+
+def test_enrich_finalized_payload_exposes_contract_artifacts_as_published(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    artifact = tmp_path / "run" / "qc_results" / "filtered_adata.h5ad"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_bytes(b"large-artifact-record")
+    node = PlanNode(id=11, plan_id=96, name="Load QC-filtered AnnData object", status="completed")
+    executor = _make_executor(MagicMock())
+
+    payload = {
+        "status": "completed",
+        "metadata": {
+            "contract_artifacts": [
+                {
+                    "expected": "qc_results/filtered_adata.h5ad",
+                    "path": str(artifact),
+                    "size": artifact.stat().st_size,
+                    "exists": True,
+                }
+            ]
+        },
+    }
+
+    enriched = executor._enrich_finalized_payload_with_artifacts(
+        plan_id=96,
+        node=node,
+        payload=payload,
+        final_status="completed",
+        session_context={},
+    )
+
+    published = enriched["metadata"].get("published_artifacts")
+    assert "contract:qc_results/filtered_adata.h5ad" in published
+    entry = published["contract:qc_results/filtered_adata.h5ad"]
+    assert entry["path"] == str(artifact.resolve())
+    assert entry["source"] == "contract_artifacts"
+    manifest = load_artifact_manifest(96)
+    manifest_entry = manifest["artifacts"]["contract:qc_results/filtered_adata.h5ad"]
+    assert manifest_entry["path"] == str(artifact.resolve())
+    assert manifest_entry["producer_task_id"] == 11
+
+
+
+def test_enrich_finalized_payload_records_missing_contract_artifacts(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    missing = tmp_path / "run" / "qc_results" / "filtered_adata.h5ad"
+    node = PlanNode(id=11, plan_id=96, name="Load QC-filtered AnnData object", status="completed")
+    executor = _make_executor(MagicMock())
+
+    payload = {
+        "status": "completed",
+        "metadata": {
+            "contract_artifacts": [
+                {
+                    "expected": "qc_results/filtered_adata.h5ad",
+                    "path": str(missing),
+                    "exists": True,
+                }
+            ]
+        },
+    }
+
+    enriched = executor._enrich_finalized_payload_with_artifacts(
+        plan_id=96,
+        node=node,
+        payload=payload,
+        final_status="completed",
+        session_context={},
+    )
+
+    assert enriched["metadata"].get("published_artifacts") is None
+    assert enriched["metadata"]["missing_contract_artifacts"] == [
+        {
+            "expected": "qc_results/filtered_adata.h5ad",
+            "path": str(missing),
+            "reason": "not_found",
+        }
+    ]

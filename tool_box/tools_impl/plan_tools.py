@@ -1291,6 +1291,7 @@ async def _execute_all(
         # --- Artifact dependency enrichment ---
         try:
             from app.services.plans.dependency_enrichment import enrich_plan_dependencies, validate_plan_dag
+            from app.services.plans.dependency_validation import normalize_plan_dependencies
             _enrichment = enrich_plan_dependencies(tree)
             if _enrichment.added_edges:
                 _persist_failures: List[int] = []
@@ -1312,6 +1313,19 @@ async def _execute_all(
                     )
                 else:
                     logger.info("Enriched plan %s with %d implicit edges in execute_all.", plan_id, len(_enrichment.added_edges))
+            _normalization = normalize_plan_dependencies(tree)
+            if _normalization.dependencies_by_task:
+                for _tid, _deps in _normalization.dependencies_by_task.items():
+                    repo.update_task(plan_id, _tid, dependencies=list(_deps))
+                    if _tid in tree.nodes:
+                        tree.nodes[_tid].dependencies = list(_deps)
+                logger.info(
+                    "Normalized dependency edges for plan %s tasks %s in execute_all.",
+                    plan_id,
+                    _normalization.changed_task_ids,
+                )
+            for _issue in _normalization.issues:
+                logger.warning("Plan dependency validation: %s", _issue.message)
             _dag_val = validate_plan_dag(tree)
             if _dag_val.has_errors():
                 return {"success": False, "error": _dag_val.summary(), "operation": "execute_all", "plan_id": plan_id}

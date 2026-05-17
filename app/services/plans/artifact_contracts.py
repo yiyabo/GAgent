@@ -4,7 +4,10 @@ import json
 import os
 import re
 import shutil
+import tempfile
 import time
+import uuid
+import fcntl
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -74,6 +77,34 @@ _ARTIFACT_ALIAS_CANONICAL: Dict[str, str] = {
     "ml_supervised.feature_row_ids_json": "phage_ml.feature_row_ids_json",
     "ml_supervised.label_alignment_json": "phage_ml.label_alignment_json",
 }
+
+_DYNAMIC_DIRECTORY_ARTIFACT_SLOTS: Dict[str, str] = {
+    "evidence_dataframes": "evidence_dataframes",
+    "evidence_tables": "evidence_tables",
+    "summary_tables": "summary_tables",
+    "intermediate_data_dir": "intermediate_data",
+}
+_DYNAMIC_ARTIFACT_ALIAS_RE = re.compile(
+    r"^[a-z][a-z0-9_]*(?:_[a-z0-9]+)*\."
+    r"(?:" + "|".join(re.escape(slot) for slot in _DYNAMIC_DIRECTORY_ARTIFACT_SLOTS) + r")$"
+)
+
+
+def _dynamic_artifact_spec(alias: str) -> Optional[tuple[str, str]]:
+    text = str(alias or "").strip()
+    if not _DYNAMIC_ARTIFACT_ALIAS_RE.fullmatch(text):
+        return None
+    namespace, slot = text.split(".", 1)
+    return namespace, _DYNAMIC_DIRECTORY_ARTIFACT_SLOTS[slot]
+
+
+def _artifact_spec_for_alias(alias: str) -> Optional[tuple[str, str]]:
+    text = canonicalize_artifact_alias(alias)
+    return _ARTIFACT_SPECS.get(text) or _dynamic_artifact_spec(text)
+
+
+def _is_registered_artifact_alias(alias: str) -> bool:
+    return _artifact_spec_for_alias(alias) is not None
 
 
 def canonicalize_artifact_alias(alias: str) -> str:
@@ -195,13 +226,40 @@ def load_artifact_manifest(plan_id: int) -> Dict[str, Any]:
 def save_artifact_manifest(plan_id: int, manifest: Dict[str, Any]) -> Path:
     path = artifact_manifest_path(plan_id)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    with lock_path.open("a+", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            existing = load_artifact_manifest(plan_id)
+            merged = dict(existing)
+            merged.update({k: v for k, v in manifest.items() if k != "artifacts"})
+            existing_artifacts = existing.get("artifacts") if isinstance(existing.get("artifacts"), dict) else {}
+            incoming_artifacts = manifest.get("artifacts") if isinstance(manifest.get("artifacts"), dict) else {}
+            merged["artifacts"] = {**existing_artifacts, **incoming_artifacts}
+
+            tmp_name = f".{path.name}.{uuid.uuid4().hex}.tmp"
+            fd, tmp_path = tempfile.mkstemp(prefix=tmp_name, dir=str(path.parent), text=True)
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as tmp_file:
+                    json.dump(merged, tmp_file, ensure_ascii=False, indent=2)
+                    tmp_file.write("\n")
+                    tmp_file.flush()
+                    os.fsync(tmp_file.fileno())
+                os.replace(tmp_path, path)
+            finally:
+                try:
+                    if os.path.exists(tmp_path):
+                        os.unlink(tmp_path)
+                except OSError:
+                    pass
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
     return path
 
 
 def canonical_artifact_path(plan_id: int, alias: str) -> Optional[Path]:
     alias = canonicalize_artifact_alias(alias)
-    spec = _ARTIFACT_SPECS.get(alias)
+    spec = _artifact_spec_for_alias(alias)
     if not spec:
         return None
     namespace, filename = spec
@@ -240,7 +298,7 @@ def aliases_for_path_text(text: str, *, preferred_namespace: str) -> List[str]:
     for basename, slot in _GENERIC_BASENAME_TO_SLOT.items():
         if basename in lowered:
             alias = f"{preferred_namespace}.{slot}"
-            if alias in _ARTIFACT_SPECS and alias not in seen:
+            if _is_registered_artifact_alias(alias) and alias not in seen:
                 seen.add(alias)
                 aliases.append(alias)
     return aliases
@@ -251,7 +309,7 @@ def aliases_for_file_name(file_name: str, *, preferred_namespace: str) -> List[s
     aliases = list(_LEGACY_BASENAME_TO_ALIASES.get(lowered, ()))
     if lowered in _GENERIC_BASENAME_TO_SLOT:
         alias = f"{preferred_namespace}.{_GENERIC_BASENAME_TO_SLOT[lowered]}"
-        if alias in _ARTIFACT_SPECS and alias not in aliases:
+        if _is_registered_artifact_alias(alias) and alias not in aliases:
             aliases.append(alias)
     for alias in _semantic_aliases_for_file_name(
         lowered,
@@ -264,7 +322,7 @@ def aliases_for_file_name(file_name: str, *, preferred_namespace: str) -> List[s
 
 def candidate_filenames_for_alias(alias: str) -> List[str]:
     alias = canonicalize_artifact_alias(alias)
-    spec = _ARTIFACT_SPECS.get(alias)
+    spec = _artifact_spec_for_alias(alias)
     names: List[str] = []
     if spec:
         filename = spec[1].lower().strip("/\\")
@@ -276,13 +334,18 @@ def candidate_filenames_for_alias(alias: str) -> List[str]:
     for basename, aliases in _LEGACY_BASENAME_TO_ALIASES.items():
         if alias in aliases and basename.lower() not in names:
             names.append(basename.lower())
+    if _dynamic_artifact_spec(alias):
+        slot = alias.split(".", 1)[1]
+        for candidate in (slot, "data", "tables", "dataframes"):
+            if candidate not in names:
+                names.append(candidate)
     return names
 
 def is_artifact_alias(value: str) -> bool:
-    return canonicalize_artifact_alias(str(value or "").strip()) in _ARTIFACT_SPECS
+    return _is_registered_artifact_alias(str(value or "").strip())
 
 def _semantic_basename_matches_alias(*, basename: str, alias: str) -> bool:
-    spec = _ARTIFACT_SPECS.get(alias)
+    spec = _artifact_spec_for_alias(alias)
     if spec is None:
         return False
 
@@ -331,7 +394,7 @@ def artifact_path_matches_alias(path_text: str, alias: str) -> bool:
     alias = canonicalize_artifact_alias(alias)
     normalized = str(path_text or "").strip().replace("\\", "/").strip("/").lower()
     basename = Path(normalized).name.lower()
-    if not basename or alias not in _ARTIFACT_SPECS:
+    if not basename or not _is_registered_artifact_alias(alias):
         return False
     candidates = candidate_filenames_for_alias(alias)
     if basename in candidates or normalized in candidates:
@@ -445,7 +508,7 @@ def _merge_unique(*buckets: Iterable[str]) -> List[str]:
             text = str(alias or "").strip()
             if text:
                 canonical_text = canonicalize_artifact_alias(text)
-                if canonical_text in _ARTIFACT_SPECS:
+                if _is_registered_artifact_alias(canonical_text):
                     text = canonical_text
             if text and text not in seen:
                 seen.add(text)
@@ -538,7 +601,7 @@ _PHAGE_SUPERVISED_FEATURE_ALIASES = {
 
 def _known_artifact_alias(value: Any) -> Optional[str]:
     alias = canonicalize_artifact_alias(str(value or "").strip())
-    return alias if alias in _ARTIFACT_SPECS else None
+    return alias if _is_registered_artifact_alias(alias) else None
 
 
 def _collect_alias_fields(mapping: Dict[str, Any], field_names: Iterable[str]) -> List[str]:
@@ -632,7 +695,7 @@ def _extract_explicit_aliases(raw_items: Any) -> List[str]:
     seen: set[str] = set()
     for item in raw_items:
         text = canonicalize_artifact_alias(str(item or "").strip())
-        if text and text in _ARTIFACT_SPECS and text not in seen:
+        if text and _is_registered_artifact_alias(text) and text not in seen:
             seen.add(text)
             aliases.append(text)
     return aliases
@@ -806,6 +869,7 @@ def publish_artifact(
         "path": str(canonical.resolve()),
         "producer_task_id": producer_task_id,
         "source_path": str(source.resolve()),
+        "source_size": source.stat().st_size if source.is_file() else None,
         "updated_at": time.time(),
         "validation": validation,
         "validated": bool(validation.get("validated") and validation.get("schema_valid")),
