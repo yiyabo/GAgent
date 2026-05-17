@@ -12,8 +12,6 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from tool_box.tools_impl.phagescope_research import phagescope_research_tool
-
 logger = logging.getLogger(__name__)
 
 
@@ -38,6 +36,54 @@ def _load_bio_tool_names() -> List[str]:
 
 
 _BIO_TOOL_NAMES = _load_bio_tool_names()
+
+_PHAGESCOPE_RESEARCH_DESCRIPTION = (
+    "Prepare and audit the local PhageScope public dataset for host taxon "
+    "prediction research. Use this before code_executor for PhageScope ML tasks."
+)
+_PHAGESCOPE_RESEARCH_PARAMETERS_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "action": {
+            "type": "string",
+            "enum": ["audit", "research_plan", "prepare_metadata_table"],
+            "default": "audit",
+            "description": "Operation to perform.",
+        },
+        "data_dir": {
+            "type": "string",
+            "description": "Local PhageScope data directory. Defaults to PHAGESCOPE_DATA_DIR or <repo>/phagescope.",
+        },
+        "output_dir": {
+            "type": "string",
+            "description": "Directory for prepared TSV/JSON outputs.",
+        },
+        "session_id": {
+            "type": "string",
+            "description": "Optional chat session id for session-scoped outputs.",
+        },
+        "label_level": {
+            "type": "string",
+            "enum": ["raw", "genus", "species_like"],
+            "default": "genus",
+            "description": "How to standardize Host labels for model targets.",
+        },
+        "min_label_count": {
+            "type": "integer",
+            "default": 20,
+            "description": "Minimum class count retained in prepared metadata table.",
+        },
+        "completeness": {
+            "description": "Allowed Completeness values. Defaults to High-quality and Medium-quality.",
+        },
+        "split_group": {
+            "type": "string",
+            "enum": ["subcluster", "cluster", "phage_id"],
+            "default": "subcluster",
+            "description": "Grouping key for deterministic leakage-aware train/val/test split.",
+        },
+    },
+}
 
 
 def _build_bio_tools_schema_description() -> str:
@@ -72,6 +118,7 @@ EXECUTOR_AVAILABLE_TOOLS: List[str] = [
     "sequence_fetch",
     "url_fetch",
     "bio_tools",
+    "scientific_figure_generator",
     "code_executor",
     "graph_rag",
     "document_reader",
@@ -263,14 +310,14 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
         "type": "function",
         "function": {
             "name": "file_operations",
-            "description": "File system operations: list directories, read/write files, copy/move/delete. In task execution, prefer relative output paths so writes land in the current task output directory.",
+            "description": "File system operations: list directories, read/write files, profile/census directories, copy/move/delete. Use profile/census for compact directory-wide evidence before making all/every/completed claims. In task execution, prefer relative output paths so writes land in the current task output directory.",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "operation": {
                         "type": "string",
-                        "enum": ["list", "read", "write", "copy", "move", "delete"],
-                        "description": "The file operation to perform.",
+                        "enum": ["list", "read", "write", "copy", "move", "delete", "exists", "info", "profile", "census"],
+                        "description": "The file operation to perform. profile/census are read-only directory evidence operations.",
                     },
                     "path": {
                         "type": "string",
@@ -283,6 +330,10 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
                     "destination": {
                         "type": "string",
                         "description": "Destination path (only for copy/move operations). Prefer task-relative destinations for final outputs.",
+                    },
+                    "pattern": {
+                        "type": "string",
+                        "description": "Optional file matching pattern for list/profile/census operations.",
                     },
                 },
                 "required": ["operation", "path"],
@@ -638,7 +689,8 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
                     "modulelist": {
                         "type": "string",
                         "description": (
-                            "Comma-separated module names. For submit/batch_submit (Annotation Pipeline), use: "
+                            "Comma-separated module names. For submit/batch_submit (Annotation Pipeline), "
+                            "use submit modules only: "
                             "quality, annotation, host, lifestyle, terminator, taxonomic, "
                             "trna, anticrispr, crispr, arvf, transmembrane. Do not use result/output names "
                             "such as proteins, phage_detail, phagefasta, or tree in submit modulelist. "
@@ -688,8 +740,8 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
         "type": "function",
         "function": {
             "name": "phagescope_research",
-            "description": phagescope_research_tool["description"],
-            "parameters": phagescope_research_tool["parameters_schema"],
+            "description": _PHAGESCOPE_RESEARCH_DESCRIPTION,
+            "parameters": _PHAGESCOPE_RESEARCH_PARAMETERS_SCHEMA,
         },
     },
     "deeppl": {
@@ -801,6 +853,74 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
                     },
                 },
                 "required": ["operation"],
+            },
+        },
+    },
+    "scientific_figure_generator": {
+        "type": "function",
+        "function": {
+            "name": "scientific_figure_generator",
+            "description": (
+                "Preferred tool for scientific composite figures and publication-style plots. "
+                "Use this when the user asks for a figure, plot, chart, visualization, PNG/PDF output, "
+                "English legend/summary, provenance TSV, QA JSON, or Deliverables publication. "
+                "It accepts inline tabular rows or CSV/TSV/JSON/JSONL paths and generates PNG, optional PDF, "
+                "summary.md, provenance TSV, QA JSON, and deliverable_submit artifacts. "
+                "Prefer this over code_executor for standard scientific figure generation."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {
+                        "type": "string",
+                        "description": "English figure title.",
+                    },
+                    "datasets": {
+                        "type": "array",
+                        "description": "Datasets as inline rows or file paths.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "name": {"type": "string", "description": "Dataset name referenced by panels."},
+                                "path": {"type": "string", "description": "CSV/TSV/JSON/JSONL file path."},
+                                "format": {"type": "string", "description": "Optional format override: csv, tsv, json, jsonl."},
+                                "rows": {
+                                    "type": "array",
+                                    "description": "Inline tabular rows.",
+                                    "items": {"type": "object"},
+                                },
+                            },
+                        },
+                    },
+                    "panels": {
+                        "type": "array",
+                        "description": (
+                            "Panel specs. Supported type values: auto, bar, line, scatter, heatmap, table. "
+                            "Common fields: dataset, type, title, x, y, value, row, column, top_n."
+                        ),
+                        "items": {"type": "object"},
+                    },
+                    "output_dir": {
+                        "type": "string",
+                        "description": "Output directory. Defaults to the task/session work directory.",
+                    },
+                    "output_basename": {
+                        "type": "string",
+                        "description": "Base filename for PNG/PDF/QA/provenance artifacts.",
+                    },
+                    "formats": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Output formats. PNG is always written; include pdf for PDF.",
+                    },
+                    "dpi": {"type": "integer", "description": "PNG DPI, default 300."},
+                    "publish": {
+                        "type": "boolean",
+                        "description": "Whether to publish generated artifacts to session Deliverables.",
+                        "default": True,
+                    },
+                },
+                "required": ["datasets"],
             },
         },
     },

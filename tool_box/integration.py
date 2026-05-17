@@ -84,6 +84,10 @@ class ToolBoxIntegration:
         """
         registry = get_tool_registry()
         tool_def = registry.get_tool(registered_tool_name)
+        if not tool_def:
+            register_all_tools()
+            registry = get_tool_registry()
+            tool_def = registry.get_tool(registered_tool_name)
 
         if not tool_def:
             raise ValueError(f"Tool '{registered_tool_name}' not found")

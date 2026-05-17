@@ -279,6 +279,47 @@ def test_optional_file_read_failure_remains_failed(
     assert result.get("success") is False
 
 
+def test_file_operations_profile_reaches_executor(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    agent = _build_minimal_agent()
+    agent.session_id = None
+
+    monkeypatch.setattr(action_handlers_module, "get_tool_policy", lambda: {})
+    monkeypatch.setattr(action_handlers_module, "is_tool_allowed", lambda _name, _policy: True)
+
+    async def _fake_execute_tool(name: str, **kwargs):
+        assert name == "file_operations"
+        assert kwargs["operation"] == "profile"
+        assert kwargs["path"] == str(tmp_path)
+        assert kwargs["pattern"] == "*.txt"
+        return {
+            "operation": "profile",
+            "path": kwargs["path"],
+            "success": True,
+            "counts": {"direct_children": 0},
+            "summary": "Directory profile for test path: 0 direct child item(s)",
+        }
+
+    monkeypatch.setattr(action_handlers_module, "execute_tool", _fake_execute_tool)
+
+    action = LLMAction(
+        kind="tool_operation",
+        name="file_operations",
+        parameters={"operation": "profile", "path": str(tmp_path), "pattern": "*.txt"},
+        order=1,
+    )
+
+    step = asyncio.run(agent._handle_tool_action(action))
+
+    assert step.success is True
+    assert "invalid_operation" not in str(step.details)
+    result = step.details.get("result") if isinstance(step.details, dict) else None
+    assert isinstance(result, dict)
+    assert result.get("operation") == "profile"
+
+
 def test_tools_floor_allows_code_executor(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1129,6 +1170,49 @@ def test_deliverable_submit_forwards_session_id_and_uses_publish_summary(
     assert deliverables["submit_artifacts_requested"] == 2
     assert deliverables["submit_artifacts_published"] == 1
     assert deliverables["submit_artifacts_skipped"] == 1
+
+
+def test_unified_executor_marks_partial_deliverable_submit_failed(monkeypatch):
+    from app.services.execution.tool_executor import UnifiedToolExecutor, ToolExecutionContext
+
+    async def _fake_execute_tool(name: str, **kwargs):
+        return {
+            "success": True,
+            "tool": "deliverable_submit",
+            "deliverable_submit": {
+                "publish": True,
+                "artifacts": [{"path": "/tmp/missing.png", "module": "image_tabular"}],
+            },
+        }
+
+    class _Publisher:
+        def publish_from_tool_result(self, **_kwargs):
+            return PublishReport(
+                version_id="v1",
+                published_files_count=0,
+                published_modules=[],
+                manifest_path="/tmp/manifest.json",
+                paper_status={},
+                submit_artifacts_requested=1,
+                submit_artifacts_published=0,
+                submit_artifacts_skipped=1,
+                warnings=["artifact[0] skipped: path does not exist"],
+            )
+
+    import tool_box
+
+    monkeypatch.setattr(tool_box, "execute_tool", _fake_execute_tool)
+    executor = UnifiedToolExecutor()
+    executor._deliverable_publisher = _Publisher()
+
+    result = executor.execute_sync(
+        "deliverable_submit",
+        {"artifacts": [{"path": "/tmp/missing.png", "module": "image_tabular"}]},
+        context=ToolExecutionContext(session_id="session-x"),
+    )
+
+    assert result["success"] is False
+    assert "skipped 1" in result["error"]
 
 
 def test_extract_taskid_from_result_prefers_numeric_remote_taskid() -> None:
