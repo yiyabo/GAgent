@@ -757,27 +757,13 @@ class SkillsLoader:
             )
             candidate_ids = list(deterministic_ids)
 
-            if 0 < len(deterministic_ids) <= max_skills:
+            if deterministic_ids:
                 source = "deterministic"
-                selected_ids = [
-                    skill.name
-                    for skill in self._sort_by_priority(
-                        [self._available_skills[name] for name in deterministic_ids]
-                    )[:max_skills]
-                ]
+                selected_ids = deterministic_ids[:max_skills]
             else:
-                if deterministic_ids:
-                    llm_pool = self._sort_by_priority(
-                        [self._available_skills[name] for name in deterministic_ids]
-                    )[:5]
-                    fallback_candidates = self._sort_by_priority(
-                        [self._available_skills[name] for name in deterministic_ids]
-                    )
-                    candidate_ids = [skill.name for skill in llm_pool]
-                else:
-                    llm_pool = self._sort_by_priority(eligible)[:5] or self._sort_by_priority(eligible)
-                    fallback_candidates = []
-                    candidate_ids = [skill.name for skill in llm_pool]
+                llm_pool = self._sort_by_priority(eligible)[:5] or self._sort_by_priority(eligible)
+                fallback_candidates = []
+                candidate_ids = [skill.name for skill in llm_pool]
 
                 selected_ids, source = await self._llm_rank_skills(
                     llm_service=llm_service,
