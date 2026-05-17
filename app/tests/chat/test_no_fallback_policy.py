@@ -332,6 +332,7 @@ class _DeepThinkPlanCreateProbe(_DeepThinkProbeBase):
         on_tool_start=None,
         on_tool_result=None,
         on_artifact=None,
+        request_profile=None,
         **_kwargs,
     ) -> None:
         _ = (
@@ -347,9 +348,23 @@ class _DeepThinkPlanCreateProbe(_DeepThinkProbeBase):
             on_artifact,
         )
         self._tool_executor = tool_executor
+        self.request_profile = dict(request_profile or {})
 
     async def think(self, user_query: str, context: dict | None = None, task_context=None) -> DeepThinkResult:
         _ = (user_query, context)
+        if self.request_profile.get("plan_conflict_requires_confirmation"):
+            return DeepThinkResult(
+                final_answer="This session is already bound to a different plan. Please choose update existing, create new, or start a new chat.",
+                thinking_steps=[],
+                total_iterations=1,
+                tools_used=[],
+                confidence=1.0,
+                thinking_summary="confirmation required",
+                structured_plan_required=True,
+                structured_plan_satisfied=False,
+                structured_plan_state="confirmation_required",
+                structured_plan_message="confirmation required",
+            )
         await self._tool_executor(
             "plan_operation",
             {
@@ -408,6 +423,7 @@ class _DeepThinkRepeatedPlanCreateProbe(_DeepThinkProbeBase):
             on_artifact,
         )
         self._tool_executor = tool_executor
+        self.request_profile = dict(_kwargs.get("request_profile") or {})
 
     async def think(self, user_query: str, context: dict | None = None, task_context=None) -> DeepThinkResult:
         _ = (user_query, context, task_context)
@@ -1089,12 +1105,10 @@ def test_deep_think_create_new_rebinds_existing_plan(
     assert final_events, "Expected a final DeepThink SSE event."
     final_metadata = final_events[-1]["payload"]["metadata"]
 
-    # Phase 1: when a plan is already bound, creating a new plan does NOT
-    # rebind — the agent keeps the existing plan_id.
-    assert agent.plan_session.plan_id == 42
-    # No rebinding occurred, so no session updates or scheduled reviews
-    assert session_updates == []
-    assert scheduled_reviews == []
+    assert final_metadata["plan_id"] == 99
+    assert agent.plan_session.plan_id == 99
+    assert session_updates == [("session-create-new", 99)]
+    assert scheduled_reviews == [99]
 
 
 def test_deep_think_reuses_existing_plan_on_repeated_create_within_turn(
@@ -1171,6 +1185,114 @@ def test_deep_think_reuses_existing_plan_on_repeated_create_within_turn(
     assert second["already_bound_plan_reused"] is True
     assert second["binding_skipped"] is True
     assert agent.plan_session.plan_id == 58
+
+
+def test_deep_think_explicit_new_plan_reuses_created_plan_on_second_create(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _DeepThinkJobStub:
+        def create_job(self, **_kwargs):
+            return None
+
+        def mark_running(self, _job_id: str) -> None:
+            return
+
+        def register_subscriber(self, _job_id: str, _loop):
+            return None
+
+        def register_runtime_controller(self, _job_id: str, _controller) -> bool:
+            return False
+
+        def unregister_runtime_controller(self, _job_id: str) -> None:
+            return
+
+        def unregister_subscriber(self, _job_id: str, _queue) -> None:
+            return
+
+        def mark_success(self, _job_id: str, **_kwargs) -> None:
+            return
+
+        def mark_failure(self, _job_id: str, _error: str, **_kwargs) -> None:
+            return
+
+        def attach_plan(self, _job_id: str, _plan_id: int) -> None:
+            return
+
+    tool_calls: list[tuple[str, dict]] = []
+
+    async def _fake_execute_tool(name: str, **params):
+        tool_calls.append((name, dict(params)))
+        assert name == "plan_operation"
+        return {
+            "success": True,
+            "operation": "create",
+            "plan_id": 99,
+            "title": "Replacement plan",
+        }
+
+    monkeypatch.setattr(chat_routes, "DeepThinkAgent", _DeepThinkRepeatedPlanCreateProbe)
+    monkeypatch.setattr("app.routers.chat.agent.execute_tool", _fake_execute_tool)
+    monkeypatch.setattr("app.routers.chat.agent.plan_decomposition_jobs", _DeepThinkJobStub())
+    monkeypatch.setattr("app.routers.chat.agent._persist_runtime_context", lambda _agent: None)
+    monkeypatch.setattr("app.routers.chat.agent._save_chat_message", lambda *args, **kwargs: None)
+    monkeypatch.setattr("app.routers.chat.agent._set_session_plan_id", lambda *args, **kwargs: None)
+    monkeypatch.setattr("app.routers.chat.agent.set_current_job", lambda _job_id: None)
+    monkeypatch.setattr("app.routers.chat.agent.reset_current_job", lambda _token: None)
+
+    agent = _build_deep_think_test_agent()
+    agent.plan_session = _PlanSessionBindStub(plan_id=42)
+    agent.session_id = "session-new-plan-repeat-create"
+    agent.max_history_messages = 20
+    agent._dirty = False
+    agent._refresh_plan_tree = lambda force_reload=False: SimpleNamespace(title="Replacement plan", metadata={})
+    agent._auto_decompose_plan = lambda *_args, **_kwargs: None
+    agent._start_background_created_plan_auto_review = lambda _plan_id: False
+
+    events = asyncio.run(_collect_deep_think_events(agent, "新建一个plan，和刚才那个分开"))
+
+    final_message = _extract_final_message(events)
+    parsed = json.loads(final_message)
+    assert len(tool_calls) == 1
+    assert parsed["first"]["plan_id"] == 99
+    assert parsed["second"]["plan_id"] == 99
+    assert parsed["second"]["already_bound_plan_reused"] is True
+    assert agent.plan_session.plan_id == 99
+
+
+def test_deep_think_bound_new_subject_plan_request_requires_confirmation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tool_calls: list[tuple[str, dict]] = []
+
+    async def _fake_execute_tool(name: str, **params):
+        tool_calls.append((name, dict(params)))
+        raise AssertionError("plan_operation should not be called before confirmation")
+
+    monkeypatch.setattr(chat_routes, "DeepThinkAgent", _DeepThinkPlanCreateProbe)
+    monkeypatch.setattr("app.routers.chat.agent.execute_tool", _fake_execute_tool)
+    monkeypatch.setattr("app.routers.chat.agent._persist_runtime_context", lambda _agent: None)
+    monkeypatch.setattr("app.routers.chat.agent._save_chat_message", lambda *args, **kwargs: None)
+    monkeypatch.setattr("app.routers.chat.agent.set_current_job", lambda _job_id: None)
+    monkeypatch.setattr("app.routers.chat.agent.reset_current_job", lambda _token: None)
+
+    agent = _build_deep_think_test_agent()
+    agent.plan_session = _PlanSessionBindStub(plan_id=42)
+    agent.session_id = "session-plan-conflict"
+    agent.max_history_messages = 20
+    agent.extra_context["active_subject"] = {
+        "kind": "directory",
+        "canonical_ref": "/tmp/old_dataset",
+        "display_ref": "/tmp/old_dataset",
+    }
+
+    events = asyncio.run(
+        _collect_deep_think_events(agent, "Create a plan for /tmp/new_dataset analysis")
+    )
+
+    final_message = _extract_final_message(events)
+    assert "choose update existing" in final_message.lower()
+    assert agent.plan_session.plan_id == 42
+    assert tool_calls == []
 
 
 def test_deep_think_schedules_auto_review_after_create_without_blocking_response(

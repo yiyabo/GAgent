@@ -751,13 +751,800 @@ def test_native_large_file_listing_is_compacted_before_next_llm_call() -> None:
     assert "sample_4999.fasta" not in str(tool_messages[0]["content"])
 
 
+def test_native_large_file_listing_compaction_preserves_evidence_scope() -> None:
+    large_items = [
+        {
+            "name": f"sample_{idx}",
+            "path": f"/tmp/humann/sample_{idx}",
+            "type": "directory",
+            "size": 0,
+        }
+        for idx in range(2000)
+    ]
+    raw_result = {
+        "operation": "list",
+        "path": "/tmp/humann",
+        "success": True,
+        "items": large_items,
+        "count": len(large_items),
+        "evidence_scope": {
+            "schema": "file_operations.evidence.v1",
+            "operation": "list",
+            "path": "/tmp/humann",
+            "scope": "direct_children",
+            "completeness_status": "complete",
+            "enumeration": {
+                "total_children": len(large_items),
+                "scanned_children": len(large_items),
+                "sampled_children": 80,
+                "omitted_children": len(large_items) - 80,
+                "complete_enumeration": True,
+            },
+            "status_counts": {"completed": 1494, "failed": 27, "status_file_total": 1521},
+            "status_counts_confidence": "high",
+            "status_count_sources": [
+                {
+                    "name": "completed.txt",
+                    "path": "/tmp/humann/humann_progress/completed.txt",
+                    "kind": "success",
+                    "entry_count": 1494,
+                    "count_source": "manifest_like",
+                    "count_confidence": "high",
+                },
+                {
+                    "name": "failed.txt",
+                    "path": "/tmp/humann/humann_progress/failed.txt",
+                    "kind": "failure",
+                    "entry_count": 27,
+                    "count_source": "manifest_like",
+                    "count_confidence": "high",
+                },
+            ],
+            "status_files": [
+                {"name": "completed.txt", "kind": "success", "line_count": 1494, "entry_count": 1494},
+                {"name": "failed.txt", "kind": "failure", "line_count": 27, "entry_count": 27},
+            ],
+            "claim_guidance": ["Failure status files were observed; report them explicitly."],
+        },
+    }
+
+    compact_result = DeepThinkAgent._compact_file_operations_result_for_llm(raw_result)
+
+    assert compact_result is not None
+    assert compact_result["llm_compacted"] is True
+    assert compact_result["status_counts"] == {"completed": 1494, "failed": 27, "status_file_total": 1521}
+    assert compact_result["evidence_scope"]["status_files"][1]["name"] == "failed.txt"
+    assert len(compact_result["sample_items"]) < len(large_items)
+
+
+def test_append_recent_tool_result_summary_only_preserves_evidence_envelope() -> None:
+    from app.routers.chat.tool_results import append_recent_tool_result
+
+    context: dict = {}
+    sanitized = {
+        "tool": "file_operations",
+        "operation": "profile",
+        "path": "/tmp/humann",
+        "success": True,
+        "summary": "Directory profile for /tmp/humann",
+        "content": "x" * 9000,
+        "counts": {"direct_children": 1509, "completed": 1494, "failed": 27},
+        "evidence_scope": {
+            "schema": "file_operations.evidence.v1",
+            "completeness_status": "complete_with_status_files",
+            "status_counts": {"completed": 1494, "failed": 27},
+            "status_counts_confidence": "high",
+        },
+        "status_counts_confidence": "high",
+        "status_files": [
+            {"name": "completed.txt", "line_count": 1494},
+            {"name": "failed.txt", "line_count": 27},
+        ],
+    }
+
+    append_recent_tool_result(context, "file_operations", "profile summary", sanitized)
+
+    entry = context["recent_tool_results"][0]
+    assert entry["_compression"] == "summary_only"
+    assert entry["result"]["counts"]["failed"] == 27
+    assert entry["result"]["evidence_scope"]["status_counts"]["completed"] == 1494
+    assert entry["result"]["status_files"][1]["name"] == "failed.txt"
+
+
+def test_evidence_scope_truth_barrier_qualifies_global_success_claims() -> None:
+    agent = DeepThinkAgent(
+        llm_client=_NoStreamLLM(),
+        available_tools=["file_operations"],
+        tool_executor=_noop_tool_executor,
+        max_iterations=1,
+    )
+    payload = {
+        "success": True,
+        "tool": "file_operations",
+        "result": {
+            "operation": "profile",
+            "path": "/tmp/humann",
+            "success": True,
+            "counts": {"direct_children": 1509, "completed": 1494, "failed": 27},
+            "incomplete_examples": [{"name": "X201-P4", "reason": "failed_status_file"}],
+            "evidence_scope": {
+                "schema": "file_operations.evidence.v1",
+                "operation": "profile",
+                "path": "/tmp/humann",
+                "scope": "direct_children",
+                "completeness_status": "complete_with_status_files",
+                "enumeration": {
+                    "total_children": 1509,
+                    "scanned_children": 1509,
+                    "sampled_children": 80,
+                    "omitted_children": 1429,
+                    "complete_enumeration": True,
+                },
+                "status_counts": {"completed": 1494, "failed": 27},
+                "status_counts_confidence": "high",
+                "status_count_sources": [
+                    {
+                        "name": "completed.txt",
+                        "path": "/tmp/humann/progress/completed.txt",
+                        "kind": "success",
+                        "entry_count": 1494,
+                        "count_source": "manifest_like",
+                        "count_confidence": "high",
+                    },
+                    {
+                        "name": "failed.txt",
+                        "path": "/tmp/humann/progress/failed.txt",
+                        "kind": "failure",
+                        "entry_count": 27,
+                        "count_source": "manifest_like",
+                        "count_confidence": "high",
+                    },
+                ],
+            },
+        },
+        "error": None,
+    }
+    step = ThinkingStep(
+        iteration=1,
+        thought="profile directory",
+        action=json.dumps({"tool": "file_operations", "params": {"operation": "profile", "path": "/tmp/humann"}}),
+        action_result=f"[file_operations] {json.dumps(payload, ensure_ascii=False)}",
+        self_correction=None,
+    )
+
+    answer = "All HUMAnN4 samples completed successfully."
+    guarded = agent._apply_evidence_scope_truth_barrier(answer, user_query="Are all samples done?", steps=[step])
+
+    assert "completed=1494" in guarded
+    assert "failed=27" in guarded
+    assert "Directory profile" in guarded
+    assert "direct_children=1509" in guarded
+    assert "Count sources" in guarded
+    assert "Do not treat sampled" in guarded
+    assert answer not in guarded
+
+
+def test_evidence_scope_truth_barrier_accepts_corrected_global_claims() -> None:
+    agent = DeepThinkAgent(
+        llm_client=_NoStreamLLM(),
+        available_tools=["file_operations"],
+        tool_executor=_noop_tool_executor,
+        max_iterations=1,
+    )
+    payload = {
+        "success": True,
+        "tool": "file_operations",
+        "result": {
+            "operation": "profile",
+            "path": "/tmp/humann",
+            "success": True,
+            "counts": {"direct_children": 1509, "completed": 1494, "failed": 27},
+            "evidence_scope": {
+                "schema": "file_operations.evidence.v1",
+                "operation": "profile",
+                "path": "/tmp/humann",
+                "scope": "direct_children",
+                "completeness_status": "complete_with_status_files",
+                "enumeration": {"total_children": 1509, "scanned_children": 1509, "sampled_children": 80, "omitted_children": 1429},
+                "status_counts": {"completed": 1494, "failed": 27},
+            },
+        },
+    }
+    step = ThinkingStep(
+        iteration=1,
+        thought="profile directory",
+        action=json.dumps({"tool": "file_operations", "params": {"operation": "profile", "path": "/tmp/humann"}}),
+        action_result=f"[file_operations] {json.dumps(payload, ensure_ascii=False)}",
+        self_correction=None,
+    )
+
+    answer = "Not all HUMAnN4 samples completed successfully: 1494 completed and 27 failed."
+    guarded = agent._apply_evidence_scope_truth_barrier(answer, user_query="Are all samples done?", steps=[step])
+
+    assert guarded == answer
+
+
+def test_evidence_scope_truth_barrier_replaces_sample_directory_overclaim() -> None:
+    agent = DeepThinkAgent(
+        llm_client=_NoStreamLLM(),
+        available_tools=["file_operations"],
+        tool_executor=_noop_tool_executor,
+        max_iterations=1,
+    )
+    payload = {
+        "success": True,
+        "tool": "file_operations",
+        "result": {
+            "operation": "profile",
+            "path": "/tmp/humann",
+            "success": True,
+            "counts": {
+                "direct_children": 1510,
+                "directories": 1510,
+                "sample_candidate_directories": 1509,
+                "status_directories": 1,
+                "completed": 1494,
+                "failed": 27,
+                "status_file_total": 1521,
+            },
+            "sample_items": [
+                {"name": "X323-P3", "type": "directory", "directory_role": "sample_candidate", "child_count": 5},
+                {"name": "X320-C2", "type": "directory", "directory_role": "sample_candidate", "child_count": 5},
+                {"name": "humann_progress", "type": "directory", "directory_role": "status_or_progress", "child_count": 2},
+            ],
+            "evidence_scope": {
+                "schema": "file_operations.evidence.v1",
+                "operation": "profile",
+                "path": "/tmp/humann",
+                "scope": "direct_children",
+                "completeness_status": "complete_with_status_files",
+                "enumeration": {"total_children": 1510, "scanned_children": 1510, "sampled_children": 80, "omitted_children": 1430},
+                "directory_classification": {
+                    "directories": 1510,
+                    "sample_candidate_directories": 1509,
+                    "status_directories": 1,
+                    "status_directory_names": ["humann_progress"],
+                    "classification_basis": "name/status-file heuristic",
+                },
+                "status_counts": {"completed": 1494, "failed": 27, "status_file_total": 1521},
+                "reconciliation": {
+                    "schema": "file_operations.reconciliation.v1",
+                    "basis": "high_confidence_manifest_status_files_vs_sample_candidate_directories",
+                    "counts": {
+                        "sample_candidate_directories": 1509,
+                        "status_entries_total": 1521,
+                        "status_unique_total": 1521,
+                        "success_entries": 1494,
+                        "success_unique": 1494,
+                        "failure_entries": 27,
+                        "failure_unique": 27,
+                        "success_missing_directories": 0,
+                        "failure_missing_directories": 12,
+                        "status_entries_missing_directories": 12,
+                        "sample_dirs_without_status": 0,
+                        "duplicate_success_entries": 0,
+                        "duplicate_failure_entries": 0,
+                        "success_failure_overlap": 0,
+                    },
+                    "examples": {
+                        "failure_missing_directories": ["X207-C2", "X416-P1"],
+                        "success_missing_directories": [],
+                        "sample_dirs_without_status": [],
+                        "success_failure_overlap": [],
+                    },
+                    "claim_guidance": [
+                        "Explain status/directory count mismatches using missing matching directories, not inferred retries/reruns unless duplicates or overlaps support that."
+                    ],
+                    "sample_directory_name_profile": {
+                        "hyphen_suffix_counts": {"Q": 367, "P3": 355, "C2": 354, "P4": 246, "P1": 179, "C": 6, "C1": 2}
+                    },
+                    "success_directory_structure": {
+                        "entries_considered": 1494,
+                        "directories_scanned": 1494,
+                        "complete_scan": True,
+                        "file_count_distribution": {"5": 1494},
+                        "common_file_patterns": [
+                            {"pattern": "<sample>_kneaddata_merged_0.log", "count": 1494},
+                            {"pattern": "<sample>_kneaddata_merged_1_metaphlan_profile.tsv", "count": 1494},
+                        ],
+                    },
+                },
+            },
+        },
+    }
+    step = ThinkingStep(
+        iteration=1,
+        thought="profile directory",
+        action=json.dumps({"tool": "file_operations", "params": {"operation": "profile", "path": "/tmp/humann"}}),
+        action_result=f"[file_operations] {json.dumps(payload, ensure_ascii=False)}",
+        self_correction=None,
+    )
+
+    answer = "Total sample directories: 1,510. Each completed sample contains 5 files."
+    guarded = agent._apply_evidence_scope_truth_barrier(answer, user_query="look this data", steps=[step])
+
+    assert answer not in guarded
+    assert "sample_candidate_directories=1509" in guarded
+    assert "status_directories=1" in guarded
+    assert "status_unique_total=1521" in guarded
+    assert "failure_missing_directories=12" in guarded
+    assert "X207-C2" in guarded
+    assert "do not infer retries/reruns" in guarded
+    assert "C1=2" in guarded
+    assert "file_count_distribution={'5': 1494}" in guarded
+    assert "humann_progress" in guarded
+
+
+def test_evidence_scope_truth_barrier_replaces_unsupported_rerun_inference() -> None:
+    agent = DeepThinkAgent(
+        llm_client=_NoStreamLLM(),
+        available_tools=["file_operations"],
+        tool_executor=_noop_tool_executor,
+        max_iterations=1,
+    )
+    payload = {
+        "success": True,
+        "tool": "file_operations",
+        "result": {
+            "operation": "profile",
+            "path": "/tmp/run",
+            "success": True,
+            "counts": {"direct_children": 4, "directories": 4, "sample_candidate_directories": 3, "status_directories": 1, "completed": 2, "failed": 2, "status_file_total": 4},
+            "evidence_scope": {
+                "schema": "file_operations.evidence.v1",
+                "operation": "profile",
+                "path": "/tmp/run",
+                "directory_classification": {"sample_candidate_directories": 3, "status_directories": 1, "status_directory_names": ["progress"]},
+                "status_counts": {"completed": 2, "failed": 2, "status_file_total": 4},
+                "reconciliation": {
+                    "schema": "file_operations.reconciliation.v1",
+                    "counts": {
+                        "sample_candidate_directories": 3,
+                        "status_unique_total": 4,
+                        "status_entries_missing_directories": 1,
+                        "failure_missing_directories": 1,
+                        "duplicate_success_entries": 0,
+                        "duplicate_failure_entries": 0,
+                        "success_failure_overlap": 0,
+                    },
+                    "examples": {"failure_missing_directories": ["sample_missing"]},
+                    "claim_guidance": ["Explain status/directory count mismatches using missing matching directories, not inferred retries/reruns unless duplicates or overlaps support that."],
+                },
+            },
+        },
+    }
+    step = ThinkingStep(
+        iteration=1,
+        thought="profile directory",
+        action=json.dumps({"tool": "file_operations", "params": {"operation": "profile", "path": "/tmp/run"}}),
+        action_result=f"[file_operations] {json.dumps(payload, ensure_ascii=False)}",
+        self_correction=None,
+    )
+
+    answer = "The mismatch suggests some samples were retried across multiple pipeline runs."
+    guarded = agent._apply_evidence_scope_truth_barrier(answer, user_query="summarize", steps=[step])
+
+    assert answer not in guarded
+    assert "sample_missing" in guarded
+    assert "do not infer retries/reruns" in guarded
+
+
+def test_evidence_scope_notice_deduplicates_repeated_status_sources() -> None:
+    agent = DeepThinkAgent(
+        llm_client=_NoStreamLLM(),
+        available_tools=["file_operations"],
+        tool_executor=_noop_tool_executor,
+        max_iterations=1,
+    )
+    source_completed = {
+        "path": "/tmp/run/progress/completed.txt",
+        "kind": "success",
+        "entry_count": 5,
+        "count_source": "manifest_like",
+        "count_confidence": "high",
+    }
+    source_failed = {
+        "path": "/tmp/run/progress/failed.txt",
+        "kind": "failure",
+        "entry_count": 1,
+        "count_source": "manifest_like",
+        "count_confidence": "high",
+    }
+    signals = [
+        {
+            "path": "/tmp/run",
+            "status_count_sources": [source_completed, source_failed],
+            "status_counts": {"completed": 5, "failed": 1},
+            "evidence_scope": {"enumeration": {"omitted_children": 0}},
+        },
+        {
+            "path": "/tmp/run",
+            "status_count_sources": [source_completed, source_failed],
+            "status_counts": {"completed": 5, "failed": 1},
+            "evidence_scope": {"enumeration": {"omitted_children": 0}},
+        },
+    ]
+
+    notice = agent._build_evidence_scope_notice(user_query="Are all done?", signals=signals)
+
+    assert "completed=5" in notice
+    assert "failed=1" in notice
+    assert "completed=10" not in notice
+    assert "failed=2" not in notice
+
+
+def test_global_success_detection_requires_scope_and_success_words() -> None:
+    from app.services.deep_think_agent import _looks_like_global_success_claim_text
+
+    assert _looks_like_global_success_claim_text("All samples completed successfully.") is True
+    assert _looks_like_global_success_claim_text("The run completed for inspected samples.") is False
+    assert _looks_like_global_success_claim_text("Not successful for failed samples.") is False
+
+
+def test_native_directory_dataset_analysis_forces_profile_before_final() -> None:
+    operations: list[str] = []
+
+    async def _tool_executor(name: str, params: dict):
+        assert name == "file_operations"
+        operation = params["operation"]
+        operations.append(operation)
+        if operation == "list":
+            return {
+                "operation": "list",
+                "path": params["path"],
+                "success": True,
+                "items": [{"name": "sample_a", "type": "directory", "size": 0}],
+                "count": 1,
+                "evidence_scope": {
+                    "schema": "file_operations.evidence.v1",
+                    "operation": "list",
+                    "path": params["path"],
+                    "scope": "direct_children",
+                    "completeness_status": "complete",
+                    "enumeration": {
+                        "total_children": 1,
+                        "scanned_children": 1,
+                        "sampled_children": 1,
+                        "omitted_children": 0,
+                        "complete_enumeration": True,
+                    },
+                },
+            }
+        if operation == "profile":
+            return {
+                "operation": "profile",
+                "path": params["path"],
+                "success": True,
+                "counts": {"direct_children": 2, "completed": 1, "failed": 1},
+                "status_count_sources": [
+                    {
+                        "path": f"{params['path']}/progress/completed.txt",
+                        "kind": "success",
+                        "entry_count": 1,
+                        "count_source": "manifest_like",
+                        "count_confidence": "high",
+                    },
+                    {
+                        "path": f"{params['path']}/progress/failed.txt",
+                        "kind": "failure",
+                        "entry_count": 1,
+                        "count_source": "manifest_like",
+                        "count_confidence": "high",
+                    },
+                ],
+                "status_counts_confidence": "high",
+                "evidence_scope": {
+                    "schema": "file_operations.evidence.v1",
+                    "operation": "profile",
+                    "path": params["path"],
+                    "scope": "direct_children",
+                    "completeness_status": "complete_with_status_files",
+                    "enumeration": {
+                        "total_children": 2,
+                        "scanned_children": 2,
+                        "sampled_children": 2,
+                        "omitted_children": 0,
+                        "complete_enumeration": True,
+                    },
+                    "status_counts": {"completed": 1, "failed": 1},
+                    "status_counts_confidence": "high",
+                },
+            }
+        raise AssertionError(f"unexpected operation: {operation}")
+
+    llm = _RecordingNativeLLM(
+        [
+            NativeStreamResult(
+                content="Inspect directory",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc1",
+                        name="file_operations",
+                        arguments={"operation": "list", "path": "/tmp/dataset"},
+                    )
+                ],
+            ),
+            NativeStreamResult(
+                content="Submit too early",
+                tool_calls=[
+                    NativeToolCall(
+                        id="final1",
+                        name="submit_final_answer",
+                        arguments={"answer": "All samples completed successfully.", "confidence": 0.9},
+                    )
+                ],
+            ),
+            NativeStreamResult(
+                content="Submit scoped answer",
+                tool_calls=[
+                    NativeToolCall(
+                        id="final2",
+                        name="submit_final_answer",
+                        arguments={
+                            "answer": "Profile evidence shows completed=1 and failed=1; not all samples completed successfully.",
+                            "confidence": 0.9,
+                        },
+                    )
+                ],
+            ),
+        ]
+    )
+    agent = DeepThinkAgent(
+        llm_client=llm,
+        available_tools=["file_operations"],
+        tool_executor=_tool_executor,
+        max_iterations=4,
+        request_profile={"request_tier": "research"},
+    )
+
+    result = asyncio.run(agent.think("Please analyze this folder: /tmp/dataset"))
+
+    assert operations == ["list", "profile"]
+    assert "completed=1" in result.final_answer
+    assert "failed=1" in result.final_answer
+    assert "All samples completed successfully" not in result.final_answer
+    assert len(llm.calls) >= 3
+    third_call_tool_messages = [msg for msg in llm.calls[2] if msg.get("role") == "tool"]
+    assert any('"operation": "profile"' in str(msg.get("content")) for msg in third_call_tool_messages)
+
+
+def test_native_vague_phagescope_path_analysis_forces_deep_profile_before_final() -> None:
+    calls: list[tuple[str, dict]] = []
+
+    async def _tool_executor(name: str, params: dict):
+        calls.append((name, dict(params)))
+        if name == "phagescope_research":
+            assert params["action"] == "deep_profile"
+            return {
+                "success": True,
+                "tool": "phagescope_research",
+                "action": "deep_profile",
+                "data_dir": params["data_dir"],
+                "metadata_files": 14,
+                "metadata_rows": 873718,
+                "metadata_size_human": "126.22 MB",
+                "total_size_human": "41.61 GB",
+            }
+        raise AssertionError(f"unexpected tool: {name}")
+
+    llm = _RecordingNativeLLM(
+        [
+            NativeStreamResult(
+                content="Submit too early",
+                tool_calls=[
+                    NativeToolCall(
+                        id="final1",
+                        name="submit_final_answer",
+                        arguments={"answer": "Only the header row is present.", "confidence": 0.9},
+                    )
+                ],
+            ),
+            NativeStreamResult(
+                content="Final with profile evidence",
+                tool_calls=[
+                    NativeToolCall(
+                        id="final2",
+                        name="submit_final_answer",
+                        arguments={
+                            "answer": "Deep profile shows 873718 rows, metadata size 126.22 MB, and full directory size 41.61 GB.",
+                            "confidence": 0.9,
+                        },
+                    )
+                ],
+            ),
+        ]
+    )
+    agent = DeepThinkAgent(
+        llm_client=llm,
+        available_tools=["file_operations", "phagescope_research"],
+        tool_executor=_tool_executor,
+        max_iterations=4,
+        request_profile={"request_tier": "research"},
+    )
+
+    result = asyncio.run(
+        agent.think(
+            "again analyze this data. /home/zczhao/Phage-Agent/phagescope. "
+            "I will tell you later, start!"
+        )
+    )
+
+    assert calls[0][0] == "phagescope_research"
+    assert calls[0][1]["action"] == "deep_profile"
+    assert "873718" in result.final_answer
+    assert "126.22 MB" in result.final_answer
+    assert "Only the header row" not in result.final_answer
+
+
+def test_native_phagescope_deep_profile_failure_blocks_forced_synthesis() -> None:
+    calls: list[tuple[str, dict]] = []
+
+    async def _tool_executor(name: str, params: dict):
+        calls.append((name, dict(params)))
+        if name == "phagescope_research":
+            return {
+                "success": False,
+                "tool": "phagescope_research",
+                "action": "deep_profile",
+                "error": "PermissionError: [Errno 1] Operation not permitted",
+            }
+        if name == "file_operations":
+            return {
+                "operation": "profile",
+                "path": params["path"],
+                "success": True,
+                "counts": {"direct_children": 13, "directories": 12, "files": 1},
+            }
+        raise AssertionError(f"unexpected tool: {name}")
+
+    llm = _RecordingNativeLLM(
+        [
+            NativeStreamResult(
+                content="Try shallow files",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc1",
+                        name="file_operations",
+                        arguments={"operation": "profile", "path": "/home/zczhao/Phage-Agent/phagescope"},
+                    )
+                ],
+            ),
+            NativeStreamResult(
+                content="No final",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc2",
+                        name="phagescope_research",
+                        arguments={"action": "deep_profile", "data_dir": "/home/zczhao/Phage-Agent/phagescope"},
+                    )
+                ],
+            ),
+        ]
+    )
+    agent = DeepThinkAgent(
+        llm_client=llm,
+        available_tools=["file_operations", "phagescope_research"],
+        tool_executor=_tool_executor,
+        max_iterations=2,
+        request_profile={"request_tier": "research"},
+    )
+
+    result = asyncio.run(
+        agent.think(
+            "again analyze this data. /home/zczhao/Phage-Agent/phagescope. "
+            "I will tell you later, start!"
+        )
+    )
+
+    assert any(call[0] == "phagescope_research" for call in calls)
+    assert "PermissionError" in result.final_answer
+    assert "shallow file listings" in result.final_answer
+    assert "Only the header row" not in result.final_answer
+    assert result.fallback_used is True
+
+
+def test_native_phagescope_dataset_analysis_forces_deep_profile_before_final() -> None:
+    calls: list[tuple[str, dict]] = []
+
+    async def _tool_executor(name: str, params: dict):
+        calls.append((name, dict(params)))
+        if name == "file_operations":
+            return {
+                "operation": "profile",
+                "path": params["path"],
+                "success": True,
+                "counts": {"direct_children": 13, "directories": 12, "files": 1},
+                "evidence_scope": {
+                    "schema": "file_operations.evidence.v1",
+                    "operation": "profile",
+                    "path": params["path"],
+                    "scope": "direct_children",
+                    "completeness_status": "complete",
+                    "enumeration": {"total_children": 13, "scanned_children": 13, "sampled_children": 13, "omitted_children": 0},
+                },
+            }
+        if name == "phagescope_research":
+            assert params["action"] == "deep_profile"
+            return {
+                "success": True,
+                "tool": "phagescope_research",
+                "action": "deep_profile",
+                "data_dir": params["data_dir"],
+                "metadata_files": 14,
+                "metadata_rows": 873718,
+                "metadata_size_bytes": 132351860,
+                "metadata_size_human": "126.22 MB",
+                "total_size_bytes": 44678300672,
+                "total_size_human": "41.61 GB",
+                "metadata_schema": {
+                    "headers_consistent": False,
+                    "most_common_header": ["Phage_ID", "Length", "GC_content", "Taxonomy", "Completeness", "Host", "Lifestyle", "Cluster", "Subcluster"],
+                    "extra_columns_by_file": {"gov2_phage_meta_data.tsv": ["Phage_source"]},
+                },
+                "ml_metadata_table": {"rows": 0, "empty_or_header_only": True},
+                "label_quality": {"host_missing_rows": 17757},
+                "split_readiness": {"recommended_primary_split": "subcluster"},
+            }
+        raise AssertionError(f"unexpected tool: {name}")
+
+    llm = _RecordingNativeLLM(
+        [
+            NativeStreamResult(
+                content="Submit too early",
+                tool_calls=[
+                    NativeToolCall(
+                        id="final1",
+                        name="submit_final_answer",
+                        arguments={"answer": "meta_data has 14 TSV around 100 GB total.", "confidence": 0.9},
+                    )
+                ],
+            ),
+            NativeStreamResult(
+                content="Final with profile evidence",
+                tool_calls=[
+                    NativeToolCall(
+                        id="final2",
+                        name="submit_final_answer",
+                        arguments={
+                            "answer": "Deep profile shows meta_data has 14 TSV, 873718 rows, and size 126.22 MB; the full directory is 41.61 GB. The ML metadata table has 0 data rows. Metadata headers are not fully identical because some files add Phage_source.",
+                            "confidence": 0.9,
+                        },
+                    )
+                ],
+            ),
+        ]
+    )
+    agent = DeepThinkAgent(
+        llm_client=llm,
+        available_tools=["file_operations", "phagescope_research"],
+        tool_executor=_tool_executor,
+        max_iterations=4,
+        request_profile={"request_tier": "research"},
+    )
+
+    result = asyncio.run(
+        agent.think(
+            "Data splitting → Model selection → Benchmarking → Biological validation. "
+            "You can explore this data. /home/zczhao/Phage-Agent/phagescope"
+        )
+    )
+
+    assert calls[0][0] == "phagescope_research"
+    assert calls[0][1]["action"] == "deep_profile"
+    assert "126.22 MB" in result.final_answer
+    assert "100 GB" not in result.final_answer
+    assert len(llm.calls) >= 2
+    assert any(
+        '"action": "deep_profile"' in str(msg.get("content"))
+        for msg in llm.calls[1]
+        if msg.get("role") == "tool"
+    )
+
+
 def test_structured_plan_outcome_detects_created_plan() -> None:
-    # Phase 1: _requires_structured_plan() always returns False now.
-    # The routing no longer sets plan fields; LLM decides via tool descriptions.
     agent = _build_plan_agent(
         {
-            "requires_structured_plan": True,
-            "plan_request_mode": "create",
+            "plan_create_required": True,
         }
     )
     step = ThinkingStep(
@@ -769,9 +1556,9 @@ def test_structured_plan_outcome_detects_created_plan() -> None:
     )
 
     outcome = agent._summarize_structured_plan_outcome([step], user_query="做一个plan")
-    # With Phase 1 stubs, required is always False — verification disabled
-    assert outcome["required"] is False
-    assert outcome["satisfied"] is False
+    assert outcome["required"] is True
+    assert outcome["satisfied"] is True
+    assert outcome["plan_id"] == 55
 
 
 def test_native_plan_create_injects_finalize_nudge() -> None:
@@ -849,11 +1636,9 @@ def test_native_plan_create_injects_finalize_nudge() -> None:
 
 
 def test_structured_plan_outcome_detects_bound_plan_update() -> None:
-    # Phase 1: _requires_structured_plan() always returns False
     agent = _build_plan_agent(
         {
-            "requires_structured_plan": True,
-            "plan_request_mode": "update_bound",
+            "plan_review_required": True,
             "current_plan_id": 42,
             "current_plan_title": "Plan 42",
         }
@@ -867,17 +1652,14 @@ def test_structured_plan_outcome_detects_bound_plan_update() -> None:
     )
 
     outcome = agent._summarize_structured_plan_outcome([step], user_query="更新这个plan")
-    assert outcome["required"] is False
-    assert outcome["satisfied"] is False
+    assert outcome["required"] is True
+    assert outcome["satisfied"] is True
 
 
 def test_structured_plan_review_requirement_rejects_get_only() -> None:
-    # Phase 1: _requires_structured_plan() always returns False
     agent = _build_plan_agent(
         {
-            "requires_structured_plan": True,
-            "plan_request_mode": "update_bound",
-            "requires_plan_review": True,
+            "plan_review_required": True,
             "current_plan_id": 42,
             "current_plan_title": "Plan 42",
         }
@@ -891,18 +1673,16 @@ def test_structured_plan_review_requirement_rejects_get_only() -> None:
     )
 
     outcome = agent._summarize_structured_plan_outcome([step], user_query="审核一下这个任务")
-    assert outcome["required"] is False
+    assert outcome["required"] is True
     assert outcome["satisfied"] is False
+    assert outcome["missing_operations"] == ["review"]
 
 
 def test_structured_plan_review_and_optimize_requirement_requires_both_ops() -> None:
-    # Phase 1: _requires_structured_plan() always returns False
     agent = _build_plan_agent(
         {
-            "requires_structured_plan": True,
-            "plan_request_mode": "update_bound",
-            "requires_plan_review": True,
-            "requires_plan_optimize": True,
+            "plan_review_required": True,
+            "plan_optimize_required": True,
             "current_plan_id": 42,
             "current_plan_title": "Plan 42",
         }
@@ -916,17 +1696,15 @@ def test_structured_plan_review_and_optimize_requirement_requires_both_ops() -> 
     )
 
     outcome = agent._summarize_structured_plan_outcome([step], user_query="审核并优化这个计划")
-    assert outcome["required"] is False
+    assert outcome["required"] is True
     assert outcome["satisfied"] is False
+    assert outcome["missing_operations"] == ["optimize"]
 
 
 def test_structured_plan_optimize_requirement_rejects_zero_applied_changes() -> None:
-    # Phase 1: _requires_structured_plan() always returns False
     agent = _build_plan_agent(
         {
-            "requires_structured_plan": True,
-            "plan_request_mode": "update_bound",
-            "requires_plan_optimize": True,
+            "plan_optimize_required": True,
             "current_plan_id": 42,
             "current_plan_title": "Plan 42",
         }
@@ -940,16 +1718,15 @@ def test_structured_plan_optimize_requirement_rejects_zero_applied_changes() -> 
     )
 
     outcome = agent._summarize_structured_plan_outcome([step], user_query="更新一下这个plan")
-    assert outcome["required"] is False
+    assert outcome["required"] is True
     assert outcome["satisfied"] is False
+    assert outcome["missing_operations"] == ["optimize"]
 
 
 def test_structured_plan_outcome_marks_text_only_when_tool_never_called() -> None:
-    # Phase 1: _requires_structured_plan() always returns False
     agent = _build_plan_agent(
         {
-            "requires_structured_plan": True,
-            "plan_request_mode": "create",
+            "plan_create_required": True,
         }
     )
     step = ThinkingStep(
@@ -961,16 +1738,15 @@ def test_structured_plan_outcome_marks_text_only_when_tool_never_called() -> Non
     )
 
     outcome = agent._summarize_structured_plan_outcome([step], user_query="做一个plan")
-    assert outcome["required"] is False
+    assert outcome["required"] is True
     assert outcome["satisfied"] is False
+    assert outcome["state"] == "not_called"
 
 
 def test_structured_plan_outcome_marks_failed_when_plan_tool_fails() -> None:
-    # Phase 1: _requires_structured_plan() always returns False
     agent = _build_plan_agent(
         {
-            "requires_structured_plan": True,
-            "plan_request_mode": "create",
+            "plan_create_required": True,
         }
     )
     step = ThinkingStep(
@@ -982,8 +1758,83 @@ def test_structured_plan_outcome_marks_failed_when_plan_tool_fails() -> None:
     )
 
     outcome = agent._summarize_structured_plan_outcome([step], user_query="做一个plan")
-    assert outcome["required"] is False
+    assert outcome["required"] is True
     assert outcome["satisfied"] is False
+    assert outcome["missing_operations"] == ["create"]
+
+
+def test_structured_plan_create_and_execute_requires_both_ops() -> None:
+    agent = _build_plan_agent(
+        {
+            "plan_create_required": True,
+            "plan_execute_required": True,
+            "plan_execute_after_create_required": True,
+        }
+    )
+    create_step = ThinkingStep(
+        iteration=1,
+        thought="",
+        action=json.dumps({"tool": "plan_operation", "params": {"operation": "create"}}),
+        action_result='[plan_operation] {"success": true, "tool": "plan_operation", "result": {"success": true, "operation": "create", "plan_id": 55, "title": "Plan 55"}, "error": null}',
+        self_correction=None,
+    )
+
+    create_only = agent._summarize_structured_plan_outcome(
+        [create_step],
+        user_query="Create a plan and execute it step by step",
+    )
+    assert create_only["required"] is True
+    assert create_only["satisfied"] is False
+    assert create_only["missing_operations"] == ["execute_all"]
+
+    execute_step = ThinkingStep(
+        iteration=2,
+        thought="",
+        action=json.dumps({"tool": "plan_operation", "params": {"operation": "execute_all", "plan_id": 55}}),
+        action_result='[plan_operation] {"success": true, "tool": "plan_operation", "result": {"success": true, "operation": "execute_all", "plan_id": 55, "job_id": "job-1"}, "error": null}',
+        self_correction=None,
+    )
+    complete = agent._summarize_structured_plan_outcome(
+        [create_step, execute_step],
+        user_query="Create a plan and execute it step by step",
+    )
+    assert complete["satisfied"] is True
+
+
+def test_structured_plan_contract_failure_replaces_observation_fallback() -> None:
+    agent = _build_plan_agent({"plan_create_required": True})
+    step = ThinkingStep(
+        iteration=1,
+        thought="Inspected files.",
+        action=json.dumps({"tool": "file_operations", "params": {"operation": "list", "path": "/tmp"}}),
+        action_result='[file_operations] {"success": true, "files": ["a.txt"]}',
+        self_correction=None,
+    )
+
+    answer = agent._build_structured_fallback(
+        [step],
+        user_query="Create an executable plan",
+    )
+
+    assert "structured plan contract was not satisfied" in answer
+    assert "Here is what was observed during execution" not in answer
+
+
+def test_structured_plan_conflict_requires_confirmation_message() -> None:
+    agent = _build_plan_agent(
+        {
+            "plan_conflict_requires_confirmation": True,
+            "current_plan_id": 42,
+            "current_plan_title": "Old plan",
+        }
+    )
+
+    outcome = agent._summarize_structured_plan_outcome([], user_query="Create a plan for /tmp/new")
+
+    assert outcome["required"] is True
+    assert outcome["satisfied"] is False
+    assert outcome["state"] == "confirmation_required"
+    assert "Update the existing plan" in outcome["message"]
 
 
 def test_extract_evidence_ignores_unverified_terminal_session_echoed_paths() -> None:
