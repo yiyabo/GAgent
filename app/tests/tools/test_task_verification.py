@@ -3257,3 +3257,224 @@ def test_task_verifier_resolves_relative_checks_against_task_raw_files_dir(tmp_p
     assert metadata["verification_status"] == "passed"
     assert metadata["verification"]["checks_passed"] == 2
     assert metadata["verification"]["failures"] == []
+
+
+def test_task_verifier_config_error_does_not_fail_completed_task_with_outputs(tmp_path) -> None:
+    task_dir = tmp_path / "runtime" / "session_test" / "raw_files" / "task_1" / "task_2" / "task_46"
+    task_dir.mkdir(parents=True)
+    report = task_dir / "metadata_parsing_report.json"
+    report.write_text(
+        json.dumps({
+            "total_files_expected": 14,
+            "files_loaded": 14,
+            "files_failed": 0,
+            "total_records": 873718,
+        }),
+        encoding="utf-8",
+    )
+    node = PlanNode(
+        id=46,
+        plan_id=105,
+        name="Load and Parse All 14 PhageScope Metadata TSV Files",
+        path="/1/2/46",
+        metadata={
+            "acceptance_criteria": {
+                "category": "file_data",
+                "blocking": True,
+                "checks": [{"type": "glob_count_at_least", "min_count": 14}],
+            }
+        },
+    )
+
+    finalization = TaskVerificationService().finalize_payload(
+        node,
+        {
+            "status": "completed",
+            "metadata": {"artifact_paths": [str(task_dir), str(report)]},
+        },
+        execution_status="completed",
+    )
+
+    metadata = finalization.payload["metadata"]
+    assert finalization.final_status == "completed"
+    assert finalization.verification is not None
+    assert metadata["verification_status"] == "config_error"
+    assert metadata["verification_config_error"] is True
+    assert metadata["verification"]["blocking"] is False
+    assert metadata["verification_config_errors"][0]["failure_kind"] == "verification_config_error"
+    assert "failure_kind" not in metadata
+    assert "contract_diff" not in metadata
+
+
+def test_task_verifier_still_fails_config_error_when_no_output_evidence(tmp_path) -> None:
+    node = PlanNode(
+        id=47,
+        plan_id=105,
+        name="Load metadata without outputs",
+        metadata={
+            "acceptance_criteria": {
+                "category": "file_data",
+                "blocking": True,
+                "checks": [{"type": "glob_count_at_least", "min_count": 1}],
+            }
+        },
+    )
+
+    finalization = TaskVerificationService().finalize_payload(
+        node,
+        {"status": "completed", "metadata": {"artifact_paths": []}},
+        execution_status="completed",
+    )
+
+    metadata = finalization.payload["metadata"]
+    assert finalization.final_status == "failed"
+    assert metadata["verification_status"] == "failed"
+    assert metadata["failure_kind"] == "contract_mismatch"
+    assert metadata["verification"]["failures"][0]["failure_kind"] == "verification_config_error"
+
+
+def test_task_verifier_searches_artifact_directory_roots_for_relative_globs(tmp_path) -> None:
+    scratch_dir = tmp_path / "scratch" / "plan105_task46" / "run_001"
+    promoted_dir = tmp_path / "runtime" / "session_test" / "raw_files" / "task_1" / "task_2" / "task_46"
+    scratch_dir.mkdir(parents=True)
+    promoted_metadata = promoted_dir / "metadata" / "ml_metadata_table_host.tsv"
+    promoted_metadata.parent.mkdir(parents=True)
+    promoted_metadata.write_text("id\thost\nphage_1\tE.coli\n", encoding="utf-8")
+    node = PlanNode(
+        id=46,
+        plan_id=105,
+        name="Load and Parse All 14 PhageScope Metadata TSV Files",
+        path="/1/2/46",
+        metadata={
+            "acceptance_criteria": {
+                "category": "file_data",
+                "blocking": True,
+                "checks": [{"type": "glob_count_at_least", "glob": "metadata/*.tsv", "min_count": 1}],
+            }
+        },
+    )
+
+    finalization = TaskVerificationService().finalize_payload(
+        node,
+        {
+            "status": "completed",
+            "metadata": {
+                "run_directory": str(scratch_dir),
+                "artifact_paths": [str(promoted_dir), str(promoted_metadata)],
+            },
+        },
+        execution_status="completed",
+    )
+
+    metadata = finalization.payload["metadata"]
+    assert finalization.final_status == "completed"
+    assert metadata["verification_status"] == "passed"
+    assert metadata["verification"]["checks_passed"] == 1
+    assert metadata["verification"]["failures"] == []
+
+
+def test_task_verifier_records_path_resolution_diagnostics(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    task_dir = tmp_path / "runtime" / "session_test" / "raw_files" / "task_1" / "task_3" / "task_19"
+    artifact = task_dir / "05_CellChat" / "pathway_summary_N.csv"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text("pathway,count\nTGFB,1\n", encoding="utf-8")
+    node = PlanNode(
+        id=19,
+        plan_id=100,
+        name="Load CellChat pathway summary files",
+        path="/1/3/19",
+        metadata={
+            "acceptance_criteria": {
+                "blocking": True,
+                "checks": [
+                    {"type": "file_exists", "path": "05_CellChat/pathway_summary_N.csv"},
+                    {"type": "file_nonempty", "path": "05_CellChat/pathway_summary_N.csv"},
+                ],
+            }
+        },
+    )
+
+    finalization = TaskVerificationService().finalize_payload(
+        node,
+        {
+            "status": "completed",
+            "metadata": {"artifact_paths": [str(task_dir), str(artifact)]},
+        },
+        execution_status="completed",
+    )
+
+    diagnostics = finalization.payload["metadata"]["verification_diagnostics"]
+    assert diagnostics["plan_id"] == 100
+    assert diagnostics["task_id"] == 19
+    assert diagnostics["node_path"] == "/1/3/19"
+    assert diagnostics["chosen_base_dir"] == str(task_dir)
+    assert diagnostics["candidate_dirs"]["task_raw_files"] == [str(task_dir)]
+    resolved_paths = [item["resolved_path"] for item in diagnostics["resolved_checks"]]
+    assert resolved_paths
+    assert set(resolved_paths) == {str(artifact)}
+    assert {item["type"] for item in diagnostics["resolved_checks"]} == {
+        "file_exists",
+        "file_nonempty",
+        "json_field_at_least",
+    }
+    assert diagnostics["artifact_path_stats"]["existing_files"] == 1
+    assert diagnostics["artifact_path_stats"]["existing_dirs"] == 1
+    assert finalization.verification["diagnostics"]["chosen_base_dir"] == str(task_dir)
+
+
+def test_dry_run_reverify_plan_does_not_persist_and_reports_would_change(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    output = tmp_path / "runtime" / "session_test" / "raw_files" / "task_1" / "task_2" / "report.txt"
+    output.parent.mkdir(parents=True)
+    output.write_text("ok\n", encoding="utf-8")
+    payload = {
+        "status": "failed",
+        "content": "previous verification failed",
+        "metadata": {"execution_status": "completed", "artifact_paths": [str(output)]},
+    }
+    tree = PlanTree(id=77, title="Dry-run reverify")
+    tree.nodes = {
+        2: PlanNode(
+            id=2,
+            plan_id=77,
+            name="Write report",
+            status="failed",
+            path="/1/2",
+            metadata={
+                "acceptance_criteria": {
+                    "blocking": True,
+                    "checks": [{"type": "file_nonempty", "path": "report.txt"}],
+                }
+            },
+            execution_result=json.dumps(payload, ensure_ascii=False),
+        ),
+        3: PlanNode(
+            id=3,
+            plan_id=77,
+            name="Pending task",
+            status="pending",
+        ),
+    }
+    tree.rebuild_adjacency()
+    repo = _RepoStub(tree)
+
+    result = TaskVerificationService().dry_run_reverify_plan(repo, plan_id=77)
+
+    assert repo.update_calls == []
+    assert result["dry_run"] is True
+    assert result["summary"] == {
+        "total": 2,
+        "verifiable": 1,
+        "would_pass": 1,
+        "would_fail": 0,
+        "would_skip": 0,
+        "would_change_status": 1,
+        "unverifiable": 1,
+    }
+    item = result["items"][0]
+    assert item["task_id"] == 2
+    assert item["current_status"] == "failed"
+    assert item["dry_run_status"] == "completed"
+    assert item["would_change_status"] is True
+    assert item["diagnostics"]["chosen_base_dir"] == str(output.parent)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from app.services.plans.artifact_contracts import save_artifact_manifest
 from app.services.plans.artifact_preflight import ArtifactPreflightService
 from app.services.plans.plan_models import PlanNode, PlanTree
 
@@ -99,6 +100,30 @@ def test_preflight_detects_artifact_cycle(monkeypatch, tmp_path) -> None:
 
     assert result.ok is False
     assert any(issue.code == "artifact_cycle" for issue in result.errors)
+
+
+def test_preflight_ignores_same_task_artifact_self_cycle(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    service = ArtifactPreflightService()
+    tree = _tree(
+        131,
+        PlanNode(
+            id=46,
+            plan_id=131,
+            name="Load and normalize metadata",
+            metadata={
+                "artifact_contract": {
+                    "requires": ["phage_ml.training_metadata_parquet"],
+                    "publishes": ["phage_ml.training_metadata_parquet"],
+                }
+            },
+        ),
+    )
+
+    result = service.validate_plan(131, tree)
+
+    assert result.ok is True
+    assert not [issue for issue in result.errors if issue.code == "artifact_cycle"]
 
 
 def test_preflight_warns_when_completed_task_missing_canonical_publish(monkeypatch, tmp_path) -> None:
@@ -207,6 +232,53 @@ def test_preflight_resolves_equivalent_model_directory_alias(monkeypatch, tmp_pa
 
     assert result.ok is True
     assert not [issue for issue in result.errors if issue.code == "missing_producer"]
+
+
+def test_preflight_resolves_dynamic_directory_artifact_alias(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    alias = "analysis_ccc.evidence_dataframes"
+    data_dir = tmp_path / "outputs" / "task_1" / "data"
+    data_dir.mkdir(parents=True)
+    (data_dir / "lr_pairs.tsv").write_text("ligand\treceptor\nMIF\tCD74\n", encoding="utf-8")
+    save_artifact_manifest(
+        101,
+        {
+            "plan_id": 101,
+            "artifacts": {
+                alias: {
+                    "alias": alias,
+                    "path": str(data_dir.resolve()),
+                    "producer_task_id": 1,
+                    "source_path": str(data_dir.resolve()),
+                    "validation": {"validated": True, "kind": "directory"},
+                }
+            },
+        },
+    )
+    service = ArtifactPreflightService()
+    tree = _tree(
+        101,
+        PlanNode(
+            id=1,
+            plan_id=101,
+            name="Produce evidence dataframes",
+            status="completed",
+            metadata={"artifact_contract": {"publishes": [alias]}},
+        ),
+        PlanNode(
+            id=2,
+            plan_id=101,
+            name="Consume evidence dataframes",
+            metadata={"artifact_contract": {"requires": [alias]}},
+        ),
+    )
+
+    result = service.validate_plan(101, tree)
+
+    assert result.ok is True
+    assert result.manifest_resolved_aliases[alias] == str(data_dir.resolve())
+    assert not [issue for issue in result.warnings if issue.code == "unknown_artifact_alias"]
+    assert not [issue for issue in result.warnings if issue.code == "completed_task_missing_publish"]
 
 
 def test_supervised_ml_contract_requires_label_and_row_id_artifacts(monkeypatch, tmp_path) -> None:
