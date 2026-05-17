@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import fields, is_dataclass
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .session_helpers import (
@@ -117,6 +119,40 @@ def sanitize_tool_result(tool_name: str, raw_result: Any) -> Dict[str, Any]:
     Each tool family has its own reducer; unknown tools go through a generic
     path that keeps commonly used keys.
     """
+    if tool_name == "phagescope_research" and isinstance(raw_result, dict):
+        sanitized: Dict[str, Any] = {
+            "tool": tool_name,
+            "action": raw_result.get("action"),
+            "success": raw_result.get("success", False),
+        }
+        for key in (
+            "error",
+            "error_code",
+            "data_dir",
+            "resolved_data_dir",
+            "total_size_bytes",
+            "total_size_human",
+            "metadata_size_bytes",
+            "metadata_size_human",
+            "metadata_files",
+            "metadata_rows",
+            "unique_phage_ids",
+            "duplicate_phage_ids",
+            "ml_metadata_table",
+            "metadata_schema",
+            "label_quality",
+            "split_readiness",
+            "annotation_inventory",
+            "source_top",
+            "taxonomy_top",
+            "claim_guidance",
+            "recommended_next_step",
+            "code_executor_add_dirs",
+        ):
+            if key in raw_result:
+                sanitized[key] = raw_result.get(key)
+        return sanitized
+
     if tool_name == "phagescope" and isinstance(raw_result, dict):
         sanitized: Dict[str, Any] = {
             "tool": tool_name,
@@ -256,7 +292,29 @@ def sanitize_tool_result(tool_name: str, raw_result: Any) -> Dict[str, Any]:
         if isinstance(content, str):
             # Extra guardrail: cap to 80k chars to avoid bloating chat logs.
             sanitized["content"] = content[:80_000]
-        for key in ("size", "file_size", "lines_read", "encoding", "truncated", "truncated_message", "count", "items", "exists", "type"):
+        for key in (
+            "size",
+            "file_size",
+            "lines_read",
+            "encoding",
+            "truncated",
+            "truncated_message",
+            "count",
+            "items",
+            "exists",
+            "type",
+            "counts",
+            "extension_counts",
+            "status_files",
+            "status_count_sources",
+            "reconciliation",
+            "status_counts_confidence",
+            "incomplete_examples",
+            "sample_items",
+            "evidence_scope",
+            "completeness_status",
+            "summary",
+        ):
             if key in raw_result:
                 sanitized[key] = raw_result.get(key)
         return sanitized
@@ -568,6 +626,7 @@ def sanitize_tool_result(tool_name: str, raw_result: Any) -> Dict[str, Any]:
             "background",
             "job_id",
             "status",
+            "summary",
         ):
             if key in raw_result:
                 sanitized[key] = raw_result[key]
@@ -586,6 +645,20 @@ def sanitize_tool_result(tool_name: str, raw_result: Any) -> Dict[str, Any]:
                     })
             if trimmed:
                 sanitized["results"] = trimmed
+        if tool_name == "scientific_figure_generator":
+            for key in (
+                "title",
+                "output_dir",
+                "figure_png",
+                "figure_pdf",
+                "legend_md",
+                "provenance_tsv",
+                "qa_json",
+                "qa_passed",
+                "generated_files",
+            ):
+                if key in raw_result:
+                    sanitized[key] = raw_result[key]
         result_block = raw_result.get("result")
         if isinstance(result_block, dict):
             if "prompt" in result_block and isinstance(result_block["prompt"], str):
@@ -601,12 +674,26 @@ def sanitize_tool_result(tool_name: str, raw_result: Any) -> Dict[str, Any]:
                 sanitized["subgraph"] = result_block["subgraph"]
             if "query" in result_block and "query" not in sanitized:
                 sanitized["query"] = result_block["query"]
+            if tool_name == "scientific_figure_generator":
+                for key in (
+                    "title",
+                    "output_dir",
+                    "figure_png",
+                    "figure_pdf",
+                    "legend_md",
+                    "provenance_tsv",
+                    "qa_json",
+                    "qa_passed",
+                    "generated_files",
+                ):
+                    if key in result_block:
+                        sanitized[key] = result_block[key]
         if "success" not in sanitized:
             if "error" in sanitized:
                 sanitized["success"] = False
             else:
                 sanitized["success"] = True
-        for key in ("artifact_paths", "storage", "deliverables", "artifact_gallery"):
+        for key in ("artifact_paths", "storage", "deliverables", "artifact_gallery", "deliverable_submit"):
             value = raw_result.get(key)
             if value is None:
                 continue
@@ -640,15 +727,19 @@ def sanitize_tool_result(tool_name: str, raw_result: Any) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def drop_callables(value: Any) -> Any:
-    """Recursively remove callable values from nested data structures."""
+    """Recursively remove callables and coerce runtime objects to JSON-safe data."""
     if callable(value):
         return None
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, Path):
+        return str(value)
     if isinstance(value, dict):
         cleaned: Dict[str, Any] = {}
         for key, item in value.items():
             if callable(item):
                 continue
-            cleaned[key] = drop_callables(item)
+            cleaned[str(key)] = drop_callables(item)
         return cleaned
     if isinstance(value, list):
         cleaned_list: List[Any] = []
@@ -664,7 +755,21 @@ def drop_callables(value: Any) -> Any:
                 continue
             cleaned_tuple.append(drop_callables(item))
         return cleaned_tuple
-    return value
+    if isinstance(value, (set, frozenset)):
+        return [drop_callables(item) for item in value if not callable(item)]
+    if is_dataclass(value) and not isinstance(value, type):
+        cleaned_dataclass: Dict[str, Any] = {}
+        for field in fields(value):
+            item = getattr(value, field.name)
+            if callable(item):
+                continue
+            cleaned_dataclass[field.name] = drop_callables(item)
+        return cleaned_dataclass
+    try:
+        json.dumps(value)
+        return value
+    except TypeError:
+        return str(value)
 
 
 # ---------------------------------------------------------------------------
@@ -673,6 +778,23 @@ def drop_callables(value: Any) -> Any:
 
 def summarize_tool_result(tool_name: str, result: Dict[str, Any]) -> str:
     """Return a concise one-line summary for a sanitized tool result."""
+    if tool_name == "phagescope_research":
+        action = str(result.get("action") or "phagescope_research").strip()
+        if result.get("success") is False:
+            error = result.get("error") or "Execution failed"
+            return f"PhageScope research {action} failed: {error}"
+        if action == "deep_profile":
+            rows = result.get("metadata_rows")
+            files = result.get("metadata_files")
+            meta_size = result.get("metadata_size_human") or "unknown metadata size"
+            total_size = result.get("total_size_human") or "unknown total size"
+            return (
+                "PhageScope research deep_profile succeeded: "
+                f"metadata_files={files}, metadata_rows={rows}, "
+                f"metadata_size={meta_size}, total_size={total_size}."
+            )
+        return f"PhageScope research {action} succeeded."
+
     if tool_name == "phagescope":
         action = result.get("action") or "phagescope"
         # Special handling: save_all may return 207 (partial) but still be usable.
@@ -807,6 +929,39 @@ def summarize_tool_result(tool_name: str, result: Dict[str, Any]) -> str:
             )
         return f"terminal_session {op or 'operation'} succeeded."
 
+    if tool_name == "file_operations":
+        op = str(result.get("operation") or "operation").strip().lower() or "operation"
+        if result.get("success") is False:
+            error = result.get("error") or "Execution failed"
+            return f"file_operations {op} failed: {error}"
+        if op in {"profile", "census"}:
+            summary = result.get("summary")
+            if isinstance(summary, str) and summary.strip():
+                return _trim_text(summary, limit=700)
+            counts = result.get("counts") if isinstance(result.get("counts"), dict) else {}
+            path = result.get("path") or "unknown"
+            total = counts.get("direct_children") or result.get("count") or "unknown"
+            completed = counts.get("completed")
+            failed = counts.get("failed")
+            status_suffix = ""
+            if isinstance(completed, int) or isinstance(failed, int):
+                status_suffix = f"; status completed={completed or 0}, failed={failed or 0}"
+            return f"file_operations profile succeeded: {path}; direct_children={total}{status_suffix}."
+        if op == "list":
+            path = result.get("path") or "unknown"
+            count = result.get("count")
+            envelope = result.get("evidence_scope") if isinstance(result.get("evidence_scope"), dict) else {}
+            status_counts = envelope.get("status_counts") if isinstance(envelope.get("status_counts"), dict) else {}
+            status_suffix = ""
+            if status_counts:
+                status_suffix = f"; status_counts={status_counts}"
+            return f"file_operations list succeeded: {path}; count={count}{status_suffix}."
+        if op == "read":
+            path = result.get("path") or "unknown"
+            truncated = " (truncated)" if result.get("truncated") else ""
+            return f"file_operations read succeeded: {path}{truncated}."
+        return f"file_operations {op} succeeded."
+
     if tool_name == "web_search":
         query = result.get("query") or ""
         prefix = f"Web search\u201c{query}\u201d" if query else "Web search"
@@ -899,6 +1054,20 @@ def summarize_tool_result(tool_name: str, result: Dict[str, Any]) -> str:
         if action_text == "job_status":
             return f"DeepPL job_status: {result.get('status') or 'unknown'}."
         return f"DeepPL {action} succeeded."
+
+    if tool_name == "scientific_figure_generator":
+        if result.get("success") is False:
+            error = result.get("error") or "Figure generation failed"
+            return f"scientific_figure_generator failed: {error}"
+        figure_png = result.get("figure_png")
+        qa_json = result.get("qa_json")
+        if isinstance(figure_png, str) and figure_png.strip():
+            suffix = f" QA: {qa_json}." if isinstance(qa_json, str) and qa_json.strip() else ""
+            return f"scientific_figure_generator succeeded. Figure: {figure_png}.{suffix}"
+        summary = result.get("summary")
+        if isinstance(summary, str) and summary.strip():
+            return _trim_text(summary, limit=700)
+        return "scientific_figure_generator succeeded."
 
     if tool_name == "manuscript_writer":
         if result.get("success") is False:
@@ -1131,6 +1300,29 @@ def append_recent_tool_result(
             value = sanitized.get(key)
             if isinstance(value, list) and value:
                 compressed_result[key] = value[:8]
+        for key in (
+            "evidence_scope",
+            "completeness_status",
+            "counts",
+            "status_files",
+            "status_count_sources",
+            "status_counts_confidence",
+            "incomplete_examples",
+            "partial_completion_suspected",
+            "partial_ratio",
+            "output_warnings",
+        ):
+            value = sanitized.get(key)
+            if value is None:
+                continue
+            if isinstance(value, list):
+                compressed_result[key] = value[:20]
+            elif isinstance(value, dict):
+                compressed_result[key] = truncate_large_fields(value, max_field_length=500)
+            elif isinstance(value, str):
+                compressed_result[key] = _trim_text(value, limit=500)
+            else:
+                compressed_result[key] = value
         storage_value = sanitized.get("storage")
         if isinstance(storage_value, dict):
             relative = (

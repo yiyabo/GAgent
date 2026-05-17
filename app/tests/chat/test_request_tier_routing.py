@@ -6,12 +6,15 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from app.routers.chat.agent import StructuredChatAgent
+from app.routers.chat.agent import _rewrite_phagescope_dataset_understanding_plan_to_deep_profile
+from app.routers.chat.action_execution import build_phagescope_deep_profile_analysis
 from app.routers.chat.guardrails import extract_task_ids_from_text
 from app.routers.chat.request_routing import (
     build_request_tier_profile,
     resolve_intent_type,
     resolve_request_routing,
 )
+from app.services.llm.structured_response import LLMAction, LLMReply, LLMStructuredResponse
 
 
 def test_request_tier_routes_greeting_to_light_auto_simple() -> None:
@@ -120,6 +123,7 @@ def test_manual_deepthink_search_request_routes_to_research_with_tools() -> None
         default_max_iterations=64,
     )
     assert "web_search" in profile.available_tools
+    assert "scientific_figure_generator" in profile.available_tools
     assert "deliverable_submit" in profile.available_tools
 
 
@@ -177,6 +181,212 @@ def test_bound_plan_request_with_explicit_new_language_creates_new_plan() -> Non
     )
 
     assert decision.intent_type == "chat"
+    assert decision.plan_create_required is True
+    assert decision.plan_new_requested is True
+
+
+def test_unbound_create_plan_only_requires_create_not_execute() -> None:
+    decision = resolve_request_routing(
+        message="Create an executable plan for the ovarian cancer scRNA analysis",
+    )
+
+    assert decision.request_tier == "execute"
+    assert decision.plan_create_required is True
+    assert decision.plan_execute_required is False
+    assert decision.plan_execute_after_create_required is False
+
+    profile = build_request_tier_profile(
+        decision,
+        default_thinking_budget=10000,
+        simple_thinking_budget=2000,
+        default_max_iterations=64,
+    )
+    assert profile.max_iterations == 12
+
+
+def test_phagescope_dataset_understanding_routes_to_research_without_plan_create() -> None:
+    decision = resolve_request_routing(
+        message=(
+            "Please understand the dataset in /home/zczhao/Phage-Agent/phagescope and answer "
+            "about data splitting, model selection, benchmarking, and biological validation. "
+            "Do not create a plan."
+        ),
+    )
+
+    assert decision.request_tier == "research"
+    assert decision.intent_type == "chat"
+    assert decision.plan_create_required is False
+    assert "phagescope" in decision.subject_resolution["display_ref"].lower()
+
+
+def test_vague_phagescope_path_analysis_routes_to_research_without_plan_create() -> None:
+    decision = resolve_request_routing(
+        message=(
+            "again analyze this data. /home/zczhao/Phage-Agent/phagescope. "
+            "I will tell you later, start!"
+        ),
+    )
+
+    assert decision.request_tier == "research"
+    assert decision.intent_type == "chat"
+    assert decision.plan_create_required is False
+    assert "phagescope_dataset_analysis" in decision.route_reason_codes
+    assert "phagescope" in decision.subject_resolution["display_ref"].lower()
+    assert decision.subject_resolution["display_ref"] == "/home/zczhao/Phage-Agent/phagescope"
+
+
+def test_phagescope_dataset_understanding_rewrites_llm_create_plan_to_deep_profile() -> None:
+    agent = StructuredChatAgent.__new__(StructuredChatAgent)
+    agent.plan_session = SimpleNamespace(plan_id=None)
+    agent.plan_tree = None
+    agent.extra_context = {}
+    agent.history = []
+    agent.session_id = "session-phagescope-dataset"
+    agent.conversation_id = None
+    agent.max_history_messages = 80
+    agent._current_user_message = None
+
+    async def _fake_invoke_llm(_message: str) -> LLMStructuredResponse:
+        return LLMStructuredResponse(
+            llm_reply=LLMReply(message="I will create a plan."),
+            actions=[
+                LLMAction(
+                    kind="plan_operation",
+                    name="create_plan",
+                    parameters={"title": "PhageScope dataset analysis"},
+                    order=1,
+                    blocking=True,
+                )
+            ],
+        )
+
+    agent._invoke_llm = _fake_invoke_llm
+
+    structured = asyncio.run(
+        agent.get_structured_response(
+            "Please understand the dataset in /home/zczhao/Phage-Agent/phagescope and answer "
+            "about Data splitting, Model selection, Benchmarking, and Biological validation. "
+            "Do not create a plan."
+        )
+    )
+
+    assert len(structured.actions) == 1
+    action = structured.actions[0]
+    assert action.kind == "tool_operation"
+    assert action.name == "phagescope_research"
+    assert action.parameters["action"] == "deep_profile"
+    assert action.parameters["data_dir"] == "/home/zczhao/Phage-Agent/phagescope"
+    assert action.parameters["session_id"] == "session-phagescope-dataset"
+    assert action.metadata["origin"] == "phagescope_dataset_understanding_guardrail"
+
+
+def test_vague_phagescope_terminal_listing_rewrites_to_deep_profile() -> None:
+    user_message = "again analyze this data. /home/zczhao/Phage-Agent/phagescope. I will tell you later, start!"
+    structured = _rewrite_phagescope_dataset_understanding_plan_to_deep_profile(
+        LLMStructuredResponse(
+            llm_reply=LLMReply(message="I will inspect the directory."),
+            actions=[
+                LLMAction(
+                    kind="tool_operation",
+                    name="terminal_session",
+                    parameters={
+                        "operation": "write",
+                        "data": 'ls -la "/home/zczhao/Phage-Agent/phagescope."\n',
+                    },
+                    order=1,
+                    blocking=True,
+                )
+            ],
+        ),
+        user_message=user_message,
+        extra_context={
+            "subject_resolution": {
+                "display_ref": "/home/zczhao/Phage-Agent/phagescope",
+                "canonical_ref": "/home/zczhao/Phage-Agent/phagescope",
+            }
+        },
+        session_id="session-phagescope-vague",
+    )
+
+    assert len(structured.actions) == 1
+    action = structured.actions[0]
+    assert action.kind == "tool_operation"
+    assert action.name == "phagescope_research"
+    assert action.parameters["action"] == "deep_profile"
+    assert action.parameters["data_dir"] == "/home/zczhao/Phage-Agent/phagescope"
+    assert action.parameters["session_id"] == "session-phagescope-vague"
+    assert action.metadata["origin"] == "phagescope_dataset_understanding_guardrail"
+
+
+def test_phagescope_deep_profile_analysis_does_not_repeat_forbidden_size_claim() -> None:
+    analysis = build_phagescope_deep_profile_analysis(
+        "For /home/zczhao/Phage-Agent/phagescope, understand the dataset deeply.",
+        [
+            {
+                "name": "phagescope_research",
+                "result": {
+                    "action": "deep_profile",
+                    "success": True,
+                    "metadata_rows": 873718,
+                    "metadata_files": 14,
+                    "metadata_size_human": "126.22 MB",
+                    "total_size_human": "41.61 GB",
+                    "unique_phage_ids": 873718,
+                    "ml_metadata_table": {"empty_or_header_only": True},
+                    "metadata_schema": {"headers_consistent": False},
+                    "label_quality": {
+                        "host_available_rows": 855961,
+                        "host_missing_rows": 17757,
+                    },
+                    "split_readiness": {
+                        "recommended_primary_split": "subcluster",
+                        "robustness_split": "cluster",
+                    },
+                },
+            }
+        ],
+    )
+
+    assert analysis is not None
+    assert "126.22 MB" in analysis
+    assert "41.61 GB" in analysis
+    assert "873718" in analysis
+    assert "meta_data ~100GB" not in analysis
+
+
+def test_unbound_create_and_execute_plan_requires_create_then_execute_all() -> None:
+    decision = resolve_request_routing(
+        message=(
+            "database is in /home/zczhao/GAgent_backup_20260421_233939/data/ovarian_cancer_scRNA, "
+            "Create an executable plan and execute it step by step"
+        ),
+    )
+
+    assert decision.request_tier == "execute"
+    assert decision.intent_type == "execute_task"
+    assert decision.plan_create_required is True
+    assert decision.plan_execute_required is True
+    assert decision.plan_execute_after_create_required is True
+
+    profile = build_request_tier_profile(
+        decision,
+        default_thinking_budget=10000,
+        simple_thinking_budget=2000,
+        default_max_iterations=64,
+    )
+    assert profile.max_iterations == 48
+
+
+def test_bound_plan_new_subject_requires_confirmation_without_new_plan_language() -> None:
+    decision = resolve_request_routing(
+        message="Create a plan for /tmp/new_dataset analysis",
+        plan_id=42,
+        context={"active_subject": {"canonical_ref": "/tmp/old_dataset", "display_ref": "/tmp/old_dataset"}},
+    )
+
+    assert decision.plan_conflict_requires_confirmation is True
+    assert decision.plan_create_required is False
+    assert decision.plan_execute_required is False
 
 
 def test_bound_plan_review_request_requires_review_operation() -> None:
@@ -206,6 +416,41 @@ def test_bound_plan_review_and_optimize_request_requires_both_operations() -> No
 
     assert decision.intent_type == "chat"
     assert decision.request_tier == "execute"
+    assert decision.plan_review_required is True
+    assert decision.plan_optimize_required is True
+
+
+def test_bound_plan_english_review_request_requires_review_operation() -> None:
+    decision = resolve_request_routing(
+        message="review this plan with the rubric",
+        plan_id=67,
+    )
+
+    assert decision.intent_type == "chat"
+    assert decision.request_tier == "execute"
+    assert decision.plan_review_required is True
+
+
+def test_internal_contract_repair_does_not_trigger_plan_review_contract() -> None:
+    decision = resolve_request_routing(
+        message=(
+            "Repair contract mismatch for task #12: 执行质控过滤.\n"
+            "Repair attempt: 1.\n"
+            "The previous execution did not satisfy the output contract. Do not redo unrelated work.\n"
+            "First check whether the required artifact already exists in the current task runtime/workspace output directory.\n"
+            "Expected deliverables: ['manuscript.review_md', 'qc_metrics.json']\n"
+            "Missing required outputs: ['manuscript.review_md']\n"
+            "Completion requires passing verification; similar filenames or prose claims are insufficient."
+        ),
+        plan_id=101,
+        current_task_id=12,
+    )
+
+    assert decision.intent_type == "execute_task"
+    assert decision.request_tier == "execute"
+    assert decision.plan_review_required is False
+    assert "plan_review" not in decision.route_reason_codes
+    assert "internal_contract_repair" in decision.route_reason_codes
 
 
 def test_bound_plan_update_language_requires_optimize_operation() -> None:
@@ -230,6 +475,26 @@ def test_bound_plan_progress_followup_does_not_require_optimize_operation() -> N
     decision = resolve_request_routing(
         message="update me on the plan",
         plan_id=68,
+    )
+
+    assert "intent_plan_optimize_request" not in decision.route_reason_codes
+
+
+def test_bound_plan_report_review_request_does_not_trigger_plan_review_contract() -> None:
+    decision = resolve_request_routing(
+        message="/think review the supervisor report and generate a polished figure legend",
+        plan_id=98,
+        current_task_id=24,
+    )
+
+    assert "intent_plan_review_request" not in decision.route_reason_codes
+
+
+def test_bound_plan_figure_optimization_does_not_trigger_plan_optimize_contract() -> None:
+    decision = resolve_request_routing(
+        message="/think optimize the composite figure layout and export the final PDF",
+        plan_id=98,
+        current_task_id=24,
     )
 
     assert "intent_plan_optimize_request" not in decision.route_reason_codes

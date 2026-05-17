@@ -54,7 +54,7 @@ from tool_box import execute_tool
 
 _DEEP_THINK_MAX_ITER_DEFAULT = 64
 _DEEP_THINK_MAX_ITER_CAP = 128
-_READ_ONLY_FILE_OPERATIONS = {"read", "list", "exists", "info"}
+_READ_ONLY_FILE_OPERATIONS = {"read", "list", "exists", "info", "profile", "census"}
 _MANUSCRIPT_CONTEXT_EXTENSIONS = {
     ".md",
     ".txt",
@@ -79,6 +79,186 @@ _OBSERVATION_ONLY_TOOLS = {
     "graph_rag",
     "literature_pipeline",
 }
+_PHAGESCOPE_DATASET_UNDERSTANDING_MARKERS = (
+    "dataset",
+    "data set",
+    "数据集",
+    "meta_data",
+    "metadata",
+    "deep profile",
+    "understand",
+    "understanding",
+    "profile",
+    "analyze",
+    "analyse",
+    "analysis",
+    "explore",
+    "inspect",
+    "理解",
+    "分析",
+    "探索",
+    "查看",
+)
+_PHAGESCOPE_DATASET_STRATEGY_MARKERS = (
+    "data splitting",
+    "data split",
+    "split strategy",
+    "model selection",
+    "benchmarking",
+    "benchmark",
+    "biological validation",
+    "validation",
+    "host prediction",
+    "host genus",
+    "ml-ready",
+    "machine learning",
+    "数据划分",
+    "划分策略",
+    "模型选择",
+    "基准",
+    "生物学验证",
+    "宿主预测",
+)
+_PLAN_CREATE_NEGATION_MARKERS = (
+    "do not create a plan",
+    "don't create a plan",
+    "dont create a plan",
+    "without creating a plan",
+    "no plan creation",
+    "不要创建 plan",
+    "不要创建plan",
+    "不要建 plan",
+    "不要建plan",
+    "不要创建计划",
+    "不要生成计划",
+    "不要制作计划",
+)
+
+
+def _normalize_phagescope_data_dir(value: Any) -> str:
+    text = str(value or "").strip().strip("`'\"")
+    return text.rstrip(".,;:)]}>，。；：）】》")
+
+
+def _is_phagescope_dataset_understanding_request(
+    user_message: str,
+    extra_context: Optional[Dict[str, Any]] = None,
+) -> bool:
+    text = str(user_message or "").strip()
+    if not text:
+        return False
+    lowered = text.lower()
+    context = extra_context if isinstance(extra_context, dict) else {}
+    subject = context.get("subject_resolution")
+    subject_text = ""
+    if isinstance(subject, dict):
+        subject_text = " ".join(
+            str(subject.get(key) or "")
+            for key in ("canonical_ref", "display_ref", "raw_ref")
+        ).lower()
+    if "phagescope" not in lowered and "phagescope" not in subject_text:
+        return False
+    plan_create_required = bool(context.get("plan_create_required"))
+    plan_create_negated = any(marker in lowered for marker in _PLAN_CREATE_NEGATION_MARKERS)
+    if plan_create_required and not plan_create_negated:
+        return False
+    if bool(context.get("plan_review_required")) or bool(context.get("plan_optimize_required")):
+        return False
+    combined = f"{lowered} {subject_text}"
+    return any(marker in combined for marker in _PHAGESCOPE_DATASET_UNDERSTANDING_MARKERS) or any(
+        marker in combined for marker in _PHAGESCOPE_DATASET_STRATEGY_MARKERS
+    )
+
+
+def _extract_phagescope_data_dir_from_context(
+    user_message: str,
+    extra_context: Optional[Dict[str, Any]] = None,
+) -> Optional[str]:
+    context = extra_context if isinstance(extra_context, dict) else {}
+    subject = context.get("subject_resolution")
+    if isinstance(subject, dict):
+        for key in ("display_ref", "canonical_ref", "raw_ref"):
+            value = _normalize_phagescope_data_dir(subject.get(key))
+            if value and "phagescope" in value.lower():
+                return value
+    for path in _extract_declared_absolute_paths_fn(user_message):
+        value = _normalize_phagescope_data_dir(path)
+        if value and "phagescope" in value.lower():
+            return value
+    return None
+
+
+def _rewrite_phagescope_dataset_understanding_plan_to_deep_profile(
+    structured: LLMStructuredResponse,
+    *,
+    user_message: str,
+    extra_context: Optional[Dict[str, Any]] = None,
+    session_id: Optional[str] = None,
+) -> LLMStructuredResponse:
+    if not _is_phagescope_dataset_understanding_request(user_message, extra_context):
+        return structured
+    actions = list(structured.actions or [])
+    data_dir = _extract_phagescope_data_dir_from_context(user_message, extra_context)
+    if not data_dir:
+        return structured
+    has_deep_profile = any(
+        action.kind == "tool_operation"
+        and str(action.name or "").strip().lower() == "phagescope_research"
+        and isinstance(action.parameters, dict)
+        and str(action.parameters.get("action") or "").strip().lower() == "deep_profile"
+        for action in actions
+    )
+    if has_deep_profile:
+        return structured
+    has_create_plan = any(
+        action.kind == "plan_operation"
+        and str(action.name or "").strip().lower() in {"create_plan", "create"}
+        for action in actions
+    )
+    has_conflicting_tool_action = any(
+        action.kind == "tool_operation"
+        and str(action.name or "").strip().lower() in {"file_operations", "terminal_session"}
+        for action in actions
+    )
+    if not has_create_plan and not has_conflicting_tool_action:
+        return structured
+    params: Dict[str, Any] = {
+        "action": "deep_profile",
+        "data_dir": data_dir,
+        "top_n": 30,
+    }
+    if isinstance(session_id, str) and session_id.strip():
+        params["session_id"] = session_id.strip()
+    language = detect_reasoning_language(user_message)
+    reply = (
+        "我会先对本地 PhageScope 数据集执行 deep_profile，基于真实 metadata、大小和划分证据回答；不会创建计划。"
+        if language == "zh"
+        else "I will deep-profile the local PhageScope dataset first and answer from real metadata, size, and split-readiness evidence; I will not create a plan."
+    )
+    rewritten = LLMStructuredResponse.model_validate(
+        {
+            "llm_reply": {"message": reply},
+            "actions": [
+                {
+                    "kind": "tool_operation",
+                    "name": "phagescope_research",
+                    "parameters": params,
+                    "order": 1,
+                    "blocking": True,
+                    "metadata": {
+                        "origin": "phagescope_dataset_understanding_guardrail",
+                        "rewrote_from": [
+                            action.model_dump() for action in actions if action.kind == "plan_operation"
+                        ],
+                    },
+                }
+            ],
+        }
+    )
+    logger.info(
+        "[CHAT][PHAGESCOPE_DATASET] Rewrote create_plan to phagescope_research deep_profile for dataset-understanding request"
+    )
+    return rewritten
 
 
 def _resolve_deep_think_max_iterations() -> int:
@@ -1282,9 +1462,9 @@ def _build_deep_think_response_metadata(
 def _should_bind_created_plan(
     *,
     existing_plan_id: Optional[int],
+    allow_new_plan_rebind: bool = False,
 ) -> bool:
-    # Phase 1: routing no longer signals "create_new" intent; bind iff no plan is currently bound.
-    return existing_plan_id is None
+    return existing_plan_id is None or allow_new_plan_rebind
 
 
 def _build_existing_plan_create_result(
@@ -1693,8 +1873,20 @@ class StructuredChatAgent:
         structured = self._build_deterministic_execute_task_structured()
         if structured is None:
             structured = await self._invoke_llm(effective_user_message)
+        structured = _rewrite_phagescope_dataset_understanding_plan_to_deep_profile(
+            structured,
+            user_message=effective_user_message,
+            extra_context=self.extra_context,
+            session_id=self.session_id,
+        )
         structured = await self._apply_experiment_fallback(structured)
         structured = self._apply_plan_first_guardrail(structured)
+        structured = _rewrite_phagescope_dataset_understanding_plan_to_deep_profile(
+            structured,
+            user_message=effective_user_message,
+            extra_context=self.extra_context,
+            session_id=self.session_id,
+        )
         structured = self._apply_phagescope_fallback(structured)
         structured = self._apply_task_execution_followthrough_guardrail(structured)
         structured = self._apply_completion_claim_guardrail(structured)
@@ -1709,8 +1901,20 @@ class StructuredChatAgent:
         structured = self._build_deterministic_execute_task_structured()
         if structured is None:
             structured = await self._invoke_llm(effective_user_message)
+        structured = _rewrite_phagescope_dataset_understanding_plan_to_deep_profile(
+            structured,
+            user_message=effective_user_message,
+            extra_context=self.extra_context,
+            session_id=self.session_id,
+        )
         structured = await self._apply_experiment_fallback(structured)
         structured = self._apply_plan_first_guardrail(structured)
+        structured = _rewrite_phagescope_dataset_understanding_plan_to_deep_profile(
+            structured,
+            user_message=effective_user_message,
+            extra_context=self.extra_context,
+            session_id=self.session_id,
+        )
         structured = self._apply_phagescope_fallback(structured)
         structured = self._apply_task_execution_followthrough_guardrail(structured)
         return self._apply_completion_claim_guardrail(structured)
@@ -3422,6 +3626,7 @@ class StructuredChatAgent:
 
                 dt_agent: Any = None
                 deep_think_task_context: Optional[TaskExecutionContext] = None
+                created_plan_this_turn_id: Optional[int] = None
 
                 def _sync_dt_agent_plan_binding(
                     plan_id: Optional[int],
@@ -3442,9 +3647,13 @@ class StructuredChatAgent:
                     nonlocal deep_think_tool_order, deep_think_bg_category
                     nonlocal bio_failure_active, failed_tool_name
                     nonlocal help_seen_after_failure, retry_seen_after_help
+                    nonlocal created_plan_this_turn_id
                     runtime_tool_context = params.get("tool_context") if isinstance(params, dict) else None
                     safe_params = _sanitize_deep_think_tool_params(params)
                     requested_operation = str(safe_params.get("operation") or "").strip().lower()
+                    allow_new_plan_rebind = bool(
+                        self.extra_context.get("plan_new_requested")
+                    ) and created_plan_this_turn_id is None
 
                     if name == "plan_operation" and requested_operation == "create":
                         existing_plan_id = self.plan_session.plan_id
@@ -3452,6 +3661,7 @@ class StructuredChatAgent:
                             existing_plan_id is not None
                             and not _should_bind_created_plan(
                                 existing_plan_id=existing_plan_id,
+                                allow_new_plan_rebind=allow_new_plan_rebind,
                             )
                         ):
                             plan_tree = getattr(self, "plan_tree", None)
@@ -3855,6 +4065,7 @@ class StructuredChatAgent:
                                 existing_plan_id = self.plan_session.plan_id
                                 if not _should_bind_created_plan(
                                     existing_plan_id=existing_plan_id,
+                                    allow_new_plan_rebind=allow_new_plan_rebind,
                                 ):
                                     logger.warning(
                                         "[DeepThink] plan_operation create returned plan %s "
@@ -3888,6 +4099,10 @@ class StructuredChatAgent:
                                             plan_id,
                                             plan_title=plan_title,
                                         )
+                                        try:
+                                            created_plan_this_turn_id = int(plan_id)
+                                        except (TypeError, ValueError):
+                                            created_plan_this_turn_id = None
                                         self._dirty = True
 
                                         if (
@@ -4816,6 +5031,13 @@ class StructuredChatAgent:
                 "explicit_task_ids": list(routing_decision.explicit_task_ids),
                 "explicit_task_override": routing_decision.explicit_task_override,
                 "full_plan_execution": routing_decision.full_plan_execution,
+                "plan_create_required": routing_decision.plan_create_required,
+                "plan_execute_required": routing_decision.plan_execute_required,
+                "plan_execute_after_create_required": routing_decision.plan_execute_after_create_required,
+                "plan_review_required": routing_decision.plan_review_required,
+                "plan_optimize_required": routing_decision.plan_optimize_required,
+                "plan_new_requested": routing_decision.plan_new_requested,
+                "plan_conflict_requires_confirmation": routing_decision.plan_conflict_requires_confirmation,
                 "current_user_turn_index": _current_user_turn_index_from_history(self.history),
             }
         )
@@ -5099,23 +5321,48 @@ class StructuredChatAgent:
 
     async def _handle_tool_action(self, action):
         # Keep legacy monkeypatch points from app.routers.chat_routes wired into
-        # the split action_handlers module.
+        # the split action_handlers module, but never leave global module state
+        # patched after this call.  Some tests and runtime callers invoke
+        # action_handlers.handle_tool_action directly; a leaked fake execute_tool
+        # would otherwise corrupt later tool calls in the same process.
+        patched: Dict[str, Any] = {}
         try:  # pragma: no cover - compatibility bridge
             from app.routers import chat_routes as compat_chat_routes
             from . import action_handlers as _action_handlers_module
+            from app.config.tool_policy import (
+                get_tool_policy as _default_get_tool_policy,
+                is_tool_allowed as _default_is_tool_allowed,
+            )
+            from app.services.plans.decomposition_jobs import (
+                get_current_job as _default_get_current_job,
+            )
+            from tool_box import execute_tool as _default_execute_tool
 
-            for name in (
-                "get_tool_policy",
-                "is_tool_allowed",
-                "execute_tool",
-                "get_current_job",
-            ):
+            default_hooks = {
+                "get_tool_policy": _default_get_tool_policy,
+                "is_tool_allowed": _default_is_tool_allowed,
+                "execute_tool": _default_execute_tool,
+                "get_current_job": _default_get_current_job,
+            }
+            for name, default_value in default_hooks.items():
                 candidate = getattr(compat_chat_routes, name, None)
-                if candidate is not None:
-                    setattr(_action_handlers_module, name, candidate)
+                if candidate is None or candidate is default_value:
+                    continue
+                patched[name] = getattr(_action_handlers_module, name)
+                setattr(_action_handlers_module, name, candidate)
         except Exception:
-            pass
-        return await _handle_tool_action_fn(self, action)
+            patched = {}
+        try:
+            return await _handle_tool_action_fn(self, action)
+        finally:
+            if patched:
+                try:
+                    from . import action_handlers as _action_handlers_module
+
+                    for name, previous in patched.items():
+                        setattr(_action_handlers_module, name, previous)
+                except Exception:
+                    pass
 
     async def _handle_plan_action(self, action):
         return await _handle_plan_action_fn(self, action)

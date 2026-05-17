@@ -27,6 +27,17 @@ _DEFAULT_MIN_LABEL_COUNT = 100
 _DEFAULT_COMPLETENESS = ("High-quality", "Medium-quality")
 _VALID_LABEL_LEVELS = {"raw", "genus", "species_like"}
 _VALID_SPLIT_GROUPS = {"subcluster", "cluster", "phage_id"}
+_EXPECTED_METADATA_COLUMNS = [
+    "Phage_ID",
+    "Length",
+    "GC_content",
+    "Taxonomy",
+    "Completeness",
+    "Host",
+    "Lifestyle",
+    "Cluster",
+    "Subcluster",
+]
 _BROAD_HOST_PREFIXES = {
     "uncultured",
     "unknown",
@@ -199,6 +210,126 @@ def _count_lines(path: Path) -> int:
         return 0
 
 
+def _human_bytes(size: int) -> str:
+    value = float(max(0, size))
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if value < 1024 or unit == "TB":
+            return f"{value:.2f} {unit}"
+        value /= 1024
+    return f"{value:.2f} TB"
+
+
+def _file_size(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
+
+
+def _directory_size(path: Path) -> int:
+    total = 0
+    try:
+        iterator = path.rglob("*")
+    except OSError:
+        return 0
+    for child in iterator:
+        if child.is_file():
+            total += _file_size(child)
+    return total
+
+
+def _subdir_size_summary(data_dir: Path) -> Dict[str, Dict[str, Any]]:
+    summary: Dict[str, Dict[str, Any]] = {}
+    for child in sorted(data_dir.iterdir(), key=lambda p: p.name):
+        if not child.is_dir():
+            continue
+        files = [p for p in child.iterdir() if p.is_file()]
+        size_bytes = _directory_size(child)
+        summary[child.name] = {
+            "files": len(files),
+            "size_bytes": size_bytes,
+            "size_human": _human_bytes(size_bytes),
+            "largest_files": [
+                {
+                    "name": path.name,
+                    "size_bytes": _file_size(path),
+                    "size_human": _human_bytes(_file_size(path)),
+                }
+                for path in sorted(files, key=_file_size, reverse=True)[:5]
+            ],
+        }
+    return summary
+
+
+def _metadata_schema_profile(data_dir: Path) -> Dict[str, Any]:
+    files: List[Dict[str, Any]] = []
+    header_counts: Counter[Tuple[str, ...]] = Counter()
+    missing_expected_by_file: Dict[str, List[str]] = {}
+    extra_columns_by_file: Dict[str, List[str]] = {}
+    for path in _metadata_files(data_dir):
+        try:
+            with path.open("r", encoding="utf-8", errors="replace", newline="") as fh:
+                header_line = fh.readline().rstrip("\n")
+        except OSError:
+            header_line = ""
+        columns = header_line.split("\t") if header_line else []
+        header_counts[tuple(columns)] += 1
+        missing = [name for name in _EXPECTED_METADATA_COLUMNS if name not in columns]
+        extra = [name for name in columns if name not in _EXPECTED_METADATA_COLUMNS]
+        if missing:
+            missing_expected_by_file[path.name] = missing
+        if extra:
+            extra_columns_by_file[path.name] = extra
+        files.append(
+            {
+                "name": path.name,
+                "size_bytes": _file_size(path),
+                "size_human": _human_bytes(_file_size(path)),
+                "columns": columns,
+            }
+        )
+    most_common_header: List[str] = []
+    if header_counts:
+        most_common_header = list(header_counts.most_common(1)[0][0])
+    return {
+        "expected_columns": list(_EXPECTED_METADATA_COLUMNS),
+        "files": files,
+        "headers_consistent": len(header_counts) <= 1,
+        "most_common_header": most_common_header,
+        "missing_expected_by_file": missing_expected_by_file,
+        "extra_columns_by_file": extra_columns_by_file,
+    }
+
+
+def _ml_metadata_status(data_dir: Path) -> Dict[str, Any]:
+    path = data_dir / "ml_metadata_table_genus_cluster.tsv"
+    if not path.exists():
+        return {"exists": False, "path": str(path), "rows": 0, "empty_or_header_only": True}
+    line_count = 0
+    preview = ""
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                if line_count == 0:
+                    preview = line.rstrip("\n")
+                line_count += 1
+                if line_count > 2:
+                    break
+    except OSError:
+        line_count = 0
+    rows = max(0, line_count - 1)
+    return {
+        "exists": True,
+        "path": str(path),
+        "size_bytes": _file_size(path),
+        "size_human": _human_bytes(_file_size(path)),
+        "observed_lines": line_count,
+        "rows": rows,
+        "header": preview,
+        "empty_or_header_only": rows == 0,
+    }
+
+
 def _audit(data_dir: Path, *, top_n: int = 30) -> Dict[str, Any]:
     row_counts: Dict[str, int] = {}
     host_counts: Counter[str] = Counter()
@@ -275,6 +406,85 @@ def _audit(data_dir: Path, *, top_n: int = 30) -> Dict[str, Any]:
             "Do not use random splits as the primary result; use Cluster/Subcluster-aware splits.",
             "Some phage_fasta files use a .fasta extension but are gzip-compressed tar archives; use tarfile.open(path, \"r:*\") and stream FASTA members.",
         ],
+    }
+
+
+def _deep_profile(data_dir: Path, *, top_n: int = 30) -> Dict[str, Any]:
+    audit = _audit(data_dir, top_n=top_n)
+    subdir_sizes = _subdir_size_summary(data_dir)
+    metadata_size_bytes = subdir_sizes.get("meta_data", {}).get("size_bytes", 0)
+    total_size_bytes = sum(item.get("size_bytes", 0) for item in subdir_sizes.values())
+    metadata_schema = _metadata_schema_profile(data_dir)
+    ml_status = _ml_metadata_status(data_dir)
+    missing_counts_raw = audit.get("missing_counts")
+    missing_counts: Dict[str, Any] = missing_counts_raw if isinstance(missing_counts_raw, dict) else {}
+    metadata_rows = int(audit.get("metadata_rows") or 0)
+    host_missing = int(missing_counts.get("Host") or 0)
+    host_available = max(0, metadata_rows - host_missing)
+    host_missing_fraction = round(host_missing / metadata_rows, 6) if metadata_rows else None
+    cluster_columns = metadata_schema.get("most_common_header") or []
+    split_readiness = {
+        "recommended_primary_split": "subcluster",
+        "robustness_split": "cluster",
+        "supports_subcluster_grouping": "Subcluster" in cluster_columns,
+        "supports_cluster_grouping": "Cluster" in cluster_columns,
+        "warning": "Random row-level splits can leak near-identical phages; use Cluster/Subcluster-aware grouping.",
+    }
+    label_quality = {
+        "host_available_rows": host_available,
+        "host_missing_rows": host_missing,
+        "host_missing_fraction": host_missing_fraction,
+        "host_unique": audit.get("host_unique"),
+        "host_top": audit.get("host_top"),
+        "completeness_counts": audit.get("completeness_counts"),
+        "lifestyle_counts": audit.get("lifestyle_counts"),
+    }
+    anomalies = {
+        "hidden_fuse_file_count": audit.get("hidden_fuse_file_count", 0),
+        "hidden_fuse_files": audit.get("hidden_fuse_files", []),
+        "non_data_log_files": [
+            str(path)
+            for path in sorted(data_dir.rglob("*.log"))[:20]
+            if path.is_file()
+        ],
+    }
+    return {
+        "success": True,
+        "tool": "phagescope_research",
+        "action": "deep_profile",
+        "data_dir": str(data_dir),
+        "resolved_data_dir": str(data_dir.resolve()),
+        "total_size_bytes": total_size_bytes,
+        "total_size_human": _human_bytes(total_size_bytes),
+        "metadata_size_bytes": metadata_size_bytes,
+        "metadata_size_human": _human_bytes(metadata_size_bytes),
+        "metadata_files": audit.get("metadata_files"),
+        "metadata_rows": audit.get("metadata_rows"),
+        "unique_phage_ids": audit.get("unique_phage_ids"),
+        "duplicate_phage_ids": audit.get("duplicate_phage_ids"),
+        "rows_by_metadata_file": audit.get("rows_by_metadata_file"),
+        "subdir_size_summary": subdir_sizes,
+        "metadata_schema": metadata_schema,
+        "ml_metadata_table": ml_status,
+        "label_quality": label_quality,
+        "source_top": audit.get("source_top"),
+        "taxonomy_top": audit.get("taxonomy_top"),
+        "split_readiness": split_readiness,
+        "annotation_inventory": audit.get("file_counts_by_subdir"),
+        "anomalies": anomalies,
+        "resources": audit.get("resources"),
+        "resource_contract": audit.get("resource_contract"),
+        "code_executor_add_dirs": audit.get("code_executor_add_dirs"),
+        "claim_guidance": [
+            "Use metadata_size_bytes/metadata_size_human for meta_data size claims; do not estimate metadata as the whole dataset size.",
+            "Use total_size_bytes/total_size_human for whole-directory size claims.",
+            "If ml_metadata_table.empty_or_header_only is true, say the ML-ready table has not been built yet.",
+            "Numeric file, row, and size claims in the final answer should come from this deep_profile payload.",
+        ],
+        "recommended_next_step": (
+            "Build the curated metadata table with action=prepare_metadata_table, then train metadata-only baselines "
+            "before adding k-mer and annotation features."
+        ),
     }
 
 
@@ -480,6 +690,8 @@ async def phagescope_research_handler(
         normalized_action = str(action or "audit").strip().lower()
         if normalized_action == "audit":
             return _audit(resolved_data_dir, top_n=max(1, int(top_n or 30)))
+        if normalized_action == "deep_profile":
+            return _deep_profile(resolved_data_dir, top_n=max(1, int(top_n or 30)))
         if normalized_action == "research_plan":
             return _research_plan(resolved_data_dir)
         if normalized_action == "prepare_metadata_table":
@@ -503,8 +715,8 @@ async def phagescope_research_handler(
 phagescope_research_tool = {
     "name": "phagescope_research",
     "description": (
-        "Prepare and audit the local PhageScope public dataset for host taxon "
-        "prediction research. Use this before code_executor for PhageScope ML tasks."
+        "Prepare, audit, and deep-profile the local PhageScope public dataset for host taxon "
+        "prediction research. Use deep_profile before code_executor or final synthesis for PhageScope ML/data exploration tasks."
     ),
     "category": "bioinformatics",
     "parameters_schema": {
@@ -512,7 +724,7 @@ phagescope_research_tool = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["audit", "research_plan", "prepare_metadata_table"],
+                "enum": ["audit", "deep_profile", "research_plan", "prepare_metadata_table"],
                 "default": "audit",
                 "description": "Operation to perform.",
             },
