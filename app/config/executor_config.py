@@ -66,6 +66,7 @@ class ExecutorSettings:
     force_rerun: bool = False
     auto_recovery: bool = False
     max_recovery_attempts: int = 2
+    contract_repair_attempts: int = 1
     autonomous: bool = False
     # --- Plan authority rollout ---
     # When False (the default), PlanExecutor no longer uses inferred contracts
@@ -202,6 +203,10 @@ def get_executor_settings() -> ExecutorSettings:
         auto_recovery=_env_bool("PLAN_EXECUTOR_AUTO_RECOVERY", defaults.auto_recovery),
         max_recovery_attempts=max(
             1, min(5, _env_int("PLAN_EXECUTOR_MAX_RECOVERY", defaults.max_recovery_attempts))
+        ),
+        contract_repair_attempts=max(
+            0,
+            min(3, _env_int("PLAN_EXECUTOR_CONTRACT_REPAIR_ATTEMPTS", defaults.contract_repair_attempts)),
         ),
         autonomous=_env_bool("PLAN_EXECUTOR_AUTONOMOUS", defaults.autonomous),
         artifact_backfill_enabled=_env_bool(
