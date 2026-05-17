@@ -13,6 +13,15 @@
       "phylogenetic",
       "metagenomics",
       "phage analysis",
+      "phagescope",
+      "phage-host",
+      "host prediction",
+      "host assignment",
+      "lifestyle",
+      "completeness",
+      "data splitting",
+      "benchmarking",
+      "biological validation",
       "genome quality",
       "functional profile"
     ],
@@ -29,7 +38,11 @@
       ".nwk",
       ".tree"
     ],
-    "tool_hints": []
+    "tool_hints": [
+      "phagescope_research",
+      "phagescope",
+      "result_interpreter"
+    ]
   },
   "injection": {
     "mode": "summary",

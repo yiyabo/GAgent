@@ -164,6 +164,28 @@ class TestSkillSelectionRuntime:
         )
         assert "visualization-generator" in result.selected_skill_ids
 
+    def test_phagescope_metadata_task_prefers_bio_data_interpreter(self):
+        loader = _make_loader()
+        llm = MagicMock()
+        result = asyncio.run(
+            loader.select_skills(
+                task_title="Explore PhageScope metadata",
+                task_description=(
+                    "Data splitting, model selection, benchmarking, and biological validation "
+                    "for phage-host prediction using PhageScope host assignment and completeness metadata."
+                ),
+                llm_service=llm,
+                dependency_paths=["/tmp/phagescope/meta_data/refseq_phage_meta_data.tsv"],
+                tool_hints=["phagescope_research"],
+                selection_mode="hybrid",
+                max_skills=3,
+                scope="task",
+            )
+        )
+
+        assert result.selection_source == "deterministic"
+        assert "bio-data-interpreter" in result.selected_skill_ids
+
     def test_llm_failure_without_deterministic_match_returns_empty(self):
         loader = _make_loader()
         llm = MagicMock()
