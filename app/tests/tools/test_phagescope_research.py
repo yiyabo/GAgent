@@ -138,6 +138,40 @@ def test_phagescope_research_audit_and_prepare_metadata_table(tmp_path: Path) ->
     assert all(row["Split"] in {"train", "val", "test"} for row in rows)
 
 
+def test_phagescope_research_deep_profile_reports_sizes_schema_and_ml_gap(tmp_path: Path) -> None:
+    data_dir = tmp_path / "phagescope"
+    _write_metadata(data_dir / "meta_data" / "test_phage_meta_data.tsv")
+    (data_dir / "phage_fasta").mkdir(parents=True)
+    (data_dir / "phage_fasta" / "TEST_phage.fasta").write_text(">p1\nACGT\n", encoding="utf-8")
+    (data_dir / "annotated_protein").mkdir(parents=True)
+    (data_dir / "annotated_protein" / "test.tsv").write_text("Phage_ID\tProtein\np1\tgp1\n", encoding="utf-8")
+    (data_dir / "ml_metadata_table_genus_cluster.tsv").write_text(
+        "Phage_ID\tHost\tGenus\tCluster\tLength\tGC_content\tDataSource\n",
+        encoding="utf-8",
+    )
+
+    profile = asyncio.run(
+        phagescope_research_handler(
+            action="deep_profile",
+            data_dir=str(data_dir),
+            top_n=3,
+        )
+    )
+
+    assert profile["success"] is True
+    assert profile["action"] == "deep_profile"
+    assert profile["metadata_files"] == 1
+    assert profile["metadata_rows"] == 5
+    assert profile["metadata_size_bytes"] == profile["subdir_size_summary"]["meta_data"]["size_bytes"]
+    assert profile["total_size_bytes"] >= profile["metadata_size_bytes"]
+    assert profile["metadata_schema"]["headers_consistent"] is True
+    assert profile["metadata_schema"]["missing_expected_by_file"] == {}
+    assert profile["ml_metadata_table"]["empty_or_header_only"] is True
+    assert profile["label_quality"]["host_missing_rows"] == 1
+    assert profile["split_readiness"]["supports_subcluster_grouping"] is True
+    assert any("metadata_size_bytes" in item for item in profile["claim_guidance"])
+
+
 def test_qwen_mounts_keep_symlink_alias_and_resolved_target(tmp_path: Path) -> None:
     parent = tmp_path / "repo"
     real_data = tmp_path / "real_phagescope"

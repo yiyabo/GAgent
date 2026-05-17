@@ -23,6 +23,16 @@ ThinkingDisplayMode = Literal["full_thinking", "compact_progress", "final_answer
 IntentType = Literal["chat", "execute_task"]
 SubjectKind = Literal["none", "file", "directory", "workspace"]
 
+
+@dataclass(frozen=True)
+class PlanLifecycleIntent:
+    create_requested: bool = False
+    execute_requested: bool = False
+    review_requested: bool = False
+    optimize_requested: bool = False
+    new_plan_requested: bool = False
+    conflict_requires_confirmation: bool = False
+
 _MANUAL_DEEP_RE = re.compile(r"^\s*/(?:think|deep)\b", re.IGNORECASE)
 _NON_WORD_RE = re.compile(r"[\s\W_]+", re.UNICODE)
 _PATH_RE = re.compile(
@@ -335,11 +345,15 @@ _EXECUTE_PHRASES = (
 _PLAN_REQUEST_PHRASES = (
     "create plan",
     "create a plan",
+    "create an executable plan",
     "make plan",
     "make a plan",
+    "make an executable plan",
     "build a plan",
+    "build an executable plan",
     "draft a plan",
     "generate a plan",
+    "generate an executable plan",
     "give me a plan",
     "turn this into a plan",
     "创建计划",
@@ -478,6 +492,63 @@ _PLAN_TARGET_MARKERS = (
     "该任务",
 )
 
+_CONTENT_GENERATION_OBJECT_MARKERS = (
+    "figure",
+    "figures",
+    "plot",
+    "plots",
+    "chart",
+    "charts",
+    "visualization",
+    "visualisation",
+    "visualizations",
+    "visualisations",
+    "report",
+    "reports",
+    "summary",
+    "summaries",
+    "manuscript",
+    "draft",
+    "legend",
+    "caption",
+    "analysis",
+    "图",
+    "图片",
+    "图表",
+    "可视化",
+    "报告",
+    "汇报材料",
+    "总结",
+    "摘要",
+    "文稿",
+    "论文",
+    "图例",
+    "说明文字",
+    "分析结果",
+)
+
+_CONTENT_GENERATION_ACTION_MARKERS = (
+    "generate",
+    "create",
+    "make",
+    "draw",
+    "plot",
+    "write",
+    "assemble",
+    "produce",
+    "render",
+    "export",
+    "生成",
+    "创建",
+    "制作",
+    "画",
+    "绘制",
+    "写",
+    "撰写",
+    "整理",
+    "导出",
+)
+
 _PLAN_STATUS_QUERY_PHRASES = (
     "update me on",
     "give me an update on",
@@ -512,6 +583,75 @@ _PLAN_NEW_REQUEST_PHRASES = (
     "新的plan",
     "另一个plan",
     "另一个计划",
+)
+
+_PLAN_EXECUTE_AFTER_CREATE_PHRASES = (
+    "execute it",
+    "execute this plan",
+    "execute the plan",
+    "execute step by step",
+    "execute it step by step",
+    "run it",
+    "run this plan",
+    "run the plan",
+    "start execution",
+    "start executing",
+    "step by step",
+    "go ahead and execute",
+    "go ahead and run",
+    "then execute",
+    "and execute",
+    "并执行",
+    "然后执行",
+    "再执行",
+    "执行它",
+    "执行这个计划",
+    "执行该计划",
+    "逐步执行",
+    "一步一步执行",
+    "开始执行",
+    "跑起来",
+)
+
+_PLAN_EXECUTE_STANDALONE_PHRASES = (
+    "execute all",
+    "execute the plan",
+    "execute this plan",
+    "execute entire plan",
+    "execute the entire plan",
+    "run the plan",
+    "run this plan",
+    "start executing",
+    "start execution",
+    "run all tasks",
+    "execute all tasks",
+    "执行整个计划",
+    "执行全部任务",
+    "执行所有任务",
+    "执行这个计划",
+    "执行该计划",
+    "开始执行计划",
+    "开始执行整个",
+    "开始执行全部",
+    "跑完整个计划",
+)
+
+_PLAN_UPDATE_CURRENT_MARKERS = (
+    "update the existing plan",
+    "update this plan",
+    "update current plan",
+    "based on the current plan",
+    "基于当前计划",
+    "更新当前计划",
+    "更新这个计划",
+    "修改当前计划",
+    "修改这个计划",
+)
+
+_INTERNAL_CONTRACT_REPAIR_MARKERS = (
+    "repair contract mismatch for task #",
+    "the previous execution did not satisfy the output contract",
+    "completion requires passing verification",
 )
 
 _LOCAL_MUTATION_PHRASES = (
@@ -799,6 +939,7 @@ ALL_TOOLS: List[str] = [
     "deeppl",
     "phagescope",
     "phagescope_research",
+    "scientific_figure_generator",
     "code_executor",
     "plan_operation",
     "deliverable_submit",
@@ -821,6 +962,13 @@ class RequestRoutingDecision:
     explicit_task_ids: List[int]
     explicit_task_override: bool
     full_plan_execution: bool = False
+    plan_create_required: bool = False
+    plan_execute_required: bool = False
+    plan_execute_after_create_required: bool = False
+    plan_review_required: bool = False
+    plan_optimize_required: bool = False
+    plan_new_requested: bool = False
+    plan_conflict_requires_confirmation: bool = False
 
     @property
     def use_deep_think(self) -> bool:
@@ -846,6 +994,13 @@ class RequestRoutingDecision:
             "explicit_task_ids": list(self.explicit_task_ids),
             "explicit_task_override": self.explicit_task_override,
             "full_plan_execution": self.full_plan_execution,
+            "plan_create_required": self.plan_create_required,
+            "plan_execute_required": self.plan_execute_required,
+            "plan_execute_after_create_required": self.plan_execute_after_create_required,
+            "plan_review_required": self.plan_review_required,
+            "plan_optimize_required": self.plan_optimize_required,
+            "plan_new_requested": self.plan_new_requested,
+            "plan_conflict_requires_confirmation": self.plan_conflict_requires_confirmation,
         }
         if self.thinking_visibility == "progress":
             payload["progress_mode"] = "compact"
@@ -863,6 +1018,13 @@ class RequestTierProfile:
     explicit_task_ids: List[int]
     explicit_task_override: bool
     full_plan_execution: bool = False
+    plan_create_required: bool = False
+    plan_execute_required: bool = False
+    plan_execute_after_create_required: bool = False
+    plan_review_required: bool = False
+    plan_optimize_required: bool = False
+    plan_new_requested: bool = False
+    plan_conflict_requires_confirmation: bool = False
 
     def prompt_metadata(self) -> Dict[str, Any]:
         return {
@@ -875,6 +1037,13 @@ class RequestTierProfile:
             "explicit_task_ids": list(self.explicit_task_ids),
             "explicit_task_override": self.explicit_task_override,
             "full_plan_execution": self.full_plan_execution,
+            "plan_create_required": self.plan_create_required,
+            "plan_execute_required": self.plan_execute_required,
+            "plan_execute_after_create_required": self.plan_execute_after_create_required,
+            "plan_review_required": self.plan_review_required,
+            "plan_optimize_required": self.plan_optimize_required,
+            "plan_new_requested": self.plan_new_requested,
+            "plan_conflict_requires_confirmation": self.plan_conflict_requires_confirmation,
         }
 
 
@@ -939,6 +1108,46 @@ def resolve_request_routing(
     combined_reasons = list(
         dict.fromkeys(subject_reasons + intent_reasons + reasons)
     )
+    context_plan_id = (context or {}).get("plan_id")
+    effective_plan_bound = plan_id is not None or context_plan_id is not None
+    plan_intent = resolve_plan_lifecycle_intent(
+        message=effective_user_message,
+        plan_bound=effective_plan_bound,
+        task_bound=current_task_id is not None or (context or {}).get("current_task_id") is not None,
+        subject_resolution=subject_resolution,
+    )
+    if plan_intent.create_requested:
+        combined_reasons.append("plan_create_request")
+    if plan_intent.execute_requested:
+        combined_reasons.append("plan_execute_request")
+    if plan_intent.review_requested:
+        combined_reasons.append("plan_review")
+    if plan_intent.optimize_requested:
+        combined_reasons.append("plan_optimize")
+    if plan_intent.new_plan_requested:
+        combined_reasons.append("plan_new_request")
+    if plan_intent.conflict_requires_confirmation:
+        combined_reasons.append("plan_conflict_confirmation")
+    if plan_intent.create_requested or plan_intent.review_requested or plan_intent.optimize_requested:
+        if request_tier != "execute":
+            request_tier = "execute"
+            combined_reasons.append("tier_elevated_plan_lifecycle")
+    if plan_intent.execute_requested:
+        if request_tier != "execute":
+            request_tier = "execute"
+            combined_reasons.append("tier_elevated_plan_execute")
+        if intent_type == "chat":
+            intent_type = "execute_task"
+            combined_reasons.append("intent_execute_task")
+    plan_create_required = bool(
+        plan_intent.create_requested
+        and not plan_intent.conflict_requires_confirmation
+        and (not effective_plan_bound or plan_intent.new_plan_requested)
+    )
+    plan_execute_required = bool(
+        plan_intent.execute_requested
+        and not plan_intent.conflict_requires_confirmation
+    )
     explicit_task_ids = extract_task_ids_from_text(effective_user_message)
     explicit_task_override = bool(explicit_task_ids)
     if explicit_task_override:
@@ -951,9 +1160,6 @@ def resolve_request_routing(
         if request_tier != "execute":
             request_tier = "execute"
             combined_reasons.append("tier_elevated_explicit_task")
-
-    context_plan_id = (context or {}).get("plan_id")
-    effective_plan_bound = plan_id is not None or context_plan_id is not None
 
     # Detect imperative full-plan execution requests ("执行整个计划",
     # "execute all tasks", etc.).  Tier-elevate to execute (more iterations)
@@ -978,6 +1184,38 @@ def resolve_request_routing(
             intent_type = "execute_task"
             combined_reasons.append("intent_execute_task")
 
+    subject_ref_text = str(
+        subject_resolution.get("display_ref")
+        or subject_resolution.get("canonical_ref")
+        or ""
+    ).lower()
+    if (
+        "phagescope" in subject_ref_text
+        and request_tier == "light"
+        and _contains_any_lowered(
+            effective_user_message.lower(),
+            (
+                "analyze",
+                "analyse",
+                "inspect",
+                "audit",
+                "review",
+                "look",
+                "explore",
+                "start",
+                "分析",
+                "查看",
+                "看看",
+                "检查",
+                "探索",
+            ),
+        )
+    ):
+        request_tier = "research"
+        combined_reasons.append("phagescope_dataset_analysis")
+        if "research_cue" not in combined_reasons:
+            combined_reasons.append("research_cue")
+
     if manual:
         combined_reasons = ["manual_deepthink"] + [
             code for code in combined_reasons if code != "manual_deepthink"
@@ -995,6 +1233,13 @@ def resolve_request_routing(
             explicit_task_ids=explicit_task_ids,
             explicit_task_override=explicit_task_override,
             full_plan_execution=full_plan_execution,
+            plan_create_required=plan_create_required,
+            plan_execute_required=plan_execute_required,
+            plan_execute_after_create_required=plan_create_required and plan_execute_required,
+            plan_review_required=plan_intent.review_requested,
+            plan_optimize_required=plan_intent.optimize_requested,
+            plan_new_requested=plan_intent.new_plan_requested,
+            plan_conflict_requires_confirmation=plan_intent.conflict_requires_confirmation,
         )
     return RequestRoutingDecision(
         request_tier=request_tier,
@@ -1009,6 +1254,13 @@ def resolve_request_routing(
         explicit_task_ids=explicit_task_ids,
         explicit_task_override=explicit_task_override,
         full_plan_execution=full_plan_execution,
+        plan_create_required=plan_create_required,
+        plan_execute_required=plan_execute_required,
+        plan_execute_after_create_required=plan_create_required and plan_execute_required,
+        plan_review_required=plan_intent.review_requested,
+        plan_optimize_required=plan_intent.optimize_requested,
+        plan_new_requested=plan_intent.new_plan_requested,
+        plan_conflict_requires_confirmation=plan_intent.conflict_requires_confirmation,
     )
 
 
@@ -1032,6 +1284,9 @@ def classify_request_tier(
     collapsed = _NON_WORD_RE.sub("", lowered)
     reasons: List[str] = []
     context_dict = dict(context or {})
+    if _is_internal_contract_repair_request(text):
+        reasons.append("internal_contract_repair")
+        return "execute", reasons, False
 
     # ── Structural signals ────────────────────────────────────────
     attachments = context_dict.get("attachments")
@@ -1275,11 +1530,24 @@ def _max_iterations_execute(
     default_max_iterations: int,
 ) -> int:
     execute_cap = 6
-    if decision.full_plan_execution or decision.explicit_task_override:
+    if decision.plan_conflict_requires_confirmation:
+        execute_cap = 3
+    elif (
+        decision.full_plan_execution
+        or decision.explicit_task_override
+        or decision.plan_execute_required
+        or decision.plan_execute_after_create_required
+    ):
         # Explicit task / full plan execution needs to traverse many tasks,
         # so a 6-step cap is too easy to exhaust before followthrough can occur.
         # Use a generous cap (48) to support multi-subtask composite execution.
         execute_cap = 48
+    elif (
+        decision.plan_create_required
+        or decision.plan_review_required
+        or decision.plan_optimize_required
+    ):
+        execute_cap = 12
     return max(3, min(default_max_iterations, execute_cap))
 
 
@@ -1296,6 +1564,13 @@ def build_request_tier_profile(
         explicit_task_ids=list(decision.explicit_task_ids),
         explicit_task_override=decision.explicit_task_override,
         full_plan_execution=decision.full_plan_execution,
+        plan_create_required=decision.plan_create_required,
+        plan_execute_required=decision.plan_execute_required,
+        plan_execute_after_create_required=decision.plan_execute_after_create_required,
+        plan_review_required=decision.plan_review_required,
+        plan_optimize_required=decision.plan_optimize_required,
+        plan_new_requested=decision.plan_new_requested,
+        plan_conflict_requires_confirmation=decision.plan_conflict_requires_confirmation,
     )
     if decision.request_tier == "light":
         return RequestTierProfile(
@@ -1348,9 +1623,102 @@ def _has_explicit_plan_request(text: str) -> bool:
     lowered = str(text or "").strip().lower()
     if not lowered:
         return False
+    if _is_internal_contract_repair_request(lowered):
+        return False
+    if _has_negated_plan_create_request(lowered):
+        return False
     return _contains_any_lowered(lowered, _PLAN_REQUEST_PHRASES) or _contains_any_lowered(
         lowered, _PLAN_NEW_REQUEST_PHRASES
     ) or bool(_PLAN_REQUEST_RE.search(lowered))
+
+
+def _has_negated_plan_create_request(lowered: str) -> bool:
+    if not lowered:
+        return False
+    markers = (
+        "do not create a plan",
+        "don't create a plan",
+        "dont create a plan",
+        "without creating a plan",
+        "no plan creation",
+        "不要创建 plan",
+        "不要创建plan",
+        "不要建 plan",
+        "不要建plan",
+        "不要创建计划",
+        "不要生成计划",
+        "不要制作计划",
+    )
+    return _contains_any_lowered(lowered, markers)
+
+
+def _is_internal_contract_repair_request(text: str) -> bool:
+    lowered = str(text or "").strip().lower()
+    if not lowered:
+        return False
+    if lowered.startswith("repair contract mismatch for task #"):
+        return True
+    return all(marker in lowered for marker in _INTERNAL_CONTRACT_REPAIR_MARKERS[1:])
+
+
+def resolve_plan_lifecycle_intent(
+    *,
+    message: str,
+    plan_bound: bool,
+    task_bound: bool = False,
+    subject_resolution: Optional[Mapping[str, Any]] = None,
+) -> PlanLifecycleIntent:
+    text = str(message or "").strip()
+    lowered = text.lower()
+    if not lowered:
+        return PlanLifecycleIntent()
+    if _is_internal_contract_repair_request(text):
+        return PlanLifecycleIntent()
+
+    create_requested = _has_explicit_plan_request(text)
+    new_plan_requested = _contains_any_lowered(lowered, _PLAN_NEW_REQUEST_PHRASES)
+    review_requested = _has_explicit_plan_review_request(
+        text,
+        plan_bound=plan_bound,
+        task_bound=task_bound,
+    )
+    optimize_requested = _has_explicit_plan_optimize_request(
+        text,
+        plan_bound=plan_bound,
+        task_bound=task_bound,
+    )
+
+    execute_requested = False
+    if create_requested:
+        execute_requested = _contains_any_lowered(
+            lowered,
+            _PLAN_EXECUTE_AFTER_CREATE_PHRASES,
+        )
+    elif plan_bound:
+        execute_requested = _is_full_plan_execution_request(
+            text,
+            plan_bound=True,
+        ) or _contains_any_lowered(lowered, _PLAN_EXECUTE_STANDALONE_PHRASES)
+
+    subject_changed = False
+    if plan_bound and isinstance(subject_resolution, Mapping):
+        subject_changed = str(subject_resolution.get("continuity") or "").strip().lower() in {"new", "shifted"}
+    conflict_requires_confirmation = bool(
+        plan_bound
+        and create_requested
+        and subject_changed
+        and not new_plan_requested
+        and not _contains_any_lowered(lowered, _PLAN_UPDATE_CURRENT_MARKERS)
+    )
+
+    return PlanLifecycleIntent(
+        create_requested=create_requested,
+        execute_requested=execute_requested,
+        review_requested=review_requested,
+        optimize_requested=optimize_requested,
+        new_plan_requested=new_plan_requested,
+        conflict_requires_confirmation=conflict_requires_confirmation,
+    )
 
 
 # Phrases that unambiguously reference the *entire* plan, not just the
@@ -1415,6 +1783,10 @@ def _has_explicit_plan_review_request(
     lowered = str(text or "").strip().lower()
     if not lowered or not (plan_bound or task_bound):
         return False
+    if _is_internal_contract_repair_request(lowered):
+        return False
+    if _looks_like_content_artifact_request(lowered):
+        return False
     if _contains_any_lowered(lowered, _PLAN_REVIEW_PHRASES):
         return True
     if not _contains_any(lowered, _PLAN_REVIEW_MARKERS):
@@ -1431,7 +1803,11 @@ def _has_explicit_plan_optimize_request(
     lowered = str(text or "").strip().lower()
     if not lowered or not (plan_bound or task_bound):
         return False
+    if _is_internal_contract_repair_request(lowered):
+        return False
     if _looks_like_plan_status_query(lowered):
+        return False
+    if _looks_like_content_artifact_request(lowered):
         return False
     if _contains_any_lowered(lowered, _PLAN_OPTIMIZE_PHRASES):
         return True
@@ -1448,6 +1824,19 @@ def _looks_like_plan_status_query(lowered: str) -> bool:
     if not _contains_any(lowered, ("update", "更新")):
         return False
     return _contains_any(lowered, _PLAN_STATUS_QUERY_MARKERS)
+
+
+def _looks_like_content_artifact_request(lowered: str) -> bool:
+    if not lowered:
+        return False
+    has_content_object = _contains_any(lowered, _CONTENT_GENERATION_OBJECT_MARKERS)
+    if not has_content_object:
+        return False
+    if _contains_any_lowered(lowered, _PLAN_REVIEW_PHRASES) or _contains_any_lowered(lowered, _PLAN_OPTIMIZE_PHRASES):
+        explicit_plan_target = _contains_any(lowered, _PLAN_TARGET_MARKERS)
+        if explicit_plan_target and not _contains_any(lowered, _CONTENT_GENERATION_ACTION_MARKERS):
+            return False
+    return True
 
 
 def _has_recent_image_artifacts(context: Optional[Mapping[str, Any]]) -> bool:
@@ -1526,6 +1915,7 @@ def _extract_explicit_path(text: str) -> Optional[str]:
         return None
     for match in _PATH_RE.finditer(text):
         candidate = str(match.group("path") or "").strip().strip("`'\"")
+        candidate = candidate.rstrip(".,;:)]}>，。；：）】》")
         if not candidate or "://" in candidate:
             continue
         if candidate in {".", ".."}:

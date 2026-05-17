@@ -73,6 +73,7 @@ from .session_helpers import (
     _update_message_content_by_tracking,
     _update_message_metadata_by_tracking,
 )
+from .tool_results import drop_callables
 
 if TYPE_CHECKING:
     from app.services.llm.structured_response import LLMAction
@@ -89,6 +90,7 @@ _AUTO_DEEP_THINK_RETRY_AVAILABLE_TOOLS: List[str] = [
     "graph_rag",
     "sequence_fetch",
     "url_fetch",
+    "scientific_figure_generator",
     "code_executor",
     "file_operations",
     "document_reader",
@@ -892,6 +894,75 @@ def _build_contract_verification_analysis(
     return "\n".join(lines)
 
 
+def build_phagescope_deep_profile_analysis(
+    user_message: str,
+    tool_results_payload: List[Dict[str, Any]],
+) -> Optional[str]:
+    language = "zh" if re.search(r"[\u4e00-\u9fff]", user_message or "") else "en"
+    profile: Optional[Dict[str, Any]] = None
+    for item in tool_results_payload or []:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("name") or item.get("tool") or "").strip() != "phagescope_research":
+            continue
+        result = item.get("result")
+        if not isinstance(result, dict):
+            continue
+        if str(result.get("action") or "").strip().lower() != "deep_profile":
+            continue
+        if result.get("success") is False:
+            continue
+        profile = result
+        break
+    if profile is None:
+        return None
+
+    rows = profile.get("metadata_rows")
+    files = profile.get("metadata_files")
+    meta_size = profile.get("metadata_size_human") or "unknown"
+    total_size = profile.get("total_size_human") or "unknown"
+    unique_ids = profile.get("unique_phage_ids")
+    ml_table = profile.get("ml_metadata_table") if isinstance(profile.get("ml_metadata_table"), dict) else {}
+    schema = profile.get("metadata_schema") if isinstance(profile.get("metadata_schema"), dict) else {}
+    label_quality = profile.get("label_quality") if isinstance(profile.get("label_quality"), dict) else {}
+    split_readiness = profile.get("split_readiness") if isinstance(profile.get("split_readiness"), dict) else {}
+    ml_empty = bool(ml_table.get("empty_or_header_only"))
+    headers_consistent = schema.get("headers_consistent")
+    host_available = label_quality.get("host_available_rows")
+    host_missing = label_quality.get("host_missing_rows")
+    primary_split = split_readiness.get("recommended_primary_split") or "subcluster"
+    robustness_split = split_readiness.get("robustness_split") or "cluster"
+
+    if language == "zh":
+        return "\n".join(
+            [
+                "我已经基于 `phagescope_research` 的 `deep_profile` 结果理解了本地 PhageScope 数据集；这不是建计划结果。",
+                "",
+                f"证据边界：`meta_data/` 有 {files} 个 metadata TSV、{rows} 行记录，metadata 体积是 {meta_size}；整个数据集目录体积是 {total_size}；不能把 metadata 体积误写成接近整个目录体积。唯一 phage ID 数为 {unique_ids}。",
+                f"当前 ML-ready 表状态：`ml_metadata_table.empty_or_header_only={str(ml_empty).lower()}`；metadata header 一致性为 `{str(headers_consistent).lower()}`。Host 标签可用行约为 {host_available}，缺失 Host 行为 {host_missing}。",
+                "",
+                f"Data splitting：主划分应使用 `{primary_split}` 分组，稳健性/敏感性分析用 `{robustness_split}`；避免随机行级 split，因为相近 phage 会造成泄漏。",
+                "Model selection：先做 metadata-only baseline（RandomForest、ExtraTrees 或线性/树模型），再逐步加入 k-mer 与 annotation-derived count features；不要先上复杂深度模型掩盖数据泄漏和标签噪声。",
+                "Benchmarking：报告 majority baseline、macro-F1、weighted-F1、top-k accuracy、source-stratified 和 lifestyle-stratified 指标；所有指标必须绑定固定 split。",
+                "Biological validation：重点检查 Host 标签来源、Taxonomy/Host 潜在泄漏、Cluster/Subcluster 泄漏、Lifestyle/Completeness 分层表现，并把稀有宿主类别作为限制说明。",
+            ]
+        )
+
+    return "\n".join(
+        [
+            "I used `phagescope_research` `deep_profile` evidence for the local PhageScope dataset; this is not a plan-creation result.",
+            "",
+            f"Evidence boundary: `meta_data/` contains {files} metadata TSV files and {rows} rows, with metadata size {meta_size}; the whole dataset directory is {total_size}. Do not inflate metadata size toward whole-directory size. Unique phage IDs: {unique_ids}.",
+            f"Current ML-ready table state: `ml_metadata_table.empty_or_header_only={str(ml_empty).lower()}`; metadata header consistency is `{str(headers_consistent).lower()}`. Host labels are available for about {host_available} rows, with {host_missing} missing Host rows.",
+            "",
+            f"Data splitting: use `{primary_split}` as the primary grouping key and `{robustness_split}` for robustness analysis; avoid random row-level splits because related phages can leak across splits.",
+            "Model selection: start with metadata-only baselines such as RandomForest, ExtraTrees, or simple linear/tree models, then add k-mer and annotation-derived count features stepwise.",
+            "Benchmarking: report majority baseline, macro-F1, weighted-F1, top-k accuracy, source-stratified metrics, and lifestyle-stratified metrics on the fixed split.",
+            "Biological validation: audit Host label provenance, Taxonomy/Host leakage, Cluster/Subcluster leakage, Lifestyle/Completeness strata, and rare-host limitations.",
+        ]
+    )
+
+
 def build_actions_summary(agent: Any, steps: List["AgentStep"]) -> List[Dict[str, Any]]:
     summary: List[Dict[str, Any]] = []
     for step in steps:
@@ -1668,6 +1739,7 @@ async def _execute_action_run(run_id: str) -> None:
             history=history,
             extra_context=context,
         )
+        agent._current_user_message = str(record.get("user_message") or "")
 
         plan_decomposition_jobs.mark_running(job.job_id)
         plan_decomposition_jobs.append_log(
@@ -2101,7 +2173,7 @@ async def _execute_action_run(run_id: str) -> None:
             )
         # ── End Task Cascade ────────────────────────────────────
 
-        result_dict = result.model_dump()
+        result_dict = drop_callables(result.model_dump())
         effective_success = bool(result.success)
         effective_errors = list(result.errors or [])
         deep_think_retry_payload: Optional[Dict[str, Any]] = None
@@ -2289,6 +2361,14 @@ async def _execute_action_run(run_id: str) -> None:
             analysis_text = (result.reply or result.summarize_steps() or "").strip() or None
             if analysis_text:
                 result_dict["analysis_source"] = "structured_action"
+        if effective_success and tool_results_payload and not analysis_text:
+            phagescope_profile_analysis = build_phagescope_deep_profile_analysis(
+                str(record.get("user_message") or ""),
+                tool_results_payload,
+            )
+            if phagescope_profile_analysis:
+                analysis_text = phagescope_profile_analysis
+                result_dict["analysis_source"] = "phagescope_deep_profile"
         if effective_success and tool_results_payload and not analysis_text:
             logger.info(
                 "[CHAT][SUMMARY] session=%s tracking=%s Starting analysis generation...",
