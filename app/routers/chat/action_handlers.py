@@ -402,6 +402,7 @@ _RUNTIME_CONTEXT_KEYS = (
     "last_subject_action_class",
     "recent_image_artifacts",
 )
+_READ_ONLY_FILE_OPERATIONS = {"read", "list", "exists", "info", "profile", "census"}
 _MUTATING_FILE_OPERATIONS = {"write", "copy", "move", "delete"}
 _LOCAL_SUBJECT_TOOLS = {
     "file_operations",
@@ -1184,6 +1185,218 @@ def _clean_existing_path_param(value: str) -> str:
     return cleaned
 
 
+def _parse_json_list_param(value: Any) -> Optional[List[Any]]:
+    if isinstance(value, list):
+        return value
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    if text.startswith("["):
+        try:
+            parsed = json.loads(text)
+        except Exception:
+            parsed = None
+        if isinstance(parsed, list):
+            return parsed
+    return None
+
+
+def _scientific_figure_label_key(params: Dict[str, Any]) -> str:
+    panels_value = _parse_json_list_param(params.get("panels"))
+    if panels_value:
+        for panel in panels_value:
+            if not isinstance(panel, dict):
+                continue
+            axis = panel.get("x") or panel.get("label") or panel.get("row")
+            if isinstance(axis, str) and axis.strip():
+                return axis.strip()
+    return "label"
+
+
+def _coerce_inline_number(value: str) -> Union[int, float]:
+    number = float(value)
+    return int(number) if number.is_integer() else number
+
+
+def _extract_scientific_figure_inline_rows(
+    user_message: Any,
+    *,
+    label_key: str,
+) -> List[Dict[str, Any]]:
+    text = str(user_message or "").strip()
+    if not text:
+        return []
+    match = re.search(
+        r"(?:rows?|records?|data)\s*[:：]\s*(?P<body>.+)",
+        text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    body = match.group("body") if match else text
+    body = re.split(
+        r"\b(?:make|create|draw|plot|render|export|output_basename|publish)\b",
+        body,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0]
+    rows: List[Dict[str, Any]] = []
+    metric_re = re.compile(
+        r"(?P<key>[A-Za-z_][A-Za-z0-9_./%-]*)\s*(?:=|:)?\s*(?P<value>-?\d+(?:\.\d+)?)"
+    )
+    for segment in re.split(r"[;；\n]+", body):
+        cleaned = segment.strip().strip(".。 ,，")
+        if not cleaned or not re.search(r"\d", cleaned):
+            continue
+        metric_matches = list(metric_re.finditer(cleaned))
+        if not metric_matches:
+            continue
+        label = cleaned[: metric_matches[0].start()].strip(" :：,-–—")
+        row: Dict[str, Any] = {label_key: label or f"row_{len(rows) + 1}"}
+        for metric_match in metric_matches:
+            row[metric_match.group("key")] = _coerce_inline_number(
+                metric_match.group("value")
+            )
+        rows.append(row)
+    return rows
+
+
+def _normalize_scientific_figure_raw_result(
+    raw_result: Any,
+    *,
+    publish: bool,
+) -> Any:
+    """Return the canonical figure-generator payload for chat handling.
+
+    The normal tool-box path returns the handler payload directly, while some
+    executor/test paths wrap it as ``{"success": ..., "result": <handler>}``.
+    Chat post-processing needs the handler payload at the top level so the
+    deliverable publisher can see ``deliverable_submit`` and the sanitizer can
+    expose ``figure_png``/QA paths consistently.
+    """
+    if not isinstance(raw_result, dict):
+        return raw_result
+
+    payload: Dict[str, Any] = raw_result
+    inner = raw_result.get("result")
+    if isinstance(inner, dict) and (
+        str(inner.get("tool") or "").strip() == "scientific_figure_generator"
+        or "deliverable_submit" in inner
+        or isinstance(inner.get("result"), dict)
+    ):
+        payload = dict(inner)
+        for key in (
+            "success",
+            "summary",
+            "deliverables",
+            "storage",
+            "artifact_gallery",
+            "deliverable_error",
+        ):
+            if key in raw_result and key not in payload:
+                payload[key] = raw_result[key]
+    else:
+        payload = dict(raw_result)
+
+    payload.setdefault("tool", "scientific_figure_generator")
+    figure_result_keys = (
+        "title",
+        "output_dir",
+        "figure_png",
+        "figure_pdf",
+        "legend_md",
+        "provenance_tsv",
+        "qa_json",
+        "qa_passed",
+        "panels",
+        "generated_files",
+    )
+    flat_result = {key: payload[key] for key in figure_result_keys if key in payload}
+    result_block = payload.get("result")
+    if flat_result:
+        if isinstance(result_block, dict):
+            merged_result = dict(flat_result)
+            merged_result.update(result_block)
+            payload["result"] = merged_result
+            result_block = merged_result
+        else:
+            payload["result"] = dict(flat_result)
+            result_block = payload["result"]
+
+    if isinstance(result_block, dict) and "deliverable_submit" not in payload:
+        artifact_specs = [
+            ("figure_png", "image_tabular", "Final scientific composite figure PNG"),
+            ("figure_pdf", "image_tabular", "Final scientific composite figure PDF"),
+            ("legend_md", "docs", "Figure legend"),
+            ("provenance_tsv", "image_tabular", "Figure provenance table"),
+            ("qa_json", "image_tabular", "Figure QA report"),
+        ]
+        artifacts: List[Dict[str, str]] = []
+        for key, module, reason in artifact_specs:
+            path_value = result_block.get(key)
+            if isinstance(path_value, str) and path_value.strip():
+                artifacts.append(
+                    {
+                        "path": path_value.strip(),
+                        "module": module,
+                        "reason": reason,
+                    }
+                )
+        if artifacts:
+            payload["deliverable_submit"] = {
+                "publish": bool(publish),
+                "artifacts": artifacts,
+            }
+
+    return payload
+
+
+def _build_chat_tool_context(agent: Any, tool_name: str) -> Optional[Any]:
+    session_id = getattr(agent, "session_id", None)
+    if not isinstance(session_id, str) or not session_id.strip():
+        return None
+    try:
+        from app.services.session_paths import get_runtime_session_dir
+        from tool_box.context import ToolContext
+    except Exception:
+        return None
+
+    plan_id: Optional[int] = None
+    raw_plan_id = getattr(getattr(agent, "plan_session", None), "plan_id", None)
+    if raw_plan_id is not None:
+        try:
+            plan_id = int(raw_plan_id)
+        except (TypeError, ValueError):
+            plan_id = None
+
+    task_id: Optional[int] = None
+    raw_task_id = (getattr(agent, "extra_context", {}) or {}).get("current_task_id")
+    if raw_task_id is not None:
+        try:
+            task_id = int(raw_task_id)
+        except (TypeError, ValueError):
+            task_id = None
+
+    task_name: Optional[str] = None
+    if task_id is not None and getattr(getattr(agent, "plan_session", None), "repo", None) is not None and plan_id is not None:
+        try:
+            tree = agent.plan_session.repo.get_plan_tree(plan_id)
+            if tree.has_node(task_id):
+                task_name = tree.get_node(task_id).display_name()
+        except Exception:
+            task_name = None
+
+    work_dir = get_runtime_session_dir(session_id, create=True) / "raw_files" / "chat_tools" / tool_name
+    owner_id = (getattr(agent, "extra_context", {}) or {}).get("owner_id")
+    return ToolContext(
+        session_id=session_id.strip(),
+        plan_id=plan_id,
+        task_id=task_id,
+        task_name=task_name,
+        job_id=get_current_job(),
+        owner_id=str(owner_id).strip() if owner_id is not None and str(owner_id).strip() else None,
+        work_dir=str(work_dir),
+    )
+
+
 def _enforce_capability_guard(
     agent: Any,
     action: LLMAction,
@@ -1306,7 +1519,7 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
             )
         operation = operation.strip()
         # Minimal validation for common operations.
-        if operation in {"read", "list", "delete", "exists", "info"}:
+        if operation in _READ_ONLY_FILE_OPERATIONS or operation == "delete":
             path = params.get("path")
             if not isinstance(path, str) or not path.strip():
                 return AgentStep(
@@ -1316,7 +1529,7 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
                     details={"error": "missing_params", "tool": tool_name},
                 )
             clean_params = {"operation": operation, "path": path}
-            if operation == "list":
+            if operation in {"list", "profile", "census"}:
                 pattern = params.get("pattern")
                 if isinstance(pattern, str) and pattern.strip():
                     clean_params["pattern"] = pattern
@@ -2395,6 +2608,80 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
                     pass
         params = clean_params
 
+    elif tool_name == "scientific_figure_generator":
+        datasets_value = _parse_json_list_param(params.get("datasets"))
+        if datasets_value is None:
+            rows = _extract_scientific_figure_inline_rows(
+                getattr(agent, "_current_user_message", None),
+                label_key=_scientific_figure_label_key(params),
+            )
+            dataset_name = params.get("datasets") or params.get("dataset") or "dataset_1"
+            if rows:
+                datasets_value = [
+                    {
+                        "name": str(dataset_name).strip() or "dataset_1",
+                        "rows": rows,
+                    }
+                ]
+        if datasets_value is None:
+            return AgentStep(
+                action=action,
+                success=False,
+                message="scientific_figure_generator requires `datasets` as a non-empty array.",
+                details={"error": "missing_datasets", "tool": tool_name},
+            )
+        datasets = [dict(item) for item in datasets_value if isinstance(item, dict)]
+        if not datasets:
+            return AgentStep(
+                action=action,
+                success=False,
+                message="scientific_figure_generator requires at least one dataset object.",
+                details={"error": "missing_datasets", "tool": tool_name},
+            )
+
+        clean_params: Dict[str, Any] = {"datasets": datasets}
+        title = params.get("title")
+        if isinstance(title, str) and title.strip():
+            clean_params["title"] = title.strip()
+
+        panels_value = _parse_json_list_param(params.get("panels"))
+        if panels_value is not None:
+            panels = [dict(item) for item in panels_value if isinstance(item, dict)]
+            if panels:
+                clean_params["panels"] = panels
+
+        for key in ("output_dir", "output_basename"):
+            value = params.get(key)
+            if isinstance(value, str) and value.strip():
+                clean_params[key] = value.strip()
+
+        formats_value = _parse_json_list_param(params.get("formats"))
+        if formats_value is not None:
+            formats = [str(item).strip() for item in formats_value if str(item).strip()]
+            if formats:
+                clean_params["formats"] = formats
+        elif isinstance(params.get("formats"), str) and params.get("formats"):
+            formats = [chunk.strip() for chunk in str(params["formats"]).split(",") if chunk.strip()]
+            if formats:
+                clean_params["formats"] = formats
+
+        if params.get("dpi") is not None:
+            try:
+                clean_params["dpi"] = int(params["dpi"])
+            except (TypeError, ValueError):
+                pass
+
+        publish_value = params.get("publish")
+        if isinstance(publish_value, bool):
+            clean_params["publish"] = publish_value
+        elif isinstance(publish_value, str):
+            clean_params["publish"] = publish_value.strip().lower() in {"1", "true", "yes", "on", "y"}
+
+        tool_context = _build_chat_tool_context(agent, tool_name)
+        if tool_context is not None:
+            clean_params["tool_context"] = tool_context
+        params = clean_params
+
     elif tool_name == "deliverable_submit":
         raw_artifacts = params.get("artifacts")
         if not isinstance(raw_artifacts, list):
@@ -2611,6 +2898,11 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
                 mutation_original_command,
             ) = await prepare_local_mutation_terminal_write(agent, tool_name, params)
             raw_result = await execute_tool(tool_name, **params)
+            if tool_name == "scientific_figure_generator":
+                raw_result = _normalize_scientific_figure_raw_result(
+                    raw_result,
+                    publish=bool(params.get("publish", True)),
+                )
     except Exception as exc:  # pragma: no cover - defensive
         logger.exception(
             "Tool %s execution failed for session %s: %s",
@@ -3851,11 +4143,30 @@ def handle_task_action(agent: Any, action: LLMAction) -> AgentStep:
             raise ValueError(f"Task {task_id} not found in plan {tree.id}")
         node = tree.get_node(task_id)
         if not node.execution_result:
+            child_ids = list(tree.children_ids(task_id)) if hasattr(tree, "children_ids") else []
+            leaf_child_ids = [
+                child_id
+                for child_id in child_ids
+                if not tree.children_ids(child_id)
+            ] if child_ids and hasattr(tree, "children_ids") else []
+            if child_ids:
+                message = (
+                    f"Task [{task_id}] is a composite parent and has no direct execution result to verify; "
+                    "verify one of its executable child tasks instead."
+                )
+            else:
+                message = f"Task [{task_id}] has not produced an execution result yet; run it before verification."
             return AgentStep(
                 action=action,
                 success=False,
-                message=f"Task [{task_id}] has no execution result to verify.",
-                details={"task_id": task_id, "plan_id": tree.id},
+                message=message,
+                details={
+                    "task_id": task_id,
+                    "plan_id": tree.id,
+                    "child_task_ids": child_ids,
+                    "verifiable_task_ids": leaf_child_ids,
+                    "verification_status": "not_run",
+                },
             )
 
         # Collect override criteria from multiple sources the LLM might use:

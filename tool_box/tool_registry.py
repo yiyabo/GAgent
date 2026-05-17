@@ -28,6 +28,7 @@ from .tools_impl import (
     plan_operation_tool,
     result_interpreter_tool,
     review_pack_writer_tool,
+    scientific_figure_generator_tool,
     sequence_fetch_tool,
     url_fetch_tool,
     terminal_session_tool,
@@ -123,6 +124,10 @@ _TOOL_METADATA: Dict[str, Dict[str, Any]] = {
     "deliverable_submit": {
         "search_hint": "deliverable artifact submit publish output",
     },
+    "scientific_figure_generator": {
+        "is_concurrent_safe": True,
+        "search_hint": "scientific figure visualization plot chart heatmap composite legend qa provenance",
+    },
 }
 
 def get_tool_orchestration_metadata(tool_name: str) -> Dict[str, Any]:
@@ -157,6 +162,7 @@ _STANDARD_TOOLS: List[Dict[str, Any]] = [
     terminal_session_tool,
     bio_tools_tool,
     result_interpreter_tool,
+    scientific_figure_generator_tool,
     plan_operation_tool,
     deliverable_submit_tool,
 ]
