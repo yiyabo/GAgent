@@ -165,9 +165,20 @@ _ALIAS_VALIDATION_SPECS: Dict[str, ArtifactValidationSpec] = {
     "industry.outline_json": ArtifactValidationSpec(kind="json_schema"),
 }
 
+_DYNAMIC_DIRECTORY_ALIAS_RE = re.compile(
+    r"^[a-z][a-z0-9_]*(?:_[a-z0-9]+)*\."
+    r"(?:evidence_dataframes|evidence_tables|summary_tables|intermediate_data_dir)$"
+)
+
 
 def get_artifact_validation_spec(alias: str) -> Optional[ArtifactValidationSpec]:
-    return _ALIAS_VALIDATION_SPECS.get(str(alias or "").strip())
+    alias_text = str(alias or "").strip()
+    spec = _ALIAS_VALIDATION_SPECS.get(alias_text)
+    if spec is not None:
+        return spec
+    if _DYNAMIC_DIRECTORY_ALIAS_RE.fullmatch(alias_text):
+        return ArtifactValidationSpec(kind="directory_glob", min_files=1)
+    return None
 
 
 def get_artifact_validation_prompt_specs(aliases: Iterable[str]) -> Dict[str, Dict[str, Any]]:
@@ -252,10 +263,13 @@ def artifact_entry_is_valid(entry: Any) -> bool:
     if not isinstance(entry, dict):
         return False
     validation = entry.get("validation")
-    if isinstance(validation, dict):
-        return bool(validation.get("validated") and validation.get("schema_valid"))
     alias = str(entry.get("alias") or "").strip()
     path = str(entry.get("path") or "").strip()
+    if isinstance(validation, dict):
+        if bool(validation.get("validated") and validation.get("schema_valid")):
+            return True
+        if validation.get("validated") is False or validation.get("schema_valid") is False:
+            return False
     return bool(path and Path(path).exists() and validate_artifact(alias, path).validated)
 
 

@@ -21,20 +21,6 @@ def test_status_resolver_marks_completed_task_failed_when_canonical_publish_miss
     tmp_path,
 ) -> None:
     monkeypatch.chdir(tmp_path)
-    # Create an artifact manifest with at least one entry so that artifact
-    # tracking is considered active.  Without a manifest the resolver
-    # gracefully skips publish-contract checks (plans executed via DeepThink
-    # may never initialise a manifest).
-    save_artifact_manifest(21, {
-        "plan_id": 21,
-        "artifacts": {
-            "other.placeholder": {
-                "alias": "other.placeholder",
-                "path": "/tmp/placeholder",
-                "producer_task_id": 999,
-            }
-        },
-    })
     resolver = PlanStatusResolver()
     tree = _tree(
         21,
@@ -53,6 +39,30 @@ def test_status_resolver_marks_completed_task_failed_when_canonical_publish_miss
     assert state["effective_status"] == "failed"
     assert state["missing_publish_aliases"] == ["general.evidence_md"]
     assert state["reason_code"] == "publish_contract_missing"
+
+
+def test_status_resolver_blocks_missing_required_alias_without_manifest(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    resolver = PlanStatusResolver()
+    tree = _tree(
+        30,
+        PlanNode(
+            id=1,
+            plan_id=30,
+            name="Consume evidence",
+            status="pending",
+            metadata={"artifact_contract": {"requires": ["general.evidence_md"]}},
+        ),
+    )
+
+    state = resolver.resolve_plan_states(30, tree)[1]
+
+    assert state["effective_status"] == "blocked"
+    assert state["missing_required_aliases"] == ["general.evidence_md"]
+    assert state["reason_code"] == "artifact_input_missing"
 
 
 def test_status_resolver_marks_completed_task_completed_when_canonical_publish_exists(
@@ -97,6 +107,60 @@ def test_status_resolver_marks_completed_task_completed_when_canonical_publish_e
     assert state["effective_status"] == "completed"
     assert state["missing_publish_aliases"] == []
     assert state["published_aliases"] == [alias]
+
+
+def test_status_resolver_accepts_registered_dynamic_directory_alias(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    alias = "analysis_ccc.evidence_dataframes"
+    data_dir = tmp_path / "runtime" / "session_x" / "raw_files" / "task_22" / "data"
+    data_dir.mkdir(parents=True)
+    (data_dir / "lr_pairs.tsv").write_text("ligand\treceptor\nMIF\tCD74\n", encoding="utf-8")
+    (data_dir / "pathways.csv").write_text("pathway,score\nMIF,0.4\n", encoding="utf-8")
+    save_artifact_manifest(
+        88,
+        {
+            "plan_id": 88,
+            "artifacts": {
+                alias: {
+                    "alias": alias,
+                    "path": str(data_dir.resolve()),
+                    "producer_task_id": 1,
+                    "source_path": str(data_dir.resolve()),
+                    "validation": {"validated": True, "kind": "directory"},
+                }
+            },
+        },
+    )
+    resolver = PlanStatusResolver()
+    producer = PlanNode(
+        id=1,
+        plan_id=88,
+        name="Produce communication evidence tables",
+        status="completed",
+        metadata={"artifact_contract": {"publishes": [alias]}},
+        execution_result=json.dumps({"status": "completed", "content": "ok"}),
+    )
+    consumer = PlanNode(
+        id=2,
+        plan_id=88,
+        name="Consume communication evidence tables",
+        status="completed",
+        dependencies=[1],
+        metadata={"artifact_contract": {"requires": [alias]}},
+        execution_result=json.dumps({"status": "completed", "content": "ok"}),
+    )
+    tree = _tree(88, producer, consumer)
+
+    states = resolver.resolve_plan_states(88, tree)
+
+    assert states[1]["effective_status"] == "completed"
+    assert states[1]["published_aliases"] == [alias]
+    assert states[1]["missing_publish_aliases"] == []
+    assert states[2]["effective_status"] == "completed"
+    assert states[2]["missing_required_aliases"] == []
 
 
 def test_status_resolver_keeps_legacy_completed_task_completed_without_publish_contract(

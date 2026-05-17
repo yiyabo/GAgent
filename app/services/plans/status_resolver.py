@@ -367,7 +367,7 @@ class PlanStatusResolver:
                 effective_status = "completed"
                 status_reason = manual_acceptance_reason or "Task was manually accepted after review."
                 reason_code = "manual_acceptance"
-            elif missing_required_aliases and manifest_artifacts:
+            elif missing_required_aliases:
                 effective_status = "blocked"
                 status_reason = _missing_required_reason(task_id, missing_required_aliases)
                 reason_code = "artifact_input_missing"
@@ -417,7 +417,7 @@ class PlanStatusResolver:
                     status_reason = _truncate_reason(content or raw_result_text) or "Task failed."
                     reason_code = "running_failed"
                 elif payload_status in _COMPLETED_LIKE or _looks_like_success_text(raw_result_text):
-                    if missing_publish_aliases and manifest_artifacts:
+                    if missing_publish_aliases:
                         effective_status = "failed"
                         status_reason = _missing_publish_reason(task_id, missing_publish_aliases)
                         reason_code = "publish_contract_missing"
@@ -445,7 +445,7 @@ class PlanStatusResolver:
                     effective_status = "failed"
                     status_reason = _truncate_reason(content or raw_result_text) or "Task failed."
                     reason_code = "retry_or_blocked_failure"
-                elif missing_publish_aliases and manifest_artifacts and verification_status != "passed":
+                elif missing_publish_aliases and verification_status != "passed":
                     effective_status = "failed"
                     status_reason = _missing_publish_reason(task_id, missing_publish_aliases)
                     reason_code = "publish_contract_missing"
