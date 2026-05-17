@@ -227,7 +227,8 @@ class ArtifactPreflightService:
         else:
             task_name = str(getattr(node, "name", "") or "").strip() or f"Task {task_id}"
         instruction = str(getattr(node, "instruction", "") or "")
-        raw_contract = metadata.get("artifact_contract") if isinstance(metadata.get("artifact_contract"), dict) else {}
+        metadata_contract = metadata.get("artifact_contract")
+        raw_contract = metadata_contract if isinstance(metadata_contract, dict) else {}
         explicit_requires, explicit_require_errors = self._normalize_explicit_aliases(
             plan_id,
             raw_contract.get("requires"),
@@ -353,6 +354,8 @@ class ArtifactPreflightService:
             producer_id = publishers[0]
             targets = edges.setdefault(producer_id, set())
             for consumer_id in consumers:
+                if consumer_id == producer_id:
+                    continue
                 targets.add(consumer_id)
         return edges
 

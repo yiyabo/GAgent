@@ -7,7 +7,7 @@ import sqlite3
 import threading
 import heapq
 import os
-from typing import Any, AsyncIterator, Dict, Iterable, List, Optional, Set, Tuple
+from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, Iterable, List, Optional, Set, Tuple
 
 from fastapi import APIRouter, BackgroundTasks, Body, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
@@ -33,6 +33,7 @@ from app.services.plans.dependency_enrichment import (
     validate_plan_dag,
     check_artifact_readiness,
 )
+from app.services.plans.dependency_validation import normalize_plan_dependencies
 from app.services.plans.todo_list import (
     build_todo_list as _build_todo_list,
     build_full_plan_todo_list as _build_full_plan_todo_list,
@@ -57,6 +58,9 @@ _task_verifier = TaskVerificationService()
 _artifact_preflight_service = ArtifactPreflightService()
 _plan_status_resolver = PlanStatusResolver()
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from app.services.plans.plan_models import PlanTree
 
 # Guard against duplicate concurrent execution of the same plan+task pair.
 _task_execution_locks: Dict[Tuple[int, int], threading.Lock] = {}
@@ -248,6 +252,15 @@ class VerifyTaskResponse(BaseModel):
     plan_id: int
     task_id: int
     result: TaskResultItem
+
+
+class ReverifyPlanDryRunResponse(BaseModel):
+    success: bool
+    message: str
+    plan_id: int
+    dry_run: bool = True
+    summary: Dict[str, Any]
+    items: List[Dict[str, Any]]
 
 
 class AcceptTaskRequest(BaseModel):
@@ -474,11 +487,27 @@ def _resolve_effective_task_states(
     snapshot: Optional[Dict[str, Any]] = None,
 ) -> Dict[int, Dict[str, Any]]:
     snapshot = snapshot or _build_plan_execution_snapshot(plan_id)
-    return _plan_status_resolver.resolve_plan_states(
+    states = _plan_status_resolver.resolve_plan_states(
         plan_id,
         tree,
         snapshot=snapshot,
     )
+    for task_id, state in states.items():
+        if str(state.get("effective_status") or "").strip().lower() != "completed":
+            continue
+        node = tree.nodes.get(task_id)
+        if node is None:
+            continue
+        content, _notes, metadata, raw_payload = _parse_execution_result(getattr(node, "execution_result", None))
+        payload_status = _normalize_task_status(raw_payload.get("status")) if isinstance(raw_payload, dict) else ""
+        verification_status = _normalize_task_status(metadata.get("verification_status"))
+        if payload_status == "completed" and verification_status == "passed":
+            continue
+        if _looks_like_retry_or_blocked_failure_text(content or getattr(node, "execution_result", None)):
+            state["effective_status"] = "failed"
+            state["status_reason"] = _truncate_reason(content or getattr(node, "execution_result", None)) or "Task requires retry."
+            state["reason_code"] = "retry_or_blocked_failure"
+    return states
 
 
 class DependencyNodeSummary(BaseModel):
@@ -1384,6 +1413,39 @@ def get_plan_results(
     return PlanResultsResponse(plan_id=plan_id, total=len(items), items=items)
 
 
+@plan_router.post(
+    "/{plan_id}/reverify/dry-run",
+    response_model=ReverifyPlanDryRunResponse,
+    summary="Dry-run deterministic verification for plan task results",
+)
+def dry_run_reverify_plan(
+    plan_id: int,
+    request: Request,
+    task_ids: Optional[List[int]] = Body(default=None),
+):
+    _load_authorized_plan_tree(plan_id, request)
+    if not isinstance(task_ids, list):
+        task_ids = None
+    result = _task_verifier.dry_run_reverify_plan(
+        _plan_repo,
+        plan_id=plan_id,
+        task_ids=task_ids,
+    )
+    summary = result.get("summary") if isinstance(result.get("summary"), dict) else {}
+    would_change = int(summary.get("would_change_status") or 0)
+    return ReverifyPlanDryRunResponse(
+        success=True,
+        message=(
+            f"Dry-run reverified {summary.get('verifiable', 0)} task(s); "
+            f"{would_change} status change(s) would be made if persisted."
+        ),
+        plan_id=plan_id,
+        dry_run=True,
+        summary=summary,
+        items=list(result.get("items") or []),
+    )
+
+
 @task_router.get(
     "/{task_id}/result",
     response_model=TaskResultItem,
@@ -1415,6 +1477,52 @@ def get_task_result(
     )
 
 
+def _build_unverifiable_task_response(
+    *,
+    plan_id: int,
+    task_id: int,
+    node: Any,
+    tree: Any,
+    reason: str,
+) -> VerifyTaskResponse:
+    state_by_task = _resolve_effective_task_states(plan_id, tree)
+    state = state_by_task.get(task_id)
+    child_ids = list(tree.children_ids(task_id)) if hasattr(tree, "children_ids") else []
+    leaf_child_ids: List[int] = []
+    for child_id in child_ids:
+        if not tree.children_ids(child_id):
+            leaf_child_ids.append(child_id)
+    if child_ids and not leaf_child_ids:
+        leaf_child_ids = [
+            child_id
+            for child_id in child_ids
+            if tree.has_node(child_id)
+        ]
+    details = {
+        "verification_status": "not_run",
+        "reason": reason,
+    }
+    if child_ids:
+        details["child_task_ids"] = child_ids
+        details["verifiable_task_ids"] = leaf_child_ids
+    return VerifyTaskResponse(
+        success=False,
+        message=reason,
+        plan_id=plan_id,
+        task_id=task_id,
+        result=TaskResultItem(
+            task_id=task_id,
+            name=node.name,
+            status=str((state or {}).get("effective_status") or node.status or "pending"),
+            **_effective_response_fields(state),
+            content=None,
+            notes=[],
+            metadata=details,
+            raw=None,
+        ),
+    )
+
+
 @task_router.post(
     "/{task_id}/verify",
     response_model=VerifyTaskResponse,
@@ -1429,8 +1537,26 @@ def verify_task_result(
     if not tree.has_node(task_id):
         raise HTTPException(status_code=404, detail=f"Task {task_id} not found in plan {plan_id}")
     node = tree.get_node(task_id)
+    child_ids = list(tree.children_ids(task_id))
+    if child_ids and not node.execution_result:
+        return _build_unverifiable_task_response(
+            plan_id=plan_id,
+            task_id=task_id,
+            node=node,
+            tree=tree,
+            reason=(
+                f"Task {task_id} is a composite parent and has no direct execution result to verify; "
+                "verify one of its executable child tasks instead."
+            ),
+        )
     if not node.execution_result:
-        raise HTTPException(status_code=400, detail=f"Task {task_id} has no execution result to verify")
+        return _build_unverifiable_task_response(
+            plan_id=plan_id,
+            task_id=task_id,
+            node=node,
+            tree=tree,
+            reason=f"Task {task_id} has not produced an execution result yet; run it before verification.",
+        )
 
     try:
         finalization = _task_verifier.verify_task(
@@ -2042,6 +2168,22 @@ def execute_full_plan(
             logging.getLogger("app.routers.plan_routes").info(
                 "Enriched plan %s with %d implicit dependency edges.",
                 plan_id, len(_enrichment_result.added_edges),
+            )
+        _normalization = normalize_plan_dependencies(tree)
+        if _normalization.dependencies_by_task:
+            for _tid, _deps in _normalization.dependencies_by_task.items():
+                _plan_repo.update_task(plan_id, _tid, dependencies=list(_deps))
+                if _tid in tree.nodes:
+                    tree.nodes[_tid].dependencies = list(_deps)
+            logging.getLogger("app.routers.plan_routes").info(
+                "Normalized dependency edges for plan %s tasks %s.",
+                plan_id,
+                _normalization.changed_task_ids,
+            )
+        for _issue in _normalization.issues:
+            logging.getLogger("app.routers.plan_routes").warning(
+                "Plan dependency validation: %s",
+                _issue.message,
             )
         _dag_validation = validate_plan_dag(tree)
         if _dag_validation.has_errors():

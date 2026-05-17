@@ -204,6 +204,50 @@ class TaskVerificationService:
     def collect_artifact_paths(self, payload: Any) -> List[str]:
         return self._extract_artifact_paths(payload)
 
+    def build_verification_diagnostics(
+        self,
+        node: PlanNode,
+        criteria: Optional[Dict[str, Any]],
+        artifact_paths: Sequence[str],
+        *,
+        payload: Optional[Dict[str, Any]] = None,
+        base_dir: Optional[Path] = None,
+    ) -> Dict[str, Any]:
+        """Return read-only path-resolution diagnostics for a verification run."""
+
+        chosen_base_dir = base_dir or self._resolve_base_dir(
+            criteria,
+            artifact_paths,
+            payload=payload,
+            node=node,
+        )
+        task_raw_candidates = self._task_raw_files_base_dir_candidates(
+            node=node,
+            payload=payload,
+            artifact_paths=artifact_paths,
+        )
+        payload_base_candidates = self._payload_base_dir_candidates(payload)
+        inferred_relative_base = self._infer_relative_output_base_dir(criteria, artifact_paths)
+        session_roots = self._runtime_session_roots_from_payload_and_artifacts(
+            payload=payload,
+            artifact_paths=artifact_paths,
+        )
+        return {
+            "plan_id": int(getattr(node, "plan_id", 0) or 0),
+            "task_id": int(getattr(node, "id", 0) or 0),
+            "node_path": str(getattr(node, "path", "") or ""),
+            "chosen_base_dir": str(chosen_base_dir),
+            "criteria_uses_relative_paths": self._criteria_uses_relative_paths(criteria),
+            "candidate_dirs": {
+                "task_raw_files": [str(path) for path in task_raw_candidates],
+                "payload_base_dirs": [str(path) for path in payload_base_candidates],
+                "inferred_relative_output_base_dir": str(inferred_relative_base) if inferred_relative_base is not None else None,
+                "session_roots": [str(path) for path in session_roots],
+            },
+            "resolved_checks": self._diagnose_check_resolutions(criteria, chosen_base_dir),
+            "artifact_path_stats": self._artifact_path_category_stats(artifact_paths),
+        }
+
     def finalize_payload(
         self,
         node: PlanNode,
@@ -300,10 +344,19 @@ class TaskVerificationService:
         if local_artifact_paths:
             normalized_payload["artifact_paths"] = list(dict.fromkeys(local_artifact_paths))[:80]
             metadata["artifact_paths"] = list(normalized_payload["artifact_paths"])
-        blocking = bool(effective_criteria.get("blocking", True))
+        diagnostics = self.build_verification_diagnostics(
+            node,
+            effective_criteria,
+            local_artifact_paths,
+            payload=normalized_payload,
+            base_dir=base_dir,
+        )
+        metadata["verification_diagnostics"] = diagnostics
+        criteria = effective_criteria if isinstance(effective_criteria, dict) else {}
+        blocking = bool(criteria.get("blocking", True))
         failures: List[Dict[str, Any]] = []
         hard_failures: List[Dict[str, Any]] = []
-        checks = effective_criteria.get("checks") or []
+        checks = criteria.get("checks") or []
         checks_passed = 0
         checks_executed = 0
         for raw_check in checks:
@@ -423,6 +476,31 @@ class TaskVerificationService:
             failures = []
             contract_diff = None
 
+        if (
+            failures
+            and self._failures_are_verification_config_errors(failures)
+            and self._has_output_evidence(local_artifact_paths)
+            and normalized_execution_status in _COMPLETED_LIKE
+        ):
+            verification_status = "config_error"
+            config_errors = [dict(item) for item in failures]
+            metadata["verification_status"] = verification_status
+            metadata["verification_config_error"] = True
+            metadata["verification_config_errors"] = config_errors
+            metadata.pop("failure_kind", None)
+            metadata.pop("contract_diff", None)
+            metadata.pop("plan_patch_suggestion", None)
+            verification["status"] = verification_status
+            verification["blocking"] = False
+            verification["config_error"] = True
+            verification["config_errors"] = config_errors
+            verification["failures"] = config_errors
+            verification.pop("contract_diff", None)
+            verification.pop("plan_patch_suggestion", None)
+            failures = []
+            hard_failures = []
+            contract_diff = None
+
         artifact_verification = self._build_artifact_verification_summary(
             criteria=effective_criteria,
             artifact_paths=local_artifact_paths,
@@ -437,6 +515,7 @@ class TaskVerificationService:
         metadata["artifact_schema_validation"] = artifact_schema_results
         metadata["artifact_verification"] = artifact_verification
         metadata["verification"] = verification
+        verification["diagnostics"] = copy.deepcopy(diagnostics)
         verification["artifact_verification"] = copy.deepcopy(artifact_verification)
         normalized_payload["metadata"] = metadata
 
@@ -562,6 +641,7 @@ class TaskVerificationService:
         task_id: int,
         trigger: str = "manual",
         override_criteria: Optional[Dict[str, Any]] = None,
+        dry_run: bool = False,
     ) -> VerificationFinalization:
         """Run verification on an existing task.
 
@@ -616,14 +696,96 @@ class TaskVerificationService:
             if isinstance(payload_meta, dict) and "acceptance_criteria" not in payload_meta:
                 payload_meta["acceptance_criteria"] = override_criteria
 
-        repo.update_task(
-            plan_id,
-            task_id,
-            status=finalization.final_status,
-            execution_result=json.dumps(finalization.payload, ensure_ascii=False),
-            metadata=node.metadata if isinstance(node.metadata, dict) else None,
-        )
+        if not dry_run:
+            repo.update_task(
+                plan_id,
+                task_id,
+                status=finalization.final_status,
+                execution_result=json.dumps(finalization.payload, ensure_ascii=False),
+                metadata=node.metadata if isinstance(node.metadata, dict) else None,
+            )
         return finalization
+
+    def dry_run_reverify_plan(
+        self,
+        repo: Any,
+        *,
+        plan_id: int,
+        task_ids: Optional[Sequence[int]] = None,
+    ) -> Dict[str, Any]:
+        tree = repo.get_plan_tree(plan_id)
+        selected = set(int(task_id) for task_id in task_ids) if task_ids is not None else None
+        items: List[Dict[str, Any]] = []
+        summary = {
+            "total": 0,
+            "verifiable": 0,
+            "would_pass": 0,
+            "would_fail": 0,
+            "would_skip": 0,
+            "would_change_status": 0,
+            "unverifiable": 0,
+        }
+        for node in tree.ordered_nodes():
+            if selected is not None and node.id not in selected:
+                continue
+            summary["total"] += 1
+            if not node.execution_result:
+                summary["unverifiable"] += 1
+                items.append({
+                    "task_id": node.id,
+                    "name": node.name,
+                    "current_status": node.status,
+                    "dry_run_status": "not_run",
+                    "would_change_status": False,
+                    "reason": "Task has no execution_result.",
+                    "verification_status": "not_run",
+                    "diagnostics": None,
+                })
+                continue
+            finalization = self.verify_task(
+                repo,
+                plan_id=plan_id,
+                task_id=node.id,
+                trigger="dry_run",
+                dry_run=True,
+            )
+            metadata = finalization.payload.get("metadata") if isinstance(finalization.payload, dict) else {}
+            if not isinstance(metadata, dict):
+                metadata = {}
+            metadata_verification = metadata.get("verification")
+            verification = metadata_verification if isinstance(metadata_verification, dict) else {}
+            verification_status = str(verification.get("status") or metadata.get("verification_status") or "not_run")
+            dry_run_status = str(finalization.final_status or "pending")
+            current_status = str(node.status or "pending")
+            would_change = dry_run_status != current_status
+            summary["verifiable"] += 1
+            if verification_status == "passed":
+                summary["would_pass"] += 1
+            elif verification_status == "failed":
+                summary["would_fail"] += 1
+            else:
+                summary["would_skip"] += 1
+            if would_change:
+                summary["would_change_status"] += 1
+            items.append({
+                "task_id": node.id,
+                "name": node.name,
+                "current_status": current_status,
+                "dry_run_status": dry_run_status,
+                "would_change_status": would_change,
+                "verification_status": verification_status,
+                "checks_total": verification.get("checks_total"),
+                "checks_passed": verification.get("checks_passed"),
+                "failure_kind": metadata.get("failure_kind"),
+                "failures": list(verification.get("failures") or [])[:10],
+                "diagnostics": metadata.get("verification_diagnostics") or verification.get("diagnostics"),
+            })
+        return {
+            "plan_id": plan_id,
+            "dry_run": True,
+            "summary": summary,
+            "items": items,
+        }
 
     def accept_task_result(
         self,
@@ -644,17 +806,20 @@ class TaskVerificationService:
         node = tree.get_node(task_id)
         raw_payload = self._parse_execution_result(node.execution_result, fallback_status=node.status)
         payload = self._coerce_payload(raw_payload, fallback_status=node.status)
-        metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+        payload_metadata = payload.get("metadata")
+        metadata = payload_metadata if isinstance(payload_metadata, dict) else {}
         payload["metadata"] = metadata
 
         reason_text = str(reason or "").strip()
         if not reason_text:
             raise ValueError("manual acceptance reason is required")
 
-        verification = metadata.get("verification") if isinstance(metadata.get("verification"), dict) else None
+        metadata_verification = metadata.get("verification")
+        verification = metadata_verification if isinstance(metadata_verification, dict) else None
+        metadata_artifact_authority = metadata.get("artifact_authority")
         artifact_authority = (
-            metadata.get("artifact_authority")
-            if isinstance(metadata.get("artifact_authority"), dict)
+            metadata_artifact_authority
+            if isinstance(metadata_artifact_authority, dict)
             else None
         )
         original_payload_status = str(payload.get("status") or node.status or "pending").strip().lower() or "pending"
@@ -675,7 +840,7 @@ class TaskVerificationService:
                 "manual acceptance is only allowed for failed, skipped, errored, or verification-failed task results"
             )
 
-        manual_acceptance = {
+        manual_acceptance: Dict[str, Any] = {
             "status": "accepted",
             "accepted": True,
             "trigger": trigger,
@@ -762,7 +927,8 @@ class TaskVerificationService:
         Require check: are all explicitly declared inputs available in the manifest?
         """
         payload = finalization.payload if isinstance(finalization.payload, dict) else {}
-        metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+        payload_metadata = payload.get("metadata")
+        metadata = payload_metadata if isinstance(payload_metadata, dict) else {}
         payload["metadata"] = metadata
         node_metadata = node.metadata if isinstance(node.metadata, dict) else {}
         provenance = resolve_artifact_contract_with_provenance(
@@ -780,7 +946,8 @@ class TaskVerificationService:
         ]
 
         manifest_payload = manifest if isinstance(manifest, dict) else load_artifact_manifest(plan_id)
-        manifest_artifacts = manifest_payload.get("artifacts") if isinstance(manifest_payload.get("artifacts"), dict) else {}
+        manifest_payload_artifacts = manifest_payload.get("artifacts")
+        manifest_artifacts = manifest_payload_artifacts if isinstance(manifest_payload_artifacts, dict) else {}
 
         resolved_publish = resolve_manifest_aliases(manifest_payload, publish_aliases)
         published_aliases: List[str] = []
@@ -1330,25 +1497,19 @@ class TaskVerificationService:
 
     def _run_check(self, raw_check: Any, *, base_dir: Path, artifact_paths: Sequence[str] = ()) -> Optional[Dict[str, Any]]:
         if not isinstance(raw_check, dict):
-            return {
-                "type": "invalid_check",
-                "message": "Check definition must be an object.",
-                "success": False,
-            }
+            return self._verification_config_error("invalid_check", "Check definition must be an object.")
 
         raw_check = self._normalize_check(raw_check)
 
         check_type = str(raw_check.get("type") or "").strip()
         if not check_type:
-            return {
-                "type": "invalid_check",
-                "message": "Check definition is missing `type`.",
-                "success": False,
-            }
+            return self._verification_config_error("invalid_check", "Check definition is missing `type`.")
 
         try:
             if check_type == "file_exists":
-                path = self._resolve_path(raw_check.get("path"), base_dir)
+                if not self._has_nonempty_string(raw_check.get("path")):
+                    return self._verification_config_error(check_type, "Check is missing a valid `path`.")
+                path = self._select_path_for_check(raw_check.get("path"), base_dir, artifact_paths, mode="exists")
                 success = path.exists()
                 if not success and artifact_paths:
                     fallback = self._fallback_artifact_match(path, artifact_paths)
@@ -1357,7 +1518,9 @@ class TaskVerificationService:
                         success = True
                 return self._check_result(check_type, success, path=path, message=None if success else "File does not exist.")
             if check_type == "file_nonempty":
-                path = self._resolve_path(raw_check.get("path"), base_dir)
+                if not self._has_nonempty_string(raw_check.get("path")):
+                    return self._verification_config_error(check_type, "Check is missing a valid `path`.")
+                path = self._select_path_for_check(raw_check.get("path"), base_dir, artifact_paths, mode="nonempty_file")
                 success = path.exists() and path.is_file() and path.stat().st_size > 0
                 if not success and artifact_paths:
                     fallback = self._fallback_artifact_match(path, artifact_paths)
@@ -1368,22 +1531,26 @@ class TaskVerificationService:
             if check_type == "glob_nonempty":
                 raw_glob = resolve_glob_pattern(raw_check)
                 if not raw_glob:
-                    return {"type": check_type, "success": False, "message": "Check is missing `glob`."}
-                pattern = self._resolve_glob(raw_glob, base_dir)
-                matched = glob.glob(pattern, recursive=True)
+                    return self._verification_config_error(check_type, "Check is missing a valid `glob`.")
+                patterns = self._resolve_glob_patterns(raw_glob, base_dir, artifact_paths)
+                matched = self._glob_matches(patterns)
                 success = len(matched) > 0
                 return {
                     "type": check_type,
                     "success": success,
-                    "glob": pattern,
+                    "glob": patterns[0],
+                    "glob_patterns": patterns,
                     "count": len(matched),
                     "message": None if success else "No files matched glob pattern.",
                 }
             if check_type == "glob_count_at_least":
                 raw_glob = resolve_glob_pattern(raw_check)
-                pattern = self._resolve_glob(raw_glob, base_dir)
-                min_count = resolve_glob_min_count(raw_check)
-                matched = [item for item in glob.glob(pattern, recursive=True)]
+                if not raw_glob:
+                    return self._verification_config_error(check_type, "Check is missing a valid `glob`.")
+                min_count = resolve_glob_min_count(raw_check, default=1)
+                patterns = self._resolve_glob_patterns(raw_glob, base_dir, artifact_paths)
+                pattern = patterns[0]
+                matched = self._glob_matches(patterns)
                 if not matched and artifact_paths and raw_glob and not glob.has_magic(raw_glob):
                     fallback = self._fallback_artifact_match(
                         self._resolve_path(raw_glob, base_dir),
@@ -1403,11 +1570,14 @@ class TaskVerificationService:
                     "type": check_type,
                     "success": success,
                     "glob": pattern,
+                    "glob_patterns": patterns,
                     "count": len(matched),
                     "message": None if success else f"Matched {len(matched)} items, expected at least {min_count}.",
                 }
             if check_type == "text_contains":
-                path = self._resolve_path(raw_check.get("path"), base_dir)
+                if not self._has_nonempty_string(raw_check.get("path")):
+                    return self._verification_config_error(check_type, "Check is missing a valid `path`.")
+                path = self._select_path_for_check(raw_check.get("path"), base_dir, artifact_paths, mode="exists")
                 pattern = str(raw_check.get("pattern") or "")
                 if not path.exists() and artifact_paths:
                     fallback = self._fallback_artifact_match(path, artifact_paths, lenient=False)
@@ -1419,7 +1589,9 @@ class TaskVerificationService:
                 success = pattern in text
                 return self._check_result(check_type, success, path=path, message=None if success else f"Pattern not found: {pattern}")
             if check_type in {"json_field_equals", "json_field_at_least"}:
-                path = self._resolve_path(raw_check.get("path"), base_dir)
+                if not self._has_nonempty_string(raw_check.get("path")):
+                    return self._verification_config_error(check_type, "Check is missing a valid `path`.")
+                path = self._select_path_for_check(raw_check.get("path"), base_dir, artifact_paths, mode="exists")
                 key_path = self._coerce_json_key_path(raw_check)
                 if not path.exists() and artifact_paths:
                     fallback = self._fallback_artifact_match(path, artifact_paths, lenient=False)
@@ -1447,7 +1619,7 @@ class TaskVerificationService:
                 else:
                     min_value = self._coerce_json_min_value(raw_check)
                     if min_value is None:
-                        raise ValueError("json_field_at_least check is missing `min_value`.")
+                        return self._verification_config_error(check_type, "json_field_at_least check is missing `min_value`.")
                     actual_num = float(actual)
                     min_num = float(min_value)
                     success = actual_num >= min_num
@@ -1461,7 +1633,9 @@ class TaskVerificationService:
                     "message": message,
                 }
             if check_type == "pdb_residue_present":
-                path = self._resolve_path(raw_check.get("path"), base_dir)
+                if not self._has_nonempty_string(raw_check.get("path")):
+                    return self._verification_config_error(check_type, "Check is missing a valid `path`.")
+                path = self._select_path_for_check(raw_check.get("path"), base_dir, artifact_paths, mode="exists")
                 residue = str(raw_check.get("residue") or "").strip().upper()
                 success = self._pdb_residue_present(path, residue)
                 return self._check_result(
@@ -1472,21 +1646,27 @@ class TaskVerificationService:
                     extra={"residue": residue},
                 )
             if check_type == "pdf_valid":
-                path = self._resolve_path(raw_check.get("path"), base_dir)
+                if not self._has_nonempty_string(raw_check.get("path")):
+                    return self._verification_config_error(check_type, "Check is missing a valid `path`.")
+                path = self._select_path_for_check(raw_check.get("path"), base_dir, artifact_paths, mode="exists")
                 if not path.exists() and artifact_paths:
                     fallback = self._fallback_artifact_match(path, artifact_paths, lenient=False)
                     if fallback:
                         path = fallback
                 return self._pdf_valid_result(path, raw_check)
             if check_type == "model_metrics_valid":
-                path = self._resolve_path(raw_check.get("path"), base_dir)
+                if not self._has_nonempty_string(raw_check.get("path")):
+                    return self._verification_config_error(check_type, "Check is missing a valid `path`.")
+                path = self._select_path_for_check(raw_check.get("path"), base_dir, artifact_paths, mode="exists")
                 if not path.exists() and artifact_paths:
                     fallback = self._fallback_artifact_match(path, artifact_paths, lenient=False)
                     if fallback:
                         path = fallback
                 return self._model_metrics_valid_result(path)
             if check_type == "manuscript_markdown_quality":
-                path = self._resolve_path(raw_check.get("path"), base_dir)
+                if not self._has_nonempty_string(raw_check.get("path")):
+                    return self._verification_config_error(check_type, "Check is missing a valid `path`.")
+                path = self._select_path_for_check(raw_check.get("path"), base_dir, artifact_paths, mode="exists")
                 if not path.exists() and artifact_paths:
                     fallback = self._fallback_artifact_match(path, artifact_paths, lenient=False)
                     if fallback:
@@ -1503,8 +1683,249 @@ class TaskVerificationService:
         return {
             "type": check_type,
             "success": False,
+            "failure_kind": "verification_config_error",
+            "verification_config_error": True,
             "message": f"Unsupported verification check type: {check_type}",
         }
+
+    @staticmethod
+    def _has_nonempty_string(value: Any) -> bool:
+        return isinstance(value, str) and bool(value.strip())
+
+    @staticmethod
+    def _verification_config_error(check_type: str, message: str) -> Dict[str, Any]:
+        return {
+            "type": str(check_type or "invalid_check"),
+            "success": False,
+            "failure_kind": "verification_config_error",
+            "verification_config_error": True,
+            "message": message,
+        }
+
+    @staticmethod
+    def _failures_are_verification_config_errors(failures: Sequence[Dict[str, Any]]) -> bool:
+        return bool(failures) and all(
+            isinstance(item, dict) and bool(item.get("verification_config_error"))
+            for item in failures
+        )
+
+    @staticmethod
+    def _has_output_evidence(artifact_paths: Sequence[str]) -> bool:
+        for raw_path in artifact_paths:
+            path = Path(str(raw_path or "")).expanduser()
+            try:
+                if path.exists() and path.is_file() and path.stat().st_size > 0:
+                    return True
+                if path.exists() and path.is_dir():
+                    for child in path.rglob("*"):
+                        if child.is_file() and child.stat().st_size > 0:
+                            return True
+            except OSError:
+                continue
+        return False
+
+    def _select_path_for_check(
+        self,
+        raw_path: Any,
+        base_dir: Path,
+        artifact_paths: Sequence[str],
+        *,
+        mode: str,
+    ) -> Path:
+        candidates = self._resolve_path_candidates(raw_path, base_dir, artifact_paths)
+        for candidate in candidates:
+            try:
+                if mode == "nonempty_file" and candidate.exists() and candidate.is_file() and candidate.stat().st_size > 0:
+                    return candidate
+                if mode == "exists" and candidate.exists():
+                    return candidate
+            except OSError:
+                continue
+        return candidates[0]
+
+    def _resolve_path_candidates(
+        self,
+        raw_path: Any,
+        base_dir: Path,
+        artifact_paths: Sequence[str],
+    ) -> List[Path]:
+        primary = self._resolve_path(raw_path, base_dir)
+        text = str(raw_path or "").strip()
+        raw = Path(text).expanduser()
+        if raw.is_absolute():
+            return [primary]
+        candidates: List[Path] = []
+        seen: set[str] = set()
+        for root in self._verification_search_roots(base_dir, artifact_paths):
+            candidate = (root / raw).resolve()
+            key = str(candidate)
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append(candidate)
+        return candidates or [primary]
+
+    def _resolve_glob_patterns(
+        self,
+        raw_glob: str,
+        base_dir: Path,
+        artifact_paths: Sequence[str],
+    ) -> List[str]:
+        text = str(raw_glob or "").strip()
+        if os.path.isabs(text):
+            return [text]
+        patterns: List[str] = []
+        seen: set[str] = set()
+        for root in self._verification_search_roots(base_dir, artifact_paths):
+            pattern = str((root / text).resolve())
+            if pattern in seen:
+                continue
+            seen.add(pattern)
+            patterns.append(pattern)
+        return patterns or [self._resolve_glob(text, base_dir)]
+
+    @staticmethod
+    def _glob_matches(patterns: Sequence[str]) -> List[str]:
+        matched: List[str] = []
+        seen: set[str] = set()
+        for pattern in patterns:
+            for item in glob.glob(pattern, recursive=True):
+                if item in seen:
+                    continue
+                seen.add(item)
+                matched.append(item)
+        return matched
+
+    @staticmethod
+    def _verification_search_roots(base_dir: Path, artifact_paths: Sequence[str]) -> List[Path]:
+        roots: List[Path] = []
+        seen: set[str] = set()
+
+        def _add(candidate: Path) -> None:
+            try:
+                resolved = candidate.expanduser().resolve()
+            except Exception:
+                resolved = candidate.expanduser()
+            if not resolved.exists() or not resolved.is_dir():
+                return
+            key = str(resolved)
+            if key in seen:
+                return
+            seen.add(key)
+            roots.append(resolved)
+
+        _add(base_dir)
+        for raw in artifact_paths:
+            text = str(raw or "").strip()
+            if not text:
+                continue
+            path = Path(text).expanduser()
+            try:
+                if path.exists() and path.is_dir():
+                    _add(path)
+                elif path.exists() and path.is_file():
+                    _add(path.parent)
+                elif path.suffix:
+                    _add(path.parent)
+            except OSError:
+                continue
+        return roots
+
+    def _diagnose_check_resolutions(
+        self,
+        criteria: Optional[Dict[str, Any]],
+        base_dir: Path,
+    ) -> List[Dict[str, Any]]:
+        checks = criteria.get("checks") if isinstance(criteria, dict) else None
+        if not isinstance(checks, list):
+            return []
+
+        resolved: List[Dict[str, Any]] = []
+        for raw_check in checks:
+            if not isinstance(raw_check, dict):
+                resolved.append({"type": "invalid_check", "message": "Check definition is not an object."})
+                continue
+            check = self._normalize_check(raw_check)
+            check_type = str(check.get("type") or "").strip()
+            item: Dict[str, Any] = {"type": check_type or "invalid_check"}
+            raw_path = check.get("path")
+            raw_glob = resolve_glob_pattern(check) if check_type in {"glob_nonempty", "glob_count_at_least"} else None
+            if isinstance(raw_path, str) and raw_path.strip():
+                try:
+                    path = self._resolve_path(raw_path, base_dir)
+                    item.update(self._path_diagnostic(path))
+                    item["raw_path"] = raw_path
+                    item["resolved_path"] = str(path)
+                except Exception as exc:
+                    item.update({"raw_path": raw_path, "message": str(exc)})
+            if isinstance(raw_glob, str) and raw_glob.strip():
+                try:
+                    pattern = self._resolve_glob(raw_glob, base_dir)
+                    matches = glob.glob(pattern, recursive=True)
+                    item.update({
+                        "raw_glob": raw_glob,
+                        "resolved_glob": pattern,
+                        "match_count": len(matches),
+                    })
+                except Exception as exc:
+                    item.update({"raw_glob": raw_glob, "message": str(exc)})
+            resolved.append(item)
+        return resolved
+
+    @staticmethod
+    def _path_diagnostic(path: Path) -> Dict[str, Any]:
+        try:
+            exists = path.exists()
+            is_file = path.is_file() if exists else False
+            is_dir = path.is_dir() if exists else False
+            size = path.stat().st_size if is_file else None
+        except OSError as exc:
+            return {
+                "exists": False,
+                "is_file": False,
+                "is_dir": False,
+                "size": None,
+                "error": str(exc),
+            }
+        return {
+            "exists": exists,
+            "is_file": is_file,
+            "is_dir": is_dir,
+            "size": size,
+        }
+
+    def _artifact_path_category_stats(self, artifact_paths: Sequence[str]) -> Dict[str, int]:
+        stats = {
+            "total": 0,
+            "local_paths": 0,
+            "existing_files": 0,
+            "existing_dirs": 0,
+            "missing_paths": 0,
+            "internal_paths": 0,
+            "session_relative_paths": 0,
+        }
+        for raw in artifact_paths:
+            if not isinstance(raw, str) or not raw.strip():
+                continue
+            text = raw.strip()
+            stats["total"] += 1
+            if self._is_internal_artifact_path(text):
+                stats["internal_paths"] += 1
+            if text.replace("\\", "/").lstrip("/").startswith("task_"):
+                stats["session_relative_paths"] += 1
+            if self._is_local_path(text):
+                stats["local_paths"] += 1
+            path = Path(text).expanduser()
+            try:
+                if path.exists() and path.is_file():
+                    stats["existing_files"] += 1
+                elif path.exists() and path.is_dir():
+                    stats["existing_dirs"] += 1
+                else:
+                    stats["missing_paths"] += 1
+            except OSError:
+                stats["missing_paths"] += 1
+        return stats
 
     def _resolve_path(self, raw_path: Any, base_dir: Path) -> Path:
         if not isinstance(raw_path, str) or not raw_path.strip():
@@ -1775,7 +2196,7 @@ class TaskVerificationService:
             except OSError:
                 actual_files.append(p.name)
         # Deduplicate by name while preserving order
-        seen_names: set = set()
+        seen_names: set[str] = set()
         deduped_files: List[str] = []
         for item in actual_files:
             name_part = item.split(" (")[0]
@@ -2243,7 +2664,8 @@ class TaskVerificationService:
         min_text_chars = int(raw_check.get("min_text_chars") or 0)
         min_sections = int(raw_check.get("min_sections") or 0)
         min_long_paragraphs = int(raw_check.get("min_long_paragraphs") or 0)
-        max_bullet_ratio = float(raw_check.get("max_bullet_ratio") if raw_check.get("max_bullet_ratio") is not None else 1.0)
+        raw_max_bullet_ratio = raw_check.get("max_bullet_ratio")
+        max_bullet_ratio = float(raw_max_bullet_ratio if raw_max_bullet_ratio is not None else 1.0)
         min_figure_callouts = int(raw_check.get("min_figure_callouts") or 0)
         min_table_callouts = int(raw_check.get("min_table_callouts") or 0)
         min_results_subsections = int(raw_check.get("min_results_subsections") or 0)
