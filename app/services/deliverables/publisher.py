@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import shutil
+import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -437,6 +438,9 @@ class DeliverablePublisher:
                     int(submit_artifacts_requested or 0) - int(submit_artifacts_published or 0),
                 )
                 submit_warnings = list(submit_result["warnings"])
+                if submit_artifacts_requested and submit_artifacts_skipped:
+                    source_payload["submit_status"] = "partial" if submit_artifacts_published else "failed"
+                    source_payload["submit_warnings"] = list(submit_warnings)
             if self._should_use_legacy_file_ingest(normalized_tool):
                 explicit_file_candidates = self._extract_explicit_file_candidates(raw_result)
                 if explicit_file_candidates:
@@ -1464,16 +1468,18 @@ class DeliverablePublisher:
             if not isinstance(updated_at, str) or not updated_at.strip():
                 updated_at = datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat()
             source_path = source.get("source_path")
-            merged.append(
-                {
-                    "module": module,
-                    "path": rel_path,
-                    "status": status_value,
-                    "size": stat.st_size,
-                    "updated_at": updated_at or fallback_timestamp,
-                    "source_path": str(source_path) if source_path is not None else None,
-                }
-            )
+            row = {
+                "module": module,
+                "path": rel_path,
+                "status": status_value,
+                "size": stat.st_size,
+                "updated_at": updated_at or fallback_timestamp,
+                "source_path": str(source_path) if source_path is not None else None,
+            }
+            checksum = source.get("sha256")
+            if isinstance(checksum, str) and checksum.strip():
+                row["sha256"] = checksum.strip()
+            merged.append(row)
         return sorted(merged, key=lambda item: (str(item.get("module")), str(item.get("path"))))
 
     def _source_path_is_blocked(self, source_path: str) -> bool:
@@ -1848,6 +1854,7 @@ class DeliverablePublisher:
         now: str,
         previous_manifest: Dict[str, Any],
         from_explicit_submit: bool = False,
+        conflict_strategy: Optional[DeliverableConflictStrategy] = None,
     ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
         module_key = str(module or "").strip().lower()
         if module_key not in self._settings.modules:
@@ -1891,15 +1898,20 @@ class DeliverablePublisher:
                 source_identity=source_identity,
                 latest_root=latest_root,
                 previous_manifest=previous_manifest,
+                conflict_strategy=conflict_strategy,
             )
         except _KeepFirstConflict as exc:
             return None, exc.message
+        except ValueError as exc:
+            return None, str(exc)
         rel_path = str(target.relative_to(latest_root))
+        checksum = self._sha256_file(target)
         return {
             "module": module_key,
             "path": rel_path,
             "status": publish_status,
             "size": target.stat().st_size,
+            "sha256": checksum,
             "updated_at": now,
             "source_path": self._to_project_relative(file_path),
         }, None
@@ -1922,6 +1934,15 @@ class DeliverablePublisher:
             return {"items": [], "requested_count": requested_count, "warnings": warnings}
         if not isinstance(artifacts, list):
             return {"items": [], "requested_count": 0, "warnings": warnings}
+        raw_strategy = str(payload.get("conflict_strategy") or "").strip().lower()
+        conflict_strategy: Optional[DeliverableConflictStrategy] = None
+        if raw_strategy:
+            if raw_strategy in {"error", "rename", "keep_first"}:
+                conflict_strategy = raw_strategy  # type: ignore[assignment]
+            else:
+                warnings.append(
+                    f"invalid conflict_strategy '{raw_strategy}'; using global strategy"
+                )
         out: List[Dict[str, Any]] = []
         for idx, row in enumerate(artifacts):
             if not isinstance(row, dict):
@@ -1972,6 +1993,7 @@ class DeliverablePublisher:
                 now=now,
                 previous_manifest=previous_manifest,
                 from_explicit_submit=True,
+                conflict_strategy=conflict_strategy,
             )
             if item is not None:
                 out.append(item)
@@ -2149,6 +2171,7 @@ class DeliverablePublisher:
         source_identity: Optional[str] = None,
         latest_root: Optional[Path] = None,
         previous_manifest: Optional[Dict[str, Any]] = None,
+        conflict_strategy: Optional[DeliverableConflictStrategy] = None,
     ) -> Path:
         module_dir.mkdir(parents=True, exist_ok=True)
         target = module_dir / source_path.name
@@ -2184,7 +2207,7 @@ class DeliverablePublisher:
                 )
 
         if conflict_message:
-            strategy: DeliverableConflictStrategy = self._settings.basename_conflict_strategy
+            strategy: DeliverableConflictStrategy = conflict_strategy or self._settings.basename_conflict_strategy
             if strategy == "keep_first":
                 raise _KeepFirstConflict(
                     f"{conflict_message}; kept existing deliverable per conflict strategy"
@@ -2249,14 +2272,16 @@ class DeliverablePublisher:
             try:
                 staged.append(
                     self._copy_to_module(
-                    source_path=resolved,
-                    module_dir=latest_root / "image_tabular",
-                    source_identity=self._source_identity(resolved),
-                    latest_root=latest_root,
-                    previous_manifest=previous_manifest,
+                        source_path=resolved,
+                        module_dir=latest_root / "image_tabular",
+                        source_identity=self._source_identity(resolved),
+                        latest_root=latest_root,
+                        previous_manifest=previous_manifest,
                     )
                 )
             except _KeepFirstConflict:
+                continue
+            except ValueError:
                 continue
         return staged
 
@@ -2265,6 +2290,17 @@ class DeliverablePublisher:
             return source_path.stat().st_size == target.stat().st_size and source_path.read_bytes() == target.read_bytes()
         except Exception:
             return False
+
+    @staticmethod
+    def _sha256_file(path: Path) -> Optional[str]:
+        try:
+            digest = hashlib.sha256()
+            with path.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            return digest.hexdigest()
+        except Exception:
+            return None
 
     def _dedupe_items(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         deduped: Dict[str, Dict[str, Any]] = {}
