@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 from app.prompts import prompt_manager
 from app.routers.chat.prompt_builder import (
@@ -14,16 +16,16 @@ from app.routers.chat.prompt_builder import (
 )
 from app.services.foundation.settings import CHAT_HISTORY_ABS_MAX
 from app.services.response_style import sanitize_professional_response_text
-from app.services.deep_think_agent import DeepThinkAgent
+from app.services.deep_think_agent import DeepThinkAgent, ThinkingStep
 from app.services import tool_schemas
 from app.routers.chat.agent import _build_brief_execute_continuation_summary
 
 
-async def _noop_tool_executor(_name: str, _params: dict):
+async def _noop_tool_executor(_name: str, _params: dict[str, Any]) -> dict[str, bool]:
     return {"success": True}
 
 
-def _build_deep_think_agent(request_profile: dict | None = None) -> DeepThinkAgent:
+def _build_deep_think_agent(request_profile: dict[str, Any] | None = None) -> DeepThinkAgent:
     return DeepThinkAgent(
         llm_client=SimpleNamespace(),
         available_tools=[
@@ -224,6 +226,56 @@ def test_deep_think_slim_evidence_keeps_json_when_storage_paths_in_single_line()
     slim = agent._slim_evidence_text_for_synthesis(blob)
     assert "11" in slim or "count" in slim
     assert "tool_outputs" not in slim.lower()
+
+
+def test_deep_think_structured_fallback_expands_llm_safe_stored_result(tmp_path: Path) -> None:
+    agent = _build_deep_think_agent()
+    output_dir = tmp_path / "runtime" / "session_demo" / "tool_outputs" / "job_dt_x" / "step_7_phagescope_research_abc123"
+    output_dir.mkdir(parents=True)
+    result_path = output_dir / "result.json"
+    manifest_path = output_dir / "manifest.json"
+    payload = {
+        "success": True,
+        "tool": "phagescope_research",
+        "action": "audit",
+        "metadata_rows": 873718,
+        "unique_phage_ids": 873718,
+        "missing_counts": {"Host": 17757, "Taxonomy": 50855},
+        "source_top": [["GOV2", 195699], ["MGV", 189680]],
+        "completeness_counts": [["High-quality", 300137], ["Low-quality", 267050]],
+        "lifestyle_counts": [["virulent", 553688], ["temperate", 320030]],
+    }
+    result_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    manifest_path.write_text(
+        json.dumps({"result": {"path": str(result_path), "too_large_for_llm": False}}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    wrapper = {
+        "success": True,
+        "result": {
+            "success": True,
+            "tool": "phagescope_research",
+            "summary": "phagescope_research finished execution.",
+            "storage": {"result_path": str(result_path)},
+        },
+        "summary": "phagescope_research finished execution.",
+    }
+    step = ThinkingStep(
+        iteration=7,
+        thought="",
+        action='{"tool":"phagescope_research","params":{"action":"audit"}}',
+        action_result=f"[phagescope_research] {json.dumps(wrapper, ensure_ascii=False)}",
+        self_correction="",
+        kind="tool",
+    )
+
+    fallback = agent._build_structured_fallback([step], user_query="看看 PhageScope 数据")
+
+    assert "metadata_rows=873718" in fallback
+    assert "unique_phage_ids=873718" in fallback
+    assert "Host=17757" in fallback
+    assert "GOV2=195699" in fallback
+    assert "tool_outputs" not in fallback
 
 
 def test_brief_execute_followup_prompt_skips_recent_chat_history() -> None:

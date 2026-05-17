@@ -117,7 +117,45 @@ _ARTIFACT_PATH_EXTS = {
 }
 # Native tool steps often prefix JSON: "[file_operations] {...}"
 _TOOL_RESULT_PREFIX_RE = re.compile(r"^\[[^\]]*]\s*")
-_EXPLORATORY_FILE_OPERATIONS = {"read", "list", "exists", "info"}
+_EXPLORATORY_FILE_OPERATIONS = {"read", "list", "profile", "census", "exists", "info"}
+_GLOBAL_SCOPE_WORD_RE = re.compile(r"\b(?:all|every|each)\b|全部|所有|每个", re.IGNORECASE)
+_SUCCESS_WORD_RE = re.compile(
+    r"\b(?:complete(?:d)?|success(?:ful|fully)?|succeeded|finished|done)\b|完成|成功|已完成|已成功",
+    re.IGNORECASE,
+)
+_FAILURE_WORD_RE = re.compile(
+    r"\b(?:fail(?:ed|ure|ures)?|incomplete|not\s+all|partial)\b|失败|不完整|未完成|并非全部|不是全部",
+    re.IGNORECASE,
+)
+_NEGATED_GLOBAL_SUCCESS_RE = re.compile(
+    r"\b(?:not|no)\s+(?:all|every|each)\b|并非(?:全部|所有|每个)|不是(?:全部|所有|每个)|并不是(?:全部|所有|每个)",
+    re.IGNORECASE,
+)
+_DIRECTORY_DATASET_REQUEST_RE = re.compile(
+    r"\b(?:analy[sz]e|inspect|audit|summari[sz]e|review|look|profile|census|folder|directory|dataset|data\s+folder|output\s+folder)\b|分析|查看|检查|审计|总结|目录|文件夹|数据集",
+    re.IGNORECASE,
+)
+_PHAGESCOPE_DATASET_REQUEST_RE = re.compile(
+    r"\b(?:phagescope|phage[-\s]?host|host\s+prediction|data\s+splitting|model\s+selection|benchmarking|biological\s+validation)\b|噬菌体|宿主预测|数据划分|模型选择|生物学验证",
+    re.IGNORECASE,
+)
+_PHAGESCOPE_ANALYSIS_ACTION_RE = re.compile(
+    r"\b(?:analy[sz]e|inspect|audit|summari[sz]e|review|look|profile|explore|start|dataset|data)\b|分析|查看|看看|检查|审计|总结|探索|数据集|数据",
+    re.IGNORECASE,
+)
+_ABSOLUTE_PATH_RE = re.compile(r"/(?:[^\s`\"'<>，。；;])+")
+_UNVERIFIED_SAMPLE_DIRECTORY_CLAIM_RE = re.compile(
+    r"(?:total\s+sample\s+director(?:y|ies)|sample\s+director(?:y|ies)\s*[:|]\s*[\d,]+|样本目录\s*[:：|]?\s*[\d,]+)",
+    re.IGNORECASE,
+)
+_UNVERIFIED_EACH_FILE_STRUCTURE_RE = re.compile(
+    r"(?:each|every|all)\s+(?:completed\s+)?(?:sample|sample\s+directory|sample\s+folder)[^\n.]{0,120}\b(?:contain|contains|has|have)\b|每个(?:已完成)?样本[^\n。]{0,80}(?:包含|含有|都有)",
+    re.IGNORECASE,
+)
+_UNSUPPORTED_RETRY_RERUN_RE = re.compile(
+    r"\b(?:retr(?:y|ied|ies)|rerun|re-run|multiple\s+pipeline\s+runs|logged\s+across\s+multiple)\b|重试|重新运行|多次运行|多轮运行",
+    re.IGNORECASE,
+)
 
 
 def _looks_like_completion_claim_text(reply_text: str) -> bool:
@@ -136,6 +174,38 @@ def _looks_like_completion_claim_text(reply_text: str) -> bool:
         "准备就绪",
     )
     return any(token in lowered for token in claim_tokens)
+
+
+def _looks_like_global_success_claim_text(reply_text: str) -> bool:
+    text = str(reply_text or "").strip()
+    if not text:
+        return False
+    if _NEGATED_GLOBAL_SUCCESS_RE.search(text):
+        return False
+    return bool(_GLOBAL_SCOPE_WORD_RE.search(text) and _SUCCESS_WORD_RE.search(text))
+
+
+def _answer_acknowledges_failed_status_counts(
+    reply_text: str,
+    signals: Sequence[Dict[str, Any]],
+) -> bool:
+    text = str(reply_text or "").strip()
+    if not text or not _FAILURE_WORD_RE.search(text):
+        return False
+    failed_counts: set[int] = set()
+    for signal in signals:
+        status_counts = signal.get("status_counts") if isinstance(signal.get("status_counts"), dict) else {}
+        failed = status_counts.get("failed")
+        if isinstance(failed, int) and failed > 0:
+            failed_counts.add(failed)
+        sources = signal.get("status_count_sources") if isinstance(signal.get("status_count_sources"), list) else []
+        for source in sources:
+            if not isinstance(source, dict) or source.get("kind") != "failure":
+                continue
+            entry_count = source.get("entry_count")
+            if isinstance(entry_count, int) and entry_count > 0:
+                failed_counts.add(entry_count)
+    return bool(failed_counts and any(str(count) in text for count in failed_counts))
 
 
 @dataclass
@@ -209,6 +279,87 @@ def _default_deepthink_summary(user_query: str) -> str:
         "已完成思考整理，准备给出结论。",
         "Finished organizing the reasoning and preparing the answer.",
     )
+
+
+def _storage_candidate_paths(storage: Any) -> List[Path]:
+    if not isinstance(storage, dict):
+        return []
+    candidates: List[Path] = []
+
+    def _append(value: Any) -> None:
+        if not isinstance(value, str) or not value.strip():
+            return
+        raw = value.strip()
+        try:
+            candidates.append(Path(raw).expanduser())
+        except Exception:
+            return
+
+    _append(storage.get("result_path"))
+    relative = storage.get("relative")
+    session_id = str(storage.get("session_id") or "").strip()
+    if isinstance(relative, dict):
+        rel_result = relative.get("result_path")
+        _append(rel_result)
+        if session_id and isinstance(rel_result, str) and rel_result.strip():
+            try:
+                from app.services.upload_storage import ensure_session_dir
+
+                candidates.append(ensure_session_dir(session_id) / rel_result.strip())
+            except Exception:
+                pass
+    return candidates
+
+
+def _load_llm_safe_stored_tool_result(wrapper: Any, *, max_bytes: int = 200_000) -> Optional[Any]:
+    """Load a stored tool ``result.json`` when the existing storage contract says it is safe.
+
+    This reuses ``tool_output_storage`` outputs instead of inventing a second file-read path.
+    It is intentionally narrow: only internal ``tool_outputs/**/result.json`` files are loaded,
+    and sibling ``manifest.json`` must not mark them as too large for LLM use.
+    """
+    if not isinstance(wrapper, dict):
+        return None
+
+    storage_values: List[Any] = []
+    for node in (wrapper, wrapper.get("result") if isinstance(wrapper.get("result"), dict) else None):
+        if isinstance(node, dict):
+            storage_values.append(node.get("storage"))
+
+    for storage in storage_values:
+        for candidate in _storage_candidate_paths(storage):
+            try:
+                path = candidate.resolve()
+            except Exception:
+                continue
+            normalized = str(path).replace("\\", "/").lower()
+            if not normalized.endswith("/result.json") or "/tool_outputs/" not in normalized:
+                continue
+            if not path.exists() or not path.is_file():
+                continue
+            try:
+                if path.stat().st_size > max_bytes:
+                    continue
+                manifest_path = path.with_name("manifest.json")
+                if manifest_path.exists():
+                    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                    result_meta = manifest.get("result") if isinstance(manifest, dict) else None
+                    if isinstance(result_meta, dict) and result_meta.get("too_large_for_llm") is True:
+                        continue
+                return json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+    return None
+
+
+def _format_count_pairs(value: Any, *, limit: int = 5) -> str:
+    if not isinstance(value, list):
+        return ""
+    parts: List[str] = []
+    for item in value[:limit]:
+        if isinstance(item, (list, tuple)) and len(item) >= 2:
+            parts.append(f"{item[0]}={item[1]}")
+    return ", ".join(parts)
 
 
 def sanitize_reasoning_text(
@@ -577,6 +728,21 @@ class DeepThinkAgent:
             self._request_tier() == "execute"
             and str(self.request_profile.get("intent_type") or "").strip().lower() == "execute_task"
         )
+
+    def _plan_contract_flags(self) -> Dict[str, bool]:
+        return {
+            "create_required": bool(self.request_profile.get("plan_create_required")),
+            "execute_required": bool(self.request_profile.get("plan_execute_required")),
+            "execute_after_create_required": bool(
+                self.request_profile.get("plan_execute_after_create_required")
+            ),
+            "review_required": bool(self.request_profile.get("plan_review_required")),
+            "optimize_required": bool(self.request_profile.get("plan_optimize_required")),
+            "new_requested": bool(self.request_profile.get("plan_new_requested")),
+            "conflict_requires_confirmation": bool(
+                self.request_profile.get("plan_conflict_requires_confirmation")
+            ),
+        }
 
     def _has_bound_task_context(self, task_context: Optional[TaskExecutionContext]) -> bool:
         if task_context and (
@@ -2228,6 +2394,449 @@ class DeepThinkAgent:
             failed_event=last_failure,
         )
 
+    @classmethod
+    def _collect_evidence_scope_signals(cls, steps: Sequence[ThinkingStep]) -> List[Dict[str, Any]]:
+        signals: List[Dict[str, Any]] = []
+        for step in steps:
+            for entry in cls._extract_tool_payloads_from_step(step):
+                tool_name = str(entry.get("tool") or "").strip().lower()
+                payload = entry.get("payload")
+                if not isinstance(payload, dict):
+                    continue
+                inner = cls._unwrap_tool_result(payload)
+                if not isinstance(inner, dict):
+                    continue
+                evidence_scope = inner.get("evidence_scope")
+                if not isinstance(evidence_scope, dict):
+                    evidence_scope = payload.get("evidence_scope")
+                status_counts = None
+                if isinstance(evidence_scope, dict):
+                    status_counts = evidence_scope.get("status_counts")
+                if status_counts is None and isinstance(inner.get("counts"), dict):
+                    counts = inner.get("counts")
+                    if any(key in counts for key in ("completed", "failed", "status_file_total")):
+                        status_counts = {
+                            key: counts.get(key)
+                            for key in ("completed", "failed", "status_file_total")
+                            if key in counts
+                        }
+                status_count_sources = None
+                if isinstance(inner.get("status_count_sources"), list):
+                    status_count_sources = inner.get("status_count_sources")
+                elif isinstance(evidence_scope, dict) and isinstance(evidence_scope.get("status_count_sources"), list):
+                    status_count_sources = evidence_scope.get("status_count_sources")
+                status_counts_confidence = inner.get("status_counts_confidence")
+                if status_counts_confidence is None and isinstance(evidence_scope, dict):
+                    status_counts_confidence = evidence_scope.get("status_counts_confidence")
+                signal: Dict[str, Any] = {
+                    "tool": tool_name,
+                    "operation": str(inner.get("operation") or payload.get("operation") or "").strip().lower(),
+                    "path": inner.get("path") or payload.get("path"),
+                    "counts": inner.get("counts") if isinstance(inner.get("counts"), dict) else None,
+                    "summary": inner.get("summary") if isinstance(inner.get("summary"), str) else None,
+                    "sample_items": inner.get("sample_items") if isinstance(inner.get("sample_items"), list) else None,
+                    "evidence_scope": evidence_scope if isinstance(evidence_scope, dict) else None,
+                    "reconciliation": inner.get("reconciliation") if isinstance(inner.get("reconciliation"), dict) else (
+                        evidence_scope.get("reconciliation") if isinstance(evidence_scope, dict) and isinstance(evidence_scope.get("reconciliation"), dict) else None
+                    ),
+                    "completeness_status": inner.get("completeness_status") or payload.get("completeness_status"),
+                    "status_counts": status_counts if isinstance(status_counts, dict) else None,
+                    "status_count_sources": status_count_sources,
+                    "status_counts_confidence": status_counts_confidence,
+                    "incomplete_examples": inner.get("incomplete_examples") if isinstance(inner.get("incomplete_examples"), list) else None,
+                    "partial_completion_suspected": bool(
+                        inner.get("partial_completion_suspected")
+                        or payload.get("partial_completion_suspected")
+                    ),
+                    "partial_ratio": inner.get("partial_ratio") or payload.get("partial_ratio"),
+                }
+                if signal["evidence_scope"] or signal["status_counts"] or signal["reconciliation"] or signal["incomplete_examples"] or signal["partial_completion_suspected"]:
+                    signals.append(signal)
+        return signals
+
+    def _build_evidence_scope_notice(
+        self,
+        *,
+        user_query: str,
+        signals: Sequence[Dict[str, Any]],
+        replace_claim: bool = False,
+    ) -> str:
+        completed: Optional[int] = None
+        failed: Optional[int] = None
+        failure_examples: List[str] = []
+        partial_ratio = ""
+        sampled_or_partial = False
+        paths: List[str] = []
+        profile_summaries: List[str] = []
+        status_source_names: List[str] = []
+        status_directory_names: List[str] = []
+        reconciliation_notes: List[str] = []
+        reconciliation_missing_examples: List[str] = []
+        reconciliation_guidance: List[str] = []
+        suffix_profile_text = ""
+        success_structure_text = ""
+        sampled_structure_notes: List[str] = []
+        seen_sources: set[tuple[str, str, str]] = set()
+        seen_profiles: set[str] = set()
+        seen_status_names: set[str] = set()
+        seen_reconciliation_notes: set[str] = set()
+        seen_missing_examples: set[str] = set()
+        seen_reconciliation_guidance: set[str] = set()
+        seen_sampled_structure_notes: set[str] = set()
+
+        for signal in signals:
+            path = str(signal.get("path") or "").strip()
+            if path and path not in paths:
+                paths.append(path)
+            counts = signal.get("counts") if isinstance(signal.get("counts"), dict) else {}
+            if counts:
+                profile_key = path or str(signal.get("operation") or "profile")
+                if profile_key not in seen_profiles:
+                    seen_profiles.add(profile_key)
+                    metric_parts: List[str] = []
+                    for key, label in (
+                        ("direct_children", "direct_children"),
+                        ("directories", "directories"),
+                        ("sample_candidate_directories", "sample_candidate_directories"),
+                        ("status_directories", "status_directories"),
+                        ("files", "files"),
+                        ("other", "other"),
+                    ):
+                        value = counts.get(key)
+                        if isinstance(value, int):
+                            metric_parts.append(f"{label}={value}")
+                    if metric_parts:
+                        profile_summaries.append(", ".join(metric_parts))
+            evidence_scope = signal.get("evidence_scope") if isinstance(signal.get("evidence_scope"), dict) else {}
+            directory_classification = (
+                evidence_scope.get("directory_classification")
+                if isinstance(evidence_scope.get("directory_classification"), dict)
+                else {}
+            )
+            if directory_classification:
+                for name in directory_classification.get("status_directory_names") or []:
+                    name_text = str(name or "").strip()
+                    if name_text and name_text not in status_directory_names:
+                        status_directory_names.append(name_text)
+            completeness = str(
+                signal.get("completeness_status")
+                or evidence_scope.get("completeness_status")
+                or ""
+            ).strip().lower()
+            enumeration = evidence_scope.get("enumeration") if isinstance(evidence_scope.get("enumeration"), dict) else {}
+            omitted = enumeration.get("omitted_children")
+            if completeness in {"partial", "unknown"} or (isinstance(omitted, int) and omitted > 0):
+                sampled_or_partial = True
+            status_counts = signal.get("status_counts") if isinstance(signal.get("status_counts"), dict) else {}
+            status_total = status_counts.get("status_file_total")
+            sample_candidates = directory_classification.get("sample_candidate_directories")
+            if isinstance(status_total, int) and isinstance(sample_candidates, int) and status_total != sample_candidates:
+                note = f"status_file_total={status_total} differs from sample_candidate_directories={sample_candidates}"
+                if note not in seen_reconciliation_notes:
+                    seen_reconciliation_notes.add(note)
+                    reconciliation_notes.append(note)
+            reconciliation = signal.get("reconciliation") if isinstance(signal.get("reconciliation"), dict) else {}
+            if reconciliation:
+                rec_counts = reconciliation.get("counts") if isinstance(reconciliation.get("counts"), dict) else {}
+                rec_examples = reconciliation.get("examples") if isinstance(reconciliation.get("examples"), dict) else {}
+                status_missing = rec_counts.get("status_entries_missing_directories")
+                failure_missing = rec_counts.get("failure_missing_directories")
+                success_missing = rec_counts.get("success_missing_directories")
+                sample_without_status = rec_counts.get("sample_dirs_without_status")
+                rec_note_parts: List[str] = []
+                for key, label in (
+                    ("status_unique_total", "status_unique_total"),
+                    ("sample_candidate_directories", "sample_candidate_directories"),
+                    ("status_entries_missing_directories", "status_entries_missing_directories"),
+                    ("failure_missing_directories", "failure_missing_directories"),
+                    ("success_missing_directories", "success_missing_directories"),
+                    ("sample_dirs_without_status", "sample_dirs_without_status"),
+                    ("duplicate_success_entries", "duplicate_success_entries"),
+                    ("duplicate_failure_entries", "duplicate_failure_entries"),
+                    ("success_failure_overlap", "success_failure_overlap"),
+                ):
+                    value = rec_counts.get(key)
+                    if isinstance(value, int):
+                        rec_note_parts.append(f"{label}={value}")
+                if rec_note_parts:
+                    note = ", ".join(rec_note_parts)
+                    if note not in seen_reconciliation_notes:
+                        seen_reconciliation_notes.add(note)
+                        reconciliation_notes.append(note)
+                for key in ("failure_missing_directories", "success_missing_directories", "sample_dirs_without_status", "success_failure_overlap"):
+                    values = rec_examples.get(key)
+                    if not isinstance(values, list) or not values:
+                        continue
+                    for value in values[:5]:
+                        text_value = str(value or "").strip()
+                        if text_value and text_value not in seen_missing_examples:
+                            seen_missing_examples.add(text_value)
+                            reconciliation_missing_examples.append(text_value)
+                for item in reconciliation.get("claim_guidance") or []:
+                    guidance = str(item or "").strip()
+                    if guidance and guidance not in seen_reconciliation_guidance:
+                        seen_reconciliation_guidance.add(guidance)
+                        reconciliation_guidance.append(guidance)
+                if isinstance(status_missing, int) and status_missing and not (rec_counts.get("duplicate_success_entries") or rec_counts.get("duplicate_failure_entries") or rec_counts.get("success_failure_overlap")):
+                    guidance = "Status/directory mismatch is explained by status IDs without matching directories; do not infer retries/reruns from this evidence."
+                    if guidance not in seen_reconciliation_guidance:
+                        seen_reconciliation_guidance.add(guidance)
+                        reconciliation_guidance.append(guidance)
+                name_profile = reconciliation.get("sample_directory_name_profile") if isinstance(reconciliation.get("sample_directory_name_profile"), dict) else {}
+                suffix_counts = name_profile.get("hyphen_suffix_counts") if isinstance(name_profile.get("hyphen_suffix_counts"), dict) else {}
+                if suffix_counts and not suffix_profile_text:
+                    suffix_profile_text = ", ".join(f"{key}={value}" for key, value in list(suffix_counts.items())[:12])
+                structure = reconciliation.get("success_directory_structure") if isinstance(reconciliation.get("success_directory_structure"), dict) else {}
+                file_distribution = structure.get("file_count_distribution") if isinstance(structure.get("file_count_distribution"), dict) else {}
+                if file_distribution and not success_structure_text:
+                    scanned = structure.get("directories_scanned")
+                    considered = structure.get("entries_considered")
+                    patterns = structure.get("common_file_patterns") if isinstance(structure.get("common_file_patterns"), list) else []
+                    pattern_text = ", ".join(
+                        str(item.get("pattern"))
+                        for item in patterns[:5]
+                        if isinstance(item, dict) and item.get("pattern")
+                    )
+                    success_structure_text = (
+                        f"success directories scanned={scanned}/{considered}, file_count_distribution={file_distribution}"
+                        + (f", common_file_patterns={pattern_text}" if pattern_text else "")
+                    )
+            count_sources = signal.get("status_count_sources") if isinstance(signal.get("status_count_sources"), list) else []
+            if count_sources:
+                for source in count_sources:
+                    if not isinstance(source, dict):
+                        continue
+                    if source.get("count_confidence") != "high":
+                        continue
+                    source_path = str(source.get("path") or source.get("name") or path).strip()
+                    kind = str(source.get("kind") or "").strip()
+                    key = (source_path, kind, str(source.get("count_source") or ""))
+                    if key in seen_sources:
+                        continue
+                    seen_sources.add(key)
+                    if source_path and source_path not in seen_status_names:
+                        seen_status_names.add(source_path)
+                        status_source_names.append(str(source.get("name") or source_path).strip())
+                    entry_count = source.get("entry_count")
+                    if not isinstance(entry_count, int):
+                        continue
+                    if kind == "success":
+                        completed = (completed or 0) + entry_count
+                    elif kind == "failure":
+                        failed = (failed or 0) + entry_count
+            else:
+                fallback_key = (path, str(signal.get("operation") or ""), "status_counts")
+                if fallback_key not in seen_sources:
+                    seen_sources.add(fallback_key)
+                    if isinstance(status_counts.get("completed"), int):
+                        completed = (completed or 0) + int(status_counts["completed"])
+                    if isinstance(status_counts.get("failed"), int):
+                        failed = (failed or 0) + int(status_counts["failed"])
+            examples = signal.get("incomplete_examples")
+            if isinstance(examples, list):
+                for item in examples[:5]:
+                    if isinstance(item, dict):
+                        name = str(item.get("name") or "").strip()
+                        reason = str(item.get("reason") or "").strip()
+                        if name:
+                            failure_examples.append(f"{name} ({reason})" if reason else name)
+            if signal.get("partial_completion_suspected"):
+                sampled_or_partial = True
+                if signal.get("partial_ratio"):
+                    partial_ratio = str(signal.get("partial_ratio"))
+            sample_items = signal.get("sample_items") if isinstance(signal.get("sample_items"), list) else []
+            sampled_dirs = [
+                item
+                for item in sample_items
+                if isinstance(item, dict)
+                and str(item.get("type") or "").strip().lower() == "directory"
+                and item.get("child_count") is not None
+            ]
+            if sampled_dirs:
+                structure_counts = sorted(
+                    {
+                        int(item.get("child_count"))
+                        for item in sampled_dirs
+                        if isinstance(item.get("child_count"), int)
+                    }
+                )
+                note = (
+                    f"per-sample file structure is based on {len(sampled_dirs)} sampled direct child directories"
+                    + (f" with observed child_count values {structure_counts[:5]}" if structure_counts else "")
+                )
+                if note not in seen_sampled_structure_notes:
+                    seen_sampled_structure_notes.add(note)
+                    sampled_structure_notes.append(note)
+
+        path_text = ", ".join(paths[:3]) if paths else "the inspected path"
+        completed_text = completed if completed is not None else "unknown"
+        failed_text = failed if failed is not None else "unknown"
+        examples_text = ", ".join(failure_examples[:5])
+        profile_text = "; ".join(profile_summaries[:3])
+        source_text = ", ".join(status_source_names[:5])
+        status_dirs_text = ", ".join(status_directory_names[:5])
+        reconciliation_text = "; ".join(reconciliation_notes[:3])
+        reconciliation_examples_text = ", ".join(reconciliation_missing_examples[:8])
+        reconciliation_guidance_text = " ".join(reconciliation_guidance[:3])
+        sampled_structure_text = "; ".join(sampled_structure_notes[:3])
+        label = "Corrected evidence-scoped conclusion" if replace_claim else "Evidence-scope note"
+        if replace_claim:
+            lines = [f"{label}:"]
+            lines.append(f"- Evidence scope: tool output for {path_text}.")
+            if profile_text:
+                lines.append(f"- Directory profile: {profile_text}.")
+            if completed is not None or failed is not None:
+                lines.append(f"- Status counts: completed={completed_text}, failed={failed_text}.")
+            if source_text:
+                lines.append(f"- Count sources: {source_text}.")
+            if status_dirs_text:
+                lines.append(f"- Status/progress directories: {status_dirs_text}. Do not report root direct_children as verified sample-directory count.")
+            if reconciliation_text:
+                lines.append(f"- Reconciliation needed: {reconciliation_text}.")
+            if reconciliation_examples_text:
+                lines.append(f"- Reconciliation examples: {reconciliation_examples_text}.")
+            if reconciliation_guidance_text:
+                lines.append(f"- Reconciliation interpretation limit: {reconciliation_guidance_text}")
+            if suffix_profile_text:
+                lines.append(f"- Sample-name suffix distribution: {suffix_profile_text}.")
+            if success_structure_text:
+                lines.append(f"- Completed-directory file structure: {success_structure_text}.")
+            if sampled_structure_text:
+                lines.append(f"- Per-sample file structure evidence: {sampled_structure_text}; do not state that each/all samples share that structure.")
+            if partial_ratio:
+                lines.append(f"- Partial-completion signal: {partial_ratio}.")
+            if examples_text:
+                lines.append(f"- Failure/incomplete examples: {examples_text}.")
+            if sampled_or_partial:
+                lines.append("- Scope caution: Do not treat sampled or compacted listings as evidence that all samples succeeded.")
+            lines.append("- Correction: the original all-success/global completion claim is not supported by the available evidence.")
+            return "\n".join(lines)
+
+        parts = [f"{label}: this run is limited to tool output for {path_text}. "]
+        if profile_text:
+            parts.append(f"Directory profile: {profile_text}. ")
+        if completed is not None or failed is not None:
+            parts.append(f"Observed status counts: completed={completed_text}, failed={failed_text}. ")
+        if status_dirs_text:
+            parts.append(f"Status/progress directories: {status_dirs_text}; root direct_children is not a verified sample-directory count. ")
+        if reconciliation_text:
+            parts.append(f"Reconciliation needed: {reconciliation_text}. ")
+        if reconciliation_examples_text:
+            parts.append(f"Reconciliation examples: {reconciliation_examples_text}. ")
+        if reconciliation_guidance_text:
+            parts.append(f"Reconciliation interpretation limit: {reconciliation_guidance_text} ")
+        if suffix_profile_text:
+            parts.append(f"Sample-name suffix distribution: {suffix_profile_text}. ")
+        if success_structure_text:
+            parts.append(f"Completed-directory file structure: {success_structure_text}. ")
+        if sampled_structure_text:
+            parts.append(f"Per-sample file structure evidence: {sampled_structure_text}; do not state that each/all samples share that structure. ")
+        if partial_ratio:
+            parts.append(f"A partial-completion signal was detected: {partial_ratio}. ")
+        if examples_text:
+            parts.append(f"Failure/incomplete examples: {examples_text}. ")
+        if sampled_or_partial:
+            parts.append("Do not treat sampled or compacted listings as evidence that all samples succeeded.")
+        if replace_claim:
+            parts.append(" The original global success claim is not supported by the available evidence.")
+        return "".join(parts).strip()
+
+    def _apply_evidence_scope_truth_barrier(
+        self,
+        answer: str,
+        *,
+        user_query: str,
+        steps: Sequence[ThinkingStep],
+    ) -> str:
+        text = str(answer or "").strip()
+        if not text:
+            return text
+        signals = self._collect_evidence_scope_signals(steps)
+        if not signals:
+            return text
+        if _answer_acknowledges_failed_status_counts(text, signals):
+            return text
+
+        needs_notice = False
+        replace_claim = False
+        has_global_success_claim = _looks_like_global_success_claim_text(text)
+        has_unverified_sample_directory_claim = bool(_UNVERIFIED_SAMPLE_DIRECTORY_CLAIM_RE.search(text))
+        has_unverified_each_file_structure_claim = bool(_UNVERIFIED_EACH_FILE_STRUCTURE_RE.search(text))
+        has_unsupported_retry_rerun_claim = bool(_UNSUPPORTED_RETRY_RERUN_RE.search(text))
+        for signal in signals:
+            evidence_scope = signal.get("evidence_scope") if isinstance(signal.get("evidence_scope"), dict) else {}
+            enumeration = evidence_scope.get("enumeration") if isinstance(evidence_scope.get("enumeration"), dict) else {}
+            omitted = enumeration.get("omitted_children")
+            status_counts = signal.get("status_counts") if isinstance(signal.get("status_counts"), dict) else {}
+            counts = signal.get("counts") if isinstance(signal.get("counts"), dict) else {}
+            directory_classification = (
+                evidence_scope.get("directory_classification")
+                if isinstance(evidence_scope.get("directory_classification"), dict)
+                else {}
+            )
+            if has_unverified_sample_directory_claim and (
+                counts.get("status_directories")
+                or directory_classification.get("status_directories")
+                or directory_classification.get("sample_candidate_directories") != counts.get("direct_children")
+            ):
+                needs_notice = True
+                replace_claim = True
+            if has_unverified_each_file_structure_claim:
+                sample_items = signal.get("sample_items") if isinstance(signal.get("sample_items"), list) else []
+                reconciliation = signal.get("reconciliation") if isinstance(signal.get("reconciliation"), dict) else {}
+                success_structure = reconciliation.get("success_directory_structure") if isinstance(reconciliation.get("success_directory_structure"), dict) else {}
+                file_distribution = success_structure.get("file_count_distribution") if isinstance(success_structure.get("file_count_distribution"), dict) else {}
+                complete_structure_scan = bool(success_structure.get("complete_scan"))
+                if not (complete_structure_scan and len(file_distribution) == 1):
+                    if sample_items:
+                        needs_notice = True
+                        replace_claim = True
+            if has_unsupported_retry_rerun_claim:
+                reconciliation = signal.get("reconciliation") if isinstance(signal.get("reconciliation"), dict) else {}
+                rec_counts = reconciliation.get("counts") if isinstance(reconciliation.get("counts"), dict) else {}
+                has_retry_evidence = bool(
+                    rec_counts.get("duplicate_success_entries")
+                    or rec_counts.get("duplicate_failure_entries")
+                    or rec_counts.get("success_failure_overlap")
+                )
+                if reconciliation and not has_retry_evidence:
+                    needs_notice = True
+                    replace_claim = True
+            if isinstance(status_counts.get("failed"), int) and status_counts.get("failed", 0) > 0:
+                needs_notice = True
+                if has_global_success_claim:
+                    replace_claim = True
+            if signal.get("partial_completion_suspected"):
+                needs_notice = True
+                if has_global_success_claim:
+                    replace_claim = True
+            if isinstance(omitted, int) and omitted > 0 and has_global_success_claim:
+                needs_notice = True
+                replace_claim = True
+            completeness = str(
+                signal.get("completeness_status")
+                or evidence_scope.get("completeness_status")
+                or ""
+            ).strip().lower()
+            if completeness in {"partial", "unknown"} and has_global_success_claim:
+                needs_notice = True
+                replace_claim = True
+        if not needs_notice:
+            return text
+
+        notice = sanitize_professional_response_text(
+            self._build_evidence_scope_notice(
+                user_query=user_query,
+                signals=signals,
+                replace_claim=replace_claim,
+            )
+        )
+        if not notice or text.startswith(notice):
+            return text
+        if replace_claim:
+            return notice
+        return f"{notice}\n\n{text}"
+
     @staticmethod
     def _unwrap_tool_result(payload: Dict[str, Any]) -> Dict[str, Any]:
         """Return the innermost result dict, handling nested {result: {...}} wrappers."""
@@ -2290,16 +2899,123 @@ class DeepThinkAgent:
         *,
         user_query: str = "",
     ) -> Dict[str, Any]:
-        # General plan creation gating is removed (Phase 1) — the LLM judges
-        # plan operations from tool descriptions.  However, for bound plan
-        # review/optimize/update requests we still enforce that the LLM must
-        # actually call plan_operation with a mutation; otherwise the user's
-        # explicit request to modify the plan would silently degrade to prose.
+        # Enforce explicit plan lifecycle contracts. The LLM still decides how
+        # to decompose and what evidence to gather, but once routing identifies
+        # create/review/optimize/execute intent, prose-only answers are not
+        # allowed to masquerade as real plan operations.
         plan_id = self._current_plan_id()
         plan_title = self._current_plan_title()
+        flags = self._plan_contract_flags()
         route_reasons = self.request_profile.get("route_reason_codes")
         if not isinstance(route_reasons, list):
             route_reasons = []
+
+        events = self._collect_plan_operation_events(steps)
+
+        if flags["conflict_requires_confirmation"]:
+            return {
+                "required": True,
+                "mode": "plan_conflict_confirmation",
+                "called": bool(events),
+                "satisfied": False,
+                "state": "confirmation_required",
+                "message": self._build_plan_conflict_confirmation_message(),
+                "plan_id": plan_id,
+                "plan_title": plan_title,
+                "operation": None,
+            }
+
+        required_ops: List[str] = []
+        if flags["create_required"]:
+            required_ops.append("create")
+        if flags["execute_required"]:
+            required_ops.append("execute_all")
+        if flags["review_required"]:
+            required_ops.append("review")
+        if flags["optimize_required"]:
+            required_ops.append("optimize")
+
+        if required_ops:
+            def _successful_event(op_name: str) -> Optional[Dict[str, Any]]:
+                for event in events:
+                    if not event.get("success"):
+                        continue
+                    if event.get("operation") != op_name:
+                        continue
+                    if op_name == "create" and event.get("already_bound_plan_reused"):
+                        continue
+                    if op_name == "optimize" and event.get("applied_changes") == 0:
+                        continue
+                    return event
+                return None
+
+            create_event = _successful_event("create") if flags["create_required"] else None
+            execute_event = _successful_event("execute_all") if flags["execute_required"] else None
+            review_event = _successful_event("review") if flags["review_required"] else None
+            optimize_event = _successful_event("optimize") if flags["optimize_required"] else None
+
+            satisfied_ops: List[str] = []
+            missing_ops: List[str] = []
+            if flags["create_required"]:
+                (satisfied_ops if create_event else missing_ops).append("create")
+            if flags["execute_required"]:
+                execute_matches_created = True
+                if flags["execute_after_create_required"] and create_event and execute_event:
+                    created_id = create_event.get("plan_id")
+                    executed_id = execute_event.get("plan_id")
+                    execute_matches_created = bool(created_id and executed_id == created_id)
+                if execute_event and execute_matches_created:
+                    satisfied_ops.append("execute_all")
+                else:
+                    missing_ops.append("execute_all")
+            if flags["review_required"]:
+                (satisfied_ops if review_event else missing_ops).append("review")
+            if flags["optimize_required"]:
+                (satisfied_ops if optimize_event else missing_ops).append("optimize")
+
+            satisfied = not missing_ops
+            last_op = events[-1].get("operation") if events else None
+            outcome_plan_id = None
+            for event in reversed(events):
+                if event.get("plan_id") is not None:
+                    outcome_plan_id = event.get("plan_id")
+                    break
+            if outcome_plan_id is None:
+                outcome_plan_id = plan_id
+            outcome_plan_title = plan_title
+            for event in reversed(events):
+                if event.get("plan_title"):
+                    outcome_plan_title = event.get("plan_title")
+                    break
+            message = None
+            if not satisfied:
+                if events:
+                    missing_text = ", ".join(missing_ops)
+                    message = (
+                        "The requested structured plan contract was not satisfied: "
+                        f"missing successful plan_operation operation(s): {missing_text}."
+                    )
+                else:
+                    missing_text = ", ".join(missing_ops)
+                    message = (
+                        "The requested structured plan contract was not satisfied: "
+                        "plan_operation was not called. "
+                        f"Required operation(s): {missing_text}."
+                    )
+            return {
+                "required": True,
+                "mode": "plan_lifecycle",
+                "called": bool(events),
+                "satisfied": satisfied,
+                "state": "satisfied" if satisfied else ("called_but_incomplete" if events else "not_called"),
+                "message": message,
+                "plan_id": outcome_plan_id,
+                "plan_title": outcome_plan_title,
+                "operation": last_op,
+                "required_operations": required_ops,
+                "satisfied_operations": satisfied_ops,
+                "missing_operations": missing_ops,
+            }
 
         is_bound_plan_mutation_request = (
             plan_id is not None
@@ -2326,7 +3042,6 @@ class DeepThinkAgent:
         # Exclude "create" — when a plan is already bound, the tool wrapper
         # rewrites create into a no-op already_bound_plan_reused result that
         # does not actually modify the plan.
-        events = self._collect_plan_operation_events(steps)
         mutation_ops = {"review", "optimize", "update"}
         called = bool(events)
         satisfied = any(
@@ -2354,8 +3069,51 @@ class DeepThinkAgent:
         }
 
     def _build_structured_plan_requirement_block(self) -> str:
-        # Only inject a requirement block for bound plan review/optimize requests.
+        flags = self._plan_contract_flags()
         plan_id = self._current_plan_id()
+
+        if flags["conflict_requires_confirmation"]:
+            plan_ref = f"plan_id={plan_id}" if plan_id is not None else "the current bound plan"
+            return (
+                "\n[REQUIREMENT] The current session is already bound to "
+                f"{plan_ref}, and the new request appears to target a different subject. "
+                "Do NOT call tools and do NOT execute or create a plan in this turn. "
+                "Ask the user to choose one option: update the existing plan, create a new plan in this session, or start a new chat.\n"
+            )
+
+        requirement_lines: List[str] = []
+        if flags["create_required"] and flags["execute_after_create_required"]:
+            requirement_lines.append(
+                "The user explicitly requested creating a structured executable plan and executing it. "
+                "You MUST first call `plan_operation` with operation=`create`. After it succeeds, "
+                "you MUST call `plan_operation` with operation=`execute_all` for the created plan_id."
+            )
+        elif flags["create_required"]:
+            requirement_lines.append(
+                "The user explicitly requested a structured plan. You MUST call `plan_operation` "
+                "with operation=`create`. Do not execute the plan unless the user explicitly requested execution."
+            )
+        elif flags["execute_required"]:
+            plan_ref = f" targeting plan_id={plan_id}" if plan_id is not None else " targeting the current bound plan"
+            requirement_lines.append(
+                "The user explicitly requested full plan execution. You MUST call `plan_operation` "
+                f"with operation=`execute_all`{plan_ref}."
+            )
+        if flags["review_required"] or flags["optimize_required"]:
+            ops = []
+            if flags["review_required"]:
+                ops.append("review")
+            if flags["optimize_required"]:
+                ops.append("optimize")
+            plan_ref = f" targeting plan_id={plan_id}" if plan_id is not None else ""
+            requirement_lines.append(
+                "The user requested plan mutation. You MUST call `plan_operation` "
+                f"with operation(s) {', '.join(ops)}{plan_ref} before submitting the final answer."
+            )
+        if requirement_lines:
+            return "\n[REQUIREMENT] " + "\n[REQUIREMENT] ".join(requirement_lines) + "\n"
+
+        # Only inject a legacy requirement block for bound plan review/optimize requests.
         route_reasons = self.request_profile.get("route_reason_codes")
         if not isinstance(route_reasons, list):
             route_reasons = []
@@ -2434,7 +3192,60 @@ class DeepThinkAgent:
             ),
         )
 
+    def _build_created_plan_execute_nudge(
+        self,
+        *,
+        user_query: str,
+        plan_id: int,
+        plan_title: Optional[str] = None,
+    ) -> str:
+        language = detect_reasoning_language(user_query)
+        title_suffix = f"，标题：{plan_title}" if language == "zh" and plan_title else (
+            f", title: {plan_title}" if plan_title else ""
+        )
+        return _localized_text(
+            language,
+            (
+                f"结构化计划已创建成功（plan_id={plan_id}{title_suffix}）。"
+                "用户还要求执行该计划。不要再次调用 `plan_operation` 的 `create`；"
+                "下一步必须调用 `plan_operation`，operation=`execute_all`，plan_id 使用刚创建的计划。"
+            ),
+            (
+                f"The structured plan has been created successfully (plan_id={plan_id}{title_suffix}). "
+                "The user also requested execution. Do not call `plan_operation` with `create` again; "
+                "next you MUST call `plan_operation` with operation=`execute_all` using the created plan_id."
+            ),
+        )
+
+    def _build_plan_conflict_confirmation_message(self) -> str:
+        plan_id = self._current_plan_id()
+        plan_title = self._current_plan_title()
+        title_suffix = f" ('{plan_title}')" if plan_title else ""
+        plan_ref = f"plan {plan_id}{title_suffix}" if plan_id is not None else "the current bound plan"
+        return (
+            f"This session is already bound to {plan_ref}. The new request appears to target a different subject. "
+            "Please choose one option: 1. Update the existing plan, 2. Create a new plan in this session, or 3. Start a new chat."
+        )
+
     def _get_structured_plan_retry_prompt(self) -> str:
+        flags = self._plan_contract_flags()
+        if flags["conflict_requires_confirmation"]:
+            return self._build_plan_conflict_confirmation_message()
+        required_ops: List[str] = []
+        if flags["create_required"]:
+            required_ops.append("create")
+        if flags["execute_required"]:
+            required_ops.append("execute_all")
+        if flags["review_required"]:
+            required_ops.append("review")
+        if flags["optimize_required"]:
+            required_ops.append("optimize")
+        if required_ops:
+            return (
+                "The user explicitly requested a structured plan lifecycle operation. "
+                f"You must call `plan_operation` with the required operation(s): {', '.join(required_ops)}. "
+                "Do not call `submit_final_answer` until those required operation(s) have succeeded."
+            )
         plan_id = self._current_plan_id()
         plan_ref = f" (plan_id={plan_id})" if plan_id else ""
         return (
@@ -2466,6 +3277,33 @@ class DeepThinkAgent:
         if text.startswith(notice):
             return text
         return f"{notice}\n\n{text}"
+
+    def _build_structured_plan_contract_failure_answer(
+        self,
+        *,
+        outcome: Dict[str, Any],
+        user_query: str,
+    ) -> str:
+        if str(outcome.get("state") or "") == "confirmation_required":
+            return self._build_plan_conflict_confirmation_message()
+        message = sanitize_professional_response_text(str(outcome.get("message") or "").strip())
+        if not message:
+            missing = outcome.get("missing_operations")
+            if isinstance(missing, list) and missing:
+                message = (
+                    "The requested structured plan contract was not satisfied: missing successful "
+                    f"plan_operation operation(s): {', '.join(str(item) for item in missing)}."
+                )
+            else:
+                message = "The requested structured plan contract was not satisfied."
+        required = outcome.get("required_operations")
+        if isinstance(required, list) and required:
+            return (
+                f"{message}\n\n"
+                f"Required operation(s): {', '.join(str(item) for item in required)}. "
+                "I cannot treat file probes, terminal checks, or ordinary markdown text as a completed structured plan operation."
+            )
+        return message
 
     def _build_request_tier_block(self) -> str:
         tier = self._request_tier()
@@ -2530,6 +3368,15 @@ class DeepThinkAgent:
         ]
         current_plan_id = self._current_plan_id()
         if current_plan_id is not None:
+            if (
+                self.request_profile.get("plan_new_requested")
+                and self.request_profile.get("plan_create_required")
+            ):
+                lines.append(
+                    f"- This session is currently bound to plan {current_plan_id}, but the user explicitly requested a new plan. "
+                    "You may call plan_operation create without reusing the existing plan_id; after creation, use the new plan_id."
+                )
+                return "\n".join(lines) + "\n"
             lines.append(
                 f"- This session is bound to plan {current_plan_id}. "
                 "When calling plan_operation, ALWAYS use this plan_id. "
@@ -2546,6 +3393,151 @@ class DeepThinkAgent:
             "- Do not substitute confident-sounding prose for evidence when a tool can obtain the "
             "ground truth within reasonable latency.\n\n"
         )
+
+    def _build_evidence_scope_block(self) -> str:
+        return (
+            "=== EVIDENCE SCOPE RULES ===\n"
+            "- Distinguish complete enumeration, status/manifest files, and sampled previews.\n"
+            "- If tool output includes `evidence_scope`, `completeness_status`, `status_counts`, "
+            "`incomplete_examples`, or `partial_completion_suspected`, carry those signals into the final answer.\n"
+            "- Never turn sampled listings or compacted previews into all/every/each/global success claims. "
+            "Only make a global completion claim when complete enumeration plus a manifest/status file supports it.\n"
+            "- For PhageScope local dataset exploration, use `phagescope_research` action=`deep_profile` before making "
+            "numeric size/row/schema/readiness claims; do not estimate dataset sizes from directory names or samples.\n"
+            "- If failure/error status files or partial-completion signals are present, state the completed and failed counts explicitly and qualify the conclusion.\n\n"
+        )
+
+    @staticmethod
+    def _directory_dataset_analysis_requested(user_query: str) -> bool:
+        text = str(user_query or "").strip()
+        if not text:
+            return False
+        return bool(_DIRECTORY_DATASET_REQUEST_RE.search(text) and _ABSOLUTE_PATH_RE.search(text))
+
+    @staticmethod
+    def _extract_directory_path_from_query(user_query: str) -> Optional[str]:
+        matches = [match.group(0).rstrip(".,;:)]}>") for match in _ABSOLUTE_PATH_RE.finditer(str(user_query or ""))]
+        if not matches:
+            return None
+        return max(matches, key=len)
+
+    @classmethod
+    def _phagescope_dataset_analysis_requested(cls, user_query: str) -> bool:
+        text = str(user_query or "").strip()
+        if not text:
+            return False
+        path = cls._extract_directory_path_from_query(text) or ""
+        path_mentions_phagescope = "phagescope" in path.lower()
+        if not path_mentions_phagescope:
+            return False
+        return bool(
+            _PHAGESCOPE_DATASET_REQUEST_RE.search(text)
+            or _PHAGESCOPE_ANALYSIS_ACTION_RE.search(text)
+        )
+
+    @classmethod
+    def _file_operation_profile_or_census_seen(cls, steps: Sequence[ThinkingStep]) -> bool:
+        for step in steps:
+            for entry in cls._extract_tool_payloads_from_step(step):
+                if str(entry.get("tool") or "").strip().lower() != "file_operations":
+                    continue
+                payload = entry.get("payload")
+                if not isinstance(payload, dict):
+                    continue
+                inner = cls._unwrap_tool_result(payload)
+                operation = str(inner.get("operation") or payload.get("operation") or "").strip().lower()
+                if operation in {"profile", "census"}:
+                    return True
+        return False
+
+    @classmethod
+    def _phagescope_deep_profile_seen(cls, steps: Sequence[ThinkingStep]) -> bool:
+        for step in steps:
+            for entry in cls._extract_tool_payloads_from_step(step):
+                if str(entry.get("tool") or "").strip().lower() != "phagescope_research":
+                    continue
+                payload = entry.get("payload")
+                if not isinstance(payload, dict):
+                    continue
+                inner = cls._unwrap_tool_result(payload)
+                action = str(inner.get("action") or payload.get("action") or "").strip().lower()
+                if action == "deep_profile" and inner.get("success", payload.get("success")) is not False:
+                    return True
+        return False
+
+    @classmethod
+    def _phagescope_deep_profile_failure(cls, steps: Sequence[ThinkingStep]) -> Optional[str]:
+        for step in steps:
+            for entry in cls._extract_tool_payloads_from_step(step):
+                if str(entry.get("tool") or "").strip().lower() != "phagescope_research":
+                    continue
+                payload = entry.get("payload")
+                if not isinstance(payload, dict):
+                    continue
+                inner = cls._unwrap_tool_result(payload)
+                action = str(inner.get("action") or payload.get("action") or "").strip().lower()
+                if action != "deep_profile":
+                    continue
+                success = inner.get("success", payload.get("success"))
+                if success is not False:
+                    continue
+                error = inner.get("error") or payload.get("error") or inner.get("summary") or payload.get("summary")
+                return str(error or "phagescope_research deep_profile failed").strip()
+        return None
+
+    def _build_phagescope_deep_profile_failure_answer(
+        self,
+        *,
+        user_query: str,
+        steps: Sequence[ThinkingStep],
+    ) -> Optional[str]:
+        if not self._phagescope_dataset_analysis_requested(user_query):
+            return None
+        if self._phagescope_deep_profile_seen(steps):
+            return None
+        error = self._phagescope_deep_profile_failure(steps)
+        if not error:
+            return None
+        path = self._extract_directory_path_from_query(user_query) or "the PhageScope dataset path"
+        return (
+            f"I could not complete the PhageScope dataset analysis because `phagescope_research` "
+            f"`deep_profile` failed for `{path}`: {error}. "
+            "I am not going to synthesize a dataset-level answer from shallow file listings or sampled metadata. "
+            "Please retry after fixing the tool/path permission issue; until then, any directory-listing evidence is only a limited diagnostic, not a complete PhageScope profile."
+        )
+
+    def _needs_phagescope_deep_profile_before_final(
+        self,
+        *,
+        user_query: str,
+        steps: Sequence[ThinkingStep],
+    ) -> Optional[str]:
+        if "phagescope_research" not in self.available_tools:
+            return None
+        if not self._phagescope_dataset_analysis_requested(user_query):
+            return None
+        if self._phagescope_deep_profile_seen(steps):
+            return None
+        return self._extract_directory_path_from_query(user_query)
+
+    def _needs_directory_profile_before_final(
+        self,
+        *,
+        user_query: str,
+        steps: Sequence[ThinkingStep],
+    ) -> Optional[str]:
+        if "file_operations" not in self.available_tools:
+            return None
+        if (
+            "phagescope_research" in self.available_tools
+            and self._phagescope_dataset_analysis_requested(user_query)
+        ):
+            return None
+        if not self._directory_dataset_analysis_requested(user_query):
+            return None
+        if self._file_operation_profile_or_census_seen(steps):
+            return None
+        return self._extract_directory_path_from_query(user_query)
 
     def _build_shared_strategy_block(self) -> str:
         return (
@@ -2566,6 +3558,7 @@ class DeepThinkAgent:
             "- For FASTA/FASTQ/sequence work, ALWAYS try bio_tools first before code_executor.\n"
             "- If the user provides inline sequence text (not a file), pass it as bio_tools(sequence_text=...).\n"
             "- If bio_tools routing is uncertain, call bio_tools(operation='help') first; use web_search only when help is insufficient.\n"
+            "- For scientific/composite figures, plots, charts, visualizations, or requests that require PNG/PDF plus summary, provenance, QA, or Deliverables publication, call scientific_figure_generator first when available. Use code_executor only for figure types or preprocessing that scientific_figure_generator cannot express.\n"
             "- For complex custom analysis not covered by bio_tools, then use code_executor.\n"
             "- Never use code_executor as fallback for sequence_fetch failures.\n"
             "- Never use code_executor as fallback for bio_tools input-conversion/parsing failures.\n"
@@ -3073,18 +4066,27 @@ class DeepThinkAgent:
                             created_plan_id is not None
                             and structured_plan_finalize_nudge_plan_id != created_plan_id
                         ):
+                            plan_title = (
+                                created_plan.get("plan_title")
+                                if isinstance(created_plan, dict)
+                                else None
+                            )
+                            if self._plan_contract_flags()["execute_after_create_required"]:
+                                nudge = self._build_created_plan_execute_nudge(
+                                    user_query=user_query,
+                                    plan_id=created_plan_id,
+                                    plan_title=plan_title,
+                                )
+                            else:
+                                nudge = self._build_created_plan_finalize_nudge(
+                                    user_query=user_query,
+                                    plan_id=created_plan_id,
+                                    plan_title=plan_title,
+                                )
                             messages.append(
                                 {
                                     "role": "user",
-                                    "content": self._build_created_plan_finalize_nudge(
-                                        user_query=user_query,
-                                        plan_id=created_plan_id,
-                                        plan_title=(
-                                            created_plan.get("plan_title")
-                                            if isinstance(created_plan, dict)
-                                            else None
-                                        ),
-                                    ),
+                                    "content": nudge,
                                 }
                             )
                             structured_plan_finalize_nudge_plan_id = created_plan_id
@@ -3460,6 +4462,130 @@ class DeepThinkAgent:
                                 }
                             )
                             continue
+                        profile_path = self._needs_directory_profile_before_final(
+                            user_query=user_query,
+                            steps=thinking_steps,
+                        )
+                        if profile_path:
+                            current_step.self_correction = (
+                                "Rejected a directory/dataset final answer until file_operations profile evidence is collected."
+                            )
+                            final_answer = ""
+                            thinking_steps.append(current_step)
+                            if self.on_thinking:
+                                await self._safe_callback(current_step)
+                            forced_call = SimpleNamespace(
+                                name="file_operations",
+                                id=f"forced_directory_profile_{iteration}",
+                                arguments={"operation": "profile", "path": profile_path},
+                            )
+                            forced_result = await self._execute_native_tool_call(
+                                tc=forced_call,
+                                iteration=iteration,
+                                index=9998,
+                            )
+                            if "file_operations" not in tools_used:
+                                tools_used.append("file_operations")
+                            forced_step = ThinkingStep(
+                                iteration=iteration,
+                                thought="Collecting required directory profile evidence before final answer.",
+                                action=json.dumps(
+                                    {
+                                        "tool": "file_operations",
+                                        "params": {"operation": "profile", "path": profile_path},
+                                    },
+                                    ensure_ascii=False,
+                                ),
+                                action_result=None,
+                                self_correction="Forced directory profile/census evidence for dataset-level analysis.",
+                                kind="tool",
+                                status="calling_tool",
+                            )
+                            thinking_steps.append(forced_step)
+                            self._append_tool_cycle_messages(
+                                messages=messages,
+                                tool_results=[forced_result],
+                                assistant_content="",
+                                current_step=forced_step,
+                            )
+                            forced_step.status = "analyzing"
+                            if self.on_thinking:
+                                await self._safe_callback(forced_step)
+                            messages.append(
+                                {
+                                    "role": "user",
+                                    "content": (
+                                        "A directory-level file_operations profile was required and has now been collected. "
+                                        "Use its evidence_scope/status_counts/status_count_sources in the final answer. "
+                                        "Do not make all/every/global-ready claims unless the profile supports them. "
+                                        "Now call submit_final_answer with a scoped dataset summary."
+                                    ),
+                                }
+                            )
+                            continue
+                        phagescope_path = self._needs_phagescope_deep_profile_before_final(
+                            user_query=user_query,
+                            steps=thinking_steps,
+                        )
+                        if phagescope_path:
+                            current_step.self_correction = (
+                                "Rejected a PhageScope dataset final answer until phagescope_research deep_profile evidence is collected."
+                            )
+                            final_answer = ""
+                            thinking_steps.append(current_step)
+                            if self.on_thinking:
+                                await self._safe_callback(current_step)
+                            forced_call = SimpleNamespace(
+                                name="phagescope_research",
+                                id=f"forced_phagescope_deep_profile_{iteration}",
+                                arguments={"action": "deep_profile", "data_dir": phagescope_path},
+                            )
+                            forced_result = await self._execute_native_tool_call(
+                                tc=forced_call,
+                                iteration=iteration,
+                                index=9997,
+                            )
+                            if "phagescope_research" not in tools_used:
+                                tools_used.append("phagescope_research")
+                            forced_step = ThinkingStep(
+                                iteration=iteration,
+                                thought="Collecting required PhageScope deep profile evidence before final answer.",
+                                action=json.dumps(
+                                    {
+                                        "tool": "phagescope_research",
+                                        "params": {"action": "deep_profile", "data_dir": phagescope_path},
+                                    },
+                                    ensure_ascii=False,
+                                ),
+                                action_result=None,
+                                self_correction="Forced PhageScope deep_profile evidence for dataset-level analysis.",
+                                kind="tool",
+                                status="calling_tool",
+                            )
+                            thinking_steps.append(forced_step)
+                            self._append_tool_cycle_messages(
+                                messages=messages,
+                                tool_results=[forced_result],
+                                assistant_content="",
+                                current_step=forced_step,
+                            )
+                            forced_step.status = "analyzing"
+                            if self.on_thinking:
+                                await self._safe_callback(forced_step)
+                            messages.append(
+                                {
+                                    "role": "user",
+                                    "content": (
+                                        "A PhageScope deep_profile was required and has now been collected. "
+                                        "Use metadata_size_bytes/metadata_size_human for meta_data size claims, "
+                                        "total_size_bytes/total_size_human for whole-dataset size claims, and "
+                                        "metadata_schema/ml_metadata_table/label_quality/split_readiness for readiness claims. "
+                                        "Do not invent numeric size, row, column, or data-readiness claims absent from deep_profile. "
+                                        "Now call submit_final_answer with an evidence-bound PhageScope dataset summary."
+                                    ),
+                                }
+                            )
+                            continue
                         final_answer = candidate_answer
                     thinking_steps.append(current_step)
                     if self.on_thinking:
@@ -3724,13 +4850,23 @@ class DeepThinkAgent:
             if self.on_final_delta:
                 await self._stream_final_answer(final_answer)
         elif not final_answer and thinking_steps:
-            logger.info("[DEEP_THINK_NATIVE] No final answer after %d iterations; attempting forced synthesis", iteration)
-            final_answer = await self._forced_synthesis_from_steps(
-                thinking_steps,
-                user_query,
-                messages,
-                task_context=task_context,
+            phagescope_failure_answer = self._build_phagescope_deep_profile_failure_answer(
+                user_query=user_query,
+                steps=thinking_steps,
             )
+            if phagescope_failure_answer:
+                logger.warning(
+                    "[DEEP_THINK_NATIVE] Blocking forced synthesis after failed PhageScope deep_profile."
+                )
+                final_answer = phagescope_failure_answer
+            else:
+                logger.info("[DEEP_THINK_NATIVE] No final answer after %d iterations; attempting forced synthesis", iteration)
+                final_answer = await self._forced_synthesis_from_steps(
+                    thinking_steps,
+                    user_query,
+                    messages,
+                    task_context=task_context,
+                )
             if final_answer and self._should_reject_missing_task_definition_answer(
                 final_answer,
                 task_context=task_context,
@@ -3772,15 +4908,30 @@ class DeepThinkAgent:
         if execute_truth_answer != final_answer:
             fallback_used = True
         final_answer = execute_truth_answer
+        evidence_scope_answer = self._apply_evidence_scope_truth_barrier(
+            final_answer,
+            user_query=user_query,
+            steps=thinking_steps,
+        )
+        if evidence_scope_answer != final_answer:
+            fallback_used = True
+        final_answer = evidence_scope_answer
         structured_plan_outcome = self._summarize_structured_plan_outcome(
             thinking_steps,
             user_query=user_query,
         )
-        final_answer = self._ensure_structured_plan_notice(
-            final_answer,
-            outcome=structured_plan_outcome,
-            user_query=user_query,
-        )
+        if structured_plan_outcome.get("required") and not structured_plan_outcome.get("satisfied"):
+            final_answer = self._build_structured_plan_contract_failure_answer(
+                outcome=structured_plan_outcome,
+                user_query=user_query,
+            )
+            fallback_used = True
+        else:
+            final_answer = self._ensure_structured_plan_notice(
+                final_answer,
+                outcome=structured_plan_outcome,
+                user_query=user_query,
+            )
         final_answer = sanitize_professional_response_text(final_answer)
 
         try:
@@ -3866,6 +5017,7 @@ class DeepThinkAgent:
             + self._build_structured_plan_requirement_block()
             + self._build_tool_access_block()
             + self._build_grounded_tooling_block()
+            + self._build_evidence_scope_block()
             + "\n"
             + "\n=== WORKFLOW ===\n"
             "1. First decide whether the request needs tools at all.\n"
@@ -4330,11 +5482,18 @@ Respond with ONLY a JSON object:
             thinking_steps,
             user_query=user_query,
         )
-        final_answer = self._ensure_structured_plan_notice(
-            final_answer,
-            outcome=structured_plan_outcome,
-            user_query=user_query,
-        )
+        if structured_plan_outcome.get("required") and not structured_plan_outcome.get("satisfied"):
+            final_answer = self._build_structured_plan_contract_failure_answer(
+                outcome=structured_plan_outcome,
+                user_query=user_query,
+            )
+            fallback_used = True
+        else:
+            final_answer = self._ensure_structured_plan_notice(
+                final_answer,
+                outcome=structured_plan_outcome,
+                user_query=user_query,
+            )
         final_answer = sanitize_professional_response_text(final_answer)
 
         try:
@@ -4941,7 +6100,71 @@ Respond with ONLY a JSON object:
     ) -> Optional[Dict[str, Any]]:
         if str(tool_name or "").strip().lower() == "file_operations":
             return cls._compact_file_operations_result_for_llm(result)
+        if str(tool_name or "").strip().lower() == "phagescope_research":
+            return cls._compact_phagescope_research_result_for_llm(result)
         return None
+
+    @classmethod
+    def _compact_phagescope_research_result_for_llm(
+        cls, result: Any
+    ) -> Optional[Dict[str, Any]]:
+        if not isinstance(result, dict):
+            return None
+        if str(result.get("action") or "").strip().lower() != "deep_profile":
+            return None
+        compact: Dict[str, Any] = {
+            "tool": "phagescope_research",
+            "action": "deep_profile",
+            "success": bool(result.get("success", True)),
+            "data_dir": result.get("data_dir"),
+            "resolved_data_dir": result.get("resolved_data_dir"),
+            "metadata_files": result.get("metadata_files"),
+            "metadata_rows": result.get("metadata_rows"),
+            "unique_phage_ids": result.get("unique_phage_ids"),
+            "duplicate_phage_ids": result.get("duplicate_phage_ids"),
+            "metadata_size_bytes": result.get("metadata_size_bytes"),
+            "metadata_size_human": result.get("metadata_size_human"),
+            "total_size_bytes": result.get("total_size_bytes"),
+            "total_size_human": result.get("total_size_human"),
+            "ml_metadata_table": result.get("ml_metadata_table"),
+            "label_quality": result.get("label_quality"),
+            "split_readiness": result.get("split_readiness"),
+            "annotation_inventory": result.get("annotation_inventory"),
+            "anomalies": result.get("anomalies"),
+            "claim_guidance": result.get("claim_guidance"),
+            "recommended_next_step": result.get("recommended_next_step"),
+            "llm_compacted": True,
+        }
+        metadata_schema = result.get("metadata_schema")
+        if isinstance(metadata_schema, dict):
+            compact["metadata_schema"] = {
+                "expected_columns": metadata_schema.get("expected_columns"),
+                "headers_consistent": metadata_schema.get("headers_consistent"),
+                "most_common_header": metadata_schema.get("most_common_header"),
+                "missing_expected_by_file": metadata_schema.get("missing_expected_by_file"),
+                "extra_columns_by_file": metadata_schema.get("extra_columns_by_file"),
+            }
+        rows_by_file = result.get("rows_by_metadata_file")
+        if isinstance(rows_by_file, dict):
+            compact["rows_by_metadata_file"] = rows_by_file
+        source_top = result.get("source_top")
+        if isinstance(source_top, list):
+            compact["source_top"] = source_top[:10]
+        taxonomy_top = result.get("taxonomy_top")
+        if isinstance(taxonomy_top, list):
+            compact["taxonomy_top"] = taxonomy_top[:10]
+        subdir_summary = result.get("subdir_size_summary")
+        if isinstance(subdir_summary, dict):
+            compact["subdir_size_summary"] = {
+                name: {
+                    key: value
+                    for key, value in summary.items()
+                    if key in {"files", "size_bytes", "size_human"}
+                }
+                for name, summary in subdir_summary.items()
+                if isinstance(summary, dict)
+            }
+        return compact
 
     @classmethod
     def _compact_file_operations_result_for_llm(
@@ -4949,7 +6172,31 @@ Respond with ONLY a JSON object:
     ) -> Optional[Dict[str, Any]]:
         if not isinstance(result, dict):
             return None
-        if str(result.get("operation") or "").strip().lower() != "list":
+        operation = str(result.get("operation") or "").strip().lower()
+        if operation in {"profile", "census"}:
+            compact: Dict[str, Any] = {
+                "operation": operation,
+                "path": str(result.get("path") or "").strip(),
+                "success": bool(result.get("success", True)),
+                "summary": result.get("summary"),
+                "completeness_status": result.get("completeness_status"),
+                "llm_compacted": True,
+            }
+            for key in ("counts", "extension_counts", "evidence_scope"):
+                value = result.get(key)
+                if isinstance(value, dict):
+                    compact[key] = value
+            for key in ("status_files", "status_count_sources", "incomplete_examples", "sample_items"):
+                value = result.get(key)
+                if isinstance(value, list) and value:
+                    compact[key] = value[:20]
+            reconciliation = result.get("reconciliation")
+            if isinstance(reconciliation, dict):
+                compact["reconciliation"] = reconciliation
+            if result.get("status_counts_confidence") is not None:
+                compact["status_counts_confidence"] = result.get("status_counts_confidence")
+            return compact
+        if operation != "list":
             return None
 
         items = result.get("items")
@@ -4975,6 +6222,7 @@ Respond with ONLY a JSON object:
 
         path = str(result.get("path") or "").strip()
         preview_limit = min(len(items), cls.MAX_FILE_OPERATION_LIST_SAMPLE_ITEMS)
+        evidence_scope = result.get("evidence_scope") if isinstance(result.get("evidence_scope"), dict) else None
         compact_result: Dict[str, Any] = {}
 
         while True:
@@ -5007,6 +6255,14 @@ Respond with ONLY a JSON object:
                     f"Showing the first {len(sample_items)} item(s) only because the full directory listing is too large for LLM context."
                 ),
             }
+            if evidence_scope:
+                compact_result["evidence_scope"] = evidence_scope
+                status_counts = evidence_scope.get("status_counts")
+                if isinstance(status_counts, dict):
+                    compact_result["status_counts"] = status_counts
+                completeness_status = evidence_scope.get("completeness_status")
+                if isinstance(completeness_status, str) and completeness_status:
+                    compact_result["completeness_status"] = completeness_status
             compact_text = json.dumps(compact_result, ensure_ascii=False, default=str)
             if len(compact_text) <= cls.MAX_TOOL_RESULT_TEXT_CHARS or preview_limit == 0:
                 return compact_result
@@ -5303,9 +6559,22 @@ Respond with ONLY a JSON object:
                 "Do not use code_executor for simple public-link downloads."
             ),
             "code_executor": "Execute Python/shell code. FALLBACK TOOL: Use this ONLY when bio_tools cannot handle the task (e.g., custom analysis scripts, complex data processing). For FASTA/FASTQ sequence stats or standard bioinformatics tasks, ALWAYS try bio_tools first. For local CSV/TSV overview/schema/count requests, prefer result_interpreter profile first. Params: {\"task\": \"description\"}",
+            "phagescope_research": (
+                "Prepare and audit the local PhageScope public dataset for host prediction research. "
+                "For local PhageScope dataset exploration, schema/size/readiness assessment, data splitting, model selection, benchmarking, or biological validation, "
+                "call action='deep_profile' before final synthesis. Use action='audit' only for compact count checks, "
+                "action='research_plan' for a workflow checklist, and action='prepare_metadata_table' to build the ML-ready TSV. "
+                "Params: {\"action\": \"deep_profile|audit|research_plan|prepare_metadata_table\", \"data_dir\": \"/path/to/phagescope\"}"
+            ),
+            "scientific_figure_generator": (
+                "PREFERRED tool for scientific/composite figures, plots, charts, visualizations, and publication-style outputs. "
+                "Use it when the user asks for PNG/PDF figures, English summary/legend, provenance TSV, QA JSON, or Deliverables publication. "
+                "Accepts datasets as inline rows or CSV/TSV/JSON/JSONL paths and panel specs (auto, bar, line, scatter, heatmap, table). "
+                "Prefer this over code_executor for standard scientific figure generation."
+            ),
             "web_search": "Search the internet for information. USE THIS ONLY for web-based queries, NOT for local files. For broad comparisons, prefer focused parallel subqueries with Params: {\"query\": \"original request\", \"queries\": [\"focused query 1\", \"focused query 2\"]}.",
             "graph_rag": "Query knowledge graph for structured information. Params: {\"query\": \"your question\", \"mode\": \"global|local|hybrid\"}",
-            "file_operations": "File system operations: list directories, read/write files, copy/move/delete. USE THIS for quick directory listing or file reading. For a bound execute_task request, read/list/exists/info are inspection-only and do not count as task completion. Params: {\"operation\": \"list|read|write|copy|move|delete\", \"path\": \"/path\"}",
+            "file_operations": "File system operations: list directories, profile/census directory contents, read/write files, copy/move/delete. USE profile/census before making global all/every/completed claims about large directory trees; list/read/profile/census/exists/info are inspection-only in bound execute_task requests and do not count as task completion. Params: {\"operation\": \"profile|census|list|read|write|copy|move|delete\", \"path\": \"/path\"}",
             "document_reader": (
                 "Read local documents (.docx, .pdf, .txt, .md). For .csv/.tsv, this tool "
                 "returns a built-in preview (headers + sample rows) — use it for quick inspection; "
@@ -5525,6 +6794,7 @@ Your goal is to choose the right depth for the user's request: be thorough when 
 {self._build_structured_plan_requirement_block()}
 {self._build_tool_access_block()}
 {self._build_grounded_tooling_block()}
+{self._build_evidence_scope_block()}
 === THINKING WORKFLOW ===
 1. First classify whether the request needs tools, targeted evidence, or just a direct answer.
 2. Break the query into sub-problems only when that materially helps.
@@ -5943,6 +7213,10 @@ When ready to answer:
         """Convert a single parsed tool-result dict into a concise, human-readable line."""
         success = obj.get("success")
         result = obj.get("result") or obj
+        stored_result = _load_llm_safe_stored_tool_result(obj)
+        if isinstance(stored_result, dict):
+            result = stored_result
+            success = stored_result.get("success", success)
         tool = str(result.get("tool", "") or tool_name).strip()
 
         # --- terminal_session: skip noise-only entries ---
@@ -5999,6 +7273,10 @@ When ready to answer:
                 summary = str(result.get("summary") or "").strip()
                 path = str(result.get("path") or "").strip()
                 fname = path.rsplit("/", 1)[-1] if path else "?"
+                content = str(result.get("content") or "").strip()
+                if content:
+                    preview = " ".join(content.split())[:300]
+                    return f"文件读取 ({fname})：{preview}"
                 if summary:
                     return f"文件读取 ({fname})：{summary[:200]}"
                 return f"已读取文件：{fname}"
@@ -6008,6 +7286,64 @@ When ready to answer:
                 size = result.get("size", "?")
                 return f"已写入文件：{fname} ({size} B)"
             return f"文件操作 ({op})：{result.get('summary', '完成')}"
+
+        # --- phagescope_research ---
+        if tool == "phagescope_research":
+            if success is False or result.get("success") is False:
+                error = str(result.get("error") or "unknown error").strip()
+                return f"phagescope_research 失败：{error[:200]}"
+            action = str(result.get("action") or "").strip() or "operation"
+            if action == "audit":
+                parts: List[str] = ["phagescope_research audit 成功"]
+                if isinstance(result.get("metadata_rows"), int):
+                    parts.append(f"metadata_rows={result.get('metadata_rows')}")
+                if isinstance(result.get("unique_phage_ids"), int):
+                    parts.append(f"unique_phage_ids={result.get('unique_phage_ids')}")
+                missing = result.get("missing_counts")
+                if isinstance(missing, dict) and missing:
+                    parts.append("missing=" + ", ".join(f"{k}={v}" for k, v in list(missing.items())[:4]))
+                source_top = _format_count_pairs(result.get("source_top"), limit=4)
+                if source_top:
+                    parts.append(f"top_sources={source_top}")
+                completeness = _format_count_pairs(result.get("completeness_counts"), limit=4)
+                if completeness:
+                    parts.append(f"completeness={completeness}")
+                lifestyle = _format_count_pairs(result.get("lifestyle_counts"), limit=3)
+                if lifestyle:
+                    parts.append(f"lifestyle={lifestyle}")
+                return "；".join(parts)
+            if action == "deep_profile":
+                parts = ["phagescope_research deep_profile 成功"]
+                if isinstance(result.get("metadata_rows"), int):
+                    parts.append(f"metadata_rows={result.get('metadata_rows')}")
+                if isinstance(result.get("metadata_files"), int):
+                    parts.append(f"metadata_files={result.get('metadata_files')}")
+                if result.get("metadata_size_human"):
+                    parts.append(f"meta_data_size={result.get('metadata_size_human')}")
+                if result.get("total_size_human"):
+                    parts.append(f"total_size={result.get('total_size_human')}")
+                ml_table = result.get("ml_metadata_table")
+                if isinstance(ml_table, dict):
+                    parts.append(f"ml_table_rows={ml_table.get('rows', '?')}")
+                label_quality = result.get("label_quality")
+                if isinstance(label_quality, dict):
+                    parts.append(
+                        f"host_missing={label_quality.get('host_missing_rows', '?')}"
+                    )
+                return "；".join(parts)
+            if action == "prepare_metadata_table":
+                rows = result.get("rows_written") or result.get("output_table_rows")
+                labels = result.get("labels_kept")
+                splits = result.get("split_totals")
+                parts = ["phagescope_research prepare_metadata_table 成功"]
+                if rows is not None:
+                    parts.append(f"rows_written={rows}")
+                if labels is not None:
+                    parts.append(f"labels_kept={labels}")
+                if isinstance(splits, dict):
+                    parts.append("splits=" + ", ".join(f"{k}={v}" for k, v in splits.items()))
+                return "；".join(parts)
+            return f"phagescope_research {action} 执行完成"
 
         # --- generic tool with summary ---
         summary = str(result.get("summary") or "").strip()
@@ -6146,6 +7482,15 @@ When ready to answer:
     def _build_structured_fallback(self, steps: List[ThinkingStep], user_query: str = "") -> str:
         """Last-resort fallback: include evidence excerpts rather than a generic 'no answer' message."""
         language = detect_reasoning_language(user_query)
+        structured_plan_outcome = self._summarize_structured_plan_outcome(
+            steps,
+            user_query=user_query,
+        )
+        if structured_plan_outcome.get("required") and not structured_plan_outcome.get("satisfied"):
+            return self._build_structured_plan_contract_failure_answer(
+                outcome=structured_plan_outcome,
+                user_query=user_query,
+            )
 
         # Collect any meaningful evidence to include in the fallback
         evidence = self._collect_user_facing_evidence_snippets(
@@ -6265,6 +7610,8 @@ When ready to answer:
             "4) Use clear structure (headings, bullet points) for readability.\n"
             "5) Do NOT say 'I could not find an answer' if there is ANY useful information — present what was found.\n"
             "6) Do not invent dates or claims absent from the excerpts.\n"
+            "7) Respect evidence scope: if excerpts show sampled/compacted listings, partial completion, failure status files, "
+            "or status counts, state those limits and do not convert them into all/every/global success claims.\n"
             f"{focus_instruction}"
             f"{bound_task_instruction}"
             f"{PROFESSIONAL_STYLE_INSTRUCTION}"
@@ -6348,7 +7695,9 @@ When ready to answer:
                     "- 介绍 PhageScope 接口时不要臆造「必须去官网用户中心申请 API Token」等；官方文档以 `userid` 为主，"
                     "工具里 `token` 为可选；无证据时不要断言具体凭证流程。\n"
                     "- 不要引导用户去查看、粘贴 `.env` 来「验证 PhageScope」；除非用户明确问本地部署密钥。"
-                    "连通性应以 `phagescope` 工具（如 ping）为准；勿臆造 `PHAGESCOPE_API_TOKEN` 等变量名。"
+                    "连通性应以 `phagescope` 工具（如 ping）为准；勿臆造 `PHAGESCOPE_API_TOKEN` 等变量名。\n"
+                    "- 尊重 evidence_scope / completeness_status / status_counts / partial_completion_suspected："
+                    "若证据只是采样、压缩列表或存在失败/部分完成信号，必须明确范围限制，不得写成全部/每个样本都成功。"
                 )
                 if structured_plan_outcome.get("required") and not structured_plan_outcome.get("satisfied"):
                     instruction += (
@@ -6380,7 +7729,9 @@ When ready to answer:
                     "\"user center\" unless the evidence says so; documented flows center on `userid`; tool `token` is optional.\n"
                     "- Do not tell the user to inspect or paste `.env` for PhageScope verification unless they explicitly "
                     "ask about local secrets; use phagescope tool (e.g. ping). This codebase only documents optional env "
-                    "`PHAGESCOPE_BASE_URL` and `PHAGESCOPE_SSL_VERIFY`, not a `PHAGESCOPE_API_TOKEN` variable."
+                    "`PHAGESCOPE_BASE_URL` and `PHAGESCOPE_SSL_VERIFY`, not a `PHAGESCOPE_API_TOKEN` variable.\n"
+                    "- Respect evidence_scope / completeness_status / status_counts / partial_completion_suspected: if evidence is "
+                    "sampled, compacted, or shows failures/partial completion, state the scope limits and do not claim all/every sample succeeded."
                 )
                 if structured_plan_outcome.get("required") and not structured_plan_outcome.get("satisfied"):
                     instruction += (
@@ -6424,6 +7775,11 @@ When ready to answer:
             if len(cleaned) < 30 or is_process_only_answer(cleaned, user_query=user_query):
                 logger.warning("[DEEP_THINK_NATIVE] Forced synthesis produced insufficient content (%d chars)", len(cleaned))
                 return ""
+            if structured_plan_outcome.get("required") and not structured_plan_outcome.get("satisfied"):
+                return self._build_structured_plan_contract_failure_answer(
+                    outcome=structured_plan_outcome,
+                    user_query=user_query,
+                )
             logger.info("[DEEP_THINK_NATIVE] Forced synthesis succeeded (%d chars)", len(cleaned))
             return cleaned
         except Exception:
