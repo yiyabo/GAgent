@@ -23,6 +23,7 @@ from uuid import uuid4
 from app.services.plans.artifact_validation import get_artifact_validation_prompt_specs
 from app.services.plans.acceptance_criteria import (
     derive_acceptance_criteria_from_text,
+    derive_expected_deliverables,
     derive_relative_output_dirs,
     resolve_glob_min_count,
     resolve_glob_pattern,
@@ -1410,6 +1411,7 @@ def _build_cli_task_contract(
         return task_text
 
     lines: List[str] = ["[BOUND TASK CONTEXT]"]
+    is_verification_only = _is_verification_only_task(task_text)
     task_id = execution_spec.get("task_id")
     task_name = str(execution_spec.get("task_name") or "").strip()
     task_instruction = str(execution_spec.get("task_instruction") or "").strip()
@@ -1420,11 +1422,19 @@ def _build_cli_task_contract(
     if task_name:
         lines.append(f"Task Name: {task_name}")
 
-    if task_instruction:
+    if task_instruction and not is_verification_only:
         lines.extend(["", "Atomic task objective:", task_instruction])
 
     if task_text and task_text != task_instruction:
         lines.extend(["", "Requested execution action:", task_text])
+        if is_verification_only:
+            lines.extend([
+                "",
+                "Verification-only mode:",
+                "- Execute only the requested inspection of existing files/artifacts.",
+                "- Do not regenerate task outputs, rerun the original task objective, or create replacement deliverables.",
+                "- Report the observed file headers, row counts, columns, and any validation failures.",
+            ])
 
     if isinstance(dependency_outputs, list) and dependency_outputs:
         lines.extend(["", "Upstream dependencies:"])
@@ -1531,6 +1541,63 @@ def _format_contract_diff_for_cli(contract_diff: Optional[Dict[str, Any]]) -> st
         if joined:
             lines.append(f"- {label}: {joined}")
     return "\n".join(lines)
+
+
+def _is_verification_only_task(task_text: str) -> bool:
+    """Detect tool calls that should inspect existing artifacts, not rerun the task."""
+
+    text = " ".join(str(task_text or "").lower().split())
+    if not text:
+        return False
+
+    verification_terms = (
+        "verify",
+        "validate",
+        "check",
+        "inspect",
+        "read the first",
+        "count total",
+        "count rows",
+        "header",
+        "columns exist",
+        "列是否存在",
+        "验证",
+        "检查",
+    )
+    artifact_terms = (
+        ".tsv",
+        ".csv",
+        ".json",
+        ".parquet",
+        ".txt",
+        ".fasta",
+        ".fa",
+        ".h5ad",
+        "file",
+        "artifact",
+        "output",
+        "文件",
+        "产物",
+        "输出",
+    )
+    generation_terms = (
+        "generate",
+        "create",
+        "produce",
+        "write",
+        "save",
+        "map ",
+        "compute",
+        "train",
+        "run analysis",
+        "生成",
+        "创建",
+        "产出",
+    )
+    has_verification = any(term in text for term in verification_terms)
+    has_artifact = any(term in text for term in artifact_terms)
+    has_generation = any(term in text for term in generation_terms)
+    return has_verification and has_artifact and not has_generation
 
 
 def _build_cli_contract_repair_task(
@@ -1930,6 +1997,105 @@ def _extract_code_workspace_metadata(
             primary_code_file = str(candidate)
             break
     return code_dir_value, primary_code_file
+
+
+def _contract_required_artifact_records(
+    *,
+    execution_spec: Optional[Dict[str, Any]],
+    task_work_dir: Path,
+    produced_files: Sequence[str],
+    max_items: int = 100,
+) -> List[Dict[str, Any]]:
+    """Return authoritative records for contract-required output files.
+
+    These records are independent from UI/session promotion. Large files may be
+    intentionally skipped for browser-facing artifact URLs, but deterministic
+    verification and downstream plan state still need a durable statement that
+    a contract-required file exists at its real task-run path.
+    """
+    criteria = execution_spec.get("acceptance_criteria") if isinstance(execution_spec, dict) else None
+    expected_deliverables = derive_expected_deliverables(criteria)
+    if not expected_deliverables:
+        return []
+
+    produced_paths: List[Path] = []
+    for raw_path in produced_files:
+        text = str(raw_path or "").strip()
+        if not text:
+            continue
+        path = Path(text).expanduser()
+        try:
+            if path.exists() and path.is_file():
+                produced_paths.append(path.resolve())
+        except OSError:
+            continue
+
+    records: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def _normalize(value: Any) -> str:
+        return str(value or "").strip().replace(chr(92), "/").strip("/")
+
+    for expected in expected_deliverables:
+        expected_text = _normalize(expected)
+        if not expected_text or any(token in expected_text for token in ("*", "?", "[")):
+            continue
+        expected_path = Path(str(expected or "").strip()).expanduser()
+        direct = expected_path if expected_path.is_absolute() else (task_work_dir / expected_path)
+        candidates: List[Path] = [direct]
+        for produced in produced_paths:
+            produced_norm = _normalize(str(produced))
+            if produced_norm == expected_text or produced_norm.endswith(f"/{expected_text}"):
+                candidates.append(produced)
+        selected: Optional[Path] = None
+        for candidate in candidates:
+            try:
+                if candidate.exists() and candidate.is_file():
+                    selected = candidate.resolve()
+                    break
+            except OSError:
+                continue
+        if selected is None:
+            continue
+        key = f"{expected_text}|{selected}"
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            size = selected.stat().st_size
+        except OSError:
+            size = None
+        try:
+            relative_to_task = str(selected.relative_to(task_work_dir.resolve())).replace(chr(92), "/")
+        except Exception:
+            relative_to_task = None
+        records.append({
+            "expected": expected_text,
+            "path": str(selected),
+            "size": size,
+            "exists": True,
+            "relative_to_task": relative_to_task,
+            "verification_source": "contract_required_output",
+        })
+        if len(records) >= max_items:
+            break
+    return records
+
+
+def _append_contract_artifact_paths(
+    verification_artifact_paths: List[str],
+    contract_artifacts: Sequence[Dict[str, Any]],
+) -> None:
+    """Expose contract-required file paths to deterministic verification."""
+    seen = set(verification_artifact_paths)
+    for record in contract_artifacts:
+        if not isinstance(record, dict):
+            continue
+        path = str(record.get("path") or "").strip()
+        if not path or path in seen:
+            continue
+        verification_artifact_paths.append(path)
+        seen.add(path)
 
 
 def _build_verification_artifact_paths(
@@ -2885,6 +3051,12 @@ async def code_executor_handler(
                 session_artifact_paths=session_artifact_paths,
                 session_dir=session_dir,
             )
+            contract_artifacts = _contract_required_artifact_records(
+                execution_spec=execution_spec,
+                task_work_dir=task_work_dir,
+                produced_files=produced_files,
+            )
+            _append_contract_artifact_paths(verification_artifact_paths, contract_artifacts)
             success = bool(local_result.get("success", False))
             result_payload = {
                 "tool": "code_executor",
@@ -2924,6 +3096,7 @@ async def code_executor_handler(
                 "produced_files": produced_files,
                 "produced_files_count": len(produced_files),
                 "artifact_paths": verification_artifact_paths,
+                "contract_artifacts": contract_artifacts,
                 "session_artifact_paths": session_artifact_paths,
                 # Unified output path (new)
                 "output_location": {
@@ -3480,6 +3653,12 @@ async def code_executor_handler(
                 session_artifact_paths=session_artifact_paths,
                 session_dir=session_dir,
             )
+            contract_artifacts = _contract_required_artifact_records(
+                execution_spec=execution_spec,
+                task_work_dir=task_work_dir,
+                produced_files=produced_files,
+            )
+            _append_contract_artifact_paths(verification_artifact_paths, contract_artifacts)
             code_directory, primary_code_file = _extract_code_workspace_metadata(
                 run_dir=task_work_dir,
                 produced_files=produced_files,
@@ -3559,6 +3738,12 @@ async def code_executor_handler(
                             session_artifact_paths=session_artifact_paths,
                             session_dir=session_dir,
                         )
+                        contract_artifacts = _contract_required_artifact_records(
+                            execution_spec=execution_spec,
+                            task_work_dir=task_work_dir,
+                            produced_files=produced_files,
+                        )
+                        _append_contract_artifact_paths(verification_artifact_paths, contract_artifacts)
                         if success:
                             finalization = _verify_execution_against_contract(
                                 execution_spec=CodeExecutionSpec(
@@ -3646,6 +3831,7 @@ async def code_executor_handler(
             "produced_files": produced_files,
             "produced_files_count": len(produced_files),
             "artifact_paths": verification_artifact_paths,
+            "contract_artifacts": contract_artifacts,
             "session_artifact_paths": session_artifact_paths,
             # Unified output path (new)
             "output_location": {

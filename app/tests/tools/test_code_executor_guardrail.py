@@ -22,6 +22,7 @@ from tool_box.tools_impl.code_executor import (
     _build_cli_failure_error,
     _build_code_executor_subprocess_env,
     _compact_cli_text,
+    _contract_required_artifact_records,
     _coerce_positive_int,
     _detect_scope_blocked,
     _extract_pending_qwen_function_call,
@@ -2167,3 +2168,145 @@ def test_build_cli_task_contract_includes_artifact_schema_guidance() -> None:
     assert "sparse_npz" in prompt
     assert "scipy.sparse.save_npz" in prompt
     assert "non-zero" in prompt
+
+
+def test_build_cli_task_contract_keeps_verification_from_rerunning_objective() -> None:
+    from tool_box.tools_impl.code_executor import _build_cli_task_contract
+
+    prompt = _build_cli_task_contract(
+        "Verify the host_genus_mapped.tsv file: read the first 5 lines, count total rows, and check that host_genus and host_mapping_status columns exist",
+        {
+            "task_id": 52,
+            "task_name": "Map Host Species to Genus Using NCBI Taxonomy",
+            "task_instruction": "Use NCBI Taxonomy to map all host species names to genus and produce host_genus_mapped.tsv",
+            "acceptance_criteria": {
+                "checks": [
+                    {"type": "file_nonempty", "path": "outputs/host_genus_mapped.tsv"},
+                ]
+            },
+        },
+    )
+
+    assert "Requested execution action:" in prompt
+    assert "Verification-only mode:" in prompt
+    assert "Do not regenerate task outputs" in prompt
+    assert "Atomic task objective:" not in prompt
+    assert "Use NCBI Taxonomy to map all host species names" not in prompt
+
+
+
+def test_contract_required_artifact_records_capture_expected_large_file(tmp_path) -> None:
+    run_dir = tmp_path / "run"
+    expected = run_dir / "qc_results" / "filtered_adata.h5ad"
+    expected.parent.mkdir(parents=True)
+    expected.write_bytes(b"h5ad-placeholder")
+
+    records = _contract_required_artifact_records(
+        execution_spec={
+            "acceptance_criteria": {
+                "checks": [
+                    {"type": "file_exists", "path": "qc_results/filtered_adata.h5ad"},
+                    {"type": "file_nonempty", "path": "qc_results/filtered_adata.h5ad"},
+                ]
+            }
+        },
+        task_work_dir=run_dir,
+        produced_files=[str(expected)],
+    )
+
+    assert records == [
+        {
+            "expected": "qc_results/filtered_adata.h5ad",
+            "path": str(expected.resolve()),
+            "size": len(b"h5ad-placeholder"),
+            "exists": True,
+            "relative_to_task": "qc_results/filtered_adata.h5ad",
+            "verification_source": "contract_required_output",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_local_code_executor_payload_includes_contract_artifacts(monkeypatch, tmp_path) -> None:
+    async def _fake_execute_code_locally(**kwargs):
+        work_dir = Path(kwargs["work_dir"])
+        target = work_dir / "qc_results" / "filtered_adata.h5ad"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"h5ad-placeholder")
+        return SimpleNamespace(
+            success=True,
+            stdout="ok",
+            stderr="",
+            exit_code=0,
+            code_file=None,
+            code="",
+            error_category=None,
+            error_summary=None,
+            fix_guidance=None,
+            execution_status="completed",
+            verification_status="passed",
+            failure_kind=None,
+            contract_diff=None,
+            verification=None,
+            artifact_verification={"actual_outputs": [str(target)]},
+            repair_attempts=0,
+            plan_patch_suggestion=None,
+            stdout_file=None,
+            stderr_file=None,
+            runtime_failure=False,
+            visualization_files=[],
+        )
+
+    monkeypatch.setattr(
+        code_executor_module,
+        "_resolve_code_executor_backend",
+        lambda _task: ("local", "analysis_fast_path", "forced local backend for test"),
+    )
+    monkeypatch.setattr(
+        "app.services.interpreter.code_execution.execute_code_locally",
+        _fake_execute_code_locally,
+    )
+    monkeypatch.setattr(
+        code_executor_module,
+        "_resolve_runtime_session_dir",
+        lambda _session_id: tmp_path / "session_test",
+    )
+    monkeypatch.setattr(
+        code_executor_module,
+        "_build_execution_spec",
+        lambda _plan_id, _task_id, task_text=None: {
+            "plan_id": 1,
+            "task_id": 2,
+            "task_name": "Load QC-filtered AnnData object",
+            "task_instruction": "Create qc_results/filtered_adata.h5ad",
+            "acceptance_criteria": {
+                "blocking": True,
+                "checks": [
+                    {"type": "file_exists", "path": "qc_results/filtered_adata.h5ad"},
+                    {"type": "file_nonempty", "path": "qc_results/filtered_adata.h5ad"},
+                ],
+            },
+            "dependency_outputs": [],
+            "dependency_artifact_paths": [],
+            "dependency_blockers": [],
+        },
+    )
+
+    result = await code_executor_module.code_executor_handler(
+        task="Create qc_results/filtered_adata.h5ad",
+        plan_id=1,
+        task_id=2,
+        session_id="test_contract_artifacts",
+        require_task_context=True,
+    )
+
+    assert result["success"] is True
+    assert len(result["contract_artifacts"]) == 1
+    record = result["contract_artifacts"][0]
+    assert record["expected"] == "qc_results/filtered_adata.h5ad"
+    assert record["size"] == len(b"h5ad-placeholder")
+    assert record["exists"] is True
+    assert record["relative_to_task"] == "qc_results/filtered_adata.h5ad"
+    assert record["verification_source"] == "contract_required_output"
+    assert Path(record["path"]).is_file()
+    assert record["path"] in result["artifact_paths"]

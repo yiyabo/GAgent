@@ -13,7 +13,7 @@ from app.services.deliverables import (
 )
 
 logger = logging.getLogger(__name__)
-_READ_ONLY_FILE_OPERATIONS = {"read", "list", "exists", "info"}
+_READ_ONLY_FILE_OPERATIONS = {"read", "list", "exists", "info", "profile", "census"}
 _MUTATING_FILE_OPERATIONS = {"write", "copy", "move", "delete"}
 
 
@@ -56,6 +56,7 @@ class UnifiedToolExecutor:
         "deliverable_submit": 60,
         "literature_pipeline": 300,
         "review_pack_writer": 300,
+        "scientific_figure_generator": 1200,
     }
 
     def __init__(self, *, default_timeout: int = DEFAULT_TIMEOUT_SECONDS) -> None:
@@ -167,6 +168,14 @@ class UnifiedToolExecutor:
                             summary = submit_summary
                             payload["summary"] = summary
                     payload["deliverables"] = report.to_dict()
+                    if tool_name == "deliverable_submit":
+                        report_payload = report.to_dict()
+                        requested = int(report_payload.get("submit_artifacts_requested") or 0)
+                        published = int(report_payload.get("submit_artifacts_published") or 0)
+                        skipped = int(report_payload.get("submit_artifacts_skipped") or 0)
+                        if requested and skipped and published == 0:
+                            payload["success"] = False
+                            payload["error"] = summary or "deliverable_submit skipped all requested artifacts"
             except Exception as exc:  # pragma: no cover - defensive
                 logger.warning("Deliverable publishing failed: %s", exc)
                 payload["deliverable_error"] = str(exc)

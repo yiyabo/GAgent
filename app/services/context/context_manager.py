@@ -38,10 +38,42 @@ def estimate_tokens(text: str) -> int:
     if not text:
         return 0
     try:
-        return len(_get_encoder().encode(text))
+        encoded_tokens = len(_get_encoder().encode(text))
+        cjk_chars = _count_cjk_chars(text)
+        if cjk_chars:
+            return max(encoded_tokens, cjk_chars)
+        return encoded_tokens
     except Exception:
-        # Fallback: ~4 chars per token for English, ~2 for CJK
-        return max(1, len(text) // 3)
+        cjk_chars = _count_cjk_chars(text)
+        if cjk_chars:
+            return max(1, cjk_chars + (len(text) - cjk_chars) // 4)
+        return max(1, len(text) // 4)
+
+
+def _count_cjk_chars(text: str) -> int:
+    """Count CJK codepoints for conservative token estimation.
+
+    Some tokenizer proxies undercount compact Chinese/Japanese/Korean text for
+    the model families used by this service.  A character floor prevents the
+    context manager from suppressing compaction on CJK-heavy conversations.
+    """
+    ranges = (
+        (0x3400, 0x4DBF),
+        (0x4E00, 0x9FFF),
+        (0xF900, 0xFAFF),
+        (0x3040, 0x30FF),
+        (0xAC00, 0xD7AF),
+        (0x20000, 0x2A6DF),
+        (0x2A700, 0x2B73F),
+        (0x2B740, 0x2B81F),
+        (0x2B820, 0x2CEAF),
+    )
+    count = 0
+    for char in text:
+        codepoint = ord(char)
+        if any(start <= codepoint <= end for start, end in ranges):
+            count += 1
+    return count
 
 
 def estimate_message_tokens(message: Dict[str, Any]) -> int:
