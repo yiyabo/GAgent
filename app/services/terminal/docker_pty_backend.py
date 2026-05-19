@@ -27,7 +27,31 @@ logger = logging.getLogger(__name__)
 # Configurable defaults (overridable via env)
 # ---------------------------------------------------------------------------
 QWEN_CODE_IMAGE = os.getenv("QWEN_CODE_DOCKER_IMAGE", "gagent-qwen-code-runtime:latest")
-CONTAINER_MEMORY_LIMIT = os.getenv("QWEN_CODE_CONTAINER_MEMORY", "4g")
+_UNLIMITED_MEMORY_LIMIT_VALUES = {
+    "",
+    "0",
+    "none",
+    "null",
+    "unlimited",
+    "host",
+    "off",
+    "false",
+    "no",
+}
+
+
+def resolve_qwen_container_memory_limit(value: Optional[str] = None) -> Optional[str]:
+    """Return the optional Docker memory limit for qwen-code containers."""
+    configured = os.getenv("QWEN_CODE_CONTAINER_MEMORY") if value is None else value
+    if configured is None:
+        return None
+    normalized = str(configured).strip()
+    if normalized.lower() in _UNLIMITED_MEMORY_LIMIT_VALUES:
+        return None
+    return normalized
+
+
+CONTAINER_MEMORY_LIMIT = resolve_qwen_container_memory_limit()
 CONTAINER_PIDS_LIMIT = int(os.getenv("QWEN_CODE_CONTAINER_PIDS", "512"))
 CONTAINER_WORKDIR = "/workspace"
 CONTAINER_HOME = "/tmp/gagent_home"
@@ -145,6 +169,7 @@ class DockerPTYBackend:
 
             identity_paths = self._create_identity_mount_files()
 
+            memory_limit = resolve_qwen_container_memory_limit()
             docker_cmd = [
                 "docker", "run", "-d",
                 "--name", self._container_name,
@@ -152,11 +177,12 @@ class DockerPTYBackend:
                 # Hardening
                 "--cap-drop=ALL",
                 "--security-opt=no-new-privileges",
-                f"--memory={CONTAINER_MEMORY_LIMIT}",
                 f"--pids-limit={CONTAINER_PIDS_LIMIT}",
                 # Match host UID/GID so workspace writes have correct ownership
                 "--user", f"{os.getuid()}:{os.getgid()}",
             ]
+            if memory_limit:
+                docker_cmd.append(f"--memory={memory_limit}")
 
             if env_file_path:
                 docker_cmd.extend(["--env-file", env_file_path])

@@ -138,6 +138,7 @@ class TestSharedTerminalReuse:
         assert container == "shared-container"
         assert driver.get_qwen_session_id("chat-123") == "shared-qwen-session"
         assert driver.get_execution_lock("chat-123") is shared_lock
+        await driver.cleanup_all()
 
     @pytest.mark.asyncio
     async def test_cleanup_does_not_remove_shared_terminal_container(self, monkeypatch):
@@ -205,6 +206,84 @@ class TestSharedTerminalReuse:
         )
 
         assert container == "gagent-qc-agent-chat-123"
+        await driver.cleanup_all()
+
+
+class TestQwenAgentContainerMemoryLimit:
+    """Verify dedicated qwen agent containers only set memory when requested."""
+
+    async def _create_dedicated_container(self, monkeypatch, tmp_path, *, memory_limit=None):
+        if memory_limit is None:
+            monkeypatch.delenv("QWEN_CODE_CONTAINER_MEMORY", raising=False)
+        else:
+            monkeypatch.setenv("QWEN_CODE_CONTAINER_MEMORY", memory_limit)
+
+        driver = QwenSessionDriver()
+        real_tmp = tmp_path / "real-tmp"
+        real_tmp.mkdir()
+        work_dir = real_tmp / "workspace"
+        captured = {}
+
+        async def _unexpected_shared_reuse(*_args, **_kwargs):
+            raise AssertionError("shared terminal reuse should be skipped for alias mounts")
+
+        class _Proc:
+            returncode = 0
+
+            async def communicate(self):
+                return b"container-id", b""
+
+        async def _fake_subprocess_exec(*args, **_kwargs):
+            captured["cmd"] = list(args)
+            return _Proc()
+
+        async def _fake_check_image(_image: str) -> None:
+            return None
+
+        async def _fake_force_remove(_name: str) -> None:
+            return None
+
+        monkeypatch.setattr(
+            "app.services.terminal.qwen_session_driver.terminal_session_manager.ensure_qwen_code_session",
+            _unexpected_shared_reuse,
+        )
+        monkeypatch.setattr(driver, "_check_image", _fake_check_image)
+        monkeypatch.setattr(driver, "_force_remove", _fake_force_remove)
+        monkeypatch.setattr(
+            "app.services.terminal.qwen_session_driver.DockerPTYBackend._create_identity_mount_files",
+            staticmethod(lambda: None),
+        )
+        monkeypatch.setattr(
+            "app.services.terminal.qwen_session_driver.asyncio.create_subprocess_exec",
+            _fake_subprocess_exec,
+        )
+
+        container = await driver.ensure_container(
+            "chat-123",
+            host_work_dir=str(work_dir),
+            extra_mounts=[(str(real_tmp), "/tmp")],
+        )
+
+        assert container == "gagent-qc-agent-chat-123"
+        command = captured["cmd"]
+        await driver.cleanup_all()
+        return command
+
+    @pytest.mark.asyncio
+    async def test_dedicated_container_omits_memory_flag_by_default(self, monkeypatch, tmp_path):
+        cmd = await self._create_dedicated_container(monkeypatch, tmp_path)
+
+        assert not any(str(token).startswith("--memory") for token in cmd)
+
+    @pytest.mark.asyncio
+    async def test_dedicated_container_uses_explicit_memory_flag(self, monkeypatch, tmp_path):
+        cmd = await self._create_dedicated_container(
+            monkeypatch,
+            tmp_path,
+            memory_limit="96g",
+        )
+
+        assert "--memory=96g" in cmd
 
 
 class TestTTLReaper:

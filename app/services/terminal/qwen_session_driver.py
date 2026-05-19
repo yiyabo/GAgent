@@ -36,6 +36,7 @@ from .docker_pty_backend import (
     QWEN_EXECUTABLE,
     DockerPTYBackend,
     _sanitise_qwen_session_id,
+    resolve_qwen_container_memory_limit,
 )
 from .session_manager import terminal_session_manager
 
@@ -43,7 +44,6 @@ logger = logging.getLogger(__name__)
 
 # Re-use image/limits from docker_pty_backend
 _DEFAULT_IMAGE = os.getenv("QWEN_CODE_DOCKER_IMAGE", "gagent-qwen-code-runtime:latest")
-_MEMORY_LIMIT = os.getenv("QWEN_CODE_CONTAINER_MEMORY", "4g")
 _PIDS_LIMIT = int(os.getenv("QWEN_CODE_CONTAINER_PIDS", "512"))
 _CONTAINER_LABEL = "gagent.component=qwen-code-agent"
 
@@ -70,7 +70,7 @@ class QwenSessionDriver:
         self._lock = asyncio.Lock()
         # Idle container TTL tracking
         self._last_used: Dict[str, float] = {}  # session_id → monotonic timestamp
-        self._ttl_task: Optional[asyncio.Task] = None
+        self._ttl_task: Optional[asyncio.Task[None]] = None
         self._ttl_seconds: float = float(
             os.getenv("QWEN_CONTAINER_IDLE_TTL", "600")
         )  # default 10 minutes
@@ -193,16 +193,18 @@ class QwenSessionDriver:
                             f.write(f"{k}={v}\n")
                 identity_paths = DockerPTYBackend._create_identity_mount_files()
 
+                memory_limit = resolve_qwen_container_memory_limit()
                 docker_cmd: List[str] = [
                     "docker", "run", "-d",
                     "--name", name,
                     "--label", _CONTAINER_LABEL,
                     "--cap-drop=ALL",
                     "--security-opt=no-new-privileges",
-                    f"--memory={_MEMORY_LIMIT}",
                     f"--pids-limit={_PIDS_LIMIT}",
                     "--user", f"{os.getuid()}:{os.getgid()}",
                 ]
+                if memory_limit:
+                    docker_cmd.append(f"--memory={memory_limit}")
                 if env_file_path:
                     docker_cmd.extend(["--env-file", env_file_path])
                 if identity_paths:
@@ -323,8 +325,8 @@ class QwenSessionDriver:
         try:
             await asyncio.wait_for(
                 asyncio.gather(
-                    _drain(proc.stdout, stdout_lines, on_stdout),  # type: ignore[arg-type]
-                    _drain(proc.stderr, stderr_lines, on_stderr),  # type: ignore[arg-type]
+                    _drain(proc.stdout or asyncio.StreamReader(), stdout_lines, on_stdout),
+                    _drain(proc.stderr or asyncio.StreamReader(), stderr_lines, on_stderr),
                 ),
                 timeout=timeout,
             )
@@ -392,10 +394,14 @@ class QwenSessionDriver:
             identity_paths = list(self._identity_file_paths.values())
             self._identity_file_paths.clear()
             self._last_used.clear()
-        # Cancel the TTL reaper task
-        if self._ttl_task and not self._ttl_task.done():
-            self._ttl_task.cancel()
-            self._ttl_task = None
+        ttl_task = self._ttl_task
+        if ttl_task and not ttl_task.done():
+            ttl_task.cancel()
+            try:
+                await ttl_task
+            except asyncio.CancelledError:
+                pass
+        self._ttl_task = None
         for name in names:
             await self._force_remove(name)
         for paths in identity_paths:
@@ -439,7 +445,7 @@ class QwenSessionDriver:
                             continue
                         execution_lock = self._locks.get(session_id)
                         if execution_lock is not None and execution_lock.locked():
-                            self._touch(session_id)
+                            self._last_used[session_id] = now
                             logger.debug(
                                 "Skipping TTL reap for active qwen container session %s",
                                 session_id,
@@ -454,6 +460,9 @@ class QwenSessionDriver:
                         self._ttl_seconds,
                     )
                     await self.cleanup(session_id)
+                if not self._containers:
+                    self._ttl_task = None
+                    break
             except asyncio.CancelledError:
                 break
             except Exception as exc:
