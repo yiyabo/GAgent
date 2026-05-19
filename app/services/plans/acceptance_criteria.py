@@ -374,7 +374,7 @@ def _content_checks_for_deliverable(candidate: str) -> List[Dict[str, Any]]:
 def resolve_glob_pattern(raw_check: Optional[Dict[str, Any]]) -> Optional[str]:
     if not isinstance(raw_check, dict):
         return None
-    for key in ("glob", "path"):
+    for key in ("glob", "pattern", "path"):
         value = raw_check.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip()
