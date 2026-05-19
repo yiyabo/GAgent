@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List, Optional, Set
 
-from .artifact_contracts import load_artifact_manifest
+from .artifact_contracts import canonical_artifact_path, load_artifact_manifest
 from .artifact_preflight import ArtifactPreflightIssue, ArtifactPreflightService
 from .plan_models import PlanTree
 from .task_verification import TaskVerificationService
@@ -308,14 +308,24 @@ class PlanStatusResolver:
             publish_aliases = list(contract_snapshot.publishes) if contract_snapshot else []
             authoritative_publish_aliases = list(contract_snapshot.explicit_publishes) if contract_snapshot else []
             contract_source = contract_snapshot.contract_source if contract_snapshot else "none"
-            missing_required_aliases = [
+            canonical_required_aliases = [
                 alias
                 for alias in authoritative_required_aliases
+                if canonical_artifact_path(plan_id, alias) is not None
+            ]
+            canonical_publish_aliases = [
+                alias
+                for alias in authoritative_publish_aliases
+                if canonical_artifact_path(plan_id, alias) is not None
+            ]
+            missing_required_aliases = [
+                alias
+                for alias in canonical_required_aliases
                 if alias not in preflight.manifest_resolved_aliases
             ]
             published_aliases: List[str] = []
             missing_publish_aliases: List[str] = []
-            for alias in authoritative_publish_aliases:
+            for alias in canonical_publish_aliases:
                 entry = manifest_artifacts.get(alias) if isinstance(manifest_artifacts, dict) else None
                 producer_task_id = int(entry.get("producer_task_id") or -1) if isinstance(entry, dict) else -1
                 if alias in preflight.manifest_resolved_aliases and producer_task_id == task_id:

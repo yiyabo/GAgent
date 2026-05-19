@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Optional,
 from pydantic import BaseModel, Field, ValidationError
 
 from ...config.executor_config import ExecutorSettings, get_executor_settings
-from ...llm import LLMClient, NativeStreamResult
+from ...llm import LLMClient, NativeStreamResult, close_current_loop_async_client
 from ..tool_schemas import build_executor_tool_schemas, EXECUTOR_AVAILABLE_TOOLS
 from app.services.resources.resource_registry import resolve_resources
 from ..deep_think_agent import (
@@ -31,6 +31,7 @@ from ..llm.llm_service import LLMService
 from ..skills import get_skills_loader
 from .artifact_contracts import (
     artifact_manifest_path,
+    canonical_artifact_path,
     canonicalize_artifact_alias,
     extend_contract_with_runtime_candidates,
     find_candidate_source_for_alias,
@@ -61,13 +62,20 @@ def _run_coroutine_sync(coro: Any) -> Any:
 
     When called from a thread that already has a running event loop (e.g. via
     asyncio.to_thread), this spawns a new thread with its own event loop to
-    avoid "cannot run nested event loop" errors.
-
-    Thread-safety note: httpx.AsyncClient is thread-safe per its documentation,
-    so creating a new event loop in a worker thread to drive the same client
-    instance is safe.  However, any non-thread-safe state (e.g. mutable shared
-    caches) accessed inside ``coro`` must use appropriate synchronization.
+    avoid "cannot run nested event loop" errors.  Any async LLM HTTP client
+    created inside that temporary loop is closed before ``asyncio.run`` closes
+    the loop, avoiding cross-loop reuse of httpx/anyio primitives.
     """
+
+    async def _run_and_cleanup() -> Any:
+        try:
+            return await coro
+        finally:
+            try:
+                await close_current_loop_async_client()
+            except Exception as exc:
+                logger.warning("Failed to close temporary loop LLM client: %s", exc)
+
     try:
         running_loop = asyncio.get_running_loop()
     except RuntimeError:
@@ -75,8 +83,8 @@ def _run_coroutine_sync(coro: Any) -> Any:
 
     if running_loop and running_loop.is_running():
         with ThreadPoolExecutor(max_workers=1) as executor:
-            return executor.submit(lambda: asyncio.run(coro)).result()
-    return asyncio.run(coro)
+            return executor.submit(lambda: asyncio.run(_run_and_cleanup())).result()
+    return asyncio.run(_run_and_cleanup())
 
 
 def _log_job(level: str, message: str, metadata: Optional[Dict[str, Any]] = None) -> None:
@@ -3521,6 +3529,7 @@ class PlanExecutor:
             canonicalize_artifact_alias(alias)
             for alias in explicit_required_aliases
             if str(alias or "").strip()
+            and canonical_artifact_path(plan_id, alias) is not None
         ]
         missing = [
             alias

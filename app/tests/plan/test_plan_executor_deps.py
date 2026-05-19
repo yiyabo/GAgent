@@ -1108,6 +1108,57 @@ def test_contract_repair_query_prefers_runtime_artifacts_over_external_copy():
         # Backfill should have been called for the producer
         assert 1 in backfill_calls
 
+    def test_resolve_required_artifacts_ignores_unregistered_business_aliases(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        monkeypatch.chdir(tmp_path)
+        producer = PlanNode(
+            id=1,
+            plan_id=7,
+            name="Compute derived features",
+            status="completed",
+            metadata={
+                "artifact_contract": {
+                    "publishes": ["feature_engineering.derived_features_csv"],
+                }
+            },
+            execution_result=json.dumps({
+                "status": "completed",
+                "content": "ok",
+                "metadata": {"verification_status": "passed"},
+            }),
+        )
+        consumer = PlanNode(
+            id=2,
+            plan_id=7,
+            name="Encode features",
+            status="pending",
+            metadata={
+                "artifact_contract": {
+                    "requires": ["feature_engineering.derived_features_csv"],
+                }
+            },
+            dependencies=[1],
+        )
+        tree = _make_tree(7, [producer, consumer])
+        repo = MagicMock()
+        repo.get_plan_tree.return_value = tree
+        executor = _make_executor(repo)
+
+        _contract, resolved, missing, producers = executor._resolve_required_artifacts(
+            7,
+            consumer,
+            dependencies=[producer],
+            tree=tree,
+            session_context={},
+        )
+
+        assert resolved == {}
+        assert missing == []
+        assert producers == {}
+
 
 
 def test_resolve_required_artifacts_ignores_invalid_manifest_entry(monkeypatch, tmp_path):
