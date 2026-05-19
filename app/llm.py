@@ -4,6 +4,8 @@ import logging
 import os
 import random
 import time
+import threading
+import weakref
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Callable, Dict, List, Optional
 
@@ -18,17 +20,21 @@ logger = logging.getLogger(__name__)
 # Shared HTTP connection pools — eliminates per-request TCP/TLS handshake
 # overhead (typically 60-150 ms saved per LLM call).
 #
-# * ``_shared_async_client`` is used by all ``async`` LLM methods.
+# * Async clients are scoped per running event loop.  httpx/anyio transports
+#   carry loop-bound synchronization primitives, so one global AsyncClient
+#   cannot be reused by plan-executor worker loops and the ASGI lifespan loop.
 # * ``_shared_sync_client`` is used by the synchronous ``chat()`` method,
 #   replacing the legacy ``urllib.request.urlopen`` calls which created a
 #   brand-new connection each time *and* blocked the event loop.
 #
-# Both clients are initialised lazily on first access and must be shut down
+# Clients are initialised lazily on first access and must be shut down
 # explicitly via ``close_shared_clients()`` during application teardown
-# (called from ``app/main.py`` lifespan).
+# (called from ``app/main.py`` lifespan).  Temporary worker loops should call
+# ``close_current_loop_async_client()`` before the loop is closed.
 # ---------------------------------------------------------------------------
 
-_shared_async_client: Optional[httpx.AsyncClient] = None
+_shared_async_clients: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, httpx.AsyncClient]" = weakref.WeakKeyDictionary()
+_async_clients_lock = threading.RLock()
 _shared_sync_client: Optional[httpx.Client] = None
 
 # Default pool limits — generous enough for multi-provider concurrent usage
@@ -64,16 +70,42 @@ def _make_request_timeout(overall: Optional[float]) -> Optional[httpx.Timeout]:
 
 
 def _get_shared_async_client() -> httpx.AsyncClient:
-    """Return (and lazily create) the shared async HTTP client."""
-    global _shared_async_client
-    if _shared_async_client is None:
-        logger.info("[LLM] Creating shared async httpx client (connection pool)")
-        _shared_async_client = httpx.AsyncClient(
-            limits=_POOL_LIMITS,
-            timeout=_DEFAULT_TIMEOUT,
-            follow_redirects=True,
-        )
-    return _shared_async_client
+    """Return the shared async HTTP client for the current event loop."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError as exc:
+        raise RuntimeError("Async LLM client requested outside a running event loop") from exc
+
+    with _async_clients_lock:
+        client = _shared_async_clients.get(loop)
+        if client is None or getattr(client, "is_closed", False):
+            logger.info(
+                "[LLM] Creating shared async httpx client for event loop %s",
+                id(loop),
+            )
+            client = httpx.AsyncClient(
+                limits=_POOL_LIMITS,
+                timeout=_DEFAULT_TIMEOUT,
+                follow_redirects=True,
+            )
+            _shared_async_clients[loop] = client
+        return client
+
+
+async def close_current_loop_async_client() -> None:
+    """Close and discard the async HTTP client bound to the current event loop."""
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+
+    with _async_clients_lock:
+        client = _shared_async_clients.pop(loop, None)
+    if client is None or getattr(client, "is_closed", False):
+        return
+
+    await client.aclose()
+    logger.info("[LLM] Shared async httpx client closed for event loop %s", id(loop))
 
 
 def _get_shared_sync_client() -> httpx.Client:
@@ -98,14 +130,28 @@ async def init_shared_clients() -> None:
 
 async def close_shared_clients() -> None:
     """Gracefully close shared HTTP clients.  Called from application shutdown."""
-    global _shared_async_client, _shared_sync_client
-    if _shared_async_client is not None:
+    global _shared_sync_client
+
+    with _async_clients_lock:
+        async_clients = list(_shared_async_clients.items())
+        _shared_async_clients.clear()
+
+    current_loop = asyncio.get_running_loop()
+    for loop, client in async_clients:
+        if client is None or getattr(client, "is_closed", False):
+            continue
         try:
-            await _shared_async_client.aclose()
-            logger.info("[LLM] Shared async httpx client closed")
+            if loop is current_loop:
+                await client.aclose()
+            elif not loop.is_closed() and loop.is_running():
+                future = asyncio.run_coroutine_threadsafe(client.aclose(), loop)
+                await asyncio.wrap_future(future)
+            else:
+                await client.aclose()
+            logger.info("[LLM] Shared async httpx client closed for event loop %s", id(loop))
         except Exception as exc:
-            logger.warning("[LLM] Error closing async client: %s", exc)
-        _shared_async_client = None
+            logger.warning("[LLM] Error closing async client for event loop %s: %s", id(loop), exc)
+
     if _shared_sync_client is not None:
         try:
             _shared_sync_client.close()
