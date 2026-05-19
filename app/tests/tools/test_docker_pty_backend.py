@@ -16,6 +16,7 @@ from app.services.terminal.docker_pty_backend import (
     DockerPTYBackend,
     QWEN_CODE_IMAGE,
     QWEN_EXECUTABLE,
+    resolve_qwen_container_memory_limit,
 )
 from app.services.terminal.session_manager import TerminalSessionManager
 
@@ -108,6 +109,93 @@ class TestIdentityMountContents:
 
         assert f"{CONTAINER_USERNAME}:x:501:20:{CONTAINER_USERNAME}:{CONTAINER_HOME}:/bin/bash" in passwd_contents
         assert f"{CONTAINER_USERNAME}:x:20:" in group_contents
+
+
+class TestQwenContainerMemoryLimit:
+    """Verify qwen-code Docker memory limits are opt-in."""
+
+    def test_unset_and_unlimited_values_disable_memory_limit(self, monkeypatch):
+        monkeypatch.delenv("QWEN_CODE_CONTAINER_MEMORY", raising=False)
+        assert resolve_qwen_container_memory_limit() is None
+        for value in ("", "0", "none", "null", "unlimited", "host", "off", "false", "no"):
+            assert resolve_qwen_container_memory_limit(value) is None
+
+    def test_explicit_value_is_preserved(self):
+        assert resolve_qwen_container_memory_limit(" 64g ") == "64g"
+
+    @pytest.mark.asyncio
+    async def test_spawn_omits_memory_flag_by_default(self, monkeypatch):
+        monkeypatch.delenv("QWEN_CODE_CONTAINER_MEMORY", raising=False)
+        captured = {}
+
+        class _Proc:
+            returncode = 1
+
+            async def communicate(self):
+                return b"", b"create failed"
+
+        async def _fake_create_subprocess_exec(*args, **_kwargs):
+            captured["cmd"] = list(args)
+            return _Proc()
+
+        backend = DockerPTYBackend()
+        monkeypatch.setattr(DockerPTYBackend, "_check_image", AsyncMock())
+        monkeypatch.setattr(
+            DockerPTYBackend,
+            "_build_container_env",
+            staticmethod(lambda env=None: {}),
+        )
+        monkeypatch.setattr(
+            DockerPTYBackend,
+            "_create_identity_mount_files",
+            staticmethod(lambda: (None, None)),
+        )
+        monkeypatch.setattr(
+            "app.services.terminal.docker_pty_backend.asyncio.create_subprocess_exec",
+            _fake_create_subprocess_exec,
+        )
+
+        with pytest.raises(RuntimeError, match="Failed to create container"):
+            await backend.spawn(cwd="/tmp")
+
+        assert not any(str(token).startswith("--memory") for token in captured["cmd"])
+
+    @pytest.mark.asyncio
+    async def test_spawn_uses_explicit_memory_flag(self, monkeypatch):
+        monkeypatch.setenv("QWEN_CODE_CONTAINER_MEMORY", "64g")
+        captured = {}
+
+        class _Proc:
+            returncode = 1
+
+            async def communicate(self):
+                return b"", b"create failed"
+
+        async def _fake_create_subprocess_exec(*args, **_kwargs):
+            captured["cmd"] = list(args)
+            return _Proc()
+
+        backend = DockerPTYBackend()
+        monkeypatch.setattr(DockerPTYBackend, "_check_image", AsyncMock())
+        monkeypatch.setattr(
+            DockerPTYBackend,
+            "_build_container_env",
+            staticmethod(lambda env=None: {}),
+        )
+        monkeypatch.setattr(
+            DockerPTYBackend,
+            "_create_identity_mount_files",
+            staticmethod(lambda: (None, None)),
+        )
+        monkeypatch.setattr(
+            "app.services.terminal.docker_pty_backend.asyncio.create_subprocess_exec",
+            _fake_create_subprocess_exec,
+        )
+
+        with pytest.raises(RuntimeError, match="Failed to create container"):
+            await backend.spawn(cwd="/tmp")
+
+        assert "--memory=64g" in captured["cmd"]
 
 
 class TestDockerPTYBackendProperties:
@@ -250,7 +338,16 @@ class TestTerminalSessionToolModeEnum:
     """Ensure the tool schema advertises qwen_code."""
 
     def test_tool_schema_includes_qwen_code(self):
-        from tool_box.tools_impl.terminal_session import terminal_session_tool
+        from tool_box.tools_impl import terminal_session as terminal_session_module
 
-        mode_schema = terminal_session_tool["parameters_schema"]["properties"]["mode"]
-        assert "qwen_code" in mode_schema["enum"]
+        terminal_tool = terminal_session_module.terminal_session_tool
+        assert isinstance(terminal_tool, dict)
+        parameters_schema = terminal_tool["parameters_schema"]
+        assert isinstance(parameters_schema, dict)
+        properties = parameters_schema["properties"]
+        assert isinstance(properties, dict)
+        mode_schema = properties["mode"]
+        assert isinstance(mode_schema, dict)
+        enum_values = mode_schema["enum"]
+        assert isinstance(enum_values, list)
+        assert "qwen_code" in enum_values
