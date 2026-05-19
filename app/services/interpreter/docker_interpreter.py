@@ -14,7 +14,7 @@ import sys
 import time
 from pathlib import Path
 from urllib.parse import urlparse
-from typing import Dict, Optional, Sequence
+from typing import Any, Dict, Optional, Sequence
 
 from .local_interpreter import CodeExecutionResult
 
@@ -35,17 +35,39 @@ _BENIGN_CLI_STDERR_PREFIXES = (
     "WARNING: The requested image's platform",
 )
 
+_UNLIMITED_MEMORY_LIMIT_VALUES = {
+    "",
+    "0",
+    "none",
+    "null",
+    "unlimited",
+    "host",
+    "off",
+    "false",
+    "no",
+}
+
+
+def resolve_docker_interpreter_memory_limit(value: Optional[str] = None) -> Optional[str]:
+    """Return the optional Docker memory limit for code interpreter runs."""
+    configured = os.getenv("CODE_EXECUTOR_DOCKER_MEMORY") if value is None else value
+    if configured is None:
+        return None
+    normalized = str(configured).strip()
+    if normalized.lower() in _UNLIMITED_MEMORY_LIMIT_VALUES:
+        return None
+    return normalized
+
 try:
     import docker
     from docker.errors import APIError, DockerException, ImageNotFound
-
-    HAS_DOCKER = True
 except ImportError:
-    HAS_DOCKER = False
     docker = None
     APIError = Exception
     DockerException = Exception
     ImageNotFound = Exception
+
+HAS_DOCKER = docker is not None
 
 
 class DockerCodeInterpreter:
@@ -95,7 +117,7 @@ class DockerCodeInterpreter:
 
         if HAS_DOCKER:
             try:
-                self.client = docker.from_env()
+                self.client = docker.from_env() if docker is not None else None
             except Exception as e:
                 self.client_error = str(e)
                 docker_bin = self._docker_binary()
@@ -205,7 +227,7 @@ class DockerCodeInterpreter:
                 return True
         return False
 
-    def _build_env(self) -> dict:
+    def _build_env(self) -> dict[str, str]:
         # Build a minimal, explicit environment for the container.
         # IMPORTANT: we do NOT inherit os.environ here — this is intentional.
         # Host conda state (CONDA_PREFIX, CONDA_DEFAULT_ENV, …) and any other
@@ -237,7 +259,7 @@ class DockerCodeInterpreter:
             host = urlparse(f"http://{value}").hostname
         return host in {"127.0.0.1", "localhost", "::1"}
 
-    def _should_use_host_network(self, environment: dict) -> bool:
+    def _should_use_host_network(self, environment: dict[str, str]) -> bool:
         if not sys.platform.startswith("linux"):
             return False
         return any(
@@ -459,15 +481,17 @@ os.makedirs(_NUMBA_CACHE_PATH, exist_ok=True)
                 {host: spec["mode"] for host, spec in volumes.items()},
             )
 
-            run_kwargs = {
+            memory_limit = resolve_docker_interpreter_memory_limit()
+            run_kwargs: dict[str, Any] = {
                 "image": self.image,
                 "command": list(command),
                 "detach": True,
-                "mem_limit": "8g",
                 "volumes": volumes,
                 "working_dir": self.work_dir,
                 "environment": environment,
             }
+            if memory_limit:
+                run_kwargs["mem_limit"] = memory_limit
             platform = self._detect_image_platform()
             if platform:
                 run_kwargs["platform"] = platform
@@ -478,7 +502,10 @@ os.makedirs(_NUMBA_CACHE_PATH, exist_ok=True)
             if user:
                 run_kwargs["user"] = user
 
-            container = self.client.containers.run(**run_kwargs)
+            client = self.client
+            if client is None:
+                return self._run_container_cli(command)
+            container = client.containers.run(**run_kwargs)
 
             start_time = time.time()
             while True:
@@ -550,15 +577,16 @@ os.makedirs(_NUMBA_CACHE_PATH, exist_ok=True)
                 {host: spec["mode"] for host, spec in volumes.items()},
             )
 
+            memory_limit = resolve_docker_interpreter_memory_limit()
             cli_command = [
                 docker_bin,
                 "run",
                 "--rm",
-                "--memory",
-                "8g",
                 "--workdir",
                 self.work_dir,
             ]
+            if memory_limit:
+                cli_command.extend(["--memory", memory_limit])
             platform = self._detect_image_platform()
             if platform:
                 cli_command.extend(["--platform", platform])

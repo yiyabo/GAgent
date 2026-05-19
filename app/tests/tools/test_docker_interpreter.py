@@ -4,7 +4,10 @@ from pathlib import Path
 import pytest
 
 from app.services.interpreter import docker_interpreter as docker_interpreter_module
-from app.services.interpreter.docker_interpreter import DockerCodeInterpreter
+from app.services.interpreter.docker_interpreter import (
+    DockerCodeInterpreter,
+    resolve_docker_interpreter_memory_limit,
+)
 
 
 class _FakeContainer:
@@ -58,6 +61,18 @@ class _FakeClient:
     def __init__(self, container: _FakeContainer, image_exc: Exception | None = None):
         self.images = _FakeImages(exc=image_exc)
         self.containers = _FakeContainers(container)
+
+
+def _set_fake_client(interpreter: DockerCodeInterpreter, client: _FakeClient | None) -> None:
+    setattr(interpreter, "client", client)
+
+
+def test_docker_interpreter_memory_limit_resolution(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("CODE_EXECUTOR_DOCKER_MEMORY", raising=False)
+    assert resolve_docker_interpreter_memory_limit() is None
+    for value in ("", "0", "none", "null", "unlimited", "host", "off", "false", "no"):
+        assert resolve_docker_interpreter_memory_limit(value) is None
+    assert resolve_docker_interpreter_memory_limit(" 64g ") == "64g"
 
 
 def test_build_volume_mounts_use_same_host_paths_and_dedupe(tmp_path: Path) -> None:
@@ -138,6 +153,7 @@ def test_run_file_passes_same_path_mounts_env_and_user(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    monkeypatch.delenv("CODE_EXECUTOR_DOCKER_MEMORY", raising=False)
     for name in (
         "HTTP_PROXY",
         "HTTPS_PROXY",
@@ -166,7 +182,7 @@ def test_run_file_passes_same_path_mounts_env_and_user(
         data_dir=str(data_dir),
         extra_read_dirs=[str(shared_dir)],
     )
-    interpreter.client = client
+    _set_fake_client(interpreter, client)
 
     result = interpreter.run_file(str(code_file))
 
@@ -187,6 +203,7 @@ def test_run_file_passes_same_path_mounts_env_and_user(
     assert kwargs["volumes"][str(data_dir)] == {"bind": str(data_dir), "mode": "ro"}
     assert kwargs["volumes"][str(shared_dir)] == {"bind": str(shared_dir), "mode": "ro"}
     assert kwargs["network_disabled"] is False
+    assert "mem_limit" not in kwargs
     assert kwargs["environment"] == {
         "WORKSPACE": str(work_dir),
         "DATA_DIR": str(data_dir),
@@ -198,6 +215,29 @@ def test_run_file_passes_same_path_mounts_env_and_user(
     }
     assert kwargs["user"] == f"{os.getuid()}:{os.getgid()}"
     assert container.removed is True
+
+
+def test_run_file_passes_explicit_memory_limit_to_sdk(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("CODE_EXECUTOR_DOCKER_MEMORY", "64g")
+    work_dir = tmp_path / "session" / "run"
+    work_dir.mkdir(parents=True, exist_ok=True)
+    code_file = work_dir / "task_code.py"
+    code_file.write_text("print('ok')", encoding="utf-8")
+
+    container = _FakeContainer(stdout=b"ok\n", stderr=b"", exit_code=0)
+    client = _FakeClient(container)
+    interpreter = DockerCodeInterpreter(work_dir=str(work_dir))
+    _set_fake_client(interpreter, client)
+
+    result = interpreter.run_file(str(code_file))
+
+    assert result.status == "success"
+    kwargs = client.containers.last_kwargs
+    assert kwargs is not None
+    assert kwargs["mem_limit"] == "64g"
 
 
 def test_run_file_fails_fast_when_image_missing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -213,7 +253,7 @@ def test_run_file_fails_fast_when_image_missing(monkeypatch: pytest.MonkeyPatch,
 
     client = _FakeClient(_FakeContainer(), image_exc=MissingImageError("missing"))
     interpreter = DockerCodeInterpreter(image="missing:image", work_dir=str(work_dir))
-    interpreter.client = client
+    _set_fake_client(interpreter, client)
 
     result = interpreter.run_file(str(code_file))
 
@@ -240,7 +280,7 @@ def test_run_file_uses_host_network_for_loopback_proxy(
     container = _FakeContainer(stdout=b"ok\n", stderr=b"", exit_code=0)
     client = _FakeClient(container)
     interpreter = DockerCodeInterpreter(work_dir=str(work_dir))
-    interpreter.client = client
+    _set_fake_client(interpreter, client)
 
     result = interpreter.run_file(str(code_file))
 
@@ -258,6 +298,7 @@ def test_run_file_falls_back_to_docker_cli_when_sdk_client_unavailable(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    monkeypatch.delenv("CODE_EXECUTOR_DOCKER_MEMORY", raising=False)
     work_dir = tmp_path / "session" / "run"
     data_dir = tmp_path / "data"
     for path in (work_dir, data_dir):
@@ -299,7 +340,7 @@ def test_run_file_falls_back_to_docker_cli_when_sdk_client_unavailable(
         work_dir=str(work_dir),
         data_dir=str(data_dir),
     )
-    interpreter.client = None
+    _set_fake_client(interpreter, None)
     interpreter.client_error = "sdk unavailable"
 
     result = interpreter.run_file(str(code_file))
@@ -311,6 +352,50 @@ def test_run_file_falls_back_to_docker_cli_when_sdk_client_unavailable(
     run_cmd = next(c for c, _ in commands if c[:2] == ["/usr/bin/docker", "run"])
     assert "--platform" in run_cmd
     assert "linux/amd64" in run_cmd
+    assert "--memory" not in run_cmd
     assert str(work_dir) in run_cmd
     assert "custom:image" in run_cmd
     assert f"{work_dir}:{work_dir}:rw" in run_cmd
+
+
+def test_run_file_passes_explicit_memory_limit_to_docker_cli(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("CODE_EXECUTOR_DOCKER_MEMORY", "32g")
+    work_dir = tmp_path / "session" / "run"
+    work_dir.mkdir(parents=True, exist_ok=True)
+    code_file = work_dir / "task_code.py"
+    code_file.write_text("print('ok')", encoding="utf-8")
+
+    commands = []
+
+    def _mock_run(cmd, capture_output=False, text=False, check=False, timeout=None):
+        commands.append((list(cmd), timeout))
+        if cmd[:3] == ["/usr/bin/docker", "images", "-q"]:
+            return docker_interpreter_module.subprocess.CompletedProcess(
+                cmd, 0, stdout="abc123\n", stderr=""
+            )
+        if cmd[:3] == ["/usr/bin/docker", "image", "inspect"]:
+            return docker_interpreter_module.subprocess.CompletedProcess(
+                cmd, 0, stdout="linux/amd64\n", stderr=""
+            )
+        if cmd[:2] == ["/usr/bin/docker", "run"]:
+            return docker_interpreter_module.subprocess.CompletedProcess(
+                cmd, 0, stdout="ok\n", stderr=""
+            )
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(docker_interpreter_module.shutil, "which", lambda name: "/usr/bin/docker")
+    monkeypatch.setattr(docker_interpreter_module.subprocess, "run", _mock_run)
+
+    interpreter = DockerCodeInterpreter(work_dir=str(work_dir))
+    _set_fake_client(interpreter, None)
+    interpreter.client_error = "sdk unavailable"
+
+    result = interpreter.run_file(str(code_file))
+
+    assert result.status == "success"
+    run_cmd = next(c for c, _ in commands if c[:2] == ["/usr/bin/docker", "run"])
+    memory_index = run_cmd.index("--memory")
+    assert run_cmd[memory_index + 1] == "32g"
