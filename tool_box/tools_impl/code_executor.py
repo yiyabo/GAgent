@@ -203,6 +203,8 @@ _QWEN_LOGGING_TO_LINE_RE = re.compile(
 _QWEN_TRANSCRIPTS_ROOT = "/tmp/gagent_home/.qwen/projects"
 _QWEN_SHELL_FALLBACK_TIMEOUT_MS = 600000
 _QWEN_SHELL_FALLBACK_MAX_TIMEOUT_MS = 3600000
+_QWEN_COMPLETED_OUTPUT_EXIT_GRACE_SECONDS = 180.0
+_QWEN_COMPLETED_OUTPUT_EXIT_CHECK_SECONDS = 15.0
 
 
 def _partition_cli_stderr_lines(stderr: str) -> tuple[List[str], str]:
@@ -331,6 +333,109 @@ def _extract_qwen_debug_log_path(stderr: str) -> str:
         return ""
     _lines, debug_log_path = _partition_cli_stderr_lines(stderr)
     return debug_log_path
+
+
+def _resolve_qwen_completed_output_exit_grace_seconds() -> float:
+    raw = str(os.getenv("QWEN_COMPLETED_OUTPUT_EXIT_GRACE_SECONDS", "")).strip()
+    if not raw:
+        return _QWEN_COMPLETED_OUTPUT_EXIT_GRACE_SECONDS
+    try:
+        return max(30.0, min(1800.0, float(raw)))
+    except ValueError:
+        return _QWEN_COMPLETED_OUTPUT_EXIT_GRACE_SECONDS
+
+
+def _resolve_qwen_completed_output_exit_check_seconds() -> float:
+    raw = str(os.getenv("QWEN_COMPLETED_OUTPUT_EXIT_CHECK_SECONDS", "")).strip()
+    if not raw:
+        return _QWEN_COMPLETED_OUTPUT_EXIT_CHECK_SECONDS
+    try:
+        return max(5.0, min(300.0, float(raw)))
+    except ValueError:
+        return _QWEN_COMPLETED_OUTPUT_EXIT_CHECK_SECONDS
+
+
+def _verify_contract_for_qwen_early_exit(
+    execution_spec: Dict[str, Any],
+    *,
+    task_work_dir: Path,
+) -> object:
+    from app.services.interpreter.code_execution import (
+        CodeExecutionSpec,
+        _verify_execution_against_contract,
+    )
+
+    return _verify_execution_against_contract(
+        execution_spec=CodeExecutionSpec(
+            plan_id=execution_spec.get("plan_id"),
+            task_id=execution_spec.get("task_id"),
+            task_name=execution_spec.get("task_name"),
+            task_instruction=execution_spec.get("task_instruction"),
+            acceptance_criteria=execution_spec.get("acceptance_criteria"),
+            dependency_outputs=list(execution_spec.get("dependency_outputs") or []),
+            dependency_artifact_paths=list(execution_spec.get("dependency_artifact_paths") or []),
+        ),
+        work_dir=str(task_work_dir),
+    )
+
+
+def _qwen_outputs_pass_contract_for_early_exit(
+    *,
+    execution_spec: Optional[Dict[str, Any]],
+    task_work_dir: Path,
+) -> tuple[bool, str]:
+    if not isinstance(execution_spec, dict):
+        return False, "no_acceptance_criteria"
+    acceptance_criteria = execution_spec.get("acceptance_criteria")
+    if not isinstance(acceptance_criteria, dict):
+        return False, "no_acceptance_criteria"
+    checks = acceptance_criteria.get("checks")
+    if not isinstance(checks, list) or not checks:
+        return False, "no_acceptance_checks"
+    try:
+        finalization = _verify_contract_for_qwen_early_exit(
+            execution_spec,
+            task_work_dir=task_work_dir,
+        )
+    except Exception as exc:
+        return False, f"verification_error:{exc}"
+
+    payload = getattr(finalization, "payload", None)
+    metadata_obj = payload.get("metadata") if isinstance(payload, dict) else None
+    metadata: Dict[str, Any] = metadata_obj if isinstance(metadata_obj, dict) else {}
+    verification_obj = getattr(finalization, "verification", None)
+    if isinstance(verification_obj, dict):
+        verification: Dict[str, Any] = verification_obj
+    else:
+        metadata_verification = metadata.get("verification")
+        verification = metadata_verification if isinstance(metadata_verification, dict) else {}
+
+    final_status = str(getattr(finalization, "final_status", "") or "").strip().lower()
+    verification_status = str(
+        metadata.get("verification_status") or verification.get("status") or ""
+    ).strip().lower()
+    checks_total = verification.get("checks_total")
+    checks_total_int = 0
+    if checks_total is not None:
+        try:
+            checks_total_int = int(checks_total)
+        except (TypeError, ValueError):
+            checks_total_int = 0
+    failures = verification.get("failures")
+
+    if final_status == "failed" or verification_status == "failed":
+        return False, "verification_failed"
+    if final_status != "completed":
+        return False, final_status or "verification_not_completed"
+    if verification_status != "passed":
+        return False, verification_status or "verification_not_passed"
+    if checks_total_int <= 0:
+        return False, "no_executed_checks"
+    if isinstance(failures, list) and failures:
+        return False, "verification_failed"
+    if verification.get("llm_override") or metadata.get("verification_overridden_by_llm"):
+        return False, "verification_llm_override"
+    return True, "verification_passed"
 
 
 def _extract_pending_qwen_function_call(transcript_text: str) -> Optional[Dict[str, Any]]:
@@ -594,12 +699,12 @@ def _build_cli_failure_error(
     return f"{backend_label} execution failed: {'; '.join(parts)}"
 
 
-_PARTIAL_COMPLETION_PATTERNS: List[re.Pattern] = [
+_PARTIAL_COMPLETION_PATTERNS: List[re.Pattern[str]] = [
     re.compile(r"(?:processed|completed|finished|done)\s+(\d+)\s*(?:of|/)\s*(\d+)", re.IGNORECASE),
     re.compile(r"(\d+)\s*/\s*(\d+)\s+(?:cell\s*types?|samples?|items?|files?|tasks?)", re.IGNORECASE),
 ]
 
-_WARNING_LINE_PATTERNS: List[re.Pattern] = [
+_WARNING_LINE_PATTERNS: List[re.Pattern[str]] = [
     re.compile(r"(?:^|\s)(?:warning|warn)\s*[:：]", re.IGNORECASE),
     re.compile(r"(?:^|\s)error\s*[:：]", re.IGNORECASE),
     re.compile(r"(?:^|\s)(?:skipping|skipped)\s", re.IGNORECASE),
@@ -823,6 +928,20 @@ def _resolve_auth_mode(value: Any) -> str:
         _DEFAULT_AUTH_MODE,
     )
     return _DEFAULT_AUTH_MODE
+
+
+def _ensure_writable_subprocess_cache_env(env_map: Dict[str, str], task_work_dir: Path) -> None:
+    cache_root = task_work_dir / ".cache"
+    for name, path in (
+        ("MPLCONFIGDIR", cache_root / "matplotlib"),
+        ("XDG_CACHE_HOME", cache_root / "xdg"),
+        ("NUMBA_CACHE_DIR", cache_root / "numba"),
+    ):
+        value = str(env_map.get(name) or "").strip()
+        if value and os.access(os.path.expanduser(value), os.W_OK):
+            continue
+        path.mkdir(parents=True, exist_ok=True)
+        env_map[name] = str(path)
 
 
 def _build_code_executor_subprocess_env(auth_mode: str) -> Dict[str, str]:
@@ -2596,7 +2715,7 @@ async def _execute_task_locally(
         )
 
     readable_dirs: List[str] = []
-    seen_dirs: set = set()
+    seen_dirs: set[str] = set()
     for item in extra_dirs or ():
         candidate = str(item or "").strip()
         if not candidate or candidate in seen_dirs:
@@ -2710,7 +2829,7 @@ async def _execute_task_locally(
             result["error"] = (
                 str(outcome.error_summary or "").strip()
                 or str(outcome.stderr or "").strip()
-                or f"{runtime_mode.capitalize()} runtime failed."
+                or f"{str(runtime_mode or 'code').capitalize()} runtime failed."
             )
         else:
             result["error"] = (
@@ -3167,6 +3286,7 @@ async def code_executor_handler(
         if use_qwen_code_backend:
             # Qwen Code path
             subprocess_env = _build_qwen_code_subprocess_env()
+            _ensure_writable_subprocess_cache_env(subprocess_env, task_work_dir)
             _inject_env_mutation_guard(subprocess_env, str(task_work_dir))
             qc_config_error = _validate_qwen_code_config(subprocess_env)
             if qc_config_error:
@@ -3261,6 +3381,7 @@ async def code_executor_handler(
                 cmd = _rebuild_cli_command(task)
                 # Env is inside the container; host subprocess only needs docker binary
                 subprocess_env = dict(os.environ)
+                _ensure_writable_subprocess_cache_env(subprocess_env, task_work_dir)
                 _cli_label = "Qwen Code (container)"
                 logger.info(
                     "[CODE_EXECUTOR] Using Docker container %s for qwen_code execution",
@@ -3276,6 +3397,7 @@ async def code_executor_handler(
             # Legacy Claude Code path
             effective_auth_mode = _resolve_auth_mode(auth_mode)
             subprocess_env = _build_code_executor_subprocess_env(effective_auth_mode)
+            _ensure_writable_subprocess_cache_env(subprocess_env, task_work_dir)
             _inject_env_mutation_guard(subprocess_env, str(task_work_dir))
             if effective_auth_mode == "api_env":
                 api_mode_error = _validate_api_mode_config(subprocess_env)
@@ -3463,14 +3585,110 @@ async def code_executor_handler(
                 )
 
                 try:
-                    await asyncio.gather(stdout_task, stderr_task)
-                    local_return_code = await process.wait()
+                    drain_task = asyncio.gather(stdout_task, stderr_task)
+                    grace_deadline: Optional[float] = None
+                    can_finish_from_contract_outputs = (
+                        use_qwen_code_backend
+                        and isinstance(execution_spec, dict)
+                        and bool(execution_spec.get("acceptance_criteria"))
+                    )
+                    if not can_finish_from_contract_outputs:
+                        await drain_task
+                    while can_finish_from_contract_outputs:
+                        if drain_task.done():
+                            await drain_task
+                            break
+                        done, _pending = await asyncio.wait(
+                            {drain_task},
+                            timeout=_resolve_qwen_completed_output_exit_check_seconds(),
+                        )
+                        if done:
+                            await drain_task
+                            break
+                        passed, reason = _qwen_outputs_pass_contract_for_early_exit(
+                            execution_spec=execution_spec,
+                            task_work_dir=task_work_dir,
+                        )
+                        if not passed:
+                            grace_deadline = None
+                            continue
+                        loop = asyncio.get_running_loop()
+                        if grace_deadline is None:
+                            grace_seconds = _resolve_qwen_completed_output_exit_grace_seconds()
+                            grace_deadline = loop.time() + grace_seconds
+                            logger.info(
+                                "[CODE_EXECUTOR] Qwen outputs satisfy contract before CLI exit; "
+                                "waiting %.0fs for graceful final response (%s).",
+                                grace_seconds,
+                                reason,
+                            )
+                            if log_file:
+                                try:
+                                    async with log_lock:
+                                        log_file.write(
+                                            f"[{datetime.utcnow().isoformat()}Z] "
+                                            "Qwen outputs satisfy contract before CLI exit; "
+                                            f"waiting {grace_seconds:.0f}s for graceful final response\n"
+                                        )
+                                        log_file.flush()
+                                except Exception:
+                                    pass
+                            continue
+                        if loop.time() < grace_deadline:
+                            continue
+                        logger.warning(
+                            "[CODE_EXECUTOR] Qwen CLI did not exit after producing contract-valid outputs; "
+                            "terminating stuck finalization process."
+                        )
+                        if log_file:
+                            try:
+                                async with log_lock:
+                                    log_file.write(
+                                        f"[{datetime.utcnow().isoformat()}Z] "
+                                        "Qwen CLI terminated after producing contract-valid outputs\n"
+                                    )
+                                    log_file.flush()
+                            except Exception:
+                                pass
+                        try:
+                            process.kill()
+                        except ProcessLookupError:
+                            pass
+                        try:
+                            await asyncio.wait_for(process.wait(), timeout=10.0)
+                        except Exception:
+                            pass
+                        try:
+                            await asyncio.wait_for(
+                                asyncio.gather(stdout_task, stderr_task, return_exceptions=True),
+                                timeout=10.0,
+                            )
+                        except asyncio.TimeoutError:
+                            stdout_task.cancel()
+                            stderr_task.cancel()
+                            await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
+                        local_return_code = 0
+                        local_stdout_lines.append(
+                            "[code_executor] Qwen CLI was terminated after required outputs passed deterministic verification."
+                        )
+                        break
+                    if local_return_code != 0:
+                        local_return_code = await process.wait()
                 except (asyncio.CancelledError, Exception) as _wait_exc:
                     try:
                         process.kill()
-                        await process.wait()
+                        await asyncio.wait_for(process.wait(), timeout=10.0)
                     except Exception:
                         pass
+                    try:
+                        await asyncio.wait_for(
+                            asyncio.gather(stdout_task, stderr_task, return_exceptions=True),
+                            timeout=10.0,
+                        )
+                    except asyncio.TimeoutError:
+                        stdout_task.cancel()
+                        stderr_task.cancel()
+                        await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
                     if isinstance(_wait_exc, asyncio.CancelledError):
                         raise
                     raise
