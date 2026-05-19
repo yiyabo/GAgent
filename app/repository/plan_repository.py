@@ -307,12 +307,14 @@ class PlanRepository:
         return len(updates)
 
     def _reconcile_active_task_statuses_from_execution_results(self, conn, plan_id: int) -> int:
-        """Recover interrupted running/queued tasks when a terminal payload already exists.
+        """Recover interrupted running/queued tasks after a backend restart.
 
-        This is intended for restart recovery only. During a fresh execution attempt,
-        the executor now clears the previous execution_result before marking the task
-        as running, so a terminal payload on an active task row means the previous run
-        already reached a terminal result but the status update was interrupted.
+        During a fresh execution attempt, the executor clears the previous
+        ``execution_result`` before marking the task active.  Therefore:
+        - an active row with a terminal payload can be restored to that terminal
+          status;
+        - an active row without any payload was interrupted before producing a
+          result and must become pending again so full-plan execution can resume.
         """
 
         self._ensure_task_columns(conn, plan_id)
@@ -321,18 +323,20 @@ class PlanRepository:
             SELECT id, status, execution_result
             FROM tasks
             WHERE status IN ('running', 'queued')
-              AND execution_result IS NOT NULL
-              AND TRIM(execution_result) != ''
             """
         ).fetchall()
 
         updates: List[Tuple[str, int]] = []
         for row in rows:
             current = self._normalize_persisted_status(row["status"])
-            inferred = self._infer_status_from_execution_result(row["execution_result"])
-            if inferred is None or inferred == current:
-                continue
-            updates.append((inferred, int(row["id"])))
+            execution_result = str(row["execution_result"] or "").strip()
+            if execution_result:
+                inferred = self._infer_status_from_execution_result(execution_result)
+                if inferred is None or inferred == current:
+                    continue
+                updates.append((inferred, int(row["id"])))
+            else:
+                updates.append(("pending", int(row["id"])))
 
         if not updates:
             return 0
@@ -342,7 +346,7 @@ class PlanRepository:
             updates,
         )
         logger.info(
-            "Recovered %s interrupted active task status(es) from execution_result for plan %s",
+            "Recovered %s interrupted active task status(es) for plan %s",
             len(updates),
             plan_id,
         )
