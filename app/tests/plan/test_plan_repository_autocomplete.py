@@ -195,6 +195,21 @@ def test_reconcile_active_status_from_execution_result_for_startup_recovery():
     assert row["status"] == "failed"
 
 
+def test_reconcile_active_status_without_result_resets_to_pending_for_startup_recovery():
+    conn = _make_tasks_conn()
+    conn.execute(
+        "INSERT INTO tasks (id, parent_id, status, execution_result, updated_at) VALUES (?, ?, ?, ?, ?)",
+        (32, None, "running", "", ""),
+    )
+
+    repo = PlanRepository()
+    updated = repo._reconcile_active_task_statuses_from_execution_results(conn, 1)
+
+    assert updated == 1
+    row = conn.execute("SELECT status FROM tasks WHERE id=?", (32,)).fetchone()
+    assert row["status"] == "pending"
+
+
 def test_merge_metadata_drops_empty_artifact_contract() -> None:
     merged = plan_repository_module._merge_metadata(
         {"artifact_contract": {"requires": [], "publishes": []}},
