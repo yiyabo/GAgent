@@ -33,10 +33,28 @@ _ARTIFACT_SPECS: Dict[str, tuple[str, str]] = {
     "phage_ml.kmer_features_npz": ("phage_ml", "features/kmer_46.npz"),
     "phage_ml.genome_embeddings_npy": ("phage_ml", "features/genome_embeddings.npy"),
     "phage_ml.functional_features_csv": ("phage_ml", "features/functional_annotations.csv"),
+    "phage_ml.unified_feature_matrix_h5": ("phage_ml", "features/unified_features.h5"),
+    "phage_ml.unified_feature_matrix_csv": ("phage_ml", "features/unified_features.csv"),
     "phage_ml.hybrid_features_final_npz": ("phage_ml", "features/hybrid_features_final.npz"),
     "phage_ml.training_metadata_parquet": ("phage_ml", "metadata/training_metadata.parquet"),
     "phage_ml.feature_row_ids_json": ("phage_ml", "features/feature_row_ids.json"),
     "phage_ml.label_alignment_json": ("phage_ml", "metadata/label_alignment.json"),
+    "phage_phi.genomic_stats_csv": ("phage_phi", "features/genomic_stats.csv"),
+    "phage_phi.functional_features_csv": ("phage_phi", "features/functional_annotations.csv"),
+    "phage_phi.full_feature_matrix_h5": ("phage_phi", "features/full_feature_matrix.h5"),
+    "phage_phi.unified_features_h5": ("phage_phi", "features/unified_features.h5"),
+    "phage_phi.unified_features_csv": ("phage_phi", "features/unified_features.csv"),
+    "phage_phi.split_assignments_json": ("phage_phi", "splits/split_assignments.json"),
+    "phage_phi.leakage_aware_splits_json": ("phage_phi", "splits/leakage_aware_splits.json"),
+    "phage_phi.split_statistics_json": ("phage_phi", "splits/split_statistics.json"),
+    "phage_phi.split_report_md": ("phage_phi", "splits/split_report.md"),
+    "phage_phi.baseline_train_val_arrays": ("phage_phi", "models/baseline_train_val.npz"),
+    "phage_phi.advanced_model_input_raw": ("phage_phi", "models/advanced_model_input_raw.pkl"),
+    "phage_phi.tree_model_features": ("phage_phi", "models/tree_model_features.npz"),
+    "phage_phi.dl_kmer_tensors": ("phage_phi", "models/dl_kmer_tensors.h5"),
+    "phage_phi.advanced_model_ready_data": ("phage_phi", "models/advanced_model_ready_data"),
+    "phage_host.baseline_eval_by_genus_json": ("phage_host", "baseline/baseline_eval_by_genus.json"),
+    "phage_host.baseline_feature_importance_csv": ("phage_host", "baseline/feature_importance.csv"),
     "ml_features.hybrid_matrix_npz": ("ml_features", "hybrid_features_final.npz"),
     "phage_features.hybrid_matrix_npz": ("phage_features", "hybrid_features_final.npz"),
     "ml_phage.features_hybrid_matrix": ("ml_phage", "hybrid_features_final.npz"),
@@ -146,6 +164,18 @@ _LEGACY_BASENAME_TO_ALIASES: Dict[str, List[str]] = {
     "label_alignment.json": ["phage_ml.label_alignment_json"],
 }
 
+_ARTIFACT_SOURCE_BASENAME_TO_ALIASES: Dict[str, List[str]] = {
+    "genomic_stats.tsv": ["phage_phi.genomic_stats_csv"],
+    "genomic_stats_clean.tsv": ["phage_phi.genomic_stats_csv"],
+    "functional_annotations.csv": ["phage_phi.functional_features_csv"],
+    "functional_features.csv": ["phage_phi.functional_features_csv"],
+    "unified_features.h5": ["phage_phi.full_feature_matrix_h5"],
+    "split_assignments.json": ["phage_phi.leakage_aware_splits_json"],
+    "baseline_performance_overall.json": ["phage_host.baseline_eval_by_genus_json"],
+    "baseline_performance_by_genus.json": ["phage_host.baseline_eval_by_genus_json"],
+    "unified_feature_importance_rankings.csv": ["phage_host.baseline_feature_importance_csv"],
+}
+
 _GENERIC_BASENAME_TO_SLOT = {
     "evidence.md": "evidence_md",
     "references.bib": "references_bib",
@@ -233,8 +263,14 @@ def save_artifact_manifest(plan_id: int, manifest: Dict[str, Any]) -> Path:
             existing = load_artifact_manifest(plan_id)
             merged = dict(existing)
             merged.update({k: v for k, v in manifest.items() if k != "artifacts"})
-            existing_artifacts = existing.get("artifacts") if isinstance(existing.get("artifacts"), dict) else {}
-            incoming_artifacts = manifest.get("artifacts") if isinstance(manifest.get("artifacts"), dict) else {}
+            raw_existing_artifacts = existing.get("artifacts")
+            raw_incoming_artifacts = manifest.get("artifacts")
+            existing_artifacts: Dict[str, Any] = (
+                raw_existing_artifacts if isinstance(raw_existing_artifacts, dict) else {}
+            )
+            incoming_artifacts: Dict[str, Any] = (
+                raw_incoming_artifacts if isinstance(raw_incoming_artifacts, dict) else {}
+            )
             merged["artifacts"] = {**existing_artifacts, **incoming_artifacts}
 
             tmp_name = f".{path.name}.{uuid.uuid4().hex}.tmp"
@@ -311,12 +347,6 @@ def aliases_for_file_name(file_name: str, *, preferred_namespace: str) -> List[s
         alias = f"{preferred_namespace}.{_GENERIC_BASENAME_TO_SLOT[lowered]}"
         if _is_registered_artifact_alias(alias) and alias not in aliases:
             aliases.append(alias)
-    for alias in _semantic_aliases_for_file_name(
-        lowered,
-        preferred_namespace=preferred_namespace,
-    ):
-        if alias not in aliases:
-            aliases.append(alias)
     return aliases
 
 
@@ -332,6 +362,9 @@ def candidate_filenames_for_alias(alias: str) -> List[str]:
             if basename and basename not in names:
                 names.append(basename)
     for basename, aliases in _LEGACY_BASENAME_TO_ALIASES.items():
+        if alias in aliases and basename.lower() not in names:
+            names.append(basename.lower())
+    for basename, aliases in _ARTIFACT_SOURCE_BASENAME_TO_ALIASES.items():
         if alias in aliases and basename.lower() not in names:
             names.append(basename.lower())
     if _dynamic_artifact_spec(alias):
