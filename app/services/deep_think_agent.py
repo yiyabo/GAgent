@@ -143,7 +143,9 @@ _PHAGESCOPE_ANALYSIS_ACTION_RE = re.compile(
     r"\b(?:analy[sz]e|inspect|audit|summari[sz]e|review|look|profile|explore|start|dataset|data)\b|分析|查看|看看|检查|审计|总结|探索|数据集|数据",
     re.IGNORECASE,
 )
-_ABSOLUTE_PATH_RE = re.compile(r"/(?:[^\s`\"'<>，。；;])+")
+# Match real absolute filesystem paths without treating the slash inside
+# relative output paths such as ``results/figures/目录`` as ``/figures/目录``.
+_ABSOLUTE_PATH_RE = re.compile(r"(?<![A-Za-z0-9_.-])/(?:[^\s`\"'<>，。；;])+")
 _UNVERIFIED_SAMPLE_DIRECTORY_CLAIM_RE = re.compile(
     r"(?:total\s+sample\s+director(?:y|ies)|sample\s+director(?:y|ies)\s*[:|]\s*[\d,]+|样本目录\s*[:：|]?\s*[\d,]+)",
     re.IGNORECASE,

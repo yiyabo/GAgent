@@ -924,6 +924,31 @@ def test_evidence_scope_truth_barrier_qualifies_global_success_claims() -> None:
     assert answer not in guarded
 
 
+@pytest.mark.parametrize(
+    "query",
+    [
+        "所有图表保存为PNG格式至results/figures/目录。请总结结果。",
+        "输出在 reports/final/report.md，帮我确认。",
+        "请检查 data/modeling/X_train.csv 和 results/report.md 是否存在。",
+        "figures/roc_curves.png 这张图生成了吗？",
+        "The output folder is ./results/figures/; summarize it.",
+    ],
+)
+def test_directory_path_extraction_ignores_relative_output_slash(query: str) -> None:
+    assert DeepThinkAgent._extract_directory_path_from_query(query) is None
+    assert DeepThinkAgent._directory_dataset_analysis_requested(query) is False
+
+
+def test_directory_path_extraction_keeps_real_absolute_path() -> None:
+    query = "请检查 /home/zczhao/Phage-Agent/runtime/session_x/results/figures/ 目录。"
+
+    assert (
+        DeepThinkAgent._extract_directory_path_from_query(query)
+        == "/home/zczhao/Phage-Agent/runtime/session_x/results/figures/"
+    )
+    assert DeepThinkAgent._directory_dataset_analysis_requested(query) is True
+
+
 def test_evidence_scope_truth_barrier_accepts_corrected_global_claims() -> None:
     agent = DeepThinkAgent(
         llm_client=_NoStreamLLM(),
