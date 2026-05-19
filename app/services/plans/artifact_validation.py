@@ -8,7 +8,7 @@ import tarfile
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
 
 @dataclass(frozen=True)
@@ -95,6 +95,13 @@ _ALIAS_VALIDATION_SPECS: Dict[str, ArtifactValidationSpec] = {
     "phage_ml.kmer_features_npz": _SPARSE_MATRIX_SPEC,
     "phage_ml.genome_embeddings_npy": _DENSE_ARRAY_SPEC,
     "phage_ml.functional_features_csv": ArtifactValidationSpec(kind="csv_table", min_rows=1),
+    "phage_ml.unified_feature_matrix_h5": ArtifactValidationSpec(kind="hdf5_table", min_rows=1, min_cols=1),
+    "phage_ml.unified_feature_matrix_csv": ArtifactValidationSpec(
+        kind="csv_table",
+        min_rows=1,
+        min_cols=2,
+        required_columns=("Phage_ID",),
+    ),
     "phage_ml.hybrid_features_final_npz": _SPARSE_MATRIX_SPEC,
     "phage_ml.training_metadata_parquet": ArtifactValidationSpec(
         kind="parquet_table",
@@ -111,6 +118,45 @@ _ALIAS_VALIDATION_SPECS: Dict[str, ArtifactValidationSpec] = {
         kind="ml_label_alignment",
         description="Supervised learning label alignment manifest proving real labels were joined to feature rows.",
         required_keys=("label_source", "label_alignment", "training_samples"),
+    ),
+    "phage_phi.genomic_stats_csv": ArtifactValidationSpec(
+        kind="csv_table",
+        min_rows=1,
+        min_cols=4,
+        required_columns=("Phage_ID", "Length", "GC_Content", "Coding_Density"),
+    ),
+    "phage_phi.functional_features_csv": ArtifactValidationSpec(
+        kind="csv_table",
+        min_rows=1,
+        min_cols=2,
+        required_columns=("Phage_ID",),
+    ),
+    "phage_phi.full_feature_matrix_h5": ArtifactValidationSpec(kind="hdf5_table", min_rows=1, min_cols=1),
+    "phage_phi.unified_features_h5": ArtifactValidationSpec(kind="hdf5_table", min_rows=1, min_cols=1),
+    "phage_phi.unified_features_csv": ArtifactValidationSpec(
+        kind="csv_table",
+        min_rows=1,
+        min_cols=2,
+        required_columns=("Phage_ID",),
+    ),
+    "phage_phi.split_assignments_json": ArtifactValidationSpec(kind="split_assignments", min_rows=1),
+    "phage_phi.leakage_aware_splits_json": ArtifactValidationSpec(kind="split_assignments", min_rows=1),
+    "phage_phi.split_statistics_json": ArtifactValidationSpec(kind="json_schema"),
+    "phage_phi.split_report_md": ArtifactValidationSpec(kind="file_nonempty"),
+    "phage_phi.baseline_train_val_arrays": ArtifactValidationSpec(kind="baseline_train_val_npz", min_rows=1, min_cols=1),
+    "phage_phi.advanced_model_input_raw": ArtifactValidationSpec(
+        kind="file_nonempty",
+        min_size_bytes=1,
+        allowed_suffixes=(".pkl", ".pickle"),
+    ),
+    "phage_phi.tree_model_features": ArtifactValidationSpec(kind="file_nonempty"),
+    "phage_phi.dl_kmer_tensors": ArtifactValidationSpec(kind="hdf5_table", min_rows=1, min_cols=1),
+    "phage_phi.advanced_model_ready_data": ArtifactValidationSpec(kind="directory_glob", min_files=1, allowed_suffixes=(".npz", ".npy", ".pt", ".pth", ".h5")),
+    "phage_host.baseline_eval_by_genus_json": ArtifactValidationSpec(kind="json_schema"),
+    "phage_host.baseline_feature_importance_csv": ArtifactValidationSpec(
+        kind="csv_table",
+        min_rows=1,
+        required_columns=("Feature_Name",),
     ),
     "ml_features.hybrid_matrix_npz": _SPARSE_MATRIX_SPEC,
     "phage_features.hybrid_matrix_npz": _SPARSE_MATRIX_SPEC,
@@ -229,6 +275,12 @@ def validate_artifact(alias: str, path: str, spec: Optional[ArtifactValidationSp
             metadata = _validate_ml_validation_metrics(candidate, effective_spec)
         elif effective_spec.kind == "csv_table":
             metadata = _validate_csv_table(candidate, effective_spec)
+        elif effective_spec.kind == "hdf5_table":
+            metadata = _validate_hdf5_table(candidate, effective_spec)
+        elif effective_spec.kind == "split_assignments":
+            metadata = _validate_split_assignments(candidate, effective_spec)
+        elif effective_spec.kind == "baseline_train_val_npz":
+            metadata = _validate_baseline_train_val_npz(candidate, effective_spec)
         elif effective_spec.kind == "directory_glob":
             metadata = _validate_directory_glob(candidate, effective_spec)
         elif effective_spec.kind == "ml_model_checkpoints":
@@ -333,13 +385,14 @@ def _validate_numpy_npy(path: Path, spec: ArtifactValidationSpec) -> Dict[str, A
     shape = tuple(int(v) for v in getattr(arr, "shape", ()) or ())
     if not shape:
         raise ValueError("NumPy array must have a non-empty shape.")
+    row_count = shape[0]
     if shape[0] < int(spec.min_rows or 0):
         raise ValueError(f"NumPy array has too few rows: {shape[0]} < {spec.min_rows}.")
     if len(shape) > 1 and shape[1] < int(spec.min_cols or 0):
         raise ValueError(f"NumPy array has too few columns: {shape[1]} < {spec.min_cols}.")
     if int(getattr(arr, "size", 0) or 0) <= 0:
         raise ValueError("NumPy array contains no elements.")
-    return {"shape": list(shape), "row_count": shape[0], "size": int(arr.size), "dtype": str(arr.dtype)}
+    return {"shape": list(shape), "row_count": row_count, "size": int(arr.size), "dtype": str(arr.dtype)}
 
 
 def _validate_json_schema(path: Path, spec: ArtifactValidationSpec) -> Dict[str, Any]:
@@ -428,8 +481,12 @@ def _validate_ml_validation_metrics(path: Path, spec: ArtifactValidationSpec) ->
         if "accuracy" not in model_payload or "macro_f1" not in model_payload:
             raise ValueError(f"Model {model_name!r} is missing accuracy or macro_f1.")
         try:
-            accuracy = float(model_payload.get("accuracy"))
-            macro_f1 = float(model_payload.get("macro_f1"))
+            accuracy_value = model_payload.get("accuracy")
+            macro_f1_value = model_payload.get("macro_f1")
+            if accuracy_value is None or macro_f1_value is None:
+                raise ValueError("accuracy and macro_f1 must be present")
+            accuracy = float(accuracy_value)
+            macro_f1 = float(macro_f1_value)
         except (TypeError, ValueError) as exc:
             raise ValueError(f"Model {model_name!r} has non-numeric metrics: {exc}")
         if accuracy < 0 or macro_f1 < 0:
@@ -494,7 +551,7 @@ def _validate_ml_label_provenance(payload: Any, serialized: str) -> None:
 
 def _validate_csv_table(path: Path, spec: ArtifactValidationSpec) -> Dict[str, Any]:
     _validate_file_nonempty(path, spec)
-    delimiter = "\t" if path.suffix.lower() == ".tsv" else ","
+    delimiter = _detect_delimiter(path)
     with path.open("r", encoding="utf-8", errors="ignore", newline="") as handle:
         reader = csv.DictReader(handle, delimiter=delimiter)
         columns = list(reader.fieldnames or [])
@@ -507,6 +564,236 @@ def _validate_csv_table(path: Path, spec: ArtifactValidationSpec) -> Dict[str, A
     if spec.min_cols and len(columns) < int(spec.min_cols):
         raise ValueError(f"CSV artifact has too few columns: {len(columns)} < {spec.min_cols}.")
     return {"row_count": row_count, "column_count": len(columns), "columns": columns[:50]}
+
+
+def _detect_delimiter(path: Path) -> str:
+    with path.open("r", encoding="utf-8", errors="ignore", newline="") as handle:
+        sample = handle.read(4096)
+    first_line = sample.splitlines()[0] if sample.splitlines() else ""
+    if "\t" in first_line and first_line.count("\t") >= first_line.count(","):
+        return "\t"
+    if path.suffix.lower() == ".tsv":
+        return "\t"
+    return ","
+
+
+def _validate_hdf5_table(path: Path, spec: ArtifactValidationSpec) -> Dict[str, Any]:
+    _validate_file_nonempty(path, spec)
+    if path.suffix.lower() not in {".h5", ".hdf5"}:
+        raise ValueError("Expected an HDF5 artifact with .h5 or .hdf5 suffix.")
+    try:
+        import h5py  # type: ignore
+    except Exception as exc:
+        raise ValueError(f"h5py is required to validate HDF5 artifacts: {exc}")
+
+    datasets: List[Dict[str, Any]] = []
+    table_datasets: List[Dict[str, Any]] = []
+    with h5py.File(path, "r") as handle:
+        def collect(name: str, value: Any) -> None:
+            shape = getattr(value, "shape", None)
+            if shape is None:
+                return
+            shape_tuple = tuple(int(item) for item in shape)
+            dtype = getattr(value, "dtype", "")
+            item: Dict[str, Union[str, List[int], int]] = {
+                "name": name,
+                "shape": list(shape_tuple),
+                "dtype": str(dtype),
+            }
+            datasets.append(item)
+            dtype_names = getattr(dtype, "names", None)
+            if name.endswith("/table") and isinstance(dtype_names, tuple):
+                item["column_count"] = len(dtype_names)
+                table_datasets.append(item)
+
+        handle.visititems(collect)
+
+    if not datasets:
+        raise ValueError("HDF5 artifact contains no datasets.")
+
+    primary_datasets = table_datasets or [
+        item for item in datasets if item["shape"] and not item["name"].split("/")[0].startswith("_i_")
+    ] or datasets
+    max_rows = max((item["shape"][0] for item in primary_datasets if item["shape"]), default=0)
+    max_cols = max(
+        (
+            int(item.get("column_count") or (item["shape"][1] if len(item["shape"]) > 1 else 1))
+            for item in primary_datasets
+        ),
+        default=1,
+    )
+    if max_rows < int(spec.min_rows or 0):
+        raise ValueError(f"HDF5 artifact has too few rows: {max_rows} < {spec.min_rows}.")
+    if max_cols < int(spec.min_cols or 0):
+        raise ValueError(f"HDF5 artifact has too few columns: {max_cols} < {spec.min_cols}.")
+    return {
+        "dataset_count": len(datasets),
+        "row_count": max_rows,
+        "column_count": max_cols,
+        "datasets": primary_datasets[:20],
+    }
+
+
+def _validate_split_assignments(path: Path, spec: ArtifactValidationSpec) -> Dict[str, Any]:
+    _validate_file_nonempty(path, spec)
+    suffix = path.suffix.lower()
+    if suffix == ".json":
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(payload, list):
+            row_count = len(payload)
+            if row_count < int(spec.min_rows or 0):
+                raise ValueError(f"Split assignment list has too few rows: {row_count} < {spec.min_rows}.")
+            first = payload[0] if payload else {}
+            if not isinstance(first, dict) or not _split_assignment_columns_present(first):
+                raise ValueError("Split assignment rows must include phage and split fields.")
+            return {"json_type": "list", "row_count": row_count, "columns": sorted(first)[:50]}
+        if isinstance(payload, dict):
+            row_count = _count_split_assignment_payload_rows(payload)
+            if row_count < int(spec.min_rows or 0):
+                raise ValueError(f"Split assignment JSON has too few rows: {row_count} < {spec.min_rows}.")
+            return {"json_type": "dict", "row_count": row_count, "keys": sorted(payload)[:50]}
+        raise ValueError("Split assignment JSON must be an object or list.")
+    if suffix in {".csv", ".tsv"}:
+        delimiter = _detect_delimiter(path)
+        with path.open("r", encoding="utf-8", errors="ignore", newline="") as handle:
+            reader = csv.DictReader(handle, delimiter=delimiter)
+            columns = list(reader.fieldnames or [])
+            lowered = {column.lower() for column in columns}
+            if "phage_id" not in lowered:
+                raise ValueError("Split table is missing Phage_ID column.")
+            if not ({"split", "set", "partition"} & lowered):
+                raise ValueError("Split table is missing a split/set/partition column.")
+            row_count = sum(1 for _ in reader)
+        if row_count < int(spec.min_rows or 0):
+            raise ValueError(f"Split assignment table has too few rows: {row_count} < {spec.min_rows}.")
+        return {"row_count": row_count, "column_count": len(columns), "columns": columns[:50]}
+    raise ValueError("Split assignments must be a JSON, CSV, or TSV artifact.")
+
+
+def _split_assignment_columns_present(row: Dict[str, Any]) -> bool:
+    lowered = {str(column).lower() for column in row}
+    return "phage_id" in lowered and bool({"split", "set", "partition"} & lowered)
+
+
+def _count_split_assignment_payload_rows(payload: Dict[str, Any]) -> int:
+    metadata = payload.get("metadata")
+    if isinstance(metadata, dict):
+        total = _split_metadata_total(metadata)
+        if total > 0:
+            return total
+    row_keys = (
+        "assignments",
+        "split_assignments",
+        "phage_split_assignments",
+        "rows",
+    )
+    for key in row_keys:
+        value = payload.get(key)
+        if isinstance(value, list):
+            return len(value)
+        if isinstance(value, dict):
+            return len(value)
+    split_statistics = payload.get("split_statistics")
+    if isinstance(split_statistics, dict):
+        total = _numeric_total_from_mapping(split_statistics)
+        if total > 0:
+            return total
+    cluster_to_split = payload.get("cluster_to_split")
+    genus_to_split = payload.get("genus_to_split")
+    if isinstance(cluster_to_split, dict) and cluster_to_split:
+        return len(cluster_to_split)
+    if isinstance(genus_to_split, dict) and genus_to_split:
+        return len(genus_to_split)
+    return len(payload)
+
+
+def _numeric_total_from_mapping(mapping: Dict[str, Any]) -> int:
+    for key in ("total", "total_samples", "n_samples", "count", "row_count"):
+        value = mapping.get(key)
+        if isinstance(value, (int, float)) and value > 0:
+            return int(value)
+    total = 0
+    for value in mapping.values():
+        if isinstance(value, dict):
+            total += _numeric_total_from_mapping(value)
+        elif isinstance(value, (int, float)) and value > 0:
+            total += int(value)
+    return total
+
+
+def _split_metadata_total(metadata: Dict[str, Any]) -> int:
+    for key in ("total_phages", "total_samples", "row_count", "clusters_assigned", "total_clusters"):
+        value = metadata.get(key)
+        if isinstance(value, (int, float)) and value > 0:
+            return int(value)
+    return _numeric_total_from_mapping(metadata)
+
+
+def _validate_baseline_train_val_npz(path: Path, spec: ArtifactValidationSpec) -> Dict[str, Any]:
+    _validate_file_nonempty(path, spec)
+    if path.suffix.lower() != ".npz":
+        raise ValueError("Expected a .npz baseline train/validation/test artifact.")
+    try:
+        import numpy as np  # type: ignore
+    except Exception as exc:
+        raise ValueError(f"numpy is required to validate baseline arrays: {exc}")
+    with np.load(str(path), allow_pickle=False) as archive:
+        keys = set(archive.files)
+        required_keys = {
+            "train_X_data", "train_X_indices", "train_X_indptr", "train_X_shape", "train_y_genus", "train_y_lifestyle",
+            "val_X_data", "val_X_indices", "val_X_indptr", "val_X_shape", "val_y_genus", "val_y_lifestyle",
+            "test_X_data", "test_X_indices", "test_X_indptr", "test_X_shape", "test_y_genus", "test_y_lifestyle",
+            "genus_encoder_classes", "lifestyle_encoder_classes", "feature_dim",
+        }
+        missing = sorted(required_keys - keys)
+        if missing:
+            raise ValueError(f"Baseline NPZ is missing required arrays: {missing}")
+
+        split_metadata: Dict[str, Any] = {}
+        total_rows = 0
+        feature_dims: set[int] = set()
+        for split in ("train", "val", "test"):
+            shape_array = _npz_array(archive, f"{split}_X_shape")
+            shape = tuple(int(value) for value in shape_array.tolist())
+            if len(shape) != 2:
+                raise ValueError(f"{split}_X_shape must be 2D, got {shape}.")
+            rows, cols = shape
+            if rows < int(spec.min_rows or 0) or cols < int(spec.min_cols or 0):
+                raise ValueError(f"{split} matrix shape {shape} is below required minimum ({spec.min_rows}, {spec.min_cols}).")
+            indptr_len = int(len(_npz_array(archive, f"{split}_X_indptr")))
+            data_len = int(len(_npz_array(archive, f"{split}_X_data")))
+            indices_len = int(len(_npz_array(archive, f"{split}_X_indices")))
+            if indptr_len != rows + 1:
+                raise ValueError(f"{split}_X_indptr length {indptr_len} does not match row count {rows}.")
+            if data_len != indices_len:
+                raise ValueError(f"{split}_X_data and {split}_X_indices lengths differ: {data_len} != {indices_len}.")
+            for label_key in (f"{split}_y_genus", f"{split}_y_lifestyle"):
+                label_rows = int(len(_npz_array(archive, label_key)))
+                if label_rows != rows:
+                    raise ValueError(f"{label_key} length {label_rows} does not match {split} row count {rows}.")
+            total_rows += rows
+            feature_dims.add(cols)
+            split_metadata[split] = {"shape": [rows, cols], "nnz": data_len}
+
+        declared_feature_dim = int(_npz_array(archive, "feature_dim").item())
+        genus_class_count = int(len(_npz_array(archive, "genus_encoder_classes")))
+        lifestyle_class_count = int(len(_npz_array(archive, "lifestyle_encoder_classes")))
+    if feature_dims != {declared_feature_dim}:
+        raise ValueError(f"feature_dim {declared_feature_dim} does not match split matrix columns {sorted(feature_dims)}.")
+    return {
+        "row_count": total_rows,
+        "feature_dim": declared_feature_dim,
+        "splits": split_metadata,
+        "genus_class_count": genus_class_count,
+        "lifestyle_class_count": lifestyle_class_count,
+    }
+
+
+def _npz_array(archive: Any, key: str) -> Any:
+    value = archive[key]
+    if getattr(value, "dtype", None) is not None and value.dtype.hasobject:
+        raise ValueError(f"Baseline NPZ array {key} has object dtype, which is not allowed.")
+    return value
 
 
 def _validate_directory_glob(path: Path, spec: ArtifactValidationSpec) -> Dict[str, Any]:
