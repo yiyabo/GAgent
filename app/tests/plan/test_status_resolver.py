@@ -65,6 +65,53 @@ def test_status_resolver_blocks_missing_required_alias_without_manifest(
     assert state["reason_code"] == "artifact_input_missing"
 
 
+def test_status_resolver_does_not_block_unregistered_business_alias_without_manifest(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    resolver = PlanStatusResolver()
+    producer = PlanNode(
+        id=1,
+        plan_id=31,
+        name="Produce derived features",
+        status="completed",
+        metadata={
+            "artifact_contract": {
+                "publishes": ["feature_engineering.derived_features_csv"],
+            }
+        },
+        execution_result=json.dumps({
+            "status": "completed",
+            "content": "ok",
+            "metadata": {"verification_status": "passed"},
+        }),
+    )
+    consumer = PlanNode(
+        id=2,
+        plan_id=31,
+        name="Consume derived features",
+        status="pending",
+        dependencies=[1],
+        metadata={
+            "artifact_contract": {
+                "requires": ["feature_engineering.derived_features_csv"],
+            }
+        },
+    )
+    tree = _tree(31, producer, consumer)
+
+    states = resolver.resolve_plan_states(31, tree)
+
+    assert states[1]["effective_status"] == "completed"
+    assert states[1]["missing_publish_aliases"] == []
+    assert states[1]["authoritative_publish_aliases"] == [
+        "feature_engineering.derived_features_csv"
+    ]
+    assert states[2]["effective_status"] == "pending"
+    assert states[2]["missing_required_aliases"] == []
+
+
 def test_status_resolver_marks_completed_task_completed_when_canonical_publish_exists(
     monkeypatch,
     tmp_path,
