@@ -302,6 +302,32 @@ def strengthen_acceptance_criteria(criteria: Any) -> Any:
     return strengthened
 
 
+def _looks_like_model_metrics_json(basename: str) -> bool:
+    """Return True only for JSON metrics that are model-evaluation artifacts."""
+    name = str(basename or "").lower()
+    if not name.endswith(".json"):
+        return False
+    stem = name[:-5]
+    tokens = [token for token in re.split(r"[^a-z0-9]+", stem) if token]
+    token_set = set(tokens)
+    if token_set & {"qc", "quality", "audit", "metadata", "baseline"}:
+        return False
+    if token_set & {"model", "models", "classifier", "classifiers"}:
+        return True
+    if "metrics" in token_set and token_set & {
+        "validation",
+        "evaluation",
+        "training",
+        "testing",
+        "test",
+        "classification",
+        "benchmark",
+        "performance",
+    }:
+        return True
+    return False
+
+
 def _content_checks_for_deliverable(candidate: str) -> List[Dict[str, Any]]:
     """Add format-aware checks for common data/report artifacts.
 
@@ -364,9 +390,7 @@ def _content_checks_for_deliverable(candidate: str) -> List[Dict[str, Any]]:
                 "hard": True,
             },
         ])
-    if lowered.endswith(".json") and (
-        "metric" in basename or "model" in basename or "baseline" in basename
-    ):
+    if _looks_like_model_metrics_json(basename):
         checks.append({"type": "model_metrics_valid", "path": candidate, "hard": True})
     return checks
 
