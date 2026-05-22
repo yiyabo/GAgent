@@ -1071,9 +1071,11 @@ class DeepThinkAgent:
         for dep in list(getattr(task_context, "dependency_outputs", None) or [])[:6]:
             if not isinstance(dep, dict):
                 continue
-            raw_paths = dep.get("artifact_paths")
-            if not isinstance(raw_paths, list):
-                continue
+            raw_paths = []
+            for key in ("artifact_paths", "output_directories"):
+                values = dep.get(key)
+                if isinstance(values, list):
+                    raw_paths.extend(values)
             for raw in raw_paths:
                 path = str(raw or "").strip()
                 if not path or path in seen or self._is_internal_artifact_path(path):
@@ -1131,10 +1133,10 @@ class DeepThinkAgent:
             lines.extend(
                 [
                     "- Authoritative upstream deliverables are already available; do not stop with BLOCKED_DEPENDENCY before attempting execution.",
-                    "- Use the upstream artifact paths below directly instead of browsing more directories or documents.",
+                    "- Use the upstream artifact paths/directories below directly instead of browsing more directories or documents.",
                     "- Produce only the current task's outputs.",
                     "",
-                    "Authoritative upstream artifact paths:",
+                    "Authoritative upstream artifact paths/directories:",
                     *[f"- {path}" for path in artifact_paths],
                 ]
             )
@@ -4987,8 +4989,9 @@ class DeepThinkAgent:
                 lines.append(f"Plan Outline (truncated):\n{task_context.plan_outline}")
             if task_context.dependency_outputs:
                 lines.append("Dependency Outputs:")
+                lines.append("Use these upstream artifact paths and output directories before creating this task's final output; inspect relevant JSON/CSV/TSV/MD/TXT files instead of relying only on dependency summaries.")
                 for dep in task_context.dependency_outputs[:6]:
-                    lines.append(f"- {json.dumps(dep, ensure_ascii=False)[:600]}")
+                    lines.append(f"- {json.dumps(dep, ensure_ascii=False)[:1200]}")
             if task_context.context_summary:
                 lines.append("Task Reference Summary:")
                 lines.append(self._clip_reference_text(task_context.context_summary, limit=1500))
@@ -6762,8 +6765,9 @@ IMPORTANT: data must end with \\n to execute the command.""",
                 task_lines.append(task_context.plan_outline)
             if task_context.dependency_outputs:
                 task_lines.append("Dependency Outputs:")
+                task_lines.append("Use these upstream artifact paths and output directories before creating this task's final output; inspect relevant JSON/CSV/TSV/MD/TXT files instead of relying only on dependency summaries.")
                 for dep in task_context.dependency_outputs[:6]:
-                    task_lines.append(f"- {json.dumps(dep, ensure_ascii=False)[:600]}")
+                    task_lines.append(f"- {json.dumps(dep, ensure_ascii=False)[:1200]}")
             if task_context.context_summary:
                 task_lines.append("Task Reference Summary:")
                 task_lines.append(self._clip_reference_text(task_context.context_summary, limit=1500))

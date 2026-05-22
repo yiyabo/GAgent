@@ -101,6 +101,16 @@ _BLOCKED_DEPENDENCY_MARKER_RE = re.compile(
 )
 
 
+_PRIMARY_EXECUTION_TOOLS = {
+    "code_executor",
+    "bio_tools",
+    "deeppl",
+    "literature_pipeline",
+    "manuscript_writer",
+    "review_pack_writer",
+}
+
+
 def _extract_blocked_dependency_detail(text: str) -> Optional[str]:
     raw = str(text or "")
     if not _BLOCKED_DEPENDENCY_MARKER_RE.search(raw):
@@ -115,6 +125,84 @@ def _extract_blocked_dependency_detail(text: str) -> Optional[str]:
 
     compact = " ".join(part.strip() for part in raw.splitlines() if part.strip())
     return compact[:500] if compact else "Blocked by missing prerequisite data or upstream artifacts."
+
+
+def _deep_think_has_failed_primary_execution_tool(result: Any) -> bool:
+    failures = getattr(result, "tool_failures", None)
+    if not isinstance(failures, list):
+        return False
+    for failure in failures:
+        if not isinstance(failure, dict):
+            continue
+        tool = str(failure.get("tool") or failure.get("tool_name") or "").strip().lower()
+        if tool in _PRIMARY_EXECUTION_TOOLS and failure.get("success") is False:
+            return True
+    return False
+
+
+def _path_points_to_recoverable_output(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    text = value.strip()
+    if not text:
+        return False
+    try:
+        candidate = Path(text).expanduser()
+        if candidate.is_file():
+            return candidate.stat().st_size >= 0
+        if candidate.is_dir():
+            return any(candidate.iterdir())
+    except OSError:
+        return False
+    return False
+
+
+def _has_recoverable_output_evidence(*values: Any) -> bool:
+    output_keys = {
+        "artifact_paths",
+        "session_artifact_paths",
+        "produced_files",
+        "contract_artifacts",
+        "deliverables",
+        "output_data",
+        "run_directory",
+        "working_directory",
+        "task_directory_full",
+        "task_root_directory",
+        "results_directory",
+        "work_dir",
+        "run_dir",
+    }
+
+    def _visit(value: Any, *, key: Optional[str] = None) -> bool:
+        if value is None:
+            return False
+        lowered_key = str(key or "").strip().lower()
+        if isinstance(value, str):
+            if lowered_key in output_keys or lowered_key.endswith("_path") or lowered_key.endswith("_file") or lowered_key.endswith("_dir"):
+                return _path_points_to_recoverable_output(value)
+            return False
+        if isinstance(value, dict):
+            if lowered_key == "deliverables" and value:
+                manifest_path = value.get("manifest_path")
+                if _path_points_to_recoverable_output(manifest_path):
+                    return True
+                modules = value.get("published_modules")
+                if isinstance(modules, list) and modules:
+                    return True
+            if lowered_key == "contract_artifacts" or value.get("exists") is True:
+                path = value.get("path")
+                if _path_points_to_recoverable_output(path):
+                    return True
+            for item_key, item_value in value.items():
+                if _visit(item_value, key=str(item_key)):
+                    return True
+            return False
+        if isinstance(value, (list, tuple, set)):
+            return any(_visit(item, key=key) for item in value)
+        return False
+
+    return any(_visit(value) for value in values)
 
 
 def _coerce_blocked_dependency_payload(payload: Dict[str, Any]) -> Tuple[Dict[str, Any], str]:
@@ -145,8 +233,8 @@ def _coerce_blocked_dependency_payload(payload: Dict[str, Any]) -> Tuple[Dict[st
     if not detail:
         return payload, "completed"
     coerced = dict(payload)
-    metadata = coerced.get("metadata") if isinstance(coerced.get("metadata"), dict) else {}
-    metadata = dict(metadata)
+    raw_metadata = coerced.get("metadata")
+    metadata: Dict[str, Any] = dict(raw_metadata) if isinstance(raw_metadata, dict) else {}
     metadata["blocked_by_dependencies"] = True
     metadata["blocked_dependency_reported_by_task"] = True
     metadata["blocked_dependency_detail"] = detail
@@ -2292,6 +2380,7 @@ class PlanExecutor:
         dep_outputs: List[Dict[str, Any]] = []
         paper_context_paths: List[str] = []
         tool_result_context: Dict[str, Any] = {"artifact_paths": [], "session_artifact_paths": []}
+        primary_execution_tool_failed = False
         raw_paper_context_paths = node_metadata.get("paper_context_paths")
         if isinstance(raw_paper_context_paths, list):
             for item in raw_paper_context_paths:
@@ -2320,6 +2409,7 @@ class PlanExecutor:
                         max_length=4000,
                     ),
                     "artifact_paths": artifact_paths,
+                    "output_directories": artifact_context.get("output_directories") or [],
                     "deliverable_manifest": artifact_context.get("deliverable_manifest"),
                     "published_modules": artifact_context.get("published_modules"),
                 }
@@ -2397,6 +2487,11 @@ class PlanExecutor:
                 "If the task instruction or user goal explicitly names an absolute final output directory, "
                 "also copy the final deliverables there; the task output directory is a canonical staging/fallback location, not a replacement for a user-requested output directory. "
                 "After producing publication-ready files, call deliverable_submit with those final file paths so they appear in the session Deliverables panel."
+            )
+        if dep_outputs or dependency_paths:
+            constraints.append(
+                "Before producing this task's final output, inspect the relevant upstream dependency files/directories listed in Dependency Outputs and Paper Context Paths. "
+                "Use absolute artifact_paths, dependency output directories, and resolved_input_artifacts as the primary source of truth; if a named non-critical file is absent, continue by examining the dependency output directory for an equivalent JSON/CSV/TSV/MD/TXT artifact instead of stopping early."
             )
         if paper_mode:
             constraints.extend(
@@ -2518,6 +2613,11 @@ class PlanExecutor:
             )
 
         async def on_tool_result(tool: str, payload: Dict[str, Any]) -> None:
+            nonlocal primary_execution_tool_failed
+            tool_name = str(tool or "").strip().lower()
+            if tool_name in _PRIMARY_EXECUTION_TOOLS and payload.get("success") is False:
+                primary_execution_tool_failed = True
+                tool_result_context["primary_execution_tool_failed"] = True
             extracted_context = self._extract_tool_result_context(payload)
             if extracted_context:
                 for key in ("artifact_paths", "session_artifact_paths"):
@@ -2627,14 +2727,20 @@ class PlanExecutor:
                     task_context=task_context,
                 )
             )
-            payload = {
-                "status": "success",
+            primary_tool_failed = (
+                primary_execution_tool_failed
+                or _deep_think_has_failed_primary_execution_tool(result)
+            )
+            deep_think_status = "failed" if primary_tool_failed else "success"
+            payload: Dict[str, Any] = {
+                "status": deep_think_status,
                 "content": result.final_answer,
                 "notes": [result.thinking_summary] if result.thinking_summary else [],
                 "metadata": {
                     "deep_think": True,
                     "confidence": result.confidence,
                     "tools_used": result.tools_used,
+                    "tool_failures": list(getattr(result, "tool_failures", []) or []),
                     "thinking_process": {
                         "status": "completed",
                         "total_iterations": result.total_iterations,
@@ -2675,12 +2781,22 @@ class PlanExecutor:
             artifact_paths = tool_result_context.get("artifact_paths")
             if isinstance(artifact_paths, list) and artifact_paths:
                 payload["artifact_paths"] = artifact_paths[:40]
-                payload["metadata"]["artifact_paths"] = artifact_paths[:40]
+                metadata_payload = payload.get("metadata")
+                if isinstance(metadata_payload, dict):
+                    metadata_payload["artifact_paths"] = artifact_paths[:40]
             session_artifact_paths = tool_result_context.get("session_artifact_paths")
             if isinstance(session_artifact_paths, list) and session_artifact_paths:
                 payload["session_artifact_paths"] = session_artifact_paths[:40]
-                payload["metadata"]["session_artifact_paths"] = session_artifact_paths[:40]
+                metadata_payload = payload.get("metadata")
+                if isinstance(metadata_payload, dict):
+                    metadata_payload["session_artifact_paths"] = session_artifact_paths[:40]
             payload, effective_execution_status = _coerce_blocked_dependency_payload(payload)
+            if (
+                primary_tool_failed
+                and effective_execution_status == "completed"
+                and not _has_recoverable_output_evidence(payload, tool_result_context)
+            ):
+                effective_execution_status = "failed"
             finalization, _ = self._finalize_task_execution(
                 plan_id,
                 node,
@@ -3353,7 +3469,8 @@ class PlanExecutor:
             payload_status = str(payload.get("status", "") or "").strip().lower()
             if payload_status in {"done", "success"}:
                 payload_status = "completed"
-            metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+            raw_metadata = payload.get("metadata")
+            metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
 
         if payload_status and payload_status != "completed":
             return False
@@ -3984,12 +4101,14 @@ class PlanExecutor:
                     combined_paths.append(candidate)
             return {
                 "artifact_paths": combined_paths[:40],
+                "output_directories": self._artifact_output_directories(combined_paths),
                 "deliverable_manifest": None,
                 "published_modules": [],
             }
         if manifest_paths:
             return {
                 "artifact_paths": manifest_paths[:40],
+                "output_directories": self._artifact_output_directories(manifest_paths),
                 "deliverable_manifest": None,
                 "published_modules": [],
             }
@@ -4018,9 +4137,24 @@ class PlanExecutor:
             artifact_paths.insert(0, manifest_path)
         return {
             "artifact_paths": artifact_paths[:40],
+            "output_directories": self._artifact_output_directories(artifact_paths),
             "deliverable_manifest": manifest_path,
             "published_modules": deliverables.get("published_modules") if isinstance(deliverables.get("published_modules"), list) else [],
         }
+
+    @staticmethod
+    def _artifact_output_directories(artifact_paths: Sequence[str]) -> List[str]:
+        directories: List[str] = []
+        for raw_path in artifact_paths:
+            text = str(raw_path or "").strip()
+            if not text:
+                continue
+            path = Path(text).expanduser()
+            candidate = path if path.exists() and path.is_dir() else path.parent
+            directory = str(candidate)
+            if directory and directory != "." and directory not in directories:
+                directories.append(directory)
+        return directories[:20]
 
     def _generate_plan_summary(
         self,
