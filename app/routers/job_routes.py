@@ -12,7 +12,8 @@ from fastapi import APIRouter, Body, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from app.database import get_db
+from app.database import get_db, plan_db_connection
+from app.repository.plan_storage import get_plan_db_path
 from app.services.realtime_bus import EventSubscription, get_realtime_bus, route_control_message
 from app.services.plans.decomposition_jobs import plan_decomposition_jobs
 from app.services.request_principal import ensure_owner_access, get_request_owner_id
@@ -589,21 +590,77 @@ def _resolve_plan_task_effective_state(
         return None
     if pid is None or pid <= 0:
         return None
-    if pid in cache:
+    if pid not in cache:
+        cache[pid] = {}
+    if task_id in cache[pid]:
         return cache[pid].get(task_id)
     try:
-        from app.routers.plan_routes import (  # local import to avoid cycles
-            _plan_repo,
-            _resolve_effective_task_states,
-        )
-        tree = _plan_repo.get_plan_tree(pid)
-        states = _resolve_effective_task_states(pid, tree)
+        db_path = get_plan_db_path(pid)
+        with plan_db_connection(db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT status, execution_result
+                FROM tasks
+                WHERE id=?
+                """,
+                (task_id,),
+            ).fetchone()
     except Exception as exc:  # pragma: no cover - defensive
-        _logger.warning("jobs.board: failed to resolve plan %s states: %s", pid, exc)
-        cache[pid] = {}
+        _logger.warning("jobs.board: failed to resolve plan %s task %s state: %s", pid, task_id, exc)
         return None
-    cache[pid] = states
-    return states.get(task_id)
+    if not row:
+        return None
+
+    raw_status = str(row["status"] or "pending").strip().lower() or "pending"
+    effective_status = raw_status
+    reason: Optional[str] = None
+    blocked = False
+    incomplete: List[int] = []
+    execution_result = row["execution_result"]
+    metadata: Dict[str, Any] = {}
+    if isinstance(execution_result, str) and execution_result.strip().startswith("{"):
+        try:
+            payload = json.loads(execution_result)
+        except Exception:
+            payload = None
+        if isinstance(payload, dict):
+            payload_status = str(payload.get("status") or "").strip().lower()
+            if payload_status in {"completed", "done", "success"}:
+                effective_status = "completed"
+            elif payload_status in {"failed", "error"}:
+                effective_status = "failed"
+            elif payload_status == "skipped":
+                effective_status = "skipped"
+            content = payload.get("content")
+            if isinstance(content, str) and content.strip():
+                reason = content.strip()[:220]
+            raw_metadata = payload.get("metadata")
+            if isinstance(raw_metadata, dict):
+                metadata = raw_metadata
+    if metadata.get("blocked_by_dependencies") is True:
+        blocked = True
+        effective_status = "blocked"
+    raw_incomplete = metadata.get("incomplete_dependencies")
+    if isinstance(raw_incomplete, list):
+        for dep in raw_incomplete:
+            try:
+                incomplete.append(int(dep))
+            except (TypeError, ValueError):
+                pass
+        if incomplete:
+            blocked = True
+            effective_status = "blocked"
+    state = {
+        "task_id": task_id,
+        "raw_status": raw_status,
+        "effective_status": effective_status,
+        "status_reason": reason,
+        "blocked_by_dependencies": blocked,
+        "incomplete_dependencies": incomplete,
+        "is_active_execution": raw_status == "running",
+    }
+    cache[pid][task_id] = state
+    return state
 
 
 def _apply_effective_state_to_item(

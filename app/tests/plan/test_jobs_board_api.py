@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.routers import job_routes
+from app.database import plan_db_connection
 from app.services.request_principal import LEGACY_LOCAL_OWNER_ID
 
 
@@ -548,3 +549,74 @@ def test_jobs_board_collapses_full_plan_runs_per_plan(
     assert full_plan_item["current_step"] == 2
     assert full_plan_item["total_steps"] == 17
     assert full_plan_item["current_task_id"] == 17
+
+
+def test_jobs_board_resolves_current_task_state_without_plan_tree(
+    board_api_env: Tuple[sqlite3.Connection, Dict[str, Dict[str, Any]], TestClient],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    conn, payloads, client = board_api_env
+    plan_id = 105
+    plan_db = tmp_path / "plan_105.sqlite"
+    with plan_db_connection(plan_db) as plan_conn:
+        plan_conn.execute(
+            """
+            CREATE TABLE tasks (
+                id INTEGER PRIMARY KEY,
+                status TEXT,
+                execution_result TEXT
+            )
+            """
+        )
+        plan_conn.execute(
+            """
+            INSERT INTO tasks (id, status, execution_result)
+            VALUES (?, ?, ?)
+            """,
+            (17, "running", None),
+        )
+
+    monkeypatch.setattr(
+        job_routes,
+        "get_plan_db_path",
+        lambda requested_plan_id: plan_db if requested_plan_id == plan_id else tmp_path / f"plan_{requested_plan_id}.sqlite",
+    )
+
+    def _fail_plan_tree(*_args, **_kwargs):
+        raise AssertionError("jobs board should not load the full plan tree")
+
+    monkeypatch.setattr(job_routes, "_plan_repo", type("Repo", (), {"get_plan_tree": _fail_plan_tree})(), raising=False)
+    _insert_job_index(
+        conn,
+        job_id="job_exec_running",
+        plan_id=plan_id,
+        job_type="plan_execute",
+        created_at="2026-02-19 14:00:00",
+    )
+    payloads["job_exec_running"] = {
+        "job_id": "job_exec_running",
+        "job_type": "plan_execute",
+        "mode": "full_plan",
+        "status": "running",
+        "plan_id": plan_id,
+        "created_at": "2026-02-19T14:00:00Z",
+        "metadata": {"plan_id": plan_id, "target_task_id": None},
+        "stats": {
+            "executed": 1,
+            "failed": 0,
+            "skipped": 0,
+            "total_steps": 10,
+            "current_step": 2,
+            "current_task_id": 17,
+        },
+    }
+
+    response = client.get("/jobs/board", params={"plan_id": plan_id})
+
+    assert response.status_code == 200
+    item = response.json()["groups"]["code_executor"]["items"][0]
+    assert item["job_id"] == "job_exec_running"
+    assert item["current_task_id"] == 17
+    assert item["effective_status"] == "running"
+    assert item["is_active_execution"] is True
