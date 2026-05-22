@@ -48,6 +48,20 @@ logger = logging.getLogger(__name__)
 
 _BLOCK_SCOPE_STATUS = "STATUS: BLOCKED_SCOPE"
 _BLOCK_SCOPE_REASON = "REASON: NEED_ATOMIC_TASK"
+_SEMANTIC_FAILURE_STATUS_DETAILS: Dict[str, str] = {
+    "BLOCKED_DEPENDENCY": "Blocked by missing or unusable upstream dependency.",
+    "MISSING_INPUT": "Blocked by missing input data.",
+    "NO_OUTPUT": "Execution produced no required outputs.",
+}
+_SEMANTIC_FAILURE_STATUS_RE = re.compile(
+    r"^\s*(?:[-*]\s*)?(?:\*\*)?STATUS(?:\*\*)?\s*:\s*"
+    r"(?:\*\*)?(BLOCKED_DEPENDENCY|MISSING_INPUT|NO_OUTPUT)(?:\*\*)?\b",
+    re.IGNORECASE | re.MULTILINE,
+)
+_SEMANTIC_FAILURE_DETAIL_RE = re.compile(
+    r"^\s*(?:[-*]\s*)?(?:\*\*)?DETAIL(?:\*\*)?\s*:\s*(?:\*\*)?(?P<detail>.+?)\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
 _DEFAULT_TASK_SUBDIRECTORIES = ("results", "code", "data", "docs")
 _TASK_READ_DIR_PREFIXES: Sequence[str] = (
     "app",
@@ -118,7 +132,283 @@ def _normalize_csv_values(value: Any) -> List[str]:
     return tokens
 
 
-def _detect_scope_blocked(stdout: str, output_data: Optional[Dict[str, Any]]) -> Optional[str]:
+def _semantic_failure_kind(status: str) -> str:
+    return str(status or "").strip().lower()
+
+
+def _semantic_failure_error(status: str, detail: str) -> str:
+    status_text = str(status or "").strip().upper() or "EXECUTION_FAILED"
+    detail_text = str(detail or "").strip()
+    if detail_text:
+        return f"{status_text}: {detail_text}"
+    return _SEMANTIC_FAILURE_STATUS_DETAILS.get(status_text, status_text)
+
+
+def _extract_semantic_failure_from_text(text: str) -> Optional[Dict[str, str]]:
+    if not isinstance(text, str) or not text.strip():
+        return None
+    status_match = _SEMANTIC_FAILURE_STATUS_RE.search(text)
+    if not status_match:
+        return None
+    prefix = text[max(0, status_match.start() - 120) : status_match.start()].lower()
+    if "if blocked" in prefix or "output exactly" in prefix:
+        return None
+    status = status_match.group(1).strip().upper()
+    detail = ""
+    detail_match = _SEMANTIC_FAILURE_DETAIL_RE.search(text)
+    if detail_match:
+        detail = detail_match.group("detail").strip().strip("*").strip()
+    if "<" in detail and ">" in detail:
+        return None
+    if not detail:
+        detail = _SEMANTIC_FAILURE_STATUS_DETAILS.get(status, "Execution reported semantic failure.")
+    return {
+        "status": status,
+        "detail": detail,
+        "failure_kind": _semantic_failure_kind(status),
+    }
+
+
+def _iter_structured_semantic_text(value: Any) -> List[str]:
+    texts: List[str] = []
+
+    def _append(candidate: Any) -> None:
+        if isinstance(candidate, str) and candidate.strip():
+            texts.append(candidate)
+
+    def _visit(item: Any) -> None:
+        if isinstance(item, list):
+            for child in item:
+                _visit(child)
+            return
+        if not isinstance(item, dict):
+            return
+
+        raw_status = str(item.get("status") or item.get("execution_status") or "").strip().upper()
+        if raw_status in _SEMANTIC_FAILURE_STATUS_DETAILS:
+            detail_value = item.get("detail") or item.get("error") or item.get("message") or item.get("summary")
+            _append(f"STATUS: {raw_status}\nDETAIL: {detail_value or _SEMANTIC_FAILURE_STATUS_DETAILS[raw_status]}")
+
+        event_type = str(item.get("type") or "").strip().lower()
+        if event_type == "assistant":
+            message = item.get("message")
+            if isinstance(message, dict):
+                content = message.get("content")
+                if isinstance(content, list):
+                    for part in content:
+                        if isinstance(part, dict) and str(part.get("type") or "").strip().lower() == "text":
+                            _append(part.get("text"))
+                else:
+                    _append(content)
+            return
+
+        if event_type == "result":
+            for key in ("result", "content", "message", "summary", "error"):
+                _append(item.get(key))
+            return
+
+        if not event_type:
+            for key in ("result", "content", "message", "raw_output", "summary", "error"):
+                _append(item.get(key))
+            for child in item.values():
+                if isinstance(child, (dict, list)):
+                    _visit(child)
+
+    _visit(value)
+    return texts
+
+
+def _detect_semantic_execution_failure(
+    stdout: str,
+    output_data: Any,
+) -> Optional[Dict[str, str]]:
+    structured_texts = _iter_structured_semantic_text(output_data)
+    for text in structured_texts:
+        failure = _extract_semantic_failure_from_text(text)
+        if failure:
+            return failure
+    if structured_texts:
+        return None
+    failure = _extract_semantic_failure_from_text(stdout or "")
+    if failure:
+        return failure
+    return None
+
+
+def _detect_missing_required_outputs(
+    execution_spec: Optional[Dict[str, Any]],
+    produced_files: Sequence[str],
+    *,
+    task_work_dir: Optional[Path] = None,
+) -> Optional[str]:
+    if not isinstance(execution_spec, dict):
+        return None
+    criteria = execution_spec.get("acceptance_criteria")
+    if not isinstance(criteria, dict) or criteria.get("blocking") is False:
+        return None
+    checks = criteria.get("checks")
+    if not isinstance(checks, list) or not checks:
+        return None
+    expected = derive_expected_deliverables(criteria)
+    if expected:
+        produced_normalized: List[str] = []
+        for raw_path in produced_files:
+            text = str(raw_path or "").strip().replace("\\", "/")
+            if text:
+                produced_normalized.append(text.strip("/"))
+
+        missing: List[str] = []
+        for raw_expected in expected:
+            expected_text = str(raw_expected or "").strip().replace("\\", "/")
+            if not expected_text:
+                continue
+            if _required_output_is_present(
+                expected_text,
+                produced_normalized,
+                task_work_dir=task_work_dir,
+            ):
+                continue
+            missing.append(expected_text)
+        if not missing:
+            return None
+        preview = ", ".join(str(item) for item in missing[:5])
+        if len(missing) > 5:
+            preview += ", ..."
+        return f"Missing required deliverables: {preview}"
+    return "No files were produced despite blocking acceptance criteria requiring output artifacts."
+
+
+def _required_output_is_present(
+    expected_text: str,
+    produced_normalized: Sequence[str],
+    *,
+    task_work_dir: Optional[Path],
+) -> bool:
+    expected_norm = str(expected_text or "").strip().replace("\\", "/").strip("/")
+    if not expected_norm:
+        return False
+
+    has_glob = any(token in expected_norm for token in ("*", "?", "["))
+    for produced in produced_normalized:
+        produced_norm = str(produced or "").strip().replace("\\", "/").strip("/")
+        if not produced_norm:
+            continue
+        if has_glob:
+            if _fnmatch.fnmatch(produced_norm, expected_norm) or _fnmatch.fnmatch(
+                produced_norm,
+                f"*/{expected_norm}",
+            ):
+                return True
+            continue
+        if produced_norm == expected_norm or produced_norm.endswith(f"/{expected_norm}"):
+            return True
+
+    if task_work_dir is None:
+        return False
+    expected_path = Path(expected_text).expanduser()
+    candidate = expected_path if expected_path.is_absolute() else task_work_dir / expected_path
+    try:
+        if has_glob:
+            return any(path.is_file() for path in candidate.parent.glob(candidate.name))
+        if candidate.exists() and candidate.is_file():
+            return True
+        if not expected_path.is_absolute():
+            prefixed = _find_unique_run_prefixed_contract_source(task_work_dir, expected_path)
+            return prefixed is not None
+        return False
+    except OSError:
+        return False
+
+
+def _execution_failure_error_category(failure_kind: str) -> str:
+    normalized = str(failure_kind or "").strip().lower()
+    if normalized == "blocked_dependency":
+        return "blocked_dependency"
+    if normalized == "missing_input":
+        return "missing_input"
+    if normalized in {"no_output", "missing_required_outputs"}:
+        return "missing_required_outputs"
+    return "execution_semantic_failure"
+
+
+def _detect_execution_semantic_or_output_failure(
+    *,
+    stdout: str,
+    output_data: Any,
+    execution_spec: Optional[Dict[str, Any]],
+    produced_files: Sequence[str],
+    success: bool,
+    task_work_dir: Optional[Path] = None,
+) -> Optional[Dict[str, str]]:
+    semantic_failure = _detect_semantic_execution_failure(stdout, output_data)
+    if semantic_failure:
+        return semantic_failure
+
+    if success:
+        missing_detail = _detect_missing_required_outputs(
+            execution_spec,
+            produced_files,
+            task_work_dir=task_work_dir,
+        )
+        if missing_detail:
+            return {
+                "status": "NO_OUTPUT",
+                "detail": missing_detail,
+                "failure_kind": "missing_required_outputs",
+            }
+    return None
+
+
+def _classify_execution_success(
+    *,
+    stdout: str,
+    output_data: Any,
+    execution_spec: Optional[Dict[str, Any]],
+    produced_files: Sequence[str],
+    success: bool,
+    task_work_dir: Optional[Path] = None,
+) -> tuple[bool, Optional[Dict[str, str]]]:
+    execution_failure = _detect_execution_semantic_or_output_failure(
+        stdout=stdout,
+        output_data=output_data,
+        execution_spec=execution_spec,
+        produced_files=produced_files,
+        success=success,
+        task_work_dir=task_work_dir,
+    )
+    if execution_failure:
+        return False, execution_failure
+    return bool(success), None
+
+
+def _apply_execution_failure_to_payload(
+    result_payload: Dict[str, Any],
+    execution_failure: Optional[Dict[str, str]],
+) -> None:
+    if not execution_failure:
+        return
+    status = str(execution_failure.get("status") or "").strip().upper()
+    detail = str(execution_failure.get("detail") or "").strip()
+    failure_kind = str(execution_failure.get("failure_kind") or _semantic_failure_kind(status)).strip()
+    result_payload["success"] = False
+    result_payload["execution_status"] = "failed"
+    result_payload["failure_kind"] = failure_kind
+    result_payload["error_category"] = _execution_failure_error_category(failure_kind)
+    result_payload["error_summary"] = _semantic_failure_error(status, detail)
+    result_payload["error"] = result_payload["error_summary"]
+    if failure_kind in {"blocked_dependency", "missing_input", "no_output", "missing_required_outputs"}:
+        result_payload["produced_files"] = []
+        result_payload["produced_files_count"] = 0
+        result_payload["artifact_paths"] = []
+        result_payload["contract_artifacts"] = []
+        result_payload["session_artifact_paths"] = []
+        output_location = result_payload.get("output_location")
+        if isinstance(output_location, dict):
+            output_location["files"] = []
+        result_payload.pop("deliverable_submit", None)
+
+
+def _detect_scope_blocked(stdout: str, output_data: Any) -> Optional[str]:
     candidates: List[str] = []
     if stdout:
         candidates.append(stdout)
@@ -205,6 +495,9 @@ _QWEN_SHELL_FALLBACK_TIMEOUT_MS = 600000
 _QWEN_SHELL_FALLBACK_MAX_TIMEOUT_MS = 3600000
 _QWEN_COMPLETED_OUTPUT_EXIT_GRACE_SECONDS = 180.0
 _QWEN_COMPLETED_OUTPUT_EXIT_CHECK_SECONDS = 15.0
+_QWEN_PROCESS_EXIT_WAIT_SECONDS = 30.0
+_QWEN_PROCESS_KILL_WAIT_SECONDS = 10.0
+_QWEN_CLI_NO_OUTPUT_TIMEOUT_SECONDS = 900.0
 
 
 def _partition_cli_stderr_lines(stderr: str) -> tuple[List[str], str]:
@@ -355,6 +648,245 @@ def _resolve_qwen_completed_output_exit_check_seconds() -> float:
         return _QWEN_COMPLETED_OUTPUT_EXIT_CHECK_SECONDS
 
 
+def _resolve_qwen_process_exit_wait_seconds() -> float:
+    raw = str(os.getenv("QWEN_PROCESS_EXIT_WAIT_SECONDS", "")).strip()
+    if not raw:
+        return _QWEN_PROCESS_EXIT_WAIT_SECONDS
+    try:
+        return max(1.0, min(300.0, float(raw)))
+    except ValueError:
+        return _QWEN_PROCESS_EXIT_WAIT_SECONDS
+
+
+def _resolve_qwen_process_kill_wait_seconds() -> float:
+    raw = str(os.getenv("QWEN_PROCESS_KILL_WAIT_SECONDS", "")).strip()
+    if not raw:
+        return _QWEN_PROCESS_KILL_WAIT_SECONDS
+    try:
+        return max(1.0, min(60.0, float(raw)))
+    except ValueError:
+        return _QWEN_PROCESS_KILL_WAIT_SECONDS
+
+
+def _resolve_qwen_cli_no_output_timeout_seconds() -> float:
+    raw = str(os.getenv("QWEN_CLI_NO_OUTPUT_TIMEOUT_SECONDS", "")).strip()
+    if not raw:
+        return _QWEN_CLI_NO_OUTPUT_TIMEOUT_SECONDS
+    try:
+        return max(5.0, min(7200.0, float(raw)))
+    except ValueError:
+        return _QWEN_CLI_NO_OUTPUT_TIMEOUT_SECONDS
+
+
+async def _wait_for_cli_process_return_code(
+    process: Any,
+    *,
+    backend_label: str,
+    exit_timeout: Optional[float] = None,
+    kill_timeout: Optional[float] = None,
+) -> int:
+    return_code = getattr(process, "returncode", None)
+    if return_code is not None:
+        return int(return_code)
+
+    effective_exit_timeout = (
+        _resolve_qwen_process_exit_wait_seconds()
+        if exit_timeout is None
+        else float(exit_timeout)
+    )
+    effective_kill_timeout = (
+        _resolve_qwen_process_kill_wait_seconds()
+        if kill_timeout is None
+        else float(kill_timeout)
+    )
+    try:
+        return int(await asyncio.wait_for(process.wait(), timeout=effective_exit_timeout))
+    except asyncio.TimeoutError:
+        logger.warning(
+            "[CODE_EXECUTOR] %s process did not exit after %.0fs; terminating.",
+            backend_label,
+            effective_exit_timeout,
+        )
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass
+        try:
+            return int(await asyncio.wait_for(process.wait(), timeout=effective_kill_timeout))
+        except asyncio.TimeoutError:
+            logger.warning(
+                "[CODE_EXECUTOR] %s process did not exit %.0fs after kill; continuing with timeout code.",
+                backend_label,
+                effective_kill_timeout,
+            )
+            return -1
+
+
+async def _wait_for_qwen_cli_drain_or_watchdog(
+    *,
+    process: Any,
+    drain_task: Any,
+    stdout_task: Any,
+    stderr_task: Any,
+    local_stdout_lines: List[str],
+    local_stderr_lines: List[str],
+    cli_progress: Dict[str, float],
+    can_finish_from_contract_outputs: bool,
+    execution_spec: Optional[Dict[str, Any]],
+    task_work_dir: Path,
+    unified_output_dir: Optional[Path],
+    cli_label: str,
+    log_file: Any,
+    log_lock: asyncio.Lock,
+) -> Optional[int]:
+    """Wait for qwen CLI stream drain, with contract early-exit and no-output watchdog.
+
+    Returns an override return code when the process was intentionally killed,
+    otherwise None so the caller can wait for the process normally.
+    """
+    no_output_timeout = _resolve_qwen_cli_no_output_timeout_seconds()
+    no_output_deadline = float(cli_progress.get("last_output_at") or 0.0) + no_output_timeout
+    grace_deadline: Optional[float] = None
+
+    while True:
+        if drain_task.done():
+            await drain_task
+            return None
+
+        wait_seconds = (
+            _resolve_qwen_completed_output_exit_check_seconds()
+            if can_finish_from_contract_outputs
+            else 15.0
+        )
+        loop = asyncio.get_running_loop()
+        wait_seconds = max(0.1, min(wait_seconds, no_output_deadline - loop.time()))
+        done, _pending = await asyncio.wait({drain_task}, timeout=wait_seconds)
+        if done:
+            await drain_task
+            return None
+
+        loop = asyncio.get_running_loop()
+        last_output_at = float(cli_progress.get("last_output_at") or loop.time())
+        timeout_seconds = _resolve_qwen_cli_no_output_timeout_seconds()
+        if loop.time() - last_output_at >= timeout_seconds:
+            timeout_note = (
+                f"[QWEN_NO_OUTPUT_TIMEOUT] qwen_cli_no_output_timeout: "
+                f"qwen CLI produced no stdout/stderr for {timeout_seconds:.0f}s "
+                f"and did not exit"
+            )
+            logger.warning("[CODE_EXECUTOR] %s", timeout_note)
+            if log_file:
+                try:
+                    async with log_lock:
+                        log_file.write(f"[{datetime.utcnow().isoformat()}Z] {timeout_note}\n")
+                        log_file.flush()
+                except Exception:
+                    pass
+            local_stderr_lines.append(timeout_note)
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+            try:
+                await _wait_for_cli_process_return_code(
+                    process,
+                    backend_label=cli_label,
+                    exit_timeout=_resolve_qwen_process_kill_wait_seconds(),
+                    kill_timeout=_resolve_qwen_process_kill_wait_seconds(),
+                )
+            except Exception:
+                pass
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(stdout_task, stderr_task, return_exceptions=True),
+                    timeout=10.0,
+                )
+            except asyncio.TimeoutError:
+                stdout_task.cancel()
+                stderr_task.cancel()
+                await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
+            return -1
+        no_output_deadline = last_output_at + timeout_seconds
+
+        if not can_finish_from_contract_outputs:
+            continue
+
+        alternate_work_dirs = [unified_output_dir] if unified_output_dir is not None else None
+        passed, reason = _qwen_outputs_pass_contract_for_early_exit(
+            execution_spec=execution_spec,
+            task_work_dir=task_work_dir,
+            alternate_work_dirs=alternate_work_dirs,
+        )
+        if not passed:
+            grace_deadline = None
+            continue
+
+        if grace_deadline is None:
+            grace_seconds = _resolve_qwen_completed_output_exit_grace_seconds()
+            grace_deadline = loop.time() + grace_seconds
+            logger.info(
+                "[CODE_EXECUTOR] Qwen outputs satisfy contract before CLI exit; "
+                "waiting %.0fs for graceful final response (%s).",
+                grace_seconds,
+                reason,
+            )
+            if log_file:
+                try:
+                    async with log_lock:
+                        log_file.write(
+                            f"[{datetime.utcnow().isoformat()}Z] "
+                            "Qwen outputs satisfy contract before CLI exit; "
+                            f"waiting {grace_seconds:.0f}s for graceful final response\n"
+                        )
+                        log_file.flush()
+                except Exception:
+                    pass
+            continue
+        if loop.time() < grace_deadline:
+            continue
+
+        logger.warning(
+            "[CODE_EXECUTOR] Qwen CLI did not exit after producing contract-valid outputs; "
+            "terminating stuck finalization process."
+        )
+        if log_file:
+            try:
+                async with log_lock:
+                    log_file.write(
+                        f"[{datetime.utcnow().isoformat()}Z] "
+                        "Qwen CLI terminated after producing contract-valid outputs\n"
+                    )
+                    log_file.flush()
+            except Exception:
+                pass
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass
+        try:
+            await _wait_for_cli_process_return_code(
+                process,
+                backend_label=cli_label,
+                exit_timeout=_resolve_qwen_process_kill_wait_seconds(),
+                kill_timeout=_resolve_qwen_process_kill_wait_seconds(),
+            )
+        except Exception:
+            pass
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(stdout_task, stderr_task, return_exceptions=True),
+                timeout=10.0,
+            )
+        except asyncio.TimeoutError:
+            stdout_task.cancel()
+            stderr_task.cancel()
+            await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
+        local_stdout_lines.append(
+            "[code_executor] Qwen CLI was terminated after required outputs passed deterministic verification."
+        )
+        return 0
+
+
 def _verify_contract_for_qwen_early_exit(
     execution_spec: Dict[str, Any],
     *,
@@ -383,6 +915,7 @@ def _qwen_outputs_pass_contract_for_early_exit(
     *,
     execution_spec: Optional[Dict[str, Any]],
     task_work_dir: Path,
+    alternate_work_dirs: Optional[Sequence[Path]] = None,
 ) -> tuple[bool, str]:
     if not isinstance(execution_spec, dict):
         return False, "no_acceptance_criteria"
@@ -392,6 +925,188 @@ def _qwen_outputs_pass_contract_for_early_exit(
     checks = acceptance_criteria.get("checks")
     if not isinstance(checks, list) or not checks:
         return False, "no_acceptance_checks"
+
+    work_dirs: List[Path] = [task_work_dir]
+    seen_dirs = {str(task_work_dir)}
+    for candidate in alternate_work_dirs or ():
+        candidate_path = Path(candidate)
+        candidate_text = str(candidate_path)
+        if candidate_text in seen_dirs:
+            continue
+        seen_dirs.add(candidate_text)
+        work_dirs.append(candidate_path)
+
+    last_reason = "verification_not_run"
+    for candidate_dir in work_dirs:
+        passed, reason = _qwen_single_work_dir_passes_contract_for_early_exit(
+            execution_spec=execution_spec,
+            task_work_dir=candidate_dir,
+        )
+        if passed:
+            if candidate_dir != task_work_dir:
+                _ = _materialize_contract_outputs_for_standard_paths(
+                    execution_spec=execution_spec,
+                    source_dir=candidate_dir,
+                    scratch_dir=task_work_dir,
+                )
+            return True, reason if candidate_dir == task_work_dir else f"{reason}:alternate_output_dir"
+        if candidate_dir != task_work_dir:
+            view_dir = _materialize_contract_view_for_flat_outputs(
+                execution_spec=execution_spec,
+                source_dir=candidate_dir,
+                scratch_dir=task_work_dir,
+            )
+            if view_dir is not None:
+                passed, view_reason = _qwen_single_work_dir_passes_contract_for_early_exit(
+                    execution_spec=execution_spec,
+                    task_work_dir=view_dir,
+                )
+                if passed:
+                    _ = _materialize_contract_outputs_for_standard_paths(
+                        execution_spec=execution_spec,
+                        source_dir=view_dir,
+                        scratch_dir=task_work_dir,
+                    )
+                    return True, f"{view_reason}:alternate_output_view"
+                reason = view_reason
+        last_reason = reason
+    return False, last_reason
+
+
+def _materialize_contract_outputs_for_standard_paths(
+    *,
+    execution_spec: Dict[str, Any],
+    source_dir: Path,
+    scratch_dir: Path,
+) -> List[Path]:
+    criteria = execution_spec.get("acceptance_criteria")
+    if not isinstance(criteria, dict):
+        return []
+    expected = derive_expected_deliverables(criteria)
+    if not expected:
+        return []
+    if not source_dir.exists() or not source_dir.is_dir():
+        return []
+
+    materialized: List[Path] = []
+    scratch_root = scratch_dir.resolve()
+    for raw_expected in expected:
+        expected_text = str(raw_expected or "").strip().replace(chr(92), "/").strip("/")
+        if not expected_text or any(token in expected_text for token in ("*", "?", "[")):
+            continue
+        expected_path = Path(expected_text)
+        if expected_path.is_absolute():
+            continue
+        direct_source = source_dir / expected_path
+        flat_source = source_dir / expected_path.name
+        prefixed_source = _find_unique_run_prefixed_contract_source(source_dir, expected_path)
+        source = direct_source if direct_source.exists() else flat_source
+        if not source.exists() and prefixed_source is not None:
+            source = prefixed_source
+        if not source.exists() or not source.is_file():
+            continue
+        destination = (scratch_dir / expected_path).resolve()
+        try:
+            destination.relative_to(scratch_root)
+        except ValueError:
+            continue
+        try:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if not destination.exists() or destination.stat().st_size != source.stat().st_size:
+                shutil.copy2(source, destination)
+            materialized.append(destination)
+        except OSError as exc:
+            logger.debug("Failed to materialize qwen contract output %s from %s: %s", destination, source, exc)
+    return materialized
+
+
+def _find_unique_run_prefixed_contract_source(source_dir: Path, expected_path: Path) -> Optional[Path]:
+    """Find a single run-prefixed file that corresponds to a contract filename.
+
+    Some code-agent prompts encourage run-prefixed output filenames while the task
+    contract requires a stable path such as ``artifacts/dl_hyperopt_results.json``.
+    Treat only same-directory ``run_*_<expected name>`` files as repair candidates,
+    and only when the match is unique. Ambiguous candidates must fail verification
+    instead of being guessed.
+    """
+
+    expected_name = expected_path.name
+    if not expected_name:
+        return None
+
+    parent = (source_dir / expected_path.parent).resolve()
+    try:
+        if not parent.exists() or not parent.is_dir():
+            return None
+    except OSError:
+        return None
+
+    suffix = f"_{expected_name}"
+    matches: List[Path] = []
+    try:
+        for candidate in parent.iterdir():
+            if not candidate.is_file():
+                continue
+            name = candidate.name
+            if name.startswith("run_") and name.endswith(suffix):
+                matches.append(candidate)
+    except OSError:
+        return None
+
+    if len(matches) != 1:
+        return None
+    return matches[0]
+
+
+def _materialize_contract_view_for_flat_outputs(
+    *,
+    execution_spec: Dict[str, Any],
+    source_dir: Path,
+    scratch_dir: Path,
+) -> Optional[Path]:
+    criteria = execution_spec.get("acceptance_criteria")
+    if not isinstance(criteria, dict):
+        return None
+    expected = derive_expected_deliverables(criteria)
+    if not expected:
+        return None
+    if not source_dir.exists() or not source_dir.is_dir():
+        return None
+
+    source_key = hashlib.md5(str(source_dir).encode("utf-8")).hexdigest()[:12]
+    view_dir = scratch_dir / ".contract_views" / source_key
+    materialized = False
+    for raw_expected in expected:
+        expected_text = str(raw_expected or "").strip().replace(chr(92), "/").strip("/")
+        if not expected_text or any(token in expected_text for token in ("*", "?", "[")):
+            continue
+        expected_path = Path(expected_text)
+        if expected_path.is_absolute() or len(expected_path.parts) < 2:
+            continue
+        direct_source = source_dir / expected_path
+        flat_source = source_dir / expected_path.name
+        prefixed_source = _find_unique_run_prefixed_contract_source(source_dir, expected_path)
+        source = direct_source if direct_source.exists() else flat_source
+        if not source.exists() and prefixed_source is not None:
+            source = prefixed_source
+        if not source.exists() or not source.is_file():
+            continue
+        destination = view_dir / expected_path
+        try:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if not destination.exists() or destination.stat().st_size != source.stat().st_size:
+                shutil.copy2(source, destination)
+            materialized = True
+        except OSError as exc:
+            logger.debug("Failed to materialize qwen contract view %s from %s: %s", destination, source, exc)
+    return view_dir if materialized else None
+
+
+def _qwen_single_work_dir_passes_contract_for_early_exit(
+    *,
+    execution_spec: Dict[str, Any],
+    task_work_dir: Path,
+) -> tuple[bool, str]:
     try:
         finalization = _verify_contract_for_qwen_early_exit(
             execution_spec,
@@ -1087,6 +1802,14 @@ def _is_qwen_session_in_use_error(stderr_text: Any) -> bool:
     return "session id" in text and "already in use" in text
 
 
+def _is_qwen_no_output_timeout(stderr_text: Any, stdout_text: Any = "") -> bool:
+    text = f"{stderr_text or ''}\n{stdout_text or ''}".lower()
+    return (
+        "qwen_cli_no_output_timeout" in text
+        or "qwen cli produced no stdout/stderr" in text
+    )
+
+
 def _is_qwen_container_infrastructure_error(stderr_text: Any, stdout_text: Any = "") -> bool:
     """Return True for qwen Docker/container failures that are safe to retry elsewhere."""
     text = f"{stderr_text or ''}\n{stdout_text or ''}".lower()
@@ -1096,6 +1819,8 @@ def _is_qwen_container_infrastructure_error(stderr_text: Any, stdout_text: Any =
         "cannot connect to the docker daemon",
         "error response from daemon",
         "context deadline exceeded",
+        "qwen_cli_no_output_timeout",
+        "qwen cli produced no stdout/stderr",
     )
     return any(pattern in text for pattern in patterns)
 
@@ -1107,6 +1832,24 @@ def _qwen_infrastructure_fallback_allowed(execution_lane: str, execution_lane_re
     if lane == "configured_backend" or "code_execution_backend=qwen_code" in reason:
         return False
     return True
+
+
+def _should_fallback_from_qwen_infra_failure(
+    *,
+    use_qwen_code_backend: bool,
+    success: bool,
+    stderr: Any,
+    stdout: Any,
+    execution_lane: str,
+    execution_lane_reason: str,
+) -> bool:
+    if not use_qwen_code_backend or success:
+        return False
+    if _is_qwen_no_output_timeout(stderr, stdout):
+        return False
+    if not _is_qwen_container_infrastructure_error(stderr, stdout):
+        return False
+    return _qwen_infrastructure_fallback_allowed(execution_lane, execution_lane_reason)
 
 
 def _qwen_code_cli_available() -> bool:
@@ -2162,6 +2905,10 @@ def _contract_required_artifact_records(
         expected_path = Path(str(expected or "").strip()).expanduser()
         direct = expected_path if expected_path.is_absolute() else (task_work_dir / expected_path)
         candidates: List[Path] = [direct]
+        if not expected_path.is_absolute():
+            prefixed_source = _find_unique_run_prefixed_contract_source(task_work_dir, expected_path)
+            if prefixed_source is not None:
+                candidates.append(prefixed_source)
         for produced in produced_paths:
             produced_norm = _normalize(str(produced))
             if produced_norm == expected_text or produced_norm.endswith(f"/{expected_text}"):
@@ -2851,6 +3598,236 @@ async def _execute_task_locally(
     return result
 
 
+def _build_local_backend_result_payload(
+    *,
+    task: str,
+    local_result: Dict[str, Any],
+    resolved_plan_id: Optional[int],
+    resolved_task_id: Optional[int],
+    require_task_context: bool,
+    task_dir_base: Optional[str],
+    task_work_dir: Path,
+    task_root_dir: Path,
+    run_id: str,
+    file_prefix: str,
+    task_subdirs: Sequence[str],
+    session_dir: Path,
+    execution_lane: str,
+    execution_lane_reason: str,
+    log_path: Optional[Path],
+    normalized_allowed_tools: Sequence[str],
+    code_directory: Optional[str],
+    primary_code_file: Optional[str],
+    produced_files: Sequence[str],
+    verification_artifact_paths: Sequence[str],
+    contract_artifacts: Sequence[Dict[str, Any]],
+    session_artifact_paths: Sequence[str],
+    unified_output_dir: Optional[Path],
+    unified_promoted_files: Sequence[str],
+    effective_session_id: str,
+    ancestor_chain: Optional[Sequence[int]],
+    execution_spec: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    success, execution_failure = _classify_execution_success(
+        stdout=str(local_result.get("stdout") or ""),
+        output_data=local_result.get("output_data"),
+        execution_spec=execution_spec,
+        produced_files=produced_files,
+        success=bool(local_result.get("success", False)),
+        task_work_dir=task_work_dir,
+    )
+    result_payload: Dict[str, Any] = {
+        "tool": "code_executor",
+        "task": task,
+        "plan_id": resolved_plan_id,
+        "task_id": resolved_task_id,
+        "require_task_context": require_task_context,
+        "task_directory": task_dir_base,
+        "task_directory_full": str(task_work_dir),
+        "task_root_directory": str(task_root_dir),
+        "run_directory": str(task_work_dir),
+        "run_id": run_id,
+        "task_subdirectories": list(task_subdirs),
+        "file_prefix": file_prefix,
+        "session_directory": str(session_dir),
+        "success": success,
+        "stdout": str(local_result.get("stdout") or ""),
+        "stderr": str(local_result.get("stderr") or ""),
+        "exit_code": local_result.get("exit_code", -1),
+        "execution_backend": str(
+            local_result.get("execution_backend")
+            or local_result.get("execution_mode")
+            or "local"
+        ),
+        "execution_mode": str(local_result.get("execution_mode") or "code_executor_host"),
+        "execution_lane": execution_lane,
+        "execution_lane_reason": execution_lane_reason,
+        "working_directory": str(task_work_dir),
+        "log_path": str(log_path) if log_path else None,
+        "debug_log_path": None,
+        "allowed_tools_effective": list(normalized_allowed_tools),
+        "claude_model_effective": None,
+        "claude_setting_sources_effective": None,
+        "claude_auth_mode_effective": None,
+        "code_directory": code_directory,
+        "code_file": local_result.get("code_file") or primary_code_file,
+        "produced_files": list(produced_files),
+        "produced_files_count": len(produced_files),
+        "artifact_paths": list(verification_artifact_paths),
+        "contract_artifacts": list(contract_artifacts),
+        "session_artifact_paths": list(session_artifact_paths),
+        "output_location": {
+            "type": "task" if resolved_task_id is not None else "tmp",
+            "session_id": effective_session_id,
+            "task_id": resolved_task_id,
+            "ancestor_chain": list(ancestor_chain) if ancestor_chain is not None else None,
+            "base_dir": str(unified_output_dir) if unified_output_dir else None,
+            "files": list(unified_promoted_files),
+        },
+    }
+
+    if "docker_image_effective" in local_result:
+        result_payload["docker_image_effective"] = local_result.get("docker_image_effective")
+    if "runtime_failure" in local_result:
+        result_payload["runtime_failure"] = bool(local_result.get("runtime_failure"))
+    for key in ("error_category", "error_summary", "fix_guidance"):
+        if key in local_result and local_result.get(key) is not None:
+            result_payload[key] = local_result.get(key)
+    for key in (
+        "execution_status",
+        "verification_status",
+        "failure_kind",
+        "contract_diff",
+        "repair_attempts",
+        "plan_patch_suggestion",
+    ):
+        if key in local_result and local_result.get(key) is not None:
+            result_payload[key] = local_result.get(key)
+    _apply_execution_failure_to_payload(result_payload, execution_failure)
+
+    code_file = str(local_result.get("code_file") or "").strip()
+    if code_file:
+        result_payload["code_file"] = code_file
+    result_text = str(local_result.get("result") or "").strip()
+    if result_text:
+        result_payload["result"] = result_text
+    if not result_payload.get("success") and not result_payload.get("error"):
+        result_payload["error"] = (
+            str(local_result.get("error") or "").strip()
+            or str(local_result.get("stderr") or "").strip()
+            or "Local code execution failed."
+        )
+
+    local_completion_info = _detect_partial_completion(
+        str(local_result.get("stdout") or ""),
+        str(local_result.get("stderr") or ""),
+        list(produced_files),
+        success=bool(result_payload.get("success")),
+    )
+    if local_completion_info:
+        result_payload.update(local_completion_info)
+
+    return result_payload
+
+
+def _prepare_code_executor_read_context(
+    *,
+    task: str,
+    add_dirs: Optional[Any],
+    resolved_resources: Optional[Dict[str, Any]],
+    require_task_context: bool,
+    execution_spec: Optional[Dict[str, Any]],
+    session_dir: Path,
+) -> Dict[str, Any]:
+    normalized_add_dirs = _normalize_csv_values(add_dirs)
+    normalized_resources = _normalize_resolved_resources(resolved_resources)
+    resource_add_dirs = _resource_read_dirs(normalized_resources)
+    allowed_dirs: List[str] = []
+    resolved_add_dirs: List[str] = []
+
+    default_data_dir = _PROJECT_ROOT / "data"
+    if default_data_dir.exists():
+        allowed_dirs.append(str(default_data_dir))
+        logger.info("Auto-added default data directory: %s", default_data_dir)
+
+    if session_dir.exists():
+        allowed_dirs.append(str(session_dir))
+        logger.info("Auto-added session runtime directory: %s", session_dir)
+
+    for dir_path in normalized_add_dirs:
+        candidate_text = str(dir_path or "").strip()
+        if not candidate_text:
+            continue
+        candidate = Path(candidate_text)
+        if not candidate.is_absolute():
+            candidate = _PROJECT_ROOT / candidate_text
+        try:
+            lexical = candidate.absolute()
+            if not lexical.exists() or not lexical.is_dir():
+                logger.warning("Ignoring non-directory add_dir path: %s", lexical)
+                continue
+        except (OSError, Exception):
+            logger.warning("Ignoring invalid add_dir path: %s", candidate_text)
+            continue
+        if require_task_context and not _is_allowed_task_read_path(lexical, session_dir):
+            logger.warning("Ignoring add_dir outside strict task scope: %s", lexical)
+            continue
+        lexical_str = str(lexical)
+        if lexical_str not in allowed_dirs:
+            allowed_dirs.append(lexical_str)
+        if lexical_str not in resolved_add_dirs:
+            resolved_add_dirs.append(lexical_str)
+
+        try:
+            resolved = lexical.resolve()
+        except OSError:
+            resolved = lexical
+        resolved_str = str(resolved)
+        if resolved != lexical and resolved.exists() and resolved.is_dir():
+            if resolved_str not in allowed_dirs:
+                allowed_dirs.append(resolved_str)
+
+    for resource_dir in resource_add_dirs:
+        if resource_dir not in allowed_dirs:
+            allowed_dirs.append(resource_dir)
+            logger.info("Auto-added resolved resource directory: %s", resource_dir)
+        if resource_dir not in resolved_add_dirs:
+            resolved_add_dirs.append(resource_dir)
+
+    inferred_task_dirs = _extract_task_referenced_read_dirs(
+        task,
+        execution_spec=execution_spec,
+        session_dir=session_dir,
+    )
+    for inferred_dir in inferred_task_dirs:
+        if inferred_dir not in allowed_dirs:
+            allowed_dirs.append(inferred_dir)
+            logger.info("Auto-added task-referenced directory: %s", inferred_dir)
+
+    allowed_dirs_info = ""
+    if allowed_dirs:
+        allowed_dirs_info = (
+            "\n\nExtra readable directories (ABSOLUTE paths):\n"
+            + "\n".join(f"  - {directory}" for directory in allowed_dirs)
+        )
+
+    local_data_dir: Optional[str] = None
+    if len(resolved_add_dirs) == 1:
+        local_data_dir = resolved_add_dirs[0]
+    elif not resolved_add_dirs and len(inferred_task_dirs) == 1:
+        local_data_dir = inferred_task_dirs[0]
+    elif not resolved_add_dirs and default_data_dir.exists():
+        local_data_dir = str(default_data_dir)
+
+    return {
+        "normalized_resources": normalized_resources,
+        "allowed_dirs": allowed_dirs,
+        "resolved_add_dirs": resolved_add_dirs,
+        "allowed_dirs_info": allowed_dirs_info,
+        "local_data_dir": local_data_dir,
+    }
+
+
 async def code_executor_handler(
     task: str,
     allowed_tools: Optional[Any] = None,
@@ -3035,93 +4012,18 @@ async def code_executor_handler(
                 "error": "No allowed tools remain after strict allowlist filtering.",
                 "task": task,
             }
-        normalized_add_dirs = _normalize_csv_values(add_dirs)
-        normalized_resources = _normalize_resolved_resources(resolved_resources)
-        resource_add_dirs = _resource_read_dirs(normalized_resources)
-        # Process additional directories to allow access, convert to absolute paths
-        allowed_dirs = []
-        resolved_add_dirs: List[str] = []
-        
-        # Always include project's data directory by default
-        default_data_dir = _PROJECT_ROOT / "data"
-        if default_data_dir.exists():
-            allowed_dirs.append(str(default_data_dir))
-            logger.info(f"Auto-added default data directory: {default_data_dir}")
-        
-        # Auto-add session's runtime directory for cross-task access within same session
-        if session_dir.exists():
-            allowed_dirs.append(str(session_dir))
-            logger.info(f"Auto-added session runtime directory: {session_dir}")
-        
-        if normalized_add_dirs:
-            for dir_path in normalized_add_dirs:
-                dir_path = dir_path.strip()
-                candidate = Path(dir_path)
-                if not candidate.is_absolute():
-                    candidate = _PROJECT_ROOT / dir_path
-                try:
-                    lexical = candidate.absolute()
-                    if not lexical.exists() or not lexical.is_dir():
-                        logger.warning("Ignoring non-directory add_dir path: %s", lexical)
-                        continue
-                except (OSError, Exception):
-                    logger.warning("Ignoring invalid add_dir path: %s", dir_path)
-                    continue
-                if require_task_context and not _is_allowed_task_read_path(lexical, session_dir):
-                    logger.warning(
-                        "Ignoring add_dir outside strict task scope: %s",
-                        lexical,
-                    )
-                    continue
-                lexical_str = str(lexical)
-                if lexical_str not in allowed_dirs:
-                    allowed_dirs.append(lexical_str)
-                if lexical_str not in resolved_add_dirs:
-                    resolved_add_dirs.append(lexical_str)
-
-                # If this is a project-local symlink to a large external data
-                # mount, expose the resolved target too.  This gives generated
-                # code a stable direct path while preserving the in-project alias.
-                try:
-                    resolved = lexical.resolve()
-                except OSError:
-                    resolved = lexical
-                resolved_str = str(resolved)
-                if resolved != lexical and resolved.exists() and resolved.is_dir():
-                    if resolved_str not in allowed_dirs:
-                        allowed_dirs.append(resolved_str)
-
-        for resource_dir in resource_add_dirs:
-            if resource_dir not in allowed_dirs:
-                allowed_dirs.append(resource_dir)
-                logger.info("Auto-added resolved resource directory: %s", resource_dir)
-            if resource_dir not in resolved_add_dirs:
-                resolved_add_dirs.append(resource_dir)
-
-        inferred_task_dirs = _extract_task_referenced_read_dirs(
-            task,
+        read_context = _prepare_code_executor_read_context(
+            task=task,
+            add_dirs=add_dirs,
+            resolved_resources=resolved_resources,
+            require_task_context=require_task_context,
             execution_spec=execution_spec,
             session_dir=session_dir,
         )
-        for inferred_dir in inferred_task_dirs:
-            if inferred_dir not in allowed_dirs:
-                allowed_dirs.append(inferred_dir)
-                logger.info("Auto-added task-referenced directory: %s", inferred_dir)
-            
-        allowed_dirs_info = ""
-        if allowed_dirs:
-            allowed_dirs_info = (
-                "\n\nExtra readable directories (ABSOLUTE paths):\n"
-                + "\n".join(f"  - {d}" for d in allowed_dirs)
-            )
-
-        local_data_dir: Optional[str] = None
-        if len(resolved_add_dirs) == 1:
-            local_data_dir = resolved_add_dirs[0]
-        elif not resolved_add_dirs and len(inferred_task_dirs) == 1:
-            local_data_dir = inferred_task_dirs[0]
-        elif not resolved_add_dirs and default_data_dir.exists():
-            local_data_dir = str(default_data_dir)
+        normalized_resources = read_context["normalized_resources"]
+        allowed_dirs = read_context["allowed_dirs"]
+        allowed_dirs_info = read_context["allowed_dirs_info"]
+        local_data_dir = read_context["local_data_dir"]
 
         cli_task = _build_cli_task_contract(task, execution_spec, normalized_resources)
 
@@ -3176,96 +4078,35 @@ async def code_executor_handler(
                 produced_files=produced_files,
             )
             _append_contract_artifact_paths(verification_artifact_paths, contract_artifacts)
-            success = bool(local_result.get("success", False))
-            result_payload = {
-                "tool": "code_executor",
-                "task": task,
-                "plan_id": resolved_plan_id,
-                "task_id": resolved_task_id,
-                "require_task_context": require_task_context,
-                "task_directory": task_dir_base,
-                "task_directory_full": str(task_work_dir),
-                "task_root_directory": str(task_root_dir),
-                "run_directory": str(task_work_dir),
-                "run_id": run_id,
-                "task_subdirectories": task_subdirs,
-                "file_prefix": file_prefix,
-                "session_directory": str(session_dir),
-                "success": success,
-                "stdout": str(local_result.get("stdout") or ""),
-                "stderr": str(local_result.get("stderr") or ""),
-                "exit_code": local_result.get("exit_code", -1),
-                "execution_backend": str(
-                    local_result.get("execution_backend")
-                    or local_result.get("execution_mode")
-                    or "local"
-                ),
-                "execution_mode": str(local_result.get("execution_mode") or "code_executor_host"),
-                "execution_lane": execution_lane,
-                "execution_lane_reason": execution_lane_reason,
-                "working_directory": str(task_work_dir),
-                "log_path": str(log_path) if log_path else None,
-                "debug_log_path": None,
-                "allowed_tools_effective": normalized_allowed_tools,
-                "claude_model_effective": None,
-                "claude_setting_sources_effective": None,
-                "claude_auth_mode_effective": None,
-                "code_directory": code_directory,
-                "code_file": local_result.get("code_file") or primary_code_file,
-                "produced_files": produced_files,
-                "produced_files_count": len(produced_files),
-                "artifact_paths": verification_artifact_paths,
-                "contract_artifacts": contract_artifacts,
-                "session_artifact_paths": session_artifact_paths,
-                # Unified output path (new)
-                "output_location": {
-                    "type": "task" if resolved_task_id is not None else "tmp",
-                    "session_id": effective_session_id,
-                    "task_id": resolved_task_id,
-                    "ancestor_chain": ancestor_chain,
-                    "base_dir": str(unified_output_dir) if unified_output_dir else None,
-                    "files": unified_promoted_files,
-                },
-            }
-            if "docker_image_effective" in local_result:
-                result_payload["docker_image_effective"] = local_result.get("docker_image_effective")
-            if "runtime_failure" in local_result:
-                result_payload["runtime_failure"] = bool(local_result.get("runtime_failure"))
-            for key in ("error_category", "error_summary", "fix_guidance"):
-                if key in local_result and local_result.get(key) is not None:
-                    result_payload[key] = local_result.get(key)
-            for key in (
-                "execution_status",
-                "verification_status",
-                "failure_kind",
-                "contract_diff",
-                "repair_attempts",
-                "plan_patch_suggestion",
-            ):
-                if key in local_result and local_result.get(key) is not None:
-                    result_payload[key] = local_result.get(key)
-            code_file = str(local_result.get("code_file") or "").strip()
-            if code_file:
-                result_payload["code_file"] = code_file
-            result_text = str(local_result.get("result") or "").strip()
-            if result_text:
-                result_payload["result"] = result_text
-            if not success:
-                result_payload["error"] = (
-                    str(local_result.get("error") or "").strip()
-                    or str(local_result.get("stderr") or "").strip()
-                    or "Local code execution failed."
-                )
-
-            # Detect partial completion signals
-            local_completion_info = _detect_partial_completion(
-                str(local_result.get("stdout") or ""),
-                str(local_result.get("stderr") or ""),
-                produced_files,
-                success=success,
+            result_payload = _build_local_backend_result_payload(
+                task=task,
+                local_result=local_result,
+                resolved_plan_id=resolved_plan_id,
+                resolved_task_id=resolved_task_id,
+                require_task_context=require_task_context,
+                task_dir_base=task_dir_base,
+                task_work_dir=task_work_dir,
+                task_root_dir=task_root_dir,
+                run_id=run_id,
+                file_prefix=file_prefix,
+                task_subdirs=task_subdirs,
+                session_dir=session_dir,
+                execution_lane=execution_lane,
+                execution_lane_reason=execution_lane_reason,
+                log_path=log_path,
+                normalized_allowed_tools=normalized_allowed_tools,
+                code_directory=code_directory,
+                primary_code_file=primary_code_file,
+                produced_files=produced_files,
+                verification_artifact_paths=verification_artifact_paths,
+                contract_artifacts=contract_artifacts,
+                session_artifact_paths=session_artifact_paths,
+                unified_output_dir=unified_output_dir,
+                unified_promoted_files=unified_promoted_files,
+                effective_session_id=effective_session_id,
+                ancestor_chain=ancestor_chain,
+                execution_spec=execution_spec,
             )
-            if local_completion_info:
-                result_payload.update(local_completion_info)
 
             if log_file:
                 try:
@@ -3510,7 +4351,13 @@ async def code_executor_handler(
         max_cli_retries, cli_retry_base_delay_s = _resolve_cli_retry_policy()
         qwen_shell_recovery: Optional[Dict[str, Any]] = None
 
+        cli_progress = {"last_output_at": 0.0}
+
         async def _record_stream_line(decoded_line: str, lines, callback, stream_name: str):
+            try:
+                cli_progress["last_output_at"] = asyncio.get_running_loop().time()
+            except RuntimeError:
+                pass
             lines.append(decoded_line)
             formatted_line = f"[{stream_name}] {decoded_line}" if decoded_line else f"[{stream_name}]"
             if log_file:
@@ -3576,6 +4423,10 @@ async def code_executor_handler(
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )
+                try:
+                    cli_progress["last_output_at"] = asyncio.get_running_loop().time()
+                except RuntimeError:
+                    pass
 
                 stdout_task = asyncio.create_task(
                     _read_stream(process.stdout, local_stdout_lines, on_stdout, "stdout")
@@ -3592,88 +4443,32 @@ async def code_executor_handler(
                         and isinstance(execution_spec, dict)
                         and bool(execution_spec.get("acceptance_criteria"))
                     )
-                    if not can_finish_from_contract_outputs:
-                        await drain_task
-                    while can_finish_from_contract_outputs:
-                        if drain_task.done():
-                            await drain_task
-                            break
-                        done, _pending = await asyncio.wait(
-                            {drain_task},
-                            timeout=_resolve_qwen_completed_output_exit_check_seconds(),
-                        )
-                        if done:
-                            await drain_task
-                            break
-                        passed, reason = _qwen_outputs_pass_contract_for_early_exit(
+                    if use_qwen_code_backend:
+                        return_code_override = await _wait_for_qwen_cli_drain_or_watchdog(
+                            process=process,
+                            drain_task=drain_task,
+                            stdout_task=stdout_task,
+                            stderr_task=stderr_task,
+                            local_stdout_lines=local_stdout_lines,
+                            local_stderr_lines=local_stderr_lines,
+                            cli_progress=cli_progress,
+                            can_finish_from_contract_outputs=can_finish_from_contract_outputs,
                             execution_spec=execution_spec,
                             task_work_dir=task_work_dir,
+                            unified_output_dir=unified_output_dir,
+                            cli_label=_cli_label,
+                            log_file=log_file,
+                            log_lock=log_lock,
                         )
-                        if not passed:
-                            grace_deadline = None
-                            continue
-                        loop = asyncio.get_running_loop()
-                        if grace_deadline is None:
-                            grace_seconds = _resolve_qwen_completed_output_exit_grace_seconds()
-                            grace_deadline = loop.time() + grace_seconds
-                            logger.info(
-                                "[CODE_EXECUTOR] Qwen outputs satisfy contract before CLI exit; "
-                                "waiting %.0fs for graceful final response (%s).",
-                                grace_seconds,
-                                reason,
-                            )
-                            if log_file:
-                                try:
-                                    async with log_lock:
-                                        log_file.write(
-                                            f"[{datetime.utcnow().isoformat()}Z] "
-                                            "Qwen outputs satisfy contract before CLI exit; "
-                                            f"waiting {grace_seconds:.0f}s for graceful final response\n"
-                                        )
-                                        log_file.flush()
-                                except Exception:
-                                    pass
-                            continue
-                        if loop.time() < grace_deadline:
-                            continue
-                        logger.warning(
-                            "[CODE_EXECUTOR] Qwen CLI did not exit after producing contract-valid outputs; "
-                            "terminating stuck finalization process."
-                        )
-                        if log_file:
-                            try:
-                                async with log_lock:
-                                    log_file.write(
-                                        f"[{datetime.utcnow().isoformat()}Z] "
-                                        "Qwen CLI terminated after producing contract-valid outputs\n"
-                                    )
-                                    log_file.flush()
-                            except Exception:
-                                pass
-                        try:
-                            process.kill()
-                        except ProcessLookupError:
-                            pass
-                        try:
-                            await asyncio.wait_for(process.wait(), timeout=10.0)
-                        except Exception:
-                            pass
-                        try:
-                            await asyncio.wait_for(
-                                asyncio.gather(stdout_task, stderr_task, return_exceptions=True),
-                                timeout=10.0,
-                            )
-                        except asyncio.TimeoutError:
-                            stdout_task.cancel()
-                            stderr_task.cancel()
-                            await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
-                        local_return_code = 0
-                        local_stdout_lines.append(
-                            "[code_executor] Qwen CLI was terminated after required outputs passed deterministic verification."
-                        )
-                        break
+                        if return_code_override is not None:
+                            local_return_code = return_code_override
+                    else:
+                        await drain_task
                     if local_return_code != 0:
-                        local_return_code = await process.wait()
+                        local_return_code = await _wait_for_cli_process_return_code(
+                            process,
+                            backend_label=_cli_label,
+                        )
                 except (asyncio.CancelledError, Exception) as _wait_exc:
                     try:
                         process.kill()
@@ -3701,7 +4496,7 @@ async def code_executor_handler(
                     logger.info("[CODE_EXECUTOR_RETRY] Scope block detected, not retrying.")
                     break
 
-                if use_qwen_code_backend:
+                if use_qwen_code_backend and not _is_qwen_no_output_timeout("\n".join(local_stderr_lines)):
                     qwen_shell_recovery = await _recover_pending_qwen_shell_call(
                         qwen_session_id=_qwen_session_id,
                         container_name=_docker_container_name,
@@ -3739,6 +4534,13 @@ async def code_executor_handler(
                         for decoded_line in recovered_stderr.splitlines():
                             await _record_stream_line(decoded_line, local_stderr_lines, on_stderr, "stderr")
                         break
+
+                if _is_qwen_no_output_timeout("\n".join(local_stderr_lines)):
+                    logger.warning(
+                        "[CODE_EXECUTOR_RETRY] Qwen no-output watchdog fired; "
+                        "skipping transcript recovery and retries."
+                    )
+                    break
 
                 if _attempt <= max_cli_retries:
                     stderr_text = "\n".join(local_stderr_lines)
@@ -3806,7 +4608,15 @@ async def code_executor_handler(
                 and _is_qwen_container_infrastructure_error(stderr, stdout)
             )
             qwen_infra_fallback_used = False
-            if qwen_infra_failure_detected and _qwen_infrastructure_fallback_allowed(execution_lane, execution_lane_reason):
+            fallback_result: Optional[Dict[str, Any]] = None
+            if _should_fallback_from_qwen_infra_failure(
+                use_qwen_code_backend=use_qwen_code_backend,
+                success=success,
+                stderr=stderr,
+                stdout=stdout,
+                execution_lane=execution_lane,
+                execution_lane_reason=execution_lane_reason,
+            ):
                 logger.warning(
                     "[CODE_EXECUTOR_FALLBACK] qwen_code infrastructure failure detected; "
                     "retrying task with local executor (session=%s run=%s)",
@@ -3823,7 +4633,7 @@ async def code_executor_handler(
                             log_file.flush()
                     except Exception:
                         pass
-                local_result = await _execute_task_locally(
+                fallback_result = await _execute_task_locally(
                     task=task,
                     work_dir=str(task_work_dir),
                     data_dir=local_data_dir,
@@ -3835,19 +4645,27 @@ async def code_executor_handler(
                     execution_spec=execution_spec,
                     resolved_resources=normalized_resources,
                 )
-                fallback_stdout = str(local_result.get("stdout") or "")
-                fallback_stderr = str(local_result.get("stderr") or "")
+                fallback_stdout = str(fallback_result.get("stdout") or "")
+                fallback_stderr = str(fallback_result.get("stderr") or "")
                 stdout = (stdout + "\n" if stdout else "") + "[fallback:local] " + fallback_stdout
                 stderr = (stderr + "\n" if stderr else "") + fallback_stderr
-                return_code = int(local_result.get("exit_code", 0 if local_result.get("success") else 1) or 0)
-                success = bool(local_result.get("success", False))
+                return_code = int(fallback_result.get("exit_code", 0 if fallback_result.get("success") else 1) or 0)
+                success = bool(fallback_result.get("success", False))
                 qwen_infra_fallback_used = True
-                output_data = local_result.get("output_data") or output_data
+                output_data = fallback_result.get("output_data") or output_data
                 blocked_detail = _detect_scope_blocked(stdout, output_data)
                 if blocked_detail:
                     success = False
 
             produced_files = _collect_run_artifacts(run_dir=task_work_dir, subdirs=task_subdirs)
+            success, execution_failure = _classify_execution_success(
+                stdout=stdout,
+                output_data=output_data,
+                execution_spec=execution_spec,
+                produced_files=produced_files,
+                success=success,
+                task_work_dir=task_work_dir,
+            )
 
             # --- Promote results to unified output directory ---
             unified_promoted_files_qwen: List[str] = []
@@ -3962,6 +4780,14 @@ async def code_executor_handler(
                             produced_files=produced_files,
                         )
                         _append_contract_artifact_paths(verification_artifact_paths, contract_artifacts)
+                        success, execution_failure = _classify_execution_success(
+                            stdout=stdout,
+                            output_data=output_data,
+                            execution_spec=execution_spec,
+                            produced_files=produced_files,
+                            success=success,
+                            task_work_dir=task_work_dir,
+                        )
                         if success:
                             finalization = _verify_execution_against_contract(
                                 execution_spec=CodeExecutionSpec(
@@ -3980,8 +4806,9 @@ async def code_executor_handler(
                             )
                             if finalization.final_status == "failed":
                                 success = False
-                                contract_error_summary = _summarize_verification_failures(verification)
-                                contract_fix_guidance = _format_verification_guidance(verification)
+                                verification_payload = verification if isinstance(verification, dict) else {}
+                                contract_error_summary = _summarize_verification_failures(verification_payload)
+                                contract_fix_guidance = _format_verification_guidance(verification_payload)
                         else:
                             verification_status = "not_run"
                             failure_kind = "execution_failed"
@@ -3991,12 +4818,14 @@ async def code_executor_handler(
                             contract_error_summary = None
                             contract_fix_guidance = None
                         if not success and not blocked_detail and contract_error_summary is None and verification_status == "failed":
-                            contract_error_summary = _summarize_verification_failures(verification)
-                            contract_fix_guidance = _format_verification_guidance(verification)
+                            verification_payload = verification if isinstance(verification, dict) else {}
+                            contract_error_summary = _summarize_verification_failures(verification_payload)
+                            contract_fix_guidance = _format_verification_guidance(verification_payload)
                     elif finalization.final_status == "failed":
                         success = False
-                        contract_error_summary = _summarize_verification_failures(verification)
-                        contract_fix_guidance = _format_verification_guidance(verification)
+                        verification_payload = verification if isinstance(verification, dict) else {}
+                        contract_error_summary = _summarize_verification_failures(verification_payload)
+                        contract_fix_guidance = _format_verification_guidance(verification_payload)
                 except Exception as contract_exc:
                     logger.warning("CLI contract verification failed unexpectedly: %s", contract_exc)
 
@@ -4015,7 +4844,7 @@ async def code_executor_handler(
                 logger.warning(f"Failed to finalize Claude Code log file: {log_err}")
 
         # Build return result
-            result_payload = {
+        result_payload = {
             "tool": "code_executor",
             "task": task,
             "plan_id": resolved_plan_id,
@@ -4073,17 +4902,18 @@ async def code_executor_handler(
                 "repair_attempts": repair_attempts,
                 "plan_patch_suggestion": plan_patch_suggestion,
             }
-        if "qwen_infra_failure_detected" in locals() and qwen_infra_failure_detected and not qwen_infra_fallback_used:
+        if qwen_infra_failure_detected and not qwen_infra_fallback_used:
             result_payload["runtime_failure"] = True
             result_payload["error_category"] = "executor_infrastructure"
             result_payload["error_summary"] = _extract_readable_error(stderr) or "qwen_code container infrastructure failure"
-        if "local_result" in locals() and qwen_infra_fallback_used:
+        if qwen_infra_fallback_used:
             result_payload["fallback_used"] = True
-            result_payload["fallback_backend"] = str(local_result.get("execution_backend") or local_result.get("execution_mode") or "local")
+            fallback_payload = fallback_result or {}
+            result_payload["fallback_backend"] = str(fallback_payload.get("execution_backend") or fallback_payload.get("execution_mode") or "local")
             result_payload["fallback_reason"] = "qwen_code_container_infrastructure_failure"
             for key in ("docker_image_effective", "runtime_failure", "error_category", "error_summary", "fix_guidance"):
-                if key in local_result and local_result.get(key) is not None and key not in result_payload:
-                    result_payload[key] = local_result.get(key)
+                if key in fallback_payload and fallback_payload.get(key) is not None and key not in result_payload:
+                    result_payload[key] = fallback_payload.get(key)
         if contract_error_summary:
             result_payload["error_category"] = "acceptance_criteria_failed"
             result_payload["error_summary"] = contract_error_summary
@@ -4098,6 +4928,7 @@ async def code_executor_handler(
                 stdout=stdout,
                 backend_label=_cli_label,
             )
+        _apply_execution_failure_to_payload(result_payload, execution_failure)
         if blocked_detail:
             result_payload["blocked_by_scope_guardrail"] = True
             result_payload["blocked_reason"] = blocked_detail
