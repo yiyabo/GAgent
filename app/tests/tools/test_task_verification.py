@@ -4,10 +4,13 @@ import json
 
 from app.routers import plan_routes
 from app.services.plans.artifact_contracts import find_candidate_source_for_alias
-from app.services.plans.acceptance_criteria import extract_explicit_deliverables_from_text
+from app.services.plans.acceptance_criteria import (
+    derive_acceptance_criteria_from_text,
+    extract_explicit_deliverables_from_text,
+)
 from app.services.plans.plan_executor import ExecutionConfig, ExecutionResponse, PlanExecutor
 from app.services.plans.plan_models import PlanNode, PlanTree
-from app.services.plans.task_verification import TaskVerificationService
+from app.services.plans.task_verification import TaskVerificationService, VerificationFinalization
 
 
 class _RepoStub:
@@ -157,8 +160,9 @@ def test_task_verifier_does_not_override_unrelated_missing_deliverable(tmp_path)
     )
 
     metadata = finalization.payload["metadata"]
-    assert finalization.final_status == "failed"
-    assert metadata["verification_status"] == "failed"
+    assert finalization.final_status == "completed"
+    assert metadata["verification_status"] == "warning"
+    assert metadata["verification_warning"] is True
     assert metadata.get("artifact_contract_satisfied_verification") is None
 
 
@@ -193,8 +197,9 @@ def test_task_verifier_does_not_override_when_explicit_publish_missing(tmp_path)
     )
 
     metadata = finalization.payload["metadata"]
-    assert finalization.final_status == "failed"
-    assert metadata["verification_status"] == "failed"
+    assert finalization.final_status == "completed"
+    assert metadata["verification_status"] == "warning"
+    assert metadata["verification_warning"] is True
     assert metadata.get("artifact_contract_satisfied_verification") is None
 
 
@@ -286,10 +291,11 @@ def test_task_verifier_records_contract_diff_for_mismatch(tmp_path):
     )
 
     metadata = finalization.payload["metadata"]
-    assert finalization.final_status == "failed"
+    assert finalization.final_status == "completed"
     assert metadata["execution_status"] == "completed"
-    assert metadata["verification_status"] == "failed"
-    assert metadata["failure_kind"] == "contract_mismatch"
+    assert metadata["verification_status"] == "warning"
+    assert metadata["verification_warning"] is True
+    assert "failure_kind" not in metadata
     assert metadata["contract_diff"]["missing_required_outputs"] == [
         "results/enrichment/upregulated_genes.csv"
     ]
@@ -414,8 +420,9 @@ def test_task_verifier_does_not_apply_source_discovery_override_to_copy_tasks(tm
         execution_status="completed",
     )
 
-    assert finalization.final_status == "failed"
-    assert finalization.payload["metadata"]["failure_kind"] == "contract_mismatch"
+    assert finalization.final_status == "completed"
+    assert finalization.payload["metadata"]["verification_status"] == "warning"
+    assert "failure_kind" not in finalization.payload["metadata"]
     assert "source_discovery_verification" not in finalization.payload["metadata"]
 
 
@@ -453,8 +460,9 @@ def test_task_verifier_keeps_source_discovery_failed_when_expected_identity_miss
         execution_status="completed",
     )
 
-    assert finalization.final_status == "failed"
-    assert finalization.payload["metadata"]["failure_kind"] == "contract_mismatch"
+    assert finalization.final_status == "completed"
+    assert finalization.payload["metadata"]["verification_status"] == "warning"
+    assert "failure_kind" not in finalization.payload["metadata"]
 
 
 def test_task_verifier_accepts_semantic_general_evidence_alias_match(tmp_path):
@@ -742,9 +750,10 @@ def test_task_verifier_derives_acceptance_criteria_from_instruction(tmp_path):
     )
 
     metadata = finalization.payload["metadata"]
-    assert finalization.final_status == "failed"
-    assert metadata["verification_status"] == "failed"
-    assert metadata["artifact_verification"]["tags"] == ["contract_mismatch"]
+    assert finalization.final_status == "completed"
+    assert metadata["verification_status"] == "warning"
+    assert metadata["verification_warning"] is True
+    assert "contract_mismatch" in metadata["artifact_verification"]["tags"]
     assert metadata["contract_diff"]["missing_required_outputs"] == [
         "subset_manifest.tsv",
         "results/qc_summary.md",
@@ -812,7 +821,7 @@ def test_task_verifier_marks_cross_extension_outputs_as_wrong_format(tmp_path):
     )
 
     metadata = finalization.payload["metadata"]
-    assert finalization.final_status == "failed"
+    assert finalization.final_status == "completed"
     assert metadata["contract_diff"]["missing_required_outputs"] == [
         "results/subset_manifest.csv"
     ]
@@ -1019,10 +1028,11 @@ def test_derived_criteria_reject_header_only_tsv(tmp_path, monkeypatch):
         execution_status="completed",
     )
 
-    assert finalization.final_status == "failed"
+    assert finalization.final_status == "completed"
     failures = finalization.payload["metadata"]["verification"]["failures"]
     assert any(item["type"] == "json_field_at_least" and item.get("actual") == 0 for item in failures)
     assert finalization.payload["metadata"].get("verification_overridden_by_llm") is None
+    assert finalization.payload["metadata"]["verification_status"] == "warning"
 
 
 def test_explicit_weak_criteria_are_strengthened_for_header_only_tsv(tmp_path):
@@ -1053,7 +1063,7 @@ def test_explicit_weak_criteria_are_strengthened_for_header_only_tsv(tmp_path):
         execution_status="completed",
     )
 
-    assert finalization.final_status == "failed"
+    assert finalization.final_status == "completed"
     failures = finalization.payload["metadata"]["verification"]["failures"]
     assert any(item["type"] == "json_field_at_least" and item.get("actual") == 0 for item in failures)
 
@@ -1076,7 +1086,8 @@ def test_derived_criteria_reject_audit_json_without_metadata_rows(tmp_path):
         execution_status="completed",
     )
 
-    assert finalization.final_status == "failed"
+    assert finalization.final_status == "completed"
+    assert finalization.payload["metadata"]["verification_status"] == "warning"
     assert any(item["type"] == "json_field_at_least" for item in finalization.payload["metadata"]["verification"]["failures"])
 
 
@@ -1098,7 +1109,8 @@ def test_derived_criteria_reject_metrics_json_without_tree_metrics(tmp_path):
         execution_status="completed",
     )
 
-    assert finalization.final_status == "failed"
+    assert finalization.final_status == "completed"
+    assert finalization.payload["metadata"]["verification_status"] == "warning"
     assert finalization.payload["metadata"]["verification"]["failures"][0]["type"] == "model_metrics_valid"
 
     metrics.write_text(
@@ -1135,6 +1147,53 @@ def test_derived_criteria_reject_metrics_json_without_tree_metrics(tmp_path):
     )
     assert nested.final_status == "completed"
 
+    metrics.write_text(
+        json.dumps(
+            {
+                "metadata": {"generated_by": "comparative_report"},
+                "overall_summary": {
+                    "models": {
+                        "XGBoost": {"accuracy": 0.43, "macro_f1": 0.28},
+                        "LightGBM_genus": {"accuracy": 0.0, "macro_f1": 0.0},
+                    }
+                },
+                "per_genus_comparison": {
+                    "Escherichia": {
+                        "XGBoost": {"accuracy": 0.43, "macro_f1": 0.28},
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    overall_summary_models = verifier.finalize_payload(
+        node,
+        {"status": "completed", "metadata": {"artifact_paths": [str(metrics)], "run_directory": str(tmp_path)}},
+        execution_status="completed",
+    )
+    assert overall_summary_models.final_status == "completed"
+
+    metrics.write_text(
+        json.dumps(
+            {
+                "models": {
+                    "XGBoost": {"accuracy": 0.43, "macro_f1": 0.28},
+                    "accuracy": 0.43,
+                    "macro_f1": 0.28,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    scalar_model_keys = verifier.finalize_payload(
+        node,
+        {"status": "completed", "metadata": {"artifact_paths": [str(metrics)], "run_directory": str(tmp_path)}},
+        execution_status="completed",
+    )
+    assert scalar_model_keys.final_status == "completed"
+    metric_check = TaskVerificationService._model_metrics_valid_result(metrics)
+    assert metric_check["valid_models"] == ["XGBoost"]
+
 
 def test_derived_criteria_reject_fake_pdf(tmp_path):
     pdf = tmp_path / "phagescope_research_topic1_production_report.pdf"
@@ -1154,7 +1213,8 @@ def test_derived_criteria_reject_fake_pdf(tmp_path):
         execution_status="completed",
     )
 
-    assert finalization.final_status == "failed"
+    assert finalization.final_status == "completed"
+    assert finalization.payload["metadata"]["verification_status"] == "warning"
     failures = finalization.payload["metadata"]["verification"]["failures"]
     assert any(item["type"] == "pdf_valid" for item in failures)
 
@@ -1284,7 +1344,7 @@ def test_verify_task_route_rechecks_existing_output(tmp_path, monkeypatch):
     assert repo.update_calls[-1][2]["status"] == "completed"
 
 
-def test_verify_task_route_fails_when_artifact_authority_demotes_result(tmp_path, monkeypatch):
+def test_verify_task_route_reports_publish_warning_without_demoting_result(tmp_path, monkeypatch):
     output_path = tmp_path / "report.json"
     output_path.write_text(json.dumps({"ok": True}), encoding="utf-8")
     payload = {
@@ -1321,9 +1381,9 @@ def test_verify_task_route_fails_when_artifact_authority_demotes_result(tmp_path
     response = plan_routes.verify_task_result(23, request=None, plan_id=56)
 
     assert response.success is False
-    assert response.result.status == "failed"
+    assert response.result.status == "completed"
     assert "artifact authority failed" in response.message.lower()
-    assert repo.update_calls[-1][2]["status"] == "failed"
+    assert repo.update_calls[-1][2]["status"] == "completed"
 
 
 def test_parse_shorthand_criteria_basic():
@@ -1453,6 +1513,57 @@ def test_verify_task_override_criteria_fail(tmp_path):
     assert len(finalization.verification["failures"]) == 1
 
 
+
+def test_manual_verification_failure_is_failed_even_when_non_blocking(tmp_path):
+    missing = tmp_path / "manual_optional.txt"
+    node = PlanNode(
+        id=1,
+        plan_id=1,
+        name="Manual verification",
+        metadata={
+            "acceptance_criteria": {
+                "category": "file_data",
+                "blocking": False,
+                "checks": [{"type": "file_exists", "path": str(missing)}],
+            }
+        },
+    )
+
+    finalization = TaskVerificationService().finalize_payload(
+        node,
+        {"status": "completed", "metadata": {}},
+        execution_status="completed",
+        trigger="manual",
+    )
+
+    assert finalization.final_status == "failed"
+    assert finalization.verification is not None
+    assert finalization.verification["status"] == "failed"
+
+
+def test_artifact_authority_blocks_missing_required_alias(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    verifier = TaskVerificationService()
+    node = PlanNode(
+        id=2,
+        plan_id=71,
+        name="Consume required evidence",
+        metadata={"artifact_contract": {"requires": ["general.evidence_md"]}},
+    )
+    finalization = VerificationFinalization(
+        final_status="completed",
+        execution_status="completed",
+        payload={"status": "completed", "content": "ok", "metadata": {}},
+    )
+
+    finalization = verifier.apply_artifact_authority(71, node, finalization)
+
+    assert finalization.final_status == "skipped"
+    assert finalization.payload["status"] == "skipped"
+    metadata = finalization.payload["metadata"]
+    assert metadata["blocked_by_dependencies"] is True
+    assert metadata["missing_artifact_aliases"] == ["general.evidence_md"]
+
 def test_json_field_equals_type_coercion(tmp_path):
     """json_field_equals should match string '38' against int 38 in JSON."""
     stats = tmp_path / "stats.json"
@@ -1543,9 +1654,9 @@ def test_task_verifier_does_not_materialize_generic_notes_file_as_evidence(tmp_p
     )
 
     expected = task_dir / "introduction_evidence.md"
-    assert finalization.final_status == "failed"
+    assert finalization.final_status == "completed"
     assert finalization.verification is not None
-    assert finalization.verification["status"] == "failed"
+    assert finalization.verification["status"] == "warning"
     assert not expected.exists()
 
 
@@ -1585,9 +1696,9 @@ def test_task_verifier_does_not_materialize_generic_notes_summary_as_evidence(tm
     )
 
     expected = task_dir / "introduction_evidence.md"
-    assert finalization.final_status == "failed"
+    assert finalization.final_status == "completed"
     assert finalization.verification is not None
-    assert finalization.verification["status"] == "failed"
+    assert finalization.verification["status"] == "warning"
     assert not expected.exists()
 
 
@@ -1627,9 +1738,9 @@ def test_task_verifier_does_not_materialize_unrelated_singleton_summary_as_evide
     )
 
     expected = task_dir / "conclusion_evidence.md"
-    assert finalization.final_status == "failed"
+    assert finalization.final_status == "completed"
     assert finalization.verification is not None
-    assert finalization.verification["status"] == "failed"
+    assert finalization.verification["status"] == "warning"
     assert not expected.exists()
 
 
@@ -1669,9 +1780,9 @@ def test_task_verifier_does_not_materialize_semantic_target_outside_task_workspa
         execution_status="completed",
     )
 
-    assert finalization.final_status == "failed"
+    assert finalization.final_status == "completed"
     assert finalization.verification is not None
-    assert finalization.verification["status"] == "failed"
+    assert finalization.verification["status"] == "warning"
     assert not shared_target.exists()
 
 
@@ -1711,9 +1822,9 @@ def test_task_verifier_does_not_materialize_semantic_absolute_target(tmp_path):
         execution_status="completed",
     )
 
-    assert finalization.final_status == "failed"
+    assert finalization.final_status == "completed"
     assert finalization.verification is not None
-    assert finalization.verification["status"] == "failed"
+    assert finalization.verification["status"] == "warning"
     assert not absolute_target.exists()
 
 
@@ -1796,9 +1907,9 @@ def test_task_verifier_does_not_materialize_unrelated_singleton_evidence_file(tm
     )
 
     expected = task_dir / "introduction_evidence.md"
-    assert finalization.final_status == "failed"
+    assert finalization.final_status == "completed"
     assert finalization.verification is not None
-    assert finalization.verification["status"] == "failed"
+    assert finalization.verification["status"] == "warning"
     assert not expected.exists()
 
 
@@ -2176,9 +2287,9 @@ def test_manuscript_markdown_quality_rejects_report_style_bullets(tmp_path):
         execution_status="completed",
     )
 
-    assert finalization.final_status == "failed"
+    assert finalization.final_status == "completed"
     assert finalization.verification is not None
-    assert finalization.verification["status"] == "failed"
+    assert finalization.verification["status"] == "warning"
     failure = finalization.verification["failures"][0]
     assert failure["type"] == "manuscript_markdown_quality"
     assert "bullet_ratio" in failure["message"] or "text_chars" in failure["message"]
@@ -2701,8 +2812,8 @@ def test_file_nonempty_does_not_pass_on_extension_only_match(tmp_path):
         },
         execution_status="completed",
     )
-    assert fin.final_status == "failed"
-    assert fin.verification["status"] == "failed"
+    assert fin.final_status == "completed"
+    assert fin.verification["status"] == "warning"
 
 
 def test_file_exists_fallback_lenient_different_extension(tmp_path):
@@ -2742,8 +2853,8 @@ def test_file_exists_fallback_lenient_different_extension(tmp_path):
         },
         execution_status="completed",
     )
-    assert fin.final_status == "failed"
-    assert fin.verification["status"] == "failed"
+    assert fin.final_status == "completed"
+    assert fin.verification["status"] == "warning"
 
 
 def test_file_exists_no_fallback_without_artifacts(tmp_path):
@@ -3037,8 +3148,9 @@ def test_artifact_authority_reports_missing_require_aliases(tmp_path):
     assert authority["require_status"] == "failed"
     assert authority["missing_require_aliases"] == ["ai_dl.references_bib"]
     assert authority["status"] == "failed"
-    # Note: missing requires does NOT demote completed→failed (only missing publishes do)
-    assert result.final_status == "completed"
+    # Missing required inputs block the task at artifact-authority finalization.
+    assert result.final_status == "skipped"
+    assert result.payload["metadata"]["blocked_by_dependencies"] is True
 
 
 def test_artifact_authority_combined_publish_and_require(tmp_path):
@@ -3081,9 +3193,9 @@ def test_artifact_authority_combined_publish_and_require(tmp_path):
     assert authority["require_status"] == "passed"
     assert authority["publish_status"] == "failed"
     assert authority["status"] == "failed"
-    # Missing publish demotes completed → failed
-    assert result.final_status == "failed"
-    assert result.payload["metadata"]["failure_kind"] == "artifact_publish_missing"
+    # Missing publish is recorded as a warning; producer execution remains completed.
+    assert result.final_status == "completed"
+    assert result.payload["metadata"]["artifact_publish_warning"] is True
 
 
 
@@ -3126,9 +3238,9 @@ def test_task_verifier_rejects_invalid_sparse_npz_schema(tmp_path):
     )
 
     metadata = finalization.payload["metadata"]
-    assert finalization.final_status == "failed"
-    assert metadata["verification_status"] == "failed"
-    assert metadata["failure_kind"] == "contract_mismatch"
+    assert finalization.final_status == "completed"
+    assert metadata["verification_status"] == "warning"
+    assert metadata["verification_warning"] is True
     schema = metadata["artifact_schema_validation"]["phage_ml.kmer_features_npz"]
     assert schema["validated"] is False
     assert "shape" in schema["failure_reason"]
@@ -3371,6 +3483,75 @@ def test_task_verifier_searches_artifact_directory_roots_for_relative_globs(tmp_
     assert metadata["verification_status"] == "passed"
     assert metadata["verification"]["checks_passed"] == 1
     assert metadata["verification"]["failures"] == []
+
+
+
+def test_derived_criteria_does_not_apply_model_metrics_to_baseline_only_json() -> None:
+    criteria = derive_acceptance_criteria_from_text(
+        "Generate baseline_performance_by_genus.json for per-genus baseline statistics."
+    )
+    assert criteria is not None
+
+    baseline_checks = [
+        check
+        for check in criteria["checks"]
+        if check.get("path") == "baseline_performance_by_genus.json"
+    ]
+
+    baseline_check_types = {check["type"] for check in baseline_checks}
+
+    assert baseline_checks
+    assert "file_nonempty" in baseline_check_types
+    assert "model_metrics_valid" not in baseline_check_types
+
+
+def test_derived_criteria_still_applies_model_metrics_to_model_report_json() -> None:
+    criteria = derive_acceptance_criteria_from_text(
+        "Generate reports/model_comparison_by_genus.json and reports/model_comparison_by_genus.md."
+    )
+    assert criteria is not None
+
+    model_report_checks = [
+        check
+        for check in criteria["checks"]
+        if check.get("path") == "reports/model_comparison_by_genus.json"
+    ]
+
+    assert model_report_checks
+    assert "model_metrics_valid" in {check["type"] for check in model_report_checks}
+
+
+def test_derived_criteria_still_applies_model_metrics_to_validation_metrics_json() -> None:
+    criteria = derive_acceptance_criteria_from_text(
+        "Save reports/validation_metrics.json after classifier evaluation."
+    )
+    assert criteria is not None
+
+    validation_metric_checks = [
+        check
+        for check in criteria["checks"]
+        if check.get("path") == "reports/validation_metrics.json"
+    ]
+
+    assert validation_metric_checks
+    assert "model_metrics_valid" in {check["type"] for check in validation_metric_checks}
+
+
+def test_derived_criteria_does_not_apply_model_metrics_to_qc_metrics_json() -> None:
+    criteria = derive_acceptance_criteria_from_text(
+        "Save data/qc/adata_qc.h5ad and logs/qc_metrics.json after quality control."
+    )
+    assert criteria is not None
+
+    qc_metric_checks = [
+        check
+        for check in criteria["checks"]
+        if check.get("path") == "logs/qc_metrics.json"
+    ]
+
+    assert qc_metric_checks
+    assert "file_nonempty" in {check["type"] for check in qc_metric_checks}
+    assert "model_metrics_valid" not in {check["type"] for check in qc_metric_checks}
 
 
 def test_task_verifier_records_path_resolution_diagnostics(tmp_path, monkeypatch) -> None:

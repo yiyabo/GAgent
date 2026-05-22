@@ -16,7 +16,7 @@ def _tree(plan_id: int, *nodes: PlanNode) -> PlanTree:
     return tree
 
 
-def test_status_resolver_marks_completed_task_failed_when_canonical_publish_missing(
+def test_status_resolver_keeps_completed_task_completed_when_canonical_publish_missing(
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -36,9 +36,9 @@ def test_status_resolver_marks_completed_task_failed_when_canonical_publish_miss
 
     state = resolver.resolve_plan_states(21, tree)[1]
 
-    assert state["effective_status"] == "failed"
+    assert state["effective_status"] == "completed"
     assert state["missing_publish_aliases"] == ["general.evidence_md"]
-    assert state["reason_code"] == "publish_contract_missing"
+    assert state["reason_code"] == "completed_publish_warning"
 
 
 def test_status_resolver_blocks_missing_required_alias_without_manifest(
@@ -266,7 +266,7 @@ def test_status_resolver_keeps_structured_completed_report_completed_when_prose_
     assert state["reason_code"] == "completed"
 
 
-def test_status_resolver_marks_verification_failure_failed(monkeypatch, tmp_path) -> None:
+def test_status_resolver_keeps_verifier_only_failure_completed(monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
     resolver = PlanStatusResolver()
     tree = _tree(
@@ -288,9 +288,61 @@ def test_status_resolver_marks_verification_failure_failed(monkeypatch, tmp_path
 
     state = resolver.resolve_plan_states(24, tree)[1]
 
-    assert state["effective_status"] == "failed"
+    assert state["effective_status"] == "completed"
     assert state["verification_status"] == "failed"
+    assert state["reason_code"] == "completed_verification_warning"
 
+
+
+def test_status_resolver_keeps_real_failed_payload_failed(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    resolver = PlanStatusResolver()
+    tree = _tree(
+        32,
+        PlanNode(
+            id=1,
+            plan_id=32,
+            name="Failed execution",
+            status="completed",
+            execution_result=json.dumps({
+                "status": "failed",
+                "content": "tool crashed",
+                "metadata": {"verification_status": "failed"},
+            }),
+        ),
+    )
+
+    state = resolver.resolve_plan_states(32, tree)[1]
+
+    assert state["effective_status"] == "failed"
+    assert state["reason_code"] == "payload_failed"
+
+
+def test_status_resolver_keeps_manual_verification_failure_failed(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    resolver = PlanStatusResolver()
+    tree = _tree(
+        33,
+        PlanNode(
+            id=1,
+            plan_id=33,
+            name="Manual verification failed",
+            status="completed",
+            execution_result=json.dumps({
+                "status": "completed",
+                "content": "ok",
+                "metadata": {
+                    "verification_status": "failed",
+                    "verification": {"status": "failed", "trigger": "manual"},
+                },
+            }),
+        ),
+    )
+
+    state = resolver.resolve_plan_states(33, tree)[1]
+
+    assert state["effective_status"] == "failed"
+    assert state["reason_code"] == "manual_verification_failed"
 
 def test_status_resolver_marks_active_background_job_running(monkeypatch, tmp_path) -> None:
     monkeypatch.chdir(tmp_path)
@@ -332,7 +384,7 @@ def test_status_resolver_preserves_retryable_skipped_status(monkeypatch, tmp_pat
     assert state["reason_code"] == "skipped_retryable"
 
 
-def test_task_verifier_demotes_completed_payload_when_publish_contract_missing(
+def test_task_verifier_records_warning_when_publish_contract_missing(
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -353,9 +405,10 @@ def test_task_verifier_demotes_completed_payload_when_publish_contract_missing(
 
     finalization = verifier.apply_artifact_authority(26, node, finalization)
 
-    assert finalization.final_status == "failed"
-    assert finalization.payload["status"] == "failed"
-    assert finalization.payload["metadata"]["failure_kind"] == "artifact_publish_missing"
+    assert finalization.final_status == "completed"
+    assert finalization.payload["status"] == "completed"
+    assert finalization.payload["metadata"]["artifact_publish_warning"] is True
+    assert finalization.payload["metadata"]["missing_publish_aliases"] == ["general.evidence_md"]
 
 
 def test_status_resolver_keeps_manually_accepted_task_completed(monkeypatch, tmp_path) -> None:

@@ -34,6 +34,11 @@ from .artifact_contracts import (
     resolve_manifest_aliases,
 )
 from .artifact_validation import validate_artifact
+from .model_metric_schema import (
+    collect_metric_model_entries,
+    is_tree_model_entry,
+    missing_required_model_metrics,
+)
 from .plan_models import PlanNode
 
 logger = logging.getLogger(__name__)
@@ -623,7 +628,38 @@ class TaskVerificationService:
             # llm_verdict is False — LLM confirmed the outputs are insufficient,
             # fall through to normal failure handling below.
 
-        normalized_payload["status"] = "failed" if failures and blocking else "completed"
+        if (
+            failures
+            and normalized_execution_status in _COMPLETED_LIKE
+            and trigger != "manual"
+            and self._has_output_evidence(local_artifact_paths)
+        ):
+            warning_items = [dict(item) for item in failures]
+            metadata["verification_status"] = "warning"
+            metadata["verification_warning"] = True
+            metadata["verification_warnings"] = warning_items
+            metadata.pop("failure_kind", None)
+            verification["status"] = "warning"
+            verification["blocking"] = False
+            verification["warnings"] = warning_items
+            # Preserve the original failures for diagnostics, but do not let
+            # verifier/schema/path mismatches override a successful execution.
+            verification["soft_failed"] = True
+            artifact_summary = verification.get("artifact_verification")
+            if isinstance(artifact_summary, dict):
+                artifact_summary["status"] = "warning"
+                artifact_summary.setdefault("tags", [])
+                if "verification_warning" not in artifact_summary["tags"]:
+                    artifact_summary["tags"].append("verification_warning")
+            if isinstance(metadata.get("artifact_verification"), dict):
+                metadata["artifact_verification"] = copy.deepcopy(artifact_summary)
+            normalized_payload["metadata"] = metadata
+            normalized_payload["status"] = "completed"
+        else:
+            if failures and trigger == "manual":
+                normalized_payload["status"] = "failed"
+            else:
+                normalized_payload["status"] = "failed" if failures and blocking else "completed"
 
         return VerificationFinalization(
             final_status=str(normalized_payload["status"]),
@@ -1016,19 +1052,33 @@ class TaskVerificationService:
 
         manual_acceptance_active = self.is_manual_acceptance_active(metadata)
 
-        # Demote completed → failed if an explicit publish contract is not
-        # present in the manifest. Verification can prove local files exist,
-        # but downstream dependency authority must come from the published
-        # artifact registry, not from prose or basename guesses.
+        if (
+            not manual_acceptance_active
+            and require_aliases
+            and finalization.final_status in _COMPLETED_LIKE
+            and missing_require_aliases
+        ):
+            metadata["blocked_by_dependencies"] = True
+            metadata["missing_artifact_aliases"] = list(missing_require_aliases)
+            metadata["artifact_require_blocked"] = True
+            payload["status"] = "skipped"
+            finalization.final_status = "skipped"
+
+        # Missing publish aliases are now recorded as warnings for completed
+        # executions. Downstream tasks with explicit `requires` still block on
+        # missing canonical inputs, but the producer itself is not failed solely
+        # because a manifest/path contract was not satisfied.
         if (
             not manual_acceptance_active
             and publish_aliases
             and finalization.final_status in _COMPLETED_LIKE
             and missing_publish_aliases
         ):
-            metadata["failure_kind"] = "artifact_publish_missing"
-            payload["status"] = "failed"
-            finalization.final_status = "failed"
+            metadata["artifact_publish_warning"] = True
+            metadata["missing_publish_aliases"] = list(missing_publish_aliases)
+            metadata.setdefault("verification_status", "warning")
+            payload["status"] = "completed"
+            finalization.final_status = "completed"
 
         if manual_acceptance_active:
             payload["status"] = "completed"
@@ -2611,28 +2661,18 @@ class TaskVerificationService:
                 message="Metrics JSON is missing or empty.",
             )
         payload = json.loads(path.read_text(encoding="utf-8"))
-        model_entries = TaskVerificationService._collect_metric_model_entries(payload)
-        required_metrics = {"accuracy", "macro_f1"}
+        model_entries = collect_metric_model_entries(payload)
         valid_models: List[str] = []
         missing: Dict[str, List[str]] = {}
         for name, metrics in model_entries.items():
-            if not isinstance(metrics, dict):
-                continue
-            missing_fields = [
-                field
-                for field in required_metrics
-                if not TaskVerificationService._is_finite_number(metrics.get(field))
-            ]
+            missing_fields = list(missing_required_model_metrics(metrics))
             if missing_fields:
                 missing[name] = missing_fields
             else:
                 valid_models.append(name)
 
         has_tree_model = any(
-            any(
-                token in name.lower()
-                for token in ("randomforest", "random_forest", "extra", "extratrees", "extra_trees")
-            )
+            is_tree_model_entry(name, model_entries[name])
             for name in valid_models
         )
         success = len(valid_models) >= 1 and has_tree_model
@@ -2741,58 +2781,6 @@ class TaskVerificationService:
                 "missing_terms": missing_terms,
             },
         )
-
-    @staticmethod
-    def _collect_metric_model_entries(payload: Any) -> Dict[str, Dict[str, Any]]:
-        entries: Dict[str, Dict[str, Any]] = {}
-        if not isinstance(payload, dict):
-            return entries
-
-        def _add(name: Any, metrics: Any) -> None:
-            if isinstance(name, str) and name.strip() and isinstance(metrics, dict):
-                entries[name.strip()] = TaskVerificationService._select_model_metric_entry(metrics)
-
-        for key in ("models", "model_metrics", "metrics", "results", "test_metrics"):
-            value = payload.get(key)
-            if isinstance(value, dict):
-                for model_name, metrics in value.items():
-                    _add(model_name, metrics)
-            elif isinstance(value, list):
-                for item in value:
-                    if isinstance(item, dict):
-                        _add(item.get("model") or item.get("name") or item.get("estimator"), item)
-        for model_name, metrics in payload.items():
-            if isinstance(metrics, dict):
-                _add(model_name, metrics)
-        return entries
-
-    @staticmethod
-    def _select_model_metric_entry(metrics: Dict[str, Any]) -> Dict[str, Any]:
-        """Return the metric dict to validate for flat or split-nested schemas.
-
-        Some executors write ``{"models": {"RandomForest": {"test": {...}}}}``
-        so the numeric model metrics live under a split key rather than directly
-        under the model name.  Prefer held-out splits over train metrics because
-        those are the publishable values.
-        """
-        if any(
-            TaskVerificationService._is_finite_number(metrics.get(field))
-            for field in ("accuracy", "macro_f1")
-        ):
-            return metrics
-        for split_name in ("test", "validation", "val", "holdout", "eval"):
-            split_metrics = metrics.get(split_name)
-            if isinstance(split_metrics, dict):
-                return split_metrics
-        return metrics
-
-    @staticmethod
-    def _is_finite_number(value: Any) -> bool:
-        try:
-            number = float(value)
-        except (TypeError, ValueError):
-            return False
-        return number == number and number not in {float("inf"), float("-inf")}
 
     @staticmethod
     def _check_result(
