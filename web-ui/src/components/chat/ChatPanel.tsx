@@ -19,6 +19,7 @@ import { useTasksStore } from '@store/tasks';
 import ChatMessage from './ChatMessage';
 import FileUploadButton from './FileUploadButton';
 import UploadedFilesList from './UploadedFilesList';
+import { isAllowedUploadFile } from '@/constants/uploadFileTypes';
 
 const { TextArea } = Input;
 const { Title, Text } = Typography;
@@ -26,37 +27,6 @@ const { Title, Text } = Typography;
 // ---------------------------------------------------------------------------
 // Helpers for paste / drag-drop
 // ---------------------------------------------------------------------------
-
-/** Allowed file extensions for drag-drop (same as FileUploadButton). */
-const DROP_ALLOWED_EXTENSIONS = [
-  '.pdf', '.doc', '.docx', '.txt', '.md', '.rtf', '.csv',
-  '.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.tif', '.tiff',
-  '.zip', '.tar', '.tar.gz', '.tgz', '.gz',
-  '.h5', '.hdf5', '.hdf', '.hd5', '.pdb', '.dcm', '.nii', '.npz', '.npy',
-  '.fasta', '.fa', '.fna', '.faa', '.ffn', '.frn',
-  '.fastq', '.fq', '.gff', '.gff3', '.gtf',
-  '.vcf', '.sam', '.bam', '.bed',
-  '.genbank', '.gb', '.gbk', '.embl',
-  '.phy', '.phylip', '.nwk', '.newick', '.aln', '.clustal',
-];
-
-const DROP_ALLOWED_MIMES = new Set([
-  'application/pdf',
-  'application/msword',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  'text/plain', 'text/markdown', 'text/csv',
-  'application/rtf',
-  'application/zip', 'application/x-zip-compressed',
-  'application/x-tar', 'application/gzip', 'application/x-gzip',
-  'application/octet-stream',
-]);
-
-function isFileAllowed(file: File): boolean {
-  if (file.type.startsWith('image/')) return true;
-  if (DROP_ALLOWED_MIMES.has(file.type)) return true;
-  const name = file.name.toLowerCase();
-  return DROP_ALLOWED_EXTENSIONS.some((ext) => name.endsWith(ext));
-}
 
 /** Extract images from clipboard (paste event). */
 function extractPasteImages(clipboardData: DataTransfer): File[] {
@@ -245,7 +215,7 @@ const ChatPanel: React.FC = () => {
     const rejected: string[] = [];
 
     for (const file of files) {
-      if (isFileAllowed(file)) {
+      if (isAllowedUploadFile(file)) {
         allowed.push(file);
       } else {
         rejected.push(file.name);
@@ -329,7 +299,7 @@ const ChatPanel: React.FC = () => {
               松开以上传文件
             </div>
             <div className="chat-drop-overlay-hint">
-              支持图片、PDF、文档等文件
+              支持图片、PDF、文档、生信数据等文件
             </div>
           </div>
         </div>

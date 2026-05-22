@@ -37,6 +37,7 @@ import { shallow } from 'zustand/shallow';
 import type { ChatMessage as ChatMessageType, Memory } from '@/types';
 import VirtualList, { ListRef } from 'rc-virtual-list';
 import { isLikelyPersistedDuplicateMessage } from '@/utils/chatMessageUtils';
+import { isAllowedUploadFile } from '@/constants/uploadFileTypes';
 
 /** FastAPI/axios errors often put the reason in `response.data.detail`; BaseApi may not surface it on `Error.message`. */
 function httpErrorDetail(err: unknown): { status?: number; detail: string } {
@@ -65,36 +66,6 @@ const { Title, Text } = Typography;
 // ---------------------------------------------------------------------------
 // Helpers for paste / drag-drop
 // ---------------------------------------------------------------------------
-
-const DROP_ALLOWED_EXTENSIONS = [
-  '.pdf', '.doc', '.docx', '.txt', '.md', '.rtf', '.csv',
-  '.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.tif', '.tiff',
-  '.zip', '.tar', '.tar.gz', '.tgz', '.gz',
-  '.h5', '.hdf5', '.hdf', '.hd5', '.pdb', '.dcm', '.nii', '.npz', '.npy',
-  '.fasta', '.fa', '.fna', '.faa', '.ffn', '.frn',
-  '.fastq', '.fq', '.gff', '.gff3', '.gtf',
-  '.vcf', '.sam', '.bam', '.bed',
-  '.genbank', '.gb', '.gbk', '.embl',
-  '.phy', '.phylip', '.nwk', '.newick', '.aln', '.clustal',
-];
-
-const DROP_ALLOWED_MIMES = new Set([
-  'application/pdf',
-  'application/msword',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  'text/plain', 'text/markdown', 'text/csv',
-  'application/rtf',
-  'application/zip', 'application/x-zip-compressed',
-  'application/x-tar', 'application/gzip', 'application/x-gzip',
-  'application/octet-stream',
-]);
-
-function isFileAllowed(file: File): boolean {
-  if (file.type.startsWith('image/')) return true;
-  if (DROP_ALLOWED_MIMES.has(file.type)) return true;
-  const name = file.name.toLowerCase();
-  return DROP_ALLOWED_EXTENSIONS.some((ext) => name.endsWith(ext));
-}
 
 function extractPasteImages(clipboardData: DataTransfer): File[] {
   const files: File[] = [];
@@ -504,7 +475,7 @@ const ChatMainArea: React.FC = () => {
     const rejected: string[] = [];
 
     for (const file of files) {
-      if (isFileAllowed(file)) {
+      if (isAllowedUploadFile(file)) {
         allowed.push(file);
       } else {
         rejected.push(file.name);
@@ -688,7 +659,7 @@ const ChatMainArea: React.FC = () => {
               松开以上传文件
             </div>
             <div className="chat-drop-overlay-hint">
-              支持图片、PDF、文档等文件
+              支持图片、PDF、文档、生信数据等文件
             </div>
           </div>
         </div>
