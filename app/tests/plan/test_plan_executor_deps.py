@@ -632,13 +632,16 @@ class TestArtifactContracts:
         repo = MagicMock()
         repo.get_plan_tree.return_value = tree
         executor = _make_executor(repo, artifact_backfill_enabled=True)
-        executor._should_use_deep_think = lambda _config: False
-        executor._llm.generate.return_value = ExecutionResponse(
-            status="success",
-            content="assembled",
-            notes=[],
-            metadata={},
+        monkeypatch.setattr(executor, "_should_use_deep_think", lambda config: False)
+        generate = MagicMock(
+            return_value=ExecutionResponse(
+                status="success",
+                content="assembled",
+                notes=[],
+                metadata={},
+            )
         )
+        monkeypatch.setattr(executor._llm, "generate", generate)
 
         result = executor.execute_task(7, 2, config=ExecutionConfig(session_context={}))
 
@@ -784,7 +787,7 @@ class TestArtifactContracts:
         assert finalization.payload["status"] == "completed"
         assert finalization.payload["metadata"]["artifact_authority"]["published_aliases"] == ["general.evidence_md"]
 
-    def test_execute_plan_does_not_skip_false_completed_task_missing_canonical_publish(
+    def test_execute_plan_skips_completed_task_with_publish_warning(
         self,
         monkeypatch,
         tmp_path,
@@ -819,10 +822,10 @@ class TestArtifactContracts:
 
         summary = executor.execute_plan(7, config=ExecutionConfig(session_context={}))
 
-        assert calls == [1]
+        assert calls == []
         assert summary.executed_task_ids == [1]
 
-    def test_run_task_blocks_dependency_with_failed_effective_status(
+    def test_run_task_allows_dependency_with_verifier_only_failed_status(
         self,
         monkeypatch,
         tmp_path,
@@ -850,6 +853,17 @@ class TestArtifactContracts:
         repo = MagicMock()
         executor = _make_executor(repo)
 
+        monkeypatch.setattr(
+            executor,
+            "_run_task_with_deep_think",
+            lambda **kwargs: ExecutionResult(
+                plan_id=kwargs["plan_id"],
+                task_id=kwargs["node"].id,
+                status="completed",
+                content="ok",
+            ),
+        )
+
         result = executor._run_task(
             7,
             node,
@@ -857,13 +871,106 @@ class TestArtifactContracts:
             ExecutionConfig(session_context={}, enforce_dependencies=True),
         )
 
-        assert result.status == "skipped"
-        assert result.metadata["incomplete_dependencies"] == [1]
-        assert result.metadata["incomplete_dependency_info"] == [
-            {"id": 1, "name": "Upstream", "status": "completed"}
-        ]
-        assert "#1(failed)" in result.content
+        assert result.status == "completed"
 
+
+
+
+def test_forced_probe_followthrough_includes_dependency_output_directories(tmp_path):
+    artifact_dir = tmp_path / "upstream_dir"
+    artifact_dir.mkdir()
+    executor = _make_executor(MagicMock())
+    from app.services.deep_think_agent import DeepThinkAgent, TaskExecutionContext
+
+    task_context = TaskExecutionContext(
+        task_id=2,
+        task_name="Downstream",
+        task_instruction="Use upstream outputs",
+        dependency_outputs=[{"artifact_paths": [], "output_directories": [str(artifact_dir)]}],
+    )
+    agent = DeepThinkAgent(llm_client=MagicMock(), available_tools=["code_executor"], tool_executor=MagicMock())
+    prompt = agent._build_forced_probe_followthrough_task(
+        task_context=task_context,
+        user_query="Use upstream outputs",
+    )
+
+    assert str(artifact_dir) in prompt
+    assert "paths/directories" in prompt
+
+def test_dependency_artifact_context_includes_output_directories(tmp_path):
+    artifact = tmp_path / "task_1" / "reports" / "summary.json"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text("{}", encoding="utf-8")
+    dep = PlanNode(
+        id=1,
+        plan_id=7,
+        name="Produce report",
+        status="completed",
+        execution_result=json.dumps({
+            "status": "completed",
+            "metadata": {"artifact_paths": [str(artifact)]},
+        }),
+    )
+    executor = _make_executor(MagicMock())
+
+    context = executor._dependency_artifact_context(dep)
+
+    assert context["artifact_paths"] == [str(artifact)]
+    assert context["output_directories"] == [str(artifact.parent)]
+
+
+def test_deepthink_task_context_prompts_dependency_inspection(monkeypatch, tmp_path):
+    artifact = tmp_path / "upstream" / "metrics.json"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text("{}", encoding="utf-8")
+    dep = PlanNode(
+        id=1,
+        plan_id=7,
+        name="Upstream metrics",
+        status="completed",
+        execution_result=json.dumps({
+            "status": "completed",
+            "metadata": {"artifact_paths": [str(artifact)]},
+        }),
+    )
+    node = PlanNode(id=2, plan_id=7, name="Summarize metrics", dependencies=[1])
+    tree = _make_tree(7, [dep, node])
+    executor = _make_executor(MagicMock())
+    captured = {}
+
+    class _AgentStub:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def think(self, user_query, context=None, task_context=None):
+            captured["task_context"] = task_context
+            return type("Result", (), {
+                "final_answer": "done",
+                "thinking_summary": "ok",
+                "confidence": 1.0,
+                "tools_used": [],
+                "thinking_steps": [],
+                "total_iterations": 1,
+            })()
+
+    monkeypatch.setattr("app.services.plans.plan_executor.DeepThinkAgent", _AgentStub)
+    repo = executor._repo
+    repo.update_task = MagicMock()
+
+    result = executor._run_task_with_deep_think(
+        plan_id=7,
+        node=node,
+        parent=None,
+        dependencies=[dep],
+        plan_outline=None,
+        tree=tree,
+        config=ExecutionConfig(session_context={"session_id": "session_test"}),
+    )
+
+    assert result.status == "completed"
+    task_context = captured["task_context"]
+    assert task_context.dependency_outputs[0]["output_directories"] == [str(artifact.parent)]
+    assert any("Before producing this task's final output" in item for item in task_context.constraints)
 
 def test_save_artifact_manifest_merges_existing_artifacts(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
@@ -1311,3 +1418,226 @@ def test_enrich_finalized_payload_records_missing_contract_artifacts(tmp_path, m
             "reason": "not_found",
         }
     ]
+
+
+def test_plan_executor_deep_think_tool_failure_finalizes_failed_task() -> None:
+    node = PlanNode(
+        id=2,
+        plan_id=1,
+        name="Run tool",
+        instruction="Use code_executor",
+        status="pending",
+    )
+    tree = _make_tree(1, [node])
+    repo = MagicMock()
+    executor = _make_executor(repo)
+
+    class _FakeResult:
+        final_answer = "The main execution tool failed."
+        thinking_summary = "tool failed"
+        confidence = 0.1
+        tools_used = ["code_executor"]
+        total_iterations = 1
+        thinking_steps = []
+        tool_failures = [
+            {
+                "tool": "code_executor",
+                "success": False,
+                "error": "qwen_cli_no_output_timeout",
+            }
+        ]
+
+    class _FakeDeepThinkAgent:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def think(self, *_args, **_kwargs):
+            return _FakeResult()
+
+        def pause(self):
+            return None
+
+        def resume(self):
+            return None
+
+        def skip_step(self):
+            return None
+
+    original_agent = __import__(
+        "app.services.plans.plan_executor",
+        fromlist=["DeepThinkAgent"],
+    ).DeepThinkAgent
+    import app.services.plans.plan_executor as plan_executor_module
+
+    plan_executor_module.DeepThinkAgent = _FakeDeepThinkAgent
+    try:
+        result = executor._run_task_with_deep_think(
+            plan_id=1,
+            node=node,
+            parent=None,
+            dependencies=[],
+            plan_outline=None,
+            tree=tree,
+            config=ExecutionConfig(
+                session_context={"session_id": "session-x"},
+            ),
+        )
+    finally:
+        plan_executor_module.DeepThinkAgent = original_agent
+
+    assert result.status == "failed"
+    assert tree.nodes[2].status == "failed"
+    update_calls = repo.update_task.call_args_list
+    assert any(call.kwargs.get("status") == "running" for call in update_calls)
+    assert any(call.kwargs.get("status") == "failed" for call in update_calls)
+    assert repo.update_task.call_args.kwargs.get("execution_result")
+
+
+def test_plan_executor_observed_primary_tool_failure_without_outputs_finalizes_failed_task() -> None:
+    node = PlanNode(
+        id=2,
+        plan_id=1,
+        name="Run tool",
+        instruction="Use code_executor",
+        status="pending",
+    )
+    tree = _make_tree(1, [node])
+    repo = MagicMock()
+    executor = _make_executor(repo)
+
+    class _FakeResult:
+        final_answer = "I recovered with narrative output."
+        thinking_summary = "narrative"
+        confidence = 0.4
+        tools_used = ["code_executor"]
+        total_iterations = 1
+        thinking_steps = []
+        tool_failures: List[Dict[str, Any]] = []
+
+    class _FakeDeepThinkAgent:
+        def __init__(self, *_args, **kwargs):
+            self.on_tool_result = kwargs.get("on_tool_result")
+
+        async def think(self, *_args, **_kwargs):
+            assert self.on_tool_result is not None
+            await self.on_tool_result(
+                "code_executor",
+                {
+                    "success": False,
+                    "error": "qwen_cli_no_output_timeout",
+                    "summary": "watchdog failure",
+                },
+            )
+            return _FakeResult()
+
+        def pause(self):
+            return None
+
+        def resume(self):
+            return None
+
+        def skip_step(self):
+            return None
+
+    import app.services.plans.plan_executor as plan_executor_module
+
+    original_agent = plan_executor_module.DeepThinkAgent
+    plan_executor_module.DeepThinkAgent = _FakeDeepThinkAgent
+    try:
+        result = executor._run_task_with_deep_think(
+            plan_id=1,
+            node=node,
+            parent=None,
+            dependencies=[],
+            plan_outline=None,
+            tree=tree,
+            config=ExecutionConfig(session_context={"session_id": "session-x"}),
+        )
+    finally:
+        plan_executor_module.DeepThinkAgent = original_agent
+
+    assert result.status == "failed"
+    assert tree.nodes[2].status == "failed"
+    assert repo.update_task.call_args.kwargs.get("execution_result")
+
+
+def test_plan_executor_observed_primary_tool_failure_with_outputs_finalizes_completed_task(tmp_path) -> None:
+    artifact = tmp_path / "benchmark_outputs" / "benchmark_summary.json"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text('{"completed": true}\n', encoding="utf-8")
+    node = PlanNode(
+        id=2,
+        plan_id=1,
+        name="Run tool",
+        instruction="Use code_executor",
+        status="pending",
+    )
+    tree = _make_tree(1, [node])
+    repo = MagicMock()
+    executor = _make_executor(repo)
+
+    class _FakeResult:
+        final_answer = f"Recovered and wrote the benchmark summary to {artifact}"
+        thinking_summary = "recovered"
+        confidence = 0.8
+        tools_used = ["code_executor"]
+        total_iterations = 2
+        thinking_steps = []
+        tool_failures: List[Dict[str, Any]] = []
+
+    class _FakeDeepThinkAgent:
+        def __init__(self, *_args, **kwargs):
+            self.on_tool_result = kwargs.get("on_tool_result")
+
+        async def think(self, *_args, **_kwargs):
+            assert self.on_tool_result is not None
+            await self.on_tool_result(
+                "code_executor",
+                {
+                    "success": False,
+                    "error": "qwen_cli_no_output_timeout",
+                    "summary": "watchdog failure",
+                },
+            )
+            await self.on_tool_result(
+                "file_operations",
+                {
+                    "success": True,
+                    "result": {
+                        "artifact_paths": [str(artifact)],
+                    },
+                },
+            )
+            return _FakeResult()
+
+        def pause(self):
+            return None
+
+        def resume(self):
+            return None
+
+        def skip_step(self):
+            return None
+
+    import app.services.plans.plan_executor as plan_executor_module
+
+    original_agent = plan_executor_module.DeepThinkAgent
+    plan_executor_module.DeepThinkAgent = _FakeDeepThinkAgent
+    try:
+        result = executor._run_task_with_deep_think(
+            plan_id=1,
+            node=node,
+            parent=None,
+            dependencies=[],
+            plan_outline=None,
+            tree=tree,
+            config=ExecutionConfig(session_context={"session_id": "session-x"}),
+        )
+    finally:
+        plan_executor_module.DeepThinkAgent = original_agent
+
+    assert result.status == "completed"
+    assert tree.nodes[2].status == "completed"
+    persisted = json.loads(repo.update_task.call_args.kwargs["execution_result"])
+    assert persisted["status"] == "completed"
+    assert str(artifact) in persisted["artifact_paths"]
