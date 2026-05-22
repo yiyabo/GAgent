@@ -10,6 +10,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
+from .model_metric_schema import collect_metric_model_entries, has_required_model_metrics
+
 
 @dataclass(frozen=True)
 class ArtifactValidationSpec:
@@ -165,7 +167,6 @@ _ALIAS_VALIDATION_SPECS: Dict[str, ArtifactValidationSpec] = {
     "ml_traditional.validation_metrics_json": ArtifactValidationSpec(
         kind="ml_validation_metrics",
         description="Validation metrics JSON from real model training; placeholders/all-zero metrics are invalid.",
-        required_keys=("models",),
     ),
     "ml_traditional.model_checkpoints_dir": ArtifactValidationSpec(
         kind="ml_model_checkpoints",
@@ -464,21 +465,19 @@ def _validate_ml_label_alignment(path: Path, spec: ArtifactValidationSpec) -> Di
 
 
 def _validate_ml_validation_metrics(path: Path, spec: ArtifactValidationSpec) -> Dict[str, Any]:
-    metadata = _validate_json_schema(path, spec)
+    metadata = _validate_json_schema(path, ArtifactValidationSpec(kind="json_schema", min_size_bytes=spec.min_size_bytes))
     payload = json.loads(path.read_text(encoding="utf-8"))
     serialized = json.dumps(payload, ensure_ascii=False).lower()
     if "placeholder" in serialized or "actual values will be populated" in serialized or "not been performed" in serialized:
         raise ValueError("Validation metrics appear to be placeholder output, not real model training results.")
     _validate_ml_label_provenance(payload, serialized)
-    models = payload.get("models") if isinstance(payload, dict) else None
-    if not isinstance(models, dict) or not models:
-        raise ValueError("Validation metrics must contain a non-empty models object.")
+    models = collect_metric_model_entries(payload)
+    if not models:
+        raise ValueError("Validation metrics must contain at least one model entry with numeric metrics.")
     metric_values: List[float] = []
     evaluated_models = 0
     for model_name, model_payload in models.items():
-        if not isinstance(model_payload, dict):
-            continue
-        if "accuracy" not in model_payload or "macro_f1" not in model_payload:
+        if not has_required_model_metrics(model_payload):
             raise ValueError(f"Model {model_name!r} is missing accuracy or macro_f1.")
         try:
             accuracy_value = model_payload.get("accuracy")

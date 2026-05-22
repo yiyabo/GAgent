@@ -354,6 +354,12 @@ class PlanStatusResolver:
             if not verification_status:
                 verification_status = _normalize_status(metadata.get("verification_status")) or None
             failure_kind = str(metadata.get("failure_kind") or "").strip() or None
+            execution_status = _normalize_status(metadata.get("execution_status")) or None
+            verification_trigger = (
+                str(verification.get("trigger") or "").strip().lower()
+                if isinstance(verification, dict)
+                else ""
+            )
             manual_acceptance = metadata.get("manual_acceptance") if isinstance(metadata, dict) else None
             manual_acceptance_active = TaskVerificationService.is_manual_acceptance_active(metadata)
             manual_acceptance_reason = None
@@ -381,46 +387,42 @@ class PlanStatusResolver:
                 effective_status = "blocked"
                 status_reason = _missing_required_reason(task_id, missing_required_aliases)
                 reason_code = "artifact_input_missing"
+            elif payload_status in _FAILED_LIKE and execution_status not in _COMPLETED_LIKE:
+                effective_status = "failed"
+                status_reason = _truncate_reason(content or raw_result_text) or "Task failed."
+                reason_code = "payload_failed"
+            elif (
+                raw_status in _FAILED_LIKE
+                and payload_status not in _COMPLETED_LIKE
+                and execution_status not in _COMPLETED_LIKE
+            ):
+                effective_status = "failed"
+                status_reason = _truncate_reason(content or raw_result_text) or "Task failed."
+                reason_code = "raw_failed"
+            elif (
+                verification_status == "failed"
+                and verification_trigger in {"manual", "manual_review"}
+            ):
+                effective_status = "failed"
+                status_reason = "Manual verification failed."
+                reason_code = "manual_verification_failed"
             elif preflight_issues and (raw_status in _COMPLETED_LIKE or payload_status in _COMPLETED_LIKE):
-                # If verification passed, preflight issues (e.g. ambiguous producer)
-                # should not override the completed status.
-                if verification_status == "passed":
-                    effective_status = "completed"
-                    status_reason = _truncate_reason(content or raw_result_text) or "Completed (preflight warning)."
-                    reason_code = "completed_preflight_warning"
-                else:
-                    effective_status = "failed"
-                    status_reason = preflight_issues[0].message
-                    reason_code = preflight_issues[0].code
+                effective_status = "completed"
+                status_reason = _truncate_reason(content or raw_result_text) or "Completed (preflight warning)."
+                reason_code = "completed_preflight_warning"
             elif preflight_issues:
                 effective_status = "blocked"
                 status_reason = preflight_issues[0].message
                 reason_code = preflight_issues[0].code
             elif verification_status == "failed":
-                effective_status = "failed"
-                if (
-                    failure_kind == "contract_mismatch"
-                    and (raw_status in _COMPLETED_LIKE or payload_status in _COMPLETED_LIKE)
-                ):
-                    status_reason = (
-                        "Execution completed, but generated outputs did not match the expected "
-                        "deliverables contract."
-                    )
-                    reason_code = "contract_mismatch_after_execution"
-                elif raw_status in _COMPLETED_LIKE or payload_status in _COMPLETED_LIKE:
-                    status_reason = "Execution completed, but verification failed."
-                    reason_code = "verification_failed_after_execution"
+                if payload_status in _COMPLETED_LIKE or execution_status in _COMPLETED_LIKE:
+                    effective_status = "completed"
+                    status_reason = _truncate_reason(content or raw_result_text) or "Completed with verification warning."
+                    reason_code = "completed_verification_warning"
                 else:
+                    effective_status = "failed"
                     status_reason = _truncate_reason(content or raw_result_text) or "Verification failed."
                     reason_code = "verification_failed"
-            elif payload_status in _FAILED_LIKE:
-                effective_status = "failed"
-                status_reason = _truncate_reason(content or raw_result_text) or "Task failed."
-                reason_code = "payload_failed"
-            elif raw_status in _FAILED_LIKE:
-                effective_status = "failed"
-                status_reason = _truncate_reason(content or raw_result_text) or "Task failed."
-                reason_code = "raw_failed"
             elif raw_status == "running":
                 if _looks_like_retry_or_blocked_failure_text(raw_result_text) or _looks_like_failure_text(raw_result_text):
                     effective_status = "failed"
@@ -455,10 +457,10 @@ class PlanStatusResolver:
                     effective_status = "failed"
                     status_reason = _truncate_reason(content or raw_result_text) or "Task failed."
                     reason_code = "retry_or_blocked_failure"
-                elif missing_publish_aliases and verification_status != "passed":
-                    effective_status = "failed"
+                elif missing_publish_aliases and verification_status not in {"passed", "warning"}:
+                    effective_status = "completed"
                     status_reason = _missing_publish_reason(task_id, missing_publish_aliases)
-                    reason_code = "publish_contract_missing"
+                    reason_code = "completed_publish_warning"
                 else:
                     effective_status = "completed"
                     status_reason = _truncate_reason(content or raw_result_text) or "Completed."

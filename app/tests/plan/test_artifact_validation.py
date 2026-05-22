@@ -45,6 +45,32 @@ def test_ml_validation_metrics_accepts_nonzero_model_metrics(tmp_path):
     assert result.metadata["model_count"] == 2
 
 
+def test_ml_validation_metrics_accepts_overall_summary_models(tmp_path):
+    metrics = tmp_path / "validation_metrics.json"
+    metrics.write_text(json.dumps({
+        "overall_summary": {
+            "models": {
+                "XGBoost": {"accuracy": 0.43, "macro_f1": 0.28},
+                "LightGBM_lifestyle": {"accuracy": 0.33, "macro_f1": 0.33},
+            }
+        },
+        "models": {
+            "accuracy": 0.43,
+            "macro_f1": 0.28,
+        },
+        "metadata": {
+            "training_samples": 5000,
+            "label_source": "phage_ml.training_metadata_parquet:host_label",
+            "label_alignment": "inner join on stable feature row IDs",
+        },
+    }), encoding="utf-8")
+
+    result = validate_artifact("ml_traditional.validation_metrics_json", str(metrics))
+
+    assert result.schema_valid is True
+    assert result.metadata["model_count"] == 2
+
+
 def test_ml_validation_metrics_accepts_row_ids_source_as_alignment_evidence(tmp_path):
     metrics = tmp_path / "validation_metrics.json"
     metrics.write_text(json.dumps({
