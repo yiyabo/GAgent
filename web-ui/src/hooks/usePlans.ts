@@ -4,7 +4,6 @@ import { planTreeApi } from '@api/planTree';
 import { planTreeToTasks } from '@utils/planTree';
 import type {
   PlanExecutionSummary,
-  PlanResultItem,
   PlanResultsResponse,
   PlanSummary,
   PlanTreeResponse,
@@ -40,6 +39,8 @@ interface PlanTasksOptions {
   planId?: number | null;
 }
 
+const planTreeQueryKey = (planId?: number | null) => ['planTree', 'tree', planId ?? null] as const;
+
 const asPlanTaskNodes = (tasks: Task[]): PlanTaskNode[] =>
   tasks.map((task) => ({
     ...task,
@@ -49,14 +50,16 @@ const asPlanTaskNodes = (tasks: Task[]): PlanTaskNode[] =>
 export const usePlanTasks = (options: PlanTasksOptions) => {
   const { planId } = options;
 
-  const query = useQuery({
-    queryKey: ['planTree', 'tasks', planId ?? null],
+  const query = useQuery<PlanTreeResponse, Error, PlanTaskNode[]>({
+    queryKey: planTreeQueryKey(planId),
     enabled: typeof planId === 'number',
     queryFn: async () => {
       if (planId == null) {
-        return [] as PlanTaskNode[];
+        return Promise.reject(new Error('planId is required'));
       }
-      const tree = await planTreeApi.getPlanTree(planId);
+      return planTreeApi.getPlanTree(planId);
+    },
+    select: (tree) => {
       const tasks = planTreeToTasks(tree);
       return asPlanTaskNodes(tasks);
     },
@@ -85,7 +88,7 @@ export const usePlanTasks = (options: PlanTasksOptions) => {
 
 export const usePlanTree = (planId?: number | null) => {
   return useQuery<PlanTreeResponse>({
-    queryKey: ['planTree', 'tree', planId ?? null],
+    queryKey: planTreeQueryKey(planId),
     enabled: typeof planId === 'number',
     queryFn: async () => {
       if (planId == null) {

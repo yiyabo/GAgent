@@ -14,7 +14,7 @@ import {
 import { usePlanTasks, usePlanTree } from '@hooks/usePlans';
 import PlanTreeVisualization from '@components/dag/PlanTreeVisualization';
 import DAG3DView from '@components/dag/DAG3DView';
-import type { PlanSyncEventDetail, PlanTaskNode } from '@/types';
+import type { PlanSyncEventDetail } from '@/types';
 import { useTasksStore } from '@store/tasks';
 import { useChatStore } from '@store/chat';
 import { useLayoutStore } from '@store/layout';
@@ -88,12 +88,9 @@ const DAGSidebar: React.FC = () => {
   const [decomposeSnapshot, setDecomposeSnapshot] = useState<Record<string, any> | null>(null);
   const [planTodoListOpen, setPlanTodoListOpen] = useState(false);
 
-  const sessionId = currentSession?.session_id;
-
   const {
   data: planTasks = [],
   isFetching: planTasksLoading,
-  refetch: refetchTasks,
   } = usePlanTasks({ planId: currentPlanId ?? undefined });
 
   const { data: planTree, refetch: refetchPlanTree } = usePlanTree(currentPlanId ?? null);
@@ -510,27 +507,20 @@ const DAGSidebar: React.FC = () => {
   ) {
   return;
   }
-  refetchTasks();
   refetchPlanTree();
-  window.setTimeout(() => {
-  refetchTasks();
-  refetchPlanTree();
-  }, 800);
   };
   window.addEventListener('tasksUpdated', handleTasksUpdated as EventListener);
   return () => window.removeEventListener('tasksUpdated', handleTasksUpdated as EventListener);
-  }, [closeTaskDrawer, currentPlanId, refetchPlanTree, refetchTasks, setTasks]);
+  }, [closeTaskDrawer, currentPlanId, refetchPlanTree, setTasks]);
 
   useEffect(() => {
   if (!currentPlanId) return;
   
   const timer1 = window.setTimeout(() => {
-  refetchTasks();
   refetchPlanTree();
   }, 3000);
   
   const timer2 = window.setTimeout(() => {
-  refetchTasks();
   refetchPlanTree();
   }, 8000);
   
@@ -538,7 +528,7 @@ const DAGSidebar: React.FC = () => {
   window.clearTimeout(timer1);
   window.clearTimeout(timer2);
   };
-  }, [currentPlanId, refetchPlanTree, refetchTasks]);
+  }, [currentPlanId, refetchPlanTree]);
 
   useEffect(() => {
   if (!currentPlanId) {
@@ -588,6 +578,7 @@ const DAGSidebar: React.FC = () => {
   running: 0,
   completed: 0,
   failed: 0,
+  blocked: 0,
   };
   }
   return {
@@ -595,12 +586,12 @@ const DAGSidebar: React.FC = () => {
   pending: planTasks.filter((task) => task.status === 'pending').length,
   running: planTasks.filter((task) => task.status === 'running').length,
   completed: planTasks.filter((task) => task.status === 'completed').length,
-  failed: planTasks.filter((task) => task.status === 'failed' || task.status === 'blocked').length,
+  failed: planTasks.filter((task) => task.status === 'failed').length,
+  blocked: planTasks.filter((task) => task.status === 'blocked').length,
   };
   }, [planTasks]);
 
   const handleRefresh = () => {
-  refetchTasks();
   refetchPlanTree();
   };
 
@@ -689,6 +680,20 @@ const DAGSidebar: React.FC = () => {
   completed
   </Text>
   </Badge>
+  {stats.pending > 0 && (
+  <Badge count={stats.pending} size="small" color="gray" offset={[8, -2]}>
+  <Text type="secondary" style={{ fontSize: 12 }}>
+  pending
+  </Text>
+  </Badge>
+  )}
+  {stats.blocked > 0 && (
+  <Badge count={stats.blocked} size="small" color="orange" offset={[8, -2]}>
+  <Text type="secondary" style={{ fontSize: 12 }}>
+  blocked
+  </Text>
+  </Badge>
+  )}
   {stats.failed > 0 && (
   <Badge count={stats.failed} size="small" color="red" offset={[8, -2]}>
   <Text type="secondary" style={{ fontSize: 12 }}>

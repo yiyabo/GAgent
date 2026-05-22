@@ -29,6 +29,9 @@ const createApiClient = (): AxiosInstance => {
     { pattern: /\/chat\/runs/, ms: 120_000 },
     // Action status polling & retry: 5 minutes
     { pattern: /\/chat\/actions\//, ms: 300_000 },
+    // Background execution status can scan large per-plan job/task state.
+    { pattern: /\/jobs\/board/, ms: 120_000 },
+    { pattern: /\/jobs\/[A-Za-z0-9_-]+(?:\/logs|\/control)?$/, ms: 120_000 },
     // Session autotitle (LLM call): 60 seconds
     { pattern: /\/autotitle/, ms: 60_000 },
     // Task execution endpoints (LLM + tool execution): 5 minutes

@@ -51,6 +51,7 @@ export const STATUS_COLORS_MAP: Record<string, { color: string; bg: string }> = 
   running: { color: '#1d4e89', bg: '#cfe2f3' },
   executing: { color: '#1d4e89', bg: '#cfe2f3' },
   pending: { color: '#9a6b00', bg: '#fff3cd' },
+  blocked: { color: '#ad4e00', bg: '#fff7e6' },
   failed: { color: '#9c2230', bg: '#f8d7da' },
   error: { color: '#9c2230', bg: '#f8d7da' },
   default: { color: '#666666', bg: '#f0f0f0' },
