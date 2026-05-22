@@ -7,10 +7,11 @@ guards for task execution.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple, cast
 
 from .dependency_validation import normalize_plan_dependencies
 from .plan_models import PlanNode, PlanTree
@@ -605,9 +606,11 @@ def validate_plan_dag(
 
 
 def check_artifact_readiness(
-    node: PlanNode,
+    node: Optional[PlanNode],
     tree: PlanTree,
     manifest: Optional[Dict[str, Any]] = None,
+    *,
+    state_by_task: Optional[Dict[int, Dict[str, Any]]] = None,
 ) -> Optional[ArtifactReadinessBlock]:
     """Check if a task's consumed artifacts are ready for execution.
 
@@ -615,8 +618,10 @@ def check_artifact_readiness(
     details about what is missing.  On unexpected errors the function
     returns ``None`` (fail-open) so that execution is not blocked.
     """
+    if node is None:
+        return None
     try:
-        return _check_readiness_impl(node, tree, manifest)
+        return _check_readiness_impl(node, tree, manifest, state_by_task)
     except Exception as exc:
         logger.error(
             "Readiness check failed for task %s: %s (allowing execution)",
@@ -630,6 +635,7 @@ def _check_readiness_impl(
     node: PlanNode,
     tree: PlanTree,
     manifest: Optional[Dict[str, Any]],
+    state_by_task: Optional[Dict[int, Dict[str, Any]]],
 ) -> Optional[ArtifactReadinessBlock]:
     try:
         requires, _ = _extract_artifacts_for_node(node)
@@ -663,8 +669,8 @@ def _check_readiness_impl(
         if producer_node is None:
             continue
 
-        producer_status = (producer_node.status or "pending").strip().lower()
-        if producer_status not in ("completed", "done"):
+        producer_status = _producer_effective_status(producer_node, state_by_task)
+        if producer_status not in ("completed", "done", "success"):
             missing.append(
                 MissingArtifact(
                     alias=alias,
@@ -685,3 +691,49 @@ def _check_readiness_impl(
         missing_artifacts=missing,
         reason=f"Missing input artifacts: {', '.join(reasons)}",
     )
+
+
+def _producer_effective_status(
+    producer_node: PlanNode,
+    state_by_task: Optional[Dict[int, Dict[str, Any]]],
+) -> str:
+    """Return producer status using resolver state when available.
+
+    The full-plan runner already computes effective states that include soft
+    verification warnings.  Artifact readiness must use the same authority;
+    otherwise a producer with raw status ``failed`` but completed execution
+    evidence can still block downstream consumers.
+    """
+
+    if isinstance(state_by_task, dict):
+        state = state_by_task.get(producer_node.id) or {}
+        effective_status = str(state.get("effective_status") or "").strip().lower()
+        if effective_status:
+            return effective_status
+
+    raw_status = str(producer_node.status or "pending").strip().lower()
+    payload_status = _execution_payload_status(getattr(producer_node, "execution_result", None))
+    if payload_status in {"completed", "done", "success"}:
+        return payload_status
+    return raw_status
+
+
+def _execution_payload_status(raw_value: Any) -> str:
+    if raw_value in (None, ""):
+        return ""
+    payload: Any = raw_value
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except Exception:
+            return ""
+    if not isinstance(payload, dict):
+        return ""
+    payload_dict = cast(Dict[str, Any], payload)
+    raw_metadata = payload_dict.get("metadata")
+    metadata: Dict[str, Any] = raw_metadata if isinstance(raw_metadata, dict) else {}
+    for value in (metadata.get("execution_status"), payload_dict.get("status")):
+        status = str(value or "").strip().lower()
+        if status in {"completed", "done", "success"}:
+            return status
+    return ""

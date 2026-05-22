@@ -2756,6 +2756,7 @@ def _run_full_plan_job(
                     current_tree.nodes.get(task_id),
                     current_tree,
                     manifest=None,
+                    state_by_task=current_state_by_task,
                 )
                 if _readiness_block is not None:
                     log_job_event(
