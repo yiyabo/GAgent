@@ -54,6 +54,7 @@ ALLOWED_MIME_TYPES = {
     "data": [
         "application/x-hdf",
         "application/x-hdf5",
+        "application/vnd.hdf5",
         "chemical/x-pdb",
         "chemical/pdb",
         "application/dicom",
@@ -68,7 +69,11 @@ ALLOWED_MIME_TYPES = {
         "text/x-gtf",
         "text/x-vcf",
         "text/x-sam",
+        "text/tab-separated-values",
+        "text/x-matrix-market",
         "application/x-bam",
+        "application/x-bcf",
+        "application/x-biom",
         "text/x-bed",
     ],
 }
@@ -108,6 +113,25 @@ ALLOWED_EXTENSION_CATEGORIES = {
     ".npz": "data",
     ".npy": "data",
     # Bioinformatics file formats
+    # Single-cell / spatial transcriptomics / multimodal omics
+    ".h5ad": "bioinformatics",
+    ".loom": "bioinformatics",
+    ".h5mu": "bioinformatics",
+    ".h5seurat": "bioinformatics",
+    ".rds": "bioinformatics",
+    ".rda": "bioinformatics",
+    ".rdata": "bioinformatics",
+    ".mtx": "bioinformatics",
+    ".mtx.gz": "bioinformatics",
+    ".tsv": "bioinformatics",
+    ".tsv.gz": "bioinformatics",
+    ".barcodes.tsv": "bioinformatics",
+    ".barcodes.tsv.gz": "bioinformatics",
+    ".features.tsv": "bioinformatics",
+    ".features.tsv.gz": "bioinformatics",
+    ".genes.tsv": "bioinformatics",
+    ".genes.tsv.gz": "bioinformatics",
+    # Sequence, alignment, annotation, and variant formats
     ".fasta": "bioinformatics",
     ".fa": "bioinformatics",
     ".fna": "bioinformatics",
@@ -125,8 +149,22 @@ ALLOWED_EXTENSION_CATEGORIES = {
     ".vcf.gz": "bioinformatics",
     ".sam": "bioinformatics",
     ".bam": "bioinformatics",
+    ".bai": "bioinformatics",
+    ".cram": "bioinformatics",
+    ".crai": "bioinformatics",
+    ".bcf": "bioinformatics",
+    ".bcf.gz": "bioinformatics",
+    ".tbi": "bioinformatics",
+    ".csi": "bioinformatics",
     ".bed": "bioinformatics",
     ".bed.gz": "bioinformatics",
+    ".bedgraph": "bioinformatics",
+    ".bedgraph.gz": "bioinformatics",
+    ".wig": "bioinformatics",
+    ".bw": "bioinformatics",
+    ".bigwig": "bioinformatics",
+    ".bb": "bioinformatics",
+    ".bigbed": "bioinformatics",
     ".genbank": "bioinformatics",
     ".gb": "bioinformatics",
     ".gbk": "bioinformatics",
@@ -137,6 +175,16 @@ ALLOWED_EXTENSION_CATEGORIES = {
     ".newick": "bioinformatics",
     ".aln": "bioinformatics",
     ".clustal": "bioinformatics",
+    # Microbiome / QIIME2 and proteomics exchange formats
+    ".biom": "bioinformatics",
+    ".qza": "bioinformatics",
+    ".qzv": "bioinformatics",
+    ".mzml": "bioinformatics",
+    ".mzxml": "bioinformatics",
+    ".mgf": "bioinformatics",
+    # Structure biology formats beyond PDB
+    ".cif": "bioinformatics",
+    ".mmcif": "bioinformatics",
 }
 
 DEFAULT_MAX_FILE_SIZE = 10 * 1024 * 1024 * 1024  # 10GB
@@ -204,6 +252,10 @@ def _get_file_category(content_type: str, filename: str) -> Optional[str]:
     return None
 
 
+def get_upload_file_category(content_type: str, filename: str) -> Optional[str]:
+    return _get_file_category(content_type, filename)
+
+
 def _validate_file(file: UploadFile, category: Optional[str] = None) -> tuple[bool, str, str]:
     """
     filetype
@@ -222,6 +274,10 @@ def _validate_file(file: UploadFile, category: Optional[str] = None) -> tuple[bo
         return False, f"filetype,  {category},  {detected_category}", ""
 
     return True, "", detected_category
+
+
+def validate_upload_file(file: UploadFile, category: Optional[str] = None) -> tuple[bool, str, str]:
+    return _validate_file(file, category)
 
 
 def _sanitize_filename(filename: str) -> str:
