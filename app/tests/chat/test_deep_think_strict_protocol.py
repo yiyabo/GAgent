@@ -422,6 +422,26 @@ def test_native_execute_task_third_probe_cycle_stops_with_blocked_dependency() -
                     )
                 ],
             ),
+            NativeStreamResult(
+                content="Inspect config",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc4",
+                        name="file_operations",
+                        arguments={"operation": "read", "file_path": "/tmp/task4/config.yaml"},
+                    )
+                ],
+            ),
+            NativeStreamResult(
+                content="Inspect logs",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc5",
+                        name="file_operations",
+                        arguments={"operation": "list", "path": "/tmp/task4/logs"},
+                    )
+                ],
+            ),
         ]
     )
 
@@ -432,7 +452,7 @@ def test_native_execute_task_third_probe_cycle_stops_with_blocked_dependency() -
         llm_client=llm,
         available_tools=["file_operations", "document_reader", "vision_reader", "code_executor"],
         tool_executor=_tool_executor,
-        max_iterations=4,
+        max_iterations=6,
         request_profile={
             "request_tier": "execute",
             "intent_type": "execute_task",
@@ -453,7 +473,7 @@ def test_native_execute_task_third_probe_cycle_stops_with_blocked_dependency() -
 
     assert "BLOCKED_DEPENDENCY" in result.final_answer
     assert "上游交付物" in result.final_answer or "上游" in result.final_answer
-    assert len(llm.calls) == 3
+    assert len(llm.calls) == 5
 
 
 def test_probe_only_with_available_upstream_outputs_forces_code_executor() -> None:
@@ -2746,25 +2766,47 @@ def test_plan_operation_does_not_set_had_real_execution_tool() -> None:
                     )
                 ],
             ),
-            # Iteration 3: file_operations (observation)
+            # Iteration 3: file_operations (observation, different path)
             NativeStreamResult(
-                content="Checking again",
+                content="Checking output directory",
                 tool_calls=[
                     NativeToolCall(
                         id="tc3",
                         name="file_operations",
-                        arguments={"operation": "list", "path": "/tmp/task34/results"},
+                        arguments={"operation": "list", "path": "/tmp/task34/output"},
                     )
                 ],
             ),
-            # Iteration 4: file_operations (observation) — would trigger hard stop
+            # Iteration 4: file_operations (observation, different path)
             NativeStreamResult(
-                content="Still checking",
+                content="Checking data directory",
                 tool_calls=[
                     NativeToolCall(
                         id="tc4",
                         name="file_operations",
-                        arguments={"operation": "list", "path": "/tmp/task34/results"},
+                        arguments={"operation": "list", "path": "/tmp/task34/data"},
+                    )
+                ],
+            ),
+            # Iteration 5: file_operations (observation, different operation)
+            NativeStreamResult(
+                content="Checking if file exists",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc5",
+                        name="file_operations",
+                        arguments={"operation": "exists", "path": "/tmp/task34/results/output.csv"},
+                    )
+                ],
+            ),
+            # Iteration 6: file_operations (observation, different path)
+            NativeStreamResult(
+                content="Checking logs directory",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc6",
+                        name="file_operations",
+                        arguments={"operation": "list", "path": "/tmp/task34/logs"},
                     )
                 ],
             ),
@@ -2778,7 +2820,7 @@ def test_plan_operation_does_not_set_had_real_execution_tool() -> None:
         llm_client=llm,
         available_tools=["plan_operation", "file_operations", "code_executor"],
         tool_executor=_tool_executor,
-        max_iterations=5,
+        max_iterations=7,
         request_profile={
             "request_tier": "execute",
             "intent_type": "execute_task",
@@ -2927,7 +2969,27 @@ def test_unverified_terminal_session_does_not_set_real_execution_flag() -> None:
                     NativeToolCall(
                         id="fo2",
                         name="file_operations",
-                        arguments={"operation": "list", "path": "/tmp/results"},
+                        arguments={"operation": "list", "path": "/tmp/results/subdir"},
+                    )
+                ],
+            ),
+            NativeStreamResult(
+                content="Check if file exists",
+                tool_calls=[
+                    NativeToolCall(
+                        id="fo3",
+                        name="file_operations",
+                        arguments={"operation": "exists", "path": "/tmp/results/data.csv"},
+                    )
+                ],
+            ),
+            NativeStreamResult(
+                content="List logs directory",
+                tool_calls=[
+                    NativeToolCall(
+                        id="fo4",
+                        name="file_operations",
+                        arguments={"operation": "list", "path": "/tmp/results/logs"},
                     )
                 ],
             ),
@@ -2950,7 +3012,7 @@ def test_unverified_terminal_session_does_not_set_real_execution_flag() -> None:
         llm_client=llm,
         available_tools=["terminal_session", "file_operations", "document_reader"],
         tool_executor=_tool_executor,
-        max_iterations=5,
+        max_iterations=7,
         request_profile={
             "request_tier": "execute",
             "intent_type": "execute_task",
