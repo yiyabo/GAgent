@@ -1855,6 +1855,10 @@ async def bio_tools_handler(
     
     required_params = _get_operation_required_params(tool_name, operation)
     provided_keys = set(clean_params or {})
+    if normalized_input_file:
+        provided_keys.add("input")
+    if output_file:
+        provided_keys.add("output")
     missing_params = [p for p in required_params if p not in provided_keys]
     if missing_params:
         all_params = _get_operation_all_params(tool_name, operation)
