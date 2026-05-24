@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 from collections import deque
 from dataclasses import dataclass
@@ -88,8 +89,15 @@ class DecompositionPromptBuilder:
             "stop_on_empty": settings.stop_on_empty,
         }
 
+        project_root = os.getcwd()
+
         prompt = [
             self.SYSTEM_HEADER,
+            f"\n=== PROJECT ROOT ===",
+            f"Project root directory: {project_root}",
+            f"IMPORTANT: All output file paths in acceptance_criteria MUST be under this project root. "
+            f"Use paths like '{project_root}/results/...' or '{project_root}/output/...'. "
+            f"Do NOT use paths from chat history or data source directories as output locations.",
         ]
 
         if session_context:
