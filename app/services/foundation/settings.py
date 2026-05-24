@@ -86,7 +86,7 @@ if _USE_PYDANTIC:
             default="https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
             env="QWEN_API_URL",
         )
-        qwen_model: str = Field(default="qwen3.6-plus", env="QWEN_MODEL")
+        qwen_model: str = Field(default="qwen3.7-max", env="QWEN_MODEL")
 
         kimi_api_key: Optional[str] = Field(default=None, env="KIMI_API_KEY")
         kimi_api_url: Optional[str] = Field(default=None, env="KIMI_API_URL")
@@ -266,7 +266,7 @@ else:
 
             self.qwen_api_key = os.getenv("QWEN_API_KEY")
             self.qwen_api_url = os.getenv("QWEN_API_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions")
-            self.qwen_model = os.getenv("QWEN_MODEL", "qwen3.6-plus")
+            self.qwen_model = os.getenv("QWEN_MODEL", "qwen3.7-max")
 
             self.kimi_api_key = os.getenv("KIMI_API_KEY")
             self.kimi_api_url = os.getenv("KIMI_API_URL")

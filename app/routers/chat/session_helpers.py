@@ -18,6 +18,7 @@ from app.llm import LLMClient
 # ---------------------------------------------------------------------------
 VALID_SEARCH_PROVIDERS = {"builtin", "perplexity", "tavily"}
 VALID_BASE_MODELS = {
+    "qwen3.7-max",
     "qwen3.6-plus",
     "qwen3.5-plus",
     "qwen3-max-2026-01-23",

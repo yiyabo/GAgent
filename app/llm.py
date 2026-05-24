@@ -245,15 +245,15 @@ class LLMClient(LLMProvider):
             env_model = os.getenv("QWEN_MODEL")
             self.api_key = api_key or env_api_key or settings.qwen_api_key
             self.url = url or env_url or settings.qwen_api_url or "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
-            selected_model = model or env_model or settings.qwen_model or "qwen3.6-plus"
+            selected_model = model or env_model or settings.qwen_model or "qwen3.7-max"
             selected_model_str = str(selected_model).strip().lower()
             if selected_model_str and not selected_model_str.startswith("qwen"):
                 logger.warning(
                     "Model '%s' is not a Qwen-series model; forcing model='%s'",
                     selected_model,
-                    settings.qwen_model or "qwen3.6-plus",
+                    settings.qwen_model or "qwen3.7-max",
                 )
-                selected_model = settings.qwen_model or "qwen3.6-plus"
+                selected_model = settings.qwen_model or "qwen3.7-max"
             self.model = selected_model
         elif provider_name == "kimi":
             env_api_key = os.getenv("KIMI_API_KEY")
@@ -314,7 +314,7 @@ class LLMClient(LLMProvider):
                 or settings.qwen_api_url
                 or "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
             )
-            self.model = model or env_model or settings.qwen_model or "qwen3.6-plus"
+            self.model = model or env_model or settings.qwen_model or "qwen3.7-max"
 
         settings_timeout = getattr(settings, "llm_request_timeout", None)
         if settings_timeout in (None, ""):
