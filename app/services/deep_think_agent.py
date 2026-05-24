@@ -4146,7 +4146,7 @@ class DeepThinkAgent:
                     )
                     if is_probe_only_cycle:
                         probe_only_execution_cycles += 1
-                        probe_limit = 2 if had_real_execution_tool else 3
+                        probe_limit = 2 if had_real_execution_tool else 5
                         if (
                             not had_real_execution_tool
                             and probe_only_execution_cycles >= 2
@@ -4197,12 +4197,34 @@ class DeepThinkAgent:
                                     "Stopped repeated post-execution observation-only probing."
                                 )
                                 if not final_answer:
-                                    final_answer = self._build_post_execution_probe_stop_answer(
+                                    raw_fallback = self._build_post_execution_probe_stop_answer(
                                         task_context=task_context,
                                         user_query=user_query,
                                         steps=[*thinking_steps, current_step],
                                         tool_results=last_real_execution_tool_results,
                                     )
+                                    # Try to synthesize a clean answer via LLM instead of
+                                    # dumping raw evidence snippets to the user.
+                                    try:
+                                        synthesized = await self._generate_fallback_from_evidence(
+                                            user_query=user_query,
+                                            evidence_snippets=raw_fallback,
+                                            steps=[*thinking_steps, current_step],
+                                            task_context=task_context,
+                                            max_retries=2,
+                                            timeout=30,
+                                            max_tokens=1500,
+                                        )
+                                        if len(synthesized) >= 100 or len(synthesized) >= len(raw_fallback) // 2:
+                                            final_answer = synthesized
+                                        else:
+                                            final_answer = raw_fallback
+                                    except Exception as synth_exc:
+                                        logger.warning(
+                                            "Post-execution probe-stop LLM synthesis failed, using raw fallback: %s",
+                                            str(synth_exc)[:200],
+                                        )
+                                        final_answer = raw_fallback
                             else:
                                 if self._explicit_task_override_active(task_context):
                                     # For explicit task override, do NOT return BLOCKED_DEPENDENCY.
