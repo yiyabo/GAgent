@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import replace
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from unittest.mock import MagicMock
 
@@ -874,6 +875,54 @@ class TestArtifactContracts:
         assert result.status == "completed"
 
 
+def test_run_task_incomplete_deps_warn_mode_annotates_metadata(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.chdir(tmp_path)
+    dep = PlanNode(
+        id=1,
+        plan_id=7,
+        name="Upstream",
+        status="failed",
+    )
+    node = PlanNode(
+        id=2,
+        plan_id=7,
+        name="Downstream",
+        status="pending",
+        dependencies=[1],
+    )
+    tree = _make_tree(7, [dep, node])
+    repo = MagicMock()
+    executor = _make_executor(repo)
+
+    monkeypatch.setattr(
+        executor,
+        "_run_task_with_deep_think",
+        lambda **kwargs: ExecutionResult(
+            plan_id=kwargs["plan_id"],
+            task_id=kwargs["node"].id,
+            status="completed",
+            content="ok",
+            metadata=dict(kwargs["config"].session_context or {}),
+        ),
+    )
+
+    session_ctx = {}
+    result = executor._run_task(
+        7,
+        node,
+        tree,
+        ExecutionConfig(session_context=session_ctx, enforce_dependencies=False),
+    )
+
+    assert result.status == "completed"
+    assert result.metadata.get("dependency_warning") is True
+    assert result.metadata.get("degraded_input") is True
+    assert result.metadata.get("incomplete_dependencies") == [1]
+
+
 
 
 def test_forced_probe_followthrough_includes_dependency_output_directories(tmp_path):
@@ -1641,3 +1690,370 @@ def test_plan_executor_observed_primary_tool_failure_with_outputs_finalizes_comp
     persisted = json.loads(repo.update_task.call_args.kwargs["execution_result"])
     assert persisted["status"] == "completed"
     assert str(artifact) in persisted["artifact_paths"]
+
+
+def test_plan_executor_manuscript_writer_fallback_for_paper_mode_leaf_task(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
+    node = PlanNode(
+        id=2,
+        plan_id=1,
+        name="Write report",
+        instruction="Generate differential analysis report",
+        status="pending",
+        metadata={
+            "paper_mode": True,
+            "paper_section": "result",
+            "acceptance_criteria": {
+                "category": "file_data",
+                "blocking": True,
+                "checks": [
+                    {"type": "file_exists", "path": "reports/differential_analysis.html"},
+                ],
+            },
+        },
+    )
+    tree = _make_tree(1, [node])
+    repo = MagicMock()
+    executor = _make_executor(repo)
+
+    class _FakeResult:
+        final_answer = "HTML report generated."
+        thinking_summary = "report"
+        confidence = 0.9
+        tools_used = ["code_executor", "deliverable_submit"]
+        total_iterations = 1
+        thinking_steps = []
+        tool_failures: List[Dict[str, Any]] = []
+
+    class _FakeDeepThinkAgent:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def think(self, *_args, **_kwargs):
+            return _FakeResult()
+
+        def pause(self):
+            return None
+
+        def resume(self):
+            return None
+
+        def skip_step(self):
+            return None
+
+    fallback_calls: List[Dict[str, Any]] = []
+
+    def _fake_manuscript_writer_handler(*, task, output_path, context_paths, sections, **kwargs):
+        manuscript_path = Path(output_path)
+        manuscript_path.parent.mkdir(parents=True, exist_ok=True)
+        manuscript_path.write_text("# Differential analysis\n\nGenerated manuscript.", encoding="utf-8")
+        manuscript_path.with_suffix(".html").write_text("<h1>Differential analysis</h1>", encoding="utf-8")
+        fallback_calls.append({
+            "task": task,
+            "output_path": output_path,
+            "context_paths": context_paths,
+            "sections": sections,
+            "ancestor_chain": kwargs.get("ancestor_chain"),
+        })
+        return {
+            "tool": "manuscript_writer",
+            "success": True,
+            "output_path": output_path,
+        }
+
+    monkeypatch.setattr(
+        "tool_box.tools_impl.manuscript_writer.manuscript_writer_handler",
+        _fake_manuscript_writer_handler,
+    )
+
+    import app.services.plans.plan_executor as plan_executor_module
+
+    original_agent = plan_executor_module.DeepThinkAgent
+    plan_executor_module.DeepThinkAgent = _FakeDeepThinkAgent
+    try:
+        result = executor._run_task_with_deep_think(
+            plan_id=1,
+            node=node,
+            parent=None,
+            dependencies=[],
+            plan_outline=None,
+            tree=tree,
+            config=ExecutionConfig(session_context={"session_id": "session-x"}),
+        )
+    finally:
+        plan_executor_module.DeepThinkAgent = original_agent
+
+    assert result.status == "completed"
+    assert len(fallback_calls) == 1
+    assert fallback_calls[0]["output_path"] == "reports/differential_analysis.md"
+    assert fallback_calls[0]["sections"] == ["result"]
+    # Verify ancestor_chain is passed (should be empty list or None for root-level task)
+    assert fallback_calls[0]["ancestor_chain"] in ([], None)
+    persisted = json.loads(repo.update_task.call_args.kwargs["execution_result"])
+    assert "manuscript_writer" in persisted["metadata"]["tools_used"]
+
+
+def test_plan_executor_manuscript_writer_fallback_passes_ancestor_chain(monkeypatch, tmp_path) -> None:
+    """Verify that manuscript_writer fallback passes correct ancestor_chain for nested tasks."""
+    monkeypatch.chdir(tmp_path)
+    
+    # Create a hierarchical tree: task_1 (root) -> task_2 -> task_10 (leaf)
+    root_node = PlanNode(
+        id=1,
+        plan_id=1,
+        name="Root task",
+        instruction="Root task",
+        status="pending",
+        parent_id=None,
+    )
+    parent_node = PlanNode(
+        id=2,
+        plan_id=1,
+        name="Parent task",
+        instruction="Parent task",
+        status="pending",
+        parent_id=1,
+    )
+    leaf_node = PlanNode(
+        id=10,
+        plan_id=1,
+        name="Write manuscript",
+        instruction="Generate final manuscript",
+        status="pending",
+        parent_id=2,
+        metadata={
+            "paper_mode": True,
+            "paper_section": "result",
+            "acceptance_criteria": {
+                "category": "file_data",
+                "blocking": True,
+                "checks": [
+                    {"type": "file_exists", "path": "manuscript/final_report.md"},
+                ],
+            },
+        },
+    )
+    
+    tree = _make_tree(1, [root_node, parent_node, leaf_node])
+    repo = MagicMock()
+    executor = _make_executor(repo)
+
+    class _FakeResult:
+        final_answer = "Manuscript generated."
+        thinking_summary = "manuscript"
+        confidence = 0.9
+        tools_used = ["code_executor"]
+        total_iterations = 1
+        thinking_steps = []
+        tool_failures: List[Dict[str, Any]] = []
+
+    class _FakeDeepThinkAgent:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def think(self, *_args, **_kwargs):
+            return _FakeResult()
+
+        def pause(self):
+            return None
+
+        def resume(self):
+            return None
+
+        def skip_step(self):
+            return None
+
+    fallback_calls: List[Dict[str, Any]] = []
+
+    def _fake_manuscript_writer_handler(*, task, output_path, context_paths, sections, **kwargs):
+        manuscript_path = Path(output_path)
+        manuscript_path.parent.mkdir(parents=True, exist_ok=True)
+        manuscript_path.write_text("# Final manuscript\n\nGenerated content.", encoding="utf-8")
+        fallback_calls.append({
+            "task": task,
+            "output_path": output_path,
+            "context_paths": context_paths,
+            "sections": sections,
+            "ancestor_chain": kwargs.get("ancestor_chain"),
+        })
+        return {
+            "tool": "manuscript_writer",
+            "success": True,
+            "output_path": output_path,
+        }
+
+    monkeypatch.setattr(
+        "tool_box.tools_impl.manuscript_writer.manuscript_writer_handler",
+        _fake_manuscript_writer_handler,
+    )
+
+    import app.services.plans.plan_executor as plan_executor_module
+
+    original_agent = plan_executor_module.DeepThinkAgent
+    plan_executor_module.DeepThinkAgent = _FakeDeepThinkAgent
+    try:
+        result = executor._run_task_with_deep_think(
+            plan_id=1,
+            node=leaf_node,
+            parent=parent_node,
+            dependencies=[],
+            plan_outline=None,
+            tree=tree,
+            config=ExecutionConfig(session_context={"session_id": "session-nested"}),
+        )
+    finally:
+        plan_executor_module.DeepThinkAgent = original_agent
+
+    assert result.status == "completed"
+    assert len(fallback_calls) == 1
+    # Verify ancestor_chain is [1, 2] for task_10 (root=1, parent=2)
+    assert fallback_calls[0]["ancestor_chain"] == [1, 2]
+    assert fallback_calls[0]["sections"] == ["result"]
+    persisted = json.loads(repo.update_task.call_args.kwargs["execution_result"])
+    assert "manuscript_writer" in persisted["metadata"]["tools_used"]
+
+
+def test_plan_executor_no_manuscript_writer_fallback_when_already_used(monkeypatch) -> None:
+    node = PlanNode(
+        id=2,
+        plan_id=1,
+        name="Write report",
+        instruction="Generate differential analysis report",
+        status="pending",
+        metadata={
+            "paper_mode": True,
+            "paper_section": "result",
+        },
+    )
+    tree = _make_tree(1, [node])
+    repo = MagicMock()
+    executor = _make_executor(repo)
+
+    class _FakeResult:
+        final_answer = "Manuscript generated."
+        thinking_summary = "manuscript"
+        confidence = 0.9
+        tools_used = ["manuscript_writer"]
+        total_iterations = 1
+        thinking_steps = []
+        tool_failures: List[Dict[str, Any]] = []
+
+    class _FakeDeepThinkAgent:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def think(self, *_args, **_kwargs):
+            return _FakeResult()
+
+        def pause(self):
+            return None
+
+        def resume(self):
+            return None
+
+        def skip_step(self):
+            return None
+
+    fallback_calls: List[Dict[str, Any]] = []
+
+    def _fake_manuscript_writer_handler(*, task, output_path, context_paths, sections, **kwargs):
+        fallback_calls.append({"task": task})
+        return {
+            "tool": "manuscript_writer",
+            "success": True,
+            "output_path": output_path,
+        }
+
+    monkeypatch.setattr(
+        "tool_box.tools_impl.manuscript_writer.manuscript_writer_handler",
+        _fake_manuscript_writer_handler,
+    )
+
+    import app.services.plans.plan_executor as plan_executor_module
+
+    original_agent = plan_executor_module.DeepThinkAgent
+    plan_executor_module.DeepThinkAgent = _FakeDeepThinkAgent
+    try:
+        result = executor._run_task_with_deep_think(
+            plan_id=1,
+            node=node,
+            parent=None,
+            dependencies=[],
+            plan_outline=None,
+            tree=tree,
+            config=ExecutionConfig(session_context={"session_id": "session-x"}),
+        )
+    finally:
+        plan_executor_module.DeepThinkAgent = original_agent
+
+    assert result.status == "completed"
+    assert len(fallback_calls) == 0
+
+
+def test_plan_executor_no_manuscript_writer_fallback_for_non_leaf_task(monkeypatch) -> None:
+    parent = PlanNode(id=1, plan_id=1, name="Parent", instruction="Parent task", status="pending")
+    child = PlanNode(id=2, plan_id=1, name="Child", instruction="Child task", status="pending", parent_id=1)
+    tree = _make_tree(1, [parent, child])
+    tree.adjacency = {None: [1], 1: [2]}
+    repo = MagicMock()
+    executor = _make_executor(repo)
+
+    class _FakeResult:
+        final_answer = "Analysis done."
+        thinking_summary = "analysis"
+        confidence = 0.9
+        tools_used = ["code_executor"]
+        total_iterations = 1
+        thinking_steps = []
+        tool_failures: List[Dict[str, Any]] = []
+
+    class _FakeDeepThinkAgent:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def think(self, *_args, **_kwargs):
+            return _FakeResult()
+
+        def pause(self):
+            return None
+
+        def resume(self):
+            return None
+
+        def skip_step(self):
+            return None
+
+    fallback_calls: List[Dict[str, Any]] = []
+
+    def _fake_manuscript_writer_handler(*, task, output_path, context_paths, sections, **kwargs):
+        fallback_calls.append({"task": task})
+        return {
+            "tool": "manuscript_writer",
+            "success": True,
+            "output_path": output_path,
+        }
+
+    monkeypatch.setattr(
+        "tool_box.tools_impl.manuscript_writer.manuscript_writer_handler",
+        _fake_manuscript_writer_handler,
+    )
+
+    import app.services.plans.plan_executor as plan_executor_module
+
+    original_agent = plan_executor_module.DeepThinkAgent
+    plan_executor_module.DeepThinkAgent = _FakeDeepThinkAgent
+    try:
+        result = executor._run_task_with_deep_think(
+            plan_id=1,
+            node=parent,
+            parent=None,
+            dependencies=[],
+            plan_outline=None,
+            tree=tree,
+            config=ExecutionConfig(session_context={"session_id": "session-x"}),
+        )
+    finally:
+        plan_executor_module.DeepThinkAgent = original_agent
+
+    assert result.status == "completed"
+    assert len(fallback_calls) == 0

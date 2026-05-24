@@ -1467,7 +1467,7 @@ class PlanExecutor:
             tree=tree,
             session_context=session_context,
         )
-        if missing_aliases:
+        if missing_aliases and config.enforce_dependencies:
             _log_job(
                 "warning",
                 f"Task {node.id} blocked: required artifacts not published",
@@ -1485,6 +1485,20 @@ class PlanExecutor:
                 producer_candidates=producer_map,
                 resolved_input_artifacts=resolved_input_artifacts,
             )
+        elif missing_aliases:
+            _log_job(
+                "warning",
+                f"Task {node.id} continuing with missing required artifacts",
+                {
+                    "task_id": node.id,
+                    "missing_artifact_aliases": missing_aliases,
+                    "producer_task_candidates": producer_map,
+                    "enforce_dependencies": False,
+                },
+            )
+            session_context["dependency_warning"] = True
+            session_context["degraded_input"] = True
+            session_context["missing_artifact_aliases"] = list(missing_aliases)
         if incomplete_deps and config.enforce_dependencies:
             incomplete_ids = [d.id for d in incomplete_deps]
             incomplete_display = ", ".join(
@@ -1576,6 +1590,9 @@ class PlanExecutor:
                     "enforce_dependencies": False,
                 },
             )
+            session_context["dependency_warning"] = True
+            session_context["degraded_input"] = True
+            session_context["incomplete_dependencies"] = [d.id for d in incomplete_deps]
 
         if isinstance(node.metadata, dict):
             node.metadata.setdefault("artifact_contract", artifact_contract)
@@ -1758,6 +1775,19 @@ class PlanExecutor:
                         metadata = {}
                         result_payload["metadata"] = metadata
                     metadata["artifact_paths"] = list(result_payload["artifact_paths"])
+                metadata = result_payload.get("metadata")
+                if not isinstance(metadata, dict):
+                    metadata = {}
+                    result_payload["metadata"] = metadata
+                if session_context.get("dependency_warning"):
+                    metadata["dependency_warning"] = True
+                    metadata["degraded_input"] = True
+                incomplete_dependencies = session_context.get("incomplete_dependencies")
+                if isinstance(incomplete_dependencies, list) and incomplete_dependencies:
+                    metadata["incomplete_dependencies"] = list(incomplete_dependencies)
+                missing_artifact_aliases = session_context.get("missing_artifact_aliases")
+                if isinstance(missing_artifact_aliases, list) and missing_artifact_aliases:
+                    metadata["missing_artifact_aliases"] = list(missing_artifact_aliases)
                 raw_response = json.dumps(result_payload, ensure_ascii=False)
                 task_status = self._normalize_status(response.status)
                 finalization, _ = self._finalize_task_execution(
@@ -2503,6 +2533,39 @@ class PlanExecutor:
                     "MD-FIRST MANUSCRIPT RULE: write the manuscript source as Markdown (.md) first and make it pass manuscript quality gates before attempting PDF rendering. PDF is a derived deliverable, not the source of truth.",
                 ]
             )
+        # --- Compressed file detection and decompression guidance ---
+        _compressed_extensions = ('.tar.gz', '.tgz', '.tar.bz2', '.tbz2', '.tar.xz', '.txz', '.zip', '.rar', '.7z', '.gz')
+        _instruction_text = (node.instruction or "").lower()
+        _all_paths_to_check = list(dependency_paths or [])
+        for dep_out in dep_outputs:
+            if isinstance(dep_out.get("artifact_paths"), list):
+                _all_paths_to_check.extend(dep_out["artifact_paths"])
+        _detected_compressed = []
+        for path in _all_paths_to_check:
+            path_lower = str(path or "").lower()
+            if any(path_lower.endswith(ext) for ext in _compressed_extensions):
+                _detected_compressed.append(path)
+        _instruction_mentions_compressed = any(ext in _instruction_text for ext in _compressed_extensions)
+        if _detected_compressed or _instruction_mentions_compressed:
+            _compressed_hint_lines = [
+                "COMPRESSED DATA HANDLING: The task involves compressed archive files. "
+                "Before reading or analyzing data, you MUST decompress them first using code_executor or terminal_session."
+            ]
+            if _detected_compressed:
+                _compressed_hint_lines.append(
+                    f"Detected compressed file(s): {', '.join(_detected_compressed[:5])}. "
+                    "Decompress to a working directory (e.g., task_work_dir or session runtime directory) before processing."
+                )
+            _compressed_hint_lines.extend([
+                "Recommended decompression commands:",
+                "  - .tar.gz / .tgz: `tar -xzf <file> -C <target_dir>`",
+                "  - .tar.bz2 / .tbz2: `tar -xjf <file> -C <target_dir>`",
+                "  - .zip: `unzip <file> -d <target_dir>`",
+                "  - .gz (single file): `gunzip -k <file>` or `gzip -dk <file>`",
+                "After decompression, use file_operations to verify the extracted contents before proceeding with analysis.",
+                "Do NOT attempt to read compressed files directly with pandas, csv, or other data libraries — they will fail."
+            ])
+            constraints.extend(_compressed_hint_lines)
         # --- Skill content injection ---
         skill_context = None
         skill_trace = {
@@ -2727,11 +2790,39 @@ class PlanExecutor:
                     task_context=task_context,
                 )
             )
+
+            fallback_result = None
+            if paper_mode and "manuscript_writer" not in (result.tools_used or []):
+                if self._is_leaf_task(node, tree):
+                    fallback_result = self._run_manuscript_writer_fallback(
+                        node=node,
+                        task_context=task_context,
+                        session_context=session_context,
+                        deep_think_result=result,
+                        tool_result_context=tool_result_context,
+                        tree=tree,
+                    )
+
             primary_tool_failed = (
                 primary_execution_tool_failed
                 or _deep_think_has_failed_primary_execution_tool(result)
             )
             deep_think_status = "failed" if primary_tool_failed else "success"
+            tools_used = list(result.tools_used or [])
+            if fallback_result and fallback_result.get("success"):
+                if "manuscript_writer" not in tools_used:
+                    tools_used = tools_used + ["manuscript_writer"]
+                fallback_paths = self._extract_path_like_values(fallback_result)
+                if fallback_paths:
+                    existing_paths = [
+                        str(item).strip()
+                        for item in list(tool_result_context.get("artifact_paths") or [])
+                        if str(item).strip()
+                    ]
+                    tool_result_context["artifact_paths"] = list(
+                        dict.fromkeys([*fallback_paths, *existing_paths])
+                    )[:40]
+
             payload: Dict[str, Any] = {
                 "status": deep_think_status,
                 "content": result.final_answer,
@@ -2739,7 +2830,7 @@ class PlanExecutor:
                 "metadata": {
                     "deep_think": True,
                     "confidence": result.confidence,
-                    "tools_used": result.tools_used,
+                    "tools_used": tools_used,
                     "tool_failures": list(getattr(result, "tool_failures", []) or []),
                     "thinking_process": {
                         "status": "completed",
@@ -2756,6 +2847,17 @@ class PlanExecutor:
                     },
                 },
             }
+            metadata_payload = payload.get("metadata")
+            if isinstance(metadata_payload, dict):
+                if session_context.get("dependency_warning"):
+                    metadata_payload["dependency_warning"] = True
+                    metadata_payload["degraded_input"] = True
+                incomplete_dependencies = session_context.get("incomplete_dependencies")
+                if isinstance(incomplete_dependencies, list) and incomplete_dependencies:
+                    metadata_payload["incomplete_dependencies"] = list(incomplete_dependencies)
+                missing_artifact_aliases = session_context.get("missing_artifact_aliases")
+                if isinstance(missing_artifact_aliases, list) and missing_artifact_aliases:
+                    metadata_payload["missing_artifact_aliases"] = list(missing_artifact_aliases)
             final_answer_paths = self._extract_path_like_values(result.final_answer)
             if final_answer_paths:
                 existing_paths = [
@@ -2877,6 +2979,129 @@ class PlanExecutor:
 
     def _run_coroutine_sync(self, coro: Any) -> Any:
         return _run_coroutine_sync(coro)
+
+    @staticmethod
+    def _is_leaf_task(node: PlanNode, tree: PlanTree) -> bool:
+        return not tree.children_ids(node.id)
+
+    def _derive_manuscript_output_path(self, node: PlanNode) -> str:
+        metadata = node.metadata if isinstance(node.metadata, dict) else {}
+        acceptance = metadata.get("acceptance_criteria") if isinstance(metadata.get("acceptance_criteria"), dict) else {}
+        checks = acceptance.get("checks") if isinstance(acceptance, dict) else None
+        if isinstance(checks, list):
+            for check in checks:
+                if isinstance(check, dict) and check.get("type") == "file_exists":
+                    path = str(check.get("path") or "").strip()
+                    if path:
+                        if path.lower().endswith(".html"):
+                            return path[:-5] + ".md"
+                        if not path.lower().endswith(".md"):
+                            return str(Path(path).with_suffix(".md"))
+                        return path
+        contract = metadata.get("artifact_contract") if isinstance(metadata, dict) else {}
+        publishes = contract.get("publishes") if isinstance(contract, dict) else None
+        if isinstance(publishes, list) and publishes:
+            for alias in publishes:
+                alias_str = str(alias).strip()
+                if alias_str:
+                    return f"manuscript/{alias_str}.md"
+        return f"manuscript/task_{node.id}_manuscript.md"
+
+    def _gather_manuscript_context_paths(
+        self,
+        node: PlanNode,
+        tool_result_context: Dict[str, Any],
+        session_context: Dict[str, Any],
+    ) -> List[str]:
+        paths: List[str] = []
+        metadata = node.metadata if isinstance(node.metadata, dict) else {}
+        raw_paths = metadata.get("paper_context_paths")
+        if isinstance(raw_paths, list):
+            for p in raw_paths:
+                if isinstance(p, str) and p.strip():
+                    paths.append(p.strip())
+        artifact_paths = tool_result_context.get("artifact_paths")
+        if isinstance(artifact_paths, list):
+            for p in artifact_paths:
+                if isinstance(p, str) and p.strip() and p.strip() not in paths:
+                    paths.append(p.strip())
+        session_artifact_paths = tool_result_context.get("session_artifact_paths")
+        if isinstance(session_artifact_paths, list):
+            for p in session_artifact_paths:
+                if isinstance(p, str) and p.strip() and p.strip() not in paths:
+                    paths.append(p.strip())
+        return paths
+
+    def _derive_manuscript_sections(self, node: PlanNode) -> Optional[List[str]]:
+        metadata = node.metadata if isinstance(node.metadata, dict) else {}
+        section = metadata.get("paper_section")
+        if isinstance(section, str) and section.strip():
+            return [section.strip().lower()]
+        return None
+
+    def _run_manuscript_writer_fallback(
+        self,
+        node: PlanNode,
+        task_context: TaskExecutionContext,
+        session_context: Dict[str, Any],
+        deep_think_result: Any,
+        tool_result_context: Dict[str, Any],
+        tree: Optional[PlanTree] = None,
+    ) -> Optional[Dict[str, Any]]:
+        try:
+            from tool_box.tools_impl.manuscript_writer import manuscript_writer_handler
+            from app.services.path_router import PathRouter
+
+            task_desc = (
+                f"{node.instruction or ''}\n\n"
+                f"Analysis result:\n{getattr(deep_think_result, 'final_answer', '') or ''}"
+            ).strip()
+
+            output_path = self._derive_manuscript_output_path(node)
+            context_paths = self._gather_manuscript_context_paths(node, tool_result_context, session_context)
+            sections = self._derive_manuscript_sections(node)
+
+            # Build ancestor_chain for proper hierarchical directory structure
+            ancestor_chain = None
+            if tree is not None:
+                try:
+                    ancestor_chain = PathRouter.build_ancestor_chain(node.id, tree)
+                except Exception:
+                    ancestor_chain = None
+
+            raw_result = manuscript_writer_handler(
+                task=task_desc,
+                output_path=output_path,
+                context_paths=context_paths,
+                sections=sections,
+                session_id=session_context.get("session_id"),
+                task_id=node.id,
+                ancestor_chain=ancestor_chain,
+                draft_only=False,
+            )
+            if asyncio.iscoroutine(raw_result):
+                result = self._run_coroutine_sync(raw_result)
+            else:
+                result = raw_result
+
+            if result and result.get("success"):
+                logger.info(
+                    "Manuscript writer fallback succeeded for task %s: output=%s",
+                    node.id,
+                    result.get("output_path"),
+                )
+            else:
+                logger.warning(
+                    "Manuscript writer fallback failed for task %s: %s",
+                    node.id,
+                    result.get("error") if isinstance(result, dict) else "unknown error",
+                )
+
+            return result if isinstance(result, dict) else None
+
+        except Exception as exc:
+            logger.exception("Manuscript writer fallback error for task %s: %s", node.id, exc)
+            return None
 
     def _attempt_contract_repair_with_deep_think(
         self,
