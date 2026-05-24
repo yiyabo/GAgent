@@ -11,6 +11,7 @@ from app.routers.chat.prompt_builder import (
     agent_history_limit,
     build_simple_stream_chat_prompt,
     coerce_plain_text_chat_response,
+    compose_plan_artifact_access_hint,
     compose_plan_status,
     rewrite_plain_chat_execution_claims,
 )
@@ -33,8 +34,10 @@ def _build_deep_think_agent(request_profile: dict[str, Any] | None = None) -> De
             "bio_tools",
             "deeppl",
             "web_search",
+            "file_operations",
             "code_executor",
             "plan_operation",
+            "manuscript_writer",
             "deliverable_submit",
         ],
         tool_executor=_noop_tool_executor,
@@ -117,10 +120,58 @@ def test_deep_think_native_and_legacy_prompts_share_effort_matching_and_bio_prio
         assert "prefer canonical data-directory paths over same-named session-root `results/` copies" in prompt
         assert "do not assume `adata.var['mt']` already exists" in prompt
         assert "fewer than 2 valid samples means the preconditions are not met" in prompt
+        assert "ARTIFACT AND DELIVERABLE WORKFLOW" in prompt
+        assert "Do not substitute chat prose" in prompt
+        assert "generate `plan_114_summary.md`" in prompt
 
     assert "PROTOCOL BOUNDARY (NATIVE TOOL CALLING)" in native_prompt
     assert "PROTOCOL BOUNDARY (LEGACY JSON)" in legacy_prompt
     assert "Promote specific files into the session Deliverables bundle." in legacy_prompt
+
+
+def test_deep_think_plan_bound_prompt_includes_artifact_discovery_hint() -> None:
+    agent = _build_deep_think_agent({"current_plan_id": 114})
+    native_prompt = agent._build_native_system_prompt(context={"session_id": "session_demo"})
+    legacy_prompt = agent._build_system_prompt(context={"session_id": "session_demo"})
+
+    for prompt in (native_prompt, legacy_prompt):
+        assert "PLAN ARTIFACT DISCOVERY" in prompt
+        assert "results/plans/plan_114/artifacts_manifest.json" in prompt
+        assert "runtime/session_demo/deliverables/manifest_latest.json" in prompt
+        assert "do not dump every artifact into the prompt" in prompt
+
+
+def test_prompt_builder_plan_artifact_access_hint_is_lightweight() -> None:
+    agent = SimpleNamespace(
+        plan_session=SimpleNamespace(plan_id=114),
+        extra_context={"session_id": "session_demo"},
+    )
+
+    hint = compose_plan_artifact_access_hint(agent, True)
+
+    assert "Plan Artifact Access" in hint
+    assert "results/plans/plan_114/artifacts_manifest.json" in hint
+    assert "runtime/session_demo/deliverables/manifest_latest.json" in hint
+    assert "do not dump every artifact into context" in hint
+    assert "stats_summary.csv" not in hint
+
+
+def test_tool_schemas_advertise_artifact_writing_affordances() -> None:
+    submit_schema = tool_schemas.SUBMIT_FINAL_ANSWER_SCHEMA["function"]["parameters"]["properties"]
+    assert "deliverables" in submit_schema
+    assert "evidence_sources" in submit_schema
+
+    registry = tool_schemas.TOOL_REGISTRY
+    file_desc = registry["file_operations"]["function"]["description"].lower()
+    manuscript_desc = registry["manuscript_writer"]["function"]["description"].lower()
+    deliverable_desc = registry["deliverable_submit"]["function"]["description"].lower()
+    interpreter_desc = registry["result_interpreter"]["function"]["description"].lower()
+
+    assert "save" in file_desc and "write" in file_desc
+    assert "structured summary" in manuscript_desc
+    assert "report" in manuscript_desc
+    assert "final outputs" in deliverable_desc
+    assert "existing plan or task outputs" in interpreter_desc
 
 
 def test_deep_think_prompts_require_structured_plan_tool_for_explicit_plan_requests() -> None:
