@@ -93,6 +93,7 @@ class TodoList:
 
     target_task_id: int
     phases: List[TodoPhase] = field(default_factory=list)
+    ordering_mode: str = "dependency_phase"
 
     @property
     def total_tasks(self) -> int:
@@ -289,6 +290,90 @@ def _build_scoped_dependency_map(
                         resolved.append(candidate_id)
         deps_map[tid] = resolved
     return deps_map
+
+
+def _node_sort_key(tree: PlanTree, task_id: int) -> Tuple[int, int]:
+    node = tree.nodes.get(task_id)
+    if node is None:
+        return (0, task_id)
+    return (int(getattr(node, "position", 0) or 0), task_id)
+
+
+def _collect_structure_postorder(tree: PlanTree, task_id: int, seen: Set[int]) -> List[int]:
+    if task_id in seen or task_id not in tree.nodes:
+        return []
+    seen.add(task_id)
+    ordered: List[int] = []
+    for child_id in sorted(tree.children_ids(task_id), key=lambda cid: _node_sort_key(tree, cid)):
+        ordered.extend(_collect_structure_postorder(tree, child_id, seen))
+    ordered.append(task_id)
+    return ordered
+
+
+def _build_structure_order_phases(
+    tree: PlanTree,
+    deps_map: Dict[int, List[int]],
+) -> List[TodoPhase]:
+    phases: List[TodoPhase] = []
+    seen: Set[int] = set()
+    root_ids = sorted(tree.root_node_ids(), key=lambda tid: _node_sort_key(tree, tid))
+
+    for root_id in root_ids:
+        child_ids = sorted(tree.children_ids(root_id), key=lambda tid: _node_sort_key(tree, tid))
+        if not child_ids:
+            branch_orders = [_collect_structure_postorder(tree, root_id, seen)]
+        else:
+            branch_orders = [
+                _collect_structure_postorder(tree, child_id, seen)
+                for child_id in child_ids
+            ]
+            root_order = _collect_structure_postorder(tree, root_id, seen)
+            root_only = [task_id for task_id in root_order if task_id == root_id]
+            if root_only:
+                branch_orders.append(root_only)
+
+        for branch_order in branch_orders:
+            items: List[TodoItem] = []
+            for task_id in branch_order:
+                node = tree.nodes.get(task_id)
+                if node is None:
+                    continue
+                items.append(
+                    TodoItem(
+                        task_id=task_id,
+                        name=node.name,
+                        instruction=node.instruction,
+                        status=node.status,
+                        dependencies=list(deps_map.get(task_id, [])),
+                        phase=len(phases),
+                    )
+                )
+            if items:
+                phases.append(TodoPhase(phase_id=len(phases), label=f"Phase {len(phases) + 1}", items=items))
+
+    orphan_ids = sorted(set(tree.nodes.keys()) - seen, key=lambda tid: _node_sort_key(tree, tid))
+    for task_id in orphan_ids:
+        order = _collect_structure_postorder(tree, task_id, seen)
+        items = []
+        for ordered_id in order:
+            node = tree.nodes.get(ordered_id)
+            if node is None:
+                continue
+            items.append(
+                TodoItem(
+                    task_id=ordered_id,
+                    name=node.name,
+                    instruction=node.instruction,
+                    status=node.status,
+                    dependencies=list(deps_map.get(ordered_id, [])),
+                    phase=len(phases),
+                )
+            )
+        if items:
+            phases.append(TodoPhase(phase_id=len(phases), label=f"Phase {len(phases) + 1}", items=items))
+
+    assign_phase_labels(phases)
+    return phases
 
 
 # ---------------------------------------------------------------------------
@@ -516,6 +601,7 @@ def build_full_plan_todo_list(
     tree: PlanTree,
     *,
     expand_composites: bool = True,
+    ordering_mode: str = "dependency_phase",
 ) -> TodoList:
     """Build a phased TodoList covering the *entire* plan tree.
 
@@ -553,6 +639,14 @@ def build_full_plan_todo_list(
         include_child_dependencies=True,
     )
 
+    normalized_mode = str(ordering_mode or "structure").strip().lower()
+    if normalized_mode in {"structure", "structure_order", "tree", "tree_order"}:
+        return TodoList(
+            target_task_id=0,
+            phases=_build_structure_order_phases(tree, deps_map),
+            ordering_mode="structure",
+        )
+
     phase_of = _compute_phase_layers(subgraph_ids, deps_map)
 
     max_phase = max(phase_of.values()) if phase_of else 0
@@ -579,7 +673,7 @@ def build_full_plan_todo_list(
 
     assign_phase_labels(phases)
 
-    return TodoList(target_task_id=0, phases=phases)
+    return TodoList(target_task_id=0, phases=phases, ordering_mode="dependency_phase")
 
 
 __all__ = [

@@ -177,6 +177,7 @@ class TodoPhaseResponse(BaseModel):
 class TodoListResponse(BaseModel):
     plan_id: int
     target_task_id: int
+    ordering_mode: str = "dependency_phase"
     total_tasks: int
     completed_tasks: int
     phases: List[TodoPhaseResponse]
@@ -803,6 +804,19 @@ def _persist_dependency_block(plan_id: int, task_id: int, dependency_block: Dict
         )
 
 
+def _dependency_warning_step(task_id: int, dependency_block: Dict[str, Any]) -> Dict[str, Any]:
+    metadata = dict(dependency_block.get("metadata") or {})
+    metadata["dependency_warning"] = True
+    metadata["degraded_input"] = True
+    return {
+        "task_id": task_id,
+        "status": "dependency_warning",
+        "duration_sec": 0.0,
+        "reason": dependency_block.get("reason"),
+        "metadata": metadata,
+    }
+
+
 def _effective_response_fields(state: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     state = state or {}
     return {
@@ -887,6 +901,19 @@ def _todo_pending_order_from_effective(
     state_by_task: Dict[int, Dict[str, Any]],
     tree: Optional["PlanTree"] = None,
 ) -> List[int]:
+    if str(getattr(todo, "ordering_mode", "") or "").strip().lower() == "structure":
+        runnable_statuses = {"pending", "failed", "skipped", "blocked"}
+        ordered: List[int] = []
+        for phase in todo.phases:
+            for item in phase.items:
+                effective_status = str((state_by_task.get(item.task_id) or {}).get("effective_status") or "pending")
+                if effective_status not in runnable_statuses:
+                    continue
+                if tree is not None and tree.children_ids(item.task_id):
+                    continue
+                ordered.append(item.task_id)
+        return ordered
+
     resolved = {
         item.task_id
         for phase in todo.phases
@@ -2007,6 +2034,14 @@ class ExecuteFullPlanRequest(BaseModel):
     stop_on_failure: bool = Field(
         True, description="Stop the chain when a task fails"
     )
+    ordering_mode: str = Field(
+        "structure",
+        description="Full-plan order strategy: structure or dependency_phase",
+    )
+    dependency_block_mode: str = Field(
+        "warn",
+        description="How execute-full handles incomplete dependencies: warn or block",
+    )
 
 
 class ExecuteFullPlanResponse(BaseModel):
@@ -2052,6 +2087,7 @@ def _todo_list_to_dict(
     return {
         "plan_id": plan_id,
         "target_task_id": todo.target_task_id,
+        "ordering_mode": str(getattr(todo, "ordering_mode", "dependency_phase") or "dependency_phase"),
         "total_tasks": todo.total_tasks,
         "completed_tasks": sum(
             1
@@ -2197,7 +2233,11 @@ def execute_full_plan(
             "Dependency enrichment failed (continuing with original graph): %s", _enrich_exc
         )
 
-    todo = _build_full_plan_todo_list(tree, expand_composites=True)
+    todo = _build_full_plan_todo_list(
+        tree,
+        expand_composites=True,
+        ordering_mode=request.ordering_mode,
+    )
     todo_dict = _todo_list_to_dict(todo, plan_id, state_by_task=state_by_task, tree=tree)
     task_order = list(todo_dict.get("execution_order") or [])
     if request.skip_completed:
@@ -2256,11 +2296,12 @@ def execute_full_plan(
                     state_by_task=current_state_by_task,
                 )
                 if dependency_block is not None:
-                    _persist_dependency_block(plan_id, tid, dependency_block)
-                    skipped.append(tid)
-                    if request.stop_on_failure:
-                        break
-                    continue
+                    if str(request.dependency_block_mode or "warn").strip().lower() == "block":
+                        _persist_dependency_block(plan_id, tid, dependency_block)
+                        skipped.append(tid)
+                        if request.stop_on_failure:
+                            break
+                        continue
             except Exception:
                 pass
             session_ctx = {
@@ -2274,6 +2315,7 @@ def execute_full_plan(
             exec_config = ExecutionConfig(
                 session_context=session_ctx,
                 paper_mode=bool(request.paper_mode),
+                enforce_dependencies=str(request.dependency_block_mode or "warn").strip().lower() == "block",
             )
             try:
                 result = _plan_executor.execute_task(plan_id, tid, config=exec_config)
@@ -2350,6 +2392,8 @@ def execute_full_plan(
                 "overall_total_steps": overall_total_steps,
                 "initial_completed_steps": initial_completed_steps,
                 "stop_on_failure": request.stop_on_failure,
+                "ordering_mode": request.ordering_mode,
+                "dependency_block_mode": request.dependency_block_mode,
             },
             metadata={
                 "session_id": request.session_id,
@@ -2360,6 +2404,8 @@ def execute_full_plan(
                 "todo_phases": len(todo.phases),
                 "todo_total_tasks": overall_total_steps,
                 "todo_completed_tasks": initial_completed_steps,
+                "ordering_mode": str(getattr(todo, "ordering_mode", request.ordering_mode) or request.ordering_mode),
+                "dependency_block_mode": request.dependency_block_mode,
             },
         )
         plan_decomposition_jobs.append_log(
@@ -2376,6 +2422,8 @@ def execute_full_plan(
                 "deep_think": request.deep_think,
                 "paper_mode": request.paper_mode,
                 "stop_on_failure": request.stop_on_failure,
+                "ordering_mode": str(getattr(todo, "ordering_mode", request.ordering_mode) or request.ordering_mode),
+                "dependency_block_mode": request.dependency_block_mode,
             },
         )
 
@@ -2397,6 +2445,7 @@ def execute_full_plan(
                 "session_id": request.session_id,
                 "paper_mode": request.paper_mode,
                 "stop_on_failure": request.stop_on_failure,
+                "dependency_block_mode": request.dependency_block_mode,
             },
             daemon=True,
         )
@@ -2442,6 +2491,7 @@ def _run_full_plan_job(
     session_id: Optional[str] = None,
     paper_mode: bool = False,
     stop_on_failure: bool = True,
+    dependency_block_mode: str = "warn",
 ) -> None:
     """Background execution wrapper for full-plan TodoList-based execution."""
     token = set_current_job(job_id)
@@ -2601,20 +2651,27 @@ def _run_full_plan_job(
                     state_by_task=current_state_by_task,
                 )
                 if dependency_block is not None:
-                    _persist_dependency_block(plan_id, task_id, dependency_block)
-                    skipped.append(task_id)
-                    step_summaries.append(
-                        {
-                            "task_id": task_id,
-                            "status": "blocked_by_dependencies",
-                            "duration_sec": 0.0,
-                            "reason": dependency_block["reason"],
-                            "metadata": dependency_block["metadata"],
-                        }
-                    )
+                    if str(dependency_block_mode or "warn").strip().lower() == "block":
+                        _persist_dependency_block(plan_id, task_id, dependency_block)
+                        skipped.append(task_id)
+                        step_summaries.append(
+                            {
+                                "task_id": task_id,
+                                "status": "blocked_by_dependencies",
+                                "duration_sec": 0.0,
+                                "reason": dependency_block["reason"],
+                                "metadata": dependency_block["metadata"],
+                            }
+                        )
+                    else:
+                        step_summaries.append(_dependency_warning_step(task_id, dependency_block))
                     log_job_event(
                         "warning",
-                        "Plan step blocked by incomplete dependencies.",
+                        (
+                            "Plan step blocked by incomplete dependencies."
+                            if str(dependency_block_mode or "warn").strip().lower() == "block"
+                            else "Plan step has incomplete dependency warning; continuing."
+                        ),
                         {
                             "plan_id": plan_id,
                             "task_id": task_id,
@@ -2624,7 +2681,7 @@ def _run_full_plan_job(
                         },
                     )
                     _publish_progress(current_step=idx, current_task_id=task_id)
-                    if stop_on_failure:
+                    if str(dependency_block_mode or "warn").strip().lower() == "block" and stop_on_failure:
                         error = f"Task #{task_id} was blocked by incomplete dependencies; stopping chain."
                         plan_decomposition_jobs.mark_failure(
                             job_id,
@@ -2640,7 +2697,8 @@ def _run_full_plan_job(
                             stats=_build_progress_stats(current_step=idx, current_task_id=task_id),
                         )
                         return
-                    continue
+                    if str(dependency_block_mode or "warn").strip().lower() == "block":
+                        continue
             except Exception as exc:
                 # Transient tree-refresh failure: retry once after a short
                 # backoff before giving up on this step.  This avoids burning
@@ -2726,17 +2784,20 @@ def _run_full_plan_job(
                     current_tree, task_id, state_by_task=current_state_by_task,
                 )
                 if dependency_block is not None:
-                    _persist_dependency_block(plan_id, task_id, dependency_block)
-                    skipped.append(task_id)
-                    step_summaries.append({
-                        "task_id": task_id,
-                        "status": "blocked_by_dependencies",
-                        "duration_sec": 0.0,
-                        "reason": dependency_block["reason"],
-                        "metadata": dependency_block["metadata"],
-                    })
+                    if str(dependency_block_mode or "warn").strip().lower() == "block":
+                        _persist_dependency_block(plan_id, task_id, dependency_block)
+                        skipped.append(task_id)
+                        step_summaries.append({
+                            "task_id": task_id,
+                            "status": "blocked_by_dependencies",
+                            "duration_sec": 0.0,
+                            "reason": dependency_block["reason"],
+                            "metadata": dependency_block["metadata"],
+                        })
+                    else:
+                        step_summaries.append(_dependency_warning_step(task_id, dependency_block))
                     _publish_progress(current_step=idx, current_task_id=task_id)
-                    if stop_on_failure:
+                    if str(dependency_block_mode or "warn").strip().lower() == "block" and stop_on_failure:
                         error = f"Task #{task_id} was blocked by incomplete dependencies; stopping chain."
                         plan_decomposition_jobs.mark_failure(
                             job_id, error,
@@ -2748,7 +2809,8 @@ def _run_full_plan_job(
                             stats=_build_progress_stats(current_step=idx, current_task_id=task_id),
                         )
                         return
-                    continue
+                    if str(dependency_block_mode or "warn").strip().lower() == "block":
+                        continue
 
             try:
                 # --- Artifact readiness guard ---
@@ -2761,20 +2823,37 @@ def _run_full_plan_job(
                 if _readiness_block is not None:
                     log_job_event(
                         "warning",
-                        "Task blocked by missing input artifacts.",
+                        (
+                            "Task blocked by missing input artifacts."
+                            if str(dependency_block_mode or "warn").strip().lower() == "block"
+                            else "Task has missing input artifact warning; continuing."
+                        ),
                         {"task_id": task_id, "step": idx, "reason": _readiness_block.reason},
                     )
-                    skipped.append(task_id)
                     step_summaries.append({
                         "task_id": task_id,
-                        "status": "missing_input_artifact",
+                        "status": (
+                            "missing_input_artifact"
+                            if str(dependency_block_mode or "warn").strip().lower() == "block"
+                            else "missing_input_artifact_warning"
+                        ),
                         "duration_sec": 0.0,
                         "reason": _readiness_block.reason,
+                        "metadata": {
+                            "dependency_warning": str(dependency_block_mode or "warn").strip().lower() != "block",
+                            "degraded_input": str(dependency_block_mode or "warn").strip().lower() != "block",
+                        },
                     })
                     _publish_progress(current_step=idx, current_task_id=task_id)
-                    continue
+                    if str(dependency_block_mode or "warn").strip().lower() == "block":
+                        skipped.append(task_id)
+                        continue
 
-                exec_config = ExecutionConfig(session_context=session_ctx, paper_mode=bool(paper_mode))
+                exec_config = ExecutionConfig(
+                    session_context=session_ctx,
+                    paper_mode=bool(paper_mode),
+                    enforce_dependencies=str(dependency_block_mode or "warn").strip().lower() == "block",
+                )
                 result = _plan_executor.execute_task(plan_id, task_id, config=exec_config)
             except Exception as exc:
                 failed.append(task_id)

@@ -419,8 +419,51 @@ def test_execute_full_plan_excludes_running_tasks_and_blocked_dependents(
     )
 
     assert response.success is True
-    assert executed == [3]
-    assert response.result["execution_order"] == [3]
+    assert executed == [2, 3]
+    assert response.result["execution_order"] == [2, 3]
+
+
+def test_execute_full_plan_sync_block_mode_passes_enforce_dependencies_true(
+    monkeypatch,
+) -> None:
+    tree = PlanTree(
+        id=7,
+        title="Plan 7",
+        nodes={
+            1: PlanNode(id=1, plan_id=7, name="Step 1", status="pending"),
+        },
+    )
+    tree.rebuild_adjacency()
+    captured_configs: list = []
+
+    def _execute_task(_plan_id: int, task_id: int, **kwargs):
+        captured_configs.append(kwargs.get("config"))
+        return SimpleNamespace(status="completed", duration_sec=0.1, content="ok")
+
+    monkeypatch.setattr(
+        plan_routes,
+        "_load_authorized_plan_tree",
+        lambda _plan_id, _request: tree,
+    )
+    monkeypatch.setattr(plan_routes._plan_repo, "get_plan_tree", lambda _plan_id: tree)
+    monkeypatch.setattr(plan_routes._plan_executor, "execute_task", _execute_task)
+    monkeypatch.setattr(
+        plan_routes,
+        "_build_plan_execution_snapshot",
+        lambda _plan_id: {"active_task_ids": set(), "active_jobs": []},
+    )
+
+    plan_routes.execute_full_plan(
+        7,
+        _build_request("alice"),
+        plan_routes.ExecuteFullPlanRequest(
+            async_mode=False,
+            dependency_block_mode="block",
+        ),
+    )
+
+    assert len(captured_configs) == 1
+    assert captured_configs[0].enforce_dependencies is True
 
 
 def test_run_full_plan_job_skips_tasks_already_running_after_queue_build(
@@ -658,6 +701,7 @@ def test_run_full_plan_job_blocks_downstream_tasks_with_failed_dependencies(
         plan_id=7,
         task_order=[2, 3],
         stop_on_failure=False,
+        dependency_block_mode="block",
     )
 
     assert execution_order == [3]
@@ -673,6 +717,51 @@ def test_run_full_plan_job_blocks_downstream_tasks_with_failed_dependencies(
     assert persisted_updates[0]["task_id"] == 2
     assert persisted_updates[0]["status"] == "skipped"
     assert "blocked_by_dependencies" in persisted_updates[0]["execution_result"]
+
+
+def test_run_full_plan_job_warns_and_continues_on_incomplete_dependencies(
+    monkeypatch,
+) -> None:
+    store = _JobStoreStub()
+    execution_order: list[int] = []
+    tree = PlanTree(
+        id=7,
+        title="Plan 7",
+        nodes={
+            1: PlanNode(id=1, plan_id=7, name="Step 1", status="failed"),
+            2: PlanNode(id=2, plan_id=7, name="Step 2", status="pending", dependencies=[1]),
+        },
+    )
+    tree.rebuild_adjacency()
+
+    def _execute_task(_plan_id: int, task_id: int, **kwargs):
+        execution_order.append(task_id)
+        config = kwargs.get("config")
+        assert config.enforce_dependencies is False
+        return SimpleNamespace(status="completed", duration_sec=0.1, content="ok")
+
+    monkeypatch.setattr(plan_routes, "plan_decomposition_jobs", store)
+    monkeypatch.setattr(plan_routes, "log_job_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr(plan_routes._plan_repo, "get_plan_tree", lambda _plan_id: tree)
+    monkeypatch.setattr(plan_routes._plan_executor, "execute_task", _execute_task)
+
+    plan_routes._run_full_plan_job(
+        job_id="job-5-warn",
+        plan_id=7,
+        task_order=[2],
+        stop_on_failure=True,
+        dependency_block_mode="warn",
+    )
+
+    assert execution_order == [2]
+    assert store.failure_calls == []
+    assert len(store.success_calls) == 1
+    result = store.success_calls[0]["result"]
+    assert result["executed_task_ids"] == [2]
+    assert result["skipped_task_ids"] == []
+    assert result["steps"][0]["status"] == "dependency_warning"
+    assert result["steps"][0]["metadata"]["degraded_input"] is True
+    assert result["steps"][1]["status"] == "completed"
 
 
 def test_get_plan_tree_exposes_effective_status_and_dependency_block_reason(
