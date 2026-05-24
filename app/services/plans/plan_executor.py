@@ -497,7 +497,9 @@ class ExecutorPromptBuilder:
     TOOL_HINTS = (
         "\n=== TOOL SELECTION HINTS ===\n"
         "- FASTA/accession download → sequence_fetch\n"
-        "- Bioinformatics analysis (FASTA/FASTQ) → bio_tools (call help first)\n"
+        "- Bioinformatics analysis (FASTA/FASTQ) → bio_tools. Call operation='help' first for required params. "
+        "Pass input_file (absolute path) or sequence_text (inline FASTA). Extra params go in the 'params' dict. "
+        "If error_code='missing_required_params', read retry_hint and retry with corrected params.\n"
         "- Literature/PubMed search → literature_pipeline\n"
         "- Data analysis/visualization/code → code_executor\n"
         "- Web information lookup → web_search\n"

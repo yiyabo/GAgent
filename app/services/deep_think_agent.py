@@ -3408,6 +3408,24 @@ class DeepThinkAgent:
             "- Good pattern: user asks for recent weather changes as a chart -> gather current weather evidence, generate the chart artifact with the appropriate figure/code tool, then report the output path.\n\n"
         )
 
+    def _build_bio_tools_quick_map_block(self) -> str:
+        if "bio_tools" not in self.available_tools:
+            return ""
+        return (
+            "=== BIO_TOOLS QUICK MAP ===\n"
+            "For FASTA/FASTQ/sequence tasks, prefer bio_tools over code_executor.\n"
+            "Call bio_tools(operation='help', tool_name='<tool>') for full param details.\n"
+            "Common patterns:\n"
+            "- seqkit stats: {\"tool_name\": \"seqkit\", \"operation\": \"stats\", \"input_file\": \"/path/to/file.fasta\"}\n"
+            "- seqkit grep: {\"tool_name\": \"seqkit\", \"operation\": \"grep\", \"input_file\": \"/path/to/file.fasta\", \"params\": {\"pattern\": \"contig_1\", \"output\": \"result.fa\"}}\n"
+            "- prodigal predict: {\"tool_name\": \"prodigal\", \"operation\": \"predict\", \"input_file\": \"/path/to/genome.fasta\", \"params\": {\"protein\": \"genes.faa\", \"nucleotide\": \"genes.fna\"}}\n"
+            "- blast makeblastdb: {\"tool_name\": \"blast\", \"operation\": \"makeblastdb\", \"input_file\": \"/path/to/seqs.fasta\", \"params\": {\"type\": \"nucl\", \"db\": \"mydb\"}}\n"
+            "- blast blastn: {\"tool_name\": \"blast\", \"operation\": \"blastn\", \"input_file\": \"/path/to/query.fasta\", \"params\": {\"db\": \"mydb\", \"output\": \"results.txt\"}}\n"
+            "- samtools sort: {\"tool_name\": \"samtools\", \"operation\": \"sort\", \"input_file\": \"/path/to/reads.bam\", \"params\": {\"output\": \"sorted.bam\"}}\n"
+            "For inline sequence text (no file), pass sequence_text instead of input_file.\n"
+            "If bio_tools returns error_code='missing_required_params', read missing_params and retry_hint, then retry with corrected params.\n\n"
+        )
+
     def _build_plan_artifact_discovery_block(
         self,
         context: Optional[Dict[str, Any]] = None,
@@ -5087,6 +5105,7 @@ class DeepThinkAgent:
             + self._build_tool_access_block()
             + self._build_grounded_tooling_block()
             + self._build_artifact_deliverable_workflow_block()
+            + self._build_bio_tools_quick_map_block()
             + self._build_plan_artifact_discovery_block(context)
             + self._build_evidence_scope_block()
             + "\n"
@@ -6868,6 +6887,7 @@ Your goal is to choose the right depth for the user's request: be thorough when 
 {self._build_tool_access_block()}
 {self._build_grounded_tooling_block()}
 {self._build_artifact_deliverable_workflow_block()}
+{self._build_bio_tools_quick_map_block()}
 {self._build_plan_artifact_discovery_block(context)}
 {self._build_evidence_scope_block()}
 === THINKING WORKFLOW ===
