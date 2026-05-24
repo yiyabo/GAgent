@@ -116,6 +116,7 @@ def estimate_messages_tokens(messages: List[Dict[str, Any]]) -> int:
 
 # Known context window sizes (in tokens).
 _MODEL_CONTEXT_WINDOWS: Dict[str, int] = {
+    "qwen3.7-max": 1000000,
     "qwen3.6-plus": 1000000,
     "qwen-long": 1000000,
 }
@@ -164,7 +165,7 @@ class ContextWindowManager:
 
     Usage::
 
-        mgr = ContextWindowManager(model="qwen3.6-plus")
+        mgr = ContextWindowManager(model="qwen3.7-max")
         messages = [...]
 
         # Check if compaction needed before LLM call

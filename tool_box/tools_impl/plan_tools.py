@@ -418,7 +418,7 @@ async def _review_plan(plan_id: Optional[int], tool_context: Optional[Any] = Non
         rubric_result = evaluate_plan_rubric(
             plan_tree,
             evaluator_provider="qwen",
-            evaluator_model="qwen3.6-plus",
+            evaluator_model="qwen3.7-max",
         )
 
         # Persist evaluation into plan metadata (merge, do not overwrite).

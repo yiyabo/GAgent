@@ -3422,7 +3422,7 @@ async def handle_plan_action(agent: Any, action: LLMAction) -> AgentStep:
                 evaluate_plan_rubric,
                 tree,
                 evaluator_provider="qwen",
-                evaluator_model="qwen3.6-plus",
+                evaluator_model="qwen3.7-max",
             )
         except Exception as exc:
             logger.warning("review_plan rubric evaluation failed: %s", exc)
