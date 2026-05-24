@@ -1873,11 +1873,12 @@ class StructuredChatAgent:
         structured = self._build_deterministic_execute_task_structured()
         if structured is None:
             structured = await self._invoke_llm(effective_user_message)
+        session_id = getattr(self, "session_id", None)
         structured = _rewrite_phagescope_dataset_understanding_plan_to_deep_profile(
             structured,
             user_message=effective_user_message,
             extra_context=self.extra_context,
-            session_id=self.session_id,
+            session_id=session_id,
         )
         structured = await self._apply_experiment_fallback(structured)
         structured = self._apply_plan_first_guardrail(structured)
@@ -1885,7 +1886,7 @@ class StructuredChatAgent:
             structured,
             user_message=effective_user_message,
             extra_context=self.extra_context,
-            session_id=self.session_id,
+            session_id=session_id,
         )
         structured = self._apply_phagescope_fallback(structured)
         structured = self._apply_task_execution_followthrough_guardrail(structured)
@@ -1901,11 +1902,12 @@ class StructuredChatAgent:
         structured = self._build_deterministic_execute_task_structured()
         if structured is None:
             structured = await self._invoke_llm(effective_user_message)
+        session_id = getattr(self, "session_id", None)
         structured = _rewrite_phagescope_dataset_understanding_plan_to_deep_profile(
             structured,
             user_message=effective_user_message,
             extra_context=self.extra_context,
-            session_id=self.session_id,
+            session_id=session_id,
         )
         structured = await self._apply_experiment_fallback(structured)
         structured = self._apply_plan_first_guardrail(structured)
@@ -1913,7 +1915,7 @@ class StructuredChatAgent:
             structured,
             user_message=effective_user_message,
             extra_context=self.extra_context,
-            session_id=self.session_id,
+            session_id=session_id,
         )
         structured = self._apply_phagescope_fallback(structured)
         structured = self._apply_task_execution_followthrough_guardrail(structured)
