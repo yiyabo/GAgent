@@ -567,6 +567,35 @@ class TestBuildFullPlanTodoList:
         assert todo.execution_order == [2, 3, 1]
         assert todo.pending_order == [1]
 
+    def test_structure_order_follows_top_level_composite_positions(self):
+        tree = _tree([
+            _node(1, "Root", parent_id=None),
+            _node(2, "Data preparation", parent_id=1),
+            _node(3, "Analysis", parent_id=1),
+            _node(4, "Deliverables", parent_id=1),
+            _node(20, "Load data", parent_id=2),
+            _node(21, "Clean data", parent_id=2, deps=[20]),
+            _node(30, "Run analysis", parent_id=3, deps=[21]),
+            _node(40, "Package final deliverables", parent_id=4),
+        ])
+        todo = build_full_plan_todo_list(tree, ordering_mode="structure")
+        assert todo.ordering_mode == "structure"
+        assert todo.execution_order == [20, 21, 2, 30, 3, 40, 4, 1]
+
+    def test_structure_order_does_not_hoist_late_zero_dependency_tasks(self):
+        tree = _tree([
+            _node(1, "Root", parent_id=None),
+            _node(2, "Data", parent_id=1),
+            _node(3, "Report", parent_id=1),
+            _node(20, "Load data", parent_id=2),
+            _node(30, "Package report", parent_id=3),
+        ])
+        dependency_todo = build_full_plan_todo_list(tree)
+        structure_todo = build_full_plan_todo_list(tree, ordering_mode="structure")
+
+        assert dependency_todo.execution_order.index(30) < dependency_todo.execution_order.index(2)
+        assert structure_todo.execution_order.index(30) > structure_todo.execution_order.index(2)
+
     def test_summary(self):
         tree = _tree([
             _node(1, "Done", status="completed"),

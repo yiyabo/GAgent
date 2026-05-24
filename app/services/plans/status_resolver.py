@@ -147,6 +147,7 @@ class PlanStatusResolver:
             except (TypeError, ValueError):
                 pass
         manifest_artifacts = manifest_payload.get("artifacts") if isinstance(manifest_payload.get("artifacts"), dict) else {}
+        artifact_tracking_active = bool(manifest_artifacts)
         memo: Dict[int, Dict[str, Any]] = {}
         visiting: Set[int] = set()
 
@@ -429,7 +430,7 @@ class PlanStatusResolver:
                     status_reason = _truncate_reason(content or raw_result_text) or "Task failed."
                     reason_code = "running_failed"
                 elif payload_status in _COMPLETED_LIKE or _looks_like_success_text(raw_result_text):
-                    if missing_publish_aliases:
+                    if missing_publish_aliases and artifact_tracking_active:
                         effective_status = "failed"
                         status_reason = _missing_publish_reason(task_id, missing_publish_aliases)
                         reason_code = "publish_contract_missing"
@@ -457,6 +458,10 @@ class PlanStatusResolver:
                     effective_status = "failed"
                     status_reason = _truncate_reason(content or raw_result_text) or "Task failed."
                     reason_code = "retry_or_blocked_failure"
+                elif missing_publish_aliases and artifact_tracking_active and verification_status not in {"passed", "warning"}:
+                    effective_status = "failed"
+                    status_reason = _missing_publish_reason(task_id, missing_publish_aliases)
+                    reason_code = "publish_contract_missing"
                 elif missing_publish_aliases and verification_status not in {"passed", "warning"}:
                     effective_status = "completed"
                     status_reason = _missing_publish_reason(task_id, missing_publish_aliases)
