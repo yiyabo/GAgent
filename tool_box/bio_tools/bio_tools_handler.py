@@ -356,6 +356,52 @@ def _operation_requires_input(tool_name: str, operation: str) -> bool:
     return bool(op_config.get("requires_input"))
 
 
+def _get_operation_required_params(tool_name: str, operation: str) -> List[str]:
+    """Return list of param names marked required=True in tools_config.json."""
+    config = get_tools_config()
+    op_config = config.get(tool_name, {}).get("operations", {}).get(operation, {})
+    raw_params = op_config.get("extra_params", {})
+    required: List[str] = []
+    if isinstance(raw_params, dict):
+        for key, schema in raw_params.items():
+            if isinstance(schema, dict) and schema.get("required"):
+                required.append(key)
+    elif isinstance(raw_params, list):
+        required = list(raw_params)
+    return sorted(required)
+
+
+def _get_operation_all_params(tool_name: str, operation: str) -> List[str]:
+    """Return all accepted param names for an operation."""
+    config = get_tools_config()
+    op_config = config.get(tool_name, {}).get("operations", {}).get(operation, {})
+    raw_params = op_config.get("extra_params", {})
+    if isinstance(raw_params, dict):
+        return sorted(raw_params.keys())
+    elif isinstance(raw_params, list):
+        return sorted(raw_params)
+    return []
+
+
+def _build_retry_hint(
+    tool_name: str,
+    operation: str,
+    *,
+    requires_input: bool = False,
+) -> Dict[str, Any]:
+    """Build a structured retry hint payload for agent auto-correction."""
+    hint: Dict[str, Any] = {
+        "tool_name": tool_name,
+        "operation": operation,
+    }
+    if requires_input:
+        hint["input_file"] = "/absolute/path/to/input"
+    all_params = _get_operation_all_params(tool_name, operation)
+    if all_params:
+        hint["params"] = {p: "..." for p in all_params}
+    return hint
+
+
 def _get_sequence_text_max_bytes() -> int:
     raw = str(os.getenv("BIO_TOOLS_SEQUENCE_TEXT_MAX_BYTES", "") or "").strip()
     if not raw:
@@ -1679,7 +1725,6 @@ async def bio_tools_handler(
         operations_detail = {}
         for op, info in tool_config.get("operations", {}).items():
             raw_params = info.get("extra_params", [])
-            # Support legacy list-shaped extra_params and newer dict-shaped schemas.
             if isinstance(raw_params, list):
                 params_detail = {
                     k: {"type": "string", "required": True, "description": ""}
@@ -1687,11 +1732,40 @@ async def bio_tools_handler(
                 }
             else:
                 params_detail = raw_params
+
+            required_params = sorted(
+                k for k, v in params_detail.items()
+                if isinstance(v, dict) and v.get("required")
+            )
+            optional_params = sorted(
+                k for k, v in params_detail.items()
+                if isinstance(v, dict) and not v.get("required")
+            )
+            accepted_params = sorted(params_detail.keys())
+
+            op_requires_input = bool(info.get("requires_input"))
+            op_requires_output = bool(info.get("requires_output"))
+
+            example: Dict[str, Any] = {
+                "tool_name": tool_name,
+                "operation": op,
+            }
+            if op_requires_input:
+                example["input_file"] = "/absolute/path/to/input"
+            if accepted_params:
+                example["params"] = {p: "..." for p in accepted_params}
+
             operations_detail[op] = {
                 "description": info.get("description", ""),
+                "requires_input": op_requires_input,
+                "requires_output": op_requires_output,
+                "required_params": required_params,
+                "optional_params": optional_params,
+                "accepted_params": accepted_params,
                 "params": params_detail,
                 "command_template": info.get("command", ""),
                 "notes": info.get("notes", ""),
+                "example_call": example,
             }
 
         return {
@@ -1761,7 +1835,8 @@ async def bio_tools_handler(
     elif has_input_file:
         normalized_input_file = normalized_input_file
 
-    if _operation_requires_input(tool_name, operation) and not normalized_input_file:
+    op_requires_input = _operation_requires_input(tool_name, operation)
+    if op_requires_input and not normalized_input_file:
         return _build_bio_tools_error(
             tool_name=tool_name,
             operation=operation,
@@ -1771,8 +1846,36 @@ async def bio_tools_handler(
             ),
             error_code="missing_input_file",
             error_stage="input_preparation",
+            extra={
+                "retry_hint": _build_retry_hint(
+                    tool_name, operation, requires_input=True,
+                ),
+            },
         )
     
+    required_params = _get_operation_required_params(tool_name, operation)
+    provided_keys = set(clean_params or {})
+    missing_params = [p for p in required_params if p not in provided_keys]
+    if missing_params:
+        all_params = _get_operation_all_params(tool_name, operation)
+        return _build_bio_tools_error(
+            tool_name=tool_name,
+            operation=operation,
+            error=(
+                f"{tool_name}.{operation} is missing required params: "
+                f"{missing_params}. Provide them in the 'params' field."
+            ),
+            error_code="missing_required_params",
+            error_stage="param_validation",
+            extra={
+                "missing_params": missing_params,
+                "accepted_params": all_params,
+                "retry_hint": _build_retry_hint(
+                    tool_name, operation, requires_input=op_requires_input,
+                ),
+            },
+        )
+
     try:
         validated_params = _validate_and_normalize_operation_params(
             tool_name,
@@ -1807,11 +1910,18 @@ async def bio_tools_handler(
         return result
         
     except UnsafeParameterError as e:
+        all_params = _get_operation_all_params(tool_name, operation)
         return _build_bio_tools_error(
             tool_name=tool_name,
             operation=operation,
             error=str(e),
             error_code="invalid_parameter",
+            extra={
+                "accepted_params": all_params,
+                "retry_hint": _build_retry_hint(
+                    tool_name, operation, requires_input=op_requires_input,
+                ),
+            },
         )
     except ValueError as e:
         return _build_bio_tools_error(

@@ -1127,3 +1127,107 @@ def test_tools_bio_tools_job_status_endpoint(
         assert payload["status"] == "running"
     finally:
         client.close()
+
+
+def test_help_operation_returns_structured_param_contract() -> None:
+    result = asyncio.run(
+        bio_handler_module.bio_tools_handler(
+            tool_name="seqkit",
+            operation="help",
+        )
+    )
+    assert result["success"] is True
+    grep_op = result["operations"]["grep"]
+    assert grep_op["requires_input"] is True
+    assert grep_op["requires_output"] is True
+    assert "pattern" in grep_op["required_params"]
+    assert "output" in grep_op["required_params"]
+    assert sorted(grep_op["accepted_params"]) == ["output", "pattern"]
+    example = grep_op["example_call"]
+    assert example["tool_name"] == "seqkit"
+    assert example["operation"] == "grep"
+    assert "input_file" in example
+    assert "params" in example
+    assert "pattern" in example["params"]
+
+    stats_op = result["operations"]["stats"]
+    assert stats_op["requires_input"] is True
+    assert stats_op["required_params"] == []
+    assert stats_op["example_call"]["tool_name"] == "seqkit"
+    assert "params" not in stats_op["example_call"]
+
+
+def test_help_all_tools_have_contract_fields() -> None:
+    config = bio_handler_module.get_tools_config()
+    for tool_name in config:
+        result = asyncio.run(
+            bio_handler_module.bio_tools_handler(
+                tool_name=tool_name,
+                operation="help",
+            )
+        )
+        assert result["success"] is True, f"help failed for {tool_name}"
+        for op_name, op_detail in result["operations"].items():
+            assert "required_params" in op_detail, f"{tool_name}.{op_name} missing required_params"
+            assert "optional_params" in op_detail, f"{tool_name}.{op_name} missing optional_params"
+            assert "accepted_params" in op_detail, f"{tool_name}.{op_name} missing accepted_params"
+            assert "example_call" in op_detail, f"{tool_name}.{op_name} missing example_call"
+            assert "requires_input" in op_detail, f"{tool_name}.{op_name} missing requires_input"
+            example = op_detail["example_call"]
+            assert example["tool_name"] == tool_name
+            assert example["operation"] == op_name
+
+
+def test_missing_input_error_includes_retry_hint() -> None:
+    result = asyncio.run(
+        bio_handler_module.bio_tools_handler(
+            tool_name="seqkit",
+            operation="stats",
+        )
+    )
+    assert result["success"] is False
+    assert result["error_code"] == "missing_input_file"
+    assert "retry_hint" in result
+    hint = result["retry_hint"]
+    assert hint["tool_name"] == "seqkit"
+    assert hint["operation"] == "stats"
+    assert "input_file" in hint
+
+
+def test_missing_required_params_error_includes_retry_hint() -> None:
+    result = asyncio.run(
+        bio_handler_module.bio_tools_handler(
+            tool_name="seqkit",
+            operation="grep",
+            input_file="/tmp/test.fasta",
+            params={},
+        )
+    )
+    assert result["success"] is False
+    assert result["error_code"] == "missing_required_params"
+    assert "missing_params" in result
+    assert "pattern" in result["missing_params"]
+    assert "output" in result["missing_params"]
+    assert "accepted_params" in result
+    assert "retry_hint" in result
+    hint = result["retry_hint"]
+    assert hint["tool_name"] == "seqkit"
+    assert hint["operation"] == "grep"
+    assert "params" in hint
+    assert "pattern" in hint["params"]
+
+
+def test_invalid_parameter_error_includes_accepted_params() -> None:
+    result = asyncio.run(
+        bio_handler_module.bio_tools_handler(
+            tool_name="seqkit",
+            operation="grep",
+            input_file="/tmp/test.fasta",
+            params={"pattern": "x", "output": "out.fa", "bogus_key": "val"},
+        )
+    )
+    assert result["success"] is False
+    assert result["error_code"] == "invalid_parameter"
+    assert "accepted_params" in result
+    assert sorted(result["accepted_params"]) == ["output", "pattern"]
+    assert "retry_hint" in result

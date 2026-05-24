@@ -129,6 +129,30 @@ def test_deep_think_native_and_legacy_prompts_share_effort_matching_and_bio_prio
     assert "Promote specific files into the session Deliverables bundle." in legacy_prompt
 
 
+def test_deep_think_bio_tools_quick_map_injected_when_available() -> None:
+    agent = _build_deep_think_agent()
+    native_prompt = agent._build_native_system_prompt()
+    legacy_prompt = agent._build_system_prompt()
+
+    for prompt in (native_prompt, legacy_prompt):
+        assert "BIO_TOOLS QUICK MAP" in prompt
+        assert "seqkit stats" in prompt
+        assert "prodigal predict" in prompt
+        assert "blast makeblastdb" in prompt
+        assert "missing_required_params" in prompt
+        assert "retry_hint" not in prompt or "retry" in prompt.lower()
+
+
+def test_deep_think_bio_tools_quick_map_omitted_when_unavailable() -> None:
+    agent = DeepThinkAgent(
+        llm_client=SimpleNamespace(),
+        available_tools=["file_operations", "code_executor"],
+        tool_executor=_noop_tool_executor,
+    )
+    native_prompt = agent._build_native_system_prompt()
+    assert "BIO_TOOLS QUICK MAP" not in native_prompt
+
+
 def test_deep_think_plan_bound_prompt_includes_artifact_discovery_hint() -> None:
     agent = _build_deep_think_agent({"current_plan_id": 114})
     native_prompt = agent._build_native_system_prompt(context={"session_id": "session_demo"})
