@@ -71,6 +71,7 @@ def build_prompt(agent: Any, user_message: str) -> str:
     plan_outline = agent.plan_session.outline(max_depth=4, max_nodes=100)
     plan_status = compose_plan_status(agent, plan_bound)
     plan_catalog = compose_plan_catalog(agent, plan_bound)
+    artifact_access_hint = compose_plan_artifact_access_hint(agent, plan_bound)
     actions_catalog = compose_action_catalog(agent, plan_bound)
     guidelines = compose_guidelines(agent, plan_bound)
 
@@ -93,6 +94,8 @@ def build_prompt(agent: Any, user_message: str) -> str:
     ])
     if plan_catalog:
         prompt_parts.append(plan_catalog)
+    if artifact_access_hint:
+        prompt_parts.append(artifact_access_hint)
     prompt_parts.extend([
         "\nReturn a JSON object that matches the following schema exactly:",
         agent.schema_json,
@@ -139,6 +142,7 @@ def build_simple_stream_chat_prompt(agent: Any, user_message: str) -> str:
     plan_outline = agent.plan_session.outline(max_depth=4, max_nodes=100)
     plan_status = compose_plan_status(agent, plan_bound)
     plan_catalog = compose_plan_catalog(agent, plan_bound)
+    artifact_access_hint = compose_plan_artifact_access_hint(agent, plan_bound)
 
     prompt_parts = [
         "You are a helpful AI assistant for research planning and bioinformatics workflows.",
@@ -171,6 +175,8 @@ def build_simple_stream_chat_prompt(agent: Any, user_message: str) -> str:
     )
     if plan_catalog:
         prompt_parts.append(plan_catalog)
+    if artifact_access_hint:
+        prompt_parts.append(artifact_access_hint)
 
     prompt_parts.extend(
         [
@@ -280,6 +286,39 @@ def compose_plan_catalog(agent: Any, plan_bound: bool) -> str:
         f"{summaries}\n"
         "If the user wants to work with one of them, ask for the specific plan ID; otherwise keep clarifying needs."
     )
+
+
+def compose_plan_artifact_access_hint(agent: Any, plan_bound: bool) -> str:
+    if not plan_bound:
+        return ""
+    plan_id = getattr(getattr(agent, "plan_session", None), "plan_id", None)
+    if plan_id is None:
+        return ""
+    context = getattr(agent, "extra_context", None)
+    if not isinstance(context, dict):
+        context = {}
+    session_id = None
+    for key in ("session_id", "runtime_session_id", "chat_session_id"):
+        value = context.get(key)
+        if isinstance(value, str) and value.strip():
+            session_id = value.strip()
+            break
+    lines = [
+        "=== Plan Artifact Access ===",
+        f"This session is bound to Plan {plan_id}.",
+        "For follow-up analysis, report generation, visualization, or synthesis over completed plan outputs, inspect artifact manifests and deliverables before answering.",
+        f"Plan artifact manifest candidate: results/plans/plan_{plan_id}/artifacts_manifest.json",
+        "Session deliverables candidates: runtime/<session_id>/deliverables/manifest_latest.json and runtime/<session_id>/deliverables/latest/",
+    ]
+    if session_id:
+        lines.extend([
+            f"Resolved session manifest candidate: runtime/{session_id}/deliverables/manifest_latest.json",
+            f"Resolved session deliverables candidate: runtime/{session_id}/deliverables/latest/",
+        ])
+    lines.append(
+        "Use file_operations profile/read or result_interpreter profile to inspect only the artifacts needed for the user's synthesis; do not dump every artifact into context."
+    )
+    return "\n".join(lines)
 
 
 def compose_action_catalog(agent: Any, plan_bound: bool) -> str:

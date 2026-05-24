@@ -172,6 +172,35 @@ SUBMIT_FINAL_ANSWER_SCHEMA: Dict[str, Any] = {
                     "type": "number",
                     "description": "Confidence score from 0.0 to 1.0.",
                 },
+                "deliverables": {
+                    "type": "array",
+                    "description": (
+                        "Optional files or artifacts actually produced or saved during this turn. "
+                        "Include this when the user asked for a saved file, report, figure, or Deliverables output."
+                    ),
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "path": {
+                                "type": "string",
+                                "description": "Path to the generated artifact.",
+                            },
+                            "description": {
+                                "type": "string",
+                                "description": "Short description of the generated artifact.",
+                            },
+                        },
+                        "required": ["path"],
+                    },
+                },
+                "evidence_sources": {
+                    "type": "array",
+                    "description": (
+                        "Optional files, URLs, manifests, or tool outputs that materially support the answer. "
+                        "Use this for evidence-backed synthesis over plan/task outputs."
+                    ),
+                    "items": {"type": "string"},
+                },
             },
             "required": ["answer"],
         },
@@ -310,7 +339,7 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
         "type": "function",
         "function": {
             "name": "file_operations",
-            "description": "File system operations: list directories, read/write files, profile/census directories, copy/move/delete. Use profile/census for compact directory-wide evidence before making all/every/completed claims. In task execution, prefer relative output paths so writes land in the current task output directory.",
+            "description": "File system operations: list directories, read/write files, profile/census directories, copy/move/delete. Use profile/census for compact directory-wide evidence before making all/every/completed claims. Use write when the user asks to save, export, create, or update a Markdown/text/JSON/CSV artifact instead of pasting content in chat. In task execution, prefer relative output paths so writes land in the current task output directory.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -325,7 +354,7 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
                     },
                     "content": {
                         "type": "string",
-                        "description": "Content to write (only for write operation).",
+                        "description": "Content to write (only for write operation). Required when creating requested saved reports, summaries, or text artifacts.",
                     },
                     "destination": {
                         "type": "string",
@@ -806,7 +835,8 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
             "name": "result_interpreter",
             "description": (
                 "Data analysis and result interpretation tool. Supports lightweight metadata/profile "
-                "inspection plus code-backed analysis for CSV, TSV, MAT, NPY, H5AD, and TXT helper files."
+                "inspection plus code-backed analysis for CSV, TSV, MAT, NPY, H5AD, and TXT helper files. "
+                "Use profile/metadata to inspect existing plan or task outputs before synthesizing reports from large tables."
             ),
             "parameters": {
                 "type": "object",
@@ -929,9 +959,9 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
         "function": {
             "name": "manuscript_writer",
             "description": (
-                "Write a research manuscript or section with citation-aware drafting, "
-                "evaluation, and merge support. Author manuscript content as Markdown first; "
-                "use .md outputs as the source of truth and render PDF only in a later conversion step."
+                "Write a research manuscript, evidence-based report, structured summary, or section with citation-aware drafting, "
+                "evaluation, and merge support. Use this when the user asks to generate/save a research report or Markdown summary from evidence files. "
+                "Author manuscript content as Markdown first; use .md outputs as the source of truth and render PDF only in a later conversion step."
             ),
             "parameters": {
                 "type": "object",
@@ -947,7 +977,7 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
                     "context_paths": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Optional supporting context files such as evidence.md or references.bib.",
+                        "description": "Optional supporting context files such as evidence.md, manifest files, CSV/TSV/JSON result tables, or references.bib.",
                     },
                     "analysis_path": {
                         "type": "string",
@@ -992,8 +1022,8 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
         "function": {
             "name": "deliverable_submit",
             "description": (
-                "Promote specific files into the session Deliverables tree for paper or submission use. "
-                "Use after files already exist and the user wants them published into Deliverables."
+                "Promote specific files into the session Deliverables tree for paper, report, summary, figure, table, or submission use. "
+                "Use after files already exist and the user wants them published into Deliverables or made visible as final outputs."
             ),
             "parameters": {
                 "type": "object",

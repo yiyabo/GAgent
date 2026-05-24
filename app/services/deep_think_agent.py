@@ -3398,6 +3398,48 @@ class DeepThinkAgent:
             "ground truth within reasonable latency.\n\n"
         )
 
+    def _build_artifact_deliverable_workflow_block(self) -> str:
+        return (
+            "=== ARTIFACT AND DELIVERABLE WORKFLOW ===\n"
+            "- Treat requests to analyze, combine, summarize, regenerate, export, save, or visualize existing files, plan outputs, task outputs, or deliverables as action requests, not prose-only answers.\n"
+            "- For such requests, choose the needed tools yourself: discover relevant artifacts, read or profile supporting files, synthesize or compute, create/write the requested output, verify it when a file is requested, then submit the final answer.\n"
+            "- Do not substitute chat prose, copy-paste Markdown, or a code snippet for a requested saved file, generated figure, or deliverable.\n"
+            "- Good pattern: user asks to generate `plan_114_summary.md` from a completed plan -> inspect the plan manifest/deliverables, read the relevant CSV/JSON/MD evidence, write the Markdown report with manuscript_writer or file_operations, verify the path exists, then report the saved file.\n"
+            "- Good pattern: user asks for recent weather changes as a chart -> gather current weather evidence, generate the chart artifact with the appropriate figure/code tool, then report the output path.\n\n"
+        )
+
+    def _build_plan_artifact_discovery_block(
+        self,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        plan_id = self._current_plan_id()
+        if plan_id is None:
+            return ""
+        context = context or {}
+        session_id = None
+        for key in ("session_id", "runtime_session_id", "chat_session_id"):
+            value = context.get(key)
+            if isinstance(value, str) and value.strip():
+                session_id = value.strip()
+                break
+        lines = [
+            "=== PLAN ARTIFACT DISCOVERY ===",
+            f"- This session is bound to Plan {plan_id}. For follow-up analysis over completed plan outputs, discover artifacts before making evidence-backed claims.",
+            f"- Start from the plan artifact manifest when present: `results/plans/plan_{plan_id}/artifacts_manifest.json`.",
+            "- If a session runtime directory is available, inspect `deliverables/manifest_latest.json` and `deliverables/latest/` there before summarizing or writing reports.",
+        ]
+        if session_id:
+            lines.extend([
+                f"- Session-scoped manifest candidate: `runtime/{session_id}/deliverables/manifest_latest.json`.",
+                f"- Session-scoped deliverables candidate: `runtime/{session_id}/deliverables/latest/`.",
+            ])
+        lines.extend([
+            "- Use file_operations profile/read or result_interpreter profile on manifest-listed CSV/TSV/JSON/MD artifacts; do not rely only on the plan outline or memory of earlier turns.",
+            "- Keep this as discovery guidance: do not dump every artifact into the prompt; inspect the manifest and read only the evidence needed for the user's requested synthesis.",
+            "",
+        ])
+        return "\n".join(lines)
+
     def _build_evidence_scope_block(self) -> str:
         return (
             "=== EVIDENCE SCOPE RULES ===\n"
@@ -5044,6 +5086,8 @@ class DeepThinkAgent:
             + self._build_structured_plan_requirement_block()
             + self._build_tool_access_block()
             + self._build_grounded_tooling_block()
+            + self._build_artifact_deliverable_workflow_block()
+            + self._build_plan_artifact_discovery_block(context)
             + self._build_evidence_scope_block()
             + "\n"
             + "\n=== WORKFLOW ===\n"
@@ -6585,7 +6629,7 @@ Respond with ONLY a JSON object:
                 "\"output_name\", \"allowed_content_types\", \"sha256\", \"timeout_sec\", \"max_bytes\"}. "
                 "Do not use code_executor for simple public-link downloads."
             ),
-            "code_executor": "Execute Python/shell code. FALLBACK TOOL: Use this ONLY when bio_tools cannot handle the task (e.g., custom analysis scripts, complex data processing). For FASTA/FASTQ sequence stats or standard bioinformatics tasks, ALWAYS try bio_tools first. For local CSV/TSV overview/schema/count requests, prefer result_interpreter profile first. Params: {\"task\": \"description\"}",
+            "code_executor": "Execute Python/shell code. FALLBACK TOOL: Use this ONLY when bio_tools cannot handle the task (e.g., custom analysis scripts, complex data processing). For FASTA/FASTQ sequence stats or standard bioinformatics tasks, ALWAYS try bio_tools first. For local CSV/TSV overview/schema/count requests, prefer result_interpreter profile first. Use this for custom computation or visualization when the user needs generated artifacts, not just code snippets. Params: {\"task\": \"description\"}",
             "phagescope_research": (
                 "Prepare and audit the local PhageScope public dataset for host prediction research. "
                 "For local PhageScope dataset exploration, schema/size/readiness assessment, data splitting, model selection, benchmarking, or biological validation, "
@@ -6595,13 +6639,13 @@ Respond with ONLY a JSON object:
             ),
             "scientific_figure_generator": (
                 "PREFERRED tool for scientific/composite figures, plots, charts, visualizations, and publication-style outputs. "
-                "Use it when the user asks for PNG/PDF figures, English summary/legend, provenance TSV, QA JSON, or Deliverables publication. "
+                "Use it when the user asks for PNG/PDF figures, visual summaries, English summary/legend, provenance TSV, QA JSON, or Deliverables publication; do not answer with plotting code when the user asked for an actual figure. "
                 "Accepts datasets as inline rows or CSV/TSV/JSON/JSONL paths and panel specs (auto, bar, line, scatter, heatmap, table). "
                 "Prefer this over code_executor for standard scientific figure generation."
             ),
             "web_search": "Search the internet for information. USE THIS ONLY for web-based queries, NOT for local files. For broad comparisons, prefer focused parallel subqueries with Params: {\"query\": \"original request\", \"queries\": [\"focused query 1\", \"focused query 2\"]}.",
             "graph_rag": "Query knowledge graph for structured information. Params: {\"query\": \"your question\", \"mode\": \"global|local|hybrid\"}",
-            "file_operations": "File system operations: list directories, profile/census directory contents, read/write files, copy/move/delete. USE profile/census before making global all/every/completed claims about large directory trees; list/read/profile/census/exists/info are inspection-only in bound execute_task requests and do not count as task completion. Params: {\"operation\": \"profile|census|list|read|write|copy|move|delete\", \"path\": \"/path\"}",
+            "file_operations": "File system operations: list directories, profile/census directory contents, read/write files, copy/move/delete. USE profile/census before making global all/every/completed claims about large directory trees. Use operation=write when the user asks to save, export, create, or update a Markdown/text/JSON/CSV artifact; do not substitute chat prose for a requested saved file. list/read/profile/census/exists/info are inspection-only in bound execute_task requests and do not count as task completion. Params: {\"operation\": \"profile|census|list|read|write|copy|move|delete\", \"path\": \"/path\"}",
             "document_reader": (
                 "Read local documents (.docx, .pdf, .txt, .md). For .csv/.tsv, this tool "
                 "returns a built-in preview (headers + sample rows) — use it for quick inspection; "
@@ -6682,7 +6726,7 @@ Operations:
 - execute: Execute Python code via Claude Code
 - analyze: Full pipeline (metadata → generate → execute with auto-fix)
 
-For quick local inspection (overview, schema, columns, row/column counts, previews), prefer metadata/profile first and keep the path lightweight. Use analyze only when the user clearly needs code-backed analysis or visualization.
+For quick local inspection (overview, schema, columns, row/column counts, previews), prefer metadata/profile first and keep the path lightweight. Use metadata/profile to inspect existing plan or task outputs before synthesizing reports from large tables. Use analyze only when the user clearly needs code-backed analysis or visualization.
 
 Params for analyze (recommended):
 {"operation": "analyze", "file_paths": ["/path/to/data.csv"], "task_title": "Analysis Title", "task_description": "What to analyze"}
@@ -6729,12 +6773,13 @@ Operations:
 Typical usage: just call write with data — the system handles terminal creation automatically.
 IMPORTANT: data must end with \\n to execute the command.""",
             "manuscript_writer": (
-                "PREFERRED tool for writing research papers and manuscripts. "
+                "PREFERRED tool for writing research papers, evidence-based reports, structured summaries, and manuscripts. "
+                "Use it when the user asks to generate or save a report/summary from evidence files. "
                 "Generates publication-quality LaTeX/Markdown sections with proper citations. "
                 "Params: {\"task\": \"write the introduction section\", \"output_path\": \"/abs/path/output.md\", "
                 "\"context_paths\": [\"/path/to/refs.bib\", \"/path/to/data.csv\"], "
                 "\"analysis_path\": \"/path/to/analysis_results\"}. "
-                "IMPORTANT: For ANY paper/manuscript writing task (sections, drafts, revisions, assembly), "
+                "IMPORTANT: For ANY paper/manuscript/report/summary writing task that should create a file (sections, drafts, revisions, assembly), "
                 "ALWAYS use manuscript_writer instead of code_executor. "
                 "code_executor should NEVER be used to write paper content directly."
             ),
@@ -6753,7 +6798,7 @@ IMPORTANT: data must end with \\n to execute the command.""",
                 "Promote specific files into the session Deliverables bundle. "
                 "Params: {\"publish\": true|false, \"artifacts\": [{\"path\": \"/path/to/file\", "
                 "\"module\": \"code|image_tabular|paper|refs|docs\", optional \"reason\": \"note\"}]}. "
-                "Use this after files already exist and the user wants them included in Deliverables."
+                "Use this after files already exist and the user wants reports, summaries, figures, tables, code, or references included in Deliverables."
             ),
         }
 
@@ -6822,6 +6867,8 @@ Your goal is to choose the right depth for the user's request: be thorough when 
 {self._build_structured_plan_requirement_block()}
 {self._build_tool_access_block()}
 {self._build_grounded_tooling_block()}
+{self._build_artifact_deliverable_workflow_block()}
+{self._build_plan_artifact_discovery_block(context)}
 {self._build_evidence_scope_block()}
 === THINKING WORKFLOW ===
 1. First classify whether the request needs tools, targeted evidence, or just a direct answer.
