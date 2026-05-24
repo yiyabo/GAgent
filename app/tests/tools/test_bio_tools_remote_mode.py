@@ -1217,6 +1217,19 @@ def test_missing_required_params_error_includes_retry_hint() -> None:
     assert "pattern" in hint["params"]
 
 
+def test_output_file_satisfies_output_requirement() -> None:
+    result = asyncio.run(
+        bio_handler_module.bio_tools_handler(
+            tool_name="seqkit",
+            operation="grep",
+            input_file="/tmp/test.fasta",
+            output_file="result.fa",
+            params={"pattern": "contig_1"},
+        )
+    )
+    assert result.get("error_code") != "missing_required_params"
+
+
 def test_invalid_parameter_error_includes_accepted_params() -> None:
     result = asyncio.run(
         bio_handler_module.bio_tools_handler(
