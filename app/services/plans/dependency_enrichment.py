@@ -189,6 +189,128 @@ def _would_create_cycle(tree: PlanTree, producer_id: int, consumer_id: int) -> b
     return False
 
 
+def _strip_namespace(alias: str) -> str:
+    if '.' in alias:
+        return alias.split('.', 1)[1]
+    return alias
+
+
+def _normalize_base_name(name: str) -> str:
+    name = name.lower().strip()
+    for ext in ('.csv', '.tsv', '.json', '.txt', '.md', '_csv', '_tsv', '_json', '_txt', '_md'):
+        if name.endswith(ext):
+            name = name[:-len(ext)]
+            break
+    name = re.sub(r'[_\-\s]+', '_', name)
+    for suffix in ('_table', '_file', '_data'):
+        if name.endswith(suffix):
+            name = name[:-len(suffix)]
+    return name
+
+
+def _fuzzy_match_alias(
+    required_alias: str,
+    producer_map: Dict[str, int],
+    tree: PlanTree,
+) -> Optional[Tuple[str, int]]:
+    req_base = _normalize_base_name(_strip_namespace(required_alias))
+    
+    candidates: List[Tuple[float, str, int]] = []
+    
+    for published_alias, producer_id in producer_map.items():
+        pub_base = _normalize_base_name(_strip_namespace(published_alias))
+        
+        if req_base == pub_base:
+            candidates.append((1.0, published_alias, producer_id))
+            continue
+        
+        req_keywords = set(re.split(r'[_\-\s]+', req_base))
+        pub_keywords = set(re.split(r'[_\-\s]+', pub_base))
+        
+        if not req_keywords or not pub_keywords:
+            continue
+        
+        intersection = req_keywords & pub_keywords
+        union = req_keywords | pub_keywords
+        similarity = len(intersection) / len(union) if union else 0.0
+        
+        core_concepts = {'dataset', 'metadata', 'table', 'annotation', 'working', 'annotated'}
+        shared_core = req_keywords & pub_keywords & core_concepts
+        
+        if similarity >= 0.5 or (shared_core and similarity >= 0.3):
+            candidates.append((similarity, published_alias, producer_id))
+    
+    if not candidates:
+        return None
+    
+    candidates.sort(key=lambda x: (-x[0], x[2]))
+    
+    best_similarity, best_alias, best_producer = candidates[0]
+    
+    if len(candidates) > 1 and candidates[0][0] - candidates[1][0] < 0.1:
+        consumer_task_ids = [
+            node.id for node in tree.iter_nodes()
+            if required_alias in (node.metadata.get('artifact_contract', {}).get('requires', []) if isinstance(node.metadata, dict) else [])
+        ]
+        if consumer_task_ids:
+            consumer_node = tree.nodes.get(consumer_task_ids[0])
+            if consumer_node and consumer_node.instruction:
+                instruction_lower = consumer_node.instruction.lower()
+                for sim, alias, prod_id in candidates:
+                    prod_node = tree.nodes.get(prod_id)
+                    if prod_node and prod_node.name:
+                        if prod_node.name.lower() in instruction_lower:
+                            return (alias, prod_id)
+    
+    return (best_alias, best_producer)
+
+
+def _resolve_fuzzy_aliases(
+    tree: PlanTree,
+    producer_map: Dict[str, int],
+    consumer_map: Dict[str, List[int]],
+    ambiguous: Set[str],
+) -> None:
+    unresolved_aliases = [
+        alias for alias in consumer_map.keys()
+        if alias not in producer_map and alias not in ambiguous
+    ]
+    
+    for required_alias in unresolved_aliases:
+        match = _fuzzy_match_alias(required_alias, producer_map, tree)
+        if not match:
+            continue
+        
+        matched_alias, producer_id = match
+        producer_node = tree.nodes.get(producer_id)
+        if not producer_node:
+            continue
+        
+        metadata = producer_node.metadata if isinstance(producer_node.metadata, dict) else {}
+        contract = metadata.get('artifact_contract', {})
+        if not isinstance(contract, dict):
+            contract = {}
+        
+        publishes = contract.get('publishes', [])
+        if not isinstance(publishes, list):
+            publishes = []
+        
+        if required_alias not in publishes:
+            publishes.append(required_alias)
+            contract['publishes'] = publishes
+            metadata['artifact_contract'] = contract
+            producer_node.metadata = metadata
+            
+            producer_map[required_alias] = producer_id
+            
+            logger.info(
+                "Fuzzy-matched artifact alias: '%s' (required) -> '%s' (published by task %d)",
+                required_alias,
+                matched_alias,
+                producer_id,
+            )
+
+
 def _detect_cycles(tree: PlanTree) -> List[List[int]]:
     """Detect cycles in the dependency graph using DFS (white/gray/black)."""
     WHITE, GRAY, BLACK = 0, 1, 2
@@ -275,6 +397,11 @@ def _enrich_impl(tree: PlanTree) -> EnrichmentResult:
 
         for alias in requires:
             consumer_map.setdefault(alias, []).append(node.id)
+
+    # Step 1.5: Fuzzy alias matching — resolve namespace/format mismatches
+    # For each required alias with no exact producer, try to find a semantically
+    # similar published alias and add it to the producer's contract.
+    _resolve_fuzzy_aliases(tree, producer_map, consumer_map, ambiguous)
 
     # Step 2: Inject missing dependency edges
     for alias, consumers in consumer_map.items():
