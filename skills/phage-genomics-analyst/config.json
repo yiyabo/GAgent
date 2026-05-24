@@ -1,0 +1,75 @@
+{
+  "name": "phage-genomics-analyst",
+  "version": 1,
+  "category": "analysis",
+  "scope": "both",
+  "priority": 10,
+  "selection": {
+    "keywords": [
+      "phage",
+      "phages",
+      "bacteriophage",
+      "bacteriophages",
+      "phage genome",
+      "phage genomics",
+      "phage diversity",
+      "phage taxonomy",
+      "phage classification",
+      "phage lifecycle",
+      "lytic phage",
+      "temperate phage",
+      "lysogenic",
+      "prophage",
+      "phage host",
+      "phage-host",
+      "anti-CRISPR",
+      "Acr protein",
+      "phage annotation",
+      "phage phylogeny",
+      "Caudovirales",
+      "Myoviridae",
+      "Siphoviridae",
+      "Podoviridae",
+      "PhageScope",
+      "phage diversity analysis",
+      "phage comparative genomics",
+      "terminase",
+      "TerL",
+      "phage capsid",
+      "phage tail",
+      "holin",
+      "endolysin",
+      "phage integrase",
+      "CI repressor",
+      "phage lysis"
+    ],
+    "path_suffixes": [
+      "phage",
+      "phages",
+      "bacteriophage",
+      "phagescope",
+      "phage_genomes",
+      "phage_analysis",
+      "phage_diversity",
+      "phage_host",
+      "anti_crispr",
+      "prophage"
+    ],
+    "tool_hints": [
+      "phagescope",
+      "phagescope_research",
+      "bio_tools",
+      "code_executor"
+    ]
+  },
+  "injection": {
+    "mode": "summary_with_references",
+    "max_chars": 6000
+  },
+  "references": [
+    "references/phage_taxonomy.md",
+    "references/lifecycle_markers.md",
+    "references/anti_crispr_db.md",
+    "references/phagescope_guide.md"
+  ]
+}
