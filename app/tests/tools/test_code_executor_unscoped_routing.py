@@ -4,6 +4,8 @@ import asyncio
 import json
 from types import SimpleNamespace
 
+import pytest
+
 from app.routers import chat_routes
 from app.routers.chat.agent import _build_deep_think_task_context
 from app.routers.chat_routes import StructuredChatAgent
@@ -273,6 +275,40 @@ def test_resolve_code_executor_task_context_allows_explicit_completed_force_reru
     assert node is completed_leaf
     assert agent.extra_context.get("task_id") == 22
     assert agent.extra_context.get("current_task_id") == 22
+    assert agent.extra_context.get("force_rerun_completed") is True
+    assert agent.extra_context.get("explicit_scope_all_blocked") is None
+
+
+@pytest.mark.parametrize("message", [
+    "Re-execute Task ID: 22",
+    "re-execute task 22",
+    "reexecute task 22",
+    "re-run task 22",
+    "rerun task 22",
+    "重新执行任务22",
+])
+def test_resolve_code_executor_task_context_allows_re_execute_patterns(message: str) -> None:
+    root = PlanNode(id=1, plan_id=49, name="Root", status="pending")
+    completed_leaf = PlanNode(id=22, plan_id=49, name="Done", parent_id=1, status="completed")
+    tree = PlanTree(
+        id=49, title="Plan 49",
+        nodes={1: root, 22: completed_leaf},
+        adjacency={None: [1], 1: [22], 22: []},
+    )
+    agent = StructuredChatAgent.__new__(StructuredChatAgent)
+    agent.plan_session = SimpleNamespace(plan_id=49, repo=_RepoStub(tree))
+    agent.extra_context = {
+        "explicit_task_ids": [22],
+        "explicit_task_override": True,
+        "request_tier": "execute",
+        "intent_type": "execute_task",
+    }
+    agent._current_user_message = message
+
+    node, error = agent._resolve_code_executor_task_context()
+
+    assert error is None
+    assert node is completed_leaf
     assert agent.extra_context.get("force_rerun_completed") is True
     assert agent.extra_context.get("explicit_scope_all_blocked") is None
 

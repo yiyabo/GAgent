@@ -46,7 +46,7 @@ _LEGACY_SESSION_WORKSPACE_RE = re.compile(
 _USELESS_RUNTIME_ROOT_RE = re.compile(r"(?:^|/)runtime/?$", re.IGNORECASE)
 
 _FORCE_RERUN_COMPLETED_RE = re.compile(
-    r"(?:\bforce\s+(?:re[-\s]?run|rerun)\b|\bexplicitly\s+(?:want\s+to\s+)?(?:re[-\s]?run|rerun)\b|\b(?:re[-\s]?run|rerun)\s+completed\b|强制(?:重跑|重新执行|再跑)|(?:重跑|重新执行|再跑)已完成)",
+    r"(?:\bforce\s+(?:re[-\s]?(?:run|execute)|rerun|reexecute)\b|\bexplicitly\s+(?:want\s+to\s+)?(?:re[-\s]?(?:run|execute)|rerun|reexecute)\b|\b(?:re[-\s]?(?:run|execute)|rerun|reexecute)\s+completed\b|\b(?:re[-\s]?(?:run|execute)|rerun|reexecute)\b|强制(?:重跑|重新执行|再跑|重新运行)|(?:重跑|重新执行|再跑|重新运行))",
     re.IGNORECASE,
 )
 
@@ -61,7 +61,7 @@ def _explicitly_requests_completed_task_rerun(agent: Any) -> bool:
         return True
     intent = str(context.get("intent_type") or "").strip().lower()
     tier = str(context.get("request_tier") or "").strip().lower()
-    if intent == "execute_task" and tier == "execute" and re.search(r"\b(?:re[-\s]?run|rerun|retry)\b", message, re.IGNORECASE):
+    if intent == "execute_task" and tier == "execute" and re.search(r"\b(?:re[-\s]?(?:run|execute)|rerun|reexecute|retry)\b", message, re.IGNORECASE):
         return True
     return False
 
