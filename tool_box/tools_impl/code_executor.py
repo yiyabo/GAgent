@@ -1525,7 +1525,7 @@ _DEFAULT_CODE_EXECUTOR_DOCKER_IMAGE = DEFAULT_CODE_EXECUTION_DOCKER_IMAGE
 _SUPPORTED_SETTING_SOURCES = {"user", "project", "local"}
 _SUPPORTED_AUTH_MODES = {"claude_login", "api_env"}
 _DEFAULT_API_BASE_URL = "https://dashscope.aliyuncs.com/apps/anthropic"
-_DEFAULT_API_MODEL = "qwen3.6-plus"
+_DEFAULT_API_MODEL = "qwen3.7-max"
 _DEFAULT_QC_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 _CLAUDE_ENV_KEYS_FOR_LOGIN_MODE: Sequence[str] = (
     "ANTHROPIC_API_KEY",
@@ -3749,6 +3749,20 @@ def _prepare_code_executor_read_context(
     if default_data_dir.exists():
         allowed_dirs.append(str(default_data_dir))
         logger.info("Auto-added default data directory: %s", default_data_dir)
+
+    for raw_extra in os.getenv("FILE_OPERATIONS_ALLOWED_BASE_PATHS", "").split(os.pathsep):
+        extra_path = str(raw_extra or "").strip()
+        if not extra_path:
+            continue
+        try:
+            extra_resolved = Path(extra_path).expanduser().resolve(strict=False)
+        except OSError:
+            continue
+        if extra_resolved.exists() and extra_resolved.is_dir():
+            extra_str = str(extra_resolved)
+            if extra_str not in allowed_dirs:
+                allowed_dirs.append(extra_str)
+                logger.info("Auto-added FILE_OPERATIONS_ALLOWED_BASE_PATHS entry: %s", extra_str)
 
     if session_dir.exists():
         allowed_dirs.append(str(session_dir))
