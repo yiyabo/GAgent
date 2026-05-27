@@ -11,6 +11,7 @@ import { useSystemStore } from '@store/system';
 import { useLayoutStore } from '@store/layout';
 import { useAuthStore } from '@store/auth';
 import { useLocation, useNavigate } from 'react-router-dom';
+import TokenUsageBadge from '@components/common/TokenUsageBadge';
 
 const { Header } = Layout;
 const { Text } = Typography;
@@ -64,6 +65,7 @@ const AppHeader: React.FC = () => {
                 </Text>
               </div>
             </Tooltip>
+            <TokenUsageBadge />
           </Space>
 
           <Space size="small">
