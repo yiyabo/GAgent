@@ -287,3 +287,23 @@ async def get_system_info():
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"getsystemfailed: {str(e)}")
+
+
+class TokenUsageResponse(BaseModel):
+    period_hours: int
+    call_count: int
+    total_prompt_tokens: int
+    total_completion_tokens: int
+    total_tokens: int
+    by_model: List[Dict[str, Any]]
+
+
+@router.get("/stats/token-usage", response_model=TokenUsageResponse, summary="Get LLM token usage statistics")
+async def get_token_usage(hours: int = 24):
+    """Get LLM token usage statistics for the specified time period."""
+    try:
+        from ..repository.llm_usage import get_usage_summary
+        return get_usage_summary(hours=hours)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get token usage: {str(e)}")
+

@@ -176,6 +176,26 @@ def _normalize_timeout(timeout: Optional[float], fallback: Optional[float]) -> O
     return value
 
 
+def _log_usage(
+    provider: str,
+    model: str,
+    prompt_tokens: int,
+    completion_tokens: int,
+    total_tokens: int,
+) -> None:
+    try:
+        from .repository.llm_usage import log_llm_usage
+        log_llm_usage(
+            provider=provider,
+            model=model,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+        )
+    except Exception as exc:
+        logger.warning("[LLM] Failed to log usage: %s", exc)
+
+
 @dataclass
 class NativeToolCall:
     """A single tool call returned by the model via native function calling."""
@@ -191,6 +211,7 @@ class NativeStreamResult:
     reasoning_content: str = ""
     tool_calls: List[NativeToolCall] = field(default_factory=list)
     finish_reason: Optional[str] = None
+    usage: Optional[Dict[str, int]] = None
 
 
 def _truthy(val: Optional[str]) -> bool:
@@ -394,7 +415,17 @@ class LLMClient(LLMProvider):
                 response.raise_for_status()
                 obj = response.json()
                 try:
-                    return obj["choices"][0]["message"]["content"]
+                    content = obj["choices"][0]["message"]["content"]
+                    usage = obj.get("usage")
+                    if isinstance(usage, dict):
+                        _log_usage(
+                            provider=self.provider,
+                            model=model or self.model,
+                            prompt_tokens=usage.get("prompt_tokens", 0),
+                            completion_tokens=usage.get("completion_tokens", 0),
+                            total_tokens=usage.get("total_tokens", 0),
+                        )
+                    return content
                 except Exception:
                     raise RuntimeError(f"Unexpected LLM response: {obj}")
             except httpx.HTTPStatusError as e:
@@ -461,7 +492,17 @@ class LLMClient(LLMProvider):
                 response.raise_for_status()
                 obj = response.json()
                 try:
-                    return obj["choices"][0]["message"]["content"]
+                    content = obj["choices"][0]["message"]["content"]
+                    usage = obj.get("usage")
+                    if isinstance(usage, dict):
+                        _log_usage(
+                            provider=self.provider,
+                            model=model or self.model,
+                            prompt_tokens=usage.get("prompt_tokens", 0),
+                            completion_tokens=usage.get("completion_tokens", 0),
+                            total_tokens=usage.get("total_tokens", 0),
+                        )
+                    return content
                 except Exception:
                     raise RuntimeError(f"Unexpected LLM response: {obj}")
             except httpx.HTTPStatusError as e:
@@ -547,6 +588,17 @@ class LLMClient(LLMProvider):
                     obj = json.loads(data)
                 except json.JSONDecodeError:
                     continue
+
+                # Extract usage from last chunk (typically has finish_reason)
+                usage = obj.get("usage")
+                if isinstance(usage, dict):
+                    _log_usage(
+                        provider=self.provider,
+                        model=model or self.model,
+                        prompt_tokens=usage.get("prompt_tokens", 0),
+                        completion_tokens=usage.get("completion_tokens", 0),
+                        total_tokens=usage.get("total_tokens", 0),
+                    )
 
                 # Extract reasoning_content delta if present
                 choices = obj.get("choices")
@@ -690,6 +742,18 @@ class LLMClient(LLMProvider):
                     obj = json.loads(data)
                 except json.JSONDecodeError:
                     continue
+
+                # Extract usage from last chunk
+                usage = obj.get("usage")
+                if isinstance(usage, dict):
+                    result.usage = usage
+                    _log_usage(
+                        provider=self.provider,
+                        model=model or self.model,
+                        prompt_tokens=usage.get("prompt_tokens", 0),
+                        completion_tokens=usage.get("completion_tokens", 0),
+                        total_tokens=usage.get("total_tokens", 0),
+                    )
 
                 choices = obj.get("choices")
                 if not isinstance(choices, list) or not choices:

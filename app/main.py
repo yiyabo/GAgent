@@ -88,6 +88,14 @@ async def lifespan(_fastapi_app: FastAPI):
     except Exception as e:
         logging.getLogger("app.main").warning("Tool Box initialization failed: %s", e)
 
+    # Initialize LLM usage tracking table
+    try:
+        from .repository.llm_usage import init_llm_usage_table
+        init_llm_usage_table()
+        logging.getLogger("app.main").info("LLM usage tracking table initialized")
+    except Exception as e:
+        logging.getLogger("app.main").warning("Failed to initialize LLM usage table: %s", e)
+
     # Fix any stale jobs from previous server runs
     try:
         fixed_count = fix_stale_jobs_on_startup()
