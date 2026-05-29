@@ -1,10 +1,13 @@
 import json
+from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 
 import pytest
 
+from app.repository.plan_repository import PlanRepository
 from app.services.plans.dependency_planner import compute_dependency_plan
-from app.services.plans.plan_executor import ExecutionConfig, PlanExecutor
+from app.services.plans.plan_executor import ExecutionConfig, PlanExecutor, PlanExecutorLLMService
 from app.services.plans.plan_models import PlanNode, PlanTree
 
 
@@ -73,7 +76,10 @@ def test_plan_executor_persists_skip_reason_when_blocked():
     }
 
     repo = _FakeRepo(tree)
-    executor = PlanExecutor(repo=repo, llm_service=_LLMStub())
+    executor = PlanExecutor(
+        repo=cast(PlanRepository, cast(object, repo)),
+        llm_service=cast(PlanExecutorLLMService, cast(object, _LLMStub())),
+    )
 
     result = executor.execute_task(1, 1)
 
@@ -90,8 +96,13 @@ def test_plan_executor_persists_skip_reason_when_blocked():
     assert payload.get("metadata", {}).get("blocked_by_dependencies") is True
 
 
-def test_plan_executor_passes_reference_context_into_deep_think(monkeypatch: pytest.MonkeyPatch):
+def test_plan_executor_passes_reference_context_into_deep_think(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+):
     captured = {}
+    evidence_path = tmp_path / "evidence.md"
+    evidence_path.write_text("Validated evidence summary.\n", encoding="utf-8")
 
     class _RepoWithContext(_FakeRepo):
         def update_plan_metadata(self, *_args, **_kwargs):
@@ -119,7 +130,7 @@ def test_plan_executor_passes_reference_context_into_deep_think(monkeypatch: pyt
                 final_answer="done",
                 thinking_summary="ok",
                 confidence=0.9,
-                tools_used=[],
+                tools_used=["manuscript_writer"],
                 total_iterations=1,
                 thinking_steps=[],
             )
@@ -147,7 +158,7 @@ def test_plan_executor_passes_reference_context_into_deep_think(monkeypatch: pyt
             dependencies=[2],
             context_combined="Use the validated analysis outputs only.",
             context_sections=[{"title": "Evidence", "content": "Output table saved at /tmp/analysis/output.csv"}],
-            metadata={"paper_mode": True, "paper_context_paths": ["/tmp/paper/evidence.md"]},
+            metadata={"paper_mode": True, "paper_context_paths": [str(evidence_path)]},
         ),
         2: PlanNode(
             id=2,
@@ -159,11 +170,29 @@ def test_plan_executor_passes_reference_context_into_deep_think(monkeypatch: pyt
     }
 
     repo = _RepoWithContext(tree)
-    executor = PlanExecutor(repo=repo, llm_service=SimpleNamespace(_llm=object()))
+    executor = PlanExecutor(
+        repo=cast(PlanRepository, cast(object, repo)),
+        llm_service=cast(PlanExecutorLLMService, cast(object, SimpleNamespace(_llm=object()))),
+    )
     result = executor.execute_task(
         1,
         1,
-        config=ExecutionConfig(enable_skills=False),
+        config=ExecutionConfig(
+            enable_skills=False,
+            session_context={
+                "_artifact_manifest": {
+                    "plan_id": 1,
+                    "artifacts": {
+                        "general.evidence_md": {
+                            "alias": "general.evidence_md",
+                            "path": str(evidence_path),
+                            "producer_task_id": 2,
+                            "validated": True,
+                        }
+                    },
+                }
+            },
+        ),
     )
 
     assert result.status == "completed"
@@ -172,7 +201,7 @@ def test_plan_executor_passes_reference_context_into_deep_think(monkeypatch: pyt
     assert task_context.context_sections == [
         {"title": "Evidence", "content": "Output table saved at /tmp/analysis/output.csv"}
     ]
-    assert "/tmp/paper/evidence.md" in task_context.paper_context_paths
+    assert str(evidence_path) in task_context.paper_context_paths
     # output_path from dependency results is no longer auto-injected into
     # paper_context_paths; the executor now injects canonical artifact paths
     # from the manifest instead.

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 from app.config.decomposer_config import DecomposerSettings
 from app.repository.plan_repository import PlanRepository
@@ -10,8 +10,10 @@ from app.services.plans.artifact_preflight import ArtifactPreflightIssue, Artifa
 from app.services.plans.plan_decomposer import PlanDecomposer
 from app.services.plans.plan_generation import create_plan_and_generate
 from app.services.plans.plan_models import PlanNode, PlanTree
+from app.services.llm.structured_response import LLMAction
 from app.services.plans.plan_rubric_evaluator import PlanRubricResult
 from tool_box.tools_impl.plan_tools import _create_plan, _optimize_plan, _review_plan
+from app.routers.chat.action_handlers import handle_plan_action
 
 
 def _build_tree() -> PlanTree:
@@ -19,7 +21,6 @@ def _build_tree() -> PlanTree:
         id=1,
         plan_id=1,
         name="Demo Plan",
-        task_type="root",
         metadata={"is_root": True, "task_type": "root"},
         parent_id=None,
         instruction="Original description",
@@ -223,6 +224,7 @@ class _GenerationRepoStub(PlanRepository):
 
 class _FailingDecomposerStub(PlanDecomposer):
     def __init__(self) -> None:
+        super().__init__(repo=None)
         self._settings = DecomposerSettings(model="configured", max_depth=2, total_node_budget=25)
 
     @property
@@ -258,6 +260,16 @@ def test_create_plan_uses_integrated_generation_and_allows_missing_seed_tasks(mo
             collected_materials=[{"tool": "web_search", "summary": "Latest benchmark guidance."}],
             session_context={"session_id": "session-1"},
             decomposition_status="completed",
+            auto_review={
+                "success": True,
+                "operation": "auto_review",
+                "plan_id": 7,
+                "status": "completed",
+                "rubric_score": 91.0,
+                "optimization_needed": False,
+                "optimization_attempted": False,
+                "message": "Automatic review completed.",
+            },
             auto_completed_generation=True,
         )
 
@@ -284,16 +296,121 @@ def test_create_plan_uses_integrated_generation_and_allows_missing_seed_tasks(mo
     assert result["decomposition_completed"] is True
     assert result["task_count"] == 2
     assert result["material_collection"]["used"] is True
+    assert result["auto_review"]["status"] == "completed"
+    assert result["auto_review"]["rubric_score"] == 91.0
     assert captured["tasks"] is None
     assert captured["owner"] == "alice"
+
+
+
+def test_structured_create_plan_auto_reviews_and_optimizes(monkeypatch) -> None:
+    repo = _GenerationRepoStub()
+    captured: dict[str, object] = {}
+
+    async def _no_materials(**kwargs):
+        return kwargs["session_context"], []
+
+    async def _fake_auto_review_and_optimize_plan(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            to_dict=lambda: {
+                "success": True,
+                "operation": "auto_review",
+                "plan_id": 1,
+                "status": "optimized",
+                "rubric_score": 73.0,
+                "optimization_needed": True,
+                "optimization_attempted": True,
+                "auto_optimize": {
+                    "success": True,
+                    "operation": "optimize",
+                    "plan_id": 1,
+                    "applied_changes": 1,
+                    "rubric_score_before": 73.0,
+                    "rubric_score_after": 88.0,
+                },
+                "message": "Applied rubric-driven improvements.",
+            }
+        )
+
+    monkeypatch.setattr("app.services.plans.plan_generation.collect_plan_generation_materials", _no_materials)
+    monkeypatch.setattr(
+        "app.services.plans.plan_generation._auto_review_and_optimize_plan",
+        _fake_auto_review_and_optimize_plan,
+    )
+
+    agent = SimpleNamespace(
+        conversation_id="conv-1",
+        extra_context={"owner_id": "alice"},
+        history=[],
+        session_id="session-structured",
+        max_history_messages=20,
+        plan_decomposer=cast(PlanDecomposer, _FailingDecomposerStub()),
+        plan_session=SimpleNamespace(
+            repo=repo,
+            bind=lambda plan_id: setattr(agent.plan_session, "plan_id", plan_id),
+            plan_id=None,
+        ),
+        plan_tree=None,
+        _dirty=False,
+    )
+
+    def _refresh_plan_tree(force_reload=True):
+        _ = force_reload
+        agent.plan_tree = repo.get_plan_tree(1)
+        return agent.plan_tree
+
+    agent._refresh_plan_tree = _refresh_plan_tree
+    action = LLMAction(
+        kind="plan_operation",
+        name="create_plan",
+        parameters={
+            "title": "Autonomous Plan",
+            "description": "Create, review, and improve the plan.",
+            "metadata": {"skip_auto_decomposition": True},
+            "tasks": [
+                {
+                    "name": "Draft workflow",
+                    "instruction": "Draft a workflow with explicit validation and deliverables.",
+                }
+            ],
+        },
+    )
+
+    step = asyncio.run(handle_plan_action(agent, action))
+
+    assert step.success is True
+    assert step.details["auto_review"]["status"] == "optimized"
+    assert step.details["auto_optimize"]["applied_changes"] == 1
+    assert captured["plan_id"] == 1
+    assert captured["repo"] is repo
+    assert captured["trigger"] == "plan_generation.create"
+    assert agent.plan_session.plan_id == 1
 
 
 def test_create_plan_and_generate_skips_decomposition_for_seeded_plan(monkeypatch) -> None:
     async def _no_materials(**kwargs):
         return kwargs["session_context"], []
 
+    async def _fake_auto_review_and_optimize_plan(**kwargs):
+        return SimpleNamespace(
+            to_dict=lambda: {
+                "success": True,
+                "operation": "auto_review",
+                "plan_id": kwargs["plan_id"],
+                "status": "completed",
+                "optimization_needed": False,
+                "optimization_attempted": False,
+                "message": "Automatic review completed.",
+            }
+        )
+
     repo = _GenerationRepoStub()
     monkeypatch.setattr("app.services.plans.plan_generation.collect_plan_generation_materials", _no_materials)
+    monkeypatch.setattr(
+        "app.services.plans.plan_generation._auto_review_and_optimize_plan",
+        _fake_auto_review_and_optimize_plan,
+    )
 
     outcome = asyncio.run(
         create_plan_and_generate(
@@ -314,7 +431,7 @@ def test_create_plan_and_generate_skips_decomposition_for_seeded_plan(monkeypatc
             ],
             metadata={"skip_auto_decomposition": True, "plan_seed_source": "phagescope_research_seed_plan"},
             repo=repo,
-            decomposer=_FailingDecomposerStub(),
+            decomposer=cast(PlanDecomposer, _FailingDecomposerStub()),
             session_context={"session_id": "strict-seed"},
         )
     )
@@ -326,6 +443,8 @@ def test_create_plan_and_generate_skips_decomposition_for_seeded_plan(monkeypatc
     assert outcome.plan_tree.metadata["skip_auto_decomposition"] is True
     assert outcome.plan_tree.metadata["plan_generation"]["decomposition_status"] == "skipped_seeded"
     assert outcome.plan_tree.metadata["plan_generation"]["seed_task_count"] == 2
+    assert outcome.auto_review is not None
+    assert outcome.auto_review["status"] == "completed"
     assert outcome.seeded_tasks[0].metadata["source"] == "phagescope_research_seed_plan"
     assert outcome.seeded_tasks[1].dependencies == [outcome.seeded_tasks[0].id]
 
