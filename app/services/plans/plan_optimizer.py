@@ -63,6 +63,94 @@ class PlanAutoOptimizationOutcome:
     auto_generated: bool = False
 
 
+@dataclass(frozen=True)
+class PlanAutoReviewOptimizeOutcome:
+    plan_id: int
+    review: Optional[PlanRubricResult]
+    optimization: Optional[PlanAutoOptimizationOutcome]
+    optimization_needed: bool
+    optimization_attempted: bool
+    summary: str
+
+    def to_dict(self) -> Dict[str, Any]:
+        review = self.review
+        degraded = bool(review is not None and is_rubric_evaluation_unavailable(review))
+        status = "failed"
+        if review is not None:
+            if degraded:
+                status = "evaluation_unavailable"
+            elif self.optimization is not None and self.optimization.applied_changes:
+                status = "optimized"
+            elif self.optimization_needed and self.optimization_attempted:
+                status = "optimization_not_applied"
+            else:
+                status = "completed"
+
+        payload: Dict[str, Any] = {
+            "success": review is not None,
+            "operation": "auto_review",
+            "plan_id": self.plan_id,
+            "status": status,
+            "degraded": degraded,
+            "optimization_needed": bool(self.optimization_needed),
+            "optimization_attempted": bool(self.optimization_attempted),
+            "message": self.summary,
+        }
+
+        if review is not None:
+            payload.update(
+                {
+                    "rubric_score": review.overall_score,
+                    "rubric_dimension_scores": dict(review.dimension_scores or {}),
+                    "rubric_subcriteria_scores": dict(review.subcriteria_scores or {}),
+                    "rubric_feedback": dict(review.feedback or {}),
+                    "rubric_evaluator": {
+                        "provider": review.evaluator_provider,
+                        "model": review.evaluator_model,
+                        "rubric_version": review.rubric_version,
+                        "evaluated_at": review.evaluated_at,
+                    },
+                }
+            )
+
+        if self.optimization is not None:
+            review_before = self.optimization.review_before
+            review_after = self.optimization.review_after or review_before
+            score_delta = None
+            if review_before is not None and review_after is not None:
+                score_delta = float(review_after.overall_score) - float(review_before.overall_score)
+            payload["auto_optimize"] = {
+                "success": bool(self.optimization.applied_changes) or not self.optimization.optimization_needed,
+                "operation": "optimize",
+                "plan_id": self.plan_id,
+                "auto_generated_changes": bool(self.optimization.auto_generated),
+                "optimization_needed": bool(self.optimization.optimization_needed),
+                "applied_changes": len(self.optimization.applied_changes),
+                "failed_changes": 0,
+                "generated_changes": list(self.optimization.generated_changes),
+                "rubric_score_before": (
+                    review_before.overall_score if review_before is not None else None
+                ),
+                "rubric_score_after": (
+                    review_after.overall_score if review_after is not None else None
+                ),
+                "rubric_score_delta": score_delta,
+                "rubric_dimension_scores_before": (
+                    dict(review_before.dimension_scores) if review_before is not None else {}
+                ),
+                "rubric_dimension_scores_after": (
+                    dict(review_after.dimension_scores) if review_after is not None else {}
+                ),
+                "changes_detail": {
+                    "applied": list(self.optimization.applied_changes),
+                    "failed": [],
+                },
+                "message": self.optimization.summary,
+            }
+
+        return payload
+
+
 def _utc_now_iso() -> str:
     return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
 
@@ -360,9 +448,13 @@ def _normalize_generated_changes(
             continue
 
         if action == "reorder_task":
+            raw_task_id = change.get("task_id")
+            raw_new_position = change.get("new_position")
+            if raw_task_id is None or raw_new_position is None:
+                continue
             try:
-                task_id = int(change.get("task_id"))
-                new_position = int(change.get("new_position"))
+                task_id = int(raw_task_id)
+                new_position = int(raw_new_position)
             except (TypeError, ValueError):
                 continue
             if task_id not in existing_ids:
@@ -377,8 +469,11 @@ def _normalize_generated_changes(
             continue
 
         if action == "update_task":
+            raw_task_id = change.get("task_id")
+            if raw_task_id is None:
+                continue
             try:
-                task_id = int(change.get("task_id"))
+                task_id = int(raw_task_id)
             except (TypeError, ValueError):
                 continue
             if task_id not in existing_ids:
@@ -463,7 +558,10 @@ def _call_optimizer_llm(
         for item in list(payload.get("rationale") or [])
         if str(item).strip()
     ]
-    changes = payload.get("changes") if isinstance(payload.get("changes"), list) else []
+    raw_changes = payload.get("changes")
+    changes: List[Dict[str, Any]] = [
+        item for item in raw_changes if isinstance(item, dict)
+    ] if isinstance(raw_changes, list) else []
     return PlanOptimizationProposal(
         summary=summary or "Generated optimization changes from rubric feedback.",
         rationale=rationale[:8],
@@ -539,6 +637,36 @@ async def resolve_plan_review_result(
         evaluator_provider=evaluator_provider,
         evaluator_model=evaluator_model,
     )
+
+
+def _persist_plan_review_result(
+    *,
+    repo: PlanRepository,
+    tree: PlanTree,
+    review: PlanRubricResult,
+    trigger: str,
+) -> PlanTree:
+    metadata = dict(tree.metadata or {})
+    metadata["plan_evaluation"] = review.to_dict()
+    metadata["plan_auto_review"] = {
+        "reviewed_at": _utc_now_iso(),
+        "trigger": trigger,
+        "status": (
+            "evaluation_unavailable"
+            if is_rubric_evaluation_unavailable(review)
+            else "completed"
+        ),
+        "rubric_score": review.overall_score,
+        "rubric_version": review.rubric_version,
+        "evaluator": {
+            "provider": review.evaluator_provider,
+            "model": review.evaluator_model,
+        },
+    }
+    repo.update_plan_metadata(tree.id, metadata)
+    updated_tree = repo.get_plan_tree(tree.id)
+    updated_tree.metadata = dict(getattr(updated_tree, "metadata", None) or metadata)
+    return updated_tree
 
 
 def _preferred_review_provider(
@@ -802,3 +930,97 @@ async def auto_optimize_plan(
         )
 
     return outcome
+
+async def auto_review_and_optimize_plan(
+    *,
+    plan_id: int,
+    repo: Optional[PlanRepository] = None,
+    review_result: Optional[PlanRubricResult] = None,
+    max_changes: Optional[int] = None,
+    overall_threshold: Optional[float] = None,
+    dimension_threshold: Optional[float] = None,
+    optimizer_provider: str = DEFAULT_OPTIMIZER_PROVIDER,
+    optimizer_model: str = DEFAULT_OPTIMIZER_MODEL,
+    trigger: str = "post_create",
+) -> PlanAutoReviewOptimizeOutcome:
+    repo = repo or PlanRepository()
+    tree = repo.get_plan_tree(plan_id)
+    review = await resolve_plan_review_result(
+        tree,
+        review_result=review_result,
+        evaluator_provider=optimizer_provider,
+        evaluator_model=optimizer_model,
+    )
+
+    if review is None:
+        return PlanAutoReviewOptimizeOutcome(
+            plan_id=plan_id,
+            review=None,
+            optimization=None,
+            optimization_needed=False,
+            optimization_attempted=False,
+            summary="Automatic plan review failed before producing a rubric result.",
+        )
+
+    tree = _persist_plan_review_result(
+        repo=repo,
+        tree=tree,
+        review=review,
+        trigger=trigger,
+    )
+
+    if is_rubric_evaluation_unavailable(review):
+        return PlanAutoReviewOptimizeOutcome(
+            plan_id=plan_id,
+            review=review,
+            optimization=None,
+            optimization_needed=False,
+            optimization_attempted=False,
+            summary="Automatic plan review completed, but rubric evaluation is unavailable; optimization was skipped.",
+        )
+
+    needs_optimization = plan_review_needs_optimization(
+        review,
+        overall_threshold=overall_threshold,
+        dimension_threshold=dimension_threshold,
+    )
+    if not needs_optimization:
+        return PlanAutoReviewOptimizeOutcome(
+            plan_id=plan_id,
+            review=review,
+            optimization=None,
+            optimization_needed=False,
+            optimization_attempted=False,
+            summary="Automatic plan review completed; optimization was skipped because the plan meets the rubric threshold.",
+        )
+
+    optimization = await auto_optimize_plan(
+        plan_id=plan_id,
+        repo=repo,
+        review_result=review,
+        max_changes=max_changes,
+        overall_threshold=overall_threshold,
+        dimension_threshold=dimension_threshold,
+        optimizer_provider=optimizer_provider,
+        optimizer_model=optimizer_model,
+    )
+
+    refreshed = repo.get_plan_tree(plan_id)
+    optimization = PlanAutoOptimizationOutcome(
+        plan_tree=refreshed,
+        review_before=optimization.review_before,
+        review_after=optimization.review_after,
+        generated_changes=optimization.generated_changes,
+        applied_changes=optimization.applied_changes,
+        summary=optimization.summary,
+        optimization_needed=optimization.optimization_needed,
+        auto_generated=optimization.auto_generated,
+    )
+    return PlanAutoReviewOptimizeOutcome(
+        plan_id=plan_id,
+        review=review,
+        optimization=optimization,
+        optimization_needed=bool(optimization.optimization_needed),
+        optimization_attempted=True,
+        summary=optimization.summary,
+    )

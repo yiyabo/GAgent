@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
 import logging
 import re
@@ -10,13 +11,20 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel
 
-from ...config import get_graph_rag_settings, get_search_settings
+from ...config.rag_config import get_graph_rag_settings
+from ...config.search_config import get_search_settings
 from ...repository.plan_repository import PlanRepository
 from ..llm.decomposer_service import strip_code_fences
 from .plan_decomposer import DecompositionResult, PlanDecomposer
 from .plan_models import PlanNode, PlanTree
 
 logger = logging.getLogger(__name__)
+
+
+async def _auto_review_and_optimize_plan(**kwargs: Any) -> Any:
+    from .plan_optimizer import auto_review_and_optimize_plan
+
+    return await auto_review_and_optimize_plan(**kwargs)
 
 
 class PlanMaterialDecision(BaseModel):
@@ -34,6 +42,7 @@ class PlanGenerationOutcome:
     collected_materials: List[Dict[str, Any]]
     session_context: Optional[Dict[str, Any]]
     decomposition_status: str
+    auto_review: Optional[Dict[str, Any]] = None
     auto_completed_generation: bool = True
 
 
@@ -324,7 +333,7 @@ async def collect_plan_generation_materials(
     session_context: Optional[Dict[str, Any]],
     decomposer: Optional[PlanDecomposer],
 ) -> Tuple[Optional[Dict[str, Any]], List[Dict[str, Any]]]:
-    from tool_box import execute_tool
+    execute_tool = importlib.import_module("tool_box.integration").execute_tool
 
     effective_context = dict(session_context or {})
     if decomposer is None:
@@ -543,7 +552,8 @@ def _merge_plan_generation_metadata(
 
 def _plan_generation_status(tree: PlanTree) -> str:
     metadata = tree.metadata if isinstance(tree.metadata, dict) else {}
-    plan_generation = metadata.get("plan_generation") if isinstance(metadata.get("plan_generation"), dict) else {}
+    raw_plan_generation = metadata.get("plan_generation")
+    plan_generation = raw_plan_generation if isinstance(raw_plan_generation, dict) else {}
     return str(
         plan_generation.get("decomposition_status") or plan_generation.get("status") or ""
     ).strip().lower()
@@ -627,6 +637,26 @@ async def create_plan_and_generate(
     repo.update_plan_metadata(plan_id, merged_metadata)
     updated_tree.metadata = merged_metadata
 
+    auto_review_payload: Optional[Dict[str, Any]] = None
+    try:
+        auto_review = await _auto_review_and_optimize_plan(
+            plan_id=plan_id,
+            repo=repo,
+            trigger="plan_generation.create",
+        )
+        auto_review_payload = auto_review.to_dict()
+        updated_tree = repo.get_plan_tree(plan_id)
+    except Exception as exc:
+        logger.warning("Automatic post-create review failed for plan %s: %s", plan_id, exc)
+        auto_review_payload = {
+            "success": False,
+            "operation": "auto_review",
+            "plan_id": plan_id,
+            "status": "failed",
+            "error": str(exc),
+            "message": "Automatic post-create review failed.",
+        }
+
     return PlanGenerationOutcome(
         plan_tree=updated_tree,
         root_task_id=root_node.id,
@@ -635,6 +665,7 @@ async def create_plan_and_generate(
         collected_materials=collected_materials,
         session_context=effective_context,
         decomposition_status=decomposition_status,
+        auto_review=auto_review_payload,
         auto_completed_generation=True,
     )
 
@@ -661,6 +692,7 @@ async def ensure_plan_generation_ready(
             collected_materials=[],
             session_context=session_context,
             decomposition_status=status,
+            auto_review=None,
             auto_completed_generation=False,
         )
 
@@ -673,6 +705,7 @@ async def ensure_plan_generation_ready(
             collected_materials=[],
             session_context=session_context,
             decomposition_status="not_configured",
+            auto_review=None,
             auto_completed_generation=False,
         )
 
@@ -712,5 +745,6 @@ async def ensure_plan_generation_ready(
         collected_materials=collected_materials,
         session_context=effective_context,
         decomposition_status=decomposition_status,
+        auto_review=None,
         auto_completed_generation=True,
     )

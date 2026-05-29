@@ -347,6 +347,13 @@ def aliases_for_file_name(file_name: str, *, preferred_namespace: str) -> List[s
         alias = f"{preferred_namespace}.{_GENERIC_BASENAME_TO_SLOT[lowered]}"
         if _is_registered_artifact_alias(alias) and alias not in aliases:
             aliases.append(alias)
+    if preferred_namespace == "general":
+        for alias in _semantic_aliases_for_file_name(
+            lowered,
+            preferred_namespace=preferred_namespace,
+        ):
+            if alias not in aliases:
+                aliases.append(alias)
     return aliases
 
 
