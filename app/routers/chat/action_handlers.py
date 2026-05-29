@@ -1017,6 +1017,7 @@ def _update_runtime_context_from_tool(
     subject_ref = ""
     subject_kind = "workspace"
     display_ref = ""
+    subject_aliases: List[str] = []
     last_tool_scope = tool_name
     if isinstance(subject, dict):
         subject_ref = canonicalize_subject_ref(
@@ -3304,6 +3305,12 @@ async def handle_plan_action(agent: Any, action: LLMAction) -> AgentStep:
         effective_tree = agent.plan_tree or new_tree
         agent.plan_tree = effective_tree
         agent.extra_context["plan_id"] = effective_tree.id
+        auto_review_payload = dict(generation.auto_review or {})
+        if auto_review_payload:
+            agent._refresh_plan_tree(force_reload=True)
+            effective_tree = agent.plan_tree or agent.plan_session.repo.get_plan_tree(effective_tree.id)
+            agent.plan_tree = effective_tree
+
         message = f'Created and bound new plan #{effective_tree.id} "{effective_tree.title}".'
         if created_seed_tasks:
             message += f" Seeded with {len(created_seed_tasks)} top-level task(s) from the proposed plan."
@@ -3311,6 +3318,11 @@ async def handle_plan_action(agent: Any, action: LLMAction) -> AgentStep:
             message += " Integrated decomposition completed before returning the plan."
         elif generation.decomposition_status == "partial":
             message += " Integrated decomposition completed partially; inspect failed nodes before execution."
+        if isinstance(auto_review_payload, dict):
+            if isinstance(auto_review_payload.get("auto_optimize"), dict):
+                message += " Automatic review found improvements and optimized the plan."
+            elif auto_review_payload.get("success"):
+                message += " Automatic review completed."
         details = {
             "plan_id": effective_tree.id,
             "title": effective_tree.title,
@@ -3324,6 +3336,10 @@ async def handle_plan_action(agent: Any, action: LLMAction) -> AgentStep:
                 "entries": generation.collected_materials,
             },
         }
+        if auto_review_payload:
+            details["auto_review"] = auto_review_payload
+            if isinstance(auto_review_payload.get("auto_optimize"), dict):
+                details["auto_optimize"] = auto_review_payload["auto_optimize"]
         if created_seed_tasks:
             details["seed_tasks"] = [node.model_dump() for node in created_seed_tasks]
         if generation.decomposition is not None:
@@ -3456,8 +3472,8 @@ async def handle_plan_action(agent: Any, action: LLMAction) -> AgentStep:
                 "2. List each dimension score in a table (dimension name, score, brief assessment).\n"
                 "3. For dimensions scoring below 70, explain the specific problems found.\n"
                 "4. Provide concrete, actionable improvement suggestions for each weak dimension.\n"
-                "5. Do NOT call optimize_plan — present the review and wait for the user to decide.\n"
-                "6. Ask the user if they want to proceed with optimization or discuss specific points first."
+                "5. If the user requested autonomous completion, continue with optimize_plan when the rubric indicates concrete improvements.\n"
+                "6. Otherwise, present the review and ask whether they want deeper optimization or discussion."
             )
         )
         details = {
@@ -4219,18 +4235,29 @@ def handle_task_action(agent: Any, action: LLMAction) -> AgentStep:
                     local_paths = [p for p in artifact_paths if _task_verifier._is_local_path(p)]
                     if local_paths:
                         override_criteria = _task_verifier._build_generated_criteria(local_paths)
+                        generated_checks = (
+                            override_criteria.get("checks", [])
+                            if isinstance(override_criteria, dict)
+                            else []
+                        )
                         logger.info(
                             "verify_task: auto-generated %d checks from artifact paths for task %s",
-                            len(override_criteria.get("checks", [])),
+                            len(generated_checks),
                             task_id,
                         )
                 except Exception:
                     pass
 
         if override_criteria and _task_verifier._has_checks(override_criteria):
+            raw_override_checks = (
+                override_criteria.get("checks", [])
+                if isinstance(override_criteria, dict)
+                else []
+            )
+            override_checks = raw_override_checks if isinstance(raw_override_checks, list) else []
             logger.info(
                 "verify_task: using %d override checks for task %s",
-                len(override_criteria.get("checks", [])),
+                len(override_checks),
                 task_id,
             )
 
