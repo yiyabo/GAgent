@@ -11,6 +11,18 @@ def test_executor_settings_default_to_auto_backend(monkeypatch) -> None:
         get_executor_settings.cache_clear()
 
 
+def test_executor_settings_default_plan_tasks_to_internal_execution(monkeypatch) -> None:
+    monkeypatch.delenv("PLAN_TASK_EXECUTION_BACKEND", raising=False)
+    monkeypatch.delenv("PLAN_TASK_AGENT_BACKEND", raising=False)
+    get_executor_settings.cache_clear()
+    try:
+        settings = get_executor_settings()
+        assert settings.plan_task_execution_backend == "internal"
+        assert settings.plan_task_agent_backend == "qwen_code"
+    finally:
+        get_executor_settings.cache_clear()
+
+
 def test_executor_settings_reads_qwen_shell_timeout(monkeypatch) -> None:
     monkeypatch.setenv("QC_SHELL_TIMEOUT_MS", "420000")
     get_executor_settings.cache_clear()

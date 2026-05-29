@@ -55,6 +55,8 @@ class ExecutorSettings:
     skill_trace_enabled: bool = True
     code_execution_backend: str = "auto"  # "auto" | "local" | "qwen_code" | "claude_code"
     code_execution_auto_strategy: str = "qwen_primary"  # "qwen_primary" | "split"
+    plan_task_execution_backend: str = "internal"  # "internal" | "external_agent"
+    plan_task_agent_backend: str = "qwen_code"  # "local" | "qwen_code" | "claude_code"
     code_execution_local_runtime: str = DEFAULT_CODE_EXECUTION_LOCAL_RUNTIME
     code_execution_docker_image: str = DEFAULT_CODE_EXECUTION_DOCKER_IMAGE
     # --- Layer 4: configurable limits ---
@@ -178,6 +180,16 @@ def get_executor_settings() -> ExecutorSettings:
             "CODE_EXECUTION_AUTO_STRATEGY",
             defaults.code_execution_auto_strategy,
             {"qwen_primary", "split"},
+        ),
+        plan_task_execution_backend=_env_choice(
+            "PLAN_TASK_EXECUTION_BACKEND",
+            defaults.plan_task_execution_backend,
+            {"internal", "external_agent"},
+        ),
+        plan_task_agent_backend=_env_choice(
+            "PLAN_TASK_AGENT_BACKEND",
+            defaults.plan_task_agent_backend,
+            {"local", "qwen_code", "claude_code"},
         ),
         code_execution_local_runtime=resolve_code_execution_local_runtime(
             os.getenv("CODE_EXECUTOR_LOCAL_RUNTIME"),
