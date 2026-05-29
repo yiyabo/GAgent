@@ -424,11 +424,11 @@ class PlanStatusResolver:
                     effective_status = "failed"
                     status_reason = _truncate_reason(content or raw_result_text) or "Verification failed."
                     reason_code = "verification_failed"
-            elif raw_status == "running":
+            elif raw_status in {"running", "delegating"}:
                 if _looks_like_retry_or_blocked_failure_text(raw_result_text) or _looks_like_failure_text(raw_result_text):
                     effective_status = "failed"
                     status_reason = _truncate_reason(content or raw_result_text) or "Task failed."
-                    reason_code = "running_failed"
+                    reason_code = f"{raw_status}_failed"
                 elif payload_status in _COMPLETED_LIKE or _looks_like_success_text(raw_result_text):
                     if missing_publish_aliases and artifact_tracking_active:
                         effective_status = "failed"
@@ -438,10 +438,14 @@ class PlanStatusResolver:
                         effective_status = "completed"
                         status_reason = _truncate_reason(content or raw_result_text) or "Completed."
                         reason_code = "completed_from_payload"
+                elif raw_status == "delegating" and not raw_result_text:
+                    effective_status = "running"
+                    status_reason = "Currently delegated to an external code agent."
+                    reason_code = "delegating"
                 else:
                     effective_status = "failed"
                     status_reason = "Execution interrupted."
-                    reason_code = "running_interrupted"
+                    reason_code = f"{raw_status}_interrupted"
             elif raw_status in _COMPLETED_LIKE or payload_status in _COMPLETED_LIKE:
                 # Structured execution payloads are the authoritative task
                 # outcome.  The fallback text heuristic exists for legacy

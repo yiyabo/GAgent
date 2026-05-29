@@ -10,7 +10,7 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple, cast
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -52,6 +52,7 @@ from .dependency_validation import (
 )
 from .plan_models import PlanNode, PlanTree
 from .status_resolver import PlanStatusResolver
+from .task_delegate_executor import CodeAgentTaskDelegateExecutor, TaskDelegationSpec
 from .task_verification import TaskVerificationService, VerificationFinalization
 
 logger = logging.getLogger(__name__)
@@ -305,7 +306,7 @@ def _extract_paths_from_execution_result(raw: str, max_paths: int = 40) -> List[
         payload = {}
 
     paths: List[str] = []
-    seen: set = set()
+    seen: set[str] = set()
 
     # Structured fields first
     for key in ("artifact_paths", "produced_files", "session_artifact_paths"):
@@ -357,9 +358,19 @@ class ExecutionResponse(BaseModel):
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
     @classmethod
-    def model_validate_json(cls, raw: str) -> "ExecutionResponse":
+    def model_validate_json(
+        cls,
+        json_data: str | bytes | bytearray,
+        *,
+        strict: Optional[bool] = None,
+        context: Optional[Dict[str, Any]] = None,
+        by_alias: Optional[bool] = None,
+        by_name: Optional[bool] = None,
+        extra: Optional[str] = None,
+    ) -> "ExecutionResponse":
+        _ = strict, context, by_alias, by_name, extra
         try:
-            payload = json.loads(raw)
+            payload = json.loads(json_data)
         except json.JSONDecodeError as exc:
             raise ValidationError([exc], cls) from exc
         return super().model_validate(payload)
@@ -652,10 +663,12 @@ class ExecutorPromptBuilder:
                 lines.append("Required output files that must exist before the task can complete:")
                 for path in required_output_paths[:20]:
                     lines.append(f"- {path}")
-            if isinstance(artifact_contract.get("requires"), list) and artifact_contract["requires"]:
-                lines.append(f"Required artifact aliases: {artifact_contract['requires']}")
-            if isinstance(artifact_contract.get("publishes"), list) and artifact_contract["publishes"]:
-                lines.append(f"Published artifact aliases: {artifact_contract['publishes']}")
+            requires = artifact_contract.get("requires") if isinstance(artifact_contract, dict) else None
+            publishes = artifact_contract.get("publishes") if isinstance(artifact_contract, dict) else None
+            if isinstance(requires, list) and requires:
+                lines.append(f"Required artifact aliases: {requires}")
+            if isinstance(publishes, list) and publishes:
+                lines.append(f"Published artifact aliases: {publishes}")
             lines.extend(
                 [
                     "Contract rule: completion is based on these exact files/artifact aliases, not on similar filenames or prose claims.",
@@ -668,10 +681,12 @@ class ExecutorPromptBuilder:
                 lines.append(f"- paper_section: {paper_section}")
             if paper_role:
                 lines.append(f"- paper_role: {paper_role}")
-            if isinstance(artifact_contract.get("requires"), list) and artifact_contract["requires"]:
-                lines.append(f"- artifact_requires: {artifact_contract['requires']}")
-            if isinstance(artifact_contract.get("publishes"), list) and artifact_contract["publishes"]:
-                lines.append(f"- artifact_publishes: {artifact_contract['publishes']}")
+            requires = artifact_contract.get("requires") if isinstance(artifact_contract, dict) else None
+            publishes = artifact_contract.get("publishes") if isinstance(artifact_contract, dict) else None
+            if isinstance(requires, list) and requires:
+                lines.append(f"- artifact_requires: {requires}")
+            if isinstance(publishes, list) and publishes:
+                lines.append(f"- artifact_publishes: {publishes}")
             if resolved_input_artifacts:
                 lines.append("- resolved_input_artifacts:")
                 for alias, path in list(resolved_input_artifacts.items())[:10]:
@@ -788,7 +803,7 @@ class PlanExecutorLLMService:
         # Store direct client reference for native tool calling
         # (LLMService.client is always set — either the passed-in client or
         # the default one created by get_default_client()).
-        self._llm_client: LLMClient = self._llm.client  # type: ignore[assignment]
+        self._llm_client: LLMClient = cast(LLMClient, self._llm.client)
 
     def generate(
         self,
@@ -949,6 +964,7 @@ class PlanExecutor:
         llm_service: Optional[PlanExecutorLLMService] = None,
         settings: Optional[ExecutorSettings] = None,
         prompt_builder: Optional[ExecutorPromptBuilder] = None,
+        task_delegate_executor: Optional[CodeAgentTaskDelegateExecutor] = None,
     ) -> None:
         if repo is None:
             from ...repository.plan_repository import PlanRepository
@@ -963,6 +979,7 @@ class PlanExecutor:
         self._task_verifier = TaskVerificationService()
         self._artifact_preflight = ArtifactPreflightService()
         self._status_resolver = PlanStatusResolver()
+        self._task_delegate_executor = task_delegate_executor or CodeAgentTaskDelegateExecutor()
 
     def _ensure_runtime_helpers(self) -> None:
         if not hasattr(self, "_settings"):
@@ -973,6 +990,8 @@ class PlanExecutor:
             self._status_resolver = PlanStatusResolver()
         if not hasattr(self, "_task_verifier"):
             self._task_verifier = TaskVerificationService()
+        if not hasattr(self, "_task_delegate_executor"):
+            self._task_delegate_executor = CodeAgentTaskDelegateExecutor()
 
     def _resolve_task_tool_workspace(
         self,
@@ -1090,7 +1109,7 @@ class PlanExecutor:
             cfg.session_context = {}
 
         # Track failed/skipped task ids for transitive dependency skip
-        _failed_or_skipped: set = set()
+        _failed_or_skipped: set[int] = set()
         cfg.session_context["_artifact_registry"] = artifact_registry
         cfg.session_context["_artifact_manifest"] = self._get_artifact_manifest(plan_id, cfg.session_context)
 
@@ -1637,6 +1656,20 @@ class PlanExecutor:
             )
         outline = tree.to_outline(max_depth=4, max_nodes=80) if config.include_plan_outline else None
 
+        if self._should_delegate_plan_task(config):
+            return self._run_task_with_external_delegate(
+                plan_id=plan_id,
+                node=node,
+                parent=parent,
+                dependencies=dependencies,
+                plan_outline=outline,
+                tree=tree,
+                config=config,
+                artifact_contract=artifact_contract,
+                resolved_input_artifacts=resolved_input_artifacts,
+                resolved_resources=resolved_resources,
+            )
+
         if self._should_use_deep_think(config):
             return self._run_task_with_deep_think(
                 plan_id=plan_id,
@@ -1997,7 +2030,7 @@ class PlanExecutor:
                 return tree
 
             # Step 3: Persist new dependencies
-            expected_edges: List[tuple] = []  # (consumer_id, producer_id, basename)
+            expected_edges: List[Tuple[int, int, str]] = []  # (consumer_id, producer_id, basename)
             for consumer_id, additions in pending_additions.items():
                 node = tree.nodes[consumer_id]
                 new_deps = list(node.dependencies)
@@ -2337,6 +2370,182 @@ class PlanExecutor:
     def _should_use_deep_think(self, config: ExecutionConfig) -> bool:
         _ = config
         return True
+
+    def _should_delegate_plan_task(self, config: ExecutionConfig) -> bool:
+        _ = config
+        return str(
+            getattr(self._settings, "plan_task_execution_backend", "internal") or "internal"
+        ).strip().lower() == "external_agent"
+
+    def _run_task_with_external_delegate(
+        self,
+        *,
+        plan_id: int,
+        node: PlanNode,
+        parent: Optional[PlanNode],
+        dependencies: List[PlanNode],
+        plan_outline: Optional[str],
+        tree: PlanTree,
+        config: ExecutionConfig,
+        artifact_contract: Dict[str, List[str]],
+        resolved_input_artifacts: Dict[str, str],
+        resolved_resources: Dict[str, Dict[str, Any]],
+    ) -> ExecutionResult:
+        try:
+            self._repo.update_task(plan_id, node.id, status="delegating", execution_result="")
+            node.status = "delegating"
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning(
+                "Failed to mark task %s as delegating for plan %s: %s",
+                node.id,
+                plan_id,
+                exc,
+            )
+
+        session_context = config.session_context if isinstance(config.session_context, dict) else {}
+        task_ancestor_chain, task_work_dir = self._resolve_task_tool_workspace(
+            node,
+            session_id=session_context.get("session_id"),
+            tree=tree,
+        )
+        prompt = self._prompt_builder.build(
+            node=node,
+            parent=parent,
+            dependencies=dependencies,
+            plan_outline=plan_outline,
+            include_context=config.use_context,
+            session_context=session_context,
+        )
+        node_metadata = node.metadata if isinstance(node.metadata, dict) else {}
+        acceptance_criteria = (
+            node_metadata.get("acceptance_criteria")
+            if isinstance(node_metadata.get("acceptance_criteria"), dict)
+            else {}
+        )
+        readable_dirs = self._delegation_readable_dirs(
+            resolved_input_artifacts=resolved_input_artifacts,
+            dependencies=dependencies,
+            session_context=session_context,
+        )
+        backend = str(
+            getattr(self._settings, "plan_task_agent_backend", "qwen_code") or "qwen_code"
+        ).strip().lower()
+        delegation = self._task_delegate_executor.execute(
+            TaskDelegationSpec(
+                plan_id=plan_id,
+                task_id=node.id,
+                task_name=node.display_name(),
+                task_instruction=node.instruction or "",
+                task_prompt=prompt,
+                executor_backend=backend,
+                session_id=session_context.get("session_id"),
+                ancestor_chain=task_ancestor_chain,
+                owner_id=session_context.get("owner_id"),
+                current_job_id=self._current_job_id(),
+                work_dir=task_work_dir,
+                artifact_contract=dict(artifact_contract or {}),
+                acceptance_criteria=dict(acceptance_criteria or {}),
+                resolved_input_artifacts=dict(resolved_input_artifacts or {}),
+                readable_dirs=readable_dirs,
+                resolved_resources=dict(resolved_resources or {}),
+            )
+        )
+        metadata: Dict[str, Any] = {
+            "delegated_task_execution": True,
+            "executor": delegation.executor,
+            "executor_session_id": delegation.executor_session_id,
+            "delegation_status": delegation.status,
+            **dict(delegation.metadata or {}),
+        }
+        if delegation.artifact_paths:
+            metadata["artifact_paths"] = list(delegation.artifact_paths[:80])
+        payload: Dict[str, Any] = {
+            "status": "success" if delegation.status == "completed" else "skipped" if delegation.status == "blocked" else "failed",
+            "content": delegation.summary,
+            "notes": ["Task executed by external code agent delegate."],
+            "metadata": metadata,
+        }
+        if delegation.artifact_paths:
+            payload["artifact_paths"] = list(delegation.artifact_paths[:80])
+        for key in (
+            "run_directory",
+            "working_directory",
+            "task_directory_full",
+            "task_root_directory",
+            "results_directory",
+            "work_dir",
+            "run_dir",
+        ):
+            value = delegation.raw_result.get(key) if isinstance(delegation.raw_result, dict) else None
+            if isinstance(value, str) and value.strip():
+                payload[key] = value.strip()
+        if delegation.status == "blocked":
+            payload.setdefault("metadata", {})["blocked_by_dependencies"] = True
+        payload, execution_status = _coerce_blocked_dependency_payload(payload)
+        if delegation.status == "failed":
+            execution_status = "failed"
+        finalization, _ = self._finalize_task_execution(
+            plan_id,
+            node,
+            payload,
+            execution_status=execution_status,
+        )
+        finalization, raw_response = self._materialize_finalization(
+            plan_id,
+            node,
+            finalization,
+            session_context=config.session_context,
+        )
+        node.execution_result = raw_response
+        node.status = finalization.final_status
+        tree.nodes[node.id] = node
+        if parent:
+            tree.nodes[parent.id] = parent
+        return ExecutionResult(
+            plan_id=plan_id,
+            task_id=node.id,
+            status=finalization.final_status,
+            content=str(finalization.payload.get("content") or delegation.summary),
+            notes=list(finalization.payload.get("notes") or []),
+            metadata=finalization.payload.get("metadata") or {},
+            raw_response=raw_response,
+            attempts=1,
+        )
+
+    def _delegation_readable_dirs(
+        self,
+        *,
+        resolved_input_artifacts: Dict[str, str],
+        dependencies: List[PlanNode],
+        session_context: Dict[str, Any],
+    ) -> List[str]:
+        dirs: List[str] = []
+
+        def _add(path_value: Any) -> None:
+            text = str(path_value or "").strip()
+            if not text:
+                return
+            path = Path(text).expanduser()
+            candidate = path if path.exists() and path.is_dir() else path.parent
+            candidate_text = str(candidate)
+            if candidate_text and candidate_text != "." and candidate_text not in dirs:
+                dirs.append(candidate_text)
+
+        for path in resolved_input_artifacts.values():
+            _add(path)
+        artifact_manifest = self._get_artifact_manifest(
+            dependencies[0].plan_id if dependencies else 0,
+            session_context,
+        ) if dependencies else {}
+        for dep in dependencies:
+            artifact_context = self._dependency_artifact_context(
+                dep,
+                session_context.get("_artifact_registry"),
+                artifact_manifest=artifact_manifest,
+            )
+            for path in artifact_context.get("artifact_paths") or []:
+                _add(path)
+        return dirs[:20]
 
     @staticmethod
     def _build_output_contract_constraints(node_metadata: Dict[str, Any]) -> List[str]:
@@ -3831,7 +4040,8 @@ class PlanExecutor:
         contract = self._resolve_task_artifact_contract(node)
         required_aliases = list(contract.get("requires") or [])
         metadata = node.metadata if isinstance(node.metadata, dict) else {}
-        explicit_contract = metadata.get("artifact_contract") if isinstance(metadata.get("artifact_contract"), dict) else {}
+        raw_explicit_contract = metadata.get("artifact_contract")
+        explicit_contract = raw_explicit_contract if isinstance(raw_explicit_contract, dict) else {}
         explicit_required_aliases = [
             str(alias).strip()
             for alias in list(explicit_contract.get("requires") or [])
@@ -3845,6 +4055,7 @@ class PlanExecutor:
         backfill_enabled = bool(
             getattr(self._settings, "artifact_backfill_enabled", False)
         )
+        state_by_task: Dict[int, Dict[str, Any]] = {}
 
         # Only backfill dependency artifacts when the legacy compat flag is on.
         # In authority mode (default), dependencies must have already published
