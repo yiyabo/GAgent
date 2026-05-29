@@ -5,12 +5,11 @@ This module provides plan creation and optimization functionality for DeepThink 
 Supports creating, reviewing, optimizing, and querying plans with iterative improvement.
 """
 
-import asyncio
 import inspect
 import json
 import logging
 from types import SimpleNamespace
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from app.services.plans.plan_decomposer import PlanDecomposer
 from app.services.plans.plan_generation import (
@@ -244,7 +243,9 @@ async def _create_plan(
             material_count,
         )
 
-        return {
+        auto_review_payload = dict(outcome.auto_review or {})
+
+        result: Dict[str, Any] = {
             "success": True,
             "operation": "create",
             "plan_id": plan_id,
@@ -269,6 +270,10 @@ async def _create_plan(
                 f"Decomposition status: {outcome.decomposition_status}."
             ),
         }
+        result["auto_review"] = auto_review_payload
+        if isinstance(auto_review_payload.get("auto_optimize"), dict):
+            result["auto_optimize"] = auto_review_payload["auto_optimize"]
+        return result
 
     except Exception as e:
         logger.exception(f"Failed to create plan: {e}")
@@ -837,7 +842,7 @@ async def _optimize_plan(
                         failed_changes.append({"change": change, "error": "task_id and new_position required"})
                         continue
                     
-                    repo.move_task(plan_id, task_id, new_position=new_position)
+                    repo.move_task(plan_id, task_id, new_parent_id=None, new_position=new_position)
                     applied_changes.append({
                         "action": "reorder_task",
                         "task_id": task_id,
@@ -1134,8 +1139,7 @@ async def _update_task(
     try:
         from app.repository.plan_repository import PlanRepository
         from app.services.plans.task_verification import TaskVerificationService
-        import json
-
+        
         repo = PlanRepository()
         tree = repo.get_plan_tree(plan_id)
 
@@ -1145,7 +1149,7 @@ async def _update_task(
         node = tree.nodes[task_id]
         old_status = node.status or "pending"
         updates: Dict[str, Any] = {}
-        changes_made: list = []
+        changes_made: List[str] = []
         verifier = TaskVerificationService()
 
         if new_status == "completed":
@@ -1271,6 +1275,9 @@ async def _execute_all(
         if plan_id is None:
             return {"success": False, "error": "plan_id is required for execute_all"}
 
+    execution_lock = None
+    release_execution_lock: Optional[Callable[[int, int, Any], None]] = None
+
     try:
         from app.repository.plan_repository import PlanRepository
         from app.services.plans.todo_list import build_full_plan_todo_list
@@ -1282,6 +1289,7 @@ async def _execute_all(
             _acquire_plan_execution_lock,
             _release_plan_execution_lock,
         )
+        release_execution_lock = _release_plan_execution_lock
         import threading
 
         repo = PlanRepository()
@@ -1411,11 +1419,12 @@ async def _execute_all(
         )
 
         # Launch background thread
-        def _locked_run(**kwargs):
+        def _locked_run(**kwargs: Any) -> None:
             try:
                 _run_full_plan_job(**kwargs)
             finally:
-                _release_plan_execution_lock(plan_id, 0, execution_lock)
+                if release_execution_lock is not None and execution_lock is not None:
+                    release_execution_lock(plan_id, 0, execution_lock)
 
         thread = threading.Thread(
             target=_locked_run,
@@ -1448,8 +1457,8 @@ async def _execute_all(
     except Exception as e:
         # Release execution lock if it was acquired but the thread was never started.
         try:
-            if execution_lock is not None:  # noqa: F821
-                _release_plan_execution_lock(plan_id, 0, execution_lock)  # noqa: F821
+            if execution_lock is not None and release_execution_lock is not None:
+                release_execution_lock(plan_id, 0, execution_lock)
         except (NameError, UnboundLocalError):
             pass  # Lock was never acquired
         except Exception:
