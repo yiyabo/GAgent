@@ -1859,7 +1859,11 @@ def _qwen_code_cli_available() -> bool:
     return _validate_qwen_code_config(env_map) is None
 
 
-def _resolve_code_executor_backend(task: str) -> tuple[str, str, str]:
+def _resolve_code_executor_backend(task: str, backend_override: Optional[str] = None) -> tuple[str, str, str]:
+    override = str(backend_override or "").strip().lower()
+    if override in {"local", "qwen_code", "claude_code"}:
+        return override, "plan_task_delegation", f"execution_backend={override}"
+
     backend = "auto"
     auto_strategy = "qwen_primary"
     try:
@@ -3862,6 +3866,7 @@ async def code_executor_handler(
     tool_context: Optional[Any] = None,
     auto_fix: bool = True,
     resolved_resources: Optional[Dict[str, Any]] = None,
+    execution_backend: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Execute a task using Claude Code (official CLI) with local file access.
@@ -3887,7 +3892,9 @@ async def code_executor_handler(
         Dict containing execution results
     """
     selected_backend, execution_lane, execution_lane_reason = (
-        _resolve_code_executor_backend(task)
+        _resolve_code_executor_backend(task, backend_override=execution_backend)
+        if execution_backend is not None
+        else _resolve_code_executor_backend(task)
     )
     use_local_backend = selected_backend == "local"
     use_qwen_code_backend = selected_backend == "qwen_code"

@@ -244,6 +244,7 @@ class UnifiedToolExecutor:
                 "setting_sources",
                 "auth_mode",
                 "resolved_resources",
+                "execution_backend",
             ):
                 safe_params.pop(key, None)
             legacy_target_task_id = safe_params.pop("target_task_id", None)
@@ -264,7 +265,11 @@ class UnifiedToolExecutor:
                 safe_params["on_stderr"] = context.on_stderr
             if context.resolved_resources is not None:
                 safe_params["resolved_resources"] = context.resolved_resources
+            explicit_backend = params.get("execution_backend") if isinstance(params, dict) else None
+            if isinstance(explicit_backend, str) and explicit_backend.strip():
+                safe_params["execution_backend"] = explicit_backend.strip()
         else:
+            safe_params.pop("execution_backend", None)
             safe_params.pop("target_task_id", None)
 
         if context.session_id:
