@@ -1,16 +1,20 @@
 import asyncio
 from types import SimpleNamespace
+from typing import cast
 
 from app.routers.chat.agent import StructuredChatAgent
 from app.services.plans.plan_models import PlanNode, PlanTree
-from app.services.plans.plan_optimizer import plan_review_needs_optimization
+from app.services.plans.plan_optimizer import auto_review_and_optimize_plan, plan_review_needs_optimization
+from app.repository.plan_repository import PlanRepository
 from app.services.plans.plan_rubric_evaluator import PlanRubricResult, rubric_definition_en
 from tool_box.tools_impl.plan_tools import _optimize_plan
 
 
-class _OptimizeRepoStub:
+class _OptimizeRepoStub(PlanRepository):
     def __init__(self, tree: PlanTree) -> None:
+        super().__init__()
         self.tree = tree
+        self.metadata_updates = []
 
     def get_plan_tree(self, plan_id: int) -> PlanTree:
         assert plan_id == self.tree.id
@@ -21,18 +25,23 @@ class _OptimizeRepoStub:
         plan_id: int,
         *,
         name: str,
-        status: str,
-        instruction: str,
-        parent_id: int | None,
-        dependencies=None,
+        status: str = "pending",
+        instruction: str | None = None,
+        parent_id: int | None = None,
+        metadata: dict[str, object] | None = None,
+        dependencies: list[int] | None = None,
+        position: int | None = None,
+        anchor_task_id: int | None = None,
+        anchor_position: str | None = None,
     ) -> PlanNode:
+        _ = metadata, position, anchor_task_id, anchor_position
         next_id = max(self.tree.nodes) + 1
         node = PlanNode(
             id=next_id,
             plan_id=plan_id,
             name=name,
             status=status,
-            instruction=instruction,
+            instruction=instruction or "",
             parent_id=parent_id,
             dependencies=list(dependencies or []),
         )
@@ -40,12 +49,71 @@ class _OptimizeRepoStub:
         self.tree.rebuild_adjacency()
         return node
 
-    def update_task(self, plan_id: int, task_id: int, **kwargs) -> None:
+    def update_task(
+        self,
+        plan_id: int,
+        task_id: int,
+        *,
+        name: str | None = None,
+        status: str | None = None,
+        instruction: str | None = None,
+        metadata: dict[str, object] | None = None,
+        dependencies: list[int] | None = None,
+        context_combined: str | None = None,
+        context_sections: list[object] | None = None,
+        context_meta: dict[str, object] | None = None,
+        execution_result: str | None = None,
+    ) -> PlanNode:
+        _ = context_combined, context_sections, context_meta
         assert plan_id == self.tree.id
         node = self.tree.nodes[task_id]
-        for key, value in kwargs.items():
-            setattr(node, key, value)
+        updates = {
+            "name": name,
+            "status": status,
+            "instruction": instruction,
+            "metadata": metadata,
+            "dependencies": dependencies,
+            "execution_result": execution_result,
+        }
+        for key, value in updates.items():
+            if value is not None:
+                setattr(node, key, value)
         self.tree.rebuild_adjacency()
+        return node
+
+    def update_plan_metadata(self, plan_id: int, metadata) -> None:
+        assert plan_id == self.tree.id
+        self.metadata_updates.append((plan_id, metadata))
+        self.tree.metadata = dict(metadata or {})
+
+    def apply_changes_atomically(self, plan_id: int, changes):
+        assert plan_id == self.tree.id
+        applied = []
+        for change in changes:
+            action = change.get("action")
+            if action == "add_task":
+                node = self.create_task(
+                    plan_id,
+                    name=change["name"],
+                    status="pending",
+                    instruction=change["instruction"],
+                    parent_id=change.get("parent_id"),
+                    dependencies=change.get("dependencies"),
+                )
+                applied.append({"action": "add_task", "task_id": node.id, "name": node.name})
+            elif action == "update_task":
+                task_id = int(change["task_id"])
+                updates = {key: change[key] for key in ("name", "instruction", "dependencies") if key in change}
+                self.update_task(plan_id, task_id, **updates)
+                applied.append({"action": "update_task", "task_id": task_id, "updated_fields": list(updates)})
+        return applied
+
+    def reindex_all_positions(self, plan_id: int) -> None:
+        assert plan_id == self.tree.id
+
+    def upsert_plan_tree(self, tree: PlanTree, *, note: str | None = None) -> None:
+        _ = note
+        self.tree = tree
 
 
 def _build_tree() -> PlanTree:
@@ -53,7 +121,6 @@ def _build_tree() -> PlanTree:
         id=1,
         plan_id=1,
         name="Demo Plan",
-        task_type="root",
         metadata={"is_root": True, "task_type": "root"},
         parent_id=None,
         instruction="Original description",
@@ -146,6 +213,14 @@ def test_optimize_plan_auto_generates_changes_when_missing(monkeypatch) -> None:
     repo = _OptimizeRepoStub(_build_tree())
     monkeypatch.setattr("app.repository.plan_repository.PlanRepository", lambda: repo)
 
+    async def _fake_ensure_plan_generation_ready(**_kwargs):
+        return SimpleNamespace(plan_tree=repo.tree, decomposition_status="completed")
+
+    monkeypatch.setattr(
+        "tool_box.tools_impl.plan_tools.ensure_plan_generation_ready",
+        _fake_ensure_plan_generation_ready,
+    )
+
     async def _fake_auto_optimize_plan(*, plan_id: int, repo=None, **_kwargs):
         assert plan_id == 1
         assert repo is not None
@@ -180,6 +255,73 @@ def test_optimize_plan_auto_generates_changes_when_missing(monkeypatch) -> None:
     assert result["rubric_score_before"] == 72.0
     assert result["rubric_score_after"] == 89.0
     assert result["generated_changes"][0]["action"] == "add_task"
+
+
+def test_auto_review_and_optimize_plan_applies_low_score_plan(monkeypatch) -> None:
+    repo = _OptimizeRepoStub(_build_tree())
+    low_review = _build_review_result(
+        overall=72.0,
+        innovation=55.0,
+        revisions=["Add a feasibility and fallback validation step."],
+    )
+    high_review = _build_review_result(overall=89.0, innovation=83.0, revisions=[])
+    review_calls = [low_review, high_review]
+
+    def _fake_evaluate(*_args, **_kwargs):
+        return review_calls.pop(0)
+
+    monkeypatch.setattr("app.services.plans.plan_optimizer.evaluate_plan_rubric", _fake_evaluate)
+    monkeypatch.setattr(
+        "app.services.plans.plan_optimizer._call_optimizer_llm",
+        lambda *_args, **_kwargs: SimpleNamespace(
+            summary="Added feasibility guardrails.",
+            rationale=["Low feasibility score required a concrete validation step."],
+            changes=[
+                {
+                    "action": "add_task",
+                    "name": "Validate feasibility",
+                    "instruction": "Check resource constraints, fallback paths, and acceptance criteria.",
+                    "parent_id": 1,
+                }
+            ],
+        ),
+    )
+
+    outcome = asyncio.run(auto_review_and_optimize_plan(plan_id=1, repo=cast(PlanRepository, repo)))
+    payload = outcome.to_dict()
+
+    assert payload["success"] is True
+    assert payload["status"] == "optimized"
+    assert payload["optimization_needed"] is True
+    assert payload["auto_optimize"]["applied_changes"] == 1
+    assert payload["auto_optimize"]["rubric_score_before"] == 72.0
+    assert payload["auto_optimize"]["rubric_score_after"] == 89.0
+    assert repo.tree.metadata["plan_auto_review"]["trigger"] == "post_create"
+    assert repo.tree.metadata["plan_evaluation"]["overall_score"] == 89.0
+
+
+def test_auto_review_and_optimize_plan_skips_high_score_plan(monkeypatch) -> None:
+    repo = _OptimizeRepoStub(_build_tree())
+    high_review = _build_review_result(overall=92.0, innovation=88.0, revisions=[])
+
+    monkeypatch.setattr(
+        "app.services.plans.plan_optimizer.evaluate_plan_rubric",
+        lambda *_args, **_kwargs: high_review,
+    )
+    monkeypatch.setattr(
+        "app.services.plans.plan_optimizer._call_optimizer_llm",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("optimizer should not run")),
+    )
+
+    outcome = asyncio.run(auto_review_and_optimize_plan(plan_id=1, repo=cast(PlanRepository, repo)))
+    payload = outcome.to_dict()
+
+    assert payload["success"] is True
+    assert payload["status"] == "completed"
+    assert payload["optimization_needed"] is False
+    assert "auto_optimize" not in payload
+    assert repo.tree.metadata["plan_auto_review"]["status"] == "completed"
+    assert repo.tree.metadata["plan_evaluation"]["overall_score"] == 92.0
 
 
 def test_created_plan_auto_review_sync_triggers_optimize_for_low_score(monkeypatch) -> None:
@@ -277,7 +419,7 @@ def test_auto_optimize_returns_gracefully_when_post_commit_scoring_fails(monkeyp
     ]
     monkeypatch.setattr("app.services.plans.plan_optimizer.PlanRepository", lambda: repo)
 
-    result = asyncio.run(auto_optimize_plan(plan_id=1, repo=repo))
+    result = asyncio.run(auto_optimize_plan(plan_id=1, repo=cast(PlanRepository, repo)))
 
     # Should succeed with degraded outcome, not raise
     assert result is not None
