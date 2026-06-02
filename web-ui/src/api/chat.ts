@@ -128,7 +128,7 @@ export class ChatApi extends BaseApi {
   getActiveRun = async (sessionId: string) => {
     return this.client.get(
       `/chat/sessions/${encodeURIComponent(sessionId)}/runs`,
-      { params: { status: 'running', limit: 1 } }
+      { params: { limit: 5 } }
     );
   };
 }

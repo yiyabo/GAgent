@@ -174,6 +174,8 @@ def test_plan_executor_passes_reference_context_into_deep_think(
         repo=cast(PlanRepository, cast(object, repo)),
         llm_service=cast(PlanExecutorLLMService, cast(object, SimpleNamespace(_llm=object()))),
     )
+    # Pin the deep-think route; the external-delegate route would skip DeepThinkAgent entirely.
+    monkeypatch.setattr(executor, "_should_delegate_plan_task", lambda _cfg: False)
     result = executor.execute_task(
         1,
         1,

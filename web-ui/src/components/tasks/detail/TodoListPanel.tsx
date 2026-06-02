@@ -57,7 +57,8 @@ const taskStatusColor: Record<string, string> = {
 const TodoTaskItem: React.FC<{
   item: TodoItemResponse;
   onTaskClick?: (taskId: number) => void;
-}> = ({ item, onTaskClick }) => {
+  showPhaseTag?: boolean;
+}> = ({ item, onTaskClick, showPhaseTag = false }) => {
   const displayStatus = item.effective_status || item.status;
   const incomplete = item.incomplete_dependencies ?? [];
   const blocked =
@@ -82,6 +83,11 @@ const TodoTaskItem: React.FC<{
           <Tag color={taskStatusColor[displayStatus] ?? 'default'} style={{ marginRight: 0 }}>
             {displayStatus}
           </Tag>
+          {showPhaseTag && (
+            <Tag color="blue" style={{ marginRight: 0 }}>
+              Phase {item.phase + 1}
+            </Tag>
+          )}
           <Button
             type="link"
             size="small"
@@ -270,7 +276,7 @@ const TodoListPanel: React.FC<TodoListPanelProps> = ({
   const isFullPlanMode = fullPlan || targetTaskId === null;
   const hasPending = todoList ? todoList.pending_order.length > 0 : false;
   const titleText = isFullPlanMode
-    ? `Plan Todo List`
+    ? `Plan Workflow`
     : `Todo List — Task #${targetTaskId}`;
 
   return (
@@ -326,13 +332,22 @@ const TodoListPanel: React.FC<TodoListPanelProps> = ({
               <Text strong>
                 Overall Progress: {todoList.completed_tasks}/{todoList.total_tasks} tasks
               </Text>
-              <Text type="secondary">{todoList.phases.length} phases</Text>
+              <Text type="secondary">
+                {`${todoList.phases.length} phases`}
+              </Text>
             </div>
             <Progress percent={overallPct} />
           </div>
 
-          {/* Phase cards */}
           <Space direction="vertical" size={12} style={{ width: '100%' }}>
+            {isFullPlanMode && (
+              <Alert
+                type="info"
+                showIcon
+                message="Ordered by execution dependencies"
+                description="Phases reflect the real dependency order in which tasks become runnable; each task shows its dependencies."
+              />
+            )}
             {todoList.phases.map((phase) => (
               <TodoPhaseCard key={phase.phase_id} phase={phase} onTaskClick={onTaskClick} />
             ))}

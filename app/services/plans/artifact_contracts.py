@@ -918,6 +918,38 @@ def publish_artifact(
     artifacts[alias] = entry
     return entry
 
+def _resolve_contract_bypass_alias(
+    artifacts: Dict[str, Any],
+    canonical_alias: str,
+) -> Optional[str]:
+    if not _is_registered_artifact_alias(canonical_alias):
+        return None
+    expected_basenames = {
+        name.lower() for name in candidate_filenames_for_alias(canonical_alias)
+    }
+    if not expected_basenames:
+        return None
+    matches: List[str] = []
+    for key, entry in artifacts.items():
+        if not isinstance(entry, dict):
+            continue
+        if not (
+            str(key).startswith("contract:")
+            or entry.get("source") == "contract_artifacts"
+        ):
+            continue
+        path = str(entry.get("path") or "").strip()
+        if not path or not Path(path).exists():
+            continue
+        if Path(path).name.lower() not in expected_basenames:
+            continue
+        if not validate_artifact(canonical_alias, path).validated:
+            continue
+        if path not in matches:
+            matches.append(path)
+    return matches[0] if len(matches) == 1 else None
+
+
 def resolve_manifest_aliases(
     manifest: Dict[str, Any],
     aliases: Iterable[str],
@@ -930,11 +962,14 @@ def resolve_manifest_aliases(
         alias_text = str(alias or "").strip()
         canonical_alias = canonicalize_artifact_alias(alias_text)
         entry = artifacts.get(canonical_alias) or artifacts.get(alias_text)
-        if not isinstance(entry, dict):
-            continue
-        path = str(entry.get("path") or "").strip()
-        if path and Path(path).exists() and artifact_entry_is_valid(entry):
-            resolved[alias_text] = path
+        if isinstance(entry, dict):
+            path = str(entry.get("path") or "").strip()
+            if path and Path(path).exists() and artifact_entry_is_valid(entry):
+                resolved[alias_text] = path
+                continue
+        fallback_path = _resolve_contract_bypass_alias(artifacts, canonical_alias)
+        if fallback_path:
+            resolved[alias_text] = fallback_path
     return resolved
 
 def find_runtime_candidates(plan_id: int, task_id: int, alias: str) -> List[str]:

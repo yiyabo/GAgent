@@ -107,6 +107,32 @@ def test_plan_executor_delegates_task_and_verifies_outputs(tmp_path: Path) -> No
     assert str(output_path) in result.metadata["artifact_paths"]
 
 
+def test_plan_executor_delegation_prompt_omits_internal_tool_hints() -> None:
+    node = PlanNode(
+        id=1,
+        plan_id=105,
+        name="Delegated prompt",
+        instruction="Create answer.txt",
+        metadata={
+            "acceptance_criteria": {
+                "blocking": True,
+                "checks": [{"type": "file_nonempty", "path": "answer.txt"}],
+            },
+            "artifact_contract": {"publishes": ["answer"]},
+        },
+    )
+    repo = _RepoStub(_make_tree(node))
+    delegate = _DelegateStub(TaskDelegationResult(status="completed", summary="ok"))
+    executor = _make_executor(repo, delegate)
+
+    _ = executor.execute_task(105, 1, config=ExecutionConfig(session_context={"session_id": "s1"}))
+
+    assert delegate.calls
+    prompt = delegate.calls[0].task_prompt
+    assert "=== TOOL SELECTION HINTS ===" not in prompt
+    assert "code_executor" not in prompt
+
+
 def test_plan_executor_delegated_missing_output_fails_verification(tmp_path: Path) -> None:
     missing_path = tmp_path / "missing.txt"
     node = PlanNode(
@@ -143,6 +169,79 @@ def test_plan_executor_delegated_missing_output_fails_verification(tmp_path: Pat
     assert metadata["delegated_task_execution"] is True
 
 
+def test_plan_executor_delegated_completed_task_ignores_prompt_block_marker(tmp_path: Path) -> None:
+    output_path = tmp_path / "answer.txt"
+    _ = output_path.write_text("delegated result\n", encoding="utf-8")
+    node = PlanNode(
+        id=1,
+        plan_id=107,
+        name="Write delegated output",
+        instruction="Create answer.txt",
+        metadata={
+            "acceptance_criteria": {
+                "blocking": True,
+                "checks": [{"type": "file_nonempty", "path": str(output_path)}],
+            }
+        },
+    )
+    repo = _RepoStub(_make_tree(node))
+    delegate = _DelegateStub(
+        TaskDelegationResult(
+            status="completed",
+            summary=(
+                "Prompt instructions said: If inputs are missing, report "
+                "BLOCKED_DEPENDENCY with a concise DETAIL. Actual output succeeded."
+            ),
+            artifact_paths=[str(output_path)],
+            executor="qwen_code",
+            raw_result={
+                "success": True,
+                "run_id": "attempt-3",
+                "artifact_paths": [str(output_path)],
+                "contract_artifacts": [
+                    {"path": str(output_path), "exists": True, "expected": "answer.txt"}
+                ],
+            },
+        )
+    )
+    executor = _make_executor(repo, delegate)
+
+    result = executor.execute_task(107, 1, config=ExecutionConfig(session_context={"session_id": "s1"}))
+
+    assert result.status == "completed"
+    payload = cast(dict[str, object], json.loads(result.raw_response or "{}"))
+    metadata = cast(dict[str, object], payload["metadata"])
+    assert metadata["delegated_task_execution"] is True
+    assert metadata.get("blocked_by_dependencies") is not True
+
+
+def test_plan_executor_delegated_blocked_task_stays_skipped() -> None:
+    node = PlanNode(
+        id=1,
+        plan_id=108,
+        name="Blocked delegated task",
+        instruction="Use missing upstream data",
+    )
+    repo = _RepoStub(_make_tree(node))
+    delegate = _DelegateStub(
+        TaskDelegationResult(
+            status="blocked",
+            summary="STATUS: BLOCKED_DEPENDENCY\nDETAIL: missing upstream file",
+            executor="qwen_code",
+            raw_result={"success": False, "error_category": "blocked_dependency"},
+        )
+    )
+    executor = _make_executor(repo, delegate)
+
+    result = executor.execute_task(108, 1, config=ExecutionConfig(session_context={"session_id": "s1"}))
+
+    assert result.status == "skipped"
+    payload = cast(dict[str, object], json.loads(result.raw_response or "{}"))
+    metadata = cast(dict[str, object], payload["metadata"])
+    assert metadata["blocked_by_dependencies"] is True
+    assert metadata["blocked_dependency_reported_by_task"] is True
+
+
 def test_plan_executor_dependency_block_prevents_delegation() -> None:
     dependency = PlanNode(id=1, plan_id=103, name="Upstream", status="pending")
     node = PlanNode(
@@ -170,3 +269,28 @@ def test_delegating_raw_status_resolves_as_running() -> None:
 
     assert states[1]["effective_status"] == "running"
     assert states[1]["reason_code"] == "delegating"
+
+
+def test_delegate_prompt_serializes_contracts_as_json() -> None:
+    spec = TaskDelegationSpec(
+        plan_id=106,
+        task_id=1,
+        task_name="JSON contract",
+        task_instruction="Create answer.txt",
+        task_prompt="Task prompt body",
+        executor_backend="local",
+        artifact_contract={"publishes": ["answer"]},
+        acceptance_criteria={
+            "blocking": True,
+            "checks": [{"type": "file_nonempty", "path": "answer.txt"}],
+        },
+        resolved_input_artifacts={"input": "/tmp/input.txt"},
+    )
+
+    prompt = CodeAgentTaskDelegateExecutor()._build_delegate_prompt(spec)
+
+    assert "Return the strict final response schema" in prompt
+    assert "Do not claim that internal Phage-Agent tools were called" in prompt
+    assert '"publishes": [' in prompt
+    assert '"checks": [' in prompt
+    assert "{'publishes':" not in prompt

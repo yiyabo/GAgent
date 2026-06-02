@@ -14,6 +14,7 @@ import {
 import { ReloadOutlined, CopyOutlined, PlayCircleOutlined } from '@ant-design/icons';
 import { useQuery } from '@tanstack/react-query';
 import { planTreeApi } from '@api/planTree';
+import { statsApi } from '@api/stats';
 import { usePlanTasks } from '@hooks/usePlans';
 import { useChatStore } from '@store/chat';
 import { useTasksStore } from '@store/tasks';
@@ -127,6 +128,23 @@ const TaskDetailDrawer: React.FC = () => {
       }
     },
   });
+
+  const { data: planTokenUsage } = useQuery({
+    queryKey: ['stats', 'planTaskTokenUsage', currentPlanId],
+    enabled: isTaskDrawerOpen && currentPlanId != null && currentPlanId > 0,
+    refetchOnWindowFocus: false,
+    queryFn: async () => {
+      if (!currentPlanId) {
+        throw new Error('Missing plan information; cannot fetch token usage');
+      }
+      return statsApi.getPlanTaskTokenUsage(currentPlanId);
+    },
+  });
+
+  const taskTokenUsage = React.useMemo(() => {
+    if (!planTokenUsage || !selectedTaskId) return null;
+    return planTokenUsage.tasks.find((t) => t.task_id === selectedTaskId) ?? null;
+  }, [planTokenUsage, selectedTaskId]);
 
   const [executeModalOpen, setExecuteModalOpen] = useState(false);
   const [executeButtonLoading, setExecuteButtonLoading] = useState(false);
@@ -451,6 +469,7 @@ const TaskDetailDrawer: React.FC = () => {
             canVerify={Boolean(taskResult ?? cachedResult)}
             canManualAccept={canManualAccept}
             taskMap={taskMap}
+            taskTokenUsage={taskTokenUsage}
           />
           {activeExecutionJobId && (
             <section>

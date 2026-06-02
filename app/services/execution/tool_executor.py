@@ -51,7 +51,7 @@ class UnifiedToolExecutor:
         "deeppl": 1800,
         # analyze/execute run Claude Code inside; 300s was too short and surfaced as result.error=timeout.
         "result_interpreter": 1200,
-        "plan_operation": 1200,
+        "plan_operation": 2400,
         "manuscript_writer": 1200,
         "deliverable_submit": 60,
         "literature_pipeline": 300,

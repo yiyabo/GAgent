@@ -31,6 +31,7 @@ MAX_PROFILE_CHILD_SAMPLE = 80
 MAX_RECONCILIATION_EXAMPLES = 20
 MAX_RECONCILIATION_STRUCTURE_SCAN_DIRS = 5_000
 MAX_RECONCILIATION_FILE_PATTERNS = 30
+DEFAULT_EXTERNAL_ALLOWED_BASE_PATHS = (Path("/mnt/sdm/zczhao"),)
 
 _STATUS_SUCCESS_TOKENS = {"complete", "completed", "success", "succeeded", "done", "passed", "ok"}
 _STATUS_FAILURE_TOKENS = {"fail", "failed", "failure", "error", "errors", "crash", "crashed", "aborted"}
@@ -101,6 +102,7 @@ def _normalize_allowed_base_paths() -> List[str]:
         cwd / "data",  # Project data directory
         cwd / "results",  # Project results directory
         cwd / "runtime",  # Runtime directory
+        *DEFAULT_EXTERNAL_ALLOWED_BASE_PATHS,
     ]
 
     extra_paths: List[Path] = []

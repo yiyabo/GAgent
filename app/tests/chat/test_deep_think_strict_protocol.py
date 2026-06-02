@@ -969,6 +969,48 @@ def test_directory_path_extraction_keeps_real_absolute_path() -> None:
     assert DeepThinkAgent._directory_dataset_analysis_requested(query) is True
 
 
+def test_directory_payload_single_xlsx_demotes_profile_barrier(tmp_path) -> None:
+    (tmp_path / "blood20190927-test.xlsx").write_text("x")
+    assert DeepThinkAgent._directory_payload_is_generic_tabular_only(str(tmp_path)) is True
+
+    async def _noop_tool_executor(name: str, params: dict):
+        return {}
+
+    agent = DeepThinkAgent(
+        llm_client=_DummyLLM([]),
+        available_tools=["file_operations"],
+        tool_executor=_noop_tool_executor,
+    )
+    query = f"请分析 {tmp_path} 目录下的临床数据"
+
+    assert agent._directory_dataset_analysis_requested(query) is True
+    assert agent._needs_directory_profile_before_final(user_query=query, steps=[]) is None
+
+
+def test_directory_payload_with_subdir_keeps_profile_barrier(tmp_path) -> None:
+    (tmp_path / "blood.xlsx").write_text("x")
+    (tmp_path / "nested").mkdir()
+    assert DeepThinkAgent._directory_payload_is_generic_tabular_only(str(tmp_path)) is False
+
+    async def _noop_tool_executor(name: str, params: dict):
+        return {}
+
+    agent = DeepThinkAgent(
+        llm_client=_DummyLLM([]),
+        available_tools=["file_operations"],
+        tool_executor=_noop_tool_executor,
+    )
+    query = f"请分析 {tmp_path} 目录下的数据"
+
+    assert agent._needs_directory_profile_before_final(user_query=query, steps=[]) == str(tmp_path)
+
+
+def test_directory_payload_with_non_tabular_file_keeps_profile_barrier(tmp_path) -> None:
+    (tmp_path / "blood.xlsx").write_text("x")
+    (tmp_path / "README.md").write_text("notes")
+    assert DeepThinkAgent._directory_payload_is_generic_tabular_only(str(tmp_path)) is False
+
+
 def test_evidence_scope_truth_barrier_accepts_corrected_global_claims() -> None:
     agent = DeepThinkAgent(
         llm_client=_NoStreamLLM(),

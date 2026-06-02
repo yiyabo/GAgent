@@ -1047,7 +1047,15 @@ async def _get_todo_list(
     if plan_id is None:
         return {"success": False, "error": "plan_id is required"}
     if target_task_id is None:
-        return {"success": False, "error": "target_task_id is required"}
+        return {
+            "success": False,
+            "error": (
+                "target_task_id is required for todo_list. "
+                "If you want to execute ALL tasks in the plan, "
+                "use operation='execute_all' instead (no target_task_id needed)."
+            ),
+            "hint": "operation='execute_all'",
+        }
 
     try:
         from app.repository.plan_repository import PlanRepository

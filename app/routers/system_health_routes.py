@@ -295,6 +295,7 @@ class TokenUsageResponse(BaseModel):
     total_prompt_tokens: int
     total_completion_tokens: int
     total_tokens: int
+    estimated_cost: float = 0.0
     by_model: List[Dict[str, Any]]
 
 
@@ -306,4 +307,100 @@ async def get_token_usage(hours: int = 24):
         return get_usage_summary(hours=hours)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get token usage: {str(e)}")
+
+
+class SessionTokenUsageResponse(BaseModel):
+    session_id: str
+    call_count: int
+    total_prompt_tokens: int
+    total_completion_tokens: int
+    total_tokens: int
+    estimated_cost: float = 0.0
+    by_model: List[Dict[str, Any]]
+    by_purpose: List[Dict[str, Any]]
+
+
+@router.get(
+    "/stats/token-usage/session/{session_id}",
+    response_model=SessionTokenUsageResponse,
+    summary="Get per-session LLM token usage",
+)
+async def get_session_token_usage(session_id: str):
+    try:
+        from ..repository.llm_usage import get_session_usage_summary
+        return get_session_usage_summary(session_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get session token usage: {str(e)}")
+
+
+class TaskTokenUsageItem(BaseModel):
+    task_id: int
+    call_count: int
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+    estimated_cost: float = 0.0
+
+
+class PlanTasksTokenUsageResponse(BaseModel):
+    plan_id: int
+    tasks: List[TaskTokenUsageItem]
+    total_tokens: int
+    estimated_cost: float = 0.0
+
+
+@router.get(
+    "/stats/token-usage/plan/{plan_id}",
+    response_model=PlanTasksTokenUsageResponse,
+    summary="Get per-task LLM token usage for a plan",
+)
+async def get_plan_tasks_token_usage(plan_id: int):
+    try:
+        from ..repository.llm_usage import get_plan_tasks_usage_summary
+        from ..repository.plan_repository import PlanRepository
+        tasks = get_plan_tasks_usage_summary(plan_id)
+        usage_by_task = {t["task_id"]: t for t in tasks}
+
+        repo = PlanRepository()
+        tree = repo.get_plan_tree(plan_id)
+        for node in tree.nodes.values():
+            children = tree.children_ids(node.id)
+            if not children:
+                continue
+            descendant_ids = _collect_descendant_ids(tree, node.id)
+            agg = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "estimated_cost": 0.0}
+            for desc_id in descendant_ids:
+                desc_usage = usage_by_task.get(desc_id)
+                if desc_usage:
+                    agg["prompt_tokens"] += desc_usage["prompt_tokens"]
+                    agg["completion_tokens"] += desc_usage["completion_tokens"]
+                    agg["total_tokens"] += desc_usage["total_tokens"]
+                    agg["estimated_cost"] += float(desc_usage.get("estimated_cost") or 0.0)
+            if agg["total_tokens"] > 0 and node.id not in usage_by_task:
+                parent_entry = {
+                    "task_id": node.id,
+                    "call_count": 0,
+                    **agg,
+                }
+                tasks.append(parent_entry)
+                usage_by_task[node.id] = parent_entry
+
+        total = sum(t["total_tokens"] for t in tasks if not tree.children_ids(t["task_id"]))
+        estimated_cost = sum(float(t.get("estimated_cost") or 0.0) for t in tasks if not tree.children_ids(t["task_id"]))
+        return {
+            "plan_id": plan_id,
+            "tasks": tasks,
+            "total_tokens": total,
+            "estimated_cost": estimated_cost,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get plan task token usage: {str(e)}")
+
+
+def _collect_descendant_ids(tree, node_id: int) -> set:
+    result = set()
+    for child_id in tree.children_ids(node_id):
+        result.add(child_id)
+        result.update(_collect_descendant_ids(tree, child_id))
+    return result
 

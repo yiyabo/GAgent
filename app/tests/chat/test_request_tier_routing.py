@@ -15,6 +15,7 @@ from app.routers.chat.request_routing import (
     resolve_request_routing,
 )
 from app.services.llm.structured_response import LLMAction, LLMReply, LLMStructuredResponse
+from app.services.deep_think_agent import DeepThinkAgent
 
 
 def test_request_tier_routes_greeting_to_light_auto_simple() -> None:
@@ -98,7 +99,7 @@ def test_request_tier_keeps_manual_deepthink_visible_for_light_request() -> None
         default_max_iterations=64,
     )
     assert len(profile.available_tools) > 0  # tools always available now
-    assert profile.max_iterations == 3
+    assert profile.max_iterations == 6
     assert profile.thinking_budget <= 400
 
 
@@ -233,6 +234,73 @@ def test_vague_phagescope_path_analysis_routes_to_research_without_plan_create()
     assert "phagescope_dataset_analysis" in decision.route_reason_codes
     assert "phagescope" in decision.subject_resolution["display_ref"].lower()
     assert decision.subject_resolution["display_ref"] == "/home/zczhao/Phage-Agent/phagescope"
+
+
+def test_phagescope_xlsx_under_phagescope_dir_is_not_treated_as_dataset() -> None:
+    decision = resolve_request_routing(
+        message=(
+            "analyze this data and build an ML model. "
+            "/home/zczhao/Phage-Agent/phagescope/test/blood20190927-test.xlsx, start!"
+        ),
+    )
+
+    assert "phagescope_dataset_analysis" not in decision.route_reason_codes
+    assert decision.subject_resolution["display_ref"].lower().endswith(".xlsx")
+
+
+def test_phagescope_directory_without_meta_data_demotes_out_of_dataset_routing(tmp_path) -> None:
+    data_dir = tmp_path / "phagescope_clinical"
+    data_dir.mkdir()
+    (data_dir / "blood.xlsx").write_bytes(b"x")
+    decision = resolve_request_routing(
+        message=f"again analyze this data. {data_dir}. I will tell you later, start!",
+    )
+
+    assert "phagescope_dataset_analysis" not in decision.route_reason_codes
+    assert DeepThinkAgent._phagescope_dataset_analysis_requested(
+        f"again analyze this data. {data_dir}. start!"
+    ) is False
+
+
+def test_phagescope_directory_with_meta_data_keeps_dataset_routing(tmp_path) -> None:
+    data_dir = tmp_path / "phagescope_dataset"
+    (data_dir / "meta_data").mkdir(parents=True)
+    decision = resolve_request_routing(
+        message=f"again analyze this data. {data_dir}. I will tell you later, start!",
+    )
+
+    assert "phagescope_dataset_analysis" in decision.route_reason_codes
+    assert DeepThinkAgent._phagescope_dataset_analysis_requested(
+        f"again analyze this data. {data_dir}. start!"
+    ) is True
+
+
+def test_phagescope_xlsx_subject_does_not_rewrite_create_plan_to_deep_profile() -> None:
+    structured = _rewrite_phagescope_dataset_understanding_plan_to_deep_profile(
+        LLMStructuredResponse(
+            llm_reply=LLMReply(message="I will create a plan."),
+            actions=[
+                LLMAction(
+                    kind="plan_operation",
+                    name="create_plan",
+                    parameters={"title": "clinical analysis"},
+                    order=1,
+                    blocking=True,
+                )
+            ],
+        ),
+        user_message="please analyze this dataset and train a classifier",
+        extra_context={
+            "subject_resolution": {
+                "canonical_ref": "/home/zczhao/Phage-Agent/phagescope/test/blood20190927-test.xlsx",
+                "display_ref": "phagescope/test/blood20190927-test.xlsx",
+            }
+        },
+    )
+
+    assert len(structured.actions) == 1
+    assert structured.actions[0].kind == "plan_operation"
+    assert structured.actions[0].name == "create_plan"
 
 
 def test_phagescope_dataset_understanding_rewrites_llm_create_plan_to_deep_profile() -> None:
@@ -539,7 +607,7 @@ def test_file_followup_inherits_active_subject_and_keeps_local_inspect_tools() -
     assert "result_interpreter" in profile.available_tools
     assert "code_executor" in profile.available_tools
     assert "deliverable_submit" in profile.available_tools
-    assert profile.max_iterations == 3
+    assert profile.max_iterations == 6
 
 
 def test_followthrough_data_analysis_followup_routes_to_execute_task() -> None:
@@ -599,7 +667,7 @@ def test_manual_deepthink_followup_keeps_local_inspect_floor() -> None:
     assert "file_operations" in profile.available_tools
     assert "result_interpreter" in profile.available_tools
     assert "code_executor" in profile.available_tools
-    assert profile.max_iterations == 3
+    assert profile.max_iterations == 6
 
 
 def test_phagescope_remote_verify_elevates_to_research_with_phagescope_tool() -> None:
@@ -1184,6 +1252,75 @@ def test_extract_task_ids_ignores_completed_and_artifact_references() -> None:
     decision = resolve_request_routing(message=message)
     assert decision.intent_type == "execute_task"
     assert decision.explicit_task_ids == [39, 40]
+
+
+def test_classify_request_tier_returns_confidence() -> None:
+    from app.routers.chat.request_routing import classify_request_tier
+    tier, reasons, brevity, confidence = classify_request_tier(
+        message="你好",
+        intent_type="chat",
+    )
+    assert tier == "light"
+    assert isinstance(confidence, float)
+    assert 0.0 <= confidence <= 1.0
+
+
+def test_classify_request_tier_high_confidence_for_plan_request() -> None:
+    from app.routers.chat.request_routing import classify_request_tier
+    tier, reasons, brevity, confidence = classify_request_tier(
+        message="优化这个计划",
+        plan_id=122,
+        intent_type="chat",
+    )
+    assert tier == "execute"
+    assert confidence >= 0.8
+
+
+def test_classify_request_tier_low_confidence_for_default_standard() -> None:
+    from app.routers.chat.request_routing import classify_request_tier
+    tier, reasons, brevity, confidence = classify_request_tier(
+        message="现在分析的很浅，跟最开始我给的最初的计划很不一样，我需要深层次的分析，现在太简单了，分析的不够深入，增加分析到计划里面",
+        plan_id=122,
+        intent_type="chat",
+    )
+    assert confidence < 0.5
+    assert "default_standard" in reasons
+
+
+def test_llm_routing_fallback_returns_none_on_failure(monkeypatch) -> None:
+    from app.routers.chat import request_routing as _rr
+    from app.routers.chat.request_routing import _llm_routing_fallback
+
+    class FakeClient:
+        def chat(self, *args, **kwargs):
+            raise RuntimeError("LLM unavailable")
+
+    monkeypatch.setattr(_rr, "LLMClient", lambda: FakeClient(), raising=False)
+    result = _llm_routing_fallback("test message", plan_bound=True)
+    assert result is None
+
+
+def test_resolve_request_routing_uses_llm_fallback_for_plan_bound_low_confidence(monkeypatch) -> None:
+    import json as _json
+    from app.routers.chat import request_routing as _rr
+    from app.routers.chat.request_routing import resolve_request_routing
+
+    class FakeClient:
+        def chat(self, *args, **kwargs):
+            return _json.dumps({
+                "tier": "execute",
+                "is_plan_modification": True,
+                "reason": "User wants to deepen analysis in the plan"
+            })
+
+    monkeypatch.setattr(_rr, "LLMClient", lambda: FakeClient(), raising=False)
+
+    decision = resolve_request_routing(
+        message="现在分析的很浅，跟最开始我给的最初的计划很不一样，我需要深层次的分析，现在太简单了，分析的不够深入，增加分析到计划里面",
+        plan_id=122,
+    )
+    assert decision.request_tier in ("standard", "research", "execute")
+    assert "llm_routing_elevated" in decision.route_reason_codes or "llm_detected_plan_modification" in decision.route_reason_codes
 
 
 def test_score_like_rubric_numbers_do_not_trigger_explicit_task_override() -> None:

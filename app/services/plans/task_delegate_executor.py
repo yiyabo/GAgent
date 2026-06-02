@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import json
+import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import cast
 
 from ..execution.tool_executor import ToolExecutionContext, UnifiedToolExecutor
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -88,7 +92,8 @@ class CodeAgentTaskDelegateExecutor:
             "Complete only this task; do not create or modify the plan.",
             "The orchestration system, not you, decides final task completion after deterministic verification.",
             "If inputs are missing, report BLOCKED_DEPENDENCY with a concise DETAIL.",
-            "Return actual produced file paths in your final response.",
+            "Return the strict final response schema requested by the execution runtime.",
+            "Do not claim that internal Phage-Agent tools were called; this delegate only has the external code-agent runtime tools.",
             "",
             "=== PLAN TASK ===",
             f"Plan ID: {spec.plan_id}",
@@ -103,11 +108,15 @@ class CodeAgentTaskDelegateExecutor:
                 lines.append(f"- {alias}: {path}")
         if spec.acceptance_criteria:
             lines.append("\n=== ACCEPTANCE CRITERIA ===")
-            lines.append(str(spec.acceptance_criteria))
+            lines.append(self._format_json_block(spec.acceptance_criteria))
         if spec.artifact_contract:
             lines.append("\n=== ARTIFACT CONTRACT ===")
-            lines.append(str(spec.artifact_contract))
+            lines.append(self._format_json_block(spec.artifact_contract))
         return "\n".join(lines)
+
+    @staticmethod
+    def _format_json_block(value: Mapping[str, object]) -> str:
+        return json.dumps(dict(value), ensure_ascii=False, indent=2, sort_keys=True)
 
     @staticmethod
     def _to_delegation_result(spec: TaskDelegationSpec, payload: Mapping[str, object]) -> TaskDelegationResult:
@@ -125,12 +134,13 @@ class CodeAgentTaskDelegateExecutor:
             status = "failed"
 
         artifact_paths = CodeAgentTaskDelegateExecutor._collect_artifact_paths(result_payload)
-        summary = (
-            str(payload.get("summary") or "").strip()
-            or str(result_payload.get("result") or "").strip()
-            or str(result_payload.get("error") or "").strip()
-            or "External task delegation finished."
-        )
+        summary = CodeAgentTaskDelegateExecutor._summarize_result(result_payload, status)
+        if status == "completed" and len(summary) < 50:
+            llm_summary = CodeAgentTaskDelegateExecutor._generate_llm_summary(
+                spec, result_payload, status
+            )
+            if llm_summary:
+                summary = llm_summary
         metadata: dict[str, object] = {
             "delegated_task_execution": True,
             "executor": spec.executor_backend,
@@ -169,6 +179,25 @@ class CodeAgentTaskDelegateExecutor:
         return {str(key): item for key, item in mapping.items()}
 
     @staticmethod
+    def _summarize_result(result_payload: Mapping[str, object], status: str) -> str:
+        for key in (
+            "result",
+            "error_summary",
+            "error",
+            "stdout",
+            "execution_status",
+            "verification_status",
+        ):
+            value = str(result_payload.get(key) or "").strip()
+            if value and len(value) <= 500:
+                return value
+        if status == "completed":
+            return "Task completed successfully."
+        if status == "blocked":
+            return "External task delegation blocked by missing dependency."
+        return "External task delegation failed."
+
+    @staticmethod
     def _collect_artifact_paths(result_payload: Mapping[str, object]) -> list[str]:
         paths: list[str] = []
         for key in ("artifact_paths", "produced_files", "session_artifact_paths"):
@@ -183,3 +212,110 @@ class CodeAgentTaskDelegateExecutor:
                 if text and text not in paths:
                     paths.append(text)
         return paths[:80]
+
+    @staticmethod
+    def _generate_llm_summary(
+        spec: TaskDelegationSpec,
+        result_payload: Mapping[str, object],
+        status: str,
+    ) -> str | None:
+        try:
+            from app.llm import get_default_client
+        except ImportError:
+            return None
+
+        produced_files: list[dict] = []
+        raw_files = result_payload.get("produced_files") or []
+        if isinstance(raw_files, list):
+            for f in raw_files[:8]:
+                if isinstance(f, dict):
+                    produced_files.append(f)
+                elif isinstance(f, str):
+                    produced_files.append({"path": f})
+
+        file_descriptions = []
+        for f in produced_files:
+            path = str(f.get("path") or "")
+            name = path.rsplit("/", 1)[-1] if "/" in path else path
+            desc = str(f.get("description") or "")
+            if name:
+                file_descriptions.append(f"- {name}" + (f"：{desc}" if desc else ""))
+
+        contract_artifacts = result_payload.get("contract_artifacts") or []
+        verified_files = []
+        if isinstance(contract_artifacts, list):
+            for a in contract_artifacts[:5]:
+                if isinstance(a, dict) and a.get("exists"):
+                    expected = str(a.get("expected") or a.get("path") or "")
+                    name = expected.rsplit("/", 1)[-1] if "/" in expected else expected
+                    size = a.get("size")
+                    if name:
+                        size_str = f" ({size:,} bytes)" if isinstance(size, (int, float)) else ""
+                        verified_files.append(f"- {name}{size_str}")
+
+        acceptance = result_payload.get("acceptance_check")
+        verification_notes = ""
+        if isinstance(acceptance, dict):
+            verification_notes = str(acceptance.get("notes") or "")[:300]
+
+        agent_summary = str(
+            result_payload.get("result")
+            or result_payload.get("summary")
+            or ""
+        ).strip()[:300]
+
+        instruction = (spec.task_instruction or "")[:400]
+
+        prompt = (
+            "You are a senior biostatistician generating a structured execution report card "
+            "with professional insights for the principal investigator.\n\n"
+            f"Task: {spec.task_name}\n"
+            f"Objective: {instruction}\n"
+            f"Status: {status}\n"
+        )
+        if file_descriptions:
+            prompt += f"Produced:\n" + "\n".join(file_descriptions) + "\n"
+        if verified_files:
+            prompt += f"Verified files:\n" + "\n".join(verified_files) + "\n"
+        if verification_notes:
+            prompt += f"Verification: {verification_notes}\n"
+        if agent_summary:
+            prompt += f"Key metrics: {agent_summary}\n"
+
+        prompt += (
+            "\nOutput format (use markdown):\n\n"
+            "## ✅ {Task Name}\n\n"
+            "**Data Source**: {describe input data briefly}\n\n"
+            "**Analysis Performed**:\n"
+            "- {method 1}: {brief result}\n"
+            "- {method 2}: {brief result}\n\n"
+            "**Key Results**:\n"
+            "| Metric | Value |\n"
+            "|--------|-------|\n"
+            "| {metric1} | {value1} |\n"
+            "| {metric2} | {value2} |\n"
+            "| ... | ... |\n\n"
+            "**Insights**:\n"
+            "- {2-3 bullet points with professional interpretation: data quality assessment, "
+            "statistical reliability, caveats, or domain-specific observations}\n\n"
+            "**Deliverables**: {list produced files with brief descriptions}\n\n"
+            "**Next Steps**: {1-2 sentences suggesting downstream analysis directions based on the results}\n\n"
+            "Requirements:\n"
+            "- Extract specific numbers/metrics from the data provided\n"
+            "- Keep table to 3-5 rows of the most important metrics\n"
+            "- Insights should add analytical value beyond raw numbers "
+            "(e.g. data quality assessment, statistical reliability, sample size adequacy, caveats)\n"
+            "- Total length: 200-300 words\n"
+            "- Match the output language to the task name language\n"
+            "- Do not mention code or file paths"
+        )
+
+        try:
+            client = get_default_client()
+            response = client.chat(prompt, max_tokens=500)
+            summary = response.strip()
+            if summary and len(summary) >= 30:
+                return summary
+        except Exception as exc:
+            logger.warning("LLM summary generation failed for task %s: %s", spec.task_id, exc)
+        return None

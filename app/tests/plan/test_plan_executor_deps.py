@@ -40,6 +40,7 @@ def _make_executor(repo=None, *, artifact_backfill_enabled: bool = False) -> Pla
     settings = replace(
         get_executor_settings(),
         artifact_backfill_enabled=artifact_backfill_enabled,
+        plan_task_execution_backend="internal",
     )
     return PlanExecutor(
         repo=repo,
@@ -1429,6 +1430,109 @@ def test_enrich_finalized_payload_exposes_contract_artifacts_as_published(tmp_pa
     manifest_entry = manifest["artifacts"]["contract:qc_results/filtered_adata.h5ad"]
     assert manifest_entry["path"] == str(artifact.resolve())
     assert manifest_entry["producer_task_id"] == 11
+
+
+def test_resolve_manifest_aliases_recovers_contract_bypass_by_basename(tmp_path):
+    artifact = tmp_path / "evidence.md"
+    artifact.write_text("# Evidence\nbody\n", encoding="utf-8")
+    manifest = {
+        "plan_id": 7,
+        "artifacts": {
+            "contract:evidence.md": {
+                "alias": "contract:evidence.md",
+                "path": str(artifact.resolve()),
+                "source": "contract_artifacts",
+                "producer_task_id": 3,
+            }
+        },
+    }
+
+    assert resolve_manifest_aliases(manifest, ["general.evidence_md"]) == {
+        "general.evidence_md": str(artifact.resolve())
+    }
+
+
+def test_resolve_manifest_aliases_does_not_recover_on_basename_collision(tmp_path):
+    first = tmp_path / "a" / "evidence.md"
+    second = tmp_path / "b" / "evidence.md"
+    first.parent.mkdir(parents=True)
+    second.parent.mkdir(parents=True)
+    first.write_text("# A\nbody\n", encoding="utf-8")
+    second.write_text("# B\nbody\n", encoding="utf-8")
+    manifest = {
+        "plan_id": 7,
+        "artifacts": {
+            "contract:a/evidence.md": {
+                "alias": "contract:a/evidence.md",
+                "path": str(first.resolve()),
+                "source": "contract_artifacts",
+            },
+            "contract:b/evidence.md": {
+                "alias": "contract:b/evidence.md",
+                "path": str(second.resolve()),
+                "source": "contract_artifacts",
+            },
+        },
+    }
+
+    assert resolve_manifest_aliases(manifest, ["general.evidence_md"]) == {}
+
+
+def test_resolve_manifest_aliases_does_not_recover_unregistered_alias(tmp_path):
+    artifact = tmp_path / "scRNA_processed.rds"
+    artifact.write_text("payload", encoding="utf-8")
+    manifest = {
+        "plan_id": 7,
+        "artifacts": {
+            "contract:scRNA_processed.rds": {
+                "alias": "contract:scRNA_processed.rds",
+                "path": str(artifact.resolve()),
+                "source": "contract_artifacts",
+            }
+        },
+    }
+
+    assert resolve_manifest_aliases(manifest, ["bioinfo.scRNA_processed_rds"]) == {}
+
+
+def test_enrich_finalized_payload_normalizes_contract_artifact_to_canonical_alias(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    artifact = tmp_path / "run" / "ai_evidence.md"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text("# AI Evidence\ncontent\n", encoding="utf-8")
+    node = PlanNode(id=11, plan_id=96, name="Summarize deep learning evidence", status="completed")
+    executor = _make_executor(MagicMock())
+
+    payload = {
+        "status": "completed",
+        "metadata": {
+            "contract_artifacts": [
+                {
+                    "expected": "ai_evidence.md",
+                    "path": str(artifact),
+                    "size": artifact.stat().st_size,
+                    "exists": True,
+                }
+            ]
+        },
+    }
+
+    enriched = executor._enrich_finalized_payload_with_artifacts(
+        plan_id=96,
+        node=node,
+        payload=payload,
+        final_status="completed",
+        session_context={},
+    )
+
+    published = enriched["metadata"].get("published_artifacts")
+    assert "ai_dl.evidence_md" in published
+    assert "contract:ai_evidence.md" in published
+    manifest = load_artifact_manifest(96)
+    canonical_path = manifest["artifacts"]["ai_dl.evidence_md"]["path"]
+    assert resolve_manifest_aliases(manifest, ["ai_dl.evidence_md"]) == {
+        "ai_dl.evidence_md": canonical_path
+    }
 
 
 

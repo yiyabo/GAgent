@@ -122,8 +122,8 @@ def sanitize_context_options(co: Dict[str, Any]) -> Dict[str, Any]:
         # non-positive per_section_max considered invalid → None
         "per_section_max": (
             None
-            if (co.get("per_section_max") is not None and parse_opt_int(co.get("per_section_max"), 1, 50_000) is None)
-            else parse_opt_int(co.get("per_section_max"), min_value=1, max_value=50_000)
+            if (co.get("per_section_max") is not None and parse_opt_int(co.get("per_section_max"), 1, 100_000) is None)
+            else parse_opt_int(co.get("per_section_max"), min_value=1, max_value=100_000)
         ),
         "strategy": parse_strategy(co.get("strategy")),
         # snapshot controls

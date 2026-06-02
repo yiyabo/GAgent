@@ -140,6 +140,32 @@ def _normalize_phagescope_data_dir(value: Any) -> str:
     return text.rstrip(".,;:)]}>，。；：）】》")
 
 
+_NON_PHAGESCOPE_TABULAR_FILE_EXTS = (
+    ".xlsx",
+    ".xls",
+    ".xlsm",
+    ".csv",
+    ".parquet",
+    ".feather",
+)
+
+
+def _path_is_generic_tabular_file(value: Any) -> bool:
+    return _normalize_phagescope_data_dir(value).lower().endswith(
+        _NON_PHAGESCOPE_TABULAR_FILE_EXTS
+    )
+
+
+def _directory_positively_lacks_phagescope_meta_data(value: Any) -> bool:
+    text = _normalize_phagescope_data_dir(value)
+    if not text:
+        return False
+    try:
+        return os.path.isdir(text) and not os.path.isdir(os.path.join(text, "meta_data"))
+    except OSError:
+        return False
+
+
 def _is_phagescope_dataset_understanding_request(
     user_message: str,
     extra_context: Optional[Dict[str, Any]] = None,
@@ -157,6 +183,11 @@ def _is_phagescope_dataset_understanding_request(
             for key in ("canonical_ref", "display_ref", "raw_ref")
         ).lower()
     if "phagescope" not in lowered and "phagescope" not in subject_text:
+        return False
+    candidate_path = _extract_phagescope_data_dir_from_context(user_message, extra_context)
+    if candidate_path and _path_is_generic_tabular_file(candidate_path):
+        return False
+    if candidate_path and _directory_positively_lacks_phagescope_meta_data(candidate_path):
         return False
     plan_create_required = bool(context.get("plan_create_required"))
     plan_create_negated = any(marker in lowered for marker in _PLAN_CREATE_NEGATION_MARKERS)

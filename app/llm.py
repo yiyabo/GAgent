@@ -1,4 +1,5 @@
 import asyncio
+import contextvars
 import json
 import logging
 import os
@@ -15,6 +16,30 @@ from .interfaces import LLMProvider
 from .services.foundation.settings import get_settings
 
 logger = logging.getLogger(__name__)
+
+_usage_context: contextvars.ContextVar[Optional[Dict[str, Any]]] = contextvars.ContextVar(
+    "llm_usage_context", default=None
+)
+
+
+def set_usage_context(
+    *,
+    session_id: Optional[str] = None,
+    plan_id: Optional[int] = None,
+    task_id: Optional[int] = None,
+    call_purpose: Optional[str] = None,
+) -> contextvars.Token:
+    ctx = {
+        "session_id": session_id,
+        "plan_id": plan_id,
+        "task_id": task_id,
+        "call_purpose": call_purpose,
+    }
+    return _usage_context.set(ctx)
+
+
+def clear_usage_context(token: contextvars.Token) -> None:
+    _usage_context.reset(token)
 
 # ---------------------------------------------------------------------------
 # Shared HTTP connection pools — eliminates per-request TCP/TLS handshake
@@ -185,12 +210,17 @@ def _log_usage(
 ) -> None:
     try:
         from .repository.llm_usage import log_llm_usage
+        ctx = _usage_context.get()
         log_llm_usage(
             provider=provider,
             model=model,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             total_tokens=total_tokens,
+            session_id=ctx.get("session_id") if ctx else None,
+            plan_id=ctx.get("plan_id") if ctx else None,
+            task_id=ctx.get("task_id") if ctx else None,
+            call_purpose=ctx.get("call_purpose") if ctx else None,
         )
     except Exception as exc:
         logger.warning("[LLM] Failed to log usage: %s", exc)

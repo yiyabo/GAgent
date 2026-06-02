@@ -57,7 +57,7 @@ export function resolveThinkingDisplayMode({
   }
 
   if (hasPersistedSteps) {
-    return isFinished ? 'final_answer' : 'full_thinking';
+    return 'full_thinking';
   }
 
   if (explicitMode === 'compact_progress') {

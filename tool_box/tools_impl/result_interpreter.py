@@ -23,7 +23,15 @@ _DEFAULT_TASK_TITLE = "Data analysis"
 _DEFAULT_TASK_DESCRIPTION = (
     "Analyze the provided dataset(s) according to the user's request in the conversation."
 )
-_PROFILE_SUPPORTED_EXTENSIONS = {".csv", ".tsv", ".mat", ".npy", ".h5ad"}
+_PROFILE_SUPPORTED_EXTENSIONS = {
+    ".csv", ".tsv", ".txt",
+    ".xlsx", ".xls", ".xlsm", ".ods",
+    ".json", ".jsonl", ".ndjson",
+    ".parquet", ".feather",
+    ".pickle", ".pkl",
+    ".sas7bdat", ".sav", ".dta",
+    ".mat", ".npy", ".h5ad",
+}
 _PROFILE_LOOKUP_EXTENSIONS = {".txt"}
 _PROFILE_ID_COLUMN_HINTS = (
     "phage_id",
@@ -253,7 +261,9 @@ def _build_deterministic_profile(
         if not _profile_supports_path(file_path):
             raise ValueError(
                 f"Unsupported file format for profile: {file_path}. "
-                "Supported: .csv, .tsv, .mat, .npy, .h5ad, .txt"
+                "Supported: .csv, .tsv, .txt, .xlsx, .xls, .xlsm, .ods, "
+                ".json, .jsonl, .ndjson, .parquet, .feather, .pickle, .pkl, "
+                ".sas7bdat, .sav, .dta, .mat, .npy, .h5ad"
             )
 
         suffix = Path(file_path).suffix.lower()

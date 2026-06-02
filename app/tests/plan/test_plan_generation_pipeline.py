@@ -219,7 +219,9 @@ class _GenerationRepoStub(PlanRepository):
         assert self.tree is not None
         assert plan_id == self.tree.id
         self.metadata_updates.append((plan_id, metadata))
-        self.tree.metadata = dict(metadata or {})
+        existing = dict(self.tree.metadata or {})
+        existing.update(metadata or {})
+        self.tree.metadata = existing
 
 
 class _FailingDecomposerStub(PlanDecomposer):
