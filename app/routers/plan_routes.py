@@ -25,6 +25,7 @@ from app.services.plans.acceptance_criteria import (
 from app.services.plans.dependency_planner import DependencyPlan, compute_dependency_plan
 from app.services.plans.plan_decomposer import PlanDecomposer, DecompositionResult
 from app.services.plans.plan_executor import ExecutionConfig, PlanExecutor
+from app.services.plans.audit_repair_loop import AuditRepairLoopConfig, AuditRepairLoopService
 from app.services.plans.artifact_preflight import ArtifactPreflightResult, ArtifactPreflightService
 from app.services.plans.status_resolver import PlanStatusResolver
 from app.services.plans.task_verification import TaskVerificationService
@@ -39,6 +40,7 @@ from app.services.plans.todo_list import (
     build_full_plan_todo_list as _build_full_plan_todo_list,
     _collect_leaf_ids,
 )
+from app.services.plans.phase_narrator import extract_phase_labels as _extract_phase_labels
 from app.services.plans.decomposition_jobs import (
     execute_decomposition_job,
     plan_decomposition_jobs,
@@ -55,6 +57,11 @@ _plan_repo = PlanRepository()
 _plan_decomposer = PlanDecomposer(repo=_plan_repo)
 _plan_executor = PlanExecutor(repo=_plan_repo)
 _task_verifier = TaskVerificationService()
+_audit_repair_loop_service = AuditRepairLoopService(
+    repo=_plan_repo,
+    verifier=_task_verifier,
+    plan_executor=_plan_executor,
+)
 _artifact_preflight_service = ArtifactPreflightService()
 _plan_status_resolver = PlanStatusResolver()
 logger = logging.getLogger(__name__)
@@ -102,6 +109,58 @@ def _artifact_preflight_failure_payload(result: ArtifactPreflightResult) -> Dict
         "preflight": result.model_dump(),
         "summary": result.summary(),
     }
+
+
+def _run_task_audit_repair_after_execution(
+    *,
+    plan_id: int,
+    task_id: int,
+    result_status: Any,
+    session_id: Optional[str],
+    owner_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Audit one task after execution and repair safe artifact/path failures.
+
+    The audit-repair service owns classification and decides whether to rerun,
+    delegate to the code agent, or block. This wrapper keeps full-plan sync and
+    async execution paths consistent.
+    """
+    trigger_status = str(result_status or "").strip().lower()
+    try:
+        loop_result = _audit_repair_loop_service.run_task_loop(
+            plan_id=plan_id,
+            task_id=task_id,
+            config=AuditRepairLoopConfig(
+                max_loops=2,
+                max_task_repairs=1,
+                enable_delegate_repair=True,
+                enable_rerun=True,
+                session_id=session_id,
+                owner_id=owner_id,
+            ),
+        )
+    except Exception as exc:
+        logger.exception("Task audit-repair loop failed for plan %s task %s", plan_id, task_id)
+        return {
+            "success": trigger_status == "completed",
+            "final_status": "completed" if trigger_status == "completed" else "failed",
+            "classification": "audit_repair_error",
+            "message": str(exc),
+            "steps": [],
+            "trigger_status": trigger_status,
+        }
+    data = loop_result.to_dict()
+    data["trigger_status"] = trigger_status
+    return data
+
+
+def _status_after_audit_repair(raw_status: Any, repair_result: Dict[str, Any]) -> str:
+    if repair_result.get("success") is True:
+        return "completed"
+    final_status = str(repair_result.get("final_status") or "").strip().lower()
+    if final_status:
+        return final_status
+    return str(raw_status or "failed").strip().lower() or "failed"
 
 
 def _is_terminal_job_status(raw_status: Any) -> bool:
@@ -174,6 +233,15 @@ class TodoPhaseResponse(BaseModel):
     items: List[TodoItemResponse]
 
 
+class TodoWorkflowSectionResponse(BaseModel):
+    section_id: str
+    label: str
+    status: str
+    total: int
+    completed: int
+    items: List[TodoItemResponse]
+
+
 class TodoListResponse(BaseModel):
     plan_id: int
     target_task_id: int
@@ -181,6 +249,7 @@ class TodoListResponse(BaseModel):
     total_tasks: int
     completed_tasks: int
     phases: List[TodoPhaseResponse]
+    workflow_sections: List[TodoWorkflowSectionResponse] = Field(default_factory=list)
     execution_order: List[int]
     pending_order: List[int]
     summary: str
@@ -500,6 +569,8 @@ def _resolve_effective_task_states(
         if node is None:
             continue
         content, _notes, metadata, raw_payload = _parse_execution_result(getattr(node, "execution_result", None))
+        if _task_verifier.is_manual_acceptance_active(metadata):
+            continue
         payload_status = _normalize_task_status(raw_payload.get("status")) if isinstance(raw_payload, dict) else ""
         verification_status = _normalize_task_status(metadata.get("verification_status"))
         if payload_status == "completed" and verification_status == "passed":
@@ -1839,6 +1910,8 @@ def execute_task_with_dependencies(
         executed: List[int] = []
         failed: List[int] = []
         skipped: List[int] = []
+        audit_repairs: Dict[str, Any] = {}
+        owner_id = get_request_owner_id(raw_request)
         for tid in task_order:
             session_ctx = {
                 "session_id": request.session_id,
@@ -2035,11 +2108,11 @@ class ExecuteFullPlanRequest(BaseModel):
         True, description="Stop the chain when a task fails"
     )
     ordering_mode: str = Field(
-        "structure",
+        "dependency_phase",
         description="Full-plan order strategy: structure or dependency_phase",
     )
     dependency_block_mode: str = Field(
-        "warn",
+        "block",
         description="How execute-full handles incomplete dependencies: warn or block",
     )
 
@@ -2051,6 +2124,21 @@ class ExecuteFullPlanResponse(BaseModel):
     todo_list: Optional[Dict[str, Any]] = None
     job: Optional[Dict[str, Any]] = None
     result: Optional[Dict[str, Any]] = None
+
+
+def _todo_item_to_dict(
+    item: Any,
+    state_by_task: Dict[int, Dict[str, Any]],
+) -> Dict[str, Any]:
+    return {
+        "task_id": item.task_id,
+        "name": item.name,
+        "instruction": item.instruction,
+        "status": str((state_by_task.get(item.task_id) or {}).get("effective_status") or "pending"),
+        **_effective_response_fields(state_by_task.get(item.task_id)),
+        "dependencies": item.dependencies,
+        "phase": item.phase,
+    }
 
 
 def _todo_list_to_dict(
@@ -2071,18 +2159,17 @@ def _todo_list_to_dict(
             "status": _todo_phase_status_from_effective(phase, state_by_task),
             "total": phase.total,
             "completed": _todo_completed_count_from_effective(phase, state_by_task),
-            "items": [
-                {
-                    "task_id": item.task_id,
-                    "name": item.name,
-                    "instruction": item.instruction,
-                    "status": str((state_by_task.get(item.task_id) or {}).get("effective_status") or "pending"),
-                    **_effective_response_fields(state_by_task.get(item.task_id)),
-                    "dependencies": item.dependencies,
-                    "phase": item.phase,
-                }
-                for item in phase.items
-            ],
+            "items": [_todo_item_to_dict(item, state_by_task) for item in phase.items],
+        })
+    workflow_sections_out = []
+    for section in getattr(todo, "workflow_sections", []) or []:
+        workflow_sections_out.append({
+            "section_id": section.section_id,
+            "label": section.label,
+            "status": _todo_phase_status_from_effective(section, state_by_task),
+            "total": section.total,
+            "completed": _todo_completed_count_from_effective(section, state_by_task),
+            "items": [_todo_item_to_dict(item, state_by_task) for item in section.items],
         })
     return {
         "plan_id": plan_id,
@@ -2096,6 +2183,7 @@ def _todo_list_to_dict(
             if str((state_by_task.get(item.task_id) or {}).get("effective_status") or "") == "completed"
         ),
         "phases": phases_out,
+        "workflow_sections": workflow_sections_out,
         "execution_order": todo.execution_order,
         "pending_order": _todo_pending_order_from_effective(todo, state_by_task, tree=tree),
         "summary": _todo_summary_from_effective(todo, state_by_task),
@@ -2148,7 +2236,13 @@ def get_full_plan_todo_list(
     node in the plan (or their atomic leaf descendants).
     """
     tree = _load_authorized_plan_tree(plan_id, request)
-    todo = _build_full_plan_todo_list(tree, expand_composites=expand_composites)
+    phase_labels = _extract_phase_labels(tree.metadata)
+    todo = _build_full_plan_todo_list(
+        tree,
+        expand_composites=expand_composites,
+        ordering_mode="dependency_phase",
+        phase_labels=phase_labels,
+    )
     state_by_task = _resolve_effective_task_states(plan_id, tree)
     todo_payload = _todo_list_to_dict(todo, plan_id, state_by_task=state_by_task, tree=tree)
     return TodoListResponse(**todo_payload)
@@ -2188,7 +2282,12 @@ def execute_full_plan(
     2. Filters to only pending tasks (unless *skip_completed* is False)
     3. Executes tasks phase-by-phase in dependency order
     """
-    request = request or ExecuteFullPlanRequest()
+    request = request or ExecuteFullPlanRequest(
+        skip_completed=True,
+        stop_on_failure=True,
+        ordering_mode="dependency_phase",
+        dependency_block_mode="block",
+    )
     tree = _load_authorized_plan_tree(plan_id, raw_request)
     state_by_task = _resolve_effective_task_states(plan_id, tree)
 
@@ -2274,6 +2373,8 @@ def execute_full_plan(
         executed: List[int] = []
         failed: List[int] = []
         skipped: List[int] = []
+        audit_repairs: Dict[str, Any] = {}
+        owner_id = get_request_owner_id(raw_request)
         for tid in task_order:
             try:
                 current_tree = _plan_repo.get_plan_tree(plan_id)
@@ -2320,14 +2421,49 @@ def execute_full_plan(
             try:
                 result = _plan_executor.execute_task(plan_id, tid, config=exec_config)
             except Exception as exc:
+                failure_payload = {
+                    "status": "failed",
+                    "content": f"Task execution raised an exception: {exc}",
+                    "metadata": {"execution_exception": True, "error": str(exc)},
+                }
+                try:
+                    _plan_repo.update_task(
+                        plan_id,
+                        tid,
+                        status="failed",
+                        execution_result=json.dumps(failure_payload, ensure_ascii=False),
+                    )
+                    repair_result = _run_task_audit_repair_after_execution(
+                        plan_id=plan_id,
+                        task_id=tid,
+                        result_status="failed",
+                        session_id=request.session_id,
+                        owner_id=owner_id,
+                    )
+                    audit_repairs[str(tid)] = repair_result
+                    if _status_after_audit_repair("failed", repair_result) == "completed":
+                        executed.append(tid)
+                        continue
+                except Exception as repair_exc:
+                    audit_repairs[str(tid)] = {"success": False, "error": str(repair_exc), "trigger_status": "failed"}
                 failed.append(tid)
                 if request.stop_on_failure:
                     break
                 continue
 
-            if result.status == "completed":
+            repair_result = _run_task_audit_repair_after_execution(
+                plan_id=plan_id,
+                task_id=tid,
+                result_status=result.status,
+                session_id=request.session_id,
+                owner_id=owner_id,
+            )
+            audit_repairs[str(tid)] = repair_result
+            final_status = _status_after_audit_repair(result.status, repair_result)
+
+            if final_status == "completed":
                 executed.append(tid)
-            elif result.status == "skipped":
+            elif final_status in {"skipped", "blocked"}:
                 skipped.append(tid)
                 if request.stop_on_failure:
                     break
@@ -2359,6 +2495,7 @@ def execute_full_plan(
                 "executed_task_ids": executed,
                 "failed_task_ids": failed,
                 "skipped_task_ids": skipped,
+                "audit_repairs": audit_repairs,
             },
         )
 
@@ -2446,6 +2583,7 @@ def execute_full_plan(
                 "paper_mode": request.paper_mode,
                 "stop_on_failure": request.stop_on_failure,
                 "dependency_block_mode": request.dependency_block_mode,
+                "owner_id": owner_id,
             },
             daemon=True,
         )
@@ -2489,6 +2627,7 @@ def _run_full_plan_job(
     overall_total_steps: Optional[int] = None,
     deep_think: bool = True,
     session_id: Optional[str] = None,
+    owner_id: Optional[str] = None,
     paper_mode: bool = False,
     stop_on_failure: bool = True,
     dependency_block_mode: str = "warn",
@@ -2499,6 +2638,7 @@ def _run_full_plan_job(
     failed: List[int] = []
     skipped: List[int] = []
     step_summaries: List[Dict[str, Any]] = []
+    audit_repairs: Dict[str, Any] = {}
     total_steps = len(task_order)
     baseline_completed_steps = max(0, int(initial_completed_steps or 0))
     overall_steps = max(total_steps, int(overall_total_steps or 0), baseline_completed_steps)
@@ -2743,6 +2883,7 @@ def _run_full_plan_job(
                             "failed_task_ids": failed,
                             "skipped_task_ids": skipped,
                             "steps": step_summaries,
+                            "audit_repairs": audit_repairs,
                         },
                         stats=_build_progress_stats(current_step=idx, current_task_id=task_id),
                     )
@@ -2805,6 +2946,7 @@ def _run_full_plan_job(
                                 "plan_id": plan_id, "execution_order": task_order,
                                 "executed_task_ids": executed, "failed_task_ids": failed,
                                 "skipped_task_ids": skipped, "steps": step_summaries,
+                                "audit_repairs": audit_repairs,
                             },
                             stats=_build_progress_stats(current_step=idx, current_task_id=task_id),
                         )
@@ -2856,6 +2998,42 @@ def _run_full_plan_job(
                 )
                 result = _plan_executor.execute_task(plan_id, task_id, config=exec_config)
             except Exception as exc:
+                repair_result: Optional[Dict[str, Any]] = None
+                failure_payload = {
+                    "status": "failed",
+                    "content": f"Task execution raised an exception: {exc}",
+                    "metadata": {"execution_exception": True, "error": str(exc)},
+                }
+                try:
+                    _plan_repo.update_task(
+                        plan_id,
+                        task_id,
+                        status="failed",
+                        execution_result=json.dumps(failure_payload, ensure_ascii=False),
+                    )
+                    repair_result = _run_task_audit_repair_after_execution(
+                        plan_id=plan_id,
+                        task_id=task_id,
+                        result_status="failed",
+                        session_id=session_id,
+                        owner_id=owner_id,
+                    )
+                    audit_repairs[str(task_id)] = repair_result
+                except Exception as repair_exc:
+                    audit_repairs[str(task_id)] = {"success": False, "error": str(repair_exc), "trigger_status": "failed"}
+                if repair_result is not None and _status_after_audit_repair("failed", repair_result) == "completed":
+                    executed.append(task_id)
+                    completed_steps += 1
+                    step_summaries.append(
+                        {
+                            "task_id": task_id,
+                            "status": "completed",
+                            "duration_sec": None,
+                            "audit_repair": repair_result,
+                        }
+                    )
+                    _publish_progress(current_step=idx, current_task_id=task_id)
+                    continue
                 failed.append(task_id)
                 step_summaries.append(
                     {
@@ -2863,6 +3041,7 @@ def _run_full_plan_job(
                         "status": "exception",
                         "duration_sec": None,
                         "error": str(exc),
+                        "audit_repair": audit_repairs.get(str(task_id)),
                     }
                 )
                 _publish_progress(current_step=idx, current_task_id=task_id)
@@ -2871,7 +3050,7 @@ def _run_full_plan_job(
                     log_job_event("error", "Plan step raised exception.", {"task_id": task_id, "error": str(exc)})
                     plan_decomposition_jobs.mark_failure(
                         job_id, error,
-                        result={"plan_id": plan_id, "execution_order": task_order, "executed_task_ids": executed, "failed_task_ids": failed, "skipped_task_ids": skipped, "steps": step_summaries},
+                        result={"plan_id": plan_id, "execution_order": task_order, "executed_task_ids": executed, "failed_task_ids": failed, "skipped_task_ids": skipped, "steps": step_summaries, "audit_repairs": audit_repairs},
                         stats=_build_progress_stats(current_step=idx, current_task_id=task_id),
                     )
                     return
@@ -2882,7 +3061,17 @@ def _run_full_plan_job(
                 )
                 continue
 
-            step_summaries.append({"task_id": task_id, "status": result.status, "duration_sec": result.duration_sec})
+            repair_result = _run_task_audit_repair_after_execution(
+                plan_id=plan_id,
+                task_id=task_id,
+                result_status=result.status,
+                session_id=session_id,
+                owner_id=owner_id,
+            )
+            audit_repairs[str(task_id)] = repair_result
+            final_status = _status_after_audit_repair(result.status, repair_result)
+
+            step_summaries.append({"task_id": task_id, "status": final_status, "duration_sec": result.duration_sec, "audit_repair": repair_result})
 
             log_job_event(
                 "info" if result.status == "completed" else "warning" if result.status == "skipped" else "error",
@@ -2893,25 +3082,25 @@ def _run_full_plan_job(
                     "task_id": task_id,
                     "step": idx,
                     "total_steps": total_steps,
-                    "status": result.status,
+                    "status": final_status,
                     "duration_sec": result.duration_sec,
                 },
             )
 
-            if result.status == "completed":
+            if final_status == "completed":
                 executed.append(task_id)
                 completed_steps += 1
                 _publish_progress(current_step=idx, current_task_id=task_id)
                 continue
-            if result.status == "skipped":
+            if final_status in {"skipped", "blocked"}:
                 skipped.append(task_id)
                 _publish_progress(current_step=idx, current_task_id=task_id)
                 if stop_on_failure:
-                    error = f"Task #{task_id} was skipped; stopping chain."
+                    error = f"Task #{task_id} was {final_status}; stopping chain."
                     log_job_event("warning", "Plan step skipped; stopping.", {"task_id": task_id, "reason": result.content})
                     plan_decomposition_jobs.mark_failure(
                         job_id, error,
-                        result={"plan_id": plan_id, "execution_order": task_order, "executed_task_ids": executed, "failed_task_ids": failed, "skipped_task_ids": skipped, "steps": step_summaries},
+                        result={"plan_id": plan_id, "execution_order": task_order, "executed_task_ids": executed, "failed_task_ids": failed, "skipped_task_ids": skipped, "steps": step_summaries, "audit_repairs": audit_repairs},
                         stats=_build_progress_stats(current_step=idx, current_task_id=task_id),
                     )
                     return
@@ -2924,7 +3113,7 @@ def _run_full_plan_job(
                 log_job_event("error", "Plan step failed; stopping.", {"task_id": task_id, "reason": result.content})
                 plan_decomposition_jobs.mark_failure(
                     job_id, error,
-                    result={"plan_id": plan_id, "execution_order": task_order, "executed_task_ids": executed, "failed_task_ids": failed, "skipped_task_ids": skipped, "steps": step_summaries},
+                    result={"plan_id": plan_id, "execution_order": task_order, "executed_task_ids": executed, "failed_task_ids": failed, "skipped_task_ids": skipped, "steps": step_summaries, "audit_repairs": audit_repairs},
                     stats=_build_progress_stats(current_step=idx, current_task_id=task_id),
                 )
                 return
@@ -2938,6 +3127,7 @@ def _run_full_plan_job(
             "failed_task_ids": failed,
             "skipped_task_ids": skipped,
             "steps": step_summaries,
+            "audit_repairs": audit_repairs,
         }
         final_stats = _build_progress_stats(
             current_step=total_steps,

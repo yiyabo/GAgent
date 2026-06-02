@@ -283,10 +283,17 @@ def normalize_dependencies_for_task(
     )
 
 
-def normalize_plan_dependencies(tree: PlanTree) -> PlanDependencyNormalization:
+def build_normalized_dependency_map(
+    tree: PlanTree,
+) -> Tuple[Dict[int, List[int]], List[DependencyIssue]]:
+    """Return the leaf-expanded, cycle-free dependency map for ALL nodes.
+
+    Differs from :func:`normalize_plan_dependencies`, which only reports changed
+    tasks; this returns the complete map so callers can persist the dependency
+    table and node metadata from a single source of truth.
+    """
     dep_map: Dict[int, List[int]] = {}
     issues: List[DependencyIssue] = []
-    changed: Dict[int, List[int]] = {}
 
     for node in tree.iter_nodes():
         cleaned, node_issues = _expand_and_clean_dependencies(
@@ -316,10 +323,16 @@ def normalize_plan_dependencies(tree: PlanTree) -> PlanDependencyNormalization:
                 )
                 continue
             normalized.append(dep_id)
-        normalized = _dedupe(normalized)
-        dep_map[task_id] = normalized
+        dep_map[task_id] = _dedupe(normalized)
+
+    return dep_map, issues
+
+
+def normalize_plan_dependencies(tree: PlanTree) -> PlanDependencyNormalization:
+    dep_map, issues = build_normalized_dependency_map(tree)
+    changed: Dict[int, List[int]] = {}
+    for task_id, normalized in dep_map.items():
         node = tree.nodes.get(task_id)
         if node is not None and list(node.dependencies or []) != normalized:
             changed[task_id] = normalized
-
     return PlanDependencyNormalization(dependencies_by_task=changed, issues=issues)

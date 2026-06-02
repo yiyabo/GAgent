@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import re
 from collections import Counter
 from dataclasses import dataclass, field
@@ -142,6 +143,17 @@ _PHAGESCOPE_DATASET_REQUEST_RE = re.compile(
 _PHAGESCOPE_ANALYSIS_ACTION_RE = re.compile(
     r"\b(?:analy[sz]e|inspect|audit|summari[sz]e|review|look|profile|explore|start|dataset|data)\b|分析|查看|看看|检查|审计|总结|探索|数据集|数据",
     re.IGNORECASE,
+)
+# Generic spreadsheet/tabular files (Excel/CSV/Parquet) under a "phagescope"
+# directory are NOT PhageScope datasets. ``.tsv``/``.txt`` are deliberately
+# excluded here because those ARE real PhageScope metadata formats.
+_NON_PHAGESCOPE_TABULAR_FILE_EXTS = (
+    ".xlsx",
+    ".xls",
+    ".xlsm",
+    ".csv",
+    ".parquet",
+    ".feather",
 )
 # Match real absolute filesystem paths without treating the slash inside
 # relative output paths such as ``results/figures/目录`` as ``/figures/目录``.
@@ -3221,6 +3233,29 @@ class DeepThinkAgent:
             ),
         )
 
+    def _build_tool_failure_correction_nudge(
+        self,
+        tool_results: List[Dict[str, Any]],
+    ) -> Optional[str]:
+        for item in tool_results:
+            if not isinstance(item, dict):
+                continue
+            result = item.get("result")
+            if not isinstance(result, dict):
+                continue
+            if result.get("success") is not False:
+                continue
+            hint = str(result.get("hint") or "").strip()
+            error = str(result.get("error") or "").strip()
+            tool_name = str(item.get("tool_name") or "").strip()
+            if hint and error:
+                return (
+                    f"[SYSTEM CORRECTION] Your previous call to `{tool_name}` failed: {error}. "
+                    f"The tool suggests: use {hint}. "
+                    "Do NOT repeat the same call. Adjust your parameters accordingly."
+                )
+        return None
+
     def _build_plan_conflict_confirmation_message(self) -> str:
         plan_id = self._current_plan_id()
         plan_title = self._current_plan_title()
@@ -3468,6 +3503,7 @@ class DeepThinkAgent:
             "Only make a global completion claim when complete enumeration plus a manifest/status file supports it.\n"
             "- For PhageScope local dataset exploration, use `phagescope_research` action=`deep_profile` before making "
             "numeric size/row/schema/readiness claims; do not estimate dataset sizes from directory names or samples.\n"
+            "- Do not treat generic spreadsheet/tabular files (`.xlsx`/`.xls`/`.csv`/`.parquet`) as PhageScope datasets even if their path contains 'phagescope'; analyze those with `code_executor`, not `phagescope_research`.\n"
             "- If failure/error status files or partial-completion signals are present, state the completed and failed counts explicitly and qualify the conclusion.\n\n"
         )
 
@@ -3494,10 +3530,61 @@ class DeepThinkAgent:
         path_mentions_phagescope = "phagescope" in path.lower()
         if not path_mentions_phagescope:
             return False
+        if cls._path_is_generic_tabular_file(path):
+            return False
+        # A real on-disk directory without a meta_data/ child is NOT a PhageScope
+        # dataset (e.g. .../phagescope/test holding a clinical xlsx). deep_profile
+        # would fail with "Missing meta_data directory", so demote here and let the
+        # generic tool chain (code_executor) handle it.
+        if cls._directory_positively_lacks_phagescope_meta_data(path):
+            return False
         return bool(
             _PHAGESCOPE_DATASET_REQUEST_RE.search(text)
             or _PHAGESCOPE_ANALYSIS_ACTION_RE.search(text)
         )
+
+    @staticmethod
+    def _path_is_generic_tabular_file(path: str) -> bool:
+        text = str(path or "").strip().strip("`'\"").rstrip(".,;:)]}>，。；：）】》").lower()
+        return text.endswith(_NON_PHAGESCOPE_TABULAR_FILE_EXTS)
+
+    @staticmethod
+    def _directory_positively_lacks_phagescope_meta_data(path: str) -> bool:
+        text = str(path or "").strip().strip("`'\"").rstrip(".,;:)]}>，。；：）】》")
+        if not text:
+            return False
+        try:
+            return os.path.isdir(text) and not os.path.isdir(os.path.join(text, "meta_data"))
+        except OSError:
+            return False
+
+    @staticmethod
+    def _directory_payload_is_generic_tabular_only(path: str) -> bool:
+        # Positive on-disk evidence that this is a simple tabular data folder (e.g. one
+        # clinical .xlsx), not a multi-file dataset needing a profile/census: demote the
+        # barrier so code_executor analyzes it directly. Conservative on purpose.
+        text = str(path or "").strip().strip("`'\"").rstrip(".,;:)]}>，。；：）】》")
+        if not text:
+            return False
+        try:
+            if not os.path.isdir(text):
+                return False
+            saw_tabular_file = False
+            with os.scandir(text) as entries:
+                for entry in entries:
+                    if entry.name.startswith("."):
+                        continue
+                    if entry.is_dir():
+                        return False
+                    if not entry.is_file():
+                        continue
+                    if entry.name.lower().endswith(_NON_PHAGESCOPE_TABULAR_FILE_EXTS):
+                        saw_tabular_file = True
+                    else:
+                        return False
+            return saw_tabular_file
+        except OSError:
+            return False
 
     @classmethod
     def _file_operation_profile_or_census_seen(cls, steps: Sequence[ThinkingStep]) -> bool:
@@ -3598,6 +3685,9 @@ class DeepThinkAgent:
         ):
             return None
         if not self._directory_dataset_analysis_requested(user_query):
+            return None
+        path = self._extract_directory_path_from_query(user_query)
+        if path and self._directory_payload_is_generic_tabular_only(path):
             return None
         if self._file_operation_profile_or_census_seen(steps):
             return None
@@ -3849,7 +3939,7 @@ class DeepThinkAgent:
         if not user_query or not user_query.strip():
             raise ValueError("User query cannot be empty")
         max_user_query_chars = int(
-            getattr(get_settings(), "deep_think_max_user_query_chars", 50000)
+            getattr(get_settings(), "deep_think_max_user_query_chars", 100000)
         )
         if len(user_query) > max_user_query_chars:
             raise ValueError(
@@ -4162,6 +4252,13 @@ class DeepThinkAgent:
                     tool_cycle_signature = self._build_tool_cycle_signature(tool_results)
                     if tool_cycle_signature and tool_cycle_signature == last_tool_cycle_signature:
                         identical_tool_cycle_count += 1
+                        if identical_tool_cycle_count == 1:
+                            correction_nudge = self._build_tool_failure_correction_nudge(tool_results)
+                            if correction_nudge:
+                                messages.append({"role": "user", "content": correction_nudge})
+                                logger.info(
+                                    "[DEEP_THINK_NATIVE] Injected correction nudge after repeated tool failure"
+                                )
                     else:
                         last_tool_cycle_signature = tool_cycle_signature
                         identical_tool_cycle_count = 0
@@ -5404,6 +5501,13 @@ class DeepThinkAgent:
                     tool_cycle_signature = self._build_tool_cycle_signature(cycle_results)
                     if tool_cycle_signature and tool_cycle_signature == last_tool_cycle_signature:
                         identical_tool_cycle_count += 1
+                        if identical_tool_cycle_count == 1:
+                            correction_nudge = self._build_tool_failure_correction_nudge(cycle_results)
+                            if correction_nudge:
+                                messages.append({"role": "user", "content": correction_nudge})
+                                logger.info(
+                                    "[DEEP_THINK_NATIVE] Injected correction nudge after repeated tool failure"
+                                )
                     else:
                         last_tool_cycle_signature = tool_cycle_signature
                         identical_tool_cycle_count = 0

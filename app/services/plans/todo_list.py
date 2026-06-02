@@ -16,7 +16,7 @@ from __future__ import annotations
 import heapq
 import re
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 from .plan_models import PlanNode, PlanTree
 from .dependency_planner import compute_dependency_plan
@@ -88,12 +88,42 @@ class TodoPhase:
 
 
 @dataclass
+class TodoWorkflowSection:
+    """Human-facing workflow section independent from execution phases."""
+
+    section_id: str
+    label: str
+    items: List[TodoItem] = field(default_factory=list)
+
+    @property
+    def status(self) -> str:
+        if not self.items:
+            return "empty"
+        if all(item.is_done for item in self.items):
+            return "completed"
+        if any(_normalize_status(item.status) == "failed" for item in self.items):
+            return "partial_failure"
+        if any(item.is_done or item.is_running for item in self.items):
+            return "in_progress"
+        return "pending"
+
+    @property
+    def total(self) -> int:
+        return len(self.items)
+
+    @property
+    def completed_count(self) -> int:
+        return sum(1 for item in self.items if item.is_done)
+
+
+@dataclass
 class TodoList:
     """Phased execution plan for a target task and its dependencies."""
 
     target_task_id: int
     phases: List[TodoPhase] = field(default_factory=list)
     ordering_mode: str = "dependency_phase"
+    workflow_sections: List[TodoWorkflowSection] = field(default_factory=list)
 
     @property
     def total_tasks(self) -> int:
@@ -372,7 +402,6 @@ def _build_structure_order_phases(
         if items:
             phases.append(TodoPhase(phase_id=len(phases), label=f"Phase {len(phases) + 1}", items=items))
 
-    assign_phase_labels(phases)
     return phases
 
 
@@ -484,6 +513,66 @@ def _classify_task_label(name: str, instruction: Optional[str]) -> Optional[str]
     return None
 
 
+
+_WORKFLOW_SECTION_ORDER: List[str] = [
+    "Data Preparation",
+    "Literature Search",
+    "Quality Control",
+    "Preprocessing",
+    "Evidence Extraction",
+    "Assembly",
+    "Annotation",
+    "Alignment",
+    "Phylogenetics",
+    "Analysis",
+    "Visualization",
+    "Reporting",
+    "Writing",
+    "Review & Polish",
+    "Other",
+]
+
+
+def _section_id(label: str) -> str:
+    normalized = re.sub(r"[^a-z0-9]+", "_", label.lower()).strip("_")
+    return normalized or "other"
+
+
+def build_workflow_sections(items: Iterable[TodoItem]) -> List[TodoWorkflowSection]:
+    """Group tasks for human display without changing execution order.
+
+    The input order is preserved within each section, so callers should pass
+    ``todo.execution_order``-ordered items.
+    """
+    grouped: Dict[str, List[TodoItem]] = {label: [] for label in _WORKFLOW_SECTION_ORDER}
+    for item in items:
+        label = _classify_task_label(item.name, item.instruction) or "Other"
+        if label not in grouped:
+            label = "Other"
+        grouped[label].append(item)
+
+    sections: List[TodoWorkflowSection] = []
+    for label in _WORKFLOW_SECTION_ORDER:
+        section_items = grouped.get(label) or []
+        if not section_items:
+            continue
+        sections.append(
+            TodoWorkflowSection(
+                section_id=_section_id(label),
+                label=label,
+                items=list(section_items),
+            )
+        )
+    return sections
+
+
+def attach_workflow_sections(todo: TodoList) -> TodoList:
+    """Populate human-facing workflow sections from the current execution order."""
+    ordered_items = [item for phase in todo.phases for item in phase.items]
+    todo.workflow_sections = build_workflow_sections(ordered_items)
+    return todo
+
+
 def assign_phase_labels(phases: List[TodoPhase]) -> None:
     """Mutate *phases* in-place, assigning semantic labels via heuristic.
 
@@ -554,7 +643,7 @@ def build_todo_list(
         subgraph_ids = set(expanded)
 
     if not subgraph_ids:
-        return TodoList(target_task_id=target_task_id)
+        return attach_workflow_sections(TodoList(target_task_id=target_task_id))
 
     # 3. Build dependency map for in-scope tasks
     deps_map = _build_scoped_dependency_map(
@@ -594,7 +683,17 @@ def build_todo_list(
     # Apply semantic labels via heuristic keyword matching
     assign_phase_labels(phases)
 
-    return TodoList(target_task_id=target_task_id, phases=phases)
+    return attach_workflow_sections(TodoList(target_task_id=target_task_id, phases=phases))
+
+
+def _apply_cached_phase_titles(
+    phases: List[TodoPhase], phase_labels: Dict[int, str]
+) -> None:
+    """Relabel phases by phase_id only; never reorders tasks (Layer3 invariant)."""
+    for phase in phases:
+        title = phase_labels.get(phase.phase_id)
+        if title and title.strip():
+            phase.label = title.strip()
 
 
 def build_full_plan_todo_list(
@@ -602,6 +701,7 @@ def build_full_plan_todo_list(
     *,
     expand_composites: bool = True,
     ordering_mode: str = "dependency_phase",
+    phase_labels: Optional[Dict[int, str]] = None,
 ) -> TodoList:
     """Build a phased TodoList covering the *entire* plan tree.
 
@@ -630,7 +730,7 @@ def build_full_plan_todo_list(
     subgraph_ids = all_ids
 
     if not subgraph_ids:
-        return TodoList(target_task_id=0)
+        return attach_workflow_sections(TodoList(target_task_id=0))
 
     deps_map = _build_scoped_dependency_map(
         tree,
@@ -641,11 +741,11 @@ def build_full_plan_todo_list(
 
     normalized_mode = str(ordering_mode or "structure").strip().lower()
     if normalized_mode in {"structure", "structure_order", "tree", "tree_order"}:
-        return TodoList(
+        return attach_workflow_sections(TodoList(
             target_task_id=0,
             phases=_build_structure_order_phases(tree, deps_map),
             ordering_mode="structure",
-        )
+        ))
 
     phase_of = _compute_phase_layers(subgraph_ids, deps_map)
 
@@ -671,17 +771,21 @@ def build_full_plan_todo_list(
         label = f"Phase {p + 1}"
         phases.append(TodoPhase(phase_id=p, label=label, items=items))
 
-    assign_phase_labels(phases)
+    if phase_labels:
+        _apply_cached_phase_titles(phases, phase_labels)
 
-    return TodoList(target_task_id=0, phases=phases, ordering_mode="dependency_phase")
+    return attach_workflow_sections(TodoList(target_task_id=0, phases=phases, ordering_mode="dependency_phase"))
 
 
 __all__ = [
     "TodoItem",
     "TodoPhase",
+    "TodoWorkflowSection",
     "TodoList",
     "build_todo_list",
     "build_full_plan_todo_list",
     "assign_phase_labels",
+    "build_workflow_sections",
+    "attach_workflow_sections",
     "_compute_phase_layers",
 ]

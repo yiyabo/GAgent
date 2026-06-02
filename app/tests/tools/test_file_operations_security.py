@@ -39,6 +39,10 @@ def test_validate_rejects_dangerous_absolute_path(monkeypatch) -> None:
     assert "allowed directories" in message.lower() or "not allowed" in message.lower()
 
 
+def test_default_allowed_base_paths_include_mnt_sdm_zczhao() -> None:
+    assert "/mnt/sdm/zczhao" in file_operations.ALLOWED_BASE_PATHS
+
+
 def test_file_operations_accepts_session_id(monkeypatch, tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     project_root.mkdir(parents=True, exist_ok=True)

@@ -134,6 +134,22 @@ _SEMANTIC_TOPIC_ALIASES = {
     },
 }
 
+_OUTPUT_DISCOVERY_DIR_NAMES = {
+    "artifact",
+    "artifacts",
+    "data",
+    "docs",
+    "figures",
+    "output",
+    "outputs",
+    "plots",
+    "result",
+    "results",
+    "tables",
+}
+_NON_DELIVERABLE_SUFFIXES = {".log", ".tmp", ".pyc"}
+_SCAFFOLDING_DIR_NAMES = {"code", "_scratch", "logs", "__pycache__"}
+
 
 _SOURCE_DISCOVERY_POSITIVE_CUES = {
     "locate",
@@ -278,13 +294,32 @@ class TaskVerificationService:
         metadata.pop("contract_diff", None)
         metadata.pop("plan_patch_suggestion", None)
 
+        effective_criteria, generated = self._effective_acceptance_criteria(node)
+
         artifact_paths = self._extract_artifact_paths(normalized_payload)
         local_artifact_paths = self._normalize_artifact_paths(
             artifact_paths,
             payload=normalized_payload,
         )
+        precheck_base_dir = self._resolve_base_dir(
+            effective_criteria,
+            local_artifact_paths,
+            payload=normalized_payload,
+            node=node,
+        )
+        local_artifact_paths = self._augment_artifact_paths_with_discovered_outputs(
+            node=node,
+            criteria=effective_criteria,
+            payload=normalized_payload,
+            artifact_paths=local_artifact_paths,
+            base_dir=precheck_base_dir,
+        )
+        execution_output_recovered = (
+            normalized_execution_status not in _COMPLETED_LIKE
+            and self._has_output_evidence(local_artifact_paths)
+        )
 
-        if normalized_execution_status not in _COMPLETED_LIKE:
+        if normalized_execution_status not in _COMPLETED_LIKE and not execution_output_recovered:
             metadata["failure_kind"] = self._derive_failure_kind(
                 execution_status=normalized_execution_status,
                 verification_status="not_run",
@@ -300,11 +335,17 @@ class TaskVerificationService:
                 artifact_paths=local_artifact_paths,
             )
 
-        effective_criteria, generated = self._effective_acceptance_criteria(node)
+        if execution_output_recovered:
+            metadata["execution_warning"] = True
+            metadata["execution_warning_reason"] = (
+                "Execution reported failure, but non-empty output artifacts were discovered."
+            )
+            metadata["execution_reported_status"] = normalized_execution_status
 
         if not self._has_checks(effective_criteria):
+            skipped_status = "warning" if execution_output_recovered else "skipped"
             verification = self._build_verification_record(
-                status="skipped",
+                status=skipped_status,
                 trigger=trigger,
                 blocking=bool((effective_criteria or {}).get("blocking", True)),
                 generated=generated,
@@ -314,7 +355,15 @@ class TaskVerificationService:
                 artifact_paths=local_artifact_paths,
             )
             metadata["verification"] = verification
-            metadata["verification_status"] = "skipped"
+            metadata["verification_status"] = skipped_status
+            if execution_output_recovered:
+                metadata["verification_warning"] = True
+                verification["blocking"] = False
+                verification["warnings"] = [{
+                    "type": "execution_status",
+                    "success": False,
+                    "message": metadata["execution_warning_reason"],
+                }]
             # When manually triggered, skipping verification should NOT
             # silently mark the task as completed — the user explicitly asked
             # for verification, so preserve the current execution status and
@@ -339,6 +388,13 @@ class TaskVerificationService:
             local_artifact_paths,
             payload=normalized_payload,
             node=node,
+        )
+        local_artifact_paths = self._augment_artifact_paths_with_discovered_outputs(
+            node=node,
+            criteria=effective_criteria,
+            payload=normalized_payload,
+            artifact_paths=local_artifact_paths,
+            base_dir=base_dir,
         )
         local_artifact_paths = self._materialize_semantic_expected_deliverables(
             node=node,
@@ -630,7 +686,7 @@ class TaskVerificationService:
 
         if (
             failures
-            and normalized_execution_status in _COMPLETED_LIKE
+            and (normalized_execution_status in _COMPLETED_LIKE or execution_output_recovered)
             and trigger != "manual"
             and self._has_output_evidence(local_artifact_paths)
         ):
@@ -660,6 +716,14 @@ class TaskVerificationService:
                 normalized_payload["status"] = "failed"
             else:
                 normalized_payload["status"] = "failed" if failures and blocking else "completed"
+
+        if execution_output_recovered and normalized_payload.get("status") == "completed":
+            metadata["execution_warning"] = True
+            metadata["execution_warning_reason"] = (
+                "Execution reported failure, but non-empty output artifacts were discovered."
+            )
+            metadata["execution_reported_status"] = normalized_execution_status
+            normalized_payload["metadata"] = metadata
 
         return VerificationFinalization(
             final_status=str(normalized_payload["status"]),
@@ -1759,16 +1823,15 @@ class TaskVerificationService:
             for item in failures
         )
 
-    @staticmethod
-    def _has_output_evidence(artifact_paths: Sequence[str]) -> bool:
+    def _has_output_evidence(self, artifact_paths: Sequence[str]) -> bool:
         for raw_path in artifact_paths:
             path = Path(str(raw_path or "")).expanduser()
             try:
-                if path.exists() and path.is_file() and path.stat().st_size > 0:
+                if self._is_output_evidence_file(path):
                     return True
                 if path.exists() and path.is_dir():
                     for child in path.rglob("*"):
-                        if child.is_file() and child.stat().st_size > 0:
+                        if self._is_output_evidence_file(child):
                             return True
             except OSError:
                 continue
@@ -3380,6 +3443,175 @@ class TaskVerificationService:
             seen.add(rel)
             outputs.append(rel)
         return outputs[:80]
+
+    def _augment_artifact_paths_with_discovered_outputs(
+        self,
+        *,
+        node: PlanNode,
+        criteria: Optional[Dict[str, Any]],
+        payload: Optional[Dict[str, Any]],
+        artifact_paths: Sequence[str],
+        base_dir: Path,
+    ) -> List[str]:
+        has_explicit_base_dir = bool(
+            isinstance(criteria, dict)
+            and isinstance(criteria.get("base_dir"), str)
+            and str(criteria.get("base_dir") or "").strip()
+        )
+        payload_base_candidates = self._payload_base_dir_candidates(payload)
+        task_base_candidates = self._task_raw_files_base_dir_candidates(
+            node=node,
+            payload=payload,
+            artifact_paths=artifact_paths,
+        )
+        if not artifact_paths and not payload_base_candidates and not task_base_candidates and not has_explicit_base_dir:
+            return []
+
+        paths: List[str] = []
+        seen: set[str] = set()
+
+        def _add_raw(value: Any) -> None:
+            if not isinstance(value, str) or not value.strip():
+                return
+            text = value.strip()
+            if text in seen or not self._is_local_path(text) or self._is_internal_artifact_path(text):
+                return
+            seen.add(text)
+            paths.append(text)
+
+        def _add_path(path: Path) -> None:
+            if self._should_include_discovered_output(path):
+                try:
+                    resolved = path.expanduser().resolve()
+                except Exception:
+                    resolved = path.expanduser()
+                text = str(resolved)
+                if text not in seen:
+                    seen.add(text)
+                    paths.append(text)
+
+        def _add_existing(raw: Any) -> None:
+            if not isinstance(raw, str) or not raw.strip():
+                return
+            raw_path = Path(raw.strip()).expanduser()
+            if not raw_path.is_absolute():
+                raw_path = base_dir / raw_path
+            if raw_path.exists() and raw_path.is_file():
+                _add_path(raw_path)
+            elif raw_path.exists() and raw_path.is_dir():
+                self._collect_discovered_output_files(raw_path, add=_add_path)
+
+        for raw in artifact_paths:
+            _add_raw(raw)
+            _add_existing(raw)
+
+        roots = self._output_discovery_roots(
+            node=node,
+            criteria=criteria,
+            payload=payload,
+            artifact_paths=artifact_paths,
+            base_dir=base_dir,
+            payload_base_candidates=payload_base_candidates,
+            task_base_candidates=task_base_candidates,
+            include_base_dir=has_explicit_base_dir or bool(artifact_paths),
+        )
+        for root in roots:
+            self._collect_discovered_output_files(root, add=_add_path)
+
+        return paths[:80]
+
+    def _output_discovery_roots(
+        self,
+        *,
+        node: PlanNode,
+        criteria: Optional[Dict[str, Any]],
+        payload: Optional[Dict[str, Any]],
+        artifact_paths: Sequence[str],
+        base_dir: Path,
+        payload_base_candidates: Sequence[Path],
+        task_base_candidates: Sequence[Path],
+        include_base_dir: bool,
+    ) -> List[Path]:
+        roots: List[Path] = []
+        seen: set[str] = set()
+
+        def _add_root(candidate: Path) -> None:
+            try:
+                path = candidate.expanduser().resolve()
+            except Exception:
+                path = candidate.expanduser()
+            if not path.exists() or not path.is_dir():
+                return
+            key = str(path)
+            if key in seen:
+                return
+            seen.add(key)
+            roots.append(path)
+
+        if include_base_dir:
+            _add_root(base_dir)
+        for candidate in payload_base_candidates:
+            _add_root(candidate)
+        for candidate in task_base_candidates:
+            _add_root(candidate)
+        inferred = self._infer_relative_output_base_dir(criteria, artifact_paths)
+        if inferred is not None:
+            _add_root(inferred)
+        for raw in artifact_paths:
+            path = Path(str(raw or "")).expanduser()
+            if path.exists() and path.is_dir():
+                _add_root(path)
+            elif path.exists() and path.is_file():
+                _add_root(path.parent)
+
+        expanded: List[Path] = list(roots)
+        for root in list(roots):
+            for dirname in _OUTPUT_DISCOVERY_DIR_NAMES:
+                candidate = root / dirname
+                if candidate.exists() and candidate.is_dir():
+                    expanded.append(candidate)
+        roots = []
+        seen.clear()
+        for root in expanded:
+            _add_root(root)
+        return roots
+
+    def _collect_discovered_output_files(self, root: Path, *, add) -> None:
+        if root.name.lower() in _OUTPUT_DISCOVERY_DIR_NAMES:
+            for child in root.rglob("*"):
+                add(child)
+            return
+        for dirname in _OUTPUT_DISCOVERY_DIR_NAMES:
+            candidate = root / dirname
+            if candidate.exists() and candidate.is_dir():
+                for child in candidate.rglob("*"):
+                    add(child)
+
+    @staticmethod
+    def _is_output_evidence_file(path: Path) -> bool:
+        """Non-empty, non-junk deliverable file; unlike discovery it ignores directory name."""
+        try:
+            if not path.exists() or not path.is_file() or path.stat().st_size <= 0:
+                return False
+        except OSError:
+            return False
+        if path.suffix.lower() in _NON_DELIVERABLE_SUFFIXES:
+            return False
+        if path.name.lower().endswith("_code_executor.log") or path.name.lower().endswith("_claude_debug.log"):
+            return False
+        normalized = str(path).replace("\\", "/")
+        if TaskVerificationService._is_internal_artifact_path(normalized):
+            return False
+        if {part.lower() for part in path.parts} & _SCAFFOLDING_DIR_NAMES:
+            return False
+        return True
+
+    @staticmethod
+    def _should_include_discovered_output(path: Path) -> bool:
+        if not TaskVerificationService._is_output_evidence_file(path):
+            return False
+        parts = {part.lower() for part in path.parts}
+        return bool(parts & _OUTPUT_DISCOVERY_DIR_NAMES)
 
     def _missing_required_outputs(
         self,

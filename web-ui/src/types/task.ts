@@ -271,12 +271,22 @@ export interface TodoPhaseResponse {
   items: TodoItemResponse[];
 }
 
+export interface TodoWorkflowSectionResponse {
+  section_id: string;
+  label: string;
+  status: string;
+  total: number;
+  completed: number;
+  items: TodoItemResponse[];
+}
+
 export interface TodoListResponse {
   plan_id: number;
   target_task_id: number;
   total_tasks: number;
   completed_tasks: number;
   phases: TodoPhaseResponse[];
+  workflow_sections?: TodoWorkflowSectionResponse[];
   execution_order: number[];
   pending_order: number[];
   summary: string;

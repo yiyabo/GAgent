@@ -33,7 +33,7 @@ describe('hydratePersistedMessage', () => {
     expect(hydrated.thinking_process?.status).toBe('completed');
     expect(hydrated.thinking_process?.steps[0]?.iteration).toBe(1);
     expect((hydrated.metadata as any).thinking_visibility).toBe('visible');
-    expect((hydrated.metadata as any).thinking_display_mode).toBe('final_answer');
+    expect((hydrated.metadata as any).thinking_display_mode).toBe('full_thinking');
   });
 
   it('reuses live tool results when persisted metadata has not caught up yet', () => {

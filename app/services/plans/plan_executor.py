@@ -30,6 +30,8 @@ from ..execution.tool_executor import ToolExecutionContext, UnifiedToolExecutor
 from ..llm.llm_service import LLMService
 from ..skills import get_skills_loader
 from .artifact_contracts import (
+    aliases_for_file_name,
+    aliases_for_path_text,
     artifact_manifest_path,
     canonical_artifact_path,
     canonicalize_artifact_alias,
@@ -37,6 +39,7 @@ from .artifact_contracts import (
     find_candidate_source_for_alias,
     find_runtime_candidates,
     infer_artifact_contract,
+    infer_artifact_namespace,
     load_artifact_manifest,
     producer_candidates_for_alias,
     publish_artifact,
@@ -67,6 +70,7 @@ def _run_coroutine_sync(coro: Any) -> Any:
     created inside that temporary loop is closed before ``asyncio.run`` closes
     the loop, avoiding cross-loop reuse of httpx/anyio primitives.
     """
+    import contextvars
 
     async def _run_and_cleanup() -> Any:
         try:
@@ -83,8 +87,9 @@ def _run_coroutine_sync(coro: Any) -> Any:
         running_loop = None
 
     if running_loop and running_loop.is_running():
+        ctx = contextvars.copy_context()
         with ThreadPoolExecutor(max_workers=1) as executor:
-            return executor.submit(lambda: asyncio.run(_run_and_cleanup())).result()
+            return executor.submit(lambda: ctx.run(asyncio.run, _run_and_cleanup())).result()
     return asyncio.run(_run_and_cleanup())
 
 
@@ -276,7 +281,7 @@ _INTERNAL_TOOL_OUTPUT_RE = re.compile(
     re.IGNORECASE,
 )
 _NON_DELIVERABLE_WORKSPACE_RE = re.compile(
-    r"/plan\d+_task\d+/run_[^/]+(?:/(?:results|code|data|docs))?$",
+    r"/runtime/session_[^/]+/(?:_scratch/)?plan\d+_task\d+/run_[^/]+(?:/(?:results|code|data|docs))?$",
     re.IGNORECASE,
 )
 _LEGACY_SESSION_WORKSPACE_RE = re.compile(
@@ -583,6 +588,7 @@ class ExecutorPromptBuilder:
         plan_outline: Optional[str],
         include_context: bool,
         session_context: Optional[Dict[str, Any]] = None,
+        include_tool_hints: bool = True,
     ) -> str:
         lines: List[str] = [self.SYSTEM_HEADER]
 
@@ -745,7 +751,8 @@ class ExecutorPromptBuilder:
             lines.append("\n=== PLAN OUTLINE (TRUNCATED) ===")
             lines.append(plan_outline)
 
-        lines.append(self.TOOL_HINTS)
+        if include_tool_hints:
+            lines.append(self.TOOL_HINTS)
         prompt = "\n".join(lines)
         if len(prompt) > self.MAX_PROMPT_CHARS:
             logger.warning(
@@ -1457,480 +1464,495 @@ class PlanExecutor:
         tree: PlanTree,
         config: ExecutionConfig,
     ) -> ExecutionResult:
-        parent = tree.nodes.get(node.parent_id) if node.parent_id else None
-        dependencies = self._resolve_dependencies(tree, node)
-        plan_state_by_task = self._status_resolver.resolve_plan_states(
-            plan_id,
-            tree,
-            manifest=self._get_artifact_manifest(plan_id, config.session_context),
+        from app.llm import clear_usage_context, set_usage_context
+        session_id = None
+        if isinstance(config.session_context, dict):
+            session_id = config.session_context.get("session_id")
+        usage_token = set_usage_context(
+            session_id=session_id,
+            plan_id=plan_id,
+            task_id=node.id,
+            call_purpose="plan_task_execution",
         )
+        try:
 
-        incomplete_deps = []
-        dep_status_by_id: Dict[int, str] = {}
-        for dep in dependencies:
-            dep_state = plan_state_by_task.get(dep.id) or {}
-            dep_status = str(dep_state.get("effective_status") or dep.status or "pending").strip().lower()
-            dep_status_by_id[dep.id] = dep_status
-            if dep_status != "completed":
-                incomplete_deps.append(dep)
-                logger.warning(
-                    "Dependency %s (status=%s) not completed before executing task %s",
-                    dep.id, dep_status, node.id
-                )
+            parent = tree.nodes.get(node.parent_id) if node.parent_id else None
+            dependencies = self._resolve_dependencies(tree, node)
+            plan_state_by_task = self._status_resolver.resolve_plan_states(
+                plan_id,
+                tree,
+                manifest=self._get_artifact_manifest(plan_id, config.session_context),
+            )
 
-        if config.session_context is None:
-            config.session_context = {}
-        session_context = config.session_context if isinstance(config.session_context, dict) else {}
-        artifact_contract, resolved_input_artifacts, missing_aliases, producer_map = self._resolve_required_artifacts(
-            plan_id,
-            node,
-            dependencies=dependencies,
-            tree=tree,
-            session_context=session_context,
-        )
-        if missing_aliases and config.enforce_dependencies:
-            _log_job(
-                "warning",
-                f"Task {node.id} blocked: required artifacts not published",
-                {
-                    "task_id": node.id,
-                    "missing_artifact_aliases": missing_aliases,
-                    "producer_task_candidates": producer_map,
-                },
-            )
-            return self._block_for_missing_artifacts(
-                plan_id=plan_id,
-                node=node,
-                tree=tree,
-                missing_aliases=missing_aliases,
-                producer_candidates=producer_map,
-                resolved_input_artifacts=resolved_input_artifacts,
-            )
-        elif missing_aliases:
-            _log_job(
-                "warning",
-                f"Task {node.id} continuing with missing required artifacts",
-                {
-                    "task_id": node.id,
-                    "missing_artifact_aliases": missing_aliases,
-                    "producer_task_candidates": producer_map,
-                    "enforce_dependencies": False,
-                },
-            )
-            session_context["dependency_warning"] = True
-            session_context["degraded_input"] = True
-            session_context["missing_artifact_aliases"] = list(missing_aliases)
-        if incomplete_deps and config.enforce_dependencies:
-            incomplete_ids = [d.id for d in incomplete_deps]
-            incomplete_display = ", ".join(
-                f"#{d.id}({dep_status_by_id.get(d.id) or (d.status or 'pending').strip()})" for d in incomplete_deps
-            )
-            skip_reason = (
-                f"Blocked by dependencies: task #{node.id} requires completed outputs from "
-                f"{len(incomplete_deps)} dependency task(s): {incomplete_display}."
-            )
-            _log_job(
-                "warning",
-                f"Task {node.id} skipped: dependencies not satisfied",
-                {
-                    "task_id": node.id,
-                    "incomplete_deps": incomplete_ids,
-                    "enforce_dependencies": True,
-                },
-            )
-            notes = [
-                "This task was not executed because dependency outputs are missing.",
-                f"Unmet dependencies: {incomplete_display}",
-            ]
-            metadata = {
-                "blocked_by_dependencies": True,
-                "incomplete_dependencies": incomplete_ids,
-                "incomplete_dependency_info": [
-                    {"id": d.id, "name": d.display_name(), "status": d.status}
-                    for d in incomplete_deps
-                ],
-                "enforce_dependencies": True,
-            }
-            payload = {
-                "status": "skipped",
-                "content": skip_reason,
-                "notes": notes,
-                "metadata": metadata,
-            }
-            finalization = self._task_verifier.finalize_payload(
-                node,
-                payload,
-                execution_status="skipped",
-            )
-            raw_response = json.dumps(finalization.payload, ensure_ascii=False)
-
-            # Persist skip reason so the UI can render why it was skipped.
-            try:
-                self._persist_execution(
-                    plan_id,
-                    node.id,
-                    finalization.payload,
-                    status=finalization.final_status,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "Failed to persist skipped execution result for task %s: %s",
-                    node.id,
-                    exc,
-                )
-                try:
-                    self._repo.update_task(plan_id, node.id, status="skipped")
-                except Exception as inner_exc:  # pragma: no cover - defensive
+            incomplete_deps = []
+            dep_status_by_id: Dict[int, str] = {}
+            for dep in dependencies:
+                dep_state = plan_state_by_task.get(dep.id) or {}
+                dep_status = str(dep_state.get("effective_status") or dep.status or "pending").strip().lower()
+                dep_status_by_id[dep.id] = dep_status
+                if dep_status != "completed":
+                    incomplete_deps.append(dep)
                     logger.warning(
-                        "Failed to update task %s status to skipped: %s",
-                        node.id,
-                        inner_exc,
+                        "Dependency %s (status=%s) not completed before executing task %s",
+                        dep.id, dep_status, node.id
                     )
 
-            # Update in-memory tree so subsequent tasks see latest status/result.
-            node.status = finalization.final_status
-            node.execution_result = raw_response
-            tree.nodes[node.id] = node
-
-            return ExecutionResult(
-                plan_id=plan_id,
-                task_id=node.id,
-                status=finalization.final_status,
-                content=skip_reason,
-                notes=notes,
-                metadata=finalization.payload.get("metadata") or {},
-                raw_response=raw_response,
-            )
-        elif incomplete_deps:
-            _log_job(
-                "warning",
-                f"Task {node.id} has {len(incomplete_deps)} incomplete dependencies (continuing anyway)",
-                {
-                    "task_id": node.id,
-                    "incomplete_deps": [d.id for d in incomplete_deps],
-                    "enforce_dependencies": False,
-                },
-            )
-            session_context["dependency_warning"] = True
-            session_context["degraded_input"] = True
-            session_context["incomplete_dependencies"] = [d.id for d in incomplete_deps]
-
-        if isinstance(node.metadata, dict):
-            node.metadata.setdefault("artifact_contract", artifact_contract)
-            raw_paths = node.metadata.get("paper_context_paths")
-            merged_paths = [
-                str(item).strip()
-                for item in raw_paths
-                if isinstance(item, str) and str(item).strip()
-            ] if isinstance(raw_paths, list) else []
-            for path in resolved_input_artifacts.values():
-                if path not in merged_paths:
-                    merged_paths.append(path)
-            if merged_paths:
-                node.metadata["paper_context_paths"] = merged_paths[:40]
-        resolved_resources: Dict[str, Dict[str, Any]] = {}
-        missing_resources: List[str] = []
-        resource_ids = list(artifact_contract.get("resources") or []) if isinstance(artifact_contract, dict) else []
-        if resource_ids:
-            resolved_resources, missing_resources = resolve_resources(resource_ids)
-        if session_context is not None:
-            session_context["resolved_input_artifacts"] = dict(resolved_input_artifacts)
-            session_context["resolved_resources"] = dict(resolved_resources)
-            session_context["required_resources"] = list(resource_ids)
-        if missing_resources:
-            _log_job(
-                "warning",
-                f"Task {node.id} blocked: required external resources unavailable",
-                {
-                    "task_id": node.id,
-                    "missing_resources": missing_resources,
-                    "required_resources": resource_ids,
-                },
-            )
-            return self._block_for_missing_resources(
-                plan_id=plan_id,
-                node=node,
-                tree=tree,
-                missing_resources=missing_resources,
-                resolved_resources=resolved_resources,
-            )
-        outline = tree.to_outline(max_depth=4, max_nodes=80) if config.include_plan_outline else None
-
-        if self._should_delegate_plan_task(config):
-            return self._run_task_with_external_delegate(
-                plan_id=plan_id,
-                node=node,
-                parent=parent,
-                dependencies=dependencies,
-                plan_outline=outline,
-                tree=tree,
-                config=config,
-                artifact_contract=artifact_contract,
-                resolved_input_artifacts=resolved_input_artifacts,
-                resolved_resources=resolved_resources,
-            )
-
-        if self._should_use_deep_think(config):
-            return self._run_task_with_deep_think(
-                plan_id=plan_id,
-                node=node,
-                parent=parent,
-                dependencies=dependencies,
-                plan_outline=outline,
-                tree=tree,
-                config=config,
-            )
-
-        prompt = self._prompt_builder.build(
-            node=node,
-            parent=parent,
-            dependencies=dependencies,
-            plan_outline=outline,
-            include_context=config.use_context,
-            session_context=config.session_context,
-        )
-
-        attempts = max(1, config.max_retries)
-        last_error: Optional[Exception] = None
-        raw_response: Optional[str] = None
-        try:
-            self._repo.update_task(plan_id, node.id, status="running", execution_result="")
-            node.status = "running"
-        except Exception as exc:  # pragma: no cover - defensive
-            logger.warning(
-                "Failed to mark task %s as running for plan %s: %s",
-                node.id,
+            if config.session_context is None:
+                config.session_context = {}
+            session_context = config.session_context if isinstance(config.session_context, dict) else {}
+            artifact_contract, resolved_input_artifacts, missing_aliases, producer_map = self._resolve_required_artifacts(
                 plan_id,
-                exc,
+                node,
+                dependencies=dependencies,
+                tree=tree,
+                session_context=session_context,
             )
-        for attempt in range(1, attempts + 1):
-            try:
+            if missing_aliases and config.enforce_dependencies:
                 _log_job(
-                    "info",
-                    "Starting task execution attempt.",
+                    "warning",
+                    f"Task {node.id} blocked: required artifacts not published",
                     {
-                        "plan_id": plan_id,
                         "task_id": node.id,
-                        "attempt": attempt,
+                        "missing_artifact_aliases": missing_aliases,
+                        "producer_task_candidates": producer_map,
                     },
                 )
-                _log_job("info", "LLM call started.", {
-                    "sub_type": "llm_call_start",
-                    "task_id": node.id,
-                    "attempt": attempt,
-                })
-                response = self._llm.generate(prompt, config, tools=build_executor_tool_schemas())
-                _log_job("info", "LLM call completed.", {
-                    "sub_type": "llm_call_end",
-                    "task_id": node.id,
-                    "attempt": attempt,
-                    "parsed_status": response.status,
-                    "tool_call_requested": response.tool_call is not None,
-                })
-
-                if response.status == "needs_tool" and response.tool_call:
-                    _log_job("info", f"Tool dispatch: {response.tool_call.name}", {
-                        "sub_type": "tool_dispatch",
+                return self._block_for_missing_artifacts(
+                    plan_id=plan_id,
+                    node=node,
+                    tree=tree,
+                    missing_aliases=missing_aliases,
+                    producer_candidates=producer_map,
+                    resolved_input_artifacts=resolved_input_artifacts,
+                )
+            elif missing_aliases:
+                _log_job(
+                    "warning",
+                    f"Task {node.id} continuing with missing required artifacts",
+                    {
                         "task_id": node.id,
-                        "tool_name": response.tool_call.name,
-                        "parameters_summary": _summarize_tool_params(response.tool_call.parameters),
-                    })
-                    tool_start = time.time()
-                    tool_result = self._execute_tool_call(
-                        response.tool_call,
-                        node=node,
-                        config=config,
+                        "missing_artifact_aliases": missing_aliases,
+                        "producer_task_candidates": producer_map,
+                        "enforce_dependencies": False,
+                    },
+                )
+                session_context["dependency_warning"] = True
+                session_context["degraded_input"] = True
+                session_context["missing_artifact_aliases"] = list(missing_aliases)
+            if incomplete_deps and config.enforce_dependencies:
+                incomplete_ids = [d.id for d in incomplete_deps]
+                incomplete_display = ", ".join(
+                    f"#{d.id}({dep_status_by_id.get(d.id) or (d.status or 'pending').strip()})" for d in incomplete_deps
+                )
+                skip_reason = (
+                    f"Blocked by dependencies: task #{node.id} requires completed outputs from "
+                    f"{len(incomplete_deps)} dependency task(s): {incomplete_display}."
+                )
+                _log_job(
+                    "warning",
+                    f"Task {node.id} skipped: dependencies not satisfied",
+                    {
+                        "task_id": node.id,
+                        "incomplete_deps": incomplete_ids,
+                        "enforce_dependencies": True,
+                    },
+                )
+                notes = [
+                    "This task was not executed because dependency outputs are missing.",
+                    f"Unmet dependencies: {incomplete_display}",
+                ]
+                metadata = {
+                    "blocked_by_dependencies": True,
+                    "incomplete_dependencies": incomplete_ids,
+                    "incomplete_dependency_info": [
+                        {"id": d.id, "name": d.display_name(), "status": d.status}
+                        for d in incomplete_deps
+                    ],
+                    "enforce_dependencies": True,
+                }
+                payload = {
+                    "status": "skipped",
+                    "content": skip_reason,
+                    "notes": notes,
+                    "metadata": metadata,
+                }
+                finalization = self._task_verifier.finalize_payload(
+                    node,
+                    payload,
+                    execution_status="skipped",
+                )
+                raw_response = json.dumps(finalization.payload, ensure_ascii=False)
+
+                # Persist skip reason so the UI can render why it was skipped.
+                try:
+                    self._persist_execution(
+                        plan_id,
+                        node.id,
+                        finalization.payload,
+                        status=finalization.final_status,
                     )
-                    tool_duration = round(time.time() - tool_start, 3)
-                    _log_job(
-                        "info" if tool_result.get("success") else "error",
-                        f"Tool completed: {response.tool_call.name}",
-                        {
-                            "sub_type": "tool_complete",
-                            "task_id": node.id,
-                            "tool_name": response.tool_call.name,
-                            "success": tool_result.get("success"),
-                            "duration_sec": tool_duration,
-                        },
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to persist skipped execution result for task %s: %s",
+                        node.id,
+                        exc,
                     )
-                    # Persist action log entry for tool execution
                     try:
-                        from .decomposition_jobs import get_current_job
-                        from ...repository.plan_storage import append_action_log_entry
+                        self._repo.update_task(plan_id, node.id, status="skipped")
+                    except Exception as inner_exc:  # pragma: no cover - defensive
+                        logger.warning(
+                            "Failed to update task %s status to skipped: %s",
+                            node.id,
+                            inner_exc,
+                        )
 
-                        current_job_id = get_current_job()
-                        if current_job_id:
-                            append_action_log_entry(
-                                plan_id=plan_id,
-                                job_id=current_job_id,
-                                job_type="plan_execute",
-                                session_id=(config.session_context or {}).get("session_id") if config.session_context else None,
-                                user_message=None,
-                                action_kind="tool_call",
-                                action_name=response.tool_call.name,
-                                status="succeeded" if tool_result.get("success") else "failed",
-                                success=tool_result.get("success"),
-                                message=_summarize_tool_params(response.tool_call.parameters),
-                                details={"result_summary": str(tool_result.get("summary", ""))[:500]},
-                            )
-                    except Exception as action_log_exc:
-                        logger.warning("Failed to persist action log for tool %s: %s", response.tool_call.name, action_log_exc)
-                    if tool_result.get("success"):
-                        final_content = f"{response.content}\n\n=== Tool Execution Result ===\n{tool_result.get('summary', str(tool_result.get('result', '')))}"
-                        response.status = "success"
-                    else:
-                        tool_error = tool_result.get("error")
-                        if (
-                            not tool_error
-                            and isinstance(tool_result.get("result"), dict)
-                        ):
-                            tool_error = tool_result["result"].get("error")
-                        final_content = f"{response.content}\n\n=== Tool Execution Failed ===\n{tool_error or 'Unknown error'}"
-                        response.status = "failed"
-                    deliverable_payload = tool_result.get("deliverables")
-                    if isinstance(deliverable_payload, dict):
-                        metadata = dict(response.metadata or {})
-                        metadata["deliverables"] = deliverable_payload
-                        response.metadata = metadata
-                    response.content = final_content
-
-                result_payload = response.model_dump()
-                response_paths = self._extract_path_like_values(response.content)
-                if response_paths:
-                    existing_paths = [
-                        str(item).strip()
-                        for item in list(result_payload.get("artifact_paths") or [])
-                        if str(item).strip()
-                    ]
-                    result_payload["artifact_paths"] = list(
-                        dict.fromkeys([*existing_paths, *response_paths])
-                    )[:40]
-                    metadata = result_payload.get("metadata")
-                    if not isinstance(metadata, dict):
-                        metadata = {}
-                        result_payload["metadata"] = metadata
-                    metadata["artifact_paths"] = list(result_payload["artifact_paths"])
-                metadata = result_payload.get("metadata")
-                if not isinstance(metadata, dict):
-                    metadata = {}
-                    result_payload["metadata"] = metadata
-                if session_context.get("dependency_warning"):
-                    metadata["dependency_warning"] = True
-                    metadata["degraded_input"] = True
-                incomplete_dependencies = session_context.get("incomplete_dependencies")
-                if isinstance(incomplete_dependencies, list) and incomplete_dependencies:
-                    metadata["incomplete_dependencies"] = list(incomplete_dependencies)
-                missing_artifact_aliases = session_context.get("missing_artifact_aliases")
-                if isinstance(missing_artifact_aliases, list) and missing_artifact_aliases:
-                    metadata["missing_artifact_aliases"] = list(missing_artifact_aliases)
-                raw_response = json.dumps(result_payload, ensure_ascii=False)
-                task_status = self._normalize_status(response.status)
-                finalization, _ = self._finalize_task_execution(
-                    plan_id,
-                    node,
-                    result_payload,
-                    execution_status=task_status,
-                )
-                finalization, raw_response = self._materialize_finalization(
-                    plan_id,
-                    node,
-                    finalization,
-                    session_context=config.session_context,
-                )
-                # Update in-memory tree so subsequent tasks see latest outputs.
-                node.execution_result = raw_response
+                # Update in-memory tree so subsequent tasks see latest status/result.
                 node.status = finalization.final_status
+                node.execution_result = raw_response
                 tree.nodes[node.id] = node
-                if parent:
-                    tree.nodes[parent.id] = parent
+
                 return ExecutionResult(
                     plan_id=plan_id,
                     task_id=node.id,
                     status=finalization.final_status,
-                    content=str(finalization.payload.get("content") or response.content),
-                    notes=response.notes,
+                    content=skip_reason,
+                    notes=notes,
                     metadata=finalization.payload.get("metadata") or {},
                     raw_response=raw_response,
-                    attempts=attempt,
                 )
-            except Exception as exc:  # pragma: no cover - retry path
-                last_error = exc
-                logger.warning(
-                    "Attempt %s failed for plan %s task %s: %s",
-                    attempt,
-                    plan_id,
-                    node.id,
-                    exc,
-                )
+            elif incomplete_deps:
                 _log_job(
                     "warning",
-                    "Task execution attempt failed; retrying.",
+                    f"Task {node.id} has {len(incomplete_deps)} incomplete dependencies (continuing anyway)",
                     {
-                        "plan_id": plan_id,
                         "task_id": node.id,
-                        "attempt": attempt,
-                        "error": str(exc),
+                        "incomplete_deps": [d.id for d in incomplete_deps],
+                        "enforce_dependencies": False,
                     },
                 )
-                # Distinguish JSON parse errors from other failures
-                if isinstance(exc, (ValidationError, json.JSONDecodeError)):
-                    _log_job("warning", "LLM response JSON parse failed.", {
-                        "sub_type": "json_parse_error",
-                        "task_id": node.id,
-                        "attempt": attempt,
-                        "error": str(exc),
-                    })
-                else:
-                    _log_job("warning", "Task execution retry triggered.", {
-                        "sub_type": "retry",
-                        "task_id": node.id,
-                        "attempt": attempt,
-                        "reason": str(exc),
-                    })
-                continue
+                session_context["dependency_warning"] = True
+                session_context["degraded_input"] = True
+                session_context["incomplete_dependencies"] = [d.id for d in incomplete_deps]
 
-        error_message = str(last_error) if last_error else "Unknown execution failure"
-        finalization, _ = self._finalize_task_execution(
-            plan_id,
-            node,
-            {
-                "status": "failed",
-                "content": error_message,
-                "notes": ["all attempts failed"],
-                "metadata": {},
-            },
-            execution_status="failed",
-        )
-        finalization, raw_response = self._materialize_finalization(
-            plan_id,
-            node,
-            finalization,
-            session_context=config.session_context,
-        )
-        node.execution_result = raw_response
-        node.status = finalization.final_status
-        tree.nodes[node.id] = node
-        result = ExecutionResult(
-            plan_id=plan_id,
-            task_id=node.id,
-            status=finalization.final_status,
-            content=error_message,
-            notes=["all attempts failed"],
-            metadata=finalization.payload.get("metadata") or {},
-            raw_response=raw_response,
-            attempts=attempts,
-        )
-        _log_job(
-            "error",
-            "All task execution attempts failed.",
-            {
-                "plan_id": plan_id,
-                "task_id": node.id,
-                "attempts": attempts,
-                "error": error_message,
-            },
-        )
-        return result
+            if isinstance(node.metadata, dict):
+                node.metadata.setdefault("artifact_contract", artifact_contract)
+                raw_paths = node.metadata.get("paper_context_paths")
+                merged_paths = [
+                    str(item).strip()
+                    for item in raw_paths
+                    if isinstance(item, str) and str(item).strip()
+                ] if isinstance(raw_paths, list) else []
+                for path in resolved_input_artifacts.values():
+                    if path not in merged_paths:
+                        merged_paths.append(path)
+                if merged_paths:
+                    node.metadata["paper_context_paths"] = merged_paths[:40]
+            resolved_resources: Dict[str, Dict[str, Any]] = {}
+            missing_resources: List[str] = []
+            resource_ids = list(artifact_contract.get("resources") or []) if isinstance(artifact_contract, dict) else []
+            if resource_ids:
+                resolved_resources, missing_resources = resolve_resources(resource_ids)
+            if session_context is not None:
+                session_context["resolved_input_artifacts"] = dict(resolved_input_artifacts)
+                session_context["resolved_resources"] = dict(resolved_resources)
+                session_context["required_resources"] = list(resource_ids)
+            if missing_resources:
+                _log_job(
+                    "warning",
+                    f"Task {node.id} blocked: required external resources unavailable",
+                    {
+                        "task_id": node.id,
+                        "missing_resources": missing_resources,
+                        "required_resources": resource_ids,
+                    },
+                )
+                return self._block_for_missing_resources(
+                    plan_id=plan_id,
+                    node=node,
+                    tree=tree,
+                    missing_resources=missing_resources,
+                    resolved_resources=resolved_resources,
+                )
+            outline = tree.to_outline(max_depth=4, max_nodes=80) if config.include_plan_outline else None
+
+            if self._should_delegate_plan_task(config):
+                return self._run_task_with_external_delegate(
+                    plan_id=plan_id,
+                    node=node,
+                    parent=parent,
+                    dependencies=dependencies,
+                    plan_outline=outline,
+                    tree=tree,
+                    config=config,
+                    artifact_contract=artifact_contract,
+                    resolved_input_artifacts=resolved_input_artifacts,
+                    resolved_resources=resolved_resources,
+                )
+
+            if self._should_use_deep_think(config):
+                return self._run_task_with_deep_think(
+                    plan_id=plan_id,
+                    node=node,
+                    parent=parent,
+                    dependencies=dependencies,
+                    plan_outline=outline,
+                    tree=tree,
+                    config=config,
+                )
+
+            prompt = self._prompt_builder.build(
+                node=node,
+                parent=parent,
+                dependencies=dependencies,
+                plan_outline=outline,
+                include_context=config.use_context,
+                session_context=config.session_context,
+            )
+
+            attempts = max(1, config.max_retries)
+            last_error: Optional[Exception] = None
+            raw_response: Optional[str] = None
+            try:
+                self._repo.update_task(plan_id, node.id, status="running", execution_result="")
+                node.status = "running"
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning(
+                    "Failed to mark task %s as running for plan %s: %s",
+                    node.id,
+                    plan_id,
+                    exc,
+                )
+            for attempt in range(1, attempts + 1):
+                try:
+                    _log_job(
+                        "info",
+                        "Starting task execution attempt.",
+                        {
+                            "plan_id": plan_id,
+                            "task_id": node.id,
+                            "attempt": attempt,
+                        },
+                    )
+                    _log_job("info", "LLM call started.", {
+                        "sub_type": "llm_call_start",
+                        "task_id": node.id,
+                        "attempt": attempt,
+                    })
+                    response = self._llm.generate(prompt, config, tools=build_executor_tool_schemas())
+                    _log_job("info", "LLM call completed.", {
+                        "sub_type": "llm_call_end",
+                        "task_id": node.id,
+                        "attempt": attempt,
+                        "parsed_status": response.status,
+                        "tool_call_requested": response.tool_call is not None,
+                    })
+
+                    if response.status == "needs_tool" and response.tool_call:
+                        _log_job("info", f"Tool dispatch: {response.tool_call.name}", {
+                            "sub_type": "tool_dispatch",
+                            "task_id": node.id,
+                            "tool_name": response.tool_call.name,
+                            "parameters_summary": _summarize_tool_params(response.tool_call.parameters),
+                        })
+                        tool_start = time.time()
+                        tool_result = self._execute_tool_call(
+                            response.tool_call,
+                            node=node,
+                            config=config,
+                        )
+                        tool_duration = round(time.time() - tool_start, 3)
+                        _log_job(
+                            "info" if tool_result.get("success") else "error",
+                            f"Tool completed: {response.tool_call.name}",
+                            {
+                                "sub_type": "tool_complete",
+                                "task_id": node.id,
+                                "tool_name": response.tool_call.name,
+                                "success": tool_result.get("success"),
+                                "duration_sec": tool_duration,
+                            },
+                        )
+                        # Persist action log entry for tool execution
+                        try:
+                            from .decomposition_jobs import get_current_job
+                            from ...repository.plan_storage import append_action_log_entry
+
+                            current_job_id = get_current_job()
+                            if current_job_id:
+                                append_action_log_entry(
+                                    plan_id=plan_id,
+                                    job_id=current_job_id,
+                                    job_type="plan_execute",
+                                    session_id=(config.session_context or {}).get("session_id") if config.session_context else None,
+                                    user_message=None,
+                                    action_kind="tool_call",
+                                    action_name=response.tool_call.name,
+                                    status="succeeded" if tool_result.get("success") else "failed",
+                                    success=tool_result.get("success"),
+                                    message=_summarize_tool_params(response.tool_call.parameters),
+                                    details={"result_summary": str(tool_result.get("summary", ""))[:500]},
+                                )
+                        except Exception as action_log_exc:
+                            logger.warning("Failed to persist action log for tool %s: %s", response.tool_call.name, action_log_exc)
+                        if tool_result.get("success"):
+                            final_content = f"{response.content}\n\n=== Tool Execution Result ===\n{tool_result.get('summary', str(tool_result.get('result', '')))}"
+                            response.status = "success"
+                        else:
+                            tool_error = tool_result.get("error")
+                            if (
+                                not tool_error
+                                and isinstance(tool_result.get("result"), dict)
+                            ):
+                                tool_error = tool_result["result"].get("error")
+                            final_content = f"{response.content}\n\n=== Tool Execution Failed ===\n{tool_error or 'Unknown error'}"
+                            response.status = "failed"
+                        deliverable_payload = tool_result.get("deliverables")
+                        if isinstance(deliverable_payload, dict):
+                            metadata = dict(response.metadata or {})
+                            metadata["deliverables"] = deliverable_payload
+                            response.metadata = metadata
+                        response.content = final_content
+
+                    result_payload = response.model_dump()
+                    response_paths = self._extract_path_like_values(response.content)
+                    if response_paths:
+                        existing_paths = [
+                            str(item).strip()
+                            for item in list(result_payload.get("artifact_paths") or [])
+                            if str(item).strip()
+                        ]
+                        result_payload["artifact_paths"] = list(
+                            dict.fromkeys([*existing_paths, *response_paths])
+                        )[:40]
+                        metadata = result_payload.get("metadata")
+                        if not isinstance(metadata, dict):
+                            metadata = {}
+                            result_payload["metadata"] = metadata
+                        metadata["artifact_paths"] = list(result_payload["artifact_paths"])
+                    metadata = result_payload.get("metadata")
+                    if not isinstance(metadata, dict):
+                        metadata = {}
+                        result_payload["metadata"] = metadata
+                    if session_context.get("dependency_warning"):
+                        metadata["dependency_warning"] = True
+                        metadata["degraded_input"] = True
+                    incomplete_dependencies = session_context.get("incomplete_dependencies")
+                    if isinstance(incomplete_dependencies, list) and incomplete_dependencies:
+                        metadata["incomplete_dependencies"] = list(incomplete_dependencies)
+                    missing_artifact_aliases = session_context.get("missing_artifact_aliases")
+                    if isinstance(missing_artifact_aliases, list) and missing_artifact_aliases:
+                        metadata["missing_artifact_aliases"] = list(missing_artifact_aliases)
+                    raw_response = json.dumps(result_payload, ensure_ascii=False)
+                    task_status = self._normalize_status(response.status)
+                    finalization, _ = self._finalize_task_execution(
+                        plan_id,
+                        node,
+                        result_payload,
+                        execution_status=task_status,
+                    )
+                    finalization, raw_response = self._materialize_finalization(
+                        plan_id,
+                        node,
+                        finalization,
+                        session_context=config.session_context,
+                    )
+                    # Update in-memory tree so subsequent tasks see latest outputs.
+                    node.execution_result = raw_response
+                    node.status = finalization.final_status
+                    tree.nodes[node.id] = node
+                    if parent:
+                        tree.nodes[parent.id] = parent
+                    return ExecutionResult(
+                        plan_id=plan_id,
+                        task_id=node.id,
+                        status=finalization.final_status,
+                        content=str(finalization.payload.get("content") or response.content),
+                        notes=response.notes,
+                        metadata=finalization.payload.get("metadata") or {},
+                        raw_response=raw_response,
+                        attempts=attempt,
+                    )
+                except Exception as exc:  # pragma: no cover - retry path
+                    last_error = exc
+                    logger.warning(
+                        "Attempt %s failed for plan %s task %s: %s",
+                        attempt,
+                        plan_id,
+                        node.id,
+                        exc,
+                    )
+                    _log_job(
+                        "warning",
+                        "Task execution attempt failed; retrying.",
+                        {
+                            "plan_id": plan_id,
+                            "task_id": node.id,
+                            "attempt": attempt,
+                            "error": str(exc),
+                        },
+                    )
+                    # Distinguish JSON parse errors from other failures
+                    if isinstance(exc, (ValidationError, json.JSONDecodeError)):
+                        _log_job("warning", "LLM response JSON parse failed.", {
+                            "sub_type": "json_parse_error",
+                            "task_id": node.id,
+                            "attempt": attempt,
+                            "error": str(exc),
+                        })
+                    else:
+                        _log_job("warning", "Task execution retry triggered.", {
+                            "sub_type": "retry",
+                            "task_id": node.id,
+                            "attempt": attempt,
+                            "reason": str(exc),
+                        })
+                    continue
+
+            error_message = str(last_error) if last_error else "Unknown execution failure"
+            finalization, _ = self._finalize_task_execution(
+                plan_id,
+                node,
+                {
+                    "status": "failed",
+                    "content": error_message,
+                    "notes": ["all attempts failed"],
+                    "metadata": {},
+                },
+                execution_status="failed",
+            )
+            finalization, raw_response = self._materialize_finalization(
+                plan_id,
+                node,
+                finalization,
+                session_context=config.session_context,
+            )
+            node.execution_result = raw_response
+            node.status = finalization.final_status
+            tree.nodes[node.id] = node
+            result = ExecutionResult(
+                plan_id=plan_id,
+                task_id=node.id,
+                status=finalization.final_status,
+                content=error_message,
+                notes=["all attempts failed"],
+                metadata=finalization.payload.get("metadata") or {},
+                raw_response=raw_response,
+                attempts=attempts,
+            )
+            _log_job(
+                "error",
+                "All task execution attempts failed.",
+                {
+                    "plan_id": plan_id,
+                    "task_id": node.id,
+                    "attempts": attempts,
+                    "error": error_message,
+                },
+            )
+            return result
+
+        finally:
+            clear_usage_context(usage_token)
 
     def _infer_missing_dependencies(self, tree: PlanTree) -> PlanTree:
         """Infer and persist missing dependency edges based on producer-consumer matching.
@@ -2415,6 +2437,7 @@ class PlanExecutor:
             plan_outline=plan_outline,
             include_context=config.use_context,
             session_context=session_context,
+            include_tool_hints=False,
         )
         node_metadata = node.metadata if isinstance(node.metadata, dict) else {}
         acceptance_criteria = (
@@ -2481,9 +2504,14 @@ class PlanExecutor:
                 payload[key] = value.strip()
         if delegation.status == "blocked":
             payload.setdefault("metadata", {})["blocked_by_dependencies"] = True
-        payload, execution_status = _coerce_blocked_dependency_payload(payload)
-        if delegation.status == "failed":
+            payload, execution_status = _coerce_blocked_dependency_payload(payload)
+            if execution_status == "completed":
+                payload["status"] = "skipped"
+                execution_status = "skipped"
+        elif delegation.status == "failed":
             execution_status = "failed"
+        else:
+            execution_status = "completed"
         finalization, _ = self._finalize_task_execution(
             plan_id,
             node,
@@ -4271,6 +4299,19 @@ class PlanExecutor:
         if contract.get("requires") or contract.get("publishes"):
             metadata["artifact_contract"] = contract
 
+        existing_artifact_paths = [
+            str(item).strip()
+            for item in list(payload.get("artifact_paths") or metadata.get("artifact_paths") or [])
+            if str(item).strip()
+        ]
+        mentioned_artifact_paths = self._existing_artifact_metadata_paths(
+            self._extract_path_like_values(payload)
+        )
+        merged_artifact_paths = list(dict.fromkeys([*existing_artifact_paths, *mentioned_artifact_paths]))[:80]
+        if merged_artifact_paths:
+            payload["artifact_paths"] = merged_artifact_paths
+            metadata["artifact_paths"] = merged_artifact_paths
+
         if final_status != "completed":
             return payload
 
@@ -4331,6 +4372,39 @@ class PlanExecutor:
                     size_int = 0
                 promotion_skipped = size_int > 250 * 1024 * 1024
                 expected = expected or candidate.name
+                # Reconnect the contract bypass to canonical publishing: only
+                # registered aliases are inferred, so a miss safely keeps the
+                # legacy `contract:` entry instead of force-publishing.
+                if not promotion_skipped:
+                    try:
+                        preferred_namespace = infer_artifact_namespace(
+                            node.display_name(),
+                            node.instruction or "",
+                        )
+                    except Exception:
+                        preferred_namespace = "general"
+                    inferred_aliases: List[str] = []
+                    for inferred in aliases_for_file_name(
+                        expected, preferred_namespace=preferred_namespace
+                    ):
+                        if inferred not in inferred_aliases:
+                            inferred_aliases.append(inferred)
+                    for inferred in aliases_for_path_text(
+                        f"{expected}\n{resolved_path}",
+                        preferred_namespace=preferred_namespace,
+                    ):
+                        if inferred not in inferred_aliases:
+                            inferred_aliases.append(inferred)
+                    for canonical_alias in inferred_aliases:
+                        published_entry = publish_artifact(
+                            plan_id=plan_id,
+                            alias=canonical_alias,
+                            source_path=resolved_path,
+                            producer_task_id=node.id,
+                            manifest=manifest,
+                        )
+                        if isinstance(published_entry, dict):
+                            contract_published[published_entry["alias"]] = published_entry
                 key = f"contract:{expected or index}"
                 contract_published[key] = {
                     "alias": key,
@@ -4360,6 +4434,34 @@ class PlanExecutor:
                 metadata["artifact_manifest_path"] = str(artifact_manifest_path(plan_id))
             self._save_artifact_manifest(plan_id, manifest, session_context)
         return payload
+
+    @classmethod
+    def _existing_artifact_metadata_paths(cls, values: Sequence[Any]) -> List[str]:
+        paths: List[str] = []
+        seen: set[str] = set()
+        for value in values:
+            for path in cls._existing_artifact_metadata_path_candidates(value):
+                if path not in seen:
+                    seen.add(path)
+                    paths.append(path)
+        return paths
+
+    @staticmethod
+    def _existing_artifact_metadata_path_candidates(value: Any) -> List[str]:
+        if not isinstance(value, str) or not value.strip():
+            return []
+        try:
+            path = Path(value.strip()).expanduser()
+            if path.exists() and (path.is_file() or path.is_dir()):
+                return [str(path)]
+            candidates: List[str] = []
+            for match in _PATH_LIKE_RE.finditer(value):
+                candidate = Path(match.group(1)).expanduser()
+                if candidate.exists() and (candidate.is_file() or candidate.is_dir()):
+                    candidates.append(str(candidate))
+            return candidates
+        except OSError:
+            return []
 
     @staticmethod
     def _is_internal_artifact_path(value: str) -> bool:

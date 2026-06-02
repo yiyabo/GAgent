@@ -323,8 +323,35 @@ class DataProcessor:
                 df = pd.read_csv(file_path, sep='\t')
             elif file_ext == '.csv':
                 df = pd.read_csv(file_path)
+            elif file_ext in ('.xlsx', '.xls', '.xlsm', '.ods'):
+                df = pd.read_excel(file_path)
+            elif file_ext == '.json':
+                df = pd.read_json(file_path)
+            elif file_ext in ('.jsonl', '.ndjson'):
+                df = pd.read_json(file_path, lines=True)
+            elif file_ext == '.parquet':
+                df = pd.read_parquet(file_path)
+            elif file_ext == '.feather':
+                df = pd.read_feather(file_path)
+            elif file_ext in ('.pickle', '.pkl'):
+                df = pd.read_pickle(file_path)
+            elif file_ext == '.txt':
+                df = pd.read_csv(file_path, sep=None, engine='python')
+            elif file_ext == '.sas7bdat':
+                df = pd.read_sas(file_path)
+            elif file_ext == '.sav':
+                df = pd.read_spss(file_path)
+            elif file_ext == '.dta':
+                df = pd.read_stata(file_path)
             else:
-                raise ValueError(f"Unsupported file format: {file_ext}. Supported: .csv, .tsv, .mat, .npy, .h5ad")
+                raise ValueError(
+                    f"Unsupported file format: {file_ext}. "
+                    "Supported: .csv, .tsv, .txt, .xlsx, .xls, .xlsm, .ods, "
+                    ".json, .jsonl, .ndjson, .parquet, .feather, .pickle, .pkl, "
+                    ".sas7bdat, .sav, .dta, .mat, .npy, .h5ad"
+                )
+        except ValueError:
+            raise
         except Exception as e:
             raise ValueError(f"Failed to read file: {e}")
 

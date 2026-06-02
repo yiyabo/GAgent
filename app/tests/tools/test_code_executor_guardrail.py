@@ -28,6 +28,7 @@ from tool_box.tools_impl.code_executor import (
     _extract_pending_qwen_function_call,
     _extract_pending_qwen_shell_command,
     _extract_readable_error,
+    _is_allowed_task_read_path,
     _is_path_within,
     _normalize_csv_values,
     _prune_stale_session_root_results,
@@ -385,6 +386,12 @@ def test_is_path_within_variants(tmp_path, target_path: str, expected: bool) -> 
     full_target = tmp_path / target_path
     full_target.mkdir(parents=True, exist_ok=True)
     assert _is_path_within(full_target, parent) is expected
+
+
+def test_allowed_task_read_path_includes_mnt_sdm_zczhao(tmp_path: Path) -> None:
+    session_dir = tmp_path / "session"
+    session_dir.mkdir()
+    assert _is_allowed_task_read_path(Path("/mnt/sdm/zczhao/example.tsv"), session_dir) is True
 
 
 @pytest.mark.parametrize(

@@ -18,6 +18,7 @@ const Memory = retryLazy(() => import('@pages/Memory'));
 const System = retryLazy(() => import('@pages/System'));
 const Login = retryLazy(() => import('@pages/Login'));
 const Register = retryLazy(() => import('@pages/Register'));
+const Landing = retryLazy(() => import('@pages/Landing'));
 
 const FullPageLoading = () => (
   <div
@@ -188,9 +189,16 @@ function App() {
           </GuestOnly>
         )}
       />
+      <Route
+        path="/"
+        element={(
+          <RouteContent>
+            <Landing />
+          </RouteContent>
+        )}
+      />
       <Route element={<RequireAuth />}>
         <Route element={<ProtectedLayout />}>
-          <Route path="/" element={<Navigate to="/chat" replace />} />
           <Route path="/dashboard" element={<RouteContent><Dashboard /></RouteContent>} />
           <Route path="/chat" element={<RouteContent><ChatLayout /></RouteContent>} />
           <Route path="/tasks" element={<RouteContent><Tasks /></RouteContent>} />

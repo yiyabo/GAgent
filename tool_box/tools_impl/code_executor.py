@@ -81,6 +81,7 @@ _TASK_READ_DIR_PREFIXES: Sequence[str] = (
     "web-ui",
 )
 _TASK_PATH_TOKEN_RE = r"[^\s'\"`<>\(\)\[\]\{\},;:，。；：！？、（）【】《》「」『』“”‘’]+"
+_DEFAULT_EXTERNAL_READ_ROOTS: Sequence[Path] = (Path("/mnt/sdm/zczhao"),)
 
 
 def _get_available_skills() -> List[str]:
@@ -483,11 +484,11 @@ def _compact_cli_text(value: Optional[str], *, limit: int = 320) -> str:
 
 
 _QWEN_DEBUG_ENABLED_LINE_RE = re.compile(
-    r"^Debug mode enabled(?:\s+Logging to:\s*(?P<path>\S+))?\s*$",
+    r"^(?:\[[^\]]+\]\s*)?Debug mode enabled(?:\s+Logging to:\s*(?P<path>\S+))?\s*$",
     re.IGNORECASE,
 )
 _QWEN_LOGGING_TO_LINE_RE = re.compile(
-    r"^Logging to:\s*(?P<path>\S+)\s*$",
+    r"^(?:\[[^\]]+\]\s*)?Logging to:\s*(?P<path>\S+)\s*$",
     re.IGNORECASE,
 )
 _QWEN_TRANSCRIPTS_ROOT = "/tmp/gagent_home/.qwen/projects"
@@ -497,7 +498,30 @@ _QWEN_COMPLETED_OUTPUT_EXIT_GRACE_SECONDS = 180.0
 _QWEN_COMPLETED_OUTPUT_EXIT_CHECK_SECONDS = 15.0
 _QWEN_PROCESS_EXIT_WAIT_SECONDS = 30.0
 _QWEN_PROCESS_KILL_WAIT_SECONDS = 10.0
-_QWEN_CLI_NO_OUTPUT_TIMEOUT_SECONDS = 900.0
+_QWEN_CLI_NO_OUTPUT_TIMEOUT_SECONDS = 1800.0
+_QWEN_FATAL_DEBUG_SCAN_BYTES = 65536
+
+
+def _is_qwen_truncated_tool_failure_text(text: Any) -> bool:
+    normalized = str(text or "").lower()
+    if not normalized:
+        return False
+    fatal_terms = (
+        "previous response was truncated due to max_tokens limit",
+        "tool call has been rejected to prevent writing truncated content",
+        "must split the content into smaller parts",
+    )
+    if any(term in normalized for term in fatal_terms):
+        return True
+    return "error executing tool write_file" in normalized and "truncated" in normalized
+
+
+def _qwen_truncated_tool_failure_note(source: str = "debug log") -> str:
+    return (
+        "[QWEN_TOOL_CALL_TRUNCATED] qwen_tool_call_truncated: "
+        f"Qwen Code reported a truncated/rejected tool call in {source}; "
+        "the current attempt cannot complete without recovery"
+    )
 
 
 def _partition_cli_stderr_lines(stderr: str) -> tuple[List[str], str]:
@@ -555,6 +579,188 @@ async def _iter_stream_lines_unbounded(
         if pending.endswith("\r"):
             pending = pending[:-1]
         yield pending
+
+
+def _extract_result_from_jsonl(stdout: str) -> Optional[str]:
+    """Extract the clean JSON response from qwen_code JSONL session transcript.
+
+    The qwen CLI outputs JSONL (one JSON event per line). The final assistant
+    message typically contains a fenced ```json block with the task result.
+    This function parses the JSONL, finds the last assistant message, and
+    extracts that JSON block.
+    """
+    if not stdout or not stdout.strip():
+        return None
+    lines = stdout.strip().split("\n")
+    last_assistant_text = None
+    for line in reversed(lines):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(event, dict):
+            continue
+        event_type = str(event.get("type") or "").lower()
+        if event_type != "assistant":
+            continue
+        message = event.get("message")
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    text = str(part.get("text") or "")
+                    if text.strip():
+                        last_assistant_text = text
+                        break
+        elif isinstance(content, str) and content.strip():
+            last_assistant_text = content
+        if last_assistant_text:
+            break
+    if not last_assistant_text:
+        return None
+    fence_match = re.search(r"```(?:json)?\s*\n(.*?)\n\s*```", last_assistant_text, re.DOTALL)
+    if fence_match:
+        json_text = fence_match.group(1).strip()
+        try:
+            parsed = json.loads(json_text)
+            if isinstance(parsed, dict):
+                return _build_summary_from_parsed_json(parsed)
+        except (json.JSONDecodeError, ValueError):
+            pass
+    return None
+
+
+def _extract_deliverables_from_jsonl(stdout: str) -> List[Dict[str, Any]]:
+    """Extract files marked as deliverables from qwen_code JSONL session transcript.
+
+    Parses the JSONL, finds the last assistant message with a fenced JSON block,
+    and extracts produced_files entries where deliverable=true.
+
+    Returns:
+        List of dicts with keys: path, module, description
+    """
+    if not stdout or not stdout.strip():
+        return []
+    
+    lines = stdout.strip().split("\n")
+    last_assistant_text = None
+    
+    for line in reversed(lines):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(event, dict):
+            continue
+        event_type = str(event.get("type") or "").lower()
+        if event_type != "assistant":
+            continue
+        message = event.get("message")
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    text = str(part.get("text") or "")
+                    if text.strip():
+                        last_assistant_text = text
+                        break
+        elif isinstance(content, str) and content.strip():
+            last_assistant_text = content
+        if last_assistant_text:
+            break
+    
+    if not last_assistant_text:
+        return []
+    
+    fence_match = re.search(r"```(?:json)?\s*\n(.*?)\n\s*```", last_assistant_text, re.DOTALL)
+    if not fence_match:
+        return []
+    
+    json_text = fence_match.group(1).strip()
+    try:
+        parsed = json.loads(json_text)
+    except (json.JSONDecodeError, ValueError):
+        return []
+    
+    if not isinstance(parsed, dict):
+        return []
+    
+    produced_files = parsed.get("produced_files") or []
+    if not isinstance(produced_files, list):
+        return []
+    
+    deliverables = []
+    for item in produced_files:
+        if not isinstance(item, dict):
+            continue
+        if not item.get("deliverable"):
+            continue
+        
+        path = str(item.get("path") or "").strip()
+        module = str(item.get("module") or "").strip().lower()
+        description = str(item.get("description") or "").strip()
+        
+        if not path or not module:
+            continue
+        
+        deliverables.append({
+            "path": path,
+            "module": module,
+            "description": description,
+        })
+    
+    return deliverables
+
+
+def _build_summary_from_parsed_json(parsed: dict) -> Optional[str]:
+    """Build a meaningful summary from the qwen agent's parsed JSON response.
+
+    When the agent's own summary field is too short (e.g. just "completed"),
+    enrich it with produced_files and acceptance_check details.
+    """
+    summary = str(parsed.get("summary") or "").strip()
+    produced = parsed.get("produced_files") or []
+    acceptance = parsed.get("acceptance_check") or {}
+    notes = str(acceptance.get("notes") or "").strip()
+
+    if len(summary) >= 30:
+        return summary
+
+    parts = []
+    status = str(parsed.get("status") or "").strip().lower()
+    if status and status not in ("completed", "success"):
+        parts.append(f"Status: {status}")
+
+    file_names = []
+    for f in produced[:5]:
+        if isinstance(f, dict):
+            path = str(f.get("path") or "")
+        elif isinstance(f, str):
+            path = f
+        else:
+            continue
+        name = path.rsplit("/", 1)[-1] if "/" in path else path
+        if name:
+            file_names.append(name)
+    if file_names:
+        parts.append(f"Produced: {', '.join(file_names)}")
+
+    if notes and len(notes) <= 200:
+        parts.append(notes)
+
+    if parts:
+        return " | ".join(parts)
+    return summary or None
 
 
 def _extract_readable_error(stderr: str) -> str:
@@ -736,6 +942,7 @@ async def _wait_for_qwen_cli_drain_or_watchdog(
     task_work_dir: Path,
     unified_output_dir: Optional[Path],
     cli_label: str,
+    container_name: Optional[str],
     log_file: Any,
     log_lock: asyncio.Lock,
 ) -> Optional[int]:
@@ -764,6 +971,44 @@ async def _wait_for_qwen_cli_drain_or_watchdog(
         if done:
             await drain_task
             return None
+
+        fatal_note = await _detect_qwen_debug_fatal_failure(
+            stderr_text="\n".join(local_stderr_lines),
+            container_name=container_name,
+        )
+        if fatal_note:
+            logger.warning("[CODE_EXECUTOR] %s", fatal_note)
+            if log_file:
+                try:
+                    async with log_lock:
+                        log_file.write(f"[{datetime.utcnow().isoformat()}Z] {fatal_note}\n")
+                        log_file.flush()
+                except Exception:
+                    pass
+            local_stderr_lines.append(fatal_note)
+            try:
+                process.kill()
+            except ProcessLookupError:
+                pass
+            try:
+                await _wait_for_cli_process_return_code(
+                    process,
+                    backend_label=cli_label,
+                    exit_timeout=_resolve_qwen_process_kill_wait_seconds(),
+                    kill_timeout=_resolve_qwen_process_kill_wait_seconds(),
+                )
+            except Exception:
+                pass
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(stdout_task, stderr_task, return_exceptions=True),
+                    timeout=10.0,
+                )
+            except asyncio.TimeoutError:
+                stdout_task.cancel()
+                stderr_task.cancel()
+                await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
+            return -1
 
         loop = asyncio.get_running_loop()
         last_output_at = float(cli_progress.get("last_output_at") or loop.time())
@@ -1297,6 +1542,59 @@ async def _run_subprocess_capture(
     )
 
 
+async def _read_qwen_debug_log_text(
+    *,
+    debug_log_path: str,
+    container_name: Optional[str] = None,
+) -> str:
+    path_text = str(debug_log_path or "").strip()
+    if not path_text:
+        return ""
+    if container_name:
+        command = (
+            f"test -f {shlex.quote(path_text)} && "
+            f"tail -c {_QWEN_FATAL_DEBUG_SCAN_BYTES} {shlex.quote(path_text)}"
+        )
+        return_code, stdout, _stderr = await _run_subprocess_capture(
+            ["docker", "exec", container_name, "sh", "-lc", command],
+            timeout_s=5.0,
+        )
+        if return_code == 0:
+            return stdout
+        return ""
+    try:
+        path = Path(path_text)
+        if not path.is_file():
+            return ""
+        with path.open("rb") as handle:
+            try:
+                handle.seek(max(0, path.stat().st_size - _QWEN_FATAL_DEBUG_SCAN_BYTES))
+            except OSError:
+                pass
+            return handle.read().decode("utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+async def _detect_qwen_debug_fatal_failure(
+    *,
+    stderr_text: str,
+    container_name: Optional[str] = None,
+) -> Optional[str]:
+    if _is_qwen_truncated_tool_failure_text(stderr_text):
+        return _qwen_truncated_tool_failure_note("stderr")
+    debug_log_path = _extract_qwen_debug_log_path(stderr_text)
+    if not debug_log_path:
+        return None
+    debug_text = await _read_qwen_debug_log_text(
+        debug_log_path=debug_log_path,
+        container_name=container_name,
+    )
+    if _is_qwen_truncated_tool_failure_text(debug_text):
+        return _qwen_truncated_tool_failure_note(debug_log_path)
+    return None
+
+
 async def _read_qwen_transcript_text(
     *,
     qwen_session_id: Optional[str],
@@ -1810,6 +2108,11 @@ def _is_qwen_no_output_timeout(stderr_text: Any, stdout_text: Any = "") -> bool:
     )
 
 
+def _is_qwen_recoverable_cli_failure(stderr_text: Any, stdout_text: Any = "") -> bool:
+    text = f"{stderr_text or ''}\n{stdout_text or ''}"
+    return _is_qwen_no_output_timeout(stderr_text, stdout_text) or _is_qwen_truncated_tool_failure_text(text)
+
+
 def _is_qwen_container_infrastructure_error(stderr_text: Any, stdout_text: Any = "") -> bool:
     """Return True for qwen Docker/container failures that are safe to retry elsewhere."""
     text = f"{stderr_text or ''}\n{stdout_text or ''}".lower()
@@ -1845,7 +2148,7 @@ def _should_fallback_from_qwen_infra_failure(
 ) -> bool:
     if not use_qwen_code_backend or success:
         return False
-    if _is_qwen_no_output_timeout(stderr, stdout):
+    if _is_qwen_recoverable_cli_failure(stderr, stdout):
         return False
     if not _is_qwen_container_infrastructure_error(stderr, stdout):
         return False
@@ -1995,7 +2298,9 @@ def _build_qwen_code_command(
         f"`run_shell_command` call so the task finishes in one tool invocation.\n"
         f"11. If the dependency requires a heavy solver, compiled stack, or a "
         f"new runtime image/profile, stop and report BLOCKED_DEPENDENCY instead "
-        f"of mutating the shared host environment."
+        f"of mutating the shared host environment.\n\n"
+        f"{_rerun_update_mode_prompt()}\n"
+        f"{_final_response_contract_prompt()}"
         f"{allowed_dirs_info}"
     )
     cmd: List[str] = [
@@ -2078,6 +2383,100 @@ def _build_qwen_container_mounts(
         seen.add(candidate_str)
 
     return [(str(path), str(path)) for path in ordered]
+
+
+def _build_claude_code_prompt(
+    *,
+    task: str,
+    task_work_dir: Path,
+    file_prefix: str,
+    task_subdirs: Sequence[str],
+    execution_spec: Optional[Dict[str, Any]],
+    resolved_resources: Optional[Dict[str, Dict[str, Any]]],
+    allowed_dirs_info: str,
+) -> str:
+    writable_task_subdirs = [
+        name for name in task_subdirs if str(name).strip().lower() != "code"
+    ]
+    cli_task = _build_cli_task_contract(task, execution_spec, resolved_resources)
+    return (
+        f"[ATOMIC TASK]\n"
+        f"Execute only the task below. Do not broaden scope or create extra tasks.\n"
+        f"If the request still needs planning or decomposition, output exactly:\n"
+        f"  {_BLOCK_SCOPE_STATUS}\n"
+        f"  {_BLOCK_SCOPE_REASON}\n"
+        f"  DETAIL: <one sentence>\n"
+        f"Use direct execution; skip standalone environment diagnostics "
+        f"unless an observed failure requires them.\n\n"
+        f"Workspace: {task_work_dir}\n"
+        f"Output dirs: {_format_task_subdirectories(task_subdirs)}\n"
+        f"File prefix: {file_prefix}\n"
+        f"Task:\n{cli_task}\n\n"
+        f"Deliverables:\n"
+        f"1. Write scripts under code/ only when needed.\n"
+        f"2. Run them and save outputs under {_format_directory_choices(writable_task_subdirs)}.\n"
+        f"3. Put publishable deliverable code under results/submission/ "
+        f"or results/deliverable/.\n"
+        f"4. Return a summary of actual outputs produced.\n"
+        f"5. Do NOT modify shared host environments: no global `conda install`, "
+        f"`pip install`, or writes into shared site-packages. Use task-local "
+        f"workspace environments only.\n"
+        f"6. If the task needs a heavy dependency solve, compiled stack, or a "
+        f"new runtime image/profile, report BLOCKED_DEPENDENCY instead of "
+        f"mutating the shared host environment.\n\n"
+        f"{_rerun_update_mode_prompt()}\n"
+        f"{_final_response_contract_prompt()}"
+        f"{allowed_dirs_info}"
+    )
+
+
+def _build_claude_code_command(
+    *,
+    task: str,
+    task_work_dir: Path,
+    file_prefix: str,
+    output_format: str,
+    normalized_allowed_tools: Sequence[str],
+    allowed_dirs: Sequence[str],
+    task_subdirs: Sequence[str],
+    execution_spec: Optional[Dict[str, Any]],
+    resolved_resources: Optional[Dict[str, Dict[str, Any]]],
+    allowed_dirs_info: str,
+    debug_log_path: Optional[Path],
+    effective_model: Optional[str],
+    effective_setting_sources: Optional[str],
+    skip_permissions: bool,
+) -> List[str]:
+    enhanced_task = _build_claude_code_prompt(
+        task=task,
+        task_work_dir=task_work_dir,
+        file_prefix=file_prefix,
+        task_subdirs=task_subdirs,
+        execution_spec=execution_spec,
+        resolved_resources=resolved_resources,
+        allowed_dirs_info=allowed_dirs_info,
+    )
+    command = [
+        "claude",
+        "-p",
+        enhanced_task,
+        "--output-format",
+        output_format,
+        "--max-turns",
+        "50",
+    ]
+    if debug_log_path is not None:
+        command.extend(["--debug-file", str(debug_log_path)])
+    if effective_model:
+        command.extend(["--model", effective_model])
+    if effective_setting_sources:
+        command.extend(["--setting-sources", effective_setting_sources])
+    command.extend(["--allowed-tools", ",".join(normalized_allowed_tools)])
+    for abs_path in allowed_dirs:
+        command.extend(["--add-dir", abs_path])
+    if skip_permissions:
+        command.append("--dangerously-skip-permissions")
+    return command
 
 
 def _coerce_positive_int(value: Any, *, field_name: str) -> Optional[int]:
@@ -2377,6 +2776,48 @@ def _build_cli_task_contract(
         lines.append(resource_text)
 
     return "\n".join(lines).strip() or task_text
+
+
+def _final_response_contract_prompt() -> str:
+    return (
+        "Final response contract:\n"
+        "- End with a JSON object in a fenced ```json block.\n"
+        "- Use this exact shape:\n"
+        "  {\n"
+        "    \"status\": \"COMPLETED | BLOCKED_DEPENDENCY | FAILED | PARTIAL\",\n"
+        "    \"summary\": \"short human-readable summary\",\n"
+        "    \"produced_files\": [\n"
+        "      {\n"
+        "        \"path\": \"absolute-or-workspace-relative path\",\n"
+        "        \"artifact_alias\": \"alias-or-null\",\n"
+        "        \"description\": \"what this file contains\",\n"
+        "        \"deliverable\": true | false,\n"
+        "        \"module\": \"image_tabular | paper | code | docs | refs | null\"\n"
+        "      }\n"
+        "    ],\n"
+        "    \"missing_inputs\": [\n"
+        "      {\"artifact_alias\": \"alias-or-null\", \"reason\": \"why unavailable\"}\n"
+        "    ],\n"
+        "    \"acceptance_check\": {\"passed\": true, \"notes\": \"brief verification notes\"}\n"
+        "  }\n"
+        "- For BLOCKED_DEPENDENCY, also include the exact two-line marker before the JSON block:\n"
+        "  STATUS: BLOCKED_DEPENDENCY\n"
+        "  DETAIL: <which upstream task/data is missing>\n"
+        "- For completed tasks, produced_files must list actual files you created or verified.\n"
+        "- Mark files as deliverable=true ONLY for final outputs (visualizations, reports, papers).\n"
+        "  Do NOT mark intermediate data, logs, or raw outputs as deliverables.\n"
+        "- Module types: image_tabular (charts/figures), paper (manuscripts), code (scripts), docs (reports), refs (references).\n"
+    )
+
+
+def _rerun_update_mode_prompt() -> str:
+    return (
+        "Rerun/update mode:\n"
+        "- If previous outputs already exist, inspect them first when useful.\n"
+        "- Reuse valid existing work where it satisfies the current contract.\n"
+        "- Regenerate or overwrite only files needed to satisfy the current task contract.\n"
+        "- Do not treat pre-existing files alone as success unless you verified they satisfy the acceptance criteria.\n"
+    )
 
 
 def _format_contract_diff_for_cli(contract_diff: Optional[Dict[str, Any]]) -> str:
@@ -2804,6 +3245,231 @@ def _promote_task_results_to_session_root(
     return promoted
 
 
+def _promote_external_contract_artifacts(
+    *,
+    contract_artifacts: List[Dict[str, Any]],
+    task_work_dir: Path,
+    unified_output_dir: Optional[Path],
+) -> List[str]:
+    """Promote contract artifact files that exist outside the workspace to unified output dir.
+
+    When qwen_code writes files to absolute paths (e.g. /results/report.md) instead
+    of the workspace, the normal workspace-based promote misses them. This function
+    catches those external files and copies them to the unified output directory.
+    """
+    if not unified_output_dir or not contract_artifacts:
+        return []
+    promoted: List[str] = []
+    workspace_resolved = task_work_dir.resolve()
+    for artifact in contract_artifacts:
+        if not isinstance(artifact, dict):
+            continue
+        if not artifact.get("exists"):
+            continue
+        path_str = str(artifact.get("path") or "").strip()
+        if not path_str:
+            continue
+        try:
+            artifact_path = Path(path_str).resolve()
+        except OSError:
+            continue
+        if not artifact_path.exists() or not artifact_path.is_file():
+            continue
+        try:
+            artifact_path.relative_to(workspace_resolved)
+            continue
+        except ValueError:
+            pass
+        dest = unified_output_dir / artifact_path.name
+        if dest.exists():
+            continue
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(str(artifact_path), str(dest))
+            promoted.append(str(dest))
+            logger.info(
+                "Promoted external contract artifact %s -> %s",
+                path_str, dest,
+            )
+        except OSError as exc:
+            logger.warning("Failed to promote external artifact %s: %s", path_str, exc)
+    return promoted
+
+
+_RUN_PREFIX_RE = re.compile(r"^run_\d{8}_\d{6}_\d+_[0-9a-f]+_")
+
+
+def _reconcile_deliverables(
+    *,
+    execution_spec: Optional[Dict[str, Any]],
+    task_work_dir: Path,
+    unified_output_dir: Optional[Path] = None,
+    session_results_dir: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Align actual produced files with expected deliverable names.
+
+    Scans ``results/`` under *task_work_dir* for files whose names differ
+    from acceptance_criteria expectations only by a ``run_*_`` prefix or
+    directory nesting, and creates symlinks so verification finds them.
+
+    Returns a report dict with ``aligned``, ``missing``, and ``already_ok``
+    lists.
+    """
+    report: Dict[str, Any] = {"aligned": [], "missing": [], "already_ok": []}
+    if not isinstance(execution_spec, dict):
+        return report
+    criteria = execution_spec.get("acceptance_criteria")
+    if not isinstance(criteria, dict):
+        return report
+
+    expected_names = derive_expected_deliverables(criteria, include_globs=False, relative_only=True)
+    if not expected_names:
+        return report
+
+    results_dir = task_work_dir / "results"
+    if not results_dir.is_dir():
+        return report
+
+    actual_files: Dict[str, Path] = {}
+    for path in sorted(results_dir.rglob("*")):
+        if not path.is_file():
+            continue
+        actual_files[path.name] = path
+
+    search_dirs: List[Path] = [results_dir]
+    if unified_output_dir and unified_output_dir.is_dir():
+        search_dirs.append(unified_output_dir)
+    if session_results_dir and session_results_dir.is_dir():
+        search_dirs.append(session_results_dir)
+
+    for raw_expected in expected_names:
+        expected_name = Path(raw_expected).name
+        expected_stem = Path(expected_name).stem
+        expected_suffix = Path(expected_name).suffix
+
+        found = False
+        for search_dir in search_dirs:
+            candidate = search_dir / expected_name
+            if candidate.exists():
+                found = True
+                break
+        if found:
+            report["already_ok"].append(expected_name)
+            continue
+
+        matched_source: Optional[Path] = None
+        for actual_name, actual_path in actual_files.items():
+            if actual_name == expected_name:
+                matched_source = actual_path
+                break
+            stripped = _RUN_PREFIX_RE.sub("", actual_name)
+            if stripped == expected_name:
+                matched_source = actual_path
+                break
+            if (
+                actual_name.endswith(expected_suffix)
+                and actual_name.endswith("_" + expected_name)
+            ):
+                matched_source = actual_path
+                break
+
+        if matched_source is None:
+            report["missing"].append(expected_name)
+            continue
+
+        for target_dir in search_dirs:
+            link_path = target_dir / expected_name
+            if link_path.exists() or link_path.is_symlink():
+                continue
+            try:
+                link_path.parent.mkdir(parents=True, exist_ok=True)
+                link_path.symlink_to(matched_source.resolve())
+                logger.info(
+                    "[RECONCILE] %s -> %s (in %s)",
+                    expected_name,
+                    matched_source.name,
+                    target_dir.name,
+                )
+            except OSError as exc:
+                logger.warning("[RECONCILE] Failed to create symlink %s: %s", link_path, exc)
+
+        report["aligned"].append({
+            "expected": expected_name,
+            "actual": matched_source.name,
+        })
+
+    if report["aligned"] or report["missing"]:
+        logger.info(
+            "[RECONCILE] task_work_dir=%s aligned=%d already_ok=%d missing=%d",
+            task_work_dir.name,
+            len(report["aligned"]),
+            len(report["already_ok"]),
+            len(report["missing"]),
+        )
+    return report
+
+
+def _build_search_and_generate_prompt(
+    missing_files: List[str],
+    session_dir: Path,
+    execution_spec: Optional[Dict[str, Any]],
+    *,
+    is_timeout: bool = False,
+) -> str:
+    task_name = ""
+    task_instruction = ""
+    if isinstance(execution_spec, dict):
+        task_name = str(execution_spec.get("task_name") or "")
+        task_instruction = str(execution_spec.get("task_instruction") or "")
+
+    file_list = "\n".join(f"  - {f}" for f in missing_files)
+
+    if is_timeout:
+        return (
+            "DELIVERABLE RECOVERY TASK (PREVIOUS EXECUTION TIMED OUT OR CLI TOOL CALL FAILED)\n\n"
+            "The previous execution was killed due to a timeout/no output or a fatal CLI tool-call failure. "
+            "The analysis code may have been partially written or not written at all.\n\n"
+            f"Missing files:\n{file_list}\n\n"
+            f"Task context:\n"
+            f"  Name: {task_name}\n"
+            f"  Instruction: {task_instruction[:500]}\n\n"
+            f"Step 1 — CHECK: Look in {session_dir} for any existing code or partial results "
+            f"from the previous run. Check code/ and results/ directories.\n\n"
+            "Step 2 — SEARCH: Use file_operations to search for each missing file in "
+            "other task outputs (plan*/task*/run_*/results/). Files may exist with "
+            "a run_*_ prefix.\n\n"
+            "Step 3 — COPY: If you find a file, copy it to results/ with the "
+            "exact expected name (no prefix).\n\n"
+            "Step 4 — RE-EXECUTE: If files are truly not found anywhere, you MUST "
+            "re-run the analysis. Write the Python script based on the task "
+            "instruction above, save it to code/, and execute it with code_executor. "
+            "Output must go to results/.\n"
+            "When writing scripts, avoid one huge write_file call. Create a small skeleton first, "
+            "then append or edit in focused chunks so tool-call output is never truncated.\n\n"
+            "IMPORTANT: This is a recovery task after a timeout. You need to complete "
+            "the work that was interrupted. Do NOT just report files as missing."
+        )
+
+    return (
+        "DELIVERABLE SEARCH TASK\n\n"
+        "The main analysis already ran. Do NOT re-run it. Your ONLY job is to "
+        "find the missing deliverable files listed below and copy them to results/.\n\n"
+        f"Missing files:\n{file_list}\n\n"
+        f"Task context:\n"
+        f"  Name: {task_name}\n"
+        f"  Instruction: {task_instruction[:500]}\n\n"
+        f"Step 1 — SEARCH: Use file_operations to search {session_dir} "
+        f"for each missing file. Check all subdirectories including other "
+        f"task outputs (plan*/task*/run_*/results/). Files may exist with "
+        f"a run_*_ prefix or in a different task's results/ directory.\n\n"
+        "Step 2 — COPY: If you find a file, copy it to results/ with the "
+        "exact expected name (no prefix). Use file_operations copy.\n\n"
+        "If a file is truly not found anywhere, just report it as missing. "
+        "Do NOT attempt to generate or re-run any analysis.\n\n"
+        "Finish quickly. This is a file search and copy operation, not an analysis task."
+    )
+
+
 def _collect_run_artifacts(
     *,
     run_dir: Path,
@@ -3034,8 +3700,10 @@ def _is_allowed_task_read_path(path: Path, session_dir: Path) -> bool:
     return (
         _is_path_within(path, _PROJECT_ROOT)
         or _is_path_within(path, session_dir)
+        or any(_is_path_within(path, root) for root in _DEFAULT_EXTERNAL_READ_ROOTS)
         or _is_path_within_lexical(path, _PROJECT_ROOT)
         or _is_path_within_lexical(path, session_dir)
+        or any(_is_path_within_lexical(path, root) for root in _DEFAULT_EXTERNAL_READ_ROOTS)
     )
 
 
@@ -3734,6 +4402,104 @@ def _build_local_backend_result_payload(
     return result_payload
 
 
+
+
+def _estimate_cli_prompt_tokens(command: Sequence[str]) -> int:
+    total_chars = 0
+    for idx, part in enumerate(command):
+        if str(part) == "-p" and idx + 1 < len(command):
+            total_chars = len(str(command[idx + 1]))
+            break
+    if total_chars <= 0:
+        total_chars = sum(len(str(part)) for part in command)
+    return max(1, int(total_chars / 4))
+
+
+def _estimate_cli_completion_tokens(stdout: str, stderr: str) -> int:
+    text = f"{stdout or ''}\n{stderr or ''}".strip()
+    if not text:
+        return 0
+    return max(1, int(len(text) / 4))
+
+
+def _parse_cli_usage_from_jsonl(stdout: str) -> Optional[Dict[str, int]]:
+    if not stdout or not stdout.strip():
+        return None
+    for line in reversed(stdout.strip().split("\n")):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(event, dict):
+            continue
+        if str(event.get("type") or "").lower() != "result":
+            continue
+        usage = event.get("usage")
+        if isinstance(usage, dict):
+            prompt = int(usage.get("input_tokens") or usage.get("prompt_tokens") or 0)
+            completion = int(usage.get("output_tokens") or usage.get("completion_tokens") or 0)
+            total = int(usage.get("total_tokens") or (prompt + completion))
+            if prompt > 0 or completion > 0:
+                return {
+                    "prompt_tokens": prompt,
+                    "completion_tokens": completion,
+                    "total_tokens": total,
+                }
+    return None
+
+
+def _record_external_cli_usage(
+    *,
+    provider: str,
+    model: Optional[str],
+    prompt_tokens: int,
+    completion_tokens: int,
+    session_id: Optional[str],
+    plan_id: Optional[int],
+    task_id: Optional[int],
+    call_purpose: str,
+) -> Optional[Dict[str, Any]]:
+    try:
+        from app.repository.llm_usage import estimate_llm_cost, log_llm_usage
+        model_name = str(model or "unknown").strip() or "unknown"
+        total_tokens = max(0, int(prompt_tokens or 0)) + max(0, int(completion_tokens or 0))
+        cost = estimate_llm_cost(
+            provider=provider,
+            model=model_name,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+        )
+        log_llm_usage(
+            provider=provider,
+            model=model_name,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            session_id=session_id,
+            plan_id=plan_id,
+            task_id=task_id,
+            call_purpose=call_purpose,
+            input_cost=cost["input_cost"],
+            output_cost=cost["output_cost"],
+            estimated_cost=cost["estimated_cost"],
+            cost_currency=cost["cost_currency"],
+        )
+        return {
+            "provider": provider,
+            "model": model_name,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+            **cost,
+        }
+    except Exception as exc:
+        logger.warning("[CODE_EXECUTOR] Failed to record external CLI usage: %s", exc)
+        return None
+
+
 def _prepare_code_executor_read_context(
     *,
     task: str,
@@ -3753,6 +4519,17 @@ def _prepare_code_executor_read_context(
     if default_data_dir.exists():
         allowed_dirs.append(str(default_data_dir))
         logger.info("Auto-added default data directory: %s", default_data_dir)
+
+    for default_external_root in _DEFAULT_EXTERNAL_READ_ROOTS:
+        try:
+            external_resolved = default_external_root.expanduser().resolve(strict=False)
+        except OSError:
+            continue
+        if external_resolved.exists() and external_resolved.is_dir():
+            external_str = str(external_resolved)
+            if external_str not in allowed_dirs:
+                allowed_dirs.append(external_str)
+                logger.info("Auto-added default external readable directory: %s", external_str)
 
     for raw_extra in os.getenv("FILE_OPERATIONS_ALLOWED_BASE_PATHS", "").split(os.pathsep):
         extra_path = str(raw_extra or "").strip()
@@ -4086,6 +4863,17 @@ async def code_executor_handler(
                 task_work_dir=task_work_dir,
                 subdirs=task_subdirs,
             )
+            reconcile_report = _reconcile_deliverables(
+                execution_spec=execution_spec,
+                task_work_dir=task_work_dir,
+                unified_output_dir=unified_output_dir,
+            )
+            if reconcile_report.get("missing"):
+                logger.warning(
+                    "[CODE_EXECUTOR_LOCAL] %d deliverables still missing after reconciliation: %s",
+                    len(reconcile_report["missing"]),
+                    reconcile_report["missing"][:5],
+                )
             verification_artifact_paths = _build_verification_artifact_paths(
                 task_work_dir=task_work_dir,
                 subdirs=task_subdirs,
@@ -4099,6 +4887,12 @@ async def code_executor_handler(
                 produced_files=produced_files,
             )
             _append_contract_artifact_paths(verification_artifact_paths, contract_artifacts)
+            if unified_output_dir and contract_artifacts:
+                _promote_external_contract_artifacts(
+                    contract_artifacts=contract_artifacts,
+                    task_work_dir=task_work_dir,
+                    unified_output_dir=unified_output_dir,
+                )
             result_payload = _build_local_backend_result_payload(
                 task=task,
                 local_result=local_result,
@@ -4277,82 +5071,23 @@ async def code_executor_handler(
             effective_setting_sources = _resolve_setting_sources(
                 setting_sources, auth_mode=effective_auth_mode,
             )
-            writable_task_subdirs = [
-                name for name in task_subdirs if str(name).strip().lower() != "code"
-            ]
-            enhanced_task = (
-                f"[ATOMIC TASK]\n"
-                f"Execute only the task below. Do not broaden scope or create extra tasks.\n"
-                f"If the request still needs planning or decomposition, output exactly:\n"
-                f"  {_BLOCK_SCOPE_STATUS}\n"
-                f"  {_BLOCK_SCOPE_REASON}\n"
-                f"  DETAIL: <one sentence>\n"
-                f"Use direct execution; skip standalone environment diagnostics "
-                f"unless an observed failure requires them.\n\n"
-                f"Workspace: {task_work_dir}\n"
-                f"Output dirs: {_format_task_subdirectories(task_subdirs)}\n"
-                f"File prefix: {file_prefix}\n"
-                f"Task:\n{cli_task}\n\n"
-                f"Deliverables:\n"
-                f"1. Write scripts under code/ only when needed.\n"
-                f"2. Run them and save outputs under {_format_directory_choices(writable_task_subdirs)}.\n"
-                f"3. Put publishable deliverable code under results/submission/ "
-                f"or results/deliverable/.\n"
-                f"4. Return a summary of actual outputs produced.\n"
-                f"5. Do NOT modify shared host environments: no global `conda install`, "
-                f"`pip install`, or writes into shared site-packages. Use task-local "
-                f"workspace environments only.\n"
-                f"6. If the task needs a heavy dependency solve, compiled stack, or a "
-                f"new runtime image/profile, report BLOCKED_DEPENDENCY instead of "
-                f"mutating the shared host environment."
-                f"{allowed_dirs_info}"
-            )
             def _rebuild_cli_command(task_override: str) -> List[str]:
-                cli_task_override = _build_cli_task_contract(task_override, execution_spec, normalized_resources)
-                enhanced_task_override = (
-                    f"[ATOMIC TASK]\n"
-                    f"Execute only the task below. Do not broaden scope or create extra tasks.\n"
-                    f"If the request still needs planning or decomposition, output exactly:\n"
-                    f"  {_BLOCK_SCOPE_STATUS}\n"
-                    f"  {_BLOCK_SCOPE_REASON}\n"
-                    f"  DETAIL: <one sentence>\n"
-                    f"Use direct execution; skip standalone environment diagnostics "
-                    f"unless an observed failure requires them.\n\n"
-                    f"Workspace: {task_work_dir}\n"
-                    f"Output dirs: {_format_task_subdirectories(task_subdirs)}\n"
-                    f"File prefix: {file_prefix}\n"
-                    f"Task:\n{cli_task_override}\n\n"
-                    f"Deliverables:\n"
-                    f"1. Write scripts under code/ only when needed.\n"
-                    f"2. Run them and save outputs under {_format_directory_choices(writable_task_subdirs)}.\n"
-                    f"3. Put publishable deliverable code under results/submission/ "
-                    f"or results/deliverable/.\n"
-                    f"4. Return a summary of actual outputs produced.\n"
-                    f"5. Do NOT modify shared host environments: no global `conda install`, "
-                    f"`pip install`, or writes into shared site-packages. Use task-local "
-                    f"workspace environments only.\n"
-                    f"6. If the task needs a heavy dependency solve, compiled stack, or a "
-                    f"new runtime image/profile, report BLOCKED_DEPENDENCY instead of "
-                    f"mutating the shared host environment."
-                    f"{allowed_dirs_info}"
+                return _build_claude_code_command(
+                    task=task_override,
+                    task_work_dir=task_work_dir,
+                    file_prefix=file_prefix,
+                    output_format=output_format,
+                    normalized_allowed_tools=normalized_allowed_tools,
+                    allowed_dirs=allowed_dirs,
+                    task_subdirs=task_subdirs,
+                    execution_spec=execution_spec,
+                    resolved_resources=normalized_resources,
+                    allowed_dirs_info=allowed_dirs_info,
+                    debug_log_path=debug_log_path,
+                    effective_model=effective_model,
+                    effective_setting_sources=effective_setting_sources,
+                    skip_permissions=skip_permissions,
                 )
-                rebuilt = [
-                    'claude', '-p', enhanced_task_override,
-                    '--output-format', output_format,
-                    '--max-turns', '50',
-                ]
-                if debug_log_path is not None:
-                    rebuilt.extend(['--debug-file', str(debug_log_path)])
-                if effective_model:
-                    rebuilt.extend(['--model', effective_model])
-                if effective_setting_sources:
-                    rebuilt.extend(['--setting-sources', effective_setting_sources])
-                rebuilt.extend(['--allowed-tools', ",".join(normalized_allowed_tools)])
-                for abs_path in allowed_dirs:
-                    rebuilt.extend(['--add-dir', abs_path])
-                if skip_permissions:
-                    rebuilt.append('--dangerously-skip-permissions')
-                return rebuilt
             cmd = _rebuild_cli_command(task)
             _cli_label = "Claude Code"
             _diag_key = subprocess_env.get("ANTHROPIC_API_KEY", "")
@@ -4373,6 +5108,7 @@ async def code_executor_handler(
         qwen_shell_recovery: Optional[Dict[str, Any]] = None
 
         cli_progress = {"last_output_at": 0.0}
+        cli_prompt_tokens_accumulated = 0
 
         async def _record_stream_line(decoded_line: str, lines, callback, stream_name: str):
             try:
@@ -4418,7 +5154,7 @@ async def code_executor_handler(
             *,
             phase: str = "primary",
         ) -> tuple[int, str, str, Optional[Dict[str, Any]]]:
-            nonlocal _qwen_session_id, qwen_shell_recovery
+            nonlocal _qwen_session_id, qwen_shell_recovery, cli_prompt_tokens_accumulated
             local_stdout_lines: list[str] = []
             local_stderr_lines: list[str] = []
             local_return_code = -1
@@ -4436,6 +5172,8 @@ async def code_executor_handler(
                     command = _rebuild_cli_command(task_override)
                 local_stdout_lines.clear()
                 local_stderr_lines.clear()
+                if use_qwen_code_backend:
+                    cli_prompt_tokens_accumulated += _estimate_cli_prompt_tokens(command)
 
                 process = await asyncio.create_subprocess_exec(
                     *command,
@@ -4478,6 +5216,7 @@ async def code_executor_handler(
                             task_work_dir=task_work_dir,
                             unified_output_dir=unified_output_dir,
                             cli_label=_cli_label,
+                            container_name=_docker_container_name,
                             log_file=log_file,
                             log_lock=log_lock,
                         )
@@ -4515,6 +5254,13 @@ async def code_executor_handler(
                 _is_scope_block = _detect_scope_blocked("\n".join(local_stdout_lines), None)
                 if _is_scope_block:
                     logger.info("[CODE_EXECUTOR_RETRY] Scope block detected, not retrying.")
+                    break
+
+                if use_qwen_code_backend and _is_qwen_truncated_tool_failure_text("\n".join(local_stderr_lines)):
+                    logger.warning(
+                        "[CODE_EXECUTOR_RETRY] Qwen truncated tool call detected; "
+                        "skipping transcript shell recovery and retries."
+                    )
                     break
 
                 if use_qwen_code_backend and not _is_qwen_no_output_timeout("\n".join(local_stderr_lines)):
@@ -4618,6 +5364,8 @@ async def code_executor_handler(
             return_code, stdout, stderr, output_data = await _run_cli_with_retry(task)
 
             success = return_code == 0
+            is_no_output_timeout = _is_qwen_no_output_timeout(stderr, stdout)
+            is_qwen_truncated_tool_failure = _is_qwen_truncated_tool_failure_text(f"{stderr}\n{stdout}")
 
             blocked_detail = _detect_scope_blocked(stdout, output_data)
             if blocked_detail:
@@ -4626,7 +5374,10 @@ async def code_executor_handler(
             qwen_infra_failure_detected = (
                 use_qwen_code_backend
                 and not success
-                and _is_qwen_container_infrastructure_error(stderr, stdout)
+                and (
+                    _is_qwen_container_infrastructure_error(stderr, stdout)
+                    or is_qwen_truncated_tool_failure
+                )
             )
             qwen_infra_fallback_used = False
             fallback_result: Optional[Dict[str, Any]] = None
@@ -4703,6 +5454,58 @@ async def code_executor_handler(
                 task_work_dir=task_work_dir,
                 subdirs=task_subdirs,
             )
+            reconcile_report = _reconcile_deliverables(
+                execution_spec=execution_spec,
+                task_work_dir=task_work_dir,
+                unified_output_dir=unified_output_dir,
+            )
+            if reconcile_report.get("missing"):
+                sg_prompt = _build_search_and_generate_prompt(
+                    reconcile_report["missing"],
+                    session_dir,
+                    execution_spec,
+                    is_timeout=is_no_output_timeout or is_qwen_truncated_tool_failure,
+                )
+                logger.info(
+                    "[CODE_EXECUTOR] %d missing deliverables, delegating to Qwen Code for %s",
+                    len(reconcile_report["missing"]),
+                    "re-execution (previous timeout/fatal CLI failure)" if (is_no_output_timeout or is_qwen_truncated_tool_failure) else "search",
+                )
+                try:
+                    sg_rc, sg_stdout, sg_stderr, sg_output = await asyncio.wait_for(
+                        _run_cli_with_retry(
+                            sg_prompt, phase="search_generate",
+                        ),
+                        timeout=300.0,
+                    )
+                    produced_files = _collect_run_artifacts(run_dir=task_work_dir, subdirs=task_subdirs)
+                    if unified_output_dir:
+                        unified_promoted_files_qwen = _promote_results_to_unified_dir(
+                            scratch_dir=task_work_dir,
+                            output_dir=unified_output_dir,
+                            subdirs=task_subdirs,
+                            session_dir=session_dir,
+                        )
+                    session_artifact_paths = _promote_task_results_to_session_root(
+                        session_dir=session_dir,
+                        task_work_dir=task_work_dir,
+                        subdirs=task_subdirs,
+                    )
+                    reconcile_report = _reconcile_deliverables(
+                        execution_spec=execution_spec,
+                        task_work_dir=task_work_dir,
+                        unified_output_dir=unified_output_dir,
+                    )
+                    logger.info(
+                        "[CODE_EXECUTOR] %s complete: rc=%d still_missing=%d",
+                        "re-execution" if is_no_output_timeout else "search",
+                        sg_rc,
+                        len(reconcile_report.get("missing", [])),
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning("[CODE_EXECUTOR] search/generate delegation timed out after 300s")
+                except Exception as sg_exc:
+                    logger.warning("[CODE_EXECUTOR] search/generate delegation failed: %s", sg_exc)
             verification_artifact_paths = _build_verification_artifact_paths(
                 task_work_dir=task_work_dir,
                 subdirs=task_subdirs,
@@ -4788,6 +5591,11 @@ async def code_executor_handler(
                             task_work_dir=task_work_dir,
                             subdirs=task_subdirs,
                         )
+                        _reconcile_deliverables(
+                            execution_spec=execution_spec,
+                            task_work_dir=task_work_dir,
+                            unified_output_dir=unified_output_dir,
+                        )
                         verification_artifact_paths = _build_verification_artifact_paths(
                             task_work_dir=task_work_dir,
                             subdirs=task_subdirs,
@@ -4857,12 +5665,33 @@ async def code_executor_handler(
                 contract_fix_guidance=contract_fix_guidance,
             )
 
+        if unified_output_dir and contract_artifacts:
+            _promote_external_contract_artifacts(
+                contract_artifacts=contract_artifacts,
+                task_work_dir=task_work_dir,
+                unified_output_dir=unified_output_dir,
+            )
+
         if log_file:
             try:
                 log_file.write(f"[{datetime.utcnow().isoformat()}Z] Claude Code finished (exit={return_code})\n")
                 log_file.flush()
             except Exception as log_err:
                 logger.warning(f"Failed to finalize Claude Code log file: {log_err}")
+
+        cli_usage = None
+        if use_qwen_code_backend:
+            real_usage = _parse_cli_usage_from_jsonl(stdout)
+            cli_usage = _record_external_cli_usage(
+                provider="qwen_code_cli",
+                model=effective_model or os.getenv("QWEN_CODE_MODEL") or os.getenv("QWEN_MODEL") or "unknown",
+                prompt_tokens=real_usage["prompt_tokens"] if real_usage else cli_prompt_tokens_accumulated,
+                completion_tokens=real_usage["completion_tokens"] if real_usage else _estimate_cli_completion_tokens(stdout, stderr),
+                session_id=effective_session_id,
+                plan_id=resolved_plan_id,
+                task_id=resolved_task_id,
+                call_purpose="qwen_code_cli_execution",
+            )
 
         # Build return result
         result_payload = {
@@ -4894,6 +5723,7 @@ async def code_executor_handler(
             "allowed_tools_effective": normalized_allowed_tools,
             "cli_model_effective": effective_model,
             "cli_backend": "qwen_code" if use_qwen_code_backend else "claude_code",
+            "cli_usage": cli_usage,
             "code_directory": code_directory,
             "code_file": primary_code_file,
             "produced_files": produced_files,
@@ -4923,10 +5753,37 @@ async def code_executor_handler(
                 "repair_attempts": repair_attempts,
                 "plan_patch_suggestion": plan_patch_suggestion,
             }
+        if use_qwen_code_backend and success:
+            extracted_result = _extract_result_from_jsonl(stdout)
+            if extracted_result:
+                result_payload["result"] = extracted_result
+            deliverables = _extract_deliverables_from_jsonl(stdout)
+            if deliverables:
+                result_payload["deliverable_submit"] = {
+                    "publish": True,
+                    "artifacts": [
+                        {
+                            "path": d["path"],
+                            "module": d["module"],
+                            "reason": d.get("description") or "Agent-marked deliverable",
+                        }
+                        for d in deliverables
+                    ],
+                }
         if qwen_infra_failure_detected and not qwen_infra_fallback_used:
             result_payload["runtime_failure"] = True
             result_payload["error_category"] = "executor_infrastructure"
-            result_payload["error_summary"] = _extract_readable_error(stderr) or "qwen_code container infrastructure failure"
+            if is_qwen_truncated_tool_failure:
+                result_payload["failure_kind"] = result_payload.get("failure_kind") or "qwen_tool_call_truncated"
+                result_payload["error_summary"] = (
+                    "Qwen Code produced a truncated tool call; retry with split file writes or smaller scripts."
+                )
+                result_payload["fix_guidance"] = (
+                    "Ask Qwen Code to write large scripts in smaller chunks: first create a skeleton, "
+                    "then use incremental edits/appends instead of one huge write_file call."
+                )
+            else:
+                result_payload["error_summary"] = _extract_readable_error(stderr) or "qwen_code container infrastructure failure"
         if qwen_infra_fallback_used:
             result_payload["fallback_used"] = True
             fallback_payload = fallback_result or {}

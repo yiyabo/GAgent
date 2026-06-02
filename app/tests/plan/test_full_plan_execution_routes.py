@@ -305,6 +305,8 @@ def test_run_full_plan_job_continues_after_exception_when_stop_on_failure_disabl
 
     def _execute_task(_plan_id: int, task_id: int, **_kwargs):
         execution_order.append(task_id)
+        tree.nodes[task_id].status = "completed"
+        tree.nodes[task_id].execution_result = json.dumps({"status": "completed", "content": "ok"})
         if task_id == 1:
             raise RuntimeError("boom")
         return SimpleNamespace(status="completed", duration_sec=0.1, content="ok")
@@ -353,6 +355,8 @@ def test_run_full_plan_job_skips_tasks_completed_after_queue_build(
 
     def _execute_task(_plan_id: int, task_id: int, **_kwargs):
         execution_order.append(task_id)
+        tree.nodes[task_id].status = "completed"
+        tree.nodes[task_id].execution_result = json.dumps({"status": "completed", "content": "ok"})
         return SimpleNamespace(status="completed", duration_sec=0.1, content="ok")
 
     monkeypatch.setattr(plan_routes, "plan_decomposition_jobs", store)
@@ -408,6 +412,11 @@ def test_execute_full_plan_excludes_running_tasks_and_blocked_dependents(
     monkeypatch.setattr(plan_routes._plan_executor, "execute_task", _execute_task)
     monkeypatch.setattr(
         plan_routes,
+        "_run_task_audit_repair_after_execution",
+        lambda **_kwargs: {"success": True, "final_status": "completed", "classification": "passed"},
+    )
+    monkeypatch.setattr(
+        plan_routes,
         "_build_plan_execution_snapshot",
         lambda _plan_id: {"active_task_ids": {1}, "active_jobs": []},
     )
@@ -419,8 +428,8 @@ def test_execute_full_plan_excludes_running_tasks_and_blocked_dependents(
     )
 
     assert response.success is True
-    assert executed == [2, 3]
-    assert response.result["execution_order"] == [2, 3]
+    assert executed == [3]
+    assert response.result["execution_order"] == [3]
 
 
 def test_execute_full_plan_sync_block_mode_passes_enforce_dependencies_true(
@@ -466,6 +475,114 @@ def test_execute_full_plan_sync_block_mode_passes_enforce_dependencies_true(
     assert captured_configs[0].enforce_dependencies is True
 
 
+def test_execute_full_plan_defaults_to_dependency_safe_blocking() -> None:
+    request = plan_routes.ExecuteFullPlanRequest()
+
+    assert request.ordering_mode == "dependency_phase"
+    assert request.dependency_block_mode == "block"
+
+
+def test_execute_full_plan_sync_runs_audit_repair_after_failed_task(monkeypatch) -> None:
+    tree = PlanTree(
+        id=7,
+        title="Plan 7",
+        nodes={1: PlanNode(id=1, plan_id=7, name="Step 1", status="pending")},
+    )
+    tree.rebuild_adjacency()
+    repair_calls: list[dict] = []
+
+    def _execute_task(_plan_id: int, task_id: int, **_kwargs):
+        tree.nodes[task_id].status = "failed"
+        tree.nodes[task_id].execution_result = json.dumps({"status": "failed", "content": "missing artifact"})
+        return SimpleNamespace(status="failed", duration_sec=0.1, content="missing artifact")
+
+    def _repair(**kwargs):
+        repair_calls.append(dict(kwargs))
+        return {
+            "success": False,
+            "final_status": "failed",
+            "classification": "repairable_manifest_or_path",
+            "steps": [],
+        }
+
+    monkeypatch.setattr(plan_routes, "_load_authorized_plan_tree", lambda _plan_id, _request: tree)
+    monkeypatch.setattr(plan_routes._plan_repo, "get_plan_tree", lambda _plan_id: tree)
+    monkeypatch.setattr(plan_routes._plan_executor, "execute_task", _execute_task)
+    monkeypatch.setattr(plan_routes, "_run_task_audit_repair_after_execution", _repair)
+    monkeypatch.setattr(
+        plan_routes,
+        "_build_plan_execution_snapshot",
+        lambda _plan_id: {"active_task_ids": set(), "active_jobs": []},
+    )
+
+    response = plan_routes.execute_full_plan(
+        7,
+        _build_request("alice"),
+        plan_routes.ExecuteFullPlanRequest(async_mode=False),
+    )
+
+    assert response.success is False
+    assert response.result["failed_task_ids"] == [1]
+    assert response.result["audit_repairs"]["1"]["classification"] == "repairable_manifest_or_path"
+    assert repair_calls == [
+        {
+            "plan_id": 7,
+            "task_id": 1,
+            "result_status": "failed",
+            "session_id": None,
+            "owner_id": "alice",
+        }
+    ]
+
+
+def test_run_full_plan_job_uses_repaired_status_after_audit(monkeypatch) -> None:
+    store = _JobStoreStub()
+    tree = PlanTree(
+        id=7,
+        title="Plan 7",
+        nodes={1: PlanNode(id=1, plan_id=7, name="Step 1", status="pending")},
+    )
+    tree.rebuild_adjacency()
+
+    def _execute_task(_plan_id: int, task_id: int, **_kwargs):
+        tree.nodes[task_id].status = "failed"
+        tree.nodes[task_id].execution_result = json.dumps({"status": "failed", "content": "contract mismatch"})
+        return SimpleNamespace(status="failed", duration_sec=0.1, content="contract mismatch")
+
+    def _repair(**_kwargs):
+        tree.nodes[1].status = "completed"
+        tree.nodes[1].execution_result = json.dumps({"status": "completed", "content": "repaired"})
+        return {
+            "success": True,
+            "final_status": "completed",
+            "classification": "repairable_artifact_contract",
+            "steps": [{"action": "delegate_repair"}],
+        }
+
+    monkeypatch.setattr(plan_routes, "plan_decomposition_jobs", store)
+    monkeypatch.setattr(plan_routes, "log_job_event", lambda *args, **kwargs: None)
+    monkeypatch.setattr(plan_routes._plan_repo, "get_plan_tree", lambda _plan_id: tree)
+    monkeypatch.setattr(plan_routes._plan_executor, "execute_task", _execute_task)
+    monkeypatch.setattr(plan_routes, "_run_task_audit_repair_after_execution", _repair)
+
+    plan_routes._run_full_plan_job(
+        job_id="job-repair",
+        plan_id=7,
+        task_order=[1],
+        stop_on_failure=True,
+        dependency_block_mode="block",
+        owner_id="alice",
+    )
+
+    assert store.failure_calls == []
+    assert len(store.success_calls) == 1
+    result = store.success_calls[0]["result"]
+    assert result["executed_task_ids"] == [1]
+    assert result["failed_task_ids"] == []
+    assert result["steps"][0]["status"] == "completed"
+    assert result["audit_repairs"]["1"]["success"] is True
+
+
 def test_run_full_plan_job_skips_tasks_already_running_after_queue_build(
     monkeypatch,
 ) -> None:
@@ -483,6 +600,8 @@ def test_run_full_plan_job_skips_tasks_already_running_after_queue_build(
 
     def _execute_task(_plan_id: int, task_id: int, **_kwargs):
         execution_order.append(task_id)
+        tree.nodes[task_id].status = "completed"
+        tree.nodes[task_id].execution_result = json.dumps({"status": "completed", "content": "ok"})
         return SimpleNamespace(status="completed", duration_sec=0.1, content="ok")
 
     monkeypatch.setattr(plan_routes, "plan_decomposition_jobs", store)
@@ -534,6 +653,8 @@ def test_run_full_plan_job_reruns_stale_running_tasks_without_active_job(
 
     def _execute_task(_plan_id: int, task_id: int, **_kwargs):
         execution_order.append(task_id)
+        tree.nodes[task_id].status = "completed"
+        tree.nodes[task_id].execution_result = json.dumps({"status": "completed", "content": "ok"})
         return SimpleNamespace(status="completed", duration_sec=0.1, content="ok")
 
     monkeypatch.setattr(plan_routes, "plan_decomposition_jobs", store)
@@ -584,6 +705,8 @@ def test_run_full_plan_job_does_not_treat_current_job_as_already_running(
 
     def _execute_task(_plan_id: int, task_id: int, **_kwargs):
         execution_order.append(task_id)
+        tree.nodes[task_id].status = "completed"
+        tree.nodes[task_id].execution_result = json.dumps({"status": "completed", "content": "ok"})
         return SimpleNamespace(status="completed", duration_sec=0.1, content="ok")
 
     def _get_job_payload(job_id: str, include_logs: bool = False):
@@ -630,6 +753,8 @@ def test_run_full_plan_job_reports_overall_progress_with_completed_baseline(
     tree.rebuild_adjacency()
 
     def _execute_task(_plan_id: int, _task_id: int, **_kwargs):
+        tree.nodes[_task_id].status = "completed"
+        tree.nodes[_task_id].execution_result = json.dumps({"status": "completed", "content": "ok"})
         return SimpleNamespace(status="completed", duration_sec=0.1, content="ok")
 
     monkeypatch.setattr(plan_routes, "plan_decomposition_jobs", store)
@@ -682,6 +807,8 @@ def test_run_full_plan_job_blocks_downstream_tasks_with_failed_dependencies(
 
     def _execute_task(_plan_id: int, task_id: int, **_kwargs):
         execution_order.append(task_id)
+        tree.nodes[task_id].status = "completed"
+        tree.nodes[task_id].execution_result = json.dumps({"status": "completed", "content": "ok"})
         return SimpleNamespace(status="completed", duration_sec=0.1, content="ok")
 
     monkeypatch.setattr(plan_routes, "plan_decomposition_jobs", store)
@@ -738,6 +865,8 @@ def test_run_full_plan_job_warns_and_continues_on_incomplete_dependencies(
         execution_order.append(task_id)
         config = kwargs.get("config")
         assert config.enforce_dependencies is False
+        tree.nodes[task_id].status = "completed"
+        tree.nodes[task_id].execution_result = json.dumps({"status": "completed", "content": "ok"})
         return SimpleNamespace(status="completed", duration_sec=0.1, content="ok")
 
     monkeypatch.setattr(plan_routes, "plan_decomposition_jobs", store)
@@ -1104,3 +1233,39 @@ def test_execute_full_plan_reruns_false_completed_tasks_with_missing_publish_con
     assert response.success is True
     assert executed == [1, 2]
     assert response.result["executed_task_ids"] == [1, 2]
+
+
+def test_get_full_plan_todo_list_returns_dependency_phase_ordering(monkeypatch) -> None:
+    tree = PlanTree(
+        id=7,
+        title="Plan 7",
+        nodes={
+            1: PlanNode(id=1, plan_id=7, name="Root", parent_id=None, position=0),
+            2: PlanNode(id=2, plan_id=7, name="Data branch", parent_id=1, position=0),
+            3: PlanNode(id=3, plan_id=7, name="Report branch", parent_id=1, position=1),
+            20: PlanNode(id=20, plan_id=7, name="Load data", parent_id=2, position=0),
+            30: PlanNode(id=30, plan_id=7, name="Package report", parent_id=3, position=0),
+        },
+    )
+    tree.rebuild_adjacency()
+
+    monkeypatch.setattr(
+        plan_routes,
+        "_load_authorized_plan_tree",
+        lambda _plan_id, _request: tree,
+    )
+    monkeypatch.setattr(
+        plan_routes,
+        "_resolve_effective_task_states",
+        lambda _plan_id, _tree, **_kw: {
+            node_id: {"effective_status": node.status}
+            for node_id, node in _tree.nodes.items()
+        },
+    )
+
+    response = plan_routes.get_full_plan_todo_list(7, _build_request("alice"))
+
+    assert response.ordering_mode == "dependency_phase"
+    first_phase_ids = {item.task_id for item in response.phases[0].items}
+    assert 20 in first_phase_ids
+    assert 30 in first_phase_ids

@@ -158,4 +158,12 @@ def build_agent_for_chat_request(
         history=converted_history,
         extra_context=context,
     )
+
+    from app.llm import set_usage_context
+    set_usage_context(
+        session_id=request.session_id,
+        plan_id=plan_session.plan_id,
+        task_id=context.get("current_task_id"),
+    )
+
     return agent, message_to_send

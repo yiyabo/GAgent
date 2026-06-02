@@ -254,6 +254,84 @@ def test_task_verifier_fails_blocking_acceptance_criteria(tmp_path):
     assert finalization.verification["failures"][0]["type"] == "file_exists"
 
 
+def test_task_verifier_discovers_results_outputs_for_relative_contract(tmp_path):
+    run_dir = tmp_path / "run_20260601"
+    result_file = run_dir / "results" / "upstream_regulator_analysis.csv"
+    result_file.parent.mkdir(parents=True, exist_ok=True)
+    result_file.write_text("regulator,score\nSTAT1,0.9\n", encoding="utf-8")
+    node = PlanNode(
+        id=30,
+        plan_id=122,
+        name="Analyze upstream regulators",
+        metadata={
+            "acceptance_criteria": {
+                "category": "file_data",
+                "blocking": True,
+                "checks": [
+                    {"type": "file_nonempty", "path": "results/upstream_regulator_analysis.csv"},
+                ],
+            }
+        },
+    )
+
+    finalization = TaskVerificationService().finalize_payload(
+        node,
+        {
+            "status": "completed",
+            "content": "analysis complete",
+            "metadata": {"run_directory": str(run_dir)},
+        },
+        execution_status="completed",
+    )
+
+    metadata = finalization.payload["metadata"]
+    assert finalization.final_status == "completed"
+    assert metadata["verification_status"] == "passed"
+    assert str(result_file.resolve()) in finalization.artifact_paths
+
+
+def test_task_verifier_converts_failed_execution_with_results_output_to_warning(tmp_path):
+    run_dir = tmp_path / "run_20260601"
+    result_file = run_dir / "results" / "meta_analysis_results.csv"
+    result_file.parent.mkdir(parents=True, exist_ok=True)
+    result_file.write_text("cohort,hr\nvalidation,1.8\n", encoding="utf-8")
+    node = PlanNode(
+        id=25,
+        plan_id=122,
+        name="Validate external cohorts",
+        metadata={
+            "acceptance_criteria": {
+                "category": "file_data",
+                "blocking": True,
+                "checks": [
+                    {"type": "file_nonempty", "path": "results/forest_plot_hr.png"},
+                ],
+            }
+        },
+    )
+
+    finalization = TaskVerificationService().finalize_payload(
+        node,
+        {
+            "status": "failed",
+            "content": "NO_OUTPUT: Missing required deliverables: results/forest_plot_hr.png",
+            "metadata": {
+                "run_directory": str(run_dir),
+                "failure_kind": "missing_required_outputs",
+            },
+        },
+        execution_status="failed",
+    )
+
+    metadata = finalization.payload["metadata"]
+    assert finalization.final_status == "completed"
+    assert metadata["verification_status"] == "warning"
+    assert metadata["verification_warning"] is True
+    assert metadata["execution_warning"] is True
+    assert metadata["execution_reported_status"] == "failed"
+    assert str(result_file.resolve()) in finalization.artifact_paths
+
+
 def test_task_verifier_records_contract_diff_for_mismatch(tmp_path):
     actual = tmp_path / "results" / "NK_cell_upregulated_genes.csv"
     actual.parent.mkdir(parents=True, exist_ok=True)
@@ -1250,6 +1328,8 @@ def test_plan_executor_verifies_artifact_path_mentioned_in_final_answer(tmp_path
         content=f"Audit completed. Output file: `{output_path}`",
     )
     executor = PlanExecutor(repo=repo, llm_service=_LLMStub(response))
+    # Pin the in-process stub path; the external-delegate route starts a real Docker LLM and hangs.
+    monkeypatch.setattr(executor, "_should_delegate_plan_task", lambda _cfg: False)
     monkeypatch.setattr(executor, "_should_use_deep_think", lambda _cfg: False)
 
     result = executor.execute_task(1, 2, config=ExecutionConfig(enable_skills=False))
@@ -1295,6 +1375,17 @@ def test_plan_executor_marks_task_failed_when_verification_fails(tmp_path, monke
     assert repo.update_calls[-1][2]["status"] == "failed"
     payload = json.loads(repo.update_calls[-1][2]["execution_result"])
     assert payload["metadata"]["verification"]["status"] == "failed"
+
+
+def test_plan_executor_extracts_existing_paths_from_prose(tmp_path):
+    output_path = tmp_path / "raw_files" / "task_1" / "task_2" / "data_audit.json"
+    output_path.parent.mkdir(parents=True)
+    output_path.write_text(json.dumps({"metadata_rows": 5}), encoding="utf-8")
+    executor = PlanExecutor(repo=_RepoStub(PlanTree(id=1, title="Path extraction")), llm_service=_LLMStub(ExecutionResponse(status="success", content="ok")))
+
+    paths = executor._existing_artifact_metadata_paths([f"Audit completed. Output file: `{output_path}`"])
+
+    assert str(output_path) in paths
 
 
 def test_verify_task_route_rechecks_existing_output(tmp_path, monkeypatch):
@@ -2662,6 +2753,43 @@ def test_accept_task_route_marks_task_completed(monkeypatch) -> None:
     persisted = json.loads(accepted_update["execution_result"])
     assert persisted["metadata"]["manual_acceptance"]["reason"] == "Outputs are usable after review."
     assert persisted["metadata"]["manual_acceptance"]["accepted_by"] == "owner-1"
+
+
+def test_plan_results_keep_manually_accepted_qwen_failure_completed(monkeypatch) -> None:
+    tree = PlanTree(id=780, title="Manual Accept Results")
+    tree.nodes = {
+        5: PlanNode(
+            id=5,
+            plan_id=780,
+            name="CellChat analysis",
+            status="completed",
+            execution_result=json.dumps(
+                {
+                    "status": "completed",
+                    "content": "Qwen Code failed: [QWEN_TOOL_CALL_TRUNCATED] qwen_tool_call_truncated",
+                    "metadata": {
+                        "execution_status": "failed",
+                        "failure_kind": "execution_failed",
+                        "manual_acceptance": {
+                            "status": "accepted",
+                            "accepted": True,
+                            "reason": "Outputs are acceptable after review.",
+                        },
+                    },
+                },
+                ensure_ascii=False,
+            ),
+        )
+    }
+    repo = _RepoStub(tree)
+    monkeypatch.setattr(plan_routes, "_plan_repo", repo)
+    monkeypatch.setattr(plan_routes, "_load_authorized_plan_tree", lambda plan_id, request: tree)
+
+    response = plan_routes.get_plan_results(780, request=None, only_with_output=False)
+
+    assert response.items[0].status == "completed"
+    assert response.items[0].effective_status == "completed"
+    assert response.items[0].status_reason == "Outputs are acceptable after review."
 
 
 def test_accept_task_route_resets_downstream_skipped_tasks(monkeypatch) -> None:

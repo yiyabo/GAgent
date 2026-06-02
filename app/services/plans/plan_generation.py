@@ -17,6 +17,7 @@ from ...repository.plan_repository import PlanRepository
 from ..llm.decomposer_service import strip_code_fences
 from .plan_decomposer import DecompositionResult, PlanDecomposer
 from .plan_models import PlanNode, PlanTree
+from .phase_narrator import PHASE_TITLES_METADATA_KEY, generate_phase_titles
 
 logger = logging.getLogger(__name__)
 
@@ -656,6 +657,17 @@ async def create_plan_and_generate(
             "error": str(exc),
             "message": "Automatic post-create review failed.",
         }
+
+    try:
+        phase_titles = await generate_phase_titles(updated_tree)
+        if phase_titles:
+            repo.update_plan_metadata(
+                plan_id,
+                {PHASE_TITLES_METADATA_KEY: {str(k): v for k, v in phase_titles.items()}},
+            )
+            updated_tree = repo.get_plan_tree(plan_id)
+    except Exception as exc:
+        logger.warning("Layer3 phase narration skipped for plan %s: %s", plan_id, exc)
 
     return PlanGenerationOutcome(
         plan_tree=updated_tree,

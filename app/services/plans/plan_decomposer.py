@@ -529,6 +529,11 @@ class PlanDecomposer:
                     siblings=batch_created,
                     tree=tree,
                 )
+                self._chain_sequential_siblings(
+                    plan_id=plan_id,
+                    siblings=batch_created,
+                    tree=tree,
+                )
 
             if llm_result.should_stop:
                 stopped_reason = llm_result.reason or "llm_requested_stop"
@@ -971,6 +976,52 @@ class PlanDecomposer:
                     "added_dependencies": missing,
                     "parent_id": consumer.parent_id,
                 },
+            )
+
+    def _chain_sequential_siblings(
+        self,
+        *,
+        plan_id: int,
+        siblings: List[PlanNode],
+        tree: PlanTree,
+    ) -> None:
+        """Chain sibling leaves by position when they have no inter-sibling deps.
+
+        For data pipeline tasks (read → clean → encode → export), sibling tasks
+        often form sequential dependencies. When the LLM omits these edges, we
+        chain consecutive sibling leaves to ensure correct execution order.
+        """
+        if len(siblings) < 2:
+            return
+        sibling_ids = {n.id for n in siblings}
+        leaves = [n for n in siblings if not tree.children_ids(n.id)]
+        if len(leaves) < 2:
+            return
+        sorted_leaves = sorted(leaves, key=lambda n: n.position)
+        for i in range(1, len(sorted_leaves)):
+            current = sorted_leaves[i]
+            prev = sorted_leaves[i - 1]
+            existing_deps = set(current.dependencies or [])
+            has_any_sibling_dep = bool(existing_deps & sibling_ids)
+            if has_any_sibling_dep:
+                continue
+            new_deps = list(existing_deps) + [prev.id]
+            try:
+                updated = self._repo.update_task(
+                    plan_id,
+                    current.id,
+                    dependencies=new_deps,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[DECOMPOSER] Sequential chain failed for task %s: %s",
+                    current.id, exc,
+                )
+                continue
+            tree.nodes[current.id] = updated
+            logger.info(
+                "[DECOMPOSER] Chained task %s → task %s (sequential siblings)",
+                current.id, prev.id,
             )
 
     def _update_tree_cache(self, tree: PlanTree, node: PlanNode) -> None:

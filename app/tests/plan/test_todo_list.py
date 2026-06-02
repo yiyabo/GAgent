@@ -19,6 +19,7 @@ from app.services.plans.todo_list import (
     TodoPhase,
     build_todo_list,
     build_full_plan_todo_list,
+    build_workflow_sections,
     assign_phase_labels,
     _classify_task_label,
     _collect_leaf_ids,
@@ -496,16 +497,19 @@ class TestBuildFullPlanTodoList:
         assert todo.execution_order == [1, 3, 2]
         assert todo.pending_order == [3]
 
-    def test_phase_labels_assigned(self):
+    def test_full_plan_keeps_execution_phase_labels_neutral(self):
         tree = _tree([
             _node(1, "Download data"),
             _node(2, "QC filtering", deps=[1]),
             _node(3, "Plot heatmap", deps=[2]),
         ])
         todo = build_full_plan_todo_list(tree)
-        labels = [p.label for p in todo.phases]
-        assert labels[0] == "Data Preparation"
-        assert labels[1] == "Quality Control"
+        assert [p.label for p in todo.phases] == ["Phase 1", "Phase 2", "Phase 3"]
+        assert [section.label for section in todo.workflow_sections] == [
+            "Data Preparation",
+            "Quality Control",
+            "Visualization",
+        ]
 
     def test_composite_expansion(self):
         tree = _tree([
@@ -595,6 +599,40 @@ class TestBuildFullPlanTodoList:
 
         assert dependency_todo.execution_order.index(30) < dependency_todo.execution_order.index(2)
         assert structure_todo.execution_order.index(30) > structure_todo.execution_order.index(2)
+
+
+    def test_workflow_sections_group_repeated_semantic_labels_without_changing_execution_order(self):
+        tree = _tree([
+            _node(1, "Download source data"),
+            _node(2, "Initial preprocessing", deps=[1]),
+            _node(3, "Run statistical analysis", deps=[2]),
+            _node(4, "Normalize analysis table", deps=[3]),
+            _node(5, "Quality control final report", deps=[4]),
+        ])
+        todo = build_full_plan_todo_list(tree)
+
+        assert todo.execution_order == [1, 2, 3, 4, 5]
+        section_items = {
+            section.label: [item.task_id for item in section.items]
+            for section in todo.workflow_sections
+        }
+        assert section_items["Data Preparation"] == [1]
+        assert section_items["Quality Control"] == [5]
+        assert section_items["Preprocessing"] == [2, 4]
+        assert section_items["Analysis"] == [3]
+        assert [item.task_id for section in todo.workflow_sections for item in section.items] != todo.execution_order
+        assert todo.pending_order == todo.execution_order
+
+    def test_workflow_section_items_keep_execution_relative_order(self):
+        items = [
+            TodoItem(10, "Preprocess first", None, "pending", [], 0),
+            TodoItem(30, "Preprocess third", None, "pending", [20], 2),
+            TodoItem(20, "Run analysis second", None, "pending", [10], 1),
+        ]
+        sections = build_workflow_sections(items)
+        by_label = {section.label: [item.task_id for item in section.items] for section in sections}
+        assert by_label["Preprocessing"] == [10, 30]
+        assert by_label["Analysis"] == [20]
 
     def test_summary(self):
         tree = _tree([

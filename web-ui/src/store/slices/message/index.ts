@@ -20,6 +20,7 @@ import {
 import { resolveChatSessionProcessingKey } from '@/utils/chatSessionKeys';
 import { recoverPlanBindingFromMessages } from './planRecovery';
 import { hydratePersistedMessage } from './historyHydration';
+import { matchesResumeSession, selectActiveChatRun } from './runResume';
 import { resolveRequestFailureMessage } from '@/components/chat/message/utils';
 
 /** Recent turns attached to each API request. Align with backend `CHAT_HISTORY_MAX_MESSAGES` (default 80, cap 200). */
@@ -519,7 +520,7 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
 
   resumeActiveChatRunIfAny: async (sessionId: string) => {
   const { processingSessionIds, currentSession, messages } = get();
-  if (currentSession?.id !== sessionId) {
+  if (!matchesResumeSession(currentSession, sessionId)) {
   return;
   }
   const resumeKey = resolveChatSessionProcessingKey(currentSession);
@@ -537,7 +538,7 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   if (!res) {
   return;
   }
-  const run = res?.runs?.[0];
+  const run = selectActiveChatRun(res);
   if (!run?.run_id) {
   // Server has no active run; client may still show "running" after backend restart.
   if (processingSessionIds.has(resumeKey)) {

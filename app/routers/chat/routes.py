@@ -355,6 +355,13 @@ async def chat_message(
             extra_context=context,
         )
 
+        from app.llm import set_usage_context
+        set_usage_context(
+            session_id=request.session_id,
+            plan_id=plan_session.plan_id,
+            task_id=context.get("current_task_id"),
+        )
+
         structured = await agent.get_structured_response(message_to_send)
 
         if not structured.actions:

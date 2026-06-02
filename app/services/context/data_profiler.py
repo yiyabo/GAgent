@@ -179,6 +179,7 @@ class DataProfiler:
         # Validate path is within allowed directories
         allowed_roots = [
             '/home/zczhao/GAgent', 
+            '/mnt/sdm/zczhao',
             '/tmp', 
             '/var/folders',  # macOS temp (symlink)
             '/private/var/folders',  # macOS temp (actual)

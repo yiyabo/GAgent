@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import json
+import logging
+import os
 import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Literal, Mapping, Optional, Sequence
+
+from app.llm import LLMClient
 
 from .guardrails import (
     extract_task_ids_from_text,
@@ -15,6 +20,8 @@ from .subject_identity import (
     canonicalize_subject_ref,
     subject_identity_matches,
 )
+
+logger = logging.getLogger(__name__)
 
 RequestTier = Literal["light", "standard", "research", "execute"]
 RequestRouteMode = Literal["manual_deepthink", "auto_simple", "auto_deepthink"]
@@ -35,6 +42,25 @@ class PlanLifecycleIntent:
 
 _MANUAL_DEEP_RE = re.compile(r"^\s*/(?:think|deep)\b", re.IGNORECASE)
 _NON_WORD_RE = re.compile(r"[\s\W_]+", re.UNICODE)
+_NON_PHAGESCOPE_TABULAR_FILE_EXTS = (
+    ".xlsx",
+    ".xls",
+    ".xlsm",
+    ".csv",
+    ".parquet",
+    ".feather",
+)
+
+
+def _directory_positively_lacks_phagescope_meta_data(value: str) -> bool:
+    text = str(value or "").strip().strip("`'\"").rstrip(".,;:)]}>，。；：）】》")
+    if not text:
+        return False
+    try:
+        return os.path.isdir(text) and not os.path.isdir(os.path.join(text, "meta_data"))
+    except OSError:
+        return False
+
 _PATH_RE = re.compile(
     r"(?P<path>(?:~?/|\.{1,2}/|/)?(?:[\w\-.一-龥]+/)+[\w\-.一-龥]+(?:\.[\w-]+)?)"
 )
@@ -1097,7 +1123,7 @@ def resolve_request_routing(
         plan_id=plan_id,
         current_task_id=current_task_id,
     )
-    request_tier, reasons, brevity_hint = classify_request_tier(
+    request_tier, reasons, brevity_hint, confidence = classify_request_tier(
         message=effective_user_message,
         history=history,
         context=context,
@@ -1132,6 +1158,22 @@ def resolve_request_routing(
         if request_tier != "execute":
             request_tier = "execute"
             combined_reasons.append("tier_elevated_plan_lifecycle")
+    if confidence < 0.5 and effective_plan_bound:
+        llm_result = _llm_routing_fallback(
+            effective_user_message,
+            plan_bound=effective_plan_bound,
+            task_bound=current_task_id is not None or (context or {}).get("current_task_id") is not None,
+        )
+        if llm_result is not None:
+            llm_tier, llm_is_plan_mod, llm_reasons = llm_result
+            if llm_tier in ("research", "execute") and request_tier in ("standard", "light"):
+                request_tier = llm_tier
+                combined_reasons.append("llm_routing_elevated")
+                for r in llm_reasons:
+                    if r not in combined_reasons:
+                        combined_reasons.append(r)
+            if llm_is_plan_mod and not plan_intent.optimize_requested:
+                combined_reasons.append("llm_detected_plan_modification")
     if plan_intent.execute_requested:
         if request_tier != "execute":
             request_tier = "execute"
@@ -1184,13 +1226,18 @@ def resolve_request_routing(
             intent_type = "execute_task"
             combined_reasons.append("intent_execute_task")
 
-    subject_ref_text = str(
+    subject_ref_raw = str(
         subject_resolution.get("display_ref")
         or subject_resolution.get("canonical_ref")
         or ""
-    ).lower()
+    )
+    subject_ref_text = subject_ref_raw.lower()
     if (
         "phagescope" in subject_ref_text
+        and not subject_ref_text.rstrip(".,;:)]}>，。；：）】》").endswith(
+            _NON_PHAGESCOPE_TABULAR_FILE_EXTS
+        )
+        and not _directory_positively_lacks_phagescope_meta_data(subject_ref_raw)
         and request_tier == "light"
         and _contains_any_lowered(
             effective_user_message.lower(),
@@ -1272,7 +1319,7 @@ def classify_request_tier(
     plan_id: Optional[int] = None,
     current_task_id: Optional[int] = None,
     intent_type: IntentType = "chat",
-) -> tuple[RequestTier, List[str], bool]:
+) -> tuple[RequestTier, List[str], bool, float]:
     """Classify the request into a tier that controls thinking budget and iterations.
 
     This function uses keyword heuristics to decide how much resource to
@@ -1286,7 +1333,7 @@ def classify_request_tier(
     context_dict = dict(context or {})
     if _is_internal_contract_repair_request(text):
         reasons.append("internal_contract_repair")
-        return "execute", reasons, False
+        return "execute", reasons, False, 0.9
 
     # ── Structural signals ────────────────────────────────────────
     attachments = context_dict.get("attachments")
@@ -1338,11 +1385,11 @@ def classify_request_tier(
     #    decides what tools to call.
     if intent_type == "execute_task":
         reasons.append("intent_execution")
-        return "execute", reasons, is_brief_followup
+        return "execute", reasons, is_brief_followup, 0.9
 
     if has_attachments:
         reasons.append("execution_keyword")
-        return "execute", reasons, is_brief_followup
+        return "execute", reasons, is_brief_followup, 0.9
 
     if has_plan_request or has_plan_review or has_plan_optimize:
         if has_plan_request:
@@ -1351,28 +1398,28 @@ def classify_request_tier(
             reasons.append("plan_review")
         if has_plan_optimize:
             reasons.append("plan_optimize")
-        return "execute", reasons, is_brief_followup
+        return "execute", reasons, is_brief_followup, 0.9
 
     if has_execute_keyword or followthrough_implies_execute:
         reasons.append("execution_keyword")
-        return "execute", reasons, is_brief_followup
+        return "execute", reasons, is_brief_followup, 0.9
 
     if plan_bound and has_followthrough_cue and not is_chat_continuation:
         reasons.append("plan_followthrough")
-        return "execute", reasons, is_brief_followup
+        return "execute", reasons, is_brief_followup, 0.9
 
     # 2. Research: literature / time-sensitive cues
     if has_research_cue or has_time_sensitive_cue:
-        return "research", reasons, is_brief_followup
+        return "research", reasons, is_brief_followup, 0.6
 
     # 2b. Remote status queries
     _REMOTE_STATUS_WORDS = ("状态", "进度", "在跑", "运行", "完成", "status", "running", "progress")
     if (
-        re.search(r"(?<!\d)\d{5,}(?!\d)", lowered)
+        re.search(r"(<?!\d)\d{5,}(?!\d)", lowered)
         and _contains_any(lowered, _REMOTE_STATUS_WORDS)
     ):
         reasons.append("remote_status_query")
-        return "standard", reasons, is_brief_followup
+        return "standard", reasons, is_brief_followup, 0.3
 
     # 3. Light: greetings, short social, brief follow-ups
     is_light_exact = collapsed in {
@@ -1382,25 +1429,73 @@ def classify_request_tier(
 
     if is_light_exact or is_light_phrase:
         reasons.append("light_social")
-        return "light", reasons, is_brief_followup
+        return "light", reasons, is_brief_followup, 0.3
 
     if is_brief_followup and has_depth_cue:
         reasons.append("brief_followup_depth")
-        return "standard", reasons, True
+        return "standard", reasons, True, 0.6
 
     if is_brief_followup:
-        return "light", reasons, True
+        return "light", reasons, True, 0.3
 
     is_short_direct_request = bool(text) and (
         len(text) <= 60 or len(text.split()) <= 14
     )
     if is_short_direct_request and not has_depth_cue:
         reasons.append("short_direct_request")
-        return "light", reasons, False
+        return "light", reasons, False, 0.3
 
     # 4. Default: standard
     reasons.append("default_standard")
-    return "standard", reasons, False
+    return "standard", reasons, False, 0.3
+
+
+def _llm_routing_fallback(
+    message: str,
+    *,
+    plan_bound: bool = False,
+    task_bound: bool = False,
+) -> Optional[tuple[RequestTier, bool, List[str]]]:
+    """Use LLM to classify request tier when keyword routing confidence is low.
+
+    Returns (tier, is_plan_modification, reasons) or None if LLM call fails.
+    """
+    prompt = (
+        "You are a request classifier for an AI research assistant. Classify the user's message.\n\n"
+        f"Context:\n"
+        f"- plan_bound: {plan_bound} (user is interacting with an existing research plan)\n"
+        f"- task_bound: {task_bound} (a specific task is selected)\n\n"
+        f"User message: {message}\n\n"
+        "Respond in JSON with exactly these fields:\n"
+        '- "tier": one of "light", "standard", "research", "execute"\n'
+        '  - "light": greetings, brief social, simple acknowledgments\n'
+        '  - "standard": general questions, status queries, simple follow-ups\n'
+        '  - "research": literature search, deep analysis requests, time-sensitive queries\n'
+        '  - "execute": user wants the AI to take action (run code, modify plan, create deliverables, deepen analysis)\n'
+        '- "is_plan_modification": true/false (user wants to change/improve/deepen the existing plan)\n'
+        '- "reason": brief explanation (one sentence)\n'
+    )
+
+    try:
+        client = LLMClient()
+        response = client.chat(
+            prompt=prompt,
+            messages=[],
+            max_tokens=256,
+            timeout=8.0,
+            response_format={"type": "json_object"},
+        )
+        if not isinstance(response, str):
+            return None
+        data = json.loads(response)
+        tier = data.get("tier")
+        is_plan_modification = bool(data.get("is_plan_modification", False))
+        reason = str(data.get("reason", ""))
+        reasons = [reason] if reason else []
+        logger.info("LLM routing fallback chose tier=%s is_plan_modification=%s", tier, is_plan_modification)
+        return tier, is_plan_modification, reasons
+    except Exception:
+        return None
 
 
 def resolve_subject_resolution(
@@ -1516,12 +1611,11 @@ def resolve_subject_resolution(
 
 
 def _max_iterations_light(decision: RequestRoutingDecision) -> int:
-    """Light requests: always 3 steps (unified with manual deep think)."""
-    return 3
+    return 6
 
 
 def _max_iterations_standard(decision: RequestRoutingDecision) -> int:
-    return 3
+    return 6
 
 
 def _max_iterations_execute(

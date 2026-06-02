@@ -28,6 +28,44 @@ const { Title, Text, Paragraph } = Typography;
 const resolveDisplayStatus = (status?: string | null, effectiveStatus?: string | null) =>
   (effectiveStatus ?? status ?? 'pending').toLowerCase();
 
+const isManualAccepted = (metadata?: Record<string, any> | null) => {
+  const manualAcceptance = metadata?.manual_acceptance;
+  if (!manualAcceptance || typeof manualAcceptance !== 'object') {
+    return false;
+  }
+  return (
+    String(manualAcceptance.status ?? '').trim().toLowerCase() === 'accepted' ||
+    manualAcceptance.accepted === true
+  );
+};
+
+const hasVerificationWarning = (metadata?: Record<string, any> | null) => {
+  if (!metadata || typeof metadata !== 'object') {
+    return false;
+  }
+  const verification = metadata.verification;
+  return (
+    metadata.verification_warning === true ||
+    metadata.artifact_publish_warning === true ||
+    metadata.execution_warning === true ||
+    String(metadata.verification_status ?? '').trim().toLowerCase() === 'warning' ||
+    (verification && typeof verification === 'object' && String(verification.status ?? '').trim().toLowerCase() === 'warning')
+  );
+};
+
+const resolveResultDisplayStatus = (
+  result?: PlanResultItem | null,
+  task?: PlanTaskNode | null,
+) => {
+  if (isManualAccepted(result?.metadata)) {
+    return 'completed';
+  }
+  return resolveDisplayStatus(
+    result?.status ?? task?.status ?? null,
+    result?.effective_status ?? task?.effective_status ?? null,
+  );
+};
+
 const toNumber = (value: unknown): number | null => {
   if (value === null || value === undefined) return null;
   const numeric = Number(value);
@@ -149,9 +187,12 @@ const PlansPage: React.FC = () => {
   return planTasks.find((task) => task.id === selectedResultTaskId) ?? null;
   }, [planTasks, selectedResultTaskId]);
 
-  const renderStatusBadge = useCallback((status?: string | null) => {
+  const renderStatusBadge = useCallback((status?: string | null, warning?: boolean) => {
   const normalized = (status ?? 'pending').toLowerCase();
   let badgeStatus: 'success' | 'processing' | 'error' | 'warning' | 'default' = 'default';
+  if (warning && (normalized === 'completed' || normalized === 'success')) {
+  badgeStatus = 'warning';
+  } else {
   switch (normalized) {
   case 'completed':
   case 'success':
@@ -170,7 +211,10 @@ const PlansPage: React.FC = () => {
   default:
   badgeStatus = 'default';
   }
-  const label = status ?? 'pending';
+  }
+  const label = warning && (normalized === 'completed' || normalized === 'success')
+  ? 'completed with warnings'
+  : status ?? 'pending';
   return <Badge status={badgeStatus} text={label} />;
   }, []);
 
@@ -387,21 +431,28 @@ const PlansPage: React.FC = () => {
   try {
   const parsed = JSON.parse(selectedTask.execution_result);
   if (parsed && typeof parsed === 'object') {
+  const metadata = parsed.metadata && typeof parsed.metadata === 'object' ? parsed.metadata : {};
+  const parsedStatus = typeof parsed.status === 'string' ? parsed.status : selectedTask.status;
+  const manualAccepted = isManualAccepted(metadata);
   return {
-  status: typeof parsed.status === 'string' ? parsed.status : selectedTask.status,
+  status: manualAccepted
+  ? 'completed'
+  : resolveDisplayStatus(parsedStatus, selectedTask.effective_status),
   content: typeof parsed.content === 'string' ? parsed.content : '',
   notes: Array.isArray(parsed.notes)
   ? parsed.notes.map((note) => String(note)).filter((note) => note.trim().length > 0)
   : [],
-  metadata: parsed.metadata && typeof parsed.metadata === 'object' ? parsed.metadata : {},
+  metadata,
+  manualAccepted,
   };
   }
   } catch (error) {
   return {
-  status: selectedTask.status,
+  status: resolveDisplayStatus(selectedTask.status, selectedTask.effective_status),
   content: selectedTask.execution_result,
   notes: [],
   metadata: {},
+  manualAccepted: false,
   rawFallback: true,
   };
   }
@@ -592,7 +643,8 @@ const PlansPage: React.FC = () => {
   title={
   <Space size={8} wrap>
   <Text strong>{item.name || `task #${item.task_id}`}</Text>
-  {renderStatusBadge(item.effective_status || item.status)}
+  {renderStatusBadge(item.effective_status || item.status, hasVerificationWarning(item.metadata))}
+  {hasVerificationWarning(item.metadata) && <Tag color="gold">Verification warning</Tag>}
   </Space>
   }
   description={
@@ -637,7 +689,9 @@ const PlansPage: React.FC = () => {
   `task #${selectedResult.task_id}`}
   </Descriptions.Item>
   <Descriptions.Item label="status">
-  {renderStatusBadge(selectedResult.status ?? selectedResultTask?.status)}
+  {renderStatusBadge(resolveResultDisplayStatus(selectedResult, selectedResultTask), hasVerificationWarning(selectedResult.metadata))}
+  {isManualAccepted(selectedResult.metadata) && <Tag color="blue" style={{ marginLeft: 8 }}>Manually accepted</Tag>}
+  {hasVerificationWarning(selectedResult.metadata) && <Tag color="gold" style={{ marginLeft: 8 }}>Completed with verification warnings</Tag>}
   </Descriptions.Item>
   <Descriptions.Item label="Task ID">
   #{selectedResult.task_id}
@@ -810,6 +864,7 @@ const PlansPage: React.FC = () => {
   }
   text={executionInfo.status ?? ''}
   />
+  {executionInfo.manualAccepted && <Tag color="blue">Manually accepted</Tag>}
   {executionInfo.content && <Text>{executionInfo.content}</Text>}
   {executionInfo.notes && executionInfo.notes.length > 0 && (
   <Space direction="vertical" size={0}>

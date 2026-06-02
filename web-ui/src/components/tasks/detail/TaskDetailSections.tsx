@@ -11,6 +11,7 @@ import {
 } from 'antd';
 import ToolResultCard from '@components/chat/ToolResultCard';
 import type { DependencyPlanResponse, PlanResultItem, PlanTaskNode, ToolResultPayload } from '@/types';
+import type { TaskTokenUsageItem } from '@/api/stats';
 import { statusColorMap, statusLabelMap } from './constants';
 import { getVerificationView } from './verification';
 
@@ -191,6 +192,7 @@ interface TaskDrawerContentProps {
   canVerify?: boolean;
   canManualAccept?: boolean;
   taskMap?: Map<number, PlanTaskNode>;
+  taskTokenUsage?: TaskTokenUsageItem | null;
 }
 
 export const TaskDrawerContent: React.FC<TaskDrawerContentProps> = ({
@@ -207,6 +209,7 @@ export const TaskDrawerContent: React.FC<TaskDrawerContentProps> = ({
   canVerify = false,
   canManualAccept = false,
   taskMap,
+  taskTokenUsage,
 }) => {
   const effectiveStatus = activeTask.effective_status ?? activeTask.status ?? 'pending';
   const isBlocked = effectiveStatus === 'blocked';
@@ -275,6 +278,19 @@ export const TaskDrawerContent: React.FC<TaskDrawerContentProps> = ({
               ))}
             </div>
           )}
+        </Space>
+      </section>
+
+      <section>
+        <Title level={5}>Token Consumption</Title>
+        <Space direction="vertical" size="small" style={{ width: '100%' }}>
+          <Descriptions column={1} size="small" bordered>
+            <Descriptions.Item label="Total Tokens">
+              <Text strong>
+                {taskTokenUsage ? taskTokenUsage.total_tokens.toLocaleString() : '0'}
+              </Text>
+            </Descriptions.Item>
+          </Descriptions>
         </Space>
       </section>
 

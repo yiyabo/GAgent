@@ -38,7 +38,7 @@ describe('resolveThinkingDisplayMode', () => {
     ).toBe('full_thinking');
   });
 
-  it('demotes completed thinking into final-answer mode', () => {
+  it('keeps completed persisted thinking visible after hydration', () => {
     expect(
       resolveThinkingDisplayMode({
         metadata: {
@@ -53,12 +53,12 @@ describe('resolveThinkingDisplayMode', () => {
         },
         isStreaming: false,
       }),
-    ).toBe('final_answer');
+    ).toBe('full_thinking');
   });
 });
 
 describe('normalizeHydratedThinkingPresentation', () => {
-  it('promotes persisted progress-mode messages with steps into final-answer presentation', () => {
+  it('promotes persisted progress-mode messages with steps into full-thinking presentation', () => {
     const metadata: Record<string, any> = {
       thinking_visibility: 'progress',
       deep_think_progress: { phase: 'finalizing' },
@@ -72,6 +72,6 @@ describe('normalizeHydratedThinkingPresentation', () => {
     });
 
     expect(metadata.thinking_visibility).toBe('visible');
-    expect(metadata.thinking_display_mode).toBe('final_answer');
+    expect(metadata.thinking_display_mode).toBe('full_thinking');
   });
 });

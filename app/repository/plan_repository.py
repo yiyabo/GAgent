@@ -7,7 +7,10 @@ from typing import Any, Dict, List, Optional, Tuple, Set
 
 from ..database import get_db, plan_db_connection
 from ..services.request_principal import get_current_principal
-from ..services.plans.dependency_validation import normalize_dependencies_for_task
+from ..services.plans.dependency_validation import (
+    build_normalized_dependency_map,
+    normalize_dependencies_for_task,
+)
 from ..services.plans.plan_models import PlanNode, PlanSummary, PlanTree
 from .plan_storage import (
     get_plan_db_path,
@@ -723,10 +726,12 @@ class PlanRepository:
             self._ensure_task_columns(conn, tree.id)
             conn.execute("DELETE FROM tasks")
             conn.execute("DELETE FROM task_dependencies")
-            dependency_buffer: List[Tuple[int, int]] = []
-            existing_ids = set(tree.nodes.keys())
+
+            normalized_map, dep_issues = build_normalized_dependency_map(tree)
 
             for node in ordered_nodes:
+                node_metadata = dict(node.metadata or {})
+                node_metadata["dependencies"] = list(normalized_map.get(node.id, []))
                 conn.execute(
                     """
                     INSERT INTO tasks (
@@ -758,7 +763,7 @@ class PlanRepository:
                         node.position,
                         node.depth,
                         node.path,
-                        _dump_json(node.metadata),
+                        _dump_json(node_metadata),
                         node.execution_result,
                         node.context_combined,
                         _dump_json_list(node.context_sections),
@@ -766,80 +771,24 @@ class PlanRepository:
                         node.context_updated_at,
                     ),
                 )
-                if node.dependencies:
-                    for dep in node.dependencies:
-                        if dep in existing_ids:
-                            dependency_buffer.append((node.id, dep))
 
-            if dependency_buffer:
-                # Filter dependencies to avoid ancestor cycles and general cycles
-                path_map: Dict[int, str] = {n.id: (n.path or f"/{n.id}") for n in ordered_nodes}
-
-                def is_ancestor(a: int, b: int) -> bool:
-                    # a is ancestor of b?
-                    ap = (path_map.get(a, "").rstrip("/"))
-                    bp = (path_map.get(b, "").rstrip("/"))
-                    return bool(ap) and bp.startswith(ap + "/")
-
-                adj: Dict[int, List[int]] = defaultdict(list)
-                accepted: List[Tuple[int, int]] = []
-                seen_pairs: Set[Tuple[int, int]] = set()
-
-                def has_path(start: int, target: int) -> bool:
-                    if start == target:
-                        return True
-                    seen: Set[int] = set()
-                    stack: List[int] = [start]
-                    while stack:
-                        cur = stack.pop()
-                        if cur == target:
-                            return True
-                        if cur in seen:
-                            continue
-                        seen.add(cur)
-                        for nxt in adj.get(cur, []):
-                            if nxt not in seen:
-                                stack.append(nxt)
-                    return False
-
-                dropped_self = dropped_ancestor = dropped_cycle = dropped_missing = 0
-                for task_id, dep_id in dependency_buffer:
-                    if (task_id, dep_id) in seen_pairs:
-                        continue
-                    if task_id == dep_id:
-                        dropped_self += 1
-                        continue
-                    if dep_id not in existing_ids or task_id not in existing_ids:
-                        dropped_missing += 1
-                        continue
-                    # Forbid depending on ancestors to avoid parent-child precedence cycle
-                    if is_ancestor(dep_id, task_id):
-                        dropped_ancestor += 1
-                        continue
-                    # Forbid introducing cycles via dependency graph
-                    if has_path(dep_id, task_id):
-                        dropped_cycle += 1
-                        continue
-                    accepted.append((task_id, dep_id))
-                    adj[task_id].append(dep_id)
-                    seen_pairs.add((task_id, dep_id))
-
-                if accepted:
-                    conn.executemany(
-                        "INSERT INTO task_dependencies (task_id, depends_on) VALUES (?, ?)",
-                        accepted,
-                    )
-                dropped_total = dropped_self + dropped_ancestor + dropped_cycle + dropped_missing
-                if dropped_total:
-                    logger.warning(
-                        "Upsert dependency filtering for plan %s: accepted=%s dropped(self=%s, ancestor=%s, cycle=%s, missing=%s)",
-                        tree.id,
-                        len(accepted),
-                        dropped_self,
-                        dropped_ancestor,
-                        dropped_cycle,
-                        dropped_missing,
-                    )
+            edge_rows = [
+                (task_id, dep_id)
+                for task_id, deps in normalized_map.items()
+                for dep_id in deps
+            ]
+            if edge_rows:
+                conn.executemany(
+                    "INSERT INTO task_dependencies (task_id, depends_on) VALUES (?, ?)",
+                    edge_rows,
+                )
+            if dep_issues:
+                logger.warning(
+                    "Upsert dependency normalization for plan %s produced %s issue(s); first: %s",
+                    tree.id,
+                    len(dep_issues),
+                    dep_issues[0].message,
+                )
 
             if snapshot_json is not None:
                 conn.execute(
