@@ -219,10 +219,10 @@ def _resolve_session_dir(session_id: Optional[str]) -> Optional[Path]:
     normalized = str(session_id).strip()
     if not normalized:
         return None
-    session_name = normalized if normalized.startswith("session_") else f"session_{normalized}"
-    session_dir = _RUNTIME_DIR / session_name
-    session_dir.mkdir(parents=True, exist_ok=True)
-    return session_dir
+    from app.services.path_router import get_path_router
+    router = get_path_router()
+    # Return session directory itself, not tool-specific subdirectory
+    return router.get_session_dir(normalized, create=True)
 
 
 def _is_review_article_task(task: str) -> bool:
@@ -1805,8 +1805,10 @@ async def manuscript_writer_handler(
             # Use unified output dir as work_dir base (sections/, reviews/, merge/ inside)
             work_dir = unified_output_dir
         else:
-            # Legacy: use session_dir for work_dir
-            work_base = session_dir or _RUNTIME_DIR / "_manuscript_scratch"
+            # Legacy: use ToolOutputResolver for work_dir
+            from app.services.tool_output_resolver import get_tool_output_resolver
+            resolver = get_tool_output_resolver()
+            work_base = session_dir or resolver.resolve(session_id=None, tool_name="manuscript_writer", create=True)
             work_base.mkdir(parents=True, exist_ok=True)
             work_dir = work_base / f".manuscript_writer_{run_id}"
         work_dir.mkdir(parents=True, exist_ok=True)

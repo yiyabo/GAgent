@@ -1085,7 +1085,11 @@ class PlanExecutor:
         tree = self._normalize_plan_dependency_edges(tree)
         tree = self._infer_missing_dependencies(tree)
         tree = self._normalize_plan_dependency_edges(tree)
-        order = list(self._execution_order(tree))
+        
+        # Use structure-based ordering (post-order traversal) instead of dependency-based
+        from app.services.plans.todo_list import build_full_plan_todo_list
+        todo = build_full_plan_todo_list(tree, expand_composites=True, ordering_mode="structure")
+        order = [tree.nodes[task_id] for task_id in todo.execution_order if task_id in tree.nodes]
 
         if cfg.max_tasks is not None:
             order = order[: cfg.max_tasks]
@@ -2956,6 +2960,9 @@ class PlanExecutor:
                 },
             )
 
+        _job_id_for_stream = self._current_job_id()
+        _on_stdout, _on_stderr = self._build_agent_stream_loggers(_job_id_for_stream)
+
         async def _tool_wrapper(tool_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
             return await self._tool_executor.execute(
                 tool_name,
@@ -2968,11 +2975,13 @@ class PlanExecutor:
                     session_id=session_context.get("session_id"),
                     ancestor_chain=task_ancestor_chain,
                     owner_id=session_context.get("owner_id"),
-                    current_job_id=self._current_job_id(),
+                    current_job_id=_job_id_for_stream,
                     work_dir=task_work_dir,
                     channel="plan_executor",
                     mode="task_execution",
                     resolved_resources=(config.session_context or {}).get("resolved_resources") if config.session_context else None,
+                    on_stdout=_on_stdout,
+                    on_stderr=_on_stderr,
                 ),
             )
 
@@ -3859,7 +3868,8 @@ class PlanExecutor:
         if isinstance(manifest, dict) and int(manifest.get("plan_id") or plan_id) == plan_id:
             manifest.setdefault("artifacts", {})
             return manifest
-        manifest = load_artifact_manifest(plan_id)
+        session_id = session_context.get("session_id") if isinstance(session_context, dict) else None
+        manifest = load_artifact_manifest(plan_id, session_id)
         if isinstance(session_context, dict):
             session_context["_artifact_manifest"] = manifest
         return manifest
@@ -3870,7 +3880,8 @@ class PlanExecutor:
         manifest: Dict[str, Any],
         session_context: Optional[Dict[str, Any]],
     ) -> None:
-        save_artifact_manifest(plan_id, manifest)
+        session_id = session_context.get("session_id") if isinstance(session_context, dict) else None
+        save_artifact_manifest(plan_id, manifest, session_id)
         if isinstance(session_context, dict):
             session_context["_artifact_manifest"] = manifest
 
@@ -4018,6 +4029,8 @@ class PlanExecutor:
         if isinstance(session_context, dict):
             artifact_registry = session_context.get("_artifact_registry")
 
+        session_id = session_context.get("session_id") if isinstance(session_context, dict) else None
+
         for alias in publishes_to_backfill:
             if provenance.explicit_publishes and alias not in provenance.explicit_publishes:
                 continue
@@ -4042,6 +4055,7 @@ class PlanExecutor:
                 source_path=source,
                 producer_task_id=node.id,
                 manifest=manifest,
+                session_id=session_id,
             )
             if entry is None:
                 continue
@@ -4079,6 +4093,7 @@ class PlanExecutor:
             return contract, {}, [], {}
 
         manifest = self._get_artifact_manifest(plan_id, session_context)
+        session_id = session_context.get("session_id") if isinstance(session_context, dict) else None
 
         backfill_enabled = bool(
             getattr(self._settings, "artifact_backfill_enabled", False)
@@ -4093,6 +4108,7 @@ class PlanExecutor:
                 plan_id,
                 tree,
                 manifest=manifest,
+                session_id=session_id,
             )
             for dep in dependencies:
                 if self._task_can_publish_artifacts(
@@ -4112,7 +4128,7 @@ class PlanExecutor:
             canonicalize_artifact_alias(alias)
             for alias in explicit_required_aliases
             if str(alias or "").strip()
-            and canonical_artifact_path(plan_id, alias) is not None
+            and canonical_artifact_path(plan_id, alias, session_id) is not None
         ]
         missing = [
             alias
@@ -4283,6 +4299,8 @@ class PlanExecutor:
             metadata = {}
             payload["metadata"] = metadata
 
+        session_id = session_context.get("session_id") if isinstance(session_context, dict) else None
+
         resolved_inputs = {}
         if isinstance(session_context, dict):
             maybe_resolved = session_context.get("resolved_input_artifacts")
@@ -4402,6 +4420,7 @@ class PlanExecutor:
                             source_path=resolved_path,
                             producer_task_id=node.id,
                             manifest=manifest,
+                            session_id=session_id,
                         )
                         if isinstance(published_entry, dict):
                             contract_published[published_entry["alias"]] = published_entry
@@ -4431,9 +4450,68 @@ class PlanExecutor:
         if published:
             metadata["published_artifacts"] = published
             if bool(manifest.get("artifacts")):
-                metadata["artifact_manifest_path"] = str(artifact_manifest_path(plan_id))
+                metadata["artifact_manifest_path"] = str(artifact_manifest_path(plan_id, session_id))
             self._save_artifact_manifest(plan_id, manifest, session_context)
+            if final_status == "completed" and session_id:
+                self._publish_contract_deliverables(
+                    plan_id=plan_id,
+                    node=node,
+                    published=published,
+                    session_context=session_context,
+                )
         return payload
+
+    def _publish_contract_deliverables(
+        self,
+        *,
+        plan_id: int,
+        node: PlanNode,
+        published: Dict[str, Dict[str, Any]],
+        session_context: Optional[Dict[str, Any]],
+    ) -> None:
+        session_id = session_context.get("session_id") if isinstance(session_context, dict) else None
+        if not session_id:
+            return
+        artifacts: List[Dict[str, str]] = []
+        seen_paths: set[str] = set()
+        for entry in published.values():
+            if not isinstance(entry, dict):
+                continue
+            path_text = str(entry.get("path") or "").strip()
+            if not path_text or path_text in seen_paths:
+                continue
+            candidate = Path(path_text)
+            if not candidate.is_file():
+                continue
+            module = self._deliverable_publisher._classify_module(candidate)
+            if module is None:
+                continue
+            artifacts.append({"path": path_text, "module": module})
+            seen_paths.add(path_text)
+        if not artifacts:
+            return
+        synthetic_result: Dict[str, Any] = {
+            "deliverable_submit": {
+                "artifacts": artifacts,
+                "publish": True,
+            },
+        }
+        try:
+            self._deliverable_publisher.publish_from_tool_result(
+                session_id=session_id,
+                tool_name="deliverable_submit",
+                raw_result=synthetic_result,
+                plan_id=plan_id,
+                task_id=node.id,
+                task_name=node.display_name(),
+                task_instruction=node.instruction or "",
+                publish_status="final",
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to publish contract deliverables for plan %s task %s: %s",
+                plan_id, node.id, exc,
+            )
 
     @classmethod
     def _existing_artifact_metadata_paths(cls, values: Sequence[Any]) -> List[str]:
@@ -4801,6 +4879,8 @@ class PlanExecutor:
                 node,
                 session_id=session_id,
             )
+            _job_id_sync = self._current_job_id()
+            _on_stdout_sync, _on_stderr_sync = self._build_agent_stream_loggers(_job_id_sync)
             payload = self._tool_executor.execute_sync(
                 tool_name,
                 params,
@@ -4812,11 +4892,13 @@ class PlanExecutor:
                     session_id=session_id,
                     ancestor_chain=_ancestor_chain_sync,
                     owner_id=owner_id,
-                    current_job_id=self._current_job_id(),
+                    current_job_id=_job_id_sync,
                     work_dir=task_work_dir,
                     channel="plan_executor",
                     mode="task_execution",
                     resolved_resources=(config.session_context or {}).get("resolved_resources") if config.session_context else None,
+                    on_stdout=_on_stdout_sync,
+                    on_stderr=_on_stderr_sync,
                 ),
             )
             logger.info(
@@ -4979,6 +5061,133 @@ class PlanExecutor:
         except Exception:  # pragma: no cover - defensive
             return None
 
+    def _build_agent_stream_loggers(self, job_id: str) -> Tuple[Optional[Callable], Optional[Callable]]:
+        """Create on_stdout/on_stderr callbacks that parse qwen CLI JSONL and emit structured events."""
+        from .decomposition_jobs import plan_decomposition_jobs
+
+        if not job_id:
+            return None, None
+
+        async def on_stdout(line: str) -> None:
+            line = line.strip()
+            if not line:
+                return
+            try:
+                event = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                plan_decomposition_jobs.append_log(job_id, "stdout", line, {"sub_type": "raw"})
+                return
+
+            if not isinstance(event, dict):
+                plan_decomposition_jobs.append_log(job_id, "stdout", line, {"sub_type": "raw"})
+                return
+
+            event_type = str(event.get("type") or "").lower()
+
+            if event_type == "assistant":
+                message = event.get("message") or {}
+                content = message.get("content") or []
+                if isinstance(content, list):
+                    for part in content:
+                        if not isinstance(part, dict):
+                            continue
+                        part_type = part.get("type")
+                        if part_type == "thinking":
+                            thought = str(part.get("thinking") or "").strip()
+                            if thought:
+                                plan_decomposition_jobs.append_log(
+                                    job_id, "info", thought,
+                                    {"sub_type": "agent_thinking"},
+                                )
+                        elif part_type == "tool_use":
+                            tool_name = str(part.get("name") or "unknown")
+                            tool_input = part.get("input") or {}
+                            summary = _summarize_tool_input(tool_name, tool_input)
+                            plan_decomposition_jobs.append_log(
+                                job_id, "info", summary,
+                                {"sub_type": "agent_tool_use", "tool_name": tool_name, "tool_input": tool_input},
+                            )
+                        elif part_type == "text":
+                            text = str(part.get("text") or "").strip()
+                            if text:
+                                plan_decomposition_jobs.append_log(
+                                    job_id, "info", text,
+                                    {"sub_type": "agent_text"},
+                                )
+                elif isinstance(content, str) and content.strip():
+                    plan_decomposition_jobs.append_log(
+                        job_id, "info", content.strip(),
+                        {"sub_type": "agent_text"},
+                    )
+
+            elif event_type == "user":
+                message = event.get("message") or {}
+                content = message.get("content") or []
+                if isinstance(content, list):
+                    for part in content:
+                        if isinstance(part, dict) and part.get("type") == "tool_result":
+                            tool_id = str(part.get("tool_use_id") or "")
+                            result_content = part.get("content") or ""
+                            if isinstance(result_content, list):
+                                result_text = " ".join(
+                                    str(p.get("text") or "") for p in result_content if isinstance(p, dict)
+                                ).strip()
+                            else:
+                                result_text = str(result_content).strip()
+                            is_error = bool(part.get("is_error"))
+                            if result_text:
+                                truncated = result_text[:500]
+                                plan_decomposition_jobs.append_log(
+                                    job_id, "info" if not is_error else "warning", truncated,
+                                    {"sub_type": "agent_tool_result", "tool_use_id": tool_id, "is_error": is_error},
+                                )
+
+            elif event_type == "result":
+                result_text = str(event.get("result") or "").strip()
+                usage = event.get("usage") or {}
+                if result_text:
+                    plan_decomposition_jobs.append_log(
+                        job_id, "info", result_text[:500],
+                        {"sub_type": "agent_result", "usage": usage},
+                    )
+            else:
+                plan_decomposition_jobs.append_log(job_id, "stdout", line, {"sub_type": "raw"})
+
+        async def on_stderr(line: str) -> None:
+            line = line.strip()
+            if line:
+                plan_decomposition_jobs.append_log(job_id, "stderr", line, {"sub_type": "raw"})
+
+        return on_stdout, on_stderr
+
+    @staticmethod
+    def _summarize_tool_input(tool_name: str, tool_input: Any) -> str:
+        if not isinstance(tool_input, dict):
+            return f"Calling {tool_name}"
+        if tool_name == "run_shell_command":
+            cmd = str(tool_input.get("command") or "").strip()
+            if len(cmd) > 120:
+                cmd = cmd[:120] + "..."
+            return f"Running: {cmd}" if cmd else f"Calling {tool_name}"
+        if tool_name in ("write_file", "edit"):
+            path = str(tool_input.get("file_path") or tool_input.get("path") or "").strip()
+            name = path.rsplit("/", 1)[-1] if "/" in path else path
+            return f"Writing: {name}" if name else f"Calling {tool_name}"
+        if tool_name == "read_file":
+            path = str(tool_input.get("file_path") or tool_input.get("path") or "").strip()
+            name = path.rsplit("/", 1)[-1] if "/" in path else path
+            return f"Reading: {name}" if name else f"Calling {tool_name}"
+        if tool_name in ("grep_search", "glob"):
+            pattern = str(tool_input.get("pattern") or tool_input.get("query") or "").strip()
+            return f"Searching: {pattern}" if pattern else f"Calling {tool_name}"
+        if tool_name == "todo_write":
+            todos = tool_input.get("todos") or []
+            if isinstance(todos, list):
+                active = [t for t in todos if isinstance(t, dict) and t.get("status") == "in_progress"]
+                if active:
+                    return f"Working on: {active[0].get('content', 'task')}"
+            return "Updating todo list"
+        return f"Calling {tool_name}"
 
     @staticmethod
     def _normalize_status(raw: str) -> str:

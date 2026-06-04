@@ -319,6 +319,19 @@ class TaskVerificationService:
             and self._has_output_evidence(local_artifact_paths)
         )
 
+        # Fallback: if execution failed and no outputs found in run_directory,
+        # try to discover outputs by extracting paths from task instruction
+        # and checking project-level output directories.
+        if normalized_execution_status not in _COMPLETED_LIKE and not execution_output_recovered:
+            fallback_paths = self._fallback_discover_outputs_for_failed_task(
+                node=node,
+                payload=normalized_payload,
+                existing_paths=local_artifact_paths,
+            )
+            if fallback_paths:
+                local_artifact_paths = list(local_artifact_paths) + fallback_paths
+                execution_output_recovered = self._has_output_evidence(local_artifact_paths)
+
         if normalized_execution_status not in _COMPLETED_LIKE and not execution_output_recovered:
             metadata["failure_kind"] = self._derive_failure_kind(
                 execution_status=normalized_execution_status,
@@ -742,6 +755,7 @@ class TaskVerificationService:
         trigger: str = "manual",
         override_criteria: Optional[Dict[str, Any]] = None,
         dry_run: bool = False,
+        session_id: Optional[str] = None,
     ) -> VerificationFinalization:
         """Run verification on an existing task.
 
@@ -787,6 +801,7 @@ class TaskVerificationService:
             plan_id,
             node,
             finalization,
+            session_id=session_id,
         )
 
         # Persist the effective acceptance_criteria into execution_result.metadata
@@ -1020,6 +1035,7 @@ class TaskVerificationService:
         finalization: VerificationFinalization,
         *,
         manifest: Optional[Dict[str, Any]] = None,
+        session_id: Optional[str] = None,
     ) -> VerificationFinalization:
         """Check both publish and require contracts against the artifact manifest.
 
@@ -1045,7 +1061,7 @@ class TaskVerificationService:
             if alias not in publish_aliases
         ]
 
-        manifest_payload = manifest if isinstance(manifest, dict) else load_artifact_manifest(plan_id)
+        manifest_payload = manifest if isinstance(manifest, dict) else load_artifact_manifest(plan_id, session_id)
         manifest_payload_artifacts = manifest_payload.get("artifacts")
         manifest_artifacts = manifest_payload_artifacts if isinstance(manifest_payload_artifacts, dict) else {}
 
@@ -1110,7 +1126,7 @@ class TaskVerificationService:
             "missing_require_aliases": missing_require_aliases,
             "require_status": require_status,
             # Manifest
-            "manifest_path": str(artifact_manifest_path(plan_id)) if has_any_contract else None,
+            "manifest_path": str(artifact_manifest_path(plan_id, session_id)) if has_any_contract else None,
         }
         metadata["artifact_authority"] = authority_summary
 
@@ -1836,6 +1852,100 @@ class TaskVerificationService:
             except OSError:
                 continue
         return False
+
+    def _fallback_discover_outputs_for_failed_task(
+        self,
+        *,
+        node: PlanNode,
+        payload: Optional[Dict[str, Any]],
+        existing_paths: Sequence[str],
+    ) -> List[str]:
+        """Fallback discovery for failed tasks: extract paths from instruction text.
+        
+        This complements ToolOutputResolver by handling edge cases where:
+        - LLMs ignore instructions and write to unexpected locations
+        - Promotion logic (_promote_project_level_strays) doesn't catch files
+        - Task instruction mentions specific paths we can extract
+        
+        ToolOutputResolver handles the common case (session-scoped paths), while
+        this fallback handles the uncommon case (unexpected locations).
+        """
+        from app.services.plans.acceptance_criteria import extract_explicit_deliverables_from_text
+
+        instruction = getattr(node, "instruction", None)
+        if not isinstance(instruction, str) or not instruction.strip():
+            return []
+
+        mentioned_paths = extract_explicit_deliverables_from_text(instruction)
+        if not mentioned_paths:
+            return []
+
+        candidate_roots = self._infer_candidate_roots(payload)
+        if not candidate_roots:
+            return []
+
+        discovered: List[str] = []
+        seen = set(existing_paths)
+
+        for raw_path in mentioned_paths:
+            path = Path(raw_path).expanduser()
+            if path.is_absolute():
+                try:
+                    if path.exists() and path.is_file() and path.stat().st_size > 0:
+                        resolved = str(path.resolve())
+                        if resolved not in seen:
+                            seen.add(resolved)
+                            discovered.append(resolved)
+                except OSError:
+                    continue
+            else:
+                for root in candidate_roots:
+                    candidate = root / path
+                    try:
+                        if candidate.exists() and candidate.is_file() and candidate.stat().st_size > 0:
+                            resolved = str(candidate.resolve())
+                            if resolved not in seen:
+                                seen.add(resolved)
+                                discovered.append(resolved)
+                                break
+                    except OSError:
+                        continue
+
+        return discovered
+
+    @staticmethod
+    def _infer_candidate_roots(payload: Optional[Dict[str, Any]]) -> List[Path]:
+        if not isinstance(payload, dict):
+            return []
+
+        metadata = payload.get("metadata")
+        if not isinstance(metadata, dict):
+            return []
+
+        run_dir_str = metadata.get("run_directory") or metadata.get("working_directory")
+        if not isinstance(run_dir_str, str) or not run_dir_str.strip():
+            return []
+
+        run_dir = Path(run_dir_str).expanduser()
+        if not run_dir.exists():
+            return []
+
+        roots: List[Path] = []
+        seen: set[str] = set()
+
+        current = run_dir
+        for _ in range(10):
+            parent = current.parent
+            if parent == current:
+                break
+            if (parent / "results").is_dir() or (parent / "output").is_dir():
+                key = str(parent)
+                if key not in seen:
+                    seen.add(key)
+                    roots.append(parent)
+            current = parent
+
+        return roots
 
     def _select_path_for_check(
         self,

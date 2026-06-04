@@ -69,13 +69,26 @@ def _slugify(value: str, fallback: str = DEFAULT_BASE_NAME) -> str:
 
 
 def _resolve_output_dir(output_dir: Optional[str], tool_context: Optional[ToolContext]) -> Path:
-    root = _work_dir_root(tool_context)
-    if output_dir:
-        path = _safe_resolve_within_root(output_dir, root, label="output_dir")
-    else:
-        path = root / "scientific_figures"
-    path.mkdir(parents=True, exist_ok=True)
-    return path.resolve()
+    from app.services.tool_output_resolver import get_tool_output_resolver
+    
+    # Security constraint: output_dir must stay within work_dir if work_dir is set
+    if output_dir and tool_context and tool_context.work_dir:
+        work_dir_resolved = Path(tool_context.work_dir).expanduser().resolve()
+        candidate = Path(output_dir).expanduser()
+        if not candidate.is_absolute():
+            candidate = work_dir_resolved / candidate
+        resolved = candidate.resolve(strict=False)
+        try:
+            resolved.relative_to(work_dir_resolved)
+        except ValueError as exc:
+            raise ValueError(f"output_dir must stay inside the tool work directory: {work_dir_resolved}") from exc
+    
+    resolver = get_tool_output_resolver()
+    return resolver.resolve(
+        explicit_dir=output_dir,
+        tool_context=tool_context,
+        tool_name="scientific_figures",
+    )
 
 
 def _coerce_number(value: Any) -> Optional[float]:

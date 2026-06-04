@@ -163,6 +163,47 @@ def _status_after_audit_repair(raw_status: Any, repair_result: Dict[str, Any]) -
     return str(raw_status or "failed").strip().lower() or "failed"
 
 
+def _publish_deliverables_after_audit_repair(
+    *,
+    plan_id: int,
+    task_id: int,
+    session_id: Optional[str],
+) -> None:
+    """Publish contract deliverables when audit repair promotes a task to completed."""
+    if not session_id:
+        return
+    try:
+        tree = _plan_repo.get_plan_tree(plan_id)
+        node = tree.nodes.get(task_id)
+        if node is None:
+            return
+        payload: Any = node.execution_result
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except Exception:
+                return
+        if not isinstance(payload, dict):
+            return
+        metadata = payload.get("metadata")
+        if not isinstance(metadata, dict):
+            return
+        published = metadata.get("published_artifacts")
+        if not isinstance(published, dict) or not published:
+            return
+        _plan_executor._publish_contract_deliverables(
+            plan_id=plan_id,
+            node=node,
+            published=published,
+            session_context={"session_id": session_id},
+        )
+    except Exception as exc:
+        logging.getLogger("app.routers.plan_routes").warning(
+            "Failed to publish deliverables after audit repair for plan %s task %s: %s",
+            plan_id, task_id, exc,
+        )
+
+
 def _is_terminal_job_status(raw_status: Any) -> bool:
     return str(raw_status or "").strip().lower() in {
         "succeeded",
@@ -908,7 +949,7 @@ def _serialize_plan_tree_with_effective_status(
     state_by_task = state_by_task or _resolve_effective_task_states(plan_id, tree)
     nodes_payload: Dict[str, Any] = {}
     for task_id, node in tree.nodes.items():
-        payload = node.model_dump()
+        payload = node.model_dump(exclude={'execution_result'})
         payload.update(_effective_response_fields(state_by_task.get(task_id)))
         payload["status"] = payload["effective_status"]
         nodes_payload[str(task_id)] = payload
@@ -1158,7 +1199,7 @@ def _build_execution_dependency_plan(
             or _normalize_task_status(tree.nodes[dep_id].status)
             or "pending"
         )
-        if dep_status == "running":
+        if dep_status in ("running", "delegating"):
             running.add(dep_id)
         if dep_status not in satisfied:
             missing.add(dep_id)
@@ -2108,7 +2149,7 @@ class ExecuteFullPlanRequest(BaseModel):
         True, description="Stop the chain when a task fails"
     )
     ordering_mode: str = Field(
-        "dependency_phase",
+        "structure",
         description="Full-plan order strategy: structure or dependency_phase",
     )
     dependency_block_mode: str = Field(
@@ -2240,7 +2281,7 @@ def get_full_plan_todo_list(
     todo = _build_full_plan_todo_list(
         tree,
         expand_composites=expand_composites,
-        ordering_mode="dependency_phase",
+        ordering_mode="structure",
         phase_labels=phase_labels,
     )
     state_by_task = _resolve_effective_task_states(plan_id, tree)
@@ -2388,7 +2429,7 @@ def execute_full_plan(
                 current_status = str(
                     (current_state_by_task.get(tid) or {}).get("effective_status") or "pending"
                 ).strip().lower()
-                if current_status in ("completed", "running"):
+                if current_status in ("completed", "running", "delegating"):
                     executed.append(tid)
                     continue
                 dependency_block = _build_dependency_block_details(
@@ -2443,6 +2484,9 @@ def execute_full_plan(
                     audit_repairs[str(tid)] = repair_result
                     if _status_after_audit_repair("failed", repair_result) == "completed":
                         executed.append(tid)
+                        _publish_deliverables_after_audit_repair(
+                            plan_id=plan_id, task_id=tid, session_id=request.session_id,
+                        )
                         continue
                 except Exception as repair_exc:
                     audit_repairs[str(tid)] = {"success": False, "error": str(repair_exc), "trigger_status": "failed"}
@@ -2757,7 +2801,7 @@ def _run_full_plan_job(
                 current_status = str(
                     (current_state_by_task.get(task_id) or {}).get("effective_status") or "pending"
                 ).strip().lower()
-                if current_status in ("completed", "running"):
+                if current_status in ("completed", "running", "delegating"):
                     already_status = "already_running" if current_status == "running" else "already_completed"
                     executed.append(task_id)
                     if current_status != "running":
@@ -2912,7 +2956,7 @@ def _run_full_plan_job(
                 current_status = str(
                     (current_state_by_task.get(task_id) or {}).get("effective_status") or "pending"
                 ).strip().lower()
-                if current_status in ("completed", "running"):
+                if current_status in ("completed", "running", "delegating"):
                     already_status = "already_running" if current_status == "running" else "already_completed"
                     executed.append(task_id)
                     if current_status != "running":
@@ -2996,7 +3040,40 @@ def _run_full_plan_job(
                     paper_mode=bool(paper_mode),
                     enforce_dependencies=str(dependency_block_mode or "warn").strip().lower() == "block",
                 )
-                result = _plan_executor.execute_task(plan_id, task_id, config=exec_config)
+                
+                # Task-level retry loop: up to 3 attempts for failed tasks
+                max_task_attempts = 3
+                result = None
+                for task_attempt in range(1, max_task_attempts + 1):
+                    result = _plan_executor.execute_task(plan_id, task_id, config=exec_config)
+                    
+                    if result.status == "completed":
+                        break
+                    
+                    if task_attempt == max_task_attempts:
+                        log_job_event(
+                            "warning",
+                            f"Task #{task_id} failed after {max_task_attempts} attempts; proceeding to audit repair.",
+                            {
+                                "task_id": task_id,
+                                "step": idx,
+                                "attempts": task_attempt,
+                                "final_status": result.status,
+                            },
+                        )
+                        break
+                    
+                    log_job_event(
+                        "warning",
+                        f"Task #{task_id} failed (attempt {task_attempt}/{max_task_attempts}); retrying.",
+                        {
+                            "task_id": task_id,
+                            "step": idx,
+                            "attempt": task_attempt,
+                            "status": result.status,
+                            "content": result.content[:200] if result.content else None,
+                        },
+                    )
             except Exception as exc:
                 repair_result: Optional[Dict[str, Any]] = None
                 failure_payload = {
@@ -3024,6 +3101,9 @@ def _run_full_plan_job(
                 if repair_result is not None and _status_after_audit_repair("failed", repair_result) == "completed":
                     executed.append(task_id)
                     completed_steps += 1
+                    _publish_deliverables_after_audit_repair(
+                        plan_id=plan_id, task_id=task_id, session_id=session_id,
+                    )
                     step_summaries.append(
                         {
                             "task_id": task_id,

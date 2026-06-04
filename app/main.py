@@ -174,6 +174,39 @@ async def lifespan(_fastapi_app: FastAPI):
             "Failed to clean up orphaned Qwen containers: %s", e
         )
 
+    # Clean up orphaned qwen/node CLI processes from previous runs
+    try:
+        import subprocess as _sp
+        _ps = _sp.run(
+            ["ps", "-eo", "pid,args"],
+            capture_output=True, text=True, timeout=10,
+        )
+        killed = 0
+        for line in _ps.stdout.splitlines():
+            parts = line.strip().split(None, 1)
+            if len(parts) < 2:
+                continue
+            pid_str, args = parts
+            if "plan" not in args or "_scratch" not in args:
+                continue
+            if "qwen" not in args and "node" not in args:
+                continue
+            try:
+                pid = int(pid_str)
+                import os, signal
+                os.kill(pid, signal.SIGKILL)
+                killed += 1
+            except (ValueError, ProcessLookupError, PermissionError):
+                pass
+        if killed > 0:
+            logging.getLogger("app.main").info(
+                "Killed %d orphaned qwen/node CLI process(es) from previous run", killed,
+            )
+    except Exception as e:
+        logging.getLogger("app.main").warning(
+            "Failed to clean up orphaned qwen/node processes: %s", e
+        )
+
     yield
 
     # Gracefully close shared HTTP connection pools on shutdown.

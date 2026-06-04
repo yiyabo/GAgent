@@ -51,7 +51,7 @@ _DELIVERABLE_SECTION_CUES = (
 _NEGATIVE_DELIVERABLE_NEARBY_PATTERNS = (
     re.compile(r"(?:^|[\s(\[{'\"`])(?:read|reads|reading|load|loads|loading|loaded|input|inputs|source|sources)(?:[\s:=-]|$)", re.IGNORECASE),
     re.compile(r"(?:^|[\s(\[{'\"`])(?:use|uses|using|reference|references|upstream|dependency|dependencies|existing|from|via)(?:[\s:=-]|$)", re.IGNORECASE),
-    re.compile(r"(?:读取|使用|载入|输入|来源|参考|上游|依赖|现有|来自|基于)"),
+    re.compile(r"(?:读取|使用|载入|输入|来源|参考|上游|依赖|现有|来自|基于|数据源|源文件)"),
 )
 _TOOL_ROLE_NEARBY_PATTERNS = (
     re.compile(r"\b(?:script|scripts|notebook|notebooks|tool|tools|module|modules|pipeline|workflow)\b", re.IGNORECASE),
@@ -132,6 +132,8 @@ def _is_deliverable_section_heading(line: str) -> bool:
     if not heading:
         return False
     if not any(cue in heading for cue in _DELIVERABLE_SECTION_CUES):
+        return False
+    if any(pattern.search(heading) for pattern in _NEGATIVE_DELIVERABLE_NEARBY_PATTERNS):
         return False
     if raw.endswith((":", "：")) or raw.startswith("#"):
         return True

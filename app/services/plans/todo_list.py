@@ -55,7 +55,7 @@ class TodoItem:
 
     @property
     def is_running(self) -> bool:
-        return _normalize_status(self.status) == "running"
+        return _normalize_status(self.status) in ("running", "delegating")
 
 
 @dataclass
@@ -344,46 +344,46 @@ def _build_structure_order_phases(
     tree: PlanTree,
     deps_map: Dict[int, List[int]],
 ) -> List[TodoPhase]:
+    """Build phases using post-order traversal (children before parent) with all tasks in a single phase."""
     phases: List[TodoPhase] = []
     seen: Set[int] = set()
+    
+    def collect_postorder(task_id: int) -> List[int]:
+        """Collect tasks in post-order: all children recursively, then parent."""
+        if task_id in seen or task_id not in tree.nodes:
+            return []
+        seen.add(task_id)
+        ordered: List[int] = []
+        for child_id in sorted(tree.children_ids(task_id), key=lambda cid: _node_sort_key(tree, cid)):
+            ordered.extend(collect_postorder(child_id))
+        ordered.append(task_id)
+        return ordered
+    
     root_ids = sorted(tree.root_node_ids(), key=lambda tid: _node_sort_key(tree, tid))
-
+    
     for root_id in root_ids:
-        child_ids = sorted(tree.children_ids(root_id), key=lambda tid: _node_sort_key(tree, tid))
-        if not child_ids:
-            branch_orders = [_collect_structure_postorder(tree, root_id, seen)]
-        else:
-            branch_orders = [
-                _collect_structure_postorder(tree, child_id, seen)
-                for child_id in child_ids
-            ]
-            root_order = _collect_structure_postorder(tree, root_id, seen)
-            root_only = [task_id for task_id in root_order if task_id == root_id]
-            if root_only:
-                branch_orders.append(root_only)
-
-        for branch_order in branch_orders:
-            items: List[TodoItem] = []
-            for task_id in branch_order:
-                node = tree.nodes.get(task_id)
-                if node is None:
-                    continue
-                items.append(
-                    TodoItem(
-                        task_id=task_id,
-                        name=node.name,
-                        instruction=node.instruction,
-                        status=node.status,
-                        dependencies=list(deps_map.get(task_id, [])),
-                        phase=len(phases),
-                    )
+        order = collect_postorder(root_id)
+        items: List[TodoItem] = []
+        for task_id in order:
+            node = tree.nodes.get(task_id)
+            if node is None:
+                continue
+            items.append(
+                TodoItem(
+                    task_id=task_id,
+                    name=node.name,
+                    instruction=node.instruction,
+                    status=node.status,
+                    dependencies=list(deps_map.get(task_id, [])),
+                    phase=len(phases),
                 )
-            if items:
-                phases.append(TodoPhase(phase_id=len(phases), label=f"Phase {len(phases) + 1}", items=items))
+            )
+        if items:
+            phases.append(TodoPhase(phase_id=len(phases), label=f"Phase {len(phases) + 1}", items=items))
 
     orphan_ids = sorted(set(tree.nodes.keys()) - seen, key=lambda tid: _node_sort_key(tree, tid))
     for task_id in orphan_ids:
-        order = _collect_structure_postorder(tree, task_id, seen)
+        order = collect_postorder(task_id)
         items = []
         for ordered_id in order:
             node = tree.nodes.get(ordered_id)

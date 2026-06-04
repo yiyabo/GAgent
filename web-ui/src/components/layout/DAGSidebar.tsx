@@ -23,7 +23,7 @@ import { computePlanDecomposeProgress } from '@utils/jobProgress';
 import { planTreeApi } from '@api/planTree';
 import ExecutorPanel from './ExecutorPanel';
 import ArtifactsPanel from './ArtifactsPanel';
-import TerminalPanel from '@components/terminal/TerminalPanel';
+import AgentWorkPanel from '@components/agent-work/AgentWorkPanel';
 import TodoListPanel from '@components/tasks/detail/TodoListPanel';
 import { ENV } from '@/config/env';
 
@@ -821,19 +821,15 @@ const DAGSidebar: React.FC = () => {
   </div>
   ),
   },
-  ...(ENV.TERMINAL_ENABLED
-  ? [
-    {
-    key: 'terminal',
-    label: 'Terminal',
-    children: (
-    <div style={{ height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-    <TerminalPanel sessionId={currentSession?.session_id ?? null} />
-    </div>
-    ),
-    },
-    ]
-  : []),
+  {
+  key: 'agent-work',
+  label: 'Agent Work',
+  children: (
+  <div style={{ height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+  <AgentWorkPanel sessionId={currentSession?.session_id ?? null} />
+  </div>
+  ),
+  },
   ]}
   className="dag-sidebar-tabs"
   style={{ height: '100%', display: 'flex', flexDirection: 'column' }}

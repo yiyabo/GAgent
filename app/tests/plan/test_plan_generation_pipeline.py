@@ -69,6 +69,10 @@ class _ReviewRepoStub:
     def update_task(self, *args, **kwargs) -> None:
         _ = args, kwargs
 
+    def get_node(self, plan_id: int, node_id: int) -> PlanNode:
+        assert plan_id == self.tree.id
+        return self.tree.nodes[node_id]
+
 
 class _OptimizeRepoStub:
     def __init__(self, tree: PlanTree) -> None:
@@ -119,6 +123,10 @@ class _OptimizeRepoStub:
         assert plan_id == self.tree.id
         node = self.tree.nodes[task_id]
         node.position = new_position
+
+    def get_node(self, plan_id: int, node_id: int) -> PlanNode:
+        assert plan_id == self.tree.id
+        return self.tree.nodes[node_id]
 
 
 class _GenerationRepoStub(PlanRepository):

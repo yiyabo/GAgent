@@ -18,6 +18,7 @@ from ..llm.decomposer_service import (
     DecompositionChild,
     PlanDecomposerLLMService,
 )
+from .task_metadata_generator import ensure_task_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -95,8 +96,9 @@ class DecompositionPromptBuilder:
             self.SYSTEM_HEADER,
             f"\n=== PROJECT ROOT ===",
             f"Project root directory: {project_root}",
-            f"IMPORTANT: All output file paths in acceptance_criteria MUST be under this project root. "
-            f"Use paths like '{project_root}/results/...' or '{project_root}/output/...'. "
+            f"IMPORTANT: All output file paths in acceptance_criteria MUST use RELATIVE paths from the project root. "
+            f"Use paths like 'results/...' or 'output/...'. "
+            f"Do NOT use absolute paths like '{project_root}/results/...'. "
             f"Do NOT use paths from chat history or data source directories as output locations.",
         ]
 
@@ -698,6 +700,11 @@ class PlanDecomposer:
             current_deps=validated_deps,
         )
         child_metadata = self._derive_paper_metadata(child)
+        child_metadata = ensure_task_metadata(
+            metadata=child_metadata,
+            task_name=child.name,
+            instruction=child.instruction,
+        )
 
         node = self._repo.create_task(
             plan_id,

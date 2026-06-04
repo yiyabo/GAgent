@@ -100,22 +100,14 @@ def _resolve_data_dir(data_dir: Optional[str]) -> Path:
 
 
 def _resolve_output_dir(output_dir: Optional[str], session_id: Optional[str]) -> Path:
-    if isinstance(output_dir, str) and output_dir.strip():
-        path = Path(output_dir.strip())
-        if not path.is_absolute():
-            path = _PROJECT_ROOT / path
-    elif isinstance(session_id, str) and session_id.strip():
-        try:
-            from app.services.session_paths import get_session_tool_outputs_dir
-
-            path = get_session_tool_outputs_dir(session_id.strip(), create=True) / "phagescope_research"
-        except Exception:
-            path = _PROJECT_ROOT / "runtime" / "phagescope_research"
-    else:
-        path = _PROJECT_ROOT / "runtime" / "phagescope_research"
-    path = path.absolute()
-    path.mkdir(parents=True, exist_ok=True)
-    return path
+    from app.services.tool_output_resolver import get_tool_output_resolver
+    
+    resolver = get_tool_output_resolver()
+    return resolver.resolve(
+        explicit_dir=output_dir,
+        session_id=session_id,
+        tool_name="phagescope_research",
+    )
 
 
 def _metadata_files(data_dir: Path) -> List[Path]:

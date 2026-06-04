@@ -1892,6 +1892,7 @@ async def _execute_action_run(run_id: str) -> None:
                                 _todo = build_full_plan_todo_list(
                                     _cascade_tree,
                                     expand_composites=True,
+                                    ordering_mode="structure",
                                 )
                                 # Keep only pending tasks in the summary
                                 assign_phase_labels(_todo.phases)
@@ -1973,7 +1974,7 @@ async def _execute_action_run(run_id: str) -> None:
                             build_full_plan_todo_list as _bfpt,
                             assign_phase_labels as _apl,
                         )
-                        _todo = _bfpt(_cascade_tree, expand_composites=True)
+                        _todo = _bfpt(_cascade_tree, expand_composites=True, ordering_mode="structure")
                         _apl(_todo.phases)
                         _agent_ctx["todo_list_summary"] = _todo.summary()
                     except Exception:

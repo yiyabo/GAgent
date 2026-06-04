@@ -131,12 +131,14 @@ class PlanStatusResolver:
         *,
         snapshot: Optional[Dict[str, Any]] = None,
         manifest: Optional[Dict[str, Any]] = None,
+        session_id: Optional[str] = None,
     ) -> Dict[int, Dict[str, Any]]:
-        manifest_payload = manifest if isinstance(manifest, dict) else load_artifact_manifest(plan_id)
+        manifest_payload = manifest if isinstance(manifest, dict) else load_artifact_manifest(plan_id, session_id)
         preflight = self._artifact_preflight.validate_plan(
             plan_id,
             tree,
             manifest=manifest_payload,
+            session_id=session_id,
         )
         contract_by_task = {snapshot.task_id: snapshot for snapshot in preflight.task_contracts}
         blocking_issue_map = self._group_blocking_issues(preflight.errors)
@@ -312,12 +314,12 @@ class PlanStatusResolver:
             canonical_required_aliases = [
                 alias
                 for alias in authoritative_required_aliases
-                if canonical_artifact_path(plan_id, alias) is not None
+                if canonical_artifact_path(plan_id, alias, session_id) is not None
             ]
             canonical_publish_aliases = [
                 alias
                 for alias in authoritative_publish_aliases
-                if canonical_artifact_path(plan_id, alias) is not None
+                if canonical_artifact_path(plan_id, alias, session_id) is not None
             ]
             missing_required_aliases = [
                 alias

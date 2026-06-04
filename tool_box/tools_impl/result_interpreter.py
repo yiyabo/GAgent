@@ -658,12 +658,18 @@ Working directory: {exec_work_dir}
 
             from app.services.interpreter.interpreter import run_analysis_async
 
-            # Use async entrypoint to avoid asyncio.run() in active event loops.
+            from app.services.tool_output_resolver import get_tool_output_resolver
+            resolver = get_tool_output_resolver()
+            resolved_output_dir = str(resolver.resolve(
+                explicit_dir=output_dir or work_dir,
+                tool_name="result_interpreter",
+            ))
+
             plan_result = await run_analysis_async(
                 description=task_description,
                 data_paths=paths,
                 title=task_title,
-                output_dir=output_dir or work_dir or "./results",
+                output_dir=resolved_output_dir,
                 max_depth=max_depth,
                 node_budget=node_budget,
             )

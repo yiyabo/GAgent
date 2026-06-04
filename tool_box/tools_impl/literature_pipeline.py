@@ -1242,12 +1242,14 @@ def _build_coverage_markdown(report: Dict[str, Any]) -> str:
 
 
 def _resolve_default_output_dir(*, session_id: Optional[str], timestamp: str) -> Path:
-    if isinstance(session_id, str) and session_id.strip():
-        from app.services.session_paths import get_session_tool_outputs_dir
-
-        root = get_session_tool_outputs_dir(session_id.strip(), create=True)
-        return (root / "literature_pipeline" / f"review_pack_{timestamp}").resolve()
-    return (_RUNTIME_DIR / "literature" / f"review_pack_{timestamp}").resolve()
+    from app.services.tool_output_resolver import get_tool_output_resolver
+    
+    resolver = get_tool_output_resolver()
+    base_dir = resolver.resolve(
+        session_id=session_id,
+        tool_name="literature_pipeline",
+    )
+    return (base_dir / f"review_pack_{timestamp}").resolve()
 
 
 def _sanitize_relative_subpath(raw_path: Path) -> Path:

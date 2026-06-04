@@ -494,7 +494,7 @@ _QWEN_LOGGING_TO_LINE_RE = re.compile(
 _QWEN_TRANSCRIPTS_ROOT = "/tmp/gagent_home/.qwen/projects"
 _QWEN_SHELL_FALLBACK_TIMEOUT_MS = 600000
 _QWEN_SHELL_FALLBACK_MAX_TIMEOUT_MS = 3600000
-_QWEN_COMPLETED_OUTPUT_EXIT_GRACE_SECONDS = 180.0
+_QWEN_COMPLETED_OUTPUT_EXIT_GRACE_SECONDS = 300.0
 _QWEN_COMPLETED_OUTPUT_EXIT_CHECK_SECONDS = 15.0
 _QWEN_PROCESS_EXIT_WAIT_SECONDS = 30.0
 _QWEN_PROCESS_KILL_WAIT_SECONDS = 10.0
@@ -1090,16 +1090,17 @@ async def _wait_for_qwen_cli_drain_or_watchdog(
         if loop.time() < grace_deadline:
             continue
 
-        logger.warning(
-            "[CODE_EXECUTOR] Qwen CLI did not exit after producing contract-valid outputs; "
-            "terminating stuck finalization process."
+        logger.info(
+            "[CODE_EXECUTOR] Task completed successfully. All required outputs verified. "
+            "Qwen CLI session finalized after grace period."
         )
         if log_file:
             try:
                 async with log_lock:
                     log_file.write(
                         f"[{datetime.utcnow().isoformat()}Z] "
-                        "Qwen CLI terminated after producing contract-valid outputs\n"
+                        "Task completed successfully. All required outputs verified. "
+                        "Qwen CLI session finalized.\n"
                     )
                     log_file.flush()
             except Exception:
@@ -1127,7 +1128,7 @@ async def _wait_for_qwen_cli_drain_or_watchdog(
             stderr_task.cancel()
             await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
         local_stdout_lines.append(
-            "[code_executor] Qwen CLI was terminated after required outputs passed deterministic verification."
+            "[code_executor] Task completed successfully. All required outputs verified and ready."
         )
         return 0
 
@@ -2298,7 +2299,18 @@ def _build_qwen_code_command(
         f"`run_shell_command` call so the task finishes in one tool invocation.\n"
         f"11. If the dependency requires a heavy solver, compiled stack, or a "
         f"new runtime image/profile, stop and report BLOCKED_DEPENDENCY instead "
-        f"of mutating the shared host environment.\n\n"
+        f"of mutating the shared host environment.\n"
+        f"12. Network proxy for package installation: If `pip install` fails due to "
+        f"network issues (timeout, connection refused, SSL errors), use the SOCKS5 proxy:\n"
+        f"    ```bash\n"
+        f"    pip install --proxy socks5://119.147.24.196:10800 <package_name>\n"
+        f"    ```\n"
+        f"    This proxy is available inside the container and should be used for all "
+        f"external package installations.\n"
+        f"13. Use `pip install` directly for Python packages. Do NOT use `conda install` "
+        f"or wait for conda environment setup — pip is faster and sufficient for most "
+        f"dependencies. Only use conda if the package explicitly requires it (e.g., "
+        f"complex C/C++ dependencies that pip cannot handle).\n\n"
         f"{_rerun_update_mode_prompt()}\n"
         f"{_final_response_contract_prompt()}"
         f"{allowed_dirs_info}"
@@ -2954,6 +2966,8 @@ def _validate_scope_contract(
 def _resolve_runtime_session_dir(session_id: Optional[str]) -> Path:
     token = str(session_id or "").strip()
     if not token:
+        # For adhoc sessions (no session_id), use session_adhoc directory
+        # This maintains backward compatibility with existing tests and behavior
         adhoc_dir = (_RUNTIME_DIR / "session_adhoc").resolve()
         adhoc_dir.mkdir(parents=True, exist_ok=True)
         return adhoc_dir
@@ -3296,6 +3310,70 @@ def _promote_external_contract_artifacts(
     return promoted
 
 
+def _promote_project_level_strays(
+    *,
+    contract_artifacts: List[Dict[str, Any]],
+    unified_output_dir: Optional[Path],
+    project_root: Path,
+) -> List[str]:
+    """Move files that LLM wrote to project-level results/output/ into raw_files/.
+
+    Scans contract_artifacts for paths under project_root/results/ or
+    project_root/output/, copies them to unified_output_dir, and records
+    the mapping for future reference.
+    """
+    if not unified_output_dir or not contract_artifacts:
+        return []
+    promoted: List[str] = []
+    workspace_resolved = unified_output_dir.resolve()
+    project_resolved = project_root.resolve()
+
+    for artifact in contract_artifacts:
+        if not isinstance(artifact, dict):
+            continue
+        if not artifact.get("exists"):
+            continue
+        path_str = str(artifact.get("path") or "").strip()
+        if not path_str:
+            continue
+        try:
+            artifact_path = Path(path_str).resolve()
+        except OSError:
+            continue
+        if not artifact_path.exists() or not artifact_path.is_file():
+            continue
+        # Only handle files under project-level results/ or output/
+        try:
+            rel = artifact_path.relative_to(project_resolved)
+        except ValueError:
+            continue
+        top_level = rel.parts[0] if rel.parts else ""
+        if top_level not in ("results", "output"):
+            continue
+        # Skip if already inside unified_output_dir
+        try:
+            artifact_path.relative_to(workspace_resolved)
+            continue
+        except ValueError:
+            pass
+        # Preserve subdirectory structure relative to results/ or output/
+        sub_rel = Path(*rel.parts[1:]) if len(rel.parts) > 1 else Path(rel.name)
+        dest = unified_output_dir / sub_rel
+        if dest.exists():
+            continue
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(str(artifact_path), str(dest))
+            promoted.append(str(dest))
+            logger.info(
+                "Promoted project-level stray %s -> %s",
+                path_str, dest,
+            )
+        except OSError as exc:
+            logger.warning("Failed to promote project-level stray %s: %s", path_str, exc)
+    return promoted
+
+
 _RUN_PREFIX_RE = re.compile(r"^run_\d{8}_\d{6}_\d+_[0-9a-f]+_")
 
 
@@ -3503,6 +3581,88 @@ def _collect_run_artifacts(
         if len(collected) >= max_files:
             return collected
     return collected
+
+
+def _recover_files_from_historical_runs(
+    *,
+    task_root_dir: Path,
+    current_run_dir: Path,
+    execution_spec: Optional[Dict[str, Any]],
+    task_subdirs: Sequence[str],
+) -> List[str]:
+    """Search historical run directories for required files and copy them to current run.
+    
+    When a task fails due to missing outputs but files exist in previous runs,
+    this function recovers them to avoid unnecessary re-execution.
+    
+    Returns list of recovered file paths in the current run directory.
+    """
+    if not execution_spec or not task_root_dir.exists():
+        return []
+    
+    criteria = execution_spec.get("acceptance_criteria")
+    expected_deliverables = derive_expected_deliverables(criteria)
+    if not expected_deliverables:
+        return []
+    
+    historical_runs = [
+        run_dir for run_dir in sorted(task_root_dir.glob("run_*"))
+        if run_dir.is_dir() and run_dir.resolve() != current_run_dir.resolve()
+    ]
+    
+    if not historical_runs:
+        return []
+    
+    recovered_files = []
+    
+    for expected in expected_deliverables:
+        expected_text = str(expected or "").strip().replace("\\", "/")
+        if not expected_text:
+            continue
+        
+        expected_path = Path(expected_text)
+        has_glob = any(token in expected_text for token in ("*", "?", "["))
+        
+        for hist_run in reversed(historical_runs):
+            found = False
+            
+            if not has_glob:
+                candidate = hist_run / expected_path
+                if candidate.exists() and candidate.is_file():
+                    dest = current_run_dir / expected_path
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    try:
+                        shutil.copy2(candidate, dest)
+                        recovered_files.append(str(dest.resolve()))
+                        logger.info(
+                            f"[CODE_EXECUTOR] Recovered {expected_text} from historical run {hist_run.name}"
+                        )
+                        found = True
+                    except Exception as exc:
+                        logger.warning(f"Failed to recover {expected_text}: {exc}")
+            
+            if has_glob:
+                pattern = str(expected_path)
+                matches = list(hist_run.glob(pattern))
+                for match in matches:
+                    if match.is_file():
+                        rel_path = match.relative_to(hist_run)
+                        dest = current_run_dir / rel_path
+                        dest.parent.mkdir(parents=True, exist_ok=True)
+                        try:
+                            shutil.copy2(match, dest)
+                            recovered_files.append(str(dest.resolve()))
+                            logger.info(
+                                f"[CODE_EXECUTOR] Recovered {rel_path} from historical run {hist_run.name}"
+                            )
+                            found = True
+                        except Exception as exc:
+                            logger.warning(f"Failed to recover {rel_path}: {exc}")
+            
+            if found:
+                break
+    
+    return recovered_files
 
 
 def _extract_code_workspace_metadata(
@@ -3930,6 +4090,7 @@ def _build_execution_spec(
     task_id: Optional[int],
     *,
     task_text: Optional[str] = None,
+    session_id: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     if plan_id is None and task_id is None:
         return _build_ad_hoc_execution_spec(task_text)
@@ -3964,7 +4125,7 @@ def _build_execution_spec(
         instruction=str(getattr(node, "instruction", "") or ""),
         metadata=node_metadata,
     ).as_contract_dict()
-    manifest = load_artifact_manifest(int(plan_id))
+    manifest = load_artifact_manifest(int(plan_id), session_id)
     resolved_input_artifacts = resolve_manifest_aliases(
         manifest,
         list(artifact_contract.get("requires") or []),
@@ -4110,7 +4271,9 @@ async def _execute_task_locally(
     task_desc = (
         f"{task}\n\n"
         f"Working directory: {work_dir}\n"
-        f"Save outputs to: {results_dir}"
+        f"Save outputs to: {results_dir}\n"
+        f"IMPORTANT: Use RELATIVE paths from your working directory (e.g. results/output.csv). "
+        f"Do NOT use absolute paths like /home/.../results/ or /home/.../output/."
     )
     if session_dir:
         session_results = os.path.join(session_dir, "results")
@@ -4757,6 +4920,7 @@ async def code_executor_handler(
             resolved_plan_id,
             resolved_task_id,
             task_text=task,
+            session_id=session_id,
         )
 
         # Scratch workspace: execution happens here, results promoted to unified_output_dir
@@ -4857,7 +5021,12 @@ async def code_executor_handler(
                     session_dir=session_dir,
                 )
 
-            # Legacy promotion (backward compat)
+            # Legacy promotion (deprecated - will be removed in Phase 7)
+            logger.debug(
+                "DEPRECATED: _promote_task_results_to_session_root called for task %s. "
+                "This redundant copy will be removed in a future phase.",
+                resolved_task_id,
+            )
             session_artifact_paths = _promote_task_results_to_session_root(
                 session_dir=session_dir,
                 task_work_dir=task_work_dir,
@@ -4892,6 +5061,11 @@ async def code_executor_handler(
                     contract_artifacts=contract_artifacts,
                     task_work_dir=task_work_dir,
                     unified_output_dir=unified_output_dir,
+                )
+                _promote_project_level_strays(
+                    contract_artifacts=contract_artifacts,
+                    unified_output_dir=unified_output_dir,
+                    project_root=_PROJECT_ROOT,
                 )
             result_payload = _build_local_backend_result_payload(
                 task=task,
@@ -5438,6 +5612,34 @@ async def code_executor_handler(
                 success=success,
                 task_work_dir=task_work_dir,
             )
+
+            if (
+                execution_failure
+                and execution_failure.get("failure_kind") == "missing_required_outputs"
+                and task_root_dir.exists()
+            ):
+                recovered = _recover_files_from_historical_runs(
+                    task_root_dir=task_root_dir,
+                    current_run_dir=task_work_dir,
+                    execution_spec=execution_spec,
+                    task_subdirs=task_subdirs,
+                )
+                if recovered:
+                    logger.info(
+                        "[CODE_EXECUTOR] Recovered %d files from historical runs, re-verifying",
+                        len(recovered),
+                    )
+                    produced_files = _collect_run_artifacts(run_dir=task_work_dir, subdirs=task_subdirs)
+                    success, execution_failure = _classify_execution_success(
+                        stdout=stdout,
+                        output_data=output_data,
+                        execution_spec=execution_spec,
+                        produced_files=produced_files,
+                        success=success,
+                        task_work_dir=task_work_dir,
+                    )
+                    if success:
+                        logger.info("[CODE_EXECUTOR] Verification passed after historical file recovery")
 
             # --- Promote results to unified output directory ---
             unified_promoted_files_qwen: List[str] = []

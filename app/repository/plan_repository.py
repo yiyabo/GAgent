@@ -281,7 +281,7 @@ class PlanRepository:
         # Statuses that indicate the task is actively being worked on.
         # Their old execution_result is stale and must not override the
         # current status.
-        _ACTIVE_STATUSES = {"running", "queued"}
+        _ACTIVE_STATUSES = {"running", "queued", "delegating"}
 
         updates: List[Tuple[str, int]] = []
         for row in rows:
@@ -310,7 +310,7 @@ class PlanRepository:
         return len(updates)
 
     def _reconcile_active_task_statuses_from_execution_results(self, conn, plan_id: int) -> int:
-        """Recover interrupted running/queued tasks after a backend restart.
+        """Recover interrupted running/queued/delegating tasks after a backend restart.
 
         During a fresh execution attempt, the executor clears the previous
         ``execution_result`` before marking the task active.  Therefore:
@@ -318,6 +318,10 @@ class PlanRepository:
           status;
         - an active row without any payload was interrupted before producing a
           result and must become pending again so full-plan execution can resume.
+
+        ``delegating`` tasks are included because external code-agent delegation
+        can be orphaned by a backend restart: the qwen/docker subprocess survives
+        as an orphan while the in-memory asyncio handle is lost.
         """
 
         self._ensure_task_columns(conn, plan_id)
@@ -325,7 +329,7 @@ class PlanRepository:
             """
             SELECT id, status, execution_result
             FROM tasks
-            WHERE status IN ('running', 'queued')
+            WHERE status IN ('running', 'queued', 'delegating')
             """
         ).fetchall()
 

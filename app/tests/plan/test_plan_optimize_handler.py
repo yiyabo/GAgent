@@ -21,10 +21,14 @@ class _OptimizeRepoStub:
         plan_id: int,
         *,
         name: str,
-        status: str,
-        instruction: str,
-        parent_id: int | None,
+        status: str = "pending",
+        instruction: str | None = None,
+        parent_id: int | None = None,
         dependencies=None,
+        metadata=None,
+        position: int | None = None,
+        anchor_task_id: int | None = None,
+        anchor_position: str | None = None,
     ) -> PlanNode:
         next_id = max(self.tree.nodes) + 1
         node = PlanNode(
@@ -35,6 +39,7 @@ class _OptimizeRepoStub:
             instruction=instruction,
             parent_id=parent_id,
             dependencies=list(dependencies or []),
+            metadata=metadata,
         )
         self.tree.nodes[next_id] = node
         self.tree.rebuild_adjacency()

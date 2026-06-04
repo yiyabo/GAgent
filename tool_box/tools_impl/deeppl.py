@@ -142,24 +142,10 @@ def _deeppl_error_payload(
 
 
 def _resolve_output_root(session_id: Optional[str]) -> Path:
-    if isinstance(session_id, str) and session_id.strip():
-        try:
-            from app.services.session_paths import get_runtime_session_dir
-
-            session_root = get_runtime_session_dir(session_id.strip(), create=True)
-            root = (session_root / "tool_outputs" / "deeppl").resolve()
-            root.mkdir(parents=True, exist_ok=True)
-            return root
-        except Exception as exc:
-            raise DeepPLError(
-                f"Failed to resolve session output directory: {exc}",
-                code="output_dir_unavailable",
-                stage="output_preparation",
-            ) from exc
-
-    root = (_PROJECT_ROOT / "runtime" / "deeppl").resolve()
-    root.mkdir(parents=True, exist_ok=True)
-    return root
+    from app.services.tool_output_resolver import get_tool_output_resolver
+    
+    resolver = get_tool_output_resolver()
+    return resolver.resolve(session_id=session_id, tool_name="deeppl", create=True)
 
 
 def _resolve_session_relative_path(path: Path, session_id: Optional[str]) -> Optional[str]:

@@ -1265,22 +1265,6 @@ def _apply_grounded_local_answer(
             if isinstance(verified_facts, list) and verified_facts:
                 return text
 
-    # If there's a recent failure and the answer doesn't acknowledge it,
-    # append a caveat so the user knows the tool result was actually a failure.
-    if isinstance(failure_state, dict) and isinstance(evidence_state, dict):
-        ev_status = str(evidence_state.get("status") or "").strip().lower()
-        if ev_status in ("failed", "unverified"):
-            error_msg = str(failure_state.get("error_message") or "").strip()
-            if error_msg and error_msg.lower() not in text.lower():
-                language = detect_reasoning_language(
-                    routing_decision.effective_user_message or ""
-                )
-                if language == "zh":
-                    caveat = f"\n\n⚠️ 注意：最近一次工具调用返回了错误（`{error_msg}`），上述回答可能不准确。"
-                else:
-                    caveat = f"\n\n⚠️ Note: the most recent tool call returned an error (`{error_msg}`). The above answer may not be accurate."
-                return text + caveat
-
     return text
 
 

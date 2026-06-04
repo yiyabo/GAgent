@@ -1743,10 +1743,10 @@ class DeliverablePublisher:
                 return "refs"
             return None
         if "/docs/" in path_lower or suffix in DOC_EXTS:
-            if file_stem in DOC_ALLOWED_STEMS:
+            if any(keyword in file_stem for keyword in DOC_ALLOWED_STEMS):
                 return "docs"
             return None
-        if file_stem in DOC_ALLOWED_STEMS and suffix in {".md", ".txt"}:
+        if any(keyword in file_stem for keyword in DOC_ALLOWED_STEMS) and suffix in {".md", ".txt"}:
             return "docs"
         return None
 
@@ -2071,7 +2071,10 @@ class DeliverablePublisher:
 
     @staticmethod
     def _is_allowed_doc_file(path: Path) -> bool:
-        return path.suffix.lower() in DOC_EXTS and path.stem.lower() in DOC_ALLOWED_STEMS
+        if path.suffix.lower() not in DOC_EXTS:
+            return False
+        stem = path.stem.lower()
+        return any(keyword in stem for keyword in DOC_ALLOWED_STEMS)
 
     def _source_identity(self, source_path: Path) -> str:
         try:

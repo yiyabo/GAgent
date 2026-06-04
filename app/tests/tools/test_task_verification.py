@@ -3787,3 +3787,179 @@ def test_dry_run_reverify_plan_does_not_persist_and_reports_would_change(tmp_pat
     assert item["dry_run_status"] == "completed"
     assert item["would_change_status"] is True
     assert item["diagnostics"]["chosen_base_dir"] == str(output.parent)
+
+
+class TestFallbackOutputDiscovery:
+    """Tests for _fallback_discover_outputs_for_failed_task and _infer_candidate_roots."""
+
+    def test_infer_candidate_roots_finds_multiple_levels(self, tmp_path):
+        project_root = tmp_path / "project"
+        session_dir = project_root / "runtime" / "session_abc" / "_scratch" / "task_1" / "run_xyz"
+        session_dir.mkdir(parents=True)
+        (project_root / "results").mkdir()
+        (project_root / "runtime" / "session_abc" / "results").mkdir(parents=True)
+
+        verifier = TaskVerificationService()
+        roots = verifier._infer_candidate_roots(
+            {"metadata": {"run_directory": str(session_dir)}}
+        )
+        root_strs = [str(r) for r in roots]
+        assert str(project_root) in root_strs
+        assert str(project_root / "runtime" / "session_abc") in root_strs
+
+    def test_infer_candidate_roots_returns_empty_for_missing_metadata(self):
+        verifier = TaskVerificationService()
+        assert verifier._infer_candidate_roots({}) == []
+        assert verifier._infer_candidate_roots(None) == []
+        assert verifier._infer_candidate_roots({"metadata": {}}) == []
+
+    def test_infer_candidate_roots_returns_empty_for_nonexistent_dir(self):
+        verifier = TaskVerificationService()
+        roots = verifier._infer_candidate_roots(
+            {"metadata": {"run_directory": "/nonexistent/path/that/does/not/exist"}}
+        )
+        assert roots == []
+
+    def test_fallback_discovers_outputs_from_instruction(self, tmp_path):
+        project_root = tmp_path / "project"
+        results_dir = project_root / "results"
+        results_dir.mkdir(parents=True)
+        (results_dir / "table1.csv").write_text("col1,col2\n1,2\n", encoding="utf-8")
+        (results_dir / "km_curve.png").write_bytes(b"\x89PNG fake content")
+
+        run_dir = project_root / "runtime" / "session_abc" / "_scratch" / "task_18" / "run_xyz"
+        run_dir.mkdir(parents=True)
+
+        node = PlanNode(
+            id=18,
+            plan_id=1,
+            name="Write Report",
+            instruction="Save outputs to results/table1.csv and results/km_curve.png",
+            metadata={},
+        )
+
+        verifier = TaskVerificationService()
+        paths = verifier._fallback_discover_outputs_for_failed_task(
+            node=node,
+            payload={"metadata": {"run_directory": str(run_dir)}},
+            existing_paths=[],
+        )
+        path_strs = [str(p) for p in paths]
+        assert any("table1.csv" in p for p in path_strs)
+        assert any("km_curve.png" in p for p in path_strs)
+
+    def test_fallback_skips_empty_files(self, tmp_path):
+        project_root = tmp_path / "project"
+        results_dir = project_root / "results"
+        results_dir.mkdir(parents=True)
+        (results_dir / "empty.csv").write_text("", encoding="utf-8")
+        (results_dir / "valid.csv").write_text("data", encoding="utf-8")
+
+        run_dir = project_root / "runtime" / "session_abc" / "_scratch" / "task_1" / "run_xyz"
+        run_dir.mkdir(parents=True)
+
+        node = PlanNode(
+            id=1,
+            plan_id=1,
+            name="Task",
+            instruction="Save to results/empty.csv and results/valid.csv",
+            metadata={},
+        )
+
+        verifier = TaskVerificationService()
+        paths = verifier._fallback_discover_outputs_for_failed_task(
+            node=node,
+            payload={"metadata": {"run_directory": str(run_dir)}},
+            existing_paths=[],
+        )
+        path_strs = [str(p) for p in paths]
+        assert not any("empty.csv" in p for p in path_strs)
+        assert any("valid.csv" in p for p in path_strs)
+
+    def test_fallback_avoids_duplicates_with_existing_paths(self, tmp_path):
+        project_root = tmp_path / "project"
+        results_dir = project_root / "results"
+        results_dir.mkdir(parents=True)
+        csv_file = results_dir / "output.csv"
+        csv_file.write_text("data", encoding="utf-8")
+
+        run_dir = project_root / "runtime" / "session_abc" / "_scratch" / "task_1" / "run_xyz"
+        run_dir.mkdir(parents=True)
+
+        node = PlanNode(
+            id=1,
+            plan_id=1,
+            name="Task",
+            instruction="Save to results/output.csv",
+            metadata={},
+        )
+
+        verifier = TaskVerificationService()
+        existing = [str(csv_file.resolve())]
+        paths = verifier._fallback_discover_outputs_for_failed_task(
+            node=node,
+            payload={"metadata": {"run_directory": str(run_dir)}},
+            existing_paths=existing,
+        )
+        assert len(paths) == 0
+
+    def test_fallback_returns_empty_when_no_instruction(self, tmp_path):
+        run_dir = tmp_path / "runtime" / "session_abc" / "_scratch" / "task_1" / "run_xyz"
+        run_dir.mkdir(parents=True)
+
+        node = PlanNode(
+            id=1,
+            plan_id=1,
+            name="Task",
+            instruction="",
+            metadata={},
+        )
+
+        verifier = TaskVerificationService()
+        paths = verifier._fallback_discover_outputs_for_failed_task(
+            node=node,
+            payload={"metadata": {"run_directory": str(run_dir)}},
+            existing_paths=[],
+        )
+        assert paths == []
+
+    def test_finalize_payload_recovers_outputs_for_failed_task(self, tmp_path):
+        project_root = tmp_path / "project"
+        results_dir = project_root / "results"
+        results_dir.mkdir(parents=True)
+        (results_dir / "report.md").write_text("# Report\nContent here", encoding="utf-8")
+
+        run_dir = project_root / "runtime" / "session_abc" / "_scratch" / "task_18" / "run_xyz"
+        run_dir.mkdir(parents=True)
+
+        node = PlanNode(
+            id=18,
+            plan_id=1,
+            name="Write Report",
+            instruction="Save the report to results/report.md",
+            metadata={},
+            status="failed",
+            execution_result=json.dumps({
+                "status": "failed",
+                "artifact_paths": None,
+                "metadata": {
+                    "execution_status": "failed",
+                    "run_directory": str(run_dir),
+                    "error_category": "missing_required_outputs",
+                },
+            }),
+        )
+
+        verifier = TaskVerificationService()
+        payload = json.loads(node.execution_result)
+        finalization = verifier.finalize_payload(
+            node,
+            payload,
+            execution_status="failed",
+            trigger="manual",
+        )
+
+        assert finalization.verification is not None
+        assert finalization.verification.get("status") != "skipped"
+        assert len(finalization.artifact_paths) > 0
+        assert any("report.md" in p for p in finalization.artifact_paths)

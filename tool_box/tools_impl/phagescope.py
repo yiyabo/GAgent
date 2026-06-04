@@ -20,6 +20,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
+from app.services.tool_output_resolver import get_tool_output_resolver
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_BASE_URL = "https://phageapi.deepomics.org"
@@ -579,7 +581,7 @@ def _attach_local_bundle_artifact_fields(
 
 
 def _get_manifests_directory(session_id: Optional[str]) -> Tuple[Path, Optional[str]]:
-    """Return ``.../work/phagescope/manifests`` under the session, or ``runtime/phagescope/manifests`` fallback."""
+    """Return ``.../work/phagescope/manifests`` under the session, or ToolOutputResolver fallback."""
     warning: Optional[str] = None
     token = str(session_id or "").strip()
     if token:
@@ -588,9 +590,10 @@ def _get_manifests_directory(session_id: Optional[str]) -> Tuple[Path, Optional[
             mdir = root / "manifests"
             mdir.mkdir(parents=True, exist_ok=True)
             return mdir.resolve(), None
-    mdir = Path("runtime/phagescope/manifests")
+    resolver = get_tool_output_resolver()
+    mdir = resolver.resolve(session_id=None, tool_name="phagescope", create=True) / "manifests"
     mdir.mkdir(parents=True, exist_ok=True)
-    warning = "no session_id: manifest stored under runtime/phagescope/manifests"
+    warning = "no session_id: manifest stored via ToolOutputResolver fallback"
     return mdir.resolve(), warning
 
 
@@ -2813,7 +2816,8 @@ async def phagescope_handler(
             elif session_root is not None:
                 default_output_dir = session_root / f"task_{taskid}_{timestamp_str}"
             else:
-                default_output_dir = Path("runtime/phagescope") / f"task_{taskid}_{timestamp_str}"
+                resolver = get_tool_output_resolver()
+                default_output_dir = resolver.resolve(session_id=None, tool_name="phagescope", create=True) / f"task_{taskid}_{timestamp_str}"
             output_dir = Path(save_path) if save_path else default_output_dir
             output_dir.mkdir(parents=True, exist_ok=True)
 
