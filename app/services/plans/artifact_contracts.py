@@ -229,16 +229,21 @@ def _repo_root() -> Path:
     return Path.cwd().resolve()
 
 
-def canonical_plan_root(plan_id: int) -> Path:
+def canonical_plan_root(plan_id: int, session_id: Optional[str] = None) -> Path:
+    if session_id:
+        from app.services.path_router import get_path_router
+        router = get_path_router()
+        session_dir = router.get_session_dir(session_id, create=False)
+        return session_dir / "artifacts" / f"plan_{plan_id}"
     return _repo_root() / "results" / "plans" / f"plan_{plan_id}"
 
 
-def artifact_manifest_path(plan_id: int) -> Path:
-    return canonical_plan_root(plan_id) / "artifacts_manifest.json"
+def artifact_manifest_path(plan_id: int, session_id: Optional[str] = None) -> Path:
+    return canonical_plan_root(plan_id, session_id) / "artifacts_manifest.json"
 
 
-def load_artifact_manifest(plan_id: int) -> Dict[str, Any]:
-    path = artifact_manifest_path(plan_id)
+def load_artifact_manifest(plan_id: int, session_id: Optional[str] = None) -> Dict[str, Any]:
+    path = artifact_manifest_path(plan_id, session_id)
     if path.exists():
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
@@ -253,14 +258,14 @@ def load_artifact_manifest(plan_id: int) -> Dict[str, Any]:
     return payload
 
 
-def save_artifact_manifest(plan_id: int, manifest: Dict[str, Any]) -> Path:
-    path = artifact_manifest_path(plan_id)
+def save_artifact_manifest(plan_id: int, manifest: Dict[str, Any], session_id: Optional[str] = None) -> Path:
+    path = artifact_manifest_path(plan_id, session_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = path.with_suffix(path.suffix + ".lock")
     with lock_path.open("a+", encoding="utf-8") as lock_file:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
         try:
-            existing = load_artifact_manifest(plan_id)
+            existing = load_artifact_manifest(plan_id, session_id)
             merged = dict(existing)
             merged.update({k: v for k, v in manifest.items() if k != "artifacts"})
             raw_existing_artifacts = existing.get("artifacts")
@@ -293,13 +298,13 @@ def save_artifact_manifest(plan_id: int, manifest: Dict[str, Any]) -> Path:
     return path
 
 
-def canonical_artifact_path(plan_id: int, alias: str) -> Optional[Path]:
+def canonical_artifact_path(plan_id: int, alias: str, session_id: Optional[str] = None) -> Optional[Path]:
     alias = canonicalize_artifact_alias(alias)
     spec = _artifact_spec_for_alias(alias)
     if not spec:
         return None
     namespace, filename = spec
-    return canonical_plan_root(plan_id) / namespace / filename
+    return canonical_plan_root(plan_id, session_id) / namespace / filename
 
 def _text_contains_namespace_keyword(text: str, keyword: str) -> bool:
     lowered_text = str(text or "").lower()
@@ -883,10 +888,11 @@ def publish_artifact(
     source_path: str,
     producer_task_id: int,
     manifest: Dict[str, Any],
+    session_id: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     requested_alias = str(alias or "").strip()
     alias = canonicalize_artifact_alias(requested_alias)
-    canonical = canonical_artifact_path(plan_id, alias)
+    canonical = canonical_artifact_path(plan_id, alias, session_id)
     if canonical is None:
         return None
     source = Path(str(source_path or "").strip()).expanduser()

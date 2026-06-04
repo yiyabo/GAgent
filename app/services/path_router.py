@@ -513,6 +513,21 @@ class PathRouter:
     # Internal helpers
     # ------------------------------------------------------------------
 
+    def get_session_dir(self, session_id: str, *, create: bool = False) -> Path:
+        """Return the session directory path.
+
+        Args:
+            session_id: Session identifier (will be normalized).
+            create: Create the directory if it doesn't exist.
+
+        Returns:
+            Absolute path to session directory.
+
+        Raises:
+            ValueError: If session_id is empty or invalid.
+        """
+        return self._get_session_dir(session_id, create=create)
+
     def _get_session_dir(self, session_id: str, *, create: bool = False) -> Path:
         """Resolve and validate session directory path."""
         norm = normalize_session_base(session_id)

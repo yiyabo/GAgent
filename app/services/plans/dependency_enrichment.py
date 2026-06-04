@@ -642,6 +642,7 @@ def _enrich_structural(tree: PlanTree, result: EnrichmentResult) -> None:
 def validate_plan_dag(
     tree: PlanTree,
     manifest: Optional[Dict[str, Any]] = None,
+    session_id: Optional[str] = None,
 ) -> DagValidationResult:
     """Validate the enriched dependency graph for structural problems.
 
@@ -654,7 +655,7 @@ def validate_plan_dag(
         try:
             from .artifact_contracts import load_artifact_manifest
 
-            manifest = load_artifact_manifest(tree.id)
+            manifest = load_artifact_manifest(tree.id, session_id)
         except Exception:
             manifest = {}
 

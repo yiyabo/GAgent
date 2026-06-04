@@ -1122,7 +1122,7 @@ def resolve_full_plan_executable_targets(
     tree: "PlanTree",
 ) -> List[int]:
     """Return dependency-safe runnable tasks for a full-plan execution request."""
-    todo = build_full_plan_todo_list(tree, expand_composites=True)
+    todo = build_full_plan_todo_list(tree, expand_composites=True, ordering_mode="structure")
     return list(todo.pending_order)
 
 

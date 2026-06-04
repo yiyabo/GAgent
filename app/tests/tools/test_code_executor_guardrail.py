@@ -850,7 +850,7 @@ def test_local_backend_collects_custom_acceptance_output_dirs(
     monkeypatch.setattr(
         code_executor_module,
         "_build_execution_spec",
-        lambda plan_id, task_id, task_text=None: {
+        lambda plan_id, task_id, task_text=None, session_id=None: {
             "plan_id": plan_id,
             "task_id": task_id,
             "task_name": "图表收集与初步审查",
@@ -2281,7 +2281,7 @@ async def test_local_code_executor_payload_includes_contract_artifacts(monkeypat
     monkeypatch.setattr(
         code_executor_module,
         "_build_execution_spec",
-        lambda _plan_id, _task_id, task_text=None: {
+        lambda _plan_id, _task_id, task_text=None, session_id=None: {
             "plan_id": 1,
             "task_id": 2,
             "task_name": "Load QC-filtered AnnData object",

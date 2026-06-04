@@ -54,6 +54,8 @@ const DAG3DView: React.FC<DAGViewProps> = ({ onClose, onNodeSelect }) => {
   const [hoveredNodeId, setHoveredNodeId] = useState<number | null>(null);
   const [stats, setStats] = useState({ total: 0, pending: 0, running: 0, completed: 0, failed: 0 });
   const [dimensions, setDimensions] = useState({ width: 800, height: 600 });
+  const [taskExecutionResult, setTaskExecutionResult] = useState<string | null>(null);
+  const [loadingResult, setLoadingResult] = useState(false);
 
   const currentPlanId = useChatStore((state) => state.currentPlanId);
 
@@ -278,6 +280,28 @@ const DAG3DView: React.FC<DAGViewProps> = ({ onClose, onNodeSelect }) => {
   return tasks.find(t => t.id === selectedNodeId) || null;
   }, [selectedNodeId, tasks]);
 
+  useEffect(() => {
+    if (!selectedTask || !currentPlanId) {
+      setTaskExecutionResult(null);
+      return;
+    }
+
+    const loadExecutionResult = async () => {
+      setLoadingResult(true);
+      try {
+        const result = await planTreeApi.getTaskResult(currentPlanId, selectedTask.id);
+        setTaskExecutionResult(result.content || null);
+      } catch (err) {
+        console.error('Failed to load execution result:', err);
+        setTaskExecutionResult(null);
+      } finally {
+        setLoadingResult(false);
+      }
+    };
+
+    loadExecutionResult();
+  }, [selectedTask, currentPlanId]);
+
   const closeDrawer = useCallback(() => {
   setSelectedNodeId(null);
   onNodeSelect?.(null);
@@ -399,13 +423,15 @@ const DAG3DView: React.FC<DAGViewProps> = ({ onClose, onNodeSelect }) => {
   label: <span><HistoryOutlined /> Execution Result</span>,
   children: (
   <div className="task-detail-section">
-  {selectedTask.execution_result ? (
+  {loadingResult ? (
+  <div style={{ textAlign: 'center', padding: '20px' }}>Loading...</div>
+  ) : taskExecutionResult ? (
   <div className="task-result-box">
   <Paragraph 
   style={{ margin: 0, whiteSpace: 'pre-wrap', fontSize: 12 }}
   ellipsis={{ rows: 15, expandable: true, symbol: 'expand' }}
   >
-  {selectedTask.execution_result}
+  {taskExecutionResult}
   </Paragraph>
   </div>
   ) : (

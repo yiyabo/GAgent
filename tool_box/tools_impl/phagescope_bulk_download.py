@@ -368,38 +368,16 @@ def _resolve_output_dir(
     task_id: Optional[int] = None,
     ancestor_chain: Optional[List[int]] = None,
 ) -> Path:
-    if save_path:
-        p = Path(save_path).expanduser().resolve()
-        p.mkdir(parents=True, exist_ok=True)
-        return p
-
-    # Prefer task-scoped directory when running inside a plan step.
-    token = str(session_id or "").strip()
-    if token and task_id is not None:
-        try:
-            from app.services.path_router import get_path_router
-            router = get_path_router()
-            target = router.get_task_output_dir(
-                token, task_id, ancestor_chain, create=True,
-            )
-            target.mkdir(parents=True, exist_ok=True)
-            return target
-        except Exception:
-            pass
-
-    if token:
-        try:
-            from app.services.session_paths import get_session_tool_outputs_dir
-            root = get_session_tool_outputs_dir(token, create=True)
-            target = (root / "phagescope_datasets").resolve()
-            target.mkdir(parents=True, exist_ok=True)
-            return target
-        except Exception:
-            pass
-
-    target = Path("runtime/phagescope_datasets").resolve()
-    target.mkdir(parents=True, exist_ok=True)
-    return target
+    from app.services.tool_output_resolver import get_tool_output_resolver
+    
+    resolver = get_tool_output_resolver()
+    return resolver.resolve(
+        explicit_dir=save_path,
+        session_id=session_id,
+        task_id=task_id,
+        ancestor_chain=ancestor_chain,
+        tool_name="phagescope_datasets",
+    )
 
 
 # ---------------------------------------------------------------------------

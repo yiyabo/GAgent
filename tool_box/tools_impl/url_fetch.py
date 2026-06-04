@@ -292,32 +292,21 @@ def _resolve_output_dir(
     *,
     tool_context: Optional[ToolContext] = None,
 ) -> Path:
-    work_dir = str(getattr(tool_context, "work_dir", "") or "").strip()
-    if work_dir:
-        target = Path(work_dir).expanduser().resolve(strict=False)
-        target.mkdir(parents=True, exist_ok=True)
-        return target
-
-    token = str(session_id or "").strip()
-    if token:
-        try:
-            from app.services.session_paths import get_session_tool_outputs_dir
-
-            root = get_session_tool_outputs_dir(token, create=True)
-            target = (root / "url_fetch").resolve()
-            target.mkdir(parents=True, exist_ok=True)
-            return target
-        except Exception as exc:
-            raise UrlFetchError(
-                f"Failed to resolve session output directory: {exc}",
-                code="output_dir_unavailable",
-                stage="output_preparation",
-            ) from exc
-
-    project_root = Path(__file__).resolve().parents[2]
-    target = (project_root / "runtime" / "url_fetch").resolve()
-    target.mkdir(parents=True, exist_ok=True)
-    return target
+    from app.services.tool_output_resolver import get_tool_output_resolver
+    
+    try:
+        resolver = get_tool_output_resolver()
+        return resolver.resolve(
+            session_id=session_id,
+            tool_context=tool_context,
+            tool_name="url_fetch",
+        )
+    except Exception as exc:
+        raise UrlFetchError(
+            f"Failed to resolve session output directory: {exc}",
+            code="output_dir_unavailable",
+            stage="output_preparation",
+        ) from exc
 
 
 def _session_relative_path(path: Path, session_id: Optional[str]) -> Optional[str]:

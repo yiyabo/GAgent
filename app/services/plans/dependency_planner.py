@@ -123,7 +123,7 @@ def compute_dependency_plan(
     running: List[int] = []
     for dep_id in closure_list:
         st = _normalize_status(tree.nodes[dep_id].status)
-        if st == "running":
+        if st in ("running", "delegating"):
             running.append(dep_id)
         if st not in satisfied_set:
             missing.append(dep_id)

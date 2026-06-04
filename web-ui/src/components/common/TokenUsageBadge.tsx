@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Tooltip, Badge, Popover, Typography, Space, Divider } from 'antd';
 import { ThunderboltOutlined, ReloadOutlined } from '@ant-design/icons';
 import { statsApi, TokenUsageResponse } from '@/api/stats';
+import { useChatStore } from '@/store/chat';
 
 const { Text } = Typography;
 
@@ -18,11 +19,16 @@ function formatTokens(count: number): string {
 const TokenUsageBadge: React.FC = () => {
   const [usage, setUsage] = useState<TokenUsageResponse | null>(null);
   const [loading, setLoading] = useState(false);
+  const currentSession = useChatStore((state) => state.currentSession);
 
   const fetchUsage = async () => {
+    if (!currentSession?.id) {
+      setUsage(null);
+      return;
+    }
     setLoading(true);
     try {
-      const data = await statsApi.getTokenUsage(24);
+      const data = await statsApi.getSessionTokenUsage(currentSession.id);
       setUsage(data);
     } catch (error) {
       console.error('Failed to fetch token usage:', error);
@@ -35,13 +41,13 @@ const TokenUsageBadge: React.FC = () => {
     fetchUsage();
     const interval = setInterval(fetchUsage, 60_000);
     return () => clearInterval(interval);
-  }, []);
+  }, [currentSession?.id]);
 
   const content = (
     <div style={{ width: 280, padding: '8px 0' }}>
       <Space direction="vertical" style={{ width: '100%' }} size="small">
         <Space style={{ width: '100%', justifyContent: 'space-between' }}>
-          <Text strong>Token Usage (24h)</Text>
+          <Text strong>Session Token Usage</Text>
           <Tooltip title="Refresh">
             <ReloadOutlined
               spin={loading}
@@ -89,7 +95,7 @@ const TokenUsageBadge: React.FC = () => {
 
   return (
     <Popover content={content} trigger="click" placement="bottomRight">
-      <Tooltip title="Token Usage">
+      <Tooltip title="Session Token Usage">
         <Badge count={usage ? formatTokens(usage.total_tokens) : '0'} size="small" style={{ backgroundColor: '#1890ff' }}>
           <ThunderboltOutlined style={{ fontSize: 18, color: 'var(--text-secondary)', cursor: 'pointer' }} />
         </Badge>

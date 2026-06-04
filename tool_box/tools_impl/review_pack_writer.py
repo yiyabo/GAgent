@@ -22,6 +22,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from app.services.tool_output_resolver import get_tool_output_resolver
+
 from .literature_pipeline import literature_pipeline_handler
 from .manuscript_writer import manuscript_writer_handler
 
@@ -47,12 +49,9 @@ def _bar(done: int, total: int, width: int = 24) -> str:
 
 
 def _resolve_default_pack_dir(*, session_id: Optional[str], timestamp: str) -> Path:
-    if isinstance(session_id, str) and session_id.strip():
-        from app.services.session_paths import get_session_tool_outputs_dir
-
-        root = get_session_tool_outputs_dir(session_id.strip(), create=True)
-        return (root / "review_pack_writer" / f"review_pack_{timestamp}").resolve()
-    return (_PROJECT_ROOT / "runtime" / "literature" / f"review_pack_{timestamp}").resolve()
+    resolver = get_tool_output_resolver()
+    base_dir = resolver.resolve(session_id=session_id, tool_name="review_pack_writer", create=True)
+    return (base_dir / f"review_pack_{timestamp}").resolve()
 
 
 def _sanitize_relative_subpath(raw_path: Path) -> Path:
@@ -67,7 +66,9 @@ def _normalize_pack_dir(raw_dir: Optional[str], *, default_dir: Path) -> Path:
     if candidate.is_absolute():
         return candidate.resolve()
     if raw_dir:
-        return (_PROJECT_ROOT / "runtime" / "lit_reviews" / _sanitize_relative_subpath(candidate)).resolve()
+        resolver = get_tool_output_resolver()
+        base_dir = resolver.resolve(session_id=None, tool_name="review_pack_writer", create=True)
+        return (base_dir / _sanitize_relative_subpath(candidate)).resolve()
     return (_PROJECT_ROOT / candidate).resolve()
 
 
@@ -80,7 +81,9 @@ def _normalize_review_output_path(raw_path: Optional[str], *, pack_dir: Path) ->
     if candidate.is_absolute():
         return str(candidate.resolve())
 
-    output_file = (_PROJECT_ROOT / "runtime" / "lit_reviews" / _sanitize_relative_subpath(candidate)).resolve()
+    resolver = get_tool_output_resolver()
+    base_dir = resolver.resolve(session_id=None, tool_name="review_pack_writer", create=True)
+    output_file = (base_dir / _sanitize_relative_subpath(candidate)).resolve()
     return str(output_file.relative_to(_PROJECT_ROOT))
 
 
@@ -104,9 +107,8 @@ def _is_within_root(path: Path, root: Path) -> bool:
 def _resolve_session_dir(session_id: Optional[str]) -> Optional[Path]:
     if not isinstance(session_id, str) or not session_id.strip():
         return None
-    normalized = session_id.strip()
-    session_name = normalized if normalized.startswith("session_") else f"session_{normalized}"
-    return (_PROJECT_ROOT / "runtime" / session_name).resolve()
+    resolver = get_tool_output_resolver()
+    return resolver.resolve(session_id=session_id, tool_name="review_pack_writer", create=False)
 
 
 def _to_session_relative(path: Path, session_dir: Optional[Path]) -> Optional[str]:

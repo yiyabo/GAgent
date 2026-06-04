@@ -3478,7 +3478,7 @@ class DeepThinkAgent:
         lines = [
             "=== PLAN ARTIFACT DISCOVERY ===",
             f"- This session is bound to Plan {plan_id}. For follow-up analysis over completed plan outputs, discover artifacts before making evidence-backed claims.",
-            f"- Start from the plan artifact manifest when present: `results/plans/plan_{plan_id}/artifacts_manifest.json`.",
+            f"- Start from the plan artifact manifest when present. Check session-scoped location first: `runtime/{session_id}/artifacts/plan_{plan_id}/artifacts_manifest.json`, then fall back to project-level: `results/plans/plan_{plan_id}/artifacts_manifest.json`.",
             "- If a session runtime directory is available, inspect `deliverables/manifest_latest.json` and `deliverables/latest/` there before summarizing or writing reports.",
         ]
         if session_id:

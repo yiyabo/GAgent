@@ -22,6 +22,7 @@ from app.services.plans.plan_optimizer import (
     capture_plan_optimization_outcome,
     resolve_plan_review_result,
 )
+from app.services.plans.task_metadata_generator import ensure_task_metadata
 
 logger = logging.getLogger(__name__)
 _artifact_preflight_service = ArtifactPreflightService()
@@ -76,6 +77,8 @@ def _supports_generation_readiness(repo: Any) -> bool:
     if not callable(getattr(repo, "create_task", None)):
         return False
     if not callable(getattr(repo, "update_task", None)):
+        return False
+    if not callable(getattr(repo, "get_node", None)):
         return False
     try:
         create_task_sig = inspect.signature(repo.create_task)
@@ -765,6 +768,12 @@ async def _optimize_plan(
                                 parent_id = node.id
                                 break
                     
+                    task_metadata = ensure_task_metadata(
+                        metadata=None,
+                        task_name=task_name,
+                        instruction=task_instruction,
+                    )
+                    
                     node = repo.create_task(
                         plan_id,
                         name=task_name,
@@ -772,6 +781,7 @@ async def _optimize_plan(
                         instruction=task_instruction,
                         parent_id=parent_id,
                         dependencies=change.get("dependencies"),
+                        metadata=task_metadata,
                     )
                     applied_changes.append({
                         "action": "add_task",
@@ -1348,7 +1358,7 @@ async def _execute_all(
         except Exception as _enrich_exc:
             logger.warning("Dependency enrichment failed in execute_all: %s", _enrich_exc)
 
-        todo = build_full_plan_todo_list(tree, expand_composites=True)
+        todo = build_full_plan_todo_list(tree, expand_composites=True, ordering_mode="structure")
         state_by_task = _resolve_effective_task_states(plan_id, tree)
         todo_dict = _todo_list_to_dict(todo, plan_id, state_by_task=state_by_task, tree=tree)
         task_order = list(todo_dict.get("pending_order") or [])

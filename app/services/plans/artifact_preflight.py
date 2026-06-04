@@ -77,9 +77,10 @@ class ArtifactPreflightService:
         *,
         task_ids: Optional[Iterable[int]] = None,
         manifest: Optional[Dict[str, Any]] = None,
+        session_id: Optional[str] = None,
     ) -> ArtifactPreflightResult:
         selected_task_ids = self._select_task_ids(tree, task_ids)
-        manifest = manifest if isinstance(manifest, dict) else load_artifact_manifest(plan_id)
+        manifest = manifest if isinstance(manifest, dict) else load_artifact_manifest(plan_id, session_id)
 
         task_contracts: List[TaskArtifactContractSnapshot] = []
         errors: List[ArtifactPreflightIssue] = []
@@ -89,7 +90,7 @@ class ArtifactPreflightService:
         selected_nodes = [tree.nodes[task_id] for task_id in selected_task_ids]
 
         for node in selected_nodes:
-            snapshot, snapshot_issues = self._build_contract_snapshot(plan_id, node)
+            snapshot, snapshot_issues = self._build_contract_snapshot(plan_id, node, session_id)
             task_contracts.append(snapshot)
             for issue in snapshot_issues:
                 if issue.severity == "error":
@@ -149,7 +150,7 @@ class ArtifactPreflightService:
             # warning — it was likely LLM-generated and has no registered
             # canonical path.  Only registered aliases that genuinely lack
             # a producer should block execution.
-            is_registered = canonical_artifact_path(plan_id, alias) is not None
+            is_registered = canonical_artifact_path(plan_id, alias, session_id) is not None
             severity = "error" if is_registered else "warning"
             target_list = errors if is_registered else warnings
             for consumer_task_id in sorted(set(consumers)):
@@ -217,6 +218,7 @@ class ArtifactPreflightService:
         self,
         plan_id: int,
         node: PlanNode,
+        session_id: Optional[str] = None,
     ) -> Tuple[TaskArtifactContractSnapshot, List[ArtifactPreflightIssue]]:
         metadata = getattr(node, "metadata", None)
         metadata = metadata if isinstance(metadata, dict) else {}
@@ -234,12 +236,14 @@ class ArtifactPreflightService:
             raw_contract.get("requires"),
             task_id=task_id,
             field_name="requires",
+            session_id=session_id,
         )
         explicit_publishes, explicit_publish_errors = self._normalize_explicit_aliases(
             plan_id,
             raw_contract.get("publishes"),
             task_id=task_id,
             field_name="publishes",
+            session_id=session_id,
         )
 
         inferred_contract = infer_artifact_contract(
@@ -285,13 +289,14 @@ class ArtifactPreflightService:
         )
         return snapshot, explicit_require_errors + explicit_publish_errors
 
-    @staticmethod
     def _normalize_explicit_aliases(
+        self,
         plan_id: int,
         raw_items: Any,
         *,
         task_id: int,
         field_name: str,
+        session_id: Optional[str] = None,
     ) -> Tuple[List[str], List[ArtifactPreflightIssue]]:
         if raw_items is None:
             return [], []
@@ -316,7 +321,7 @@ class ArtifactPreflightService:
             alias = canonicalize_artifact_alias(str(item or "").strip())
             if not alias or alias in seen:
                 continue
-            if canonical_artifact_path(plan_id, alias) is None:
+            if canonical_artifact_path(plan_id, alias, session_id) is None:
                 # Unknown alias: downgrade to warning so review/optimize are
                 # not blocked.  The alias is still tracked so dependency
                 # analysis remains functional for LLM-generated contracts.

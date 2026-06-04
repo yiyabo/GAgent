@@ -96,11 +96,13 @@ class AuditRepairLoopService:
         verifier: Optional[TaskVerificationService] = None,
         plan_executor: Optional[PlanExecutor] = None,
         delegate_executor: Optional[CodeAgentTaskDelegateExecutor] = None,
+        session_id: Optional[str] = None,
     ) -> None:
         self._repo = repo
         self._verifier = verifier or TaskVerificationService()
         self._plan_executor = plan_executor or PlanExecutor(repo=repo)
         self._delegate_executor = delegate_executor or CodeAgentTaskDelegateExecutor()
+        self._session_id = session_id
 
     def run_task_loop(
         self,
@@ -108,7 +110,9 @@ class AuditRepairLoopService:
         plan_id: int,
         task_id: int,
         config: Optional[AuditRepairLoopConfig] = None,
+        session_id: Optional[str] = None,
     ) -> AuditRepairLoopResult:
+        effective_session_id = session_id or self._session_id
         cfg = config or AuditRepairLoopConfig()
         max_loops = max(1, int(cfg.max_loops))
         max_task_repairs = max(0, int(cfg.max_task_repairs))
@@ -210,8 +214,9 @@ class AuditRepairLoopService:
                     classification=classification,
                     attempt=repair_count,
                     config=cfg,
+                    session_id=effective_session_id,
                 )
-                self._publish_repair_artifacts(plan_id, task_id, repair_payload)
+                self._publish_repair_artifacts(plan_id, task_id, repair_payload, effective_session_id)
                 self._persist_repair_payload(plan_id, task_id, repair_payload, repair_count, steps)
                 finalization = self._audit(plan_id, task_id)
                 steps.append(
@@ -285,7 +290,9 @@ class AuditRepairLoopService:
         classification: str,
         attempt: int,
         config: AuditRepairLoopConfig,
+        session_id: Optional[str] = None,
     ) -> Dict[str, Any]:
+        effective_session_id = session_id or self._session_id
         tree = self._repo.get_plan_tree(plan_id)
         node = tree.get_node(task_id)
         metadata = self._payload_metadata(finalization.payload)
@@ -309,7 +316,7 @@ class AuditRepairLoopService:
                 executor_backend=backend,
                 session_id=config.session_id,
                 owner_id=config.owner_id,
-                work_dir=self._repair_work_dir(plan_id, task_id),
+                work_dir=self._repair_work_dir(plan_id, task_id, effective_session_id),
                 artifact_contract=dict(node_metadata.get("artifact_contract") or {}),
                 acceptance_criteria=dict(node_metadata.get("acceptance_criteria") or {}),
             )
@@ -375,7 +382,9 @@ class AuditRepairLoopService:
         plan_id: int,
         task_id: int,
         payload: Dict[str, Any],
+        session_id: Optional[str] = None,
     ) -> None:
+        effective_session_id = session_id or self._session_id
         tree = self._repo.get_plan_tree(plan_id)
         node = tree.get_node(task_id)
         node_metadata = node.metadata if isinstance(node.metadata, dict) else {}
@@ -396,13 +405,13 @@ class AuditRepairLoopService:
         if not candidates:
             return
 
-        manifest = load_artifact_manifest(plan_id)
+        manifest = load_artifact_manifest(plan_id, effective_session_id)
         published: List[Dict[str, Any]] = []
         for alias in publishes:
             for candidate in candidates:
                 if not artifact_path_matches_alias(candidate, alias):
                     continue
-                safe_candidate = self._safe_repair_artifact_candidate(plan_id, task_id, candidate)
+                safe_candidate = self._safe_repair_artifact_candidate(plan_id, task_id, candidate, effective_session_id)
                 if safe_candidate is None:
                     continue
                 entry = publish_artifact(
@@ -411,13 +420,14 @@ class AuditRepairLoopService:
                     source_path=safe_candidate,
                     producer_task_id=task_id,
                     manifest=manifest,
+                    session_id=effective_session_id,
                 )
                 if entry is not None:
                     published.append(entry)
                     break
         if not published:
             return
-        save_artifact_manifest(plan_id, manifest)
+        save_artifact_manifest(plan_id, manifest, effective_session_id)
         metadata = self._payload_metadata(payload)
         metadata["repair_manifest_publish"] = [
             {"alias": entry.get("alias"), "path": entry.get("path"), "producer_task_id": entry.get("producer_task_id")}
@@ -430,7 +440,9 @@ class AuditRepairLoopService:
         plan_id: int,
         task_id: int,
         candidate_text: str,
+        session_id: Optional[str] = None,
     ) -> Optional[str]:
+        effective_session_id = session_id or self._session_id
         try:
             candidate = Path(str(candidate_text or "").strip()).expanduser()
             resolved_candidate = candidate.resolve(strict=True)
@@ -439,8 +451,8 @@ class AuditRepairLoopService:
         if self._path_has_symlink_component(candidate):
             return None
         allowed_roots = [
-            self._repair_work_dir_path(plan_id, task_id),
-            canonical_plan_root(plan_id),
+            self._repair_work_dir_path(plan_id, task_id, effective_session_id),
+            canonical_plan_root(plan_id, effective_session_id),
         ]
         for root in allowed_roots:
             try:
@@ -560,15 +572,15 @@ class AuditRepairLoopService:
             ]
         )
 
-    @staticmethod
-    def _repair_work_dir(plan_id: int, task_id: int) -> str:
-        path = AuditRepairLoopService._repair_work_dir_path(plan_id, task_id)
+    def _repair_work_dir(self, plan_id: int, task_id: int, session_id: Optional[str] = None) -> str:
+        effective_session_id = session_id or self._session_id
+        path = self._repair_work_dir_path(plan_id, task_id, effective_session_id)
         path.mkdir(parents=True, exist_ok=True)
         return str(path)
 
-    @staticmethod
-    def _repair_work_dir_path(plan_id: int, task_id: int) -> Path:
-        return canonical_plan_root(plan_id) / "repairs" / f"task_{task_id}"
+    def _repair_work_dir_path(self, plan_id: int, task_id: int, session_id: Optional[str] = None) -> Path:
+        effective_session_id = session_id or self._session_id
+        return canonical_plan_root(plan_id, effective_session_id) / "repairs" / f"task_{task_id}"
 
     @staticmethod
     def _payload_metadata(payload: Dict[str, Any]) -> Dict[str, Any]:

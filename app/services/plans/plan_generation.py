@@ -18,6 +18,7 @@ from ..llm.decomposer_service import strip_code_fences
 from .plan_decomposer import DecompositionResult, PlanDecomposer
 from .plan_models import PlanNode, PlanTree
 from .phase_narrator import PHASE_TITLES_METADATA_KEY, generate_phase_titles
+from .task_metadata_generator import ensure_task_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -458,6 +459,11 @@ def _create_seed_tasks(
         status = str(raw_task.get("status") or "pending").strip() or "pending"
         metadata = dict(raw_task.get("metadata") or {}) if isinstance(raw_task.get("metadata"), dict) else {}
         metadata.setdefault("task_type", metadata.get("task_type") or "composite")
+        metadata = ensure_task_metadata(
+            metadata=metadata,
+            task_name=name,
+            instruction=instruction,
+        )
 
         parent_id = raw_task.get("parent_id")
         try:

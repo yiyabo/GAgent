@@ -133,25 +133,24 @@ def _parse_max_bytes(max_bytes: Optional[Any]) -> int:
 
 
 def _resolve_output_dir(session_id: Optional[str]) -> Path:
-    if isinstance(session_id, str) and session_id.strip():
-        try:
-            from app.services.session_paths import get_session_tool_outputs_dir
-
-            root = get_session_tool_outputs_dir(session_id.strip(), create=True)
-            target = (root / "sequence_fetch").resolve()
-            target.mkdir(parents=True, exist_ok=True)
-            return target
-        except Exception as exc:
-            raise SequenceFetchError(
-                f"Failed to resolve session output directory: {exc}",
-                code="output_dir_unavailable",
-                stage="output_preparation",
-            ) from exc
-
-    project_root = Path(__file__).resolve().parents[2]
-    target = (project_root / "runtime" / "sequence_fetch").resolve()
-    target.mkdir(parents=True, exist_ok=True)
-    return target
+    from app.services.tool_output_resolver import get_tool_output_resolver
+    
+    try:
+        resolver = get_tool_output_resolver()
+        return resolver.resolve_for_tool(
+            "sequence_fetch",
+            tool_context=None,
+            explicit_dir=None,
+        ) if session_id is None else resolver.resolve(
+            session_id=session_id,
+            tool_name="sequence_fetch",
+        )
+    except Exception as exc:
+        raise SequenceFetchError(
+            f"Failed to resolve session output directory: {exc}",
+            code="output_dir_unavailable",
+            stage="output_preparation",
+        ) from exc
 
 
 def _safe_output_name(value: Optional[str], first_accession: str) -> str:
