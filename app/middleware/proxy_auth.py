@@ -38,7 +38,9 @@ def _is_anonymous_path(path: str) -> bool:
     normalized = str(path or "").strip() or "/"
     if normalized in {"/health", "/health/llm", "/openapi.json", "/docs", "/redoc"}:
         return True
-    return normalized.startswith("/auth")
+    if normalized.startswith("/auth") or normalized.startswith("/sso"):
+        return True
+    return False
 
 
 class ProxyAuthMiddleware(BaseHTTPMiddleware):

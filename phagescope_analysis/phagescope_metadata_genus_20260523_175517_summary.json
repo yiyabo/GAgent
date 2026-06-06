@@ -1,0 +1,151 @@
+{
+  "tool": "phagescope_research",
+  "action": "prepare_metadata_table",
+  "data_dir": "/home/zczhao/Phage-Agent/phagescope",
+  "resolved_data_dir": "/mnt/sdm/zczhao/Phage-Agent/phagescope",
+  "output_table": "/home/zczhao/Phage-Agent/phagescope_analysis/phagescope_metadata_genus_20260523_175517.tsv",
+  "label_counts_path": "/home/zczhao/Phage-Agent/phagescope_analysis/phagescope_metadata_genus_20260523_175517_label_counts.tsv",
+  "summary_path": "/home/zczhao/Phage-Agent/phagescope_analysis/phagescope_metadata_genus_20260523_175517_summary.json",
+  "canonical_output_table": "/home/zczhao/Phage-Agent/phagescope_analysis/curated_metadata.tsv",
+  "canonical_label_counts_path": "/home/zczhao/Phage-Agent/phagescope_analysis/label_counts.tsv",
+  "canonical_summary_path": "/home/zczhao/Phage-Agent/phagescope_analysis/metadata_summary.json",
+  "label_level": "genus",
+  "min_label_count": 20,
+  "completeness": [
+    "High-quality",
+    "Medium-quality"
+  ],
+  "split_group": "subcluster",
+  "candidate_rows_before_label_min": 504406,
+  "labels_before_filter": 2883,
+  "labels_kept": 616,
+  "rows_written": 495148,
+  "split_totals": {
+    "train": 396135,
+    "test": 49170,
+    "val": 49843
+  },
+  "top_labels": [
+    [
+      "Salmonella",
+      31511
+    ],
+    [
+      "Bacteroides",
+      29910
+    ],
+    [
+      "Lachnospiraceae",
+      23584
+    ],
+    [
+      "Faecalibacterium",
+      22247
+    ],
+    [
+      "Bacteroidaceae",
+      17508
+    ],
+    [
+      "Escherichia",
+      16335
+    ],
+    [
+      "Prevotella",
+      14834
+    ],
+    [
+      "Streptococcus",
+      12872
+    ],
+    [
+      "Oscillospirales",
+      10880
+    ],
+    [
+      "Bacteroidales",
+      10838
+    ],
+    [
+      "Lawsonia",
+      10132
+    ],
+    [
+      "Bifidobacterium",
+      9884
+    ],
+    [
+      "Klebsiella",
+      9563
+    ],
+    [
+      "Parabacteroides",
+      9140
+    ],
+    [
+      "Ruminococcus",
+      8726
+    ],
+    [
+      "Staphylococcus",
+      8703
+    ],
+    [
+      "Pseudomonas",
+      8115
+    ],
+    [
+      "Oscillospiraceae",
+      7408
+    ],
+    [
+      "Clostridia",
+      6610
+    ],
+    [
+      "Alistipes",
+      6488
+    ],
+    [
+      "Mycobacterium",
+      6070
+    ],
+    [
+      "Clostridioides",
+      5568
+    ],
+    [
+      "Blautia",
+      4958
+    ],
+    [
+      "Clostridium",
+      4872
+    ],
+    [
+      "Roseburia",
+      4822
+    ],
+    [
+      "Enterococcus",
+      4518
+    ],
+    [
+      "Bacteroides_B",
+      4436
+    ],
+    [
+      "Enterobacter",
+      4400
+    ],
+    [
+      "Bacillus",
+      4372
+    ],
+    [
+      "Agathobacter",
+      4318
+    ]
+  ],
+  "recommended_next_step": "Use code_executor with this TSV as input to train baseline models. Keep Split fixed and report test metrics separately."
+}

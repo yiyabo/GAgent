@@ -54,6 +54,7 @@ def init_db() -> None:
             )
             """
         )
+        _ensure_sso_user_columns(conn)
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS auth_sessions (
@@ -336,6 +337,36 @@ def _ensure_chat_run_columns(conn) -> None:
         conn.execute(
             "ALTER TABLE chat_runs ADD COLUMN owner_id TEXT NOT NULL DEFAULT 'legacy-local'"
         )
+
+
+def _ensure_sso_user_columns(conn) -> None:
+    info_rows = conn.execute("PRAGMA table_info(users)").fetchall()
+    existing = {row["name"] for row in info_rows}
+    
+    if "global_uuid" not in existing:
+        conn.execute("ALTER TABLE users ADD COLUMN global_uuid TEXT")
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_global_uuid ON users(global_uuid)")
+    
+    if "name" not in existing:
+        conn.execute("ALTER TABLE users ADD COLUMN name TEXT")
+    
+    if "username" not in existing:
+        conn.execute("ALTER TABLE users ADD COLUMN username TEXT")
+    
+    if "department" not in existing:
+        conn.execute("ALTER TABLE users ADD COLUMN department INTEGER")
+    
+    if "department_code" not in existing:
+        conn.execute("ALTER TABLE users ADD COLUMN department_code TEXT")
+    
+    if "department_display" not in existing:
+        conn.execute("ALTER TABLE users ADD COLUMN department_display TEXT")
+    
+    if "profile" not in existing:
+        conn.execute("ALTER TABLE users ADD COLUMN profile TEXT")
+    
+    if "sso_enabled" not in existing:
+        conn.execute("ALTER TABLE users ADD COLUMN sso_enabled BOOLEAN DEFAULT 0")
 
 
 def _ensure_plan_decomposition_job_index_columns(conn) -> None:

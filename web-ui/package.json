@@ -71,6 +71,7 @@
     "patch-package": "^8.0.1",
     "typescript": "^5.0.2",
     "vite": "^4.4.5",
+    "vite-plugin-compression": "^0.5.1",
     "vitest": "^1.6.0"
   },
   "keywords": [
