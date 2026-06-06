@@ -499,4 +499,4 @@ const ChatSidebar: React.FC = () => {
   );
 };
 
-export default ChatSidebar;
+export default React.memo(ChatSidebar);

@@ -241,7 +241,7 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
       artifactsApi.listSessionArtifacts(sessionId ?? '', {
         maxDepth: 6,
         includeDirs: false,
-        limit: 1000,
+        limit: 100,
         pathPrefix: rawPathPrefix,
       }),
     enabled: Boolean(sessionId && mode === 'raw'),
@@ -260,7 +260,7 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
       artifactsApi.listSessionDeliverables(sessionId ?? '', {
         scope: 'latest',
         includeDraft: false,
-        limit: 1000,
+        limit: 100,
       }),
     enabled: Boolean(sessionId && mode === 'deliverables'),
     refetchInterval: 10000,
@@ -963,4 +963,4 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
   );
 };
 
-export default ArtifactsPanel;
+export default React.memo(ArtifactsPanel);

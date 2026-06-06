@@ -1,0 +1,93 @@
+Cell-Cell Communication Analysis: CellChat Methodology
+======================================================
+
+Dataset and Sample Composition
+------------------------------
+Single-cell RNA sequencing data were obtained from the Gene Expression Omnibus
+(GEO) under accession GSE184880. The dataset comprises 12 samples: 7 ovarian
+cancer (OC) tumor samples and 5 normal (non-malignant) tissue samples.
+
+Quality Control and Preprocessing
+----------------------------------
+Individual cells were subjected to the following quality control filters prior
+to downstream analysis:
+  - Minimum UMI counts per cell: 500
+  - Maximum UMI counts per cell: 50,000
+  - Minimum genes detected per cell: 200
+  - Maximum genes detected per cell: 6,000
+  - Maximum mitochondrial gene percentage: 20%
+
+Following QC filtering, batch effect correction was performed using the
+Harmony algorithm. After Harmony integration, a total of 211,163 cells were
+retained for downstream analysis.
+
+Cell Type Annotation
+--------------------
+Eight major cell types were identified and annotated:
+  Epithelial, Fibroblast, Macrophage, T_cell, NK, Endothelial, Pericyte,
+  and Proliferating.
+
+Group Comparisons
+-----------------
+Three experimental groups were defined for comparative analysis:
+  - N: Normal tissue
+  - OC: Ovarian cancer tumor tissue
+  - MT: Metastatic/other tissue
+
+The primary analysis focus was the OC group, specifically examining
+ligand-receptor interactions between malignant epithelial tumor cells and
+tumor microenvironment (TME) populations.
+
+CellChat Framework
+------------------
+Cell-cell communication inference was performed using the CellChat framework
+(Jin et al., 2021), which models intercellular signaling through curated
+ligand-receptor (LR) interaction databases.
+
+Ligand-Receptor Database (CellChatDB):
+CellChatDB provides a comprehensive, manually curated collection of LR pairs
+compiled from multiple biological databases and literature sources, including
+KEGG, Reactome, IntAct, and PubMed-annotated publications. The database
+encompasses signaling pathways, secreted factors, extracellular matrix
+interactions, and cell-surface receptor-ligand pairs.
+
+Communication Probability Computation:
+CellChat computes the communication probability for each LR pair between
+cell types using a mass-action model combined with a Hill-function response.
+Gene expression levels of ligands and receptors are transformed through the
+Hill function to estimate interaction strength. The model accounts for
+multi-subunit receptor complexes, where multiple gene products must be
+co-expressed to form a functional receptor complex. For each pair of cell
+types, the communication probability P is computed as the product of
+normalized expression levels of the ligand in the source cell population
+and the receptor in the target cell population, modulated by the Hill
+function response curve.
+
+Pathway-Level Aggregation:
+Individual LR pair communication probabilities are aggregated to the
+pathway level by summing probabilities across all LR pairs belonging to
+the same signaling pathway. This yields a pathway-level communication
+score that reflects the total signaling strength between two cell types
+via a specific biological pathway. Contribution analysis further identifies
+the relative contribution of individual LR pairs within each pathway.
+
+Statistical Testing
+--------------------
+Statistical significance of inferred communication events was assessed
+using a permutation-based approach. Specifically, 1,000 random permutations
+of cell labels were performed to generate an empirical null distribution
+of communication probabilities under the hypothesis of no structured
+cell-type-specific signaling. Observed communication probabilities were
+compared against this null distribution to compute empirical p-values.
+
+Multiple testing correction was applied using the Benjamini-Hochberg
+false discovery rate (FDR) procedure. Interactions with an adjusted
+p-value (adj-p) less than 0.05 were considered statistically significant.
+
+Analysis Scope
+--------------
+The primary analytical objective was to reconstruct and characterize the
+cell-cell communication network within the tumor microenvironment of
+ovarian cancer, with emphasis on signaling axes between malignant epithelial
+tumor cells and stromal and immune TME populations (fibroblasts,
+macrophages, T cells, NK cells, and endothelial cells) in the OC group.

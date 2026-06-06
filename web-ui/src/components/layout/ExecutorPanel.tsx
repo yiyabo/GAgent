@@ -684,4 +684,4 @@ const ExecutorPanel: React.FC = () => {
   );
 };
 
-export default ExecutorPanel;
+export default React.memo(ExecutorPanel);

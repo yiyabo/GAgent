@@ -1,0 +1,7 @@
+🚀 Starting backend server...
+📍 Host: 0.0.0.0
+🔌 Port: 9000
+🌐 CORS Origins: http://119.147.24.196:3001,http://localhost:3001
+♻️  Reload enabled: true
+📂 Project root: /home/zczhao/Phage-Agent
+📚 literature_pipeline proxy: socks5://119.147.24.196:10800
