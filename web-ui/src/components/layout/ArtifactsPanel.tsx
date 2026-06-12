@@ -41,6 +41,7 @@ import type { DataNode } from 'antd/es/tree';
 import type { ColumnsType } from 'antd/es/table';
 import { useLayoutStore } from '@store/layout';
 import { useTasksStore } from '@store/tasks';
+import { MarkdownRenderer } from '@components/chat/MarkdownRenderer';
 
 const { Text } = Typography;
 
@@ -910,7 +911,7 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
                         </div>
                       )}
                     </div>
-                  ) : renderedPreview?.format === 'pdf' && renderedPreview?.url ? (
+                   ) : renderedPreview?.format === 'pdf' && renderedPreview?.url ? (
                     <iframe
                       src={buildRenderedFileUrl(renderedPreview.url)}
                       title={selectedItem.name}
@@ -922,6 +923,13 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
                         borderRadius: isFocusedPreview ? 0 : 8,
                       }}
                     />
+                  ) : selectedItem?.path?.endsWith('.md') && textPreview?.content ? (
+                    <div style={{ flex: 1, overflow: 'auto', padding: 16, background: '#fff' }}>
+                      <MarkdownRenderer
+                        content={textPreview.content}
+                        sessionId={sessionId}
+                      />
+                    </div>
                   ) : renderedPreview?.format === 'html' && renderedPreview?.content ? (
                     <iframe
                       title={`${selectedItem.name}-rendered-html`}
