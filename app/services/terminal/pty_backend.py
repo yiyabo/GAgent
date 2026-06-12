@@ -34,8 +34,13 @@ class PTYBackend:
         self._verdict_write_fd: Optional[int] = None
         self._command_buffer = b""
         self._command_handler: Optional[CommandHandler] = None
-        self._command_lock = asyncio.Lock()
+        self._command_lock: Optional[asyncio.Lock] = None
         self._rcfile_path: Optional[str] = None  # cleaned up in terminate()
+
+    def _get_command_lock(self) -> asyncio.Lock:
+        if self._command_lock is None:
+            self._command_lock = asyncio.Lock()
+        return self._command_lock
 
     async def spawn(
         self,
@@ -218,7 +223,7 @@ class PTYBackend:
 
     async def _process_command_check(self, command: str) -> None:
         verdict = "ALLOW"
-        async with self._command_lock:
+        async with self._get_command_lock():
             try:
                 if self._command_handler is not None:
                     result = await self._command_handler(command)

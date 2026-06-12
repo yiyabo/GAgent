@@ -9,6 +9,7 @@ import {
 import { ChatMessage as ChatMessageType, ToolResultPayload } from '@/types';
 import { planTreeApi } from '@api/planTree';
 import { chatApi } from '@api/chat';
+import { useDecompositionJobStatus } from '@hooks/useDecompositionJobStatus';
 import JobLogPanel from '../JobLogPanel';
 import { ThinkingProcess } from '../ThinkingProcess';
 import { MarkdownRenderer } from '../MarkdownRenderer';
@@ -68,7 +69,7 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
     return null;
   }, [metadata]);
   const decompositionJobId = typeof decompositionJob?.job_id === 'string' ? decompositionJob.job_id : null;
-  const [decomposeSnapshot, setDecomposeSnapshot] = useState<DecompositionJobStatus | null>(null);
+  const { data: decomposeSnapshot = null } = useDecompositionJobStatus(decompositionJobId);
   const effectiveDecomposeJob = decomposeSnapshot ?? decompositionJob;
   const decomposeProgress = useMemo(
     () => computeDecomposeProgress(effectiveDecomposeJob),
@@ -81,45 +82,6 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
     unifiedStream && typeof (metadata as any)?.plan_message === 'string'
       ? ((metadata as any).plan_message as string)
       : null;
-  React.useEffect(() => {
-    if (!decompositionJobId) {
-      setDecomposeSnapshot(null);
-      return;
-    }
-    let cancelled = false;
-    let timer: number | null = null;
-
-    const stopTimer = () => {
-      if (timer !== null) {
-        window.clearInterval(timer);
-        timer = null;
-      }
-    };
-
-    const fetchStatus = async () => {
-      try {
-        const snapshot = await planTreeApi.getJobStatus(decompositionJobId);
-        if (cancelled) return;
-        setDecomposeSnapshot(snapshot);
-        const normalized = normalizeJobStatus(snapshot.status);
-        if (FINAL_JOB_STATUSES.has(normalized)) {
-          stopTimer();
-        }
-      } catch (error) {
-        if (!cancelled) {
-          stopTimer();
-        }
-      }
-    };
-
-    fetchStatus();
-    timer = window.setInterval(fetchStatus, 5000);
-
-    return () => {
-      cancelled = true;
-      stopTimer();
-    };
-  }, [decompositionJobId]);
 
   const toolResults: ToolResultPayload[] = useMemo(
     () =>

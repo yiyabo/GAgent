@@ -92,21 +92,26 @@ class InMemoryRealtimeBus(RealtimeBus):
         self._job_subscribers: DefaultDict[str, List[asyncio.Queue]] = defaultdict(list)
         self._control_subscribers: DefaultDict[str, List[asyncio.Queue]] = defaultdict(list)
         self._owners: Dict[Tuple[str, str], Tuple[str, float]] = {}
-        self._lock = asyncio.Lock()
+        self._lock: Optional[asyncio.Lock] = None
+
+    def _get_lock(self) -> asyncio.Lock:
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        return self._lock
 
     async def publish_run_event(self, run_id: str, seq: int, payload: Dict[str, Any]) -> None:
-        async with self._lock:
+        async with self._get_lock():
             queues = list(self._run_subscribers.get(run_id, []))
         for queue in queues:
             await self._safe_put(queue, (seq, payload))
 
     async def subscribe_run_events(self, run_id: str) -> EventSubscription:
         queue: asyncio.Queue = asyncio.Queue()
-        async with self._lock:
+        async with self._get_lock():
             self._run_subscribers[run_id].append(queue)
 
         async def _close() -> None:
-            async with self._lock:
+            async with self._get_lock():
                 queues = self._run_subscribers.get(run_id, [])
                 with contextlib.suppress(ValueError):
                     queues.remove(queue)
@@ -116,18 +121,18 @@ class InMemoryRealtimeBus(RealtimeBus):
         return AsyncQueueSubscription(queue, close_cb=_close)
 
     async def publish_job_event(self, job_id: str, payload: Dict[str, Any]) -> None:
-        async with self._lock:
+        async with self._get_lock():
             queues = list(self._job_subscribers.get(job_id, []))
         for queue in queues:
             await self._safe_put(queue, payload)
 
     async def subscribe_job_events(self, job_id: str) -> EventSubscription:
         queue: asyncio.Queue = asyncio.Queue()
-        async with self._lock:
+        async with self._get_lock():
             self._job_subscribers[job_id].append(queue)
 
         async def _close() -> None:
-            async with self._lock:
+            async with self._get_lock():
                 queues = self._job_subscribers.get(job_id, [])
                 with contextlib.suppress(ValueError):
                     queues.remove(queue)
@@ -137,11 +142,11 @@ class InMemoryRealtimeBus(RealtimeBus):
         return AsyncQueueSubscription(queue, close_cb=_close)
 
     async def register_owner(self, kind: str, entity_id: str, worker_id: str, *, ttl_seconds: int = OWNER_TTL_SECONDS) -> None:
-        async with self._lock:
+        async with self._get_lock():
             self._owners[(kind, entity_id)] = (worker_id, asyncio.get_running_loop().time() + ttl_seconds)
 
     async def get_owner(self, kind: str, entity_id: str) -> Optional[str]:
-        async with self._lock:
+        async with self._get_lock():
             value = self._owners.get((kind, entity_id))
             if value is None:
                 return None
@@ -152,7 +157,7 @@ class InMemoryRealtimeBus(RealtimeBus):
             return worker_id
 
     async def clear_owner(self, kind: str, entity_id: str, *, worker_id: Optional[str] = None) -> None:
-        async with self._lock:
+        async with self._get_lock():
             current = self._owners.get((kind, entity_id))
             if current is None:
                 return
@@ -161,18 +166,18 @@ class InMemoryRealtimeBus(RealtimeBus):
             self._owners.pop((kind, entity_id), None)
 
     async def send_control(self, worker_id: str, message: Dict[str, Any]) -> None:
-        async with self._lock:
+        async with self._get_lock():
             queues = list(self._control_subscribers.get(worker_id, []))
         for queue in queues:
             await self._safe_put(queue, message)
 
     async def subscribe_controls(self, worker_id: str) -> EventSubscription:
         queue: asyncio.Queue = asyncio.Queue()
-        async with self._lock:
+        async with self._get_lock():
             self._control_subscribers[worker_id].append(queue)
 
         async def _close() -> None:
-            async with self._lock:
+            async with self._get_lock():
                 queues = self._control_subscribers.get(worker_id, [])
                 with contextlib.suppress(ValueError):
                     queues.remove(queue)
@@ -182,7 +187,7 @@ class InMemoryRealtimeBus(RealtimeBus):
         return AsyncQueueSubscription(queue, close_cb=_close)
 
     async def close(self) -> None:
-        async with self._lock:
+        async with self._get_lock():
             self._run_subscribers.clear()
             self._job_subscribers.clear()
             self._control_subscribers.clear()

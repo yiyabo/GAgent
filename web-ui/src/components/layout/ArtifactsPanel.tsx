@@ -241,7 +241,7 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
       artifactsApi.listSessionArtifacts(sessionId ?? '', {
         maxDepth: 6,
         includeDirs: false,
-        limit: 100,
+        limit: 3000,
         pathPrefix: rawPathPrefix,
       }),
     enabled: Boolean(sessionId && mode === 'raw'),

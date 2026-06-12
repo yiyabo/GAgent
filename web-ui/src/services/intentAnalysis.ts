@@ -228,7 +228,9 @@ async function executeTaskCreate(
 async function executeSystemStatus(): Promise<ToolExecutionResult> {
   
   try {
-    const response = await fetch(`${ENV.API_BASE_URL}/system/health`);
+    const response = await fetch(`${ENV.API_BASE_URL}/system/health`, {
+      credentials: 'include',
+    });
     if (!response.ok) {
       throw new Error(`system/health ${response.status}`);
     }

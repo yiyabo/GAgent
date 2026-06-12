@@ -142,6 +142,7 @@ export type ChatRunStreamItem = { seq: number | null; event: ChatStreamEvent };
 export async function postChatRun(request: Record<string, any>): Promise<{ run_id: string; session_id?: string }> {
     const response = await fetch(`${ENV.API_BASE_URL}/chat/runs`, {
         method: 'POST',
+        credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(request),
     });
@@ -275,6 +276,7 @@ export const streamChatEvents = async function* (
         try {
             const response = await fetch(`${ENV.API_BASE_URL}/chat/stream`, {
                 method: 'POST',
+                credentials: 'include',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(request),
             });

@@ -1204,15 +1204,10 @@ def resolve_request_routing(
             combined_reasons.append("tier_elevated_explicit_task")
 
     # Detect imperative full-plan execution requests ("执行整个计划",
-    # "execute all tasks", etc.).  Tier-elevate to execute (more iterations)
-    # so DeepThink has enough budget to call plan_operation(execute_all).
-    #
-    # full_plan_execution stays False — the plan_operation tool has an
-    # execute_all operation that launches a background job with DAG ordering,
-    # artifact manifest, task verification, and deliverable publishing.
-    # DeepThink will call it via native tool-calling, which also produces
-    # visible thinking steps for the user.  Setting full_plan_execution=True
-    # would bypass DeepThink entirely and delegate to PlanExecutor directly.
+    # "execute all tasks", etc.).  Tier-elevate to execute so DeepThink
+    # has enough budget.  plan_execute_required (set via plan_intent)
+    # injects [REQUIREMENT] into DeepThink's system prompt to ensure
+    # it calls plan_operation(execute_all).
     full_plan_execution = False
     _execution_keywords_detected = _is_full_plan_execution_request(
         effective_user_message, plan_bound=effective_plan_bound,

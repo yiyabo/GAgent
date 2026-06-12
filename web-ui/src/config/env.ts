@@ -23,10 +23,17 @@ const defaultWsProtocol = browserProtocol === 'https:' ? 'wss:' : 'ws:';
 const defaultApiBaseUrl = `${defaultApiProtocol}//${browserHostname}:9000`;
 const defaultWsBaseUrl = `${defaultWsProtocol}//${browserHostname}:9000`;
 
-export const ENV = {
-  API_BASE_URL: import.meta.env.VITE_API_BASE_URL || defaultApiBaseUrl,
+const rawApiUrl = import.meta.env.VITE_API_BASE_URL;
+const rawWsUrl = import.meta.env.VITE_WS_BASE_URL;
 
-  WS_BASE_URL: import.meta.env.VITE_WS_BASE_URL || defaultWsBaseUrl,
+export const ENV = {
+  API_BASE_URL: rawApiUrl !== undefined
+    ? rawApiUrl
+    : defaultApiBaseUrl,
+
+  WS_BASE_URL: rawWsUrl !== undefined
+    ? rawWsUrl
+    : defaultWsBaseUrl,
 
   TERMINAL_ENABLED: String(import.meta.env.VITE_TERMINAL_ENABLED || 'true').toLowerCase() === 'true',
 

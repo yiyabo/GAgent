@@ -169,6 +169,7 @@ export const checkApiHealth = async (): Promise<{
   console.log('🌐 Checking health endpoint...');
   const healthResponse = await fetch(`${ENV.API_BASE_URL}/health`, {
   method: 'GET',
+  credentials: 'include',
   headers: {
   'Content-Type': 'application/json',
   },
@@ -183,6 +184,7 @@ export const checkApiHealth = async (): Promise<{
   console.log('🧠 Checking LLM endpoint...');
   const llmResponse = await fetch(`${ENV.API_BASE_URL}/health/llm?ping=true`, {
   method: 'GET',
+  credentials: 'include',
   headers: {
   'Content-Type': 'application/json',
   },

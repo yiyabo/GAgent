@@ -80,6 +80,9 @@ export default defineConfig(({ mode }) => {
 
   return {
     envDir: projectRoot,
+    esbuild: {
+      drop: mode === 'production' ? ['console', 'debugger'] : [],
+    },
     plugins: [
       patchThirdPartyModules(),
       react(),
@@ -107,6 +110,7 @@ export default defineConfig(({ mode }) => {
       host: devServerHost,
       port: devServerPort,
       strictPort: true,
+      allowedHosts: ['bioagent.byoryn.cn'],
       watch: {
         // Exclude large data directories from fs watching to avoid ENOSPC
         ignored: [
@@ -128,12 +132,65 @@ export default defineConfig(({ mode }) => {
           ws: true,
           changeOrigin: true,
         },
+        '/sso': {
+          target: apiBaseUrl,
+          changeOrigin: true,
+        },
+        '/auth': {
+          target: apiBaseUrl,
+          changeOrigin: true,
+        },
+        '/health': {
+          target: apiBaseUrl,
+          changeOrigin: true,
+        },
+        '/chat/sessions': {
+          target: apiBaseUrl,
+          changeOrigin: true,
+        },
+        '/chat/runs': {
+          target: apiBaseUrl,
+          changeOrigin: true,
+        },
+        '/chat/stream': {
+          target: apiBaseUrl,
+          changeOrigin: true,
+        },
+        '/chat/actions': {
+          target: apiBaseUrl,
+          changeOrigin: true,
+        },
+        '/chat/history': {
+          target: apiBaseUrl,
+          changeOrigin: true,
+        },
+        '/jobs': {
+          target: apiBaseUrl,
+          changeOrigin: true,
+        },
+        '/artifacts': {
+          target: apiBaseUrl,
+          changeOrigin: true,
+        },
+        '/plans/': {
+          target: apiBaseUrl,
+          changeOrigin: true,
+        },
+        '/tasks/': {
+          target: apiBaseUrl,
+          changeOrigin: true,
+        },
+        '/upload': {
+          target: apiBaseUrl,
+          changeOrigin: true,
+        },
       },
     },
     build: {
       outDir: 'dist',
       sourcemap: true,
       chunkSizeWarningLimit: 700,
+      minify: 'esbuild',
       rollupOptions: {
         output: {
           manualChunks(id) {

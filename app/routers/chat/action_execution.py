@@ -2468,7 +2468,23 @@ async def _execute_action_run(run_id: str) -> None:
         )
 
         if record.get("session_id"):
-            _set_session_plan_id(record["session_id"], result.bound_plan_id)
+            # Check if plan_id was changed by a tool (e.g., plan_operation bind)
+            from ...database import get_db
+            with get_db() as conn:
+                row = conn.execute(
+                    "SELECT plan_id FROM chat_sessions WHERE id=?",
+                    (record["session_id"],),
+                ).fetchone()
+                if row and row["plan_id"] != result.bound_plan_id:
+                    # Database was updated by a tool, use that value
+                    logger.info(
+                        "[CHAT][ASYNC] Plan binding changed by tool: %s -> %s",
+                        result.bound_plan_id, row["plan_id"]
+                    )
+                    _set_session_plan_id(record["session_id"], row["plan_id"])
+                else:
+                    # Use agent's state
+                    _set_session_plan_id(record["session_id"], result.bound_plan_id)
 
         final_plan_id = result.bound_plan_id or plan_session.plan_id
         if final_plan_id is not None:

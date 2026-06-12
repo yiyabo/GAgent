@@ -106,6 +106,7 @@ class ProxyAuthMiddleware(BaseHTTPMiddleware):
                 response,
                 session_id=session_refresh_id,
                 expires_at=session_refresh_expires,
+                host=_trim_header(request.headers.get("host")),
             )
         return response
 

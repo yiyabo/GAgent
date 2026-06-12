@@ -1803,8 +1803,10 @@ class DeepThinkAgent:
                 if not isinstance(raw_outputs, list) or not raw_outputs:
                     continue
 
+                output_location = candidate.get("output_location")
                 base_dir_value = (
-                    candidate.get("task_directory_full")
+                    (output_location.get("base_dir") if isinstance(output_location, dict) else None)
+                    or candidate.get("task_directory_full")
                     or candidate.get("run_directory")
                     or candidate.get("working_directory")
                 )
@@ -6029,6 +6031,17 @@ Respond with ONLY a JSON object:
                     self.tool_executor(tool_name, params_with_ctx),
                     timeout=timeout,
                 )
+                
+                if tool_name == "plan_operation" and isinstance(tool_result, dict):
+                    if tool_result.get("operation") == "bind" and tool_result.get("success"):
+                        new_plan_id = tool_result.get("plan_id")
+                        if new_plan_id is not None:
+                            self.request_profile["current_plan_id"] = new_plan_id
+                            logger.info(
+                                "[DEEP_THINK] Updated request_profile current_plan_id to %s after successful bind",
+                                new_plan_id
+                            )
+                
                 callback_success, callback_error = self._normalize_tool_callback_outcome(tool_result)
                 callback_payload = {
                     "success": callback_success,
@@ -6296,7 +6309,47 @@ Respond with ONLY a JSON object:
             return cls._compact_file_operations_result_for_llm(result)
         if str(tool_name or "").strip().lower() == "phagescope_research":
             return cls._compact_phagescope_research_result_for_llm(result)
+        if str(tool_name or "").strip().lower() == "code_executor":
+            return cls._compact_code_executor_result_for_llm(result)
         return None
+
+    @classmethod
+    def _compact_code_executor_result_for_llm(
+        cls, result: Any
+    ) -> Optional[Dict[str, Any]]:
+        if not isinstance(result, dict):
+            return None
+        _MAX_STDOUT_CHARS = 3000
+        stdout_raw = str(result.get("stdout") or "")
+        stdout_text = (
+            stdout_raw[:_MAX_STDOUT_CHARS] + "…[truncated]"
+            if len(stdout_raw) > _MAX_STDOUT_CHARS
+            else stdout_raw
+        )
+        stderr_raw = str(result.get("stderr") or "")
+        stderr_text = (
+            stderr_raw[:1000] + "…[truncated]"
+            if len(stderr_raw) > 1000
+            else stderr_raw
+        )
+        compact: Dict[str, Any] = {
+            "tool": "code_executor",
+            "success": bool(result.get("success", False)),
+            "exit_code": result.get("exit_code", -1),
+            "output_files": result.get("output_files", []),
+            "output_location": result.get("output_location"),
+            "stdout": stdout_text,
+            "llm_compacted": True,
+        }
+        if stderr_text:
+            compact["stderr"] = stderr_text
+        for key in ("error", "error_category", "error_summary", "fix_guidance",
+                     "execution_status", "verification_status", "failure_kind",
+                     "result", "code_file", "produced_files_count"):
+            val = result.get(key)
+            if val is not None:
+                compact[key] = val
+        return compact
 
     @classmethod
     def _compact_phagescope_research_result_for_llm(

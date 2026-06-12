@@ -112,6 +112,39 @@ def auth_cookie_secure() -> bool:
     return app_env in {"prod", "production"}
 
 
+def auth_cookie_domain() -> Optional[str]:
+    raw = getattr(get_settings(), "auth_cookie_domain", None)
+    if raw is None:
+        return None
+    domain = str(raw).strip()
+    return domain if domain else None
+
+
+def effective_cookie_domain(host: Optional[str]) -> Optional[str]:
+    """Return the cookie domain to use for a given request host.
+
+    If AUTH_COOKIE_DOMAIN is configured, only apply it when the request host
+    actually falls under that domain.  Otherwise, leave domain=None so the
+    browser binds the cookie to the exact current origin — which works for
+    direct-access scenarios (localhost, private IPs, etc.) that would reject
+    a mismatched domain.
+    """
+    configured = auth_cookie_domain()
+    if configured is None:
+        return None
+    if host is None:
+        return configured
+    # Strip port if present (e.g. "bioagent.byoryn.cn:9000" → "bioagent.byoryn.cn")
+    hostname = str(host).split(":")[0].strip().lower()
+    domain_suffix = str(configured).lstrip(".").strip().lower()
+    # Host matches if it equals the domain or ends with "." + domain
+    if hostname == domain_suffix or hostname.endswith(f".{domain_suffix}"):
+        return configured
+    # Host does not belong to the configured domain — omit domain so the
+    # browser defaults to the current origin.
+    return None
+
+
 def require_local_auth_enabled() -> None:
     if local_auth_enabled():
         return
@@ -144,8 +177,10 @@ def set_session_cookie(
     *,
     session_id: str,
     expires_at: datetime,
+    host: Optional[str] = None,
 ) -> None:
     max_age = max(0, int((expires_at - _now_utc()).total_seconds()))
+    domain = effective_cookie_domain(host)
     response.set_cookie(
         key=auth_cookie_name(),
         value=session_id,
@@ -155,16 +190,19 @@ def set_session_cookie(
         samesite="lax",
         secure=auth_cookie_secure(),
         path="/",
+        domain=domain,
     )
 
 
-def clear_session_cookie(response: Response) -> None:
+def clear_session_cookie(response: Response, *, host: Optional[str] = None) -> None:
+    domain = effective_cookie_domain(host)
     response.delete_cookie(
         key=auth_cookie_name(),
         httponly=True,
         samesite="lax",
         secure=auth_cookie_secure(),
         path="/",
+        domain=domain,
     )
 
 

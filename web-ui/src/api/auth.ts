@@ -37,4 +37,13 @@ export const authApi = {
     const response = await apiClient.post<AuthSessionResponse>('/auth/change-password', payload, AUTH_REQUEST_OPTIONS);
     return response.data as AuthSessionResponse;
   },
+
+  async ssoComplete(sessionToken: string): Promise<AuthSessionResponse> {
+    const response = await apiClient.post<AuthSessionResponse>(
+      '/auth/sso-complete',
+      { session_token: sessionToken },
+      AUTH_REQUEST_OPTIONS
+    );
+    return response.data as AuthSessionResponse;
+  },
 };
