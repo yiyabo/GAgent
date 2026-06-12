@@ -52,7 +52,8 @@ def resolve_qwen_container_memory_limit(value: Optional[str] = None) -> Optional
 
 
 CONTAINER_MEMORY_LIMIT = resolve_qwen_container_memory_limit()
-CONTAINER_PIDS_LIMIT = int(os.getenv("QWEN_CODE_CONTAINER_PIDS", "512"))
+CONTAINER_PIDS_LIMIT = int(os.getenv("QWEN_CODE_CONTAINER_PIDS", "2048"))
+CONTAINER_NPROC_LIMIT = int(os.getenv("QWEN_CODE_CONTAINER_NPROC", "4096"))
 CONTAINER_WORKDIR = "/workspace"
 CONTAINER_HOME = "/tmp/gagent_home"
 CONTAINER_USERNAME = "runner"
@@ -178,6 +179,7 @@ class DockerPTYBackend:
                 "--cap-drop=ALL",
                 "--security-opt=no-new-privileges",
                 f"--pids-limit={CONTAINER_PIDS_LIMIT}",
+                f"--ulimit", f"nproc={CONTAINER_NPROC_LIMIT}:{CONTAINER_NPROC_LIMIT}",
                 # Match host UID/GID so workspace writes have correct ownership
                 "--user", f"{os.getuid()}:{os.getgid()}",
             ]

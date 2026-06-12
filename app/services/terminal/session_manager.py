@@ -69,9 +69,14 @@ class TerminalSessionManager:
         self._sessions: Dict[str, TerminalSession] = {}
         self._max_sessions = max_sessions
         self._idle_timeout = idle_timeout
-        self._lock = asyncio.Lock()
+        self._lock: Optional[asyncio.Lock] = None
         self._command_filter = CommandFilter()
         self._reaper_task: Optional[asyncio.Task] = None
+
+    def _get_lock(self) -> asyncio.Lock:
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        return self._lock
 
     def _now(self) -> datetime:
         return datetime.now(timezone.utc)
@@ -199,7 +204,7 @@ class TerminalSessionManager:
         # concurrent callers see this session in the count and cannot
         # exceed max_sessions.  AuditLogger is created only after
         # admission to avoid orphan SQLite files on rejection.
-        async with self._lock:
+        async with self._get_lock():
             active_count = sum(1 for s in self._sessions.values() if s.state != "closed")
             if active_count >= self._max_sessions:
                 raise ValueError("Maximum number of terminal sessions reached")
@@ -256,7 +261,7 @@ class TerminalSessionManager:
                 await backend.connect(cfg)
         except BaseException:
             # Spawn failed — release the reserved slot so the cap stays accurate.
-            async with self._lock:
+            async with self._get_lock():
                 self._sessions.pop(session.terminal_id, None)
             # Clean up the orphan audit DB.
             try:
@@ -298,7 +303,7 @@ class TerminalSessionManager:
             return await self.ensure_qwen_code_session(target_id)
 
         session: Optional[TerminalSession] = None
-        async with self._lock:
+        async with self._get_lock():
             candidates = [
                 s
                 for s in self._sessions.values()
@@ -338,7 +343,7 @@ class TerminalSessionManager:
             if str(path or "").strip()
         ]
 
-        async with self._lock:
+        async with self._get_lock():
             candidates = [
                 s
                 for s in self._sessions.values()
@@ -379,7 +384,7 @@ class TerminalSessionManager:
         )
 
     async def list_sessions(self, *, session_id: Optional[str] = None) -> list[dict[str, Any]]:
-        async with self._lock:
+        async with self._get_lock():
             rows = []
             for s in self._sessions.values():
                 if session_id and s.session_id != session_id:
@@ -400,7 +405,7 @@ class TerminalSessionManager:
             return rows
 
     async def get_session(self, terminal_id: str) -> TerminalSession:
-        async with self._lock:
+        async with self._get_lock():
             session = self._sessions.get(terminal_id)
             if session is None:
                 raise KeyError(f"Unknown terminal_id: {terminal_id}")
@@ -422,7 +427,7 @@ class TerminalSessionManager:
                 continue
             queue.put_nowait(TerminalEvent(type=WSMessageType.OUTPUT, payload=payload))
 
-        async with self._lock:
+        async with self._get_lock():
             session.subscribers.add(queue)
             session.state = "active"
             session.last_activity = self._now()
@@ -431,7 +436,7 @@ class TerminalSessionManager:
 
     async def unsubscribe(self, terminal_id: str, queue: asyncio.Queue) -> None:
         session = await self.get_session(terminal_id)
-        async with self._lock:
+        async with self._get_lock():
             session.subscribers.discard(queue)
             session.last_activity = self._now()
             if not session.subscribers and session.state not in {"closing", "closed"}:
@@ -515,7 +520,7 @@ class TerminalSessionManager:
         await session.backend.resize(int(cols), int(rows))
 
     async def close_session(self, terminal_id: str) -> None:
-        async with self._lock:
+        async with self._get_lock():
             session = self._sessions.get(terminal_id)
             if session is None:
                 return
@@ -551,7 +556,7 @@ class TerminalSessionManager:
 
         await self._broadcast(session, TerminalEvent(type=WSMessageType.SESSION_CLOSED, payload={"terminal_id": terminal_id}))
 
-        async with self._lock:
+        async with self._get_lock():
             session.state = "closed"
             session.last_activity = self._now()
             self._sessions.pop(terminal_id, None)
@@ -645,7 +650,7 @@ class TerminalSessionManager:
             except Exception:
                 stale.append(queue)
         if stale:
-            async with self._lock:
+            async with self._get_lock():
                 for queue in stale:
                     session.subscribers.discard(queue)
 
@@ -717,7 +722,7 @@ class TerminalSessionManager:
                 await asyncio.sleep(30)
                 now = self._now()
                 to_close: list[str] = []
-                async with self._lock:
+                async with self._get_lock():
                     for terminal_id, session in self._sessions.items():
                         if session.state != "idle":
                             continue

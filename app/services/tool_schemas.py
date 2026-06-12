@@ -1066,11 +1066,12 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
             "name": "plan_operation",
             "description": (
                 "Plan creation, optimization, and execution tool. "
-                "Operations: create, review, optimize, get, execute_all, todo_list. "
+                "Operations: create, bind, review, optimize, get, execute_all, todo_list. "
                 "CRITICAL: When the user wants to execute the entire plan or all tasks, "
                 "you MUST use operation='execute_all'. Do NOT execute tasks one by one. "
                 "execute_all launches a background job that handles all tasks automatically. "
                 "Use create for new structured plans, then prefer review to persist rubric metadata. "
+                "Use bind to switch the current session to a different plan (e.g. '切换到 plan X', '绑定 plan X'). "
                 "Use get/review/optimize for bound plans. "
                 "Research with web_search first only when latest external evidence materially affects the plan. "
                 "For optimize, use concrete change objects such as add_task, update_task, update_description, "
@@ -1082,8 +1083,8 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
                 "properties": {
                     "operation": {
                         "type": "string",
-                        "enum": ["create", "review", "optimize", "get", "execute_all", "todo_list"],
-                        "description": "Plan operation to perform. Use execute_all to run all pending tasks in background.",
+                        "enum": ["create", "bind", "review", "optimize", "get", "execute_all", "todo_list", "update_task"],
+                        "description": "Plan operation to perform. Use execute_all to run all pending tasks in background. Use bind to switch to a different plan.",
                     },
                     "title": {"type": "string", "description": "Plan title (for create)."},
                     "description": {"type": "string", "description": "Plan goal description (for create)."},

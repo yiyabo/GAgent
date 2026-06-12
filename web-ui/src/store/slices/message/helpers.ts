@@ -23,7 +23,9 @@ export function startActionStatusPolling(
   if (!trackingId) return;
   const pollOnce = async (): Promise<boolean> => {
   try {
-  const resp = await fetch(`${ENV.API_BASE_URL}/chat/actions/${trackingId}`);
+  const resp = await fetch(`${ENV.API_BASE_URL}/chat/actions/${trackingId}`, {
+    credentials: 'include',
+  });
   if (!resp.ok) return false;
   const statusResp = (await resp.json()) as ActionStatusResponse;
   const status = statusResp.status;

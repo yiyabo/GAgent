@@ -12,6 +12,7 @@ import {
   ExpandOutlined,
 } from '@ant-design/icons';
 import { usePlanTasks, usePlanTree } from '@hooks/usePlans';
+import { useDecompositionJobStatus } from '@hooks/useDecompositionJobStatus';
 import PlanTreeVisualization from '@components/dag/PlanTreeVisualization';
 import DAG3DView from '@components/dag/DAG3DView';
 import type { PlanSyncEventDetail } from '@/types';
@@ -85,7 +86,6 @@ const DAGSidebar: React.FC = () => {
   const [activeTab, setActiveTab] = useState<string>('plan');
 
   const [showFullscreenDAG, setShowFullscreenDAG] = useState(false);
-  const [decomposeSnapshot, setDecomposeSnapshot] = useState<Record<string, any> | null>(null);
   const [planTodoListOpen, setPlanTodoListOpen] = useState(false);
 
   const {
@@ -152,45 +152,9 @@ const DAGSidebar: React.FC = () => {
   return null;
   }, [currentPlanId, messages]);
 
-  useEffect(() => {
-  if (!latestDecomposeJob?.jobId) {
-  setDecomposeSnapshot(null);
-  return;
-  }
-  setDecomposeSnapshot(latestDecomposeJob.initialJob ?? null);
-  let cancelled = false;
-  let timer: number | null = null;
-
-  const stopTimer = () => {
-  if (timer !== null) {
-  window.clearInterval(timer);
-  timer = null;
-  }
-  };
-
-  const fetchStatus = async () => {
-  try {
-  const snapshot = await planTreeApi.getJobStatus(latestDecomposeJob.jobId);
-  if (cancelled) return;
-  setDecomposeSnapshot(snapshot);
-  if (FINAL_JOB_STATUSES.has(snapshot.status)) {
-  stopTimer();
-  }
-  } catch (error) {
-  if (!cancelled) {
-  stopTimer();
-  }
-  }
-  };
-
-  fetchStatus();
-  timer = window.setInterval(fetchStatus, 5000);
-
-  return () => {
-  cancelled = true;
-  stopTimer();
-  };
-  }, [latestDecomposeJob?.jobId]);
+  const { data: decomposeSnapshot = null } = useDecompositionJobStatus(
+    latestDecomposeJob?.jobId ?? null
+  );
 
   const decomposeProgress = useMemo(() => {
   if (!latestDecomposeJob?.jobId) return null;

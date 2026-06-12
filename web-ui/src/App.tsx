@@ -95,9 +95,18 @@ function App() {
       message.error(`error: ${event.message || 'error'}`, 6);
     };
     const handleRejection = (event: PromiseRejectionEvent) => {
-      const reason = (event.reason && (event.reason.message || event.reason.toString())) || 'reason';
-      console.error('Unhandled rejection:', event.reason);
-      message.error(`exception: ${reason}`, 6);
+      const reason = event.reason;
+      const status = reason?.response?.status || reason?.status;
+      
+      // Silently handle 401 errors (auth-related, will be handled by AUTH_UNAUTHORIZED_EVENT)
+      if (status === 401) {
+        event.preventDefault();
+        return;
+      }
+      
+      const message = (reason && (reason.message || reason.toString())) || 'reason';
+      console.error('Unhandled rejection:', reason);
+      message.error(`exception: ${message}`, 6);
     };
     const handleUnauthorized = () => {
       clearAuth();

@@ -5061,11 +5061,10 @@ class StructuredChatAgent:
 
         # ── Full plan execution ───────────────────────────────────────
         # When user requests "执行整个计划" / "complete all tasks",
-        # delegate to PlanExecutor which handles DAG ordering, artifact
-        # manifest registration, task verification, and deliverable
-        # publishing.  PlanExecutor has its own resume logic for
-        # running/skipped/failed tasks, so we always delegate when a
-        # plan is bound — no need to pre-check pending_order.
+        # full_plan_execution stays False so DeepThink handles it via
+        # plan_operation(execute_all).  The plan_execute_required flag
+        # (set by routing) injects [REQUIREMENT] into DeepThink's system
+        # prompt to ensure it calls execute_all reliably.
         if routing_decision.full_plan_execution:
             self.extra_context["_current_task_source"] = "full_plan"
             if self.plan_session.plan_id is not None:

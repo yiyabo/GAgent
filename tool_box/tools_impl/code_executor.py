@@ -4511,6 +4511,10 @@ def _build_local_backend_result_payload(
         "artifact_paths": list(verification_artifact_paths),
         "contract_artifacts": list(contract_artifacts),
         "session_artifact_paths": list(session_artifact_paths),
+        "output_files": [
+            str((unified_output_dir / rel).resolve()) if unified_output_dir else rel
+            for rel in unified_promoted_files
+        ],
         "output_location": {
             "type": "task" if resolved_task_id is not None else "tmp",
             "session_id": effective_session_id,
@@ -5933,6 +5937,10 @@ async def code_executor_handler(
             "artifact_paths": verification_artifact_paths,
             "contract_artifacts": contract_artifacts,
             "session_artifact_paths": session_artifact_paths,
+            "output_files": [
+                str((unified_output_dir / rel).resolve()) if unified_output_dir else rel
+                for rel in unified_promoted_files_qwen
+            ],
             # Unified output path (new)
             "output_location": {
                 "type": "task" if resolved_task_id is not None else "tmp",

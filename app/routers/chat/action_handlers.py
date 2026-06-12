@@ -80,6 +80,7 @@ from .session_helpers import (
     _normalize_search_provider,
     _resolve_phagescope_taskid_alias,
     _record_phagescope_task_memory,
+    _set_session_plan_id,
     _update_session_metadata,
 )
 from .subject_identity import (
@@ -3305,6 +3306,10 @@ async def handle_plan_action(agent: Any, action: LLMAction) -> AgentStep:
         effective_tree = agent.plan_tree or new_tree
         agent.plan_tree = effective_tree
         agent.extra_context["plan_id"] = effective_tree.id
+        
+        # Persist the plan binding to the database immediately
+        if agent.session_id:
+            _set_session_plan_id(agent.session_id, effective_tree.id, owner_id=owner)
         auto_review_payload = dict(generation.auto_review or {})
         if auto_review_payload:
             agent._refresh_plan_tree(force_reload=True)

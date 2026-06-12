@@ -4424,6 +4424,19 @@ class PlanExecutor:
                         )
                         if isinstance(published_entry, dict):
                             contract_published[published_entry["alias"]] = published_entry
+                    
+                    if not inferred_aliases:
+                        fallback_alias = f"general.contract_{node.id}_{Path(expected).stem}"
+                        fallback_entry = publish_artifact(
+                            plan_id=plan_id,
+                            alias=fallback_alias,
+                            source_path=resolved_path,
+                            producer_task_id=node.id,
+                            manifest=manifest,
+                            session_id=session_id,
+                        )
+                        if isinstance(fallback_entry, dict):
+                            contract_published[fallback_entry["alias"]] = fallback_entry
                 key = f"contract:{expected or index}"
                 contract_published[key] = {
                     "alias": key,
@@ -4458,6 +4471,7 @@ class PlanExecutor:
                     node=node,
                     published=published,
                     session_context=session_context,
+                    manifest=manifest,
                 )
         return payload
 
@@ -4468,28 +4482,56 @@ class PlanExecutor:
         node: PlanNode,
         published: Dict[str, Dict[str, Any]],
         session_context: Optional[Dict[str, Any]],
+        manifest: Optional[Dict[str, Any]] = None,
     ) -> None:
         session_id = session_context.get("session_id") if isinstance(session_context, dict) else None
         if not session_id:
+            logger.debug(f"Plan {plan_id} task {node.id}: No session_id, skipping deliverable publish")
             return
+        
+        def _collect_artifact_entries(entries: Iterable[Dict[str, Any]], include_contract_prefix: bool) -> List[Dict[str, str]]:
+            collected = []
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                path_text = str(entry.get("path") or "").strip()
+                if not path_text:
+                    continue
+                candidate = Path(path_text)
+                if not candidate.is_file():
+                    continue
+                module = self._deliverable_publisher._classify_module(candidate)
+                if module is None:
+                    continue
+                collected.append({"path": path_text, "module": module})
+            return collected
+        
         artifacts: List[Dict[str, str]] = []
         seen_paths: set[str] = set()
-        for entry in published.values():
-            if not isinstance(entry, dict):
-                continue
-            path_text = str(entry.get("path") or "").strip()
-            if not path_text or path_text in seen_paths:
-                continue
-            candidate = Path(path_text)
-            if not candidate.is_file():
-                continue
-            module = self._deliverable_publisher._classify_module(candidate)
-            if module is None:
-                continue
-            artifacts.append({"path": path_text, "module": module})
-            seen_paths.add(path_text)
+        
+        for entry in _collect_artifact_entries(published.values(), include_contract_prefix=False):
+            if entry["path"] not in seen_paths:
+                artifacts.append(entry)
+                seen_paths.add(entry["path"])
+        
+        if manifest and isinstance(manifest, dict):
+            manifest_artifacts = manifest.get("artifacts", {})
+            if isinstance(manifest_artifacts, dict):
+                contract_entries = [
+                    entry for key, entry in manifest_artifacts.items()
+                    if isinstance(key, str) and key.startswith("contract:")
+                ]
+                for entry in _collect_artifact_entries(contract_entries, include_contract_prefix=True):
+                    if entry["path"] not in seen_paths:
+                        artifacts.append(entry)
+                        seen_paths.add(entry["path"])
+        
         if not artifacts:
+            logger.debug(f"Plan {plan_id} task {node.id}: No artifacts to publish")
             return
+        
+        logger.info(f"Plan {plan_id} task {node.id}: Publishing {len(artifacts)} contract deliverables")
+        
         synthetic_result: Dict[str, Any] = {
             "deliverable_submit": {
                 "artifacts": artifacts,
@@ -4507,6 +4549,7 @@ class PlanExecutor:
                 task_instruction=node.instruction or "",
                 publish_status="final",
             )
+            logger.info(f"Plan {plan_id} task {node.id}: Successfully published contract deliverables")
         except Exception as exc:
             logger.warning(
                 "Failed to publish contract deliverables for plan %s task %s: %s",

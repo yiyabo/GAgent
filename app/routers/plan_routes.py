@@ -591,6 +591,20 @@ def _build_dependency_block_reason(
     )
 
 
+def _lookup_session_id_for_plan(plan_id: int) -> Optional[str]:
+    try:
+        with get_db() as conn:
+            row = conn.execute(
+                "SELECT id FROM chat_sessions WHERE plan_id = ? LIMIT 1",
+                (plan_id,),
+            ).fetchone()
+            if row:
+                return str(row["id"])
+    except Exception:
+        pass
+    return None
+
+
 def _resolve_effective_task_states(
     plan_id: int,
     tree: "PlanTree",
@@ -598,10 +612,12 @@ def _resolve_effective_task_states(
     snapshot: Optional[Dict[str, Any]] = None,
 ) -> Dict[int, Dict[str, Any]]:
     snapshot = snapshot or _build_plan_execution_snapshot(plan_id)
+    session_id = _lookup_session_id_for_plan(plan_id)
     states = _plan_status_resolver.resolve_plan_states(
         plan_id,
         tree,
         snapshot=snapshot,
+        session_id=session_id,
     )
     for task_id, state in states.items():
         if str(state.get("effective_status") or "").strip().lower() != "completed":

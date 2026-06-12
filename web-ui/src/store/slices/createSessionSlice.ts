@@ -84,6 +84,7 @@ export const createSessionSlice: ChatSliceCreator = (set, get) => ({
   try {
   const checkResponse = await fetch(`${ENV.API_BASE_URL}/chat/sessions/${sessionId}`, {
   method: 'HEAD',
+  credentials: 'include',
   });
 
   if (!checkResponse.ok) {

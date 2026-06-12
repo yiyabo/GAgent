@@ -138,8 +138,8 @@ async def plan_operation_handler(
         Dict containing operation result
     """
     # Session-plan isolation: if the session is bound to a plan, only allow
-    # operations on that plan (except create, which creates a new one).
-    if operation != "create" and plan_id is not None and tool_context is not None:
+    # operations on that plan (except create and bind, which manage bindings).
+    if operation not in ("create", "bind") and plan_id is not None and tool_context is not None:
         bound_plan_id = getattr(tool_context, "plan_id", None)
         if bound_plan_id is not None and plan_id != bound_plan_id:
             logger.warning(
@@ -150,7 +150,7 @@ async def plan_operation_handler(
                 "success": False,
                 "error": (
                     f"Cannot access plan {plan_id}: this session is bound to plan {bound_plan_id}. "
-                    f"Use plan_id={bound_plan_id} or start a new session for a different plan."
+                    f"Use plan_id={bound_plan_id}, use operation='bind' to switch plans, or start a new session."
                 ),
                 "operation": operation,
                 "requested_plan_id": plan_id,
@@ -160,6 +160,8 @@ async def plan_operation_handler(
     try:
         if operation == "create":
             return await _create_plan(title, description, tasks, tool_context=tool_context)
+        elif operation == "bind":
+            return await _bind_plan(plan_id, tool_context=tool_context)
         elif operation == "review":
             return await _review_plan(plan_id, tool_context=tool_context)
         elif operation == "optimize":
@@ -184,7 +186,7 @@ async def plan_operation_handler(
         else:
             return {
                 "success": False,
-                "error": f"Unknown operation: {operation}. Supported: create, review, optimize, get, todo_list, execute_all, update_task",
+                "error": f"Unknown operation: {operation}. Supported: create, bind, review, optimize, get, todo_list, execute_all, update_task",
             }
     except Exception as e:
         logger.exception(f"Plan operation '{operation}' failed: {e}")
@@ -281,6 +283,80 @@ async def _create_plan(
     except Exception as e:
         logger.exception(f"Failed to create plan: {e}")
         return {"success": False, "error": f"Failed to create plan: {str(e)}"}
+
+
+async def _bind_plan(plan_id: Optional[int], tool_context: Optional[Any] = None) -> Dict[str, Any]:
+    """
+    Bind the current session to an existing plan.
+    
+    This allows switching from one plan to another within the same session.
+    
+    Args:
+        plan_id: ID of the plan to bind to
+        
+    Returns:
+        Binding result with plan info
+    """
+    if plan_id is None:
+        return {"success": False, "error": "plan_id is required"}
+    
+    try:
+        from app.repository.plan_repository import PlanRepository
+        from app.routers.chat.session_helpers import _set_session_plan_id
+        
+        repo = PlanRepository()
+        
+        try:
+            plan_tree = repo.get_plan_tree(plan_id)
+        except ValueError as e:
+            return {"success": False, "error": f"Plan {plan_id} not found: {str(e)}"}
+        
+        session_id = None
+        owner_id = None
+        if tool_context is not None:
+            session_id = getattr(tool_context, "session_id", None)
+            owner_id = getattr(tool_context, "owner_id", None)
+        
+        logger.info(f"[BIND] session_id={session_id}, owner_id={owner_id}, target_plan_id={plan_id}")
+        
+        if session_id:
+            _set_session_plan_id(session_id, plan_id, owner_id=owner_id)
+            logger.info(f"Session {session_id} bound to plan {plan_id}")
+            
+            # Verify the update
+            from app.database import get_db
+            with get_db() as conn:
+                row = conn.execute(
+                    "SELECT plan_id FROM chat_sessions WHERE id=?",
+                    (session_id,),
+                ).fetchone()
+                if row:
+                    logger.info(f"[BIND] Verification: session {session_id} now has plan_id={row['plan_id']}")
+                else:
+                    logger.warning(f"[BIND] Verification failed: session {session_id} not found")
+        else:
+            logger.warning(f"No session_id in tool_context, cannot persist binding")
+        
+        if tool_context is not None and hasattr(tool_context, "plan_id"):
+            tool_context.plan_id = plan_id
+        
+        task_count = len(plan_tree.nodes) - 1
+        completed_count = sum(1 for node in plan_tree.nodes.values() 
+                            if node.status == "completed" and node.id != plan_tree.root_id)
+        
+        return {
+            "success": True,
+            "operation": "bind",
+            "plan_id": plan_id,
+            "title": plan_tree.title,
+            "task_count": task_count,
+            "completed_count": completed_count,
+            "message": f"Successfully bound to plan '{plan_tree.title}' (ID: {plan_id}) with {task_count} tasks ({completed_count} completed).",
+        }
+        
+    except Exception as e:
+        logger.exception(f"Failed to bind to plan: {e}")
+        return {"success": False, "error": f"Failed to bind to plan: {str(e)}"}
 
 
 async def _review_plan(plan_id: Optional[int], tool_context: Optional[Any] = None) -> Dict[str, Any]:
@@ -1501,6 +1577,14 @@ with progress tracking and error handling. It returns a job_id for real-time mon
 Trigger phrases: "执行全部任务", "执行整个计划", "开始吧", "跑起来", "execute all",
 "run the plan", "let's go", "start executing", "do all tasks", or any similar intent.
 
+BIND operation:
+- Switches the current session to a different plan
+- Use when the user wants to work on a different plan within the same session
+- Requires plan_id of the target plan
+- Updates the session binding in the database
+- Returns plan info including task count and completion status
+- Trigger phrases: "切换到 plan X", "绑定 plan X", "switch to plan X", "bind to plan X"
+
 WORKFLOW for Plan Creation:
 1. Use 'create' to generate the plan in one synchronous pass
 2. The system may collect web_search or graph_rag evidence before decomposition when needed
@@ -1537,7 +1621,7 @@ Legacy compatibility:
             "operation": {
                 "type": "string",
                 "description": "Operation type",
-                "enum": ["create", "review", "optimize", "get", "todo_list", "execute_all", "update_task"],
+                "enum": ["create", "bind", "review", "optimize", "get", "todo_list", "execute_all", "update_task"],
             },
             "title": {
                 "type": "string",

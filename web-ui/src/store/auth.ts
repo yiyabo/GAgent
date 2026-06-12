@@ -45,6 +45,35 @@ export const useAuthStore = create<AuthState>((set) => ({
   bootstrap: async () => {
     set({ loading: true });
     try {
+      const urlParams = new URLSearchParams(window.location.search);
+      const ssoSession = urlParams.get('__sso_session');
+      if (ssoSession) {
+        try {
+          const payload = await authApi.ssoComplete(ssoSession);
+          urlParams.delete('__sso_session');
+          const newUrl = urlParams.toString() 
+            ? `${window.location.pathname}?${urlParams.toString()}`
+            : window.location.pathname;
+          window.history.replaceState({}, '', newUrl);
+          if (payload.authenticated && payload.user) {
+            set({
+              user: payload.user,
+              authenticated: true,
+              legacyAccessAllowed: false,
+              initialized: true,
+              loading: false,
+            });
+            return;
+          }
+        } catch {
+          urlParams.delete('__sso_session');
+          const newUrl = urlParams.toString() 
+            ? `${window.location.pathname}?${urlParams.toString()}`
+            : window.location.pathname;
+          window.history.replaceState({}, '', newUrl);
+        }
+      }
+
       const payload = await authApi.me();
       if (payload.authenticated && payload.user) {
         set({

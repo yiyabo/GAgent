@@ -140,6 +140,7 @@ if _USE_PYDANTIC:
         )
         auth_mode: str = Field(default="local", env="AUTH_MODE")
         auth_cookie_name: str = Field(default="ga_session", env="AUTH_COOKIE_NAME")
+        auth_cookie_domain: Optional[str] = Field(default=None, env="AUTH_COOKIE_DOMAIN")
         auth_session_ttl_hours: int = Field(default=168, env="AUTH_SESSION_TTL_HOURS")
         auth_open_signup: bool = Field(default=True, env="AUTH_OPEN_SIGNUP")
         chat_include_action_summary: bool = Field(

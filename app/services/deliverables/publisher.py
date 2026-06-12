@@ -55,6 +55,17 @@ TABULAR_EXTS = {
     ".xls",
     ".jsonl",
     ".parquet",
+    ".json",
+    ".fasta",
+    ".fa",
+    ".fna",
+    ".faa",
+    ".out",
+    ".nwk",
+    ".newick",
+    ".graphml",
+    ".sqlite",
+    ".db",
 }
 
 IMAGE_EXTS = {
@@ -1706,6 +1717,9 @@ class DeliverablePublisher:
         # Manuscript LaTeX (and class/style) always live under paper/
         if suffix in {".tex", ".cls", ".sty", ".bst"}:
             return "paper"
+        # Manuscript markdown files (draft, final, etc.)
+        if suffix == ".md" and any(keyword in file_stem for keyword in ("manuscript", "draft", "paper", "submission")):
+            return "paper"
         # PDFs under paper/ are almost always downloaded papers, not the compiled manuscript
         if suffix == ".pdf" and "/paper/" in path_lower:
             if file_stem in MANUSCRIPT_PDF_STEMS:
@@ -1718,7 +1732,8 @@ class DeliverablePublisher:
         if suffix in IMAGE_EXTS or suffix in TABULAR_EXTS:
             return "image_tabular"
         if suffix == ".pdf":
-            if any(token in path_lower for token in ("/fig", "/figure", "/table", "/plot", "/chart")):
+            # PDFs with chart/plot/figure/visualization keywords are image_tabular
+            if any(token in path_lower for token in ("/fig", "/figure", "/table", "/plot", "/chart", "pcoa", "pca", "visualization")):
                 return "image_tabular"
             # PDFs from literature_pipeline are downloaded references, not our paper
             if any(token in path_lower for token in (

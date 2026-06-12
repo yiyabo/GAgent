@@ -9,11 +9,18 @@ from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-_lock = asyncio.Lock()
+_lock: Optional[asyncio.Lock] = None
 _subscribers: Dict[str, List[asyncio.Queue[Optional[Tuple[int, Dict[str, Any]]]]]] = {}
 _cancel_events: Dict[str, asyncio.Event] = {}
 _tasks: Dict[str, asyncio.Task[None]] = {}
 _steer_queues: Dict[str, asyncio.Queue[str]] = {}
+
+
+def _get_lock() -> asyncio.Lock:
+    global _lock
+    if _lock is None:
+        _lock = asyncio.Lock()
+    return _lock
 
 
 def ensure_cancel_event(run_id: str) -> asyncio.Event:
@@ -38,7 +45,7 @@ async def register_subscriber(
     run_id: str,
 ) -> asyncio.Queue[Optional[Tuple[int, Dict[str, Any]]]]:
     q: asyncio.Queue[Optional[Tuple[int, Dict[str, Any]]]] = asyncio.Queue()
-    async with _lock:
+    async with _get_lock():
         _subscribers.setdefault(run_id, []).append(q)
     return q
 
@@ -47,7 +54,7 @@ async def unregister_subscriber(
     run_id: str,
     q: asyncio.Queue[Optional[Tuple[int, Dict[str, Any]]]],
 ) -> None:
-    async with _lock:
+    async with _get_lock():
         subs = _subscribers.get(run_id)
         if not subs:
             return
@@ -60,7 +67,7 @@ async def unregister_subscriber(
 
 
 async def publish_live_event(run_id: str, seq: int, payload: Dict[str, Any]) -> None:
-    async with _lock:
+    async with _get_lock():
         subs = list(_subscribers.get(run_id, []))
     for q in subs:
         try:
@@ -70,7 +77,7 @@ async def publish_live_event(run_id: str, seq: int, payload: Dict[str, Any]) -> 
 
 
 async def close_live_subscribers(run_id: str) -> None:
-    async with _lock:
+    async with _get_lock():
         subs = _subscribers.pop(run_id, [])
     for q in subs:
         try:

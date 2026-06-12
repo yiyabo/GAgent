@@ -19,6 +19,7 @@ from app.services.auth import (
     revoke_auth_session,
     require_local_auth_enabled,
     set_session_cookie,
+    session_principal_from_session_id,
 )
 from app.services.request_principal import get_request_principal, require_authenticated_principal
 
@@ -75,6 +76,10 @@ def _request_ip(request: Request) -> str:
     return "unknown"
 
 
+def _request_host(request: Request) -> Optional[str]:
+    return request.headers.get("host")
+
+
 def _request_user_agent(request: Request) -> Optional[str]:
     raw = request.headers.get("user-agent")
     if raw is None:
@@ -105,7 +110,7 @@ def register_local_account(
         user_agent=_request_user_agent(request),
     )
     request.state.skip_auth_cookie_refresh = True
-    set_session_cookie(response, session_id=session["id"], expires_at=session["expires_at"])
+    set_session_cookie(response, session_id=session["id"], expires_at=session["expires_at"], host=_request_host(request))
     return _auth_success_response(user)
 
 
@@ -130,7 +135,7 @@ def login_local_account(
         user_agent=_request_user_agent(request),
     )
     request.state.skip_auth_cookie_refresh = True
-    set_session_cookie(response, session_id=session["id"], expires_at=session["expires_at"])
+    set_session_cookie(response, session_id=session["id"], expires_at=session["expires_at"], host=_request_host(request))
     return _auth_success_response(user)
 
 
@@ -145,7 +150,7 @@ def logout_current_session(
         if raw_session:
             revoke_auth_session(raw_session)
     request.state.skip_auth_cookie_refresh = True
-    clear_session_cookie(response)
+    clear_session_cookie(response, host=_request_host(request))
     return {"success": True}
 
 
@@ -197,5 +202,41 @@ def change_local_password(
         user_agent=_request_user_agent(request),
     )
     request.state.skip_auth_cookie_refresh = True
-    set_session_cookie(response, session_id=session["id"], expires_at=session["expires_at"])
+    set_session_cookie(response, session_id=session["id"], expires_at=session["expires_at"], host=_request_host(request))
     return _auth_success_response(updated_user)
+
+
+class SSOCompleteRequest(BaseModel):
+    session_token: str = Field(..., min_length=1, max_length=512)
+
+
+@router.post("/sso-complete", response_model=AuthSessionResponse)
+def complete_sso_login(
+    payload: SSOCompleteRequest,
+    request: Request,
+    response: Response,
+):
+    """Exchange SSO session token for a proper session cookie.
+    
+    Called by frontend after SSO redirect to set cookie on the correct domain.
+    """
+    resolved = session_principal_from_session_id(payload.session_token, touch=True)
+    if resolved is None:
+        raise HTTPException(status_code=401, detail="Invalid or expired session token")
+    
+    principal, expires_at = resolved
+    if not principal.is_authenticated:
+        raise HTTPException(status_code=401, detail="Session is not authenticated")
+    
+    request.state.skip_auth_cookie_refresh = True
+    set_session_cookie(response, session_id=payload.session_token, expires_at=expires_at, host=_request_host(request))
+    
+    return AuthSessionResponse(
+        authenticated=True,
+        user=AuthUserResponse(
+            user_id=principal.user_id,
+            email=principal.email or "",
+            role=principal.role,
+            auth_source="sso",
+        ),
+    )

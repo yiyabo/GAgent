@@ -18,8 +18,8 @@ logger = logging.getLogger(__name__)
 
 _password_hasher = PasswordHasher()
 
-SSO_VERIFY_URL = "http://119.147.24.197:3000/api/v1/sso/verify-token/"
-SSO_API_KEY = "LowqW_eKqdcGur0lRXSqlgVFcPLsYfcTX6YRPXE-Fyu1DDTFkRgugg"
+SSO_VERIFY_URL = "http://119.147.24.196:3087/api/v1/sso/verify-token/"
+SSO_API_KEY = "E9-U3-Or-TH9al3aB9twT5wBv6J541636jAh18PBm4IuVwsmtBoyhQ"
 SSO_TIMEOUT_SECONDS = 10.0
 
 

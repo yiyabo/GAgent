@@ -52,6 +52,10 @@ def _request_ip(request: Request) -> str:
     return "unknown"
 
 
+def _request_host(request: Request) -> Optional[str]:
+    return request.headers.get("host")
+
+
 def _request_user_agent(request: Request) -> Optional[str]:
     raw = request.headers.get("user-agent")
     if raw is None:
@@ -105,9 +109,11 @@ def sso_login(
     )
     
     request.state.skip_auth_cookie_refresh = True
-    set_session_cookie(response, session_id=session["id"], expires_at=session["expires_at"])
+    set_session_cookie(response, session_id=session["id"], expires_at=session["expires_at"], host=_request_host(request))
     
-    final_redirect = redirect_url or "/"
+    frontend_base = redirect_url or "http://bioagent.byoryn.cn"
+    separator = "&" if "?" in frontend_base else "?"
+    final_redirect = f"{frontend_base}{separator}__sso_session={session['id']}"
     return RedirectResponse(url=final_redirect, status_code=302)
 
 

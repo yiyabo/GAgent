@@ -67,7 +67,7 @@ class QwenSessionDriver:
         self._locks: Dict[str, asyncio.Lock] = {}
         self._shared_terminal_ids: Dict[str, str] = {}  # session_id → terminal_id
         self._identity_file_paths: Dict[str, Tuple[str, str]] = {}
-        self._lock = asyncio.Lock()
+        self._lock: Optional[asyncio.Lock] = None
         # Idle container TTL tracking
         self._last_used: Dict[str, float] = {}  # session_id → monotonic timestamp
         self._ttl_task: Optional[asyncio.Task[None]] = None
@@ -75,6 +75,11 @@ class QwenSessionDriver:
             os.getenv("QWEN_CONTAINER_IDLE_TTL", "600")
         )  # default 10 minutes
         self._ttl_check_interval: float = 60.0  # check every 60 seconds
+
+    def _get_lock(self) -> asyncio.Lock:
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        return self._lock
 
     # ------------------------------------------------------------------
     # Container lifecycle
@@ -104,7 +109,7 @@ class QwenSessionDriver:
         image:
             Docker image override.
         """
-        async with self._lock:
+        async with self._get_lock():
             name = self._containers.get(session_id)
             if name:
                 if session_id in self._shared_terminal_ids:
@@ -364,7 +369,7 @@ class QwenSessionDriver:
 
     async def cleanup(self, session_id: str) -> None:
         """Stop and remove the container for a session."""
-        async with self._lock:
+        async with self._get_lock():
             name = self._containers.pop(session_id, None)
             self._session_ids.pop(session_id, None)
             self._locks.pop(session_id, None)
@@ -380,7 +385,7 @@ class QwenSessionDriver:
 
     async def cleanup_all(self) -> None:
         """Remove all managed containers."""
-        async with self._lock:
+        async with self._get_lock():
             shared_session_ids = set(self._shared_terminal_ids.keys())
             names = [
                 name
@@ -435,7 +440,7 @@ class QwenSessionDriver:
                 await asyncio.sleep(self._ttl_check_interval)
                 now = time.monotonic()
                 to_cleanup: list[str] = []
-                async with self._lock:
+                async with self._get_lock():
                     for session_id, last_used in list(self._last_used.items()):
                         if now - last_used < self._ttl_seconds:
                             continue
