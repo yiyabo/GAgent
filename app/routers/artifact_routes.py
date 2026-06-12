@@ -974,7 +974,7 @@ def _iter_render_dependency_files(source_path: Path) -> List[Tuple[str, Path, Pa
     return files
 
 
-def _get_render_cache_path(file_path: Path, extension: str) -> Path:
+def _get_render_cache_path(file_path: Path, extension: str, extra_hash: str = "") -> Path:
     """Get cache path for rendered file based on source file hash.
 
     For .tex files, also incorporates the paper tree plus sibling refs/
@@ -992,9 +992,42 @@ def _get_render_cache_path(file_path: Path, extension: str) -> Path:
                 )
             except OSError:
                 continue
+    if extra_hash:
+        hash_parts.append(extra_hash)
     file_hash = hashlib.md5(":".join(hash_parts).encode()).hexdigest()[:16]
     cache_name = f"{file_path.stem}_{file_hash}.{extension}"
     return _render_cache_dir() / cache_name
+
+
+def _rewrite_markdown_image_urls(
+    content: str,
+    session_id: str,
+    source_type: str,
+    base_dir: str = "",
+) -> str:
+    import re as _re
+    from urllib.parse import quote
+
+    if source_type == "deliverables":
+        endpoint = f"/api/artifacts/sessions/{session_id}/deliverables/file"
+    else:
+        endpoint = f"/api/artifacts/sessions/{session_id}/file"
+
+    def _replace(match):
+        alt = match.group(1)
+        src = match.group(2).strip()
+        if not src or src.startswith("http://") or src.startswith("https://") or src.startswith("/api/"):
+            return match.group(0)
+        clean = src.lstrip("/")
+        parts = []
+        if base_dir:
+            parts.append(base_dir)
+        parts.append(clean)
+        rel_path = "/".join(parts)
+        encoded = quote(rel_path, safe="/")
+        return f"![{alt}]({endpoint}?path={encoded})"
+
+    return _re.sub(r"!\[(.*?)\]\((.*?)\)", _replace, content)
 
 
 def _render_markdown_to_html(content: str) -> str:
@@ -1229,11 +1262,16 @@ async def render_artifact(
 
     elif extension == "md":
         # Markdown -> HTML
-        cache_path = _get_render_cache_path(target, "html")
+        context_hash = f"{session_id}:{source_type}:{str(target.relative_to(root_dir))}"
+        cache_path = _get_render_cache_path(target, "html", extra_hash=context_hash)
         cached = cache_path.exists()
 
         if not cached:
             content = target.read_text(encoding="utf-8")
+            base_dir = str(target.relative_to(root_dir).parent) if target.parent != root_dir else ""
+            content = _rewrite_markdown_image_urls(
+                content, session_id=session_id, source_type=source_type, base_dir=base_dir
+            )
             html = _render_markdown_to_html(content)
             cache_path.write_text(html, encoding="utf-8")
 
