@@ -926,7 +926,7 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
                     <iframe
                       title={`${selectedItem.name}-rendered-html`}
                       srcDoc={renderedPreview.content}
-                      sandbox="allow-popups allow-popups-to-escape-sandbox"
+                      sandbox="allow-popups allow-popups-to-escape-sandbox allow-same-origin"
                       style={{
                         width: '100%',
                         flex: 1,

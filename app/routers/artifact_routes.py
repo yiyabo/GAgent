@@ -1051,6 +1051,7 @@ def _render_markdown_to_html(content: str) -> str:
 <html>
 <head>
     <meta charset="UTF-8">
+    <base href="/">
     <style>
         body {{
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
