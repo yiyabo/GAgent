@@ -19,6 +19,7 @@ _DEFAULT_MODULES: Iterable[str] = (
     "app.routers.artifact_routes",
     "app.routers.interpreter_routes",
     "app.routers.tool_routes",
+    "app.routers.models_routes",
 )
 
 

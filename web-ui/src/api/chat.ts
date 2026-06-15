@@ -24,6 +24,27 @@ interface ChatRequest {
   session_id?: string; // 🔒 : sessionparameter
 }
 
+export interface ModelEntry {
+  id: string;
+  name: string;
+  provider: string;
+  description?: string | null;
+  available: boolean;
+}
+
+export interface ProviderEntry {
+  id: string;
+  name: string;
+  available: boolean;
+}
+
+export interface AvailableModelsResponse {
+  providers: ProviderEntry[];
+  models: ModelEntry[];
+  current_provider: string;
+  current_model: string;
+}
+
 export class ChatApi extends BaseApi {
   sendMessage = async (message: string, context?: {
   task_id?: number;
@@ -60,6 +81,10 @@ export class ChatApi extends BaseApi {
 
   getChatStatus = async (): Promise<ChatStatusResponse> => {
   return this.get('/chat/status');
+  };
+
+  getAvailableModels = async (): Promise<AvailableModelsResponse> => {
+  return this.get('/api/models');
   };
 
   getSessions = async (params?: {
