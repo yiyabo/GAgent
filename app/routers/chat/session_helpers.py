@@ -19,12 +19,9 @@ from app.llm import LLMClient
 VALID_SEARCH_PROVIDERS = {"builtin", "perplexity", "tavily"}
 VALID_BASE_MODELS = {
     "qwen3.7-max",
-    "qwen3.6-plus",
-    "qwen3.5-plus",
-    "qwen3-max-2026-01-23",
-    "qwen-turbo",
+    "mimo-v2.5-pro-ultraspeed",
 }
-VALID_LLM_PROVIDERS = {"qwen"}
+VALID_LLM_PROVIDERS = {"qwen", "mimo"}
 SESSION_RUNTIME_CONTEXT_KEYS = (
     "active_subject",
     "last_failure_state",

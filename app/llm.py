@@ -343,6 +343,23 @@ class LLMClient(LLMProvider):
                 or qwen_kimi_model
                 or "kimi-k2.5"
             )
+        elif provider_name == "mimo":
+            env_api_key = os.getenv("MIMO_API_KEY")
+            env_url = os.getenv("MIMO_API_URL")
+            env_model = os.getenv("MIMO_MODEL")
+            self.api_key = api_key or env_api_key or getattr(settings, "mimo_api_key", None)
+            self.url = (
+                url
+                or env_url
+                or getattr(settings, "mimo_api_url", None)
+                or "https://api.xiaomimimo.com/v1/chat/completions"
+            )
+            self.model = (
+                model
+                or env_model
+                or getattr(settings, "mimo_model", None)
+                or "mimo-v2.5-pro-ultraspeed"
+            )
         elif provider_name == "openai":
             env_api_key = os.getenv("OPENAI_API_KEY") or os.getenv("OPENAI_API")
             env_url = os.getenv("OPENAI_URL")

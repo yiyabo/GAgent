@@ -92,6 +92,14 @@ if _USE_PYDANTIC:
         kimi_api_url: Optional[str] = Field(default=None, env="KIMI_API_URL")
         kimi_model: str = Field(default="kimi-k2.5", env="KIMI_MODEL")
 
+        # 小米 MiMo (OpenAI-compatible)
+        mimo_api_key: Optional[str] = Field(default=None, env="MIMO_API_KEY")
+        mimo_api_url: str = Field(
+            default="https://api.xiaomimimo.com/v1/chat/completions",
+            env="MIMO_API_URL",
+        )
+        mimo_model: str = Field(default="mimo-v2.5-pro-ultraspeed", env="MIMO_MODEL")
+
         qwen_embedding_api_url: str = Field(
             default="https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings",
             env="QWEN_EMBEDDING_API_URL",
