@@ -83,3 +83,4 @@ task/
 *.bak_*
 app_patch_tmp/
 
+/backend.log
