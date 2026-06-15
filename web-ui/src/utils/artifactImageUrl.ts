@@ -34,6 +34,7 @@ export function isWorkspaceAbsoluteImagePath(src: string | null | undefined): bo
 export function resolveArtifactImageSrc(
   src: string | null | undefined,
   sessionId: string | null | undefined,
+  sourceType?: 'raw' | 'deliverables' | null,
 ): string {
   const normalized = normalizeArtifactImagePath(src);
   if (!normalized) {
@@ -56,7 +57,10 @@ export function resolveArtifactImageSrc(
     return buildWorkspaceFileUrl(sid, normalized);
   }
 
-  return buildArtifactFileUrl(sid, normalized);
+  const pathForApi = sourceType === 'deliverables'
+    ? `deliverables/latest/${normalized}`
+    : normalized;
+  return buildArtifactFileUrl(sid, pathForApi);
 }
 
 /**

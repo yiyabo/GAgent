@@ -928,6 +928,7 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
                       <MarkdownRenderer
                         content={textPreview.content}
                         sessionId={sessionId}
+                        sourceType={selectedItem?.sourceType === 'deliverables' ? 'deliverables' : undefined}
                       />
                     </div>
                   ) : renderedPreview?.format === 'html' && renderedPreview?.content ? (
