@@ -14,20 +14,24 @@ interface MarkdownRendererProps {
     className?: string;
     /** When set, relative markdown image paths resolve to `/artifacts/sessions/.../file`. */
     sessionId?: string | null;
+    /** When 'deliverables', image paths get deliverables/latest/ prefix. */
+    sourceType?: 'raw' | 'deliverables' | null;
 }
 
 function MarkdownArtifactImage({
     src,
     alt,
     sessionId,
+    sourceType,
 }: {
     src?: string;
     alt?: string;
     sessionId?: string | null;
+    sourceType?: 'raw' | 'deliverables' | null;
 }) {
     const resolved =
         typeof src === 'string' && src.trim()
-            ? resolveArtifactImageSrc(src, sessionId ?? null)
+            ? resolveArtifactImageSrc(src, sessionId ?? null, sourceType ?? null)
             : '';
     if (!resolved) {
         return null;
@@ -95,8 +99,7 @@ const preprocessLaTeX = (content: string): string => {
     return processed;
 };
 
-export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, className, sessionId }) => {
-    // Preprocess content to normalize LaTeX delimiters
+export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, className, sessionId, sourceType }) => {
     const processedContent = preprocessLaTeX(content);
 
     return (
@@ -111,6 +114,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, cla
                                 src={typeof src === 'string' ? src : undefined}
                                 alt={typeof alt === 'string' ? alt : undefined}
                                 sessionId={sessionId}
+                                sourceType={sourceType}
                             />
                         );
                     },
