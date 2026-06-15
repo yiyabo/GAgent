@@ -611,7 +611,7 @@ class DeepThinkAgent:
     DEFAULT_TOOL_TIMEOUT = 60
     FINAL_STREAM_CHUNK_CHARS = 30
     FINAL_STREAM_DELAY_SEC = 0.05  # 50 ms — lets the network flush each chunk separately
-    MAX_IDENTICAL_TOOL_CALL_CYCLES = 4
+    MAX_IDENTICAL_TOOL_CALL_CYCLES = 12
     EXTERNAL_RETRIABLE_TOOLS = frozenset({"web_search", "literature_pipeline"})
     MAX_EXTERNAL_TOOL_RETRIES = 1
     MAX_TOOL_RESULT_TEXT_CHARS = 12_000
@@ -633,7 +633,7 @@ class DeepThinkAgent:
         llm_client: Any,
         available_tools: List[str],
         tool_executor: Callable[[str, Dict[str, Any]], Any],
-        max_iterations: int = 10,
+        max_iterations: int = 30,
         tool_timeout: int = DEFAULT_TOOL_TIMEOUT,
         cancel_event: Optional[asyncio.Event] = None,
         on_thinking: Optional[Callable[[ThinkingStep], Any]] = None,
@@ -4305,7 +4305,7 @@ class DeepThinkAgent:
                     )
                     if is_probe_only_cycle:
                         probe_only_execution_cycles += 1
-                        probe_limit = 2 if had_real_execution_tool else 5
+                        probe_limit = 6 if had_real_execution_tool else 12
                         if (
                             not had_real_execution_tool
                             and probe_only_execution_cycles >= 2
@@ -4371,8 +4371,8 @@ class DeepThinkAgent:
                                             steps=[*thinking_steps, current_step],
                                             task_context=task_context,
                                             max_retries=2,
-                                            timeout=30,
-                                            max_tokens=1500,
+                                            timeout=120,
+                                            max_tokens=4000,
                                         )
                                         if len(synthesized) >= 100 or len(synthesized) >= len(raw_fallback) // 2:
                                             final_answer = synthesized
