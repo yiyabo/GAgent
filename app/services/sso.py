@@ -20,7 +20,48 @@ _password_hasher = PasswordHasher()
 
 SSO_VERIFY_URL = "http://119.147.24.196:3087/api/v1/sso/verify-token/"
 SSO_API_KEY = "E9-U3-Or-TH9al3aB9twT5wBv6J541636jAh18PBm4IuVwsmtBoyhQ"
+PROJECT_API_URL = "http://119.147.24.196:3087/api/v1/bioagent/projects/"
 SSO_TIMEOUT_SECONDS = 10.0
+
+
+def get_project_context(project_id: int) -> Dict[str, Any]:
+    try:
+        with httpx.Client(timeout=SSO_TIMEOUT_SECONDS) as client:
+            response = client.get(
+                f"{PROJECT_API_URL}{project_id}/",
+                headers={"X-Api-Key": SSO_API_KEY}
+            )
+            
+            if response.status_code != 200:
+                logger.error(f"Project context retrieval failed: {response.status_code} - {response.text}")
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Project context retrieval failed: {response.status_code}"
+                )
+            
+            data = response.json()
+            
+            if data.get("code") != 0:
+                logger.error(f"Project context retrieval failed: {data.get('message')}")
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Project context retrieval failed: {data.get('message')}"
+                )
+            
+            return data.get("data", {})
+            
+    except httpx.TimeoutException:
+        logger.error("Project context retrieval timeout")
+        raise HTTPException(
+            status_code=504,
+            detail="Project context retrieval timeout"
+        )
+    except httpx.RequestError as e:
+        logger.error(f"Project context retrieval request error: {e}")
+        raise HTTPException(
+            status_code=502,
+            detail=f"Project context retrieval request error: {str(e)}"
+        )
 
 
 def _now_utc() -> datetime:
