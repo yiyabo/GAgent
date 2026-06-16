@@ -93,6 +93,7 @@ export interface ChatState {
     setRelevantMemories: (memories: Memory[]) => void;
     saveMessageAsMemory: (message: ChatMessage, memoryType?: string, importance?: string) => Promise<void>;
     uploadFile: (file: File) => Promise<UploadedFile>;
+    setUploadedFiles: (files: UploadedFile[]) => void;
     removeUploadedFile: (fileId: string) => Promise<void>;
     clearUploadedFiles: () => void;
 }

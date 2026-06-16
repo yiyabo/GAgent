@@ -8,6 +8,7 @@ from .registry import RouterRegistry, register_router, routers_for_fastapi
 _DEFAULT_MODULES: Iterable[str] = (
     "app.routers.auth_routes",
     "app.routers.sso_routes",
+    "app.routers.project_routes",
     "app.routers.chat.routes",
     "app.routers.system_health_routes",
     "app.routers.plan_routes",

@@ -267,8 +267,29 @@ async def chat_message(
 
         session_settings: Dict[str, Any] = {}
 
-        # 🔄 Task-state sync: prioritize task_id from frontend context.
-        # This logic must run before session checks to ensure task_id is always handled.
+        if request.project_id:
+            from app.services.sso import get_project_context
+            try:
+                project_data = get_project_context(request.project_id)
+                if project_data:
+                    context["project_id"] = request.project_id
+                    data_roots = project_data.get("data_roots", [])
+                    if data_roots:
+                        context["data_roots"] = [root.get("path", "") for root in data_roots]
+                    model_provider = project_data.get("model_provider")
+                    if model_provider:
+                        context["model_provider"] = {
+                            "base_url": model_provider.get("base_url", ""),
+                            "api_key": model_provider.get("api_key", ""),
+                        }
+                    logger.info(
+                        "[CHAT][PROJECT] Loaded project context: project_id=%s, data_roots=%d",
+                        request.project_id,
+                        len(data_roots),
+                    )
+            except Exception as e:
+                logger.warning("[CHAT][PROJECT] Failed to load project context: %s", e)
+
         if "task_id" in context and "current_task_id" not in context:
             context["current_task_id"] = context["task_id"]
             logger.info(
