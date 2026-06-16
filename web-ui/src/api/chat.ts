@@ -55,17 +55,19 @@ export class ChatApi extends BaseApi {
   workflow_id?: string;
   session_id?: string;
   metadata?: Record<string, any>;
+  project_id?: number;
   }): Promise<ChatResponsePayload> => {
   const request: ChatRequest = {
   message,
   mode: context?.mode || 'assistant',
   history: context?.history || [],
-  session_id: context?.session_id, // 🔒 : session_idparameter
+  session_id: context?.session_id,
   context: {
   plan_id: context?.plan_id,
   task_id: context?.task_id,
   plan_title: context?.plan_title,
   workflow_id: context?.workflow_id,
+  project_id: context?.project_id,
   }
   };
 
