@@ -2,16 +2,17 @@ import React, { useState } from 'react';
 import { Button, message, Tooltip, Upload } from 'antd';
 import { PaperClipOutlined, FolderOpenOutlined } from '@ant-design/icons';
 import { useChatStore } from '@store/chat';
+import { useAuthStore } from '@store/auth';
 import { UPLOAD_ACCEPT_LIST, isAllowedUploadFile } from '@/constants/uploadFileTypes';
 import FileTreeSelector from './FileTreeSelector';
 
 interface FileUploadButtonProps {
   size?: 'small' | 'middle' | 'large';
-  projectId?: number;
 }
 
-const FileUploadButton: React.FC<FileUploadButtonProps> = ({ size = 'middle', projectId }) => {
+const FileUploadButton: React.FC<FileUploadButtonProps> = ({ size = 'middle' }) => {
   const { uploadFile, currentSession } = useChatStore();
+  const { projectId } = useAuthStore();
   const [uploading, setUploading] = useState(false);
   const [treeSelectorVisible, setTreeSelectorVisible] = useState(false);
 

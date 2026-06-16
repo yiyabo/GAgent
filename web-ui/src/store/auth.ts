@@ -9,7 +9,9 @@ interface AuthState {
   legacyAccessAllowed: boolean;
   initialized: boolean;
   loading: boolean;
+  projectId: number | null;
   setUser: (user: AuthUser | null) => void;
+  setProjectId: (projectId: number | null) => void;
   clearAuth: () => void;
   bootstrap: () => Promise<void>;
   login: (email: string, password: string) => Promise<void>;
@@ -24,12 +26,17 @@ export const useAuthStore = create<AuthState>((set) => ({
   legacyAccessAllowed: false,
   initialized: false,
   loading: false,
+  projectId: null,
   setUser: (user) =>
     set({
       user,
       authenticated: Boolean(user),
       legacyAccessAllowed: false,
       initialized: true,
+    }),
+  setProjectId: (projectId) =>
+    set({
+      projectId,
     }),
   clearAuth: () =>
     {
@@ -40,6 +47,7 @@ export const useAuthStore = create<AuthState>((set) => ({
         legacyAccessAllowed: false,
         initialized: true,
         loading: false,
+        projectId: null,
       });
     },
   bootstrap: async () => {
@@ -47,10 +55,19 @@ export const useAuthStore = create<AuthState>((set) => ({
     try {
       const urlParams = new URLSearchParams(window.location.search);
       const ssoSession = urlParams.get('__sso_session');
+      const projectIdParam = urlParams.get('project_id');
+      const projectId = projectIdParam ? parseInt(projectIdParam, 10) : null;
+      
+      if (projectId && !isNaN(projectId)) {
+        set({ projectId });
+        (window as any).__PROJECT_ID__ = projectId;
+      }
+      
       if (ssoSession) {
         try {
           const payload = await authApi.ssoComplete(ssoSession);
           urlParams.delete('__sso_session');
+          urlParams.delete('project_id');
           const newUrl = urlParams.toString() 
             ? `${window.location.pathname}?${urlParams.toString()}`
             : window.location.pathname;
@@ -67,6 +84,7 @@ export const useAuthStore = create<AuthState>((set) => ({
           }
         } catch {
           urlParams.delete('__sso_session');
+          urlParams.delete('project_id');
           const newUrl = urlParams.toString() 
             ? `${window.location.pathname}?${urlParams.toString()}`
             : window.location.pathname;
