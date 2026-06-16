@@ -41,6 +41,7 @@ export const useAuthStore = create<AuthState>((set) => ({
   clearAuth: () =>
     {
       resetClientStateForAuthChange();
+      localStorage.removeItem('project_id');
       set({
         user: null,
         authenticated: false,
@@ -61,6 +62,18 @@ export const useAuthStore = create<AuthState>((set) => ({
       if (projectId && !isNaN(projectId)) {
         set({ projectId });
         (window as any).__PROJECT_ID__ = projectId;
+        // 持久化 project_id 到 localStorage
+        localStorage.setItem('project_id', String(projectId));
+      } else {
+        // 尝试从 localStorage 恢复 project_id
+        const storedProjectId = localStorage.getItem('project_id');
+        if (storedProjectId) {
+          const parsed = parseInt(storedProjectId, 10);
+          if (!isNaN(parsed)) {
+            set({ projectId: parsed });
+            (window as any).__PROJECT_ID__ = parsed;
+          }
+        }
       }
       
       if (ssoSession) {
