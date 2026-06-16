@@ -70,6 +70,7 @@ def sso_login(
     response: Response,
     token: str = Query(..., description="SSO token from main platform"),
     redirect_url: Optional[str] = Query(None, description="URL to redirect after login"),
+    project_id: Optional[int] = Query(None, description="Project ID from main platform"),
 ):
     """SSO login endpoint.
     
@@ -114,6 +115,10 @@ def sso_login(
     frontend_base = redirect_url or "http://bioagent.byoryn.cn"
     separator = "&" if "?" in frontend_base else "?"
     final_redirect = f"{frontend_base}{separator}__sso_session={session['id']}"
+    
+    if project_id is not None:
+        final_redirect += f"&project_id={project_id}"
+    
     return RedirectResponse(url=final_redirect, status_code=302)
 
 
