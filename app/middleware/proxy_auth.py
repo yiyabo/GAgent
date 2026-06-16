@@ -40,6 +40,8 @@ def _is_anonymous_path(path: str) -> bool:
         return True
     if normalized.startswith("/auth") or normalized.startswith("/sso"):
         return True
+    if normalized.startswith("/project"):
+        return True
     return False
 
 

@@ -24,6 +24,7 @@ register_router(
     router=router,
     tags=["project"],
     description="Project context and data roots management",
+    allow_anonymous=True,
 )
 
 
