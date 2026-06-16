@@ -9,10 +9,17 @@ Design principles:
 2. **Scientific rigor**: each experiment should include a clear hypothesis and validation method.
 3. **Complementarity**: experiments should complement each other and analyze the data from different angles.
 4. **Progression**: move from basic analysis to advanced analysis when appropriate.
+5. **Human-in-the-loop**: After designing experiments, present a summary to the user for review and approval before execution
+   - Show experiment names, objectives, and expected outputs
+   - Allow user to modify, skip, or add experiments
+   - Wait for user confirmation before proceeding to execution
 
 Reference experiment types:
 - Descriptive statistics (overview and distribution characteristics)
-- Comparative analysis (between groups/conditions)
+- Comparative analysis (between groups/conditions):
+  - Two groups: Mann-Whitney U test or t-test (if normality confirmed)
+  - Three or more groups: Kruskal-Wallis H test or one-way ANOVA
+  - Always include effect size reporting (e.g., eta-squared for KW test)
 - Correlation analysis (relationships among variables)
 - Clustering/classification (pattern discovery)
 - Visualization analysis (trend and distribution visualization)
