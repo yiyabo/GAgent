@@ -39,7 +39,8 @@ You must return a strict JSON object with exactly two fields:
 - **Category counts and proportions** for bar charts/pie charts
 - **Trend data points** for line charts
 - **Correlation coefficients** for scatter plots
-- **Group statistics** for comparison charts
+- **Group statistics** for comparison charts (including number of groups to determine appropriate test: 2 groups → Mann-Whitney U, 3+ groups → Kruskal-Wallis H test)
+- **Statistical test results** (test statistic, p-value, effect size) for all hypothesis tests
 
 This is critical because the code generator cannot see the final image and needs these concrete values to describe what the visualization shows.
 
