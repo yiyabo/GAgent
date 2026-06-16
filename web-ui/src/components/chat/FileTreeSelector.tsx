@@ -30,15 +30,18 @@ const FileTreeSelector: React.FC<FileTreeSelectorProps> = ({
   const loadTreeData = async () => {
     setLoading(true);
     try {
+      console.log('📁 Loading project files for projectId:', projectId);
       const response = await projectApi.getProjectFiles(projectId);
+      console.log('📁 Project files response:', response);
       if (response.code === 0) {
         setTreeData(response.data);
       } else {
         message.error(response.message || 'Failed to load files');
       }
-    } catch (error) {
-      message.error('Failed to load project files');
-      console.error('Error loading project files:', error);
+    } catch (error: any) {
+      console.error('❌ Error loading project files:', error);
+      console.error('❌ Error details:', error.response?.data || error.message);
+      message.error(`Failed to load project files: ${error.message || 'Unknown error'}`);
     } finally {
       setLoading(false);
     }

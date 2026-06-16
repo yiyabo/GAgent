@@ -59,7 +59,7 @@ const createApiClient = (): AxiosInstance => {
       }
     }
   }
-  console.log(`🚀 API Request: ${config.method?.toUpperCase()} ${config.url}`);
+  console.log(`🚀 API Request: ${config.method?.toUpperCase()} ${config.url}`, 'baseURL:', config.baseURL, 'fullURL:', config.baseURL + config.url);
   return config;
   },
   (error) => {
@@ -74,7 +74,7 @@ const createApiClient = (): AxiosInstance => {
   return response;
   },
   (error: AxiosError<ApiResponse>) => {
-  console.error('❌ Response Error:', error.response?.status, error.response?.data);
+  console.error('❌ Response Error:', error.response?.status, error.response?.data, 'URL:', error.config?.url, 'baseURL:', error.config?.baseURL);
   
   const status = error.response?.status;
   const skipAuthHandling = Boolean((error.config as AxiosError<ApiResponse>['config'] & AuthAwareRequestConfig | undefined)?.skipAuthHandling);

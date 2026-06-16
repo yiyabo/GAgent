@@ -184,6 +184,10 @@ export default defineConfig(({ mode }) => {
           target: apiBaseUrl,
           changeOrigin: true,
         },
+        '/project': {
+          target: apiBaseUrl,
+          changeOrigin: true,
+        },
       },
     },
     build: {
