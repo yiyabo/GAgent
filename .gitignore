@@ -84,3 +84,5 @@ task/
 app_patch_tmp/
 
 /backend.log
+
+.sisyphus/
