@@ -28,8 +28,21 @@ export const createFileSlice: ChatSliceCreator = (set, get) => ({
         extracted_files: response.extracted_files,
       };
 
+      // 找到旧的同名文件，尝试后台删除（不阻塞）
+      const existingFile = get().uploadedFiles.find(
+        (f) => f.original_name === file.name
+      );
+      if (existingFile) {
+        uploadApi.deleteFile(existingFile.file_id, session.id).catch((e) => {
+          console.warn('Failed to delete old file on server:', e);
+        });
+      }
+
       set((state) => ({
-        uploadedFiles: [...state.uploadedFiles, uploadedFile],
+        uploadedFiles: [
+          ...state.uploadedFiles.filter((f) => f.original_name !== file.name),
+          uploadedFile,
+        ],
       }));
 
       return uploadedFile;
