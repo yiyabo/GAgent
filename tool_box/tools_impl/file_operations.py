@@ -138,9 +138,115 @@ def _path_is_within(candidate: Path, base: Path) -> bool:
         return False
 
 
-def _validate_path_security(file_path: str, *, enforce_file_size_limit: bool = False) -> Tuple[bool, str]:
+def _enforce_session_scope(
+    candidate_resolved: Path,
+    candidate_lexical: Path,
+    tool_context: Optional[ToolContext],
+) -> Tuple[Optional[bool], Optional[str]]:
     """
-    Validate file path for security
+    Session isolation layer.
+
+    Returns:
+        (True, None)   - path is session-private; allow immediately.
+        (False, error) - path sits inside a cross-session / global artifact
+                         directory but is NOT within the current session;
+                         reject.
+        (None, None)   - path is not session-scoped; fall through to the
+                         existing ALLOWED_BASE_PATHS whitelist.
+    """
+    if tool_context is None:
+        return (None, None)
+
+    session_id = str(tool_context.session_id or "").strip()
+    if not session_id:
+        return (None, None)
+
+    session_dir: Optional[Path] = None
+    try:
+        from app.services.session_paths import get_runtime_session_dir
+
+        session_dir = get_runtime_session_dir(session_id, create=True).resolve()
+    except Exception:
+        pass
+
+    # Membership is judged on candidate_resolved ONLY (not candidate_lexical),
+    # because resolve() follows symlinks. Using lexical here would let an
+    # agent create `session_dir/escape -> /project_root/output/secret.csv`
+    # and read global artifacts through the symlink (lexical passes the
+    # session_dir check before the risk-dir check runs).
+
+    # Risk directories are anchored to the project root reported by
+    # session_paths (NOT os.getcwd()) so that risk-dir detection stays
+    # consistent with where sessions actually live, even if the process
+    # working directory differs.
+    try:
+        from app.services.session_paths import get_runtime_root
+
+        project_root = get_runtime_root().parent.resolve()
+    except Exception:
+        project_root = Path(os.getcwd()).resolve()
+    risk_dirs: List[Path] = []
+    for name in ("runtime", "output", "results"):
+        try:
+            risk_dirs.append((project_root / name).resolve(strict=False))
+        except Exception:
+            continue
+
+    def _resolved_within(base: Path) -> bool:
+        try:
+            candidate_resolved.relative_to(base)
+            return True
+        except ValueError:
+            return False
+
+    # 1. session-private: resolved path is inside the current session dir.
+    if session_dir is not None and _resolved_within(session_dir):
+        return (True, None)
+
+    # 2. cross-session / global artifact: resolved path is inside a risk dir
+    #    but NOT inside the current session (checked above). This also
+    #    catches symlinks whose lexical form is inside session_dir but whose
+    #    resolved target lands in a risk dir.
+    for risk_resolved in risk_dirs:
+        if _resolved_within(risk_resolved):
+            return (
+                False,
+                f"Access denied: path is inside a cross-session or global "
+                f"artifact directory ({risk_resolved}). Scope file access to "
+                f"the current session directory.",
+            )
+
+    # 3. work_dir: legitimate task output dirs that live outside session_dir
+    #    (e.g. ad-hoc interpreter runs, tmpdirs). Runs after the risk check
+    #    so a work_dir that fell back to the project root cannot smuggle
+    #    access to output/ or results/.
+    work_dir = str(tool_context.work_dir or "").strip()
+    if work_dir:
+        try:
+            work_root = Path(work_dir).expanduser().resolve(strict=False)
+            if _resolved_within(work_root):
+                return (True, None)
+        except Exception:
+            pass
+
+    return (None, None)
+
+
+def _validate_path_security(
+    file_path: str,
+    *,
+    enforce_file_size_limit: bool = False,
+    tool_context: Optional[ToolContext] = None,
+) -> Tuple[bool, str]:
+    """
+    Validate file path for security.
+
+    When a ``tool_context`` carrying a ``session_id`` is supplied, an extra
+    session-isolation layer is enforced before the legacy ALLOWED_BASE_PATHS
+    whitelist: paths inside the current session directory are always allowed,
+    while paths inside cross-session / global artifact directories
+    (``runtime/``, ``output/``, ``results/`` under the project root) that do
+    NOT belong to the current session are rejected outright.
 
     Returns:
         (is_safe, error_message)
@@ -149,6 +255,39 @@ def _validate_path_security(file_path: str, *, enforce_file_size_limit: bool = F
         input_path = Path(file_path).expanduser()
         lexical_abs = Path(os.path.abspath(str(input_path)))
         resolved_abs = input_path.resolve(strict=False)
+
+        # Session isolation layer (takes precedence over the legacy whitelist
+        # so cross-session access cannot be sneaked in via allowed base paths).
+        scope_verdict, scope_error = _enforce_session_scope(resolved_abs, lexical_abs, tool_context)
+        if scope_verdict is True:
+            # Session-private path; allow without further whitelist checks.
+            if enforce_file_size_limit and resolved_abs.exists() and resolved_abs.is_file():
+                if resolved_abs.stat().st_size > MAX_READ_FILE_BYTES:
+                    return False, "File too large (>50MB)"
+            return True, ""
+        if scope_verdict is False:
+            return False, scope_error or "Access denied by session isolation"
+        # scope_verdict is None -> not session-scoped, fall through to whitelist.
+
+        # Global guard: resolved paths landing in dangerous system dirs are
+        # rejected REGARDLESS of the allowed-base-paths check below, so a
+        # symlink whose lexical form sits inside an allowed dir (e.g. an
+        # agent-created symlink under session_dir pointing to /etc) cannot
+        # bypass the dangerous-paths guard.
+        dangerous_paths = [
+            "/etc",
+            "/bin",
+            "/sbin",
+            "/usr/bin",
+            "/usr/sbin",
+            "/root",
+            "/var/log",
+            "/proc",
+            "/sys",
+        ]
+        for dangerous in dangerous_paths:
+            if _path_is_within(resolved_abs, Path(dangerous)):
+                return False, f"Access to {dangerous} is not allowed"
 
         # First check if path is in explicitly allowed directories.
         # We check both lexical and resolved absolute paths so symlinked
@@ -163,7 +302,7 @@ def _validate_path_security(file_path: str, *, enforce_file_size_limit: bool = F
             if _path_is_within(lexical_abs, allowed_path) or _path_is_within(resolved_abs, allowed_resolved):
                 is_in_allowed = True
                 break
-        
+
         if is_in_allowed:
             # Size limits are only for read-like operations. Copy/move of large
             # binary artifacts must remain possible inside allowed workspaces.
@@ -175,23 +314,6 @@ def _validate_path_security(file_path: str, *, enforce_file_size_limit: bool = F
         # Check for path traversal attempts
         if ".." in Path(file_path).parts or Path(file_path).is_absolute():
             return False, "Path outside allowed directories"
-
-        # Check for dangerous paths (only for non-allowed paths)
-        dangerous_paths = [
-            "/etc",
-            "/bin",
-            "/sbin",
-            "/usr/bin",
-            "/usr/sbin",
-            "/root",
-            "/var/log",
-            "/proc",
-            "/sys",
-        ]
-
-        for dangerous in dangerous_paths:
-            if _path_is_within(resolved_abs, Path(dangerous)):
-                return False, f"Access to {dangerous} is not allowed"
 
         # Check file size only for read-like operations (prevent dumping huge files).
         if enforce_file_size_limit and resolved_abs.exists() and resolved_abs.is_file():
@@ -275,27 +397,27 @@ async def file_operations_handler(
             else None
         )
         if operation == "read":
-            return await _read_file(resolved_path)
+            return await _read_file(resolved_path, tool_context=tool_context)
         elif operation == "write":
-            return await _write_file(resolved_path, content or "")
+            return await _write_file(resolved_path, content or "", tool_context=tool_context)
         elif operation == "list":
-            return await _list_directory(resolved_path, pattern)
+            return await _list_directory(resolved_path, pattern, tool_context=tool_context)
         elif operation in {"profile", "census"}:
-            return await _profile_directory(resolved_path, pattern, operation=operation)
+            return await _profile_directory(resolved_path, pattern, operation=operation, tool_context=tool_context)
         elif operation == "delete":
-            return await _delete_path(resolved_path)
+            return await _delete_path(resolved_path, tool_context=tool_context)
         elif operation == "copy":
             if resolved_destination is None:
                 return {"operation": "copy", "path": resolved_path, "success": False, "error": "destination is required"}
-            return await _copy_path(resolved_path, resolved_destination)
+            return await _copy_path(resolved_path, resolved_destination, tool_context=tool_context)
         elif operation == "move":
             if resolved_destination is None:
                 return {"operation": "move", "path": resolved_path, "success": False, "error": "destination is required"}
-            return await _move_path(resolved_path, resolved_destination)
+            return await _move_path(resolved_path, resolved_destination, tool_context=tool_context)
         elif operation == "exists":
-            return await _check_exists(resolved_path)
+            return await _check_exists(resolved_path, tool_context=tool_context)
         elif operation == "info":
-            return await _get_file_info(resolved_path)
+            return await _get_file_info(resolved_path, tool_context=tool_context)
         else:
             return {"operation": operation, "success": False, "error": f"Unsupported operation: {operation}"}
 
@@ -304,13 +426,14 @@ async def file_operations_handler(
         return {"operation": operation, "path": path, "success": False, "error": str(e)}
 
 
-async def _read_file(file_path: str, max_chars: Optional[int] = None, max_lines: Optional[int] = None) -> Dict[str, Any]:
+async def _read_file(file_path: str, max_chars: Optional[int] = None, max_lines: Optional[int] = None, tool_context: Optional[ToolContext] = None) -> Dict[str, Any]:
     """Read file content with security validation and output limits
 
     Args:
         file_path: Path to the file to read
         max_chars: Maximum characters to read (default: MAX_READ_CHARS)
         max_lines: Maximum lines to read (default: MAX_READ_LINES)
+        tool_context: Optional execution context for session isolation.
     """
     if max_chars is None:
         max_chars = MAX_READ_CHARS
@@ -318,8 +441,7 @@ async def _read_file(file_path: str, max_chars: Optional[int] = None, max_lines:
         max_lines = MAX_READ_LINES
 
     try:
-        # Security validation
-        is_safe, error_msg = _validate_path_security(file_path)
+        is_safe, error_msg = _validate_path_security(file_path, tool_context=tool_context)
         if not is_safe:
             return {
                 "operation": "read",
@@ -385,11 +507,10 @@ async def _read_file(file_path: str, max_chars: Optional[int] = None, max_lines:
         return {"operation": "read", "path": file_path, "success": False, "error": str(e)}
 
 
-async def _write_file(file_path: str, content: str) -> Dict[str, Any]:
+async def _write_file(file_path: str, content: str, tool_context: Optional[ToolContext] = None) -> Dict[str, Any]:
     """Write content to file with security validation"""
     try:
-        # Security validation
-        is_safe, error_msg = _validate_path_security(file_path)
+        is_safe, error_msg = _validate_path_security(file_path, tool_context=tool_context)
         if not is_safe:
             return {
                 "operation": "write",
@@ -872,10 +993,10 @@ def _build_evidence_envelope(
     return envelope
 
 
-async def _profile_file(file_path: str, *, operation: str = "profile") -> Dict[str, Any]:
+async def _profile_file(file_path: str, *, operation: str = "profile", tool_context: Optional[ToolContext] = None) -> Dict[str, Any]:
     """Return a compact profile for a single file when profile/census receives a file path."""
     try:
-        is_safe, error_msg = _validate_path_security(file_path, enforce_file_size_limit=True)
+        is_safe, error_msg = _validate_path_security(file_path, enforce_file_size_limit=True, tool_context=tool_context)
         if not is_safe:
             return {
                 "operation": operation,
@@ -923,9 +1044,18 @@ async def _profile_file(file_path: str, *, operation: str = "profile") -> Dict[s
         return {"operation": operation, "path": file_path, "success": False, "error": str(e)}
 
 
-async def _list_directory(dir_path: str, pattern: Optional[str] = None) -> Dict[str, Any]:
+async def _list_directory(dir_path: str, pattern: Optional[str] = None, tool_context: Optional[ToolContext] = None) -> Dict[str, Any]:
     """List directory contents"""
     try:
+        is_safe, error_msg = _validate_path_security(dir_path, tool_context=tool_context)
+        if not is_safe:
+            return {
+                "operation": "list",
+                "path": dir_path,
+                "success": False,
+                "error": f"Security violation: {error_msg}",
+            }
+
         path = Path(dir_path)
 
         if not path.exists():
@@ -974,10 +1104,11 @@ async def _profile_directory(
     pattern: Optional[str] = None,
     *,
     operation: str = "profile",
+    tool_context: Optional[ToolContext] = None,
 ) -> Dict[str, Any]:
     """Build a compact, read-only directory census for evidence-scoped answers."""
     try:
-        is_safe, error_msg = _validate_path_security(dir_path, enforce_file_size_limit=True)
+        is_safe, error_msg = _validate_path_security(dir_path, enforce_file_size_limit=True, tool_context=tool_context)
         if not is_safe:
             return {
                 "operation": operation,
@@ -1164,11 +1295,10 @@ async def _profile_directory(
         return {"operation": operation, "path": dir_path, "success": False, "error": str(e)}
 
 
-async def _delete_path(target_path: str) -> Dict[str, Any]:
+async def _delete_path(target_path: str, tool_context: Optional[ToolContext] = None) -> Dict[str, Any]:
     """Delete file or directory with security validation"""
     try:
-        # Security validation
-        is_safe, error_msg = _validate_path_security(target_path)
+        is_safe, error_msg = _validate_path_security(target_path, tool_context=tool_context)
         if not is_safe:
             return {
                 "operation": "delete",
@@ -1193,11 +1323,11 @@ async def _delete_path(target_path: str) -> Dict[str, Any]:
         return {"operation": "delete", "path": target_path, "success": False, "error": str(e)}
 
 
-async def _copy_path(source: str, destination: str) -> Dict[str, Any]:
+async def _copy_path(source: str, destination: str, tool_context: Optional[ToolContext] = None) -> Dict[str, Any]:
     """Copy file or directory with security validation"""
     try:
         # Security validation for both paths
-        is_safe_src, error_msg_src = _validate_path_security(source)
+        is_safe_src, error_msg_src = _validate_path_security(source, tool_context=tool_context)
         if not is_safe_src:
             return {
                 "operation": "copy",
@@ -1216,7 +1346,7 @@ async def _copy_path(source: str, destination: str) -> Dict[str, Any]:
                 "error": f"Source security violation: {size_error}",
             }
 
-        is_safe_dest, error_msg_dest = _validate_path_security(destination)
+        is_safe_dest, error_msg_dest = _validate_path_security(destination, tool_context=tool_context)
         if not is_safe_dest:
             return {
                 "operation": "copy",
@@ -1252,11 +1382,11 @@ async def _copy_path(source: str, destination: str) -> Dict[str, Any]:
         return {"operation": "copy", "source": source, "destination": destination, "success": False, "error": str(e)}
 
 
-async def _move_path(source: str, destination: str) -> Dict[str, Any]:
+async def _move_path(source: str, destination: str, tool_context: Optional[ToolContext] = None) -> Dict[str, Any]:
     """Move file or directory with security validation"""
     try:
         # Security validation for both paths
-        is_safe_src, error_msg_src = _validate_path_security(source)
+        is_safe_src, error_msg_src = _validate_path_security(source, tool_context=tool_context)
         if not is_safe_src:
             return {
                 "operation": "move",
@@ -1275,7 +1405,7 @@ async def _move_path(source: str, destination: str) -> Dict[str, Any]:
                 "error": f"Source security violation: {size_error}",
             }
 
-        is_safe_dest, error_msg_dest = _validate_path_security(destination)
+        is_safe_dest, error_msg_dest = _validate_path_security(destination, tool_context=tool_context)
         if not is_safe_dest:
             return {
                 "operation": "move",
@@ -1308,8 +1438,16 @@ async def _move_path(source: str, destination: str) -> Dict[str, Any]:
         return {"operation": "move", "source": source, "destination": destination, "success": False, "error": str(e)}
 
 
-async def _check_exists(target_path: str) -> Dict[str, Any]:
+async def _check_exists(target_path: str, tool_context: Optional[ToolContext] = None) -> Dict[str, Any]:
     """Check if path exists"""
+    is_safe, error_msg = _validate_path_security(target_path, tool_context=tool_context)
+    if not is_safe:
+        return {
+            "operation": "exists",
+            "path": target_path,
+            "success": False,
+            "error": f"Security violation: {error_msg}",
+        }
     path = Path(target_path)
     return {
         "operation": "exists",
@@ -1319,9 +1457,18 @@ async def _check_exists(target_path: str) -> Dict[str, Any]:
     }
 
 
-async def _get_file_info(target_path: str) -> Dict[str, Any]:
+async def _get_file_info(target_path: str, tool_context: Optional[ToolContext] = None) -> Dict[str, Any]:
     """Get file/directory information"""
     try:
+        is_safe, error_msg = _validate_path_security(target_path, tool_context=tool_context)
+        if not is_safe:
+            return {
+                "operation": "info",
+                "path": target_path,
+                "success": False,
+                "error": f"Security violation: {error_msg}",
+            }
+
         path = Path(target_path)
 
         if not path.exists():
