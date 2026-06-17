@@ -52,7 +52,7 @@ const FileUploadButton: React.FC<FileUploadButtonProps> = ({ size = 'middle' }) 
       const store = useChatStore.getState();
       const fileRefs = files.map(file => ({
         file_id: `project_${file.path}`,
-        file_path: `${file.data_root_path}/${file.path}`,
+        file_path: file.path,
         file_name: file.name,
         original_name: file.name,
         file_size: 'Project File',
@@ -103,6 +103,7 @@ const FileUploadButton: React.FC<FileUploadButtonProps> = ({ size = 'middle' }) 
       {projectId && (
         <FileTreeSelector
           projectId={projectId}
+          sessionId={currentSession?.id}
           visible={treeSelectorVisible}
           onCancel={() => setTreeSelectorVisible(false)}
           onSelect={handleFileTreeSelect}

@@ -74,6 +74,7 @@ class FileReference(BaseModel):
 class SelectedFilesRequest(BaseModel):
     project_id: int
     selected_paths: list[str]
+    session_id: Optional[str] = None
 
 
 class SelectedFilesResponse(BaseModel):
@@ -258,10 +259,19 @@ async def select_project_files(
         
         valid_roots = [root.get("path", "") for root in data_roots_raw]
         
+        session_upload_dir = None
+        if request.session_id:
+            from app.services.session_paths import get_session_upload_dir
+            try:
+                session_upload_dir = get_session_upload_dir(request.session_id, create=True)
+            except Exception as e:
+                logger.warning(f"Failed to create session upload dir: {e}")
+        
         files = []
         for selected_path in request.selected_paths:
             is_valid = False
             matched_root = ""
+            source_full_path = None
             
             for root_path in valid_roots:
                 if not root_path:
@@ -275,16 +285,45 @@ async def select_project_files(
                     if full_path.exists() and full_path.is_file():
                         is_valid = True
                         matched_root = root_path
+                        source_full_path = full_path
                         break
                 except (ValueError, FileNotFoundError):
                     continue
             
-            if is_valid:
-                files.append(FileReference(
+            if is_valid and source_full_path:
+                file_ref = FileReference(
                     path=selected_path,
                     name=Path(selected_path).name,
                     data_root_path=matched_root
-                ))
+                )
+                
+                if session_upload_dir:
+                    try:
+                        import shutil
+                        dest_path = session_upload_dir / file_ref.name
+                        
+                        original_dest = dest_path
+                        counter = 1
+                        while dest_path.exists():
+                            stem = original_dest.stem
+                            suffix = original_dest.suffix
+                            dest_path = original_dest.with_name(f"{stem}_{counter}{suffix}")
+                            counter += 1
+                        
+                        shutil.copy2(source_full_path, dest_path)
+                        file_ref.path = str(dest_path)
+                        logger.info(
+                            "Copied project file to session upload: %s -> %s",
+                            source_full_path,
+                            dest_path
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            "Failed to copy file to session upload, using original path: %s",
+                            e
+                        )
+                
+                files.append(file_ref)
             else:
                 logger.warning(f"Invalid or non-existent file path: {selected_path}")
         

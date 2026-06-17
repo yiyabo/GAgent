@@ -68,11 +68,13 @@ export class ProjectApi extends BaseApi {
 
   selectFiles = async (
     projectId: number,
-    selectedPaths: string[]
+    selectedPaths: string[],
+    sessionId?: string
   ): Promise<SelectedFilesResponse> => {
     return this.post<SelectedFilesResponse>(`/project/${projectId}/select-files`, {
       project_id: projectId,
       selected_paths: selectedPaths,
+      session_id: sessionId,
     });
   };
 }

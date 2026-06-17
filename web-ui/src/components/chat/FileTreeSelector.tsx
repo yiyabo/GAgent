@@ -5,6 +5,7 @@ import { projectApi, FileTreeNode } from '@api/project';
 
 interface FileTreeSelectorProps {
   projectId: number;
+  sessionId?: string;
   visible: boolean;
   onCancel: () => void;
   onSelect: (files: Array<{ path: string; name: string; data_root_path: string }>) => void;
@@ -12,6 +13,7 @@ interface FileTreeSelectorProps {
 
 const FileTreeSelector: React.FC<FileTreeSelectorProps> = ({
   projectId,
+  sessionId,
   visible,
   onCancel,
   onSelect,
@@ -62,7 +64,7 @@ const FileTreeSelector: React.FC<FileTreeSelectorProps> = ({
     }
 
     try {
-      const response = await projectApi.selectFiles(projectId, selectedKeys);
+      const response = await projectApi.selectFiles(projectId, selectedKeys, sessionId);
       if (response.code === 0) {
         onSelect(response.files);
         message.success(`Selected ${response.files.length} files`);
