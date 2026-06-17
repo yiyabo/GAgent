@@ -1,4 +1,0 @@
-Model,AUC,Accuracy,Precision,Recall,F1_Score,Brier_Score,AUC_Threshold_0.75,Best_CV_AUC
-Logistic Regression,0.5179,0.6,0.125,0.25,0.1667,0.2206,FAIL,0.6172
-Random Forest,0.878,0.84,0.0,0.0,0.0,0.1067,PASS,0.9346
-XGBoost,0.9375,0.98,1.0,0.875,0.9333,0.02,PASS,0.9667
