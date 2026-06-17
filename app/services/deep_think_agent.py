@@ -3509,6 +3509,29 @@ class DeepThinkAgent:
             "- If failure/error status files or partial-completion signals are present, state the completed and failed counts explicitly and qualify the conclusion.\n\n"
         )
 
+    def _build_session_isolation_block(self) -> str:
+        session_id = str(self.request_profile.get("session_id") or "").strip()
+        if not session_id:
+            return ""
+        from app.services.session_paths import get_runtime_session_dir
+        try:
+            session_dir = get_runtime_session_dir(session_id, create=False)
+        except Exception:
+            return ""
+        return (
+            "=== SESSION ISOLATION (CRITICAL) ===\n"
+            f"- This session's runtime directory is: {session_dir}\n"
+            f"- When searching for or reading analysis results, model outputs, feature files, or data dictionaries, "
+            f"ALWAYS look under `{session_dir}/` first (especially `{session_dir}/results/` and `{session_dir}/raw_files/`).\n"
+            "- NEVER read result/output files from global project directories like `/home/zczhao/Phage-Agent/output/`, "
+            "`/home/zczhao/Phage-Agent/results/`, or `/home/zczhao/GAgent*/` — those contain outputs from OTHER sessions "
+            "and will cause cross-contamination of findings.\n"
+            "- If you need to find a previously generated file in this session, use file_operations with a path scoped to "
+            f"`{session_dir}/`, not the project root.\n"
+            "- When listing files to discover outputs, scope the listing to the session directory. Do NOT list "
+            "`/home/zczhao/Phage-Agent` or `/home/zczhao/Phage-Agent/results` — that will surface unrelated session files.\n\n"
+        )
+
     @staticmethod
     def _directory_dataset_analysis_requested(user_query: str) -> bool:
         text = str(user_query or "").strip()
@@ -5207,6 +5230,7 @@ class DeepThinkAgent:
             + self._build_bio_tools_quick_map_block()
             + self._build_plan_artifact_discovery_block(context)
             + self._build_evidence_scope_block()
+            + self._build_session_isolation_block()
             + "\n"
             + "\n=== WORKFLOW ===\n"
             "1. First decide whether the request needs tools at all.\n"
@@ -7047,6 +7071,7 @@ Your goal is to choose the right depth for the user's request: be thorough when 
 {self._build_bio_tools_quick_map_block()}
 {self._build_plan_artifact_discovery_block(context)}
 {self._build_evidence_scope_block()}
+{self._build_session_isolation_block()}
 === THINKING WORKFLOW ===
 1. First classify whether the request needs tools, targeted evidence, or just a direct answer.
 2. Break the query into sub-problems only when that materially helps.
@@ -7116,12 +7141,14 @@ When ready to answer:
                 'CRITICAL: This is your LAST step. You MUST call submit_final_answer NOW with the best answer '
                 'you can provide based on all evidence gathered. Do NOT call any more tools — synthesize and submit.'
             )
-        if iteration > 8:
+        gentle_nudge = self.max_iterations // 2
+        strong_nudge = int(self.max_iterations * 0.75)
+        if iteration > strong_nudge:
             return (
                 'You have taken many steps. Consolidate what you already know and call submit_final_answer NOW. '
                 'Do NOT continue researching unless one more targeted tool call is absolutely essential.'
             )
-        elif iteration > 5:
+        elif iteration > gentle_nudge:
             return (
                 'Check whether the user is already adequately answered. If yes, call submit_final_answer now. '
                 'Continue only if another step materially improves accuracy.'

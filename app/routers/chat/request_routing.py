@@ -1606,11 +1606,11 @@ def resolve_subject_resolution(
 
 
 def _max_iterations_light(decision: RequestRoutingDecision) -> int:
-    return 6
+    return 100
 
 
 def _max_iterations_standard(decision: RequestRoutingDecision) -> int:
-    return 6
+    return 100
 
 
 def _max_iterations_execute(
@@ -1618,25 +1618,22 @@ def _max_iterations_execute(
     *,
     default_max_iterations: int,
 ) -> int:
-    execute_cap = 6
+    execute_cap = 100
     if decision.plan_conflict_requires_confirmation:
-        execute_cap = 3
+        execute_cap = 10
     elif (
         decision.full_plan_execution
         or decision.explicit_task_override
         or decision.plan_execute_required
         or decision.plan_execute_after_create_required
     ):
-        # Explicit task / full plan execution needs to traverse many tasks,
-        # so a 6-step cap is too easy to exhaust before followthrough can occur.
-        # Use a generous cap (48) to support multi-subtask composite execution.
-        execute_cap = 48
+        execute_cap = 100
     elif (
         decision.plan_create_required
         or decision.plan_review_required
         or decision.plan_optimize_required
     ):
-        execute_cap = 12
+        execute_cap = 100
     return max(3, min(default_max_iterations, execute_cap))
 
 
@@ -1678,7 +1675,7 @@ def build_request_tier_profile(
             **common,
         )
     if decision.request_tier == "research":
-        research_cap = min(default_max_iterations, 8)
+        research_cap = min(default_max_iterations, 100)
         return RequestTierProfile(
             request_tier="research",
             thinking_budget=max(simple_thinking_budget, min(default_thinking_budget, 10000)),
