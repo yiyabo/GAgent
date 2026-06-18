@@ -6,6 +6,7 @@ legacy `data/information_sessions` compatibility for cleanup and migration.
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 from pathlib import Path
@@ -16,6 +17,21 @@ _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _RUNTIME_ROOT = (_PROJECT_ROOT / "runtime").resolve()
 _LEGACY_INFO_SESSIONS_ROOT = (_PROJECT_ROOT / "data" / "information_sessions").resolve()
 _UNSAFE_SESSION_CHARS = re.compile(r"[^A-Za-z0-9_-]+")
+
+logger = logging.getLogger(__name__)
+
+# Reserved top-level directory names under each session root.
+# These names MUST be directories — a regular file squatting on any of them
+# would break PathRouter / PathResolution / plan execution.  We pre-create
+# them at session-dir creation time so that a misbehaving copy/move that
+# targets ``{session_dir}/<reserved_name>`` lands *inside* the directory
+# rather than replacing it with a regular file.
+_RESERVED_SESSION_TOPLEVEL_DIRS: tuple[str, ...] = (
+    "raw_files",
+    "uploads",
+    "deliverables",
+    "tool_outputs",
+)
 
 
 def normalize_session_base(session_id: str) -> str:
@@ -51,14 +67,68 @@ def get_legacy_info_sessions_root() -> Path:
 
 
 def get_runtime_session_dir(session_id: str, *, create: bool = False) -> Path:
-    """Return `runtime/session_<base>` for the provided session id."""
+    """Return `runtime/session_<base>` for the provided session id.
+
+    When *create* is True, also pre-creates the reserved top-level
+    subdirectories (`raw_files/`, `uploads/`, `deliverables/`,
+    `tool_outputs/`) plus `deliverables/latest/`.  This guards against
+    tools writing a regular file at one of these reserved names
+    (e.g. `shutil.copy2(src, "{session}/raw_files")`), which would
+    break PathRouter and all downstream plan execution.
+    """
     session_base = normalize_session_base(session_id)
     if not session_base:
         raise ValueError("session_id is required")
     session_dir = get_runtime_root() / f"session_{session_base}"
     if create:
         session_dir.mkdir(parents=True, exist_ok=True)
+        _ensure_reserved_session_dirs(session_dir)
     return session_dir.resolve()
+
+
+def _ensure_reserved_session_dirs(session_dir: Path) -> None:
+    """Pre-create reserved top-level session subdirectories.
+
+    Tolerates an existing regular file squatting on a reserved name
+    (it will not crash session creation — downstream path validators
+    are expected to surface the problem).  Always re-creates
+    `deliverables/latest/` since it is required by artifact publication.
+    """
+    for name in _RESERVED_SESSION_TOPLEVEL_DIRS:
+        path = session_dir / name
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+        except FileExistsError:
+            logger.warning(
+                "session %s has a non-directory entry at '%s'; reserved dir not created",
+                session_dir.name, name,
+            )
+    latest = session_dir / "deliverables" / "latest"
+    try:
+        latest.mkdir(parents=True, exist_ok=True)
+    except FileExistsError:
+        logger.warning(
+            "session %s has a non-directory entry at 'deliverables/latest'; latest dir not created",
+            session_dir.name,
+        )
+
+
+def get_session_raw_files_dir(session_id: str, *, create: bool = False) -> Path:
+    """Return ``runtime/session_<base>/raw_files`` (directory)."""
+    session_dir = get_runtime_session_dir(session_id, create=create)
+    raw_files_dir = session_dir / "raw_files"
+    if create:
+        raw_files_dir.mkdir(parents=True, exist_ok=True)
+    return raw_files_dir.resolve()
+
+
+def get_session_deliverables_dir(session_id: str, *, create: bool = False) -> Path:
+    """Return ``runtime/session_<base>/deliverables/latest`` (directory)."""
+    session_dir = get_runtime_session_dir(session_id, create=create)
+    deliverables_dir = session_dir / "deliverables" / "latest"
+    if create:
+        deliverables_dir.mkdir(parents=True, exist_ok=True)
+    return deliverables_dir.resolve()
 
 
 def get_session_upload_dir(session_id: str, *, create: bool = False) -> Path:
