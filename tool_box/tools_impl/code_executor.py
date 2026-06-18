@@ -3172,6 +3172,46 @@ def _promote_results_to_unified_dir(
         promoted.append(rel_to_session)
         count += 1
 
+    # Fallback: when the run workspace produced no files but the session-level
+    # results/ directory has content (e.g. qwen_code wrote to absolute session
+    # results/ path instead of the run-scoped results/), promote those too.
+    if not promoted:
+        session_results = (session_dir / "results").resolve()
+        if session_results.is_dir() and session_results != (scratch_dir / "results").resolve():
+            for path in sorted(session_results.rglob("*")):
+                if not path.is_file() or _should_skip_unified_promoted_file(path, root=session_results):
+                    continue
+                if count >= max_files:
+                    logger.warning(
+                        "Unified promotion (session fallback) stopped after %s files (cap=%s)",
+                        count,
+                        max_files,
+                    )
+                    break
+                try:
+                    rel = path.relative_to(session_results)
+                except ValueError:
+                    continue
+                dest = output_dir / rel
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    shutil.copy2(path, dest)
+                except OSError as exc:
+                    logger.warning("Failed to promote (session fallback) %s -> %s: %s", path, dest, exc)
+                    continue
+                try:
+                    rel_to_session = str(dest.relative_to(session_dir)).replace("\\", "/")
+                except ValueError:
+                    rel_to_session = str(dest).replace("\\", "/")
+                promoted.append(rel_to_session)
+                count += 1
+            if promoted:
+                logger.info(
+                    "Promoted %s file(s) from session results/ fallback to unified output dir %s",
+                    len(promoted),
+                    output_dir,
+                )
+
     if promoted:
         logger.info(
             "Promoted %s file(s) to unified output dir %s",
