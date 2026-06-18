@@ -177,3 +177,71 @@ def test_promote_strays_multiple_files(
     assert (unified_output_dir / "table1.csv").exists()
     assert (unified_output_dir / "km_curve.png").exists()
     assert (unified_output_dir / "report.md").exists()
+
+
+def test_promote_results_to_unified_dir_falls_back_to_session_results(
+    tmp_path: Path,
+) -> None:
+    from tool_box.tools_impl.code_executor import _promote_results_to_unified_dir
+
+    session_dir = tmp_path / "session"
+    session_dir.mkdir()
+    scratch_dir = session_dir / "_scratch" / "plan143_task7" / "run_xxx"
+    scratch_dir.mkdir(parents=True)
+    output_dir = session_dir / "raw_files" / "task_1" / "task_7"
+    output_dir.mkdir(parents=True)
+
+    # run workspace results/ is empty
+    (scratch_dir / "results").mkdir()
+
+    # session-level results/ has the actual file
+    session_results = session_dir / "results"
+    session_results.mkdir()
+    report = session_results / "research_report.md"
+    report.write_text("# Report\n", encoding="utf-8")
+
+    promoted = _promote_results_to_unified_dir(
+        scratch_dir=scratch_dir,
+        output_dir=output_dir,
+        subdirs=["results", "code", "data", "docs"],
+        session_dir=session_dir,
+    )
+
+    assert len(promoted) == 1
+    assert (output_dir / "research_report.md").exists()
+    assert (output_dir / "research_report.md").read_text(encoding="utf-8") == "# Report\n"
+
+
+def test_promote_results_prefers_run_workspace_over_session_fallback(
+    tmp_path: Path,
+) -> None:
+    from tool_box.tools_impl.code_executor import _promote_results_to_unified_dir
+
+    session_dir = tmp_path / "session"
+    session_dir.mkdir()
+    scratch_dir = session_dir / "_scratch" / "plan143_task7" / "run_xxx"
+    scratch_dir.mkdir(parents=True)
+    output_dir = session_dir / "raw_files" / "task_1" / "task_7"
+    output_dir.mkdir(parents=True)
+
+    # run workspace has a file
+    run_results = scratch_dir / "results"
+    run_results.mkdir()
+    (run_results / "run_report.md").write_text("from run", encoding="utf-8")
+
+    # session-level also has a file (should be ignored because run has content)
+    session_results = session_dir / "results"
+    session_results.mkdir()
+    (session_results / "session_report.md").write_text("from session", encoding="utf-8")
+
+    promoted = _promote_results_to_unified_dir(
+        scratch_dir=scratch_dir,
+        output_dir=output_dir,
+        subdirs=["results", "code", "data", "docs"],
+        session_dir=session_dir,
+    )
+
+    # Only run workspace files promoted; session fallback not triggered
+    assert len(promoted) == 1
+    assert (output_dir / "run_report.md").exists()
+    assert not (output_dir / "session_report.md").exists()
