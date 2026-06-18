@@ -597,3 +597,114 @@ def test_session_no_tool_context_falls_back_to_whitelist(monkeypatch, tmp_path: 
         file_operations.file_operations_handler("read", str(plain))
     )
     assert result["success"] is True
+
+
+# ---------------------------------------------------------------------------
+# Regression: session-scoped reserved directory pollution
+#
+# Incident (plan_141, session_1781701589917_ho8i76cqo):
+#   DeepThink called file_operations.copy with destination "{session}/raw_files"
+#   (no trailing filename). shutil.copy2 created a regular FILE at that path
+#   instead of a directory, which broke PathRouter and all 16 plan tasks with
+#   ENOTDIR. These tests pin the two-layer defence:
+#     1. session_paths pre-creates raw_files/uploads/deliverables/tool_outputs
+#     2. file_operations _copy_path / _move_path redirect a file copy/move
+#        whose destination matches a reserved directory name INTO the directory.
+# ---------------------------------------------------------------------------
+
+
+def test_session_init_pre_creates_reserved_dirs(monkeypatch, tmp_path: Path) -> None:
+    """get_runtime_session_dir(create=True) must pre-create reserved dirs
+    so a misbehaving copy/move lands inside them instead of replacing them."""
+    from app.services import session_paths
+
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("APP_RUNTIME_ROOT", str(runtime_root))
+
+    session_dir = session_paths.get_runtime_session_dir("regression_001", create=True)
+
+    assert session_dir.is_dir()
+    assert (session_dir / "raw_files").is_dir()
+    assert (session_dir / "uploads").is_dir()
+    assert (session_dir / "deliverables").is_dir()
+    assert (session_dir / "deliverables" / "latest").is_dir()
+    assert (session_dir / "tool_outputs").is_dir()
+
+
+def test_session_init_tolerates_polluted_reserved_name(monkeypatch, tmp_path: Path) -> None:
+    """If a regular file already squats on a reserved name (the incident
+    scenario), session init must not crash — it leaves the pollutant in place
+    for downstream validators to surface, while still creating the others."""
+    from app.services import session_paths
+
+    runtime_root = tmp_path / "runtime"
+    polluted = runtime_root / "session_polluted"
+    polluted.mkdir(parents=True, exist_ok=True)
+    # Simulate the incident: a regular file squatting on raw_files
+    (polluted / "raw_files").write_bytes(b"PK\x03\x04 polluted")
+
+    monkeypatch.setenv("APP_RUNTIME_ROOT", str(runtime_root))
+
+    session_dir = session_paths.get_runtime_session_dir("polluted", create=True)
+
+    # Pollutant is NOT cleaned up automatically; downstream must surface it
+    assert (polluted / "raw_files").is_file()
+    # But the other reserved dirs are still created
+    assert (session_dir / "uploads").is_dir()
+    assert (session_dir / "deliverables" / "latest").is_dir()
+    assert (session_dir / "tool_outputs").is_dir()
+
+
+def test_copy_to_reserved_dir_name_redirects_into_dir(monkeypatch, tmp_path: Path) -> None:
+    """Regression (plan_141 incident): when the LLM passes a destination like
+    `{dir}/raw_files` without a trailing filename, the file must land INSIDE
+    the reserved directory instead of creating a regular file at the reserved
+    name (which would break PathRouter and all downstream plan execution)."""
+    project_root = tmp_path / "project"
+    project_root.mkdir(parents=True, exist_ok=True)
+
+    source = project_root / "data.xlsx"
+    source.write_bytes(b"PK\x03\x04 fake xlsx payload")
+
+    target_dir = project_root / "target"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    dest = target_dir / "raw_files"
+
+    monkeypatch.setattr(file_operations, "ALLOWED_BASE_PATHS", [str(project_root)])
+
+    result = asyncio.run(
+        file_operations.file_operations_handler("copy", str(source), destination=str(dest))
+    )
+
+    assert result["success"] is True
+    assert not (target_dir / "raw_files").is_file(), "guard failed: regular file at reserved name"
+    assert (target_dir / "raw_files").is_dir()
+    assert (target_dir / "raw_files" / "data.xlsx").is_file()
+    assert (target_dir / "raw_files" / "data.xlsx").read_bytes() == b"PK\x03\x04 fake xlsx payload"
+    assert result["destination"].endswith("data.xlsx")
+
+
+def test_move_to_reserved_dir_name_redirects_into_dir(monkeypatch, tmp_path: Path) -> None:
+    """Same regression as test_copy_* but for move."""
+    project_root = tmp_path / "project"
+    project_root.mkdir(parents=True, exist_ok=True)
+
+    source = project_root / "input.csv"
+    source.write_text("a,b\n1,2", encoding="utf-8")
+
+    target_dir = project_root / "out"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    dest = target_dir / "uploads"
+
+    monkeypatch.setattr(file_operations, "ALLOWED_BASE_PATHS", [str(project_root)])
+
+    result = asyncio.run(
+        file_operations.file_operations_handler("move", str(source), destination=str(dest))
+    )
+
+    assert result["success"] is True
+    assert not (target_dir / "uploads").is_file()
+    assert (target_dir / "uploads" / "input.csv").is_file()
+    assert (target_dir / "uploads" / "input.csv").read_text(encoding="utf-8") == "a,b\n1,2"
+    assert not source.exists()

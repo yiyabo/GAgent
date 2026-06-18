@@ -336,6 +336,42 @@ def _validate_copy_move_size(file_path: str) -> Tuple[bool, str]:
         return False, f"Path validation error: {str(e)}"
 
 
+# Reserved directory names that must never be replaced by a regular file.
+# If a copy/move targets one of these names with a file source and the
+# destination does not yet exist, the destination is treated as the intended
+# directory and the source filename is appended.  This guards against LLM
+# tool-call misuse where the caller passes ``{session}/raw_files`` (intended
+# as a directory) instead of ``{session}/raw_files/<filename>`` — without
+# this guard ``shutil.copy2`` would create a regular file at the reserved
+# path and break PathRouter and all downstream plan execution.
+_RESERVED_DIR_NAMES = frozenset({
+    "raw_files",
+    "uploads",
+    "deliverables",
+    "tool_outputs",
+    "workspace",
+    "results",
+})
+
+
+def _redirect_reserved_dir_destination(
+    src_path: Path, dest_path: Path, op_name: str,
+) -> Path:
+    if not src_path.is_file():
+        return dest_path
+    if dest_path.exists():
+        return dest_path
+    if dest_path.name not in _RESERVED_DIR_NAMES:
+        return dest_path
+    redirected = dest_path / src_path.name
+    logger.warning(
+        "%s destination '%s' matches a reserved directory name but does not "
+        "exist; treating it as a directory and redirecting to '%s'",
+        op_name, dest_path, redirected,
+    )
+    return redirected
+
+
 async def file_operations_handler(
     operation: str,
     path: str,
@@ -1368,6 +1404,8 @@ async def _copy_path(source: str, destination: str, tool_context: Optional[ToolC
                 "error": "Source path not found",
             }
 
+        dest_path = _redirect_reserved_dir_destination(src_path, dest_path, "copy")
+
         # Create destination parent directories
         dest_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -1376,7 +1414,7 @@ async def _copy_path(source: str, destination: str, tool_context: Optional[ToolC
         elif src_path.is_dir():
             shutil.copytree(src_path, dest_path)
 
-        return {"operation": "copy", "source": source, "destination": destination, "success": True}
+        return {"operation": "copy", "source": source, "destination": str(dest_path), "success": True}
 
     except Exception as e:
         return {"operation": "copy", "source": source, "destination": destination, "success": False, "error": str(e)}
@@ -1427,12 +1465,14 @@ async def _move_path(source: str, destination: str, tool_context: Optional[ToolC
                 "error": "Source path not found",
             }
 
+        dest_path = _redirect_reserved_dir_destination(src_path, dest_path, "move")
+
         # Create destination parent directories
         dest_path.parent.mkdir(parents=True, exist_ok=True)
 
         shutil.move(str(src_path), str(dest_path))
 
-        return {"operation": "move", "source": source, "destination": destination, "success": True}
+        return {"operation": "move", "source": source, "destination": str(dest_path), "success": True}
 
     except Exception as e:
         return {"operation": "move", "source": source, "destination": destination, "success": False, "error": str(e)}
