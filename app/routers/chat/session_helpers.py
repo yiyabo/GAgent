@@ -20,8 +20,9 @@ VALID_SEARCH_PROVIDERS = {"builtin", "perplexity", "tavily"}
 VALID_BASE_MODELS = {
     "qwen3.7-max",
     "mimo-v2.5-pro-ultraspeed",
+    "kimi/kimi-k2.7-code-highspeed",
 }
-VALID_LLM_PROVIDERS = {"qwen", "mimo"}
+VALID_LLM_PROVIDERS = {"qwen", "mimo", "kimi"}
 SESSION_RUNTIME_CONTEXT_KEYS = (
     "active_subject",
     "last_failure_state",

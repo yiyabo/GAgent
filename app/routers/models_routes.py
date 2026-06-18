@@ -68,6 +68,11 @@ _MODEL_METADATA = {
         "name": "MiMo v2.5 Pro UltraSpeed",
         "description": "Xiaomi MiMo flagship with reasoning, ~500 tok/s decode.",
     },
+    "kimi/kimi-k2.7-code-highspeed": {
+        "provider": "kimi",
+        "name": "Kimi K2.7 Code Highspeed",
+        "description": "Kimi coding model hosted on Bailian via Qwen-compatible endpoint.",
+    },
 }
 
 
@@ -75,7 +80,12 @@ def _provider_available(provider_id: str) -> bool:
     settings = get_settings()
     key_attr = f"{provider_id}_api_key"
     api_key = getattr(settings, key_attr, None)
-    return bool(api_key)
+    if api_key:
+        return True
+    # kimi provider can fallback to qwen credentials on the same Bailian platform
+    if provider_id == "kimi":
+        return bool(getattr(settings, "qwen_api_key", None))
+    return False
 
 
 @router.get("", response_model=AvailableModelsResponse)
