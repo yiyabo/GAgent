@@ -311,8 +311,10 @@ def _required_output_is_present(
     try:
         if has_glob:
             return any(path.is_file() for path in candidate.parent.glob(candidate.name))
-        if candidate.exists() and candidate.is_file():
+        if candidate.is_file():
             return True
+        if candidate.is_dir():
+            return any(candidate.iterdir())
         if not expected_path.is_absolute():
             prefixed = _find_unique_run_prefixed_contract_source(task_work_dir, expected_path)
             return prefixed is not None

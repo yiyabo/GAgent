@@ -656,3 +656,52 @@ def test_code_executor_failure_payload_overrides_exit_zero_success() -> None:
     assert payload["session_artifact_paths"] == []
     assert payload["output_location"]["files"] == []
     assert "deliverable_submit" not in payload
+
+
+def test_code_executor_accepts_directory_path_when_non_empty(tmp_path: Path) -> None:
+    execution_spec = {
+        "acceptance_criteria": {
+            "category": "file_data",
+            "blocking": True,
+            "checks": [{"type": "file_nonempty", "path": str(tmp_path / "results") + "/"}],
+        }
+    }
+    output_file = tmp_path / "results" / "processed_data.csv"
+    output_file.parent.mkdir()
+    output_file.write_text("col_a,col_b\n1,2\n")
+
+    failure = code_executor_module._detect_execution_semantic_or_output_failure(
+        stdout="Completed successfully",
+        output_data=None,
+        execution_spec=execution_spec,
+        produced_files=[str(tmp_path / "executor.log")],
+        success=True,
+        task_work_dir=tmp_path,
+    )
+
+    assert failure is None
+
+
+def test_code_executor_rejects_directory_path_when_empty(tmp_path: Path) -> None:
+    empty_dir = tmp_path / "results"
+    empty_dir.mkdir()
+    execution_spec = {
+        "acceptance_criteria": {
+            "category": "file_data",
+            "blocking": True,
+            "checks": [{"type": "file_nonempty", "path": str(empty_dir) + "/"}],
+        }
+    }
+
+    failure = code_executor_module._detect_execution_semantic_or_output_failure(
+        stdout="Completed successfully",
+        output_data=None,
+        execution_spec=execution_spec,
+        produced_files=[str(tmp_path / "executor.log")],
+        success=True,
+        task_work_dir=tmp_path,
+    )
+
+    assert failure is not None
+    assert failure["status"] == "NO_OUTPUT"
+    assert failure["failure_kind"] == "missing_required_outputs"
