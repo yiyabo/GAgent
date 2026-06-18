@@ -3348,16 +3348,6 @@ class DeepThinkAgent:
 
     def _build_request_tier_block(self) -> str:
         tier = self._request_tier()
-        if tier == "light":
-            return (
-                "=== REQUEST TIER: LIGHT ===\n"
-                "- Answer directly and briefly.\n"
-                "- Use the smallest amount of explanation that fully answers the user.\n"
-                "- Keep the tone professional and plain; avoid decorative emojis or hype.\n"
-                "- Prefer finishing in one short reasoning pass.\n"
-                "- Use tools when the answer depends on file/workspace/remote state; "
-                "a no-tool guess is not an acceptable substitute for a check you could run.\n"
-            )
         if tier == "standard":
             return (
                 "=== REQUEST TIER: STANDARD ===\n"
@@ -4972,7 +4962,7 @@ class DeepThinkAgent:
                     _tier_for_early_stop = self._request_tier()
                     _content_for_early_stop = (result.content or "").strip()
                     if (
-                        _tier_for_early_stop in {"light", "standard"}
+                        _tier_for_early_stop == "standard"
                         and _content_for_early_stop
                         and len(_content_for_early_stop) >= 20
                         and not self._is_execute_task_request()
@@ -7129,11 +7119,6 @@ When ready to answer:
     def _get_next_step_prompt(self, iteration: int) -> str:
         """Generate prompt for the next step, encouraging completion if steps are getting long."""
         tier = self._request_tier()
-        if tier == "light":
-            return (
-                "Light request: if you still need file or tool evidence to answer "
-                "accurately, call the tool now; otherwise finish with submit_final_answer."
-            )
         if tier == "standard":
             return 'Prefer answering now. Continue only if one more brief step materially improves the response.'
         if iteration >= self.max_iterations - 1:
