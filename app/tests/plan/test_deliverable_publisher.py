@@ -1204,4 +1204,52 @@ def test_publish_puts_reference_pdf_from_paper_tree_into_refs(tmp_path: Path):
     assert report is not None
     latest_root = tmp_path / "runtime" / "session_pdf_route001" / "deliverables" / "latest"
     assert (latest_root / "refs" / "Hu2025Naturecommunica.pdf").exists()
+
+
+def test_publish_docs_md_rewrites_relative_image_paths(tmp_path: Path):
+    publisher = _build_publisher(tmp_path)
+    viz_dir = tmp_path / "workspace" / "visualizations"
+    viz_dir.mkdir(parents=True, exist_ok=True)
+    roc = viz_dir / "roc_curve.png"
+    cal = viz_dir / "calibration_curve.png"
+    roc.write_bytes(b"roc-image-data")
+    cal.write_bytes(b"cal-image-data")
+    report_dir = tmp_path / "workspace" / "report"
+    report_dir.mkdir(parents=True, exist_ok=True)
+    report_md = report_dir / "final_report.md"
+    report_md.write_text(
+        "# Report\n\n![ROC](../visualizations/roc_curve.png)\n\n![Cal](../visualizations/calibration_curve.png)\n",
+        encoding="utf-8",
+    )
+
+    report = publisher.publish_from_tool_result(
+        session_id="rewrite_md_paths001",
+        tool_name="deliverable_submit",
+        raw_result={
+            "deliverable_submit": {
+                "artifacts": [
+                    {"path": str(report_md), "module": "docs"},
+                    {"path": str(roc), "module": "image_tabular"},
+                    {"path": str(cal), "module": "image_tabular"},
+                ],
+                "publish": True,
+            },
+        },
+        summary="Report with images",
+    )
+    assert report is not None
+
+    latest_root = (
+        tmp_path
+        / "runtime"
+        / "session_rewrite_md_paths001"
+        / "deliverables"
+        / "latest"
+    )
+    doc_file = latest_root / "docs" / "final_report.md"
+    assert doc_file.exists()
+    content = doc_file.read_text(encoding="utf-8")
+    assert "../visualizations/" not in content
+    assert "image_tabular/roc_curve.png" in content
+    assert "image_tabular/calibration_curve.png" in content
     assert not (latest_root / "paper" / "Hu2025Naturecommunica.pdf").exists()

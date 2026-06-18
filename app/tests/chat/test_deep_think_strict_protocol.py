@@ -3978,11 +3978,11 @@ def test_bound_execute_task_fallback_never_asks_for_missing_task_definition() ->
     assert "当前绑定任务" in result.final_answer
 
 
-# ---------- Early stop for light / standard tiers ----------
+# ---------- Early stop for standard tier ----------
 
 
-def test_native_light_tier_early_stops_on_direct_text_answer() -> None:
-    """Light tier: when the LLM returns a direct text answer (no tools),
+def test_native_standard_tier_early_stops_on_code_answer() -> None:
+    """Standard tier: when the LLM returns a direct code answer (no tools),
     the engine should stop immediately instead of forcing extra iterations."""
 
     llm = _RecordingNativeLLM([
@@ -4008,7 +4008,7 @@ def test_native_light_tier_early_stops_on_direct_text_answer() -> None:
         available_tools=["web_search"],
         tool_executor=_noop_tool_executor,
         max_iterations=3,
-        request_profile={"request_tier": "light"},
+        request_profile={"request_tier": "standard"},
     )
 
     result = asyncio.run(agent.think("写个斐波那契数列代码"))
@@ -4023,7 +4023,7 @@ def test_native_light_tier_early_stops_on_direct_text_answer() -> None:
 
 
 def test_native_standard_tier_early_stops_on_direct_text_answer() -> None:
-    """Standard tier: same early stop behavior as light."""
+    """Standard tier: same early stop behavior."""
 
     llm = _RecordingNativeLLM([
         NativeStreamResult(
@@ -4123,8 +4123,8 @@ def test_native_execute_tier_does_not_early_stop() -> None:
     assert result.final_answer == "Task executed"
 
 
-def test_native_light_tier_no_early_stop_on_short_content() -> None:
-    """Light tier should NOT early stop when content is too short (< 20 chars)."""
+def test_native_standard_tier_no_early_stop_on_short_content() -> None:
+    """Standard tier should NOT early stop when content is too short (< 20 chars)."""
 
     llm = _NativeDummyLLM([
         NativeStreamResult(
@@ -4148,7 +4148,7 @@ def test_native_light_tier_no_early_stop_on_short_content() -> None:
         available_tools=["web_search"],
         tool_executor=_noop_tool_executor,
         max_iterations=3,
-        request_profile={"request_tier": "light"},
+        request_profile={"request_tier": "standard"},
     )
 
     result = asyncio.run(agent.think("你好"))

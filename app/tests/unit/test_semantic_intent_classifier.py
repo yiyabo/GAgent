@@ -264,12 +264,12 @@ class TestFeatureFlag:
         # No semantic reason codes should be present
         assert not any("semantic" in r for r in reasons)
 
-    def test_greeting_still_routes_to_light(self) -> None:
-        """Greetings must still get classified correctly by rules."""
+    def test_greeting_routes_to_standard(self) -> None:
+        """Greetings route to standard tier with brevity_hint."""
         from app.routers.chat.request_routing import resolve_request_routing
 
         decision = resolve_request_routing(message="你好呀")
-        assert decision.request_tier == "light"
+        assert decision.request_tier == "standard"
 
     def test_research_cue_still_routes_to_research_tier(self) -> None:
         """Research keywords must still route to research request_tier."""

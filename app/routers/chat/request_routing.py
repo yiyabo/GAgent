@@ -23,7 +23,7 @@ from .subject_identity import (
 
 logger = logging.getLogger(__name__)
 
-RequestTier = Literal["light", "standard", "research", "execute"]
+RequestTier = Literal["standard", "research", "execute"]
 RequestRouteMode = Literal["manual_deepthink", "auto_simple", "auto_deepthink"]
 ThinkingVisibility = Literal["visible", "progress", "hidden"]
 ThinkingDisplayMode = Literal["full_thinking", "compact_progress", "final_answer", "hidden"]
@@ -65,7 +65,7 @@ _PATH_RE = re.compile(
     r"(?P<path>(?:~?/|\.{1,2}/|/)?(?:[\w\-.一-龥]+/)+[\w\-.一-龥]+(?:\.[\w-]+)?)"
 )
 
-_LIGHT_EXACT = {
+_GREETING_TOKENS_EXACT = {
     "你好",
     "您好",
     "嗨",
@@ -73,12 +73,6 @@ _LIGHT_EXACT = {
     "在吗",
     "谢谢",
     "感谢",
-    "好的",
-    "收到",
-    "明白",
-    "可以",
-    "ok",
-    "okay",
     "hello",
     "hi",
     "hey",
@@ -87,7 +81,7 @@ _LIGHT_EXACT = {
     "thank you",
 }
 
-_LIGHT_PHRASES = (
+_SOCIAL_PHRASES = (
     "你好",
     "您好",
     "好久不见",
@@ -108,6 +102,18 @@ _LIGHT_PHRASES = (
     "sounds good",
     "how does this look",
 )
+
+# Short-direct-request tokens that, regardless of tier, should make the
+# final answer brief and skip progress recaps.  Replaces the old
+# `is_brief_followup`/`is_short_direct_request` length-based logic: we no
+# longer downgrade the request tier based on message length, but we still
+# want execute-tier runs that start with a terse instruction to skip
+# verbose recaps.  This set intentionally excludes pure greetings (those
+# stay in _GREETING_TOKENS_EXACT) and pure affirmations ("好的/收到/可以") so that
+# carry-forward intent is preserved.
+_DIRECT_REQUEST_TOKENS = frozenset({
+    "why", "how", "继续", "然后呢", "接下来", "next", "nextstep", "whatnext",
+})
 
 _RESEARCH_PHRASES = (
     "search",
@@ -1166,7 +1172,7 @@ def resolve_request_routing(
         )
         if llm_result is not None:
             llm_tier, llm_is_plan_mod, llm_reasons = llm_result
-            if llm_tier in ("research", "execute") and request_tier in ("standard", "light"):
+            if llm_tier in ("research", "execute") and request_tier == "standard":
                 request_tier = llm_tier
                 combined_reasons.append("llm_routing_elevated")
                 for r in llm_reasons:
@@ -1233,7 +1239,7 @@ def resolve_request_routing(
             _NON_PHAGESCOPE_TABULAR_FILE_EXTS
         )
         and not _directory_positively_lacks_phagescope_meta_data(subject_ref_raw)
-        and request_tier == "light"
+        and request_tier == "standard"
         and _contains_any_lowered(
             effective_user_message.lower(),
             (
@@ -1366,12 +1372,11 @@ def classify_request_tier(
     has_plan_optimize = _has_explicit_plan_optimize_request(text, plan_bound=plan_bound, task_bound=task_bound)
 
     recent_assistant_turn = _last_role(history, "assistant")
-    is_brief_followup = bool(recent_assistant_turn) and (
-        len(text) <= 24
-        or collapsed in {"why", "how", "继续", "然后呢", "接下来", "next", "nextstep", "whatnext"}
-    )
-    if is_brief_followup:
-        reasons.append("brief_followup")
+    # Token-based direct-followup detection (was previously length-based;
+    # see _DIRECT_REQUEST_TOKENS comment for why affirmations are excluded).
+    is_direct_followup = bool(recent_assistant_turn) and collapsed in _DIRECT_REQUEST_TOKENS
+    if is_direct_followup:
+        reasons.append("direct_followup")
 
     # ── Tier decision ─────────────────────────────────────────────
     # 1. Execute tier: structural signals or keyword heuristics that
@@ -1380,11 +1385,11 @@ def classify_request_tier(
     #    decides what tools to call.
     if intent_type == "execute_task":
         reasons.append("intent_execution")
-        return "execute", reasons, is_brief_followup, 0.9
+        return "execute", reasons, is_direct_followup, 0.9
 
     if has_attachments:
         reasons.append("execution_keyword")
-        return "execute", reasons, is_brief_followup, 0.9
+        return "execute", reasons, is_direct_followup, 0.9
 
     if has_plan_request or has_plan_review or has_plan_optimize:
         if has_plan_request:
@@ -1393,19 +1398,19 @@ def classify_request_tier(
             reasons.append("plan_review")
         if has_plan_optimize:
             reasons.append("plan_optimize")
-        return "execute", reasons, is_brief_followup, 0.9
+        return "execute", reasons, is_direct_followup, 0.9
 
     if has_execute_keyword or followthrough_implies_execute:
         reasons.append("execution_keyword")
-        return "execute", reasons, is_brief_followup, 0.9
+        return "execute", reasons, is_direct_followup, 0.9
 
     if plan_bound and has_followthrough_cue and not is_chat_continuation:
         reasons.append("plan_followthrough")
-        return "execute", reasons, is_brief_followup, 0.9
+        return "execute", reasons, is_direct_followup, 0.9
 
     # 2. Research: literature / time-sensitive cues
     if has_research_cue or has_time_sensitive_cue:
-        return "research", reasons, is_brief_followup, 0.6
+        return "research", reasons, is_direct_followup, 0.6
 
     # 2b. Remote status queries
     _REMOTE_STATUS_WORDS = ("状态", "进度", "在跑", "运行", "完成", "status", "running", "progress")
@@ -1414,35 +1419,23 @@ def classify_request_tier(
         and _contains_any(lowered, _REMOTE_STATUS_WORDS)
     ):
         reasons.append("remote_status_query")
-        return "standard", reasons, is_brief_followup, 0.3
+        return "standard", reasons, is_direct_followup, 0.3
 
-    # 3. Light: greetings, short social, brief follow-ups
-    is_light_exact = collapsed in {
-        _NON_WORD_RE.sub("", token.lower()) for token in _LIGHT_EXACT
+    # 3. Greetings / thanks: brief social tokens no longer downgrade to
+    #    a deprecated "light" tier — they now route to standard tier with
+    #    brevity_hint=True so the LLM still keeps the answer short.
+    is_greeting = collapsed in {
+        _NON_WORD_RE.sub("", token.lower()) for token in _GREETING_TOKENS_EXACT
     }
-    is_light_phrase = _contains_any(lowered, _LIGHT_PHRASES)
+    is_social_phrase = _contains_any(lowered, _SOCIAL_PHRASES)
 
-    if is_light_exact or is_light_phrase:
-        reasons.append("light_social")
-        return "light", reasons, is_brief_followup, 0.3
-
-    if is_brief_followup and has_depth_cue:
-        reasons.append("brief_followup_depth")
-        return "standard", reasons, True, 0.6
-
-    if is_brief_followup:
-        return "light", reasons, True, 0.3
-
-    is_short_direct_request = bool(text) and (
-        len(text) <= 60 or len(text.split()) <= 14
-    )
-    if is_short_direct_request and not has_depth_cue:
-        reasons.append("short_direct_request")
-        return "light", reasons, False, 0.3
+    if is_greeting or is_social_phrase:
+        reasons.append("greeting_or_social")
+        return "standard", reasons, True, 0.3
 
     # 4. Default: standard
     reasons.append("default_standard")
-    return "standard", reasons, False, 0.3
+    return "standard", reasons, is_direct_followup, 0.3
 
 
 def _llm_routing_fallback(
@@ -1462,9 +1455,8 @@ def _llm_routing_fallback(
         f"- task_bound: {task_bound} (a specific task is selected)\n\n"
         f"User message: {message}\n\n"
         "Respond in JSON with exactly these fields:\n"
-        '- "tier": one of "light", "standard", "research", "execute"\n'
-        '  - "light": greetings, brief social, simple acknowledgments\n'
-        '  - "standard": general questions, status queries, simple follow-ups\n'
+        '- "tier": one of "standard", "research", "execute"\n'
+        '  - "standard": general questions, status queries, simple follow-ups, greetings\n'
         '  - "research": literature search, deep analysis requests, time-sensitive queries\n'
         '  - "execute": user wants the AI to take action (run code, modify plan, create deliverables, deepen analysis)\n'
         '- "is_plan_modification": true/false (user wants to change/improve/deepen the existing plan)\n'
@@ -1605,10 +1597,6 @@ def resolve_subject_resolution(
     )
 
 
-def _max_iterations_light(decision: RequestRoutingDecision) -> int:
-    return 100
-
-
 def _max_iterations_standard(decision: RequestRoutingDecision) -> int:
     return 100
 
@@ -1658,14 +1646,6 @@ def build_request_tier_profile(
         plan_new_requested=decision.plan_new_requested,
         plan_conflict_requires_confirmation=decision.plan_conflict_requires_confirmation,
     )
-    if decision.request_tier == "light":
-        return RequestTierProfile(
-            request_tier="light",
-            thinking_budget=max(80, min(simple_thinking_budget, 400)),
-            max_iterations=_max_iterations_light(decision),
-            output_bias="short_direct",
-            **common,
-        )
     if decision.request_tier == "standard":
         return RequestTierProfile(
             request_tier="standard",
