@@ -1511,7 +1511,8 @@ class PlanExecutor:
                 tree=tree,
                 session_context=session_context,
             )
-            if missing_aliases and config.enforce_dependencies:
+            delegation_mode = self._should_delegate_plan_task(config)
+            if missing_aliases and config.enforce_dependencies and not delegation_mode:
                 _log_job(
                     "warning",
                     f"Task {node.id} blocked: required artifacts not published",
@@ -4459,6 +4460,57 @@ class PlanExecutor:
             if contract_published:
                 manifest.setdefault("artifacts", {}).update(contract_published)
                 published = {**published, **contract_published}
+
+            declared_publishes = contract.get("publishes") or []
+            if isinstance(declared_publishes, list) and declared_publishes:
+                manifest_aliases_registered = {
+                    canonicalize_artifact_alias(a)
+                    for a in manifest.get("artifacts", {}).keys()
+                    if isinstance(a, str)
+                }
+                for declared_alias in declared_publishes:
+                    if not isinstance(declared_alias, str) or not declared_alias.strip():
+                        continue
+                    canonical_declared = canonicalize_artifact_alias(declared_alias)
+                    if canonical_declared in manifest_aliases_registered:
+                        continue
+                    candidate_paths = [
+                        entry.get("path")
+                        for entry in contract_published.values()
+                        if isinstance(entry, dict) and entry.get("path")
+                    ]
+                    chosen_path = None
+                    slot_suffix = canonical_declared.split(".", 1)[1] if "." in canonical_declared else ""
+                    desired_ext = {
+                        "evidence_md": ".md",
+                        "manuscript_md": ".md",
+                        "references_bib": ".bib",
+                        "library_jsonl": ".jsonl",
+                    }.get(slot_suffix)
+                    for cp in candidate_paths:
+                        cp_ext = Path(str(cp)).suffix.lower()
+                        if desired_ext and cp_ext == desired_ext:
+                            chosen_path = cp
+                            break
+                    if chosen_path is None and candidate_paths:
+                        chosen_path = candidate_paths[0]
+                    if chosen_path:
+                        forced_entry = publish_artifact(
+                            plan_id=plan_id,
+                            alias=canonical_declared,
+                            source_path=chosen_path,
+                            producer_task_id=node.id,
+                            manifest=manifest,
+                            session_id=session_id,
+                        )
+                        if isinstance(forced_entry, dict):
+                            published[forced_entry["alias"]] = forced_entry
+                            logger.info(
+                                "Task %s contract.publishes backfill: %s -> %s",
+                                node.id,
+                                canonical_declared,
+                                chosen_path,
+                            )
 
         if published:
             metadata["published_artifacts"] = published

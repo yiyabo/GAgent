@@ -1919,6 +1919,18 @@ class DeliverablePublisher:
             return None, exc.message
         except ValueError as exc:
             return None, str(exc)
+        # Post-process: rewrite relative image paths in .md docs so they
+        # resolve correctly under the deliverables/latest/ directory structure.
+        # Front-end rejects paths containing ".." or "\", so we stage referenced
+        # images into image_tabular/ and rewrite the markdown references.
+        if module_key == "docs" and file_path.suffix.lower() == ".md":
+            self._rewrite_md_image_paths_in_deliverable(
+                target=target,
+                section_source=file_path,
+                latest_root=latest_root,
+                session_dir=session_dir,
+                previous_manifest=previous_manifest,
+            )
         rel_path = str(target.relative_to(latest_root))
         checksum = self._sha256_file(target)
         return {
@@ -2302,6 +2314,56 @@ class DeliverablePublisher:
             except ValueError:
                 continue
         return staged
+
+    def _rewrite_md_image_paths_in_deliverable(
+        self,
+        *,
+        target: Path,
+        section_source: Path,
+        latest_root: Path,
+        session_dir: Path,
+        previous_manifest: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        try:
+            text = target.read_text(encoding="utf-8")
+        except Exception:
+            return
+        image_paths = self._extract_markdown_image_paths(text)
+        if not image_paths:
+            return
+        rewritten = text
+        for raw_path in image_paths:
+            if not raw_path or re.match(r"^[A-Za-z][A-Za-z0-9+.\-]*://", raw_path):
+                continue
+            resolved = self._resolve_section_asset_path(
+                raw_path,
+                section_source=section_source,
+                session_dir=session_dir,
+            )
+            if resolved is None or not resolved.is_file() or resolved.suffix.lower() not in IMAGE_EXTS:
+                continue
+            try:
+                staged = self._copy_to_module(
+                    source_path=resolved,
+                    module_dir=latest_root / "image_tabular",
+                    source_identity=self._source_identity(resolved),
+                    latest_root=latest_root,
+                    previous_manifest=previous_manifest,
+                )
+            except (_KeepFirstConflict, ValueError):
+                continue
+            new_ref = str(staged.relative_to(latest_root))
+            escaped_old = re.escape(raw_path)
+            rewritten = re.sub(
+                r"(!\[[^\]]*\]\()\s*" + escaped_old + r"\s*(\))",
+                lambda m: m.group(1) + new_ref + m.group(2),
+                rewritten,
+            )
+        if rewritten != text:
+            try:
+                target.write_text(rewritten, encoding="utf-8")
+            except Exception:
+                pass
 
     def _same_file(self, source_path: Path, target: Path) -> bool:
         try:

@@ -120,9 +120,9 @@ class TestResult:
         self.message = msg
 
 
-def test_light_greeting() -> TestResult:
-    """1.1 Light — simple greeting should respond quickly without thinking steps."""
-    t = TestResult("1.1 Light greeting")
+def test_short_greeting() -> TestResult:
+    """1.1 Short greeting — routes to standard tier with brevity_hint."""
+    t = TestResult("1.1 Short greeting")
     r = send_chat("你好呀")
     t.elapsed = r.elapsed_sec
     if r.error:
@@ -133,8 +133,8 @@ def test_light_greeting() -> TestResult:
         return t
     tier = r.metadata.get("request_tier")
     visibility = r.metadata.get("thinking_visibility")
-    if tier != "light":
-        t.fail(f"Expected tier=light, got {tier}")
+    if tier != "standard":
+        t.fail(f"Expected tier=standard, got {tier}")
         return t
     # thinking_steps may still arrive but visibility should be hidden
     if visibility and visibility != "hidden":
@@ -234,8 +234,8 @@ def test_remote_status_query() -> TestResult:
         return t
     tier = r.metadata.get("request_tier")
     reason_codes = r.metadata.get("route_reason_codes", [])
-    if tier == "light":
-        t.fail(f"Expected tier != light for remote status query, got {tier}")
+    if tier not in ("standard", "research", "execute"):
+        t.fail(f"Expected valid tier for status query, got {tier}")
         return t
     t.ok(f"Tier={tier}, reasons={reason_codes} ({r.elapsed_sec:.1f}s)")
     return t
