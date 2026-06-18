@@ -172,10 +172,11 @@ class ChatSessionSettings(BaseModel):
         Literal[
             "qwen3.7-max",
             "mimo-v2.5-pro-ultraspeed",
+            "kimi/kimi-k2.7-code-highspeed",
         ]
     ] = None
     default_llm_provider: Optional[
-        Literal["qwen", "mimo"]
+        Literal["qwen", "mimo", "kimi"]
     ] = None
 
 
