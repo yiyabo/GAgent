@@ -18,10 +18,11 @@ from app.services.llm.structured_response import LLMAction, LLMReply, LLMStructu
 from app.services.deep_think_agent import DeepThinkAgent
 
 
-def test_request_tier_routes_greeting_to_light_auto_simple() -> None:
+def test_request_tier_routes_greeting_to_standard_with_brevity_hint() -> None:
     decision = resolve_request_routing(message="你好呀")
 
-    assert decision.request_tier == "light"
+    assert decision.request_tier == "standard"
+    assert decision.brevity_hint is True
     assert decision.request_route_mode == "auto_deepthink"
     # Phase 1: thinking is always visible — the LLM controls its own depth.
     assert decision.thinking_visibility == "visible"
@@ -78,16 +79,17 @@ def test_request_tier_routes_attachment_request_to_execute_auto_deepthink() -> N
         simple_thinking_budget=2000,
         default_max_iterations=64,
     )
-    assert profile.max_iterations == 6
+    assert profile.max_iterations == 64  # min(default_max_iterations=64, execute_cap=100)
 
 
-def test_request_tier_keeps_manual_deepthink_visible_for_light_request() -> None:
+def test_request_tier_keeps_manual_deepthink_visible_for_standard_request() -> None:
     decision = resolve_request_routing(
         message="你好",
         context={"deep_think_enabled": True},
     )
 
-    assert decision.request_tier == "light"
+    assert decision.request_tier == "standard"
+    assert decision.brevity_hint is True
     assert decision.request_route_mode == "manual_deepthink"
     assert decision.thinking_visibility == "visible"
     assert decision.manual_deep_think is True
@@ -99,8 +101,7 @@ def test_request_tier_keeps_manual_deepthink_visible_for_light_request() -> None
         default_max_iterations=64,
     )
     assert len(profile.available_tools) > 0  # tools always available now
-    assert profile.max_iterations == 6
-    assert profile.thinking_budget <= 400
+    assert profile.max_iterations == 100  # standard tier uses 100 iterations
 
 
 def test_request_tier_promotes_depth_cue_out_of_light_bucket() -> None:
@@ -202,7 +203,7 @@ def test_unbound_create_plan_only_requires_create_not_execute() -> None:
         simple_thinking_budget=2000,
         default_max_iterations=64,
     )
-    assert profile.max_iterations == 12
+    assert profile.max_iterations == 64  # min(default=64, execute_cap=100)
 
 
 def test_phagescope_dataset_understanding_routes_to_research_without_plan_create() -> None:
@@ -442,7 +443,7 @@ def test_unbound_create_and_execute_plan_requires_create_then_execute_all() -> N
         simple_thinking_budget=2000,
         default_max_iterations=64,
     )
-    assert profile.max_iterations == 48
+    assert profile.max_iterations == 64  # min(default=64, execute_cap=100)
 
 
 def test_bound_plan_new_subject_requires_confirmation_without_new_plan_language() -> None:
@@ -593,7 +594,7 @@ def test_file_followup_inherits_active_subject_and_keeps_local_inspect_tools() -
         ],
     )
 
-    assert decision.request_tier == "light"
+    assert decision.request_tier == "standard"
     assert decision.request_route_mode == "auto_deepthink"
     assert decision.subject_resolution["source"] == "inherited"
 
@@ -607,7 +608,7 @@ def test_file_followup_inherits_active_subject_and_keeps_local_inspect_tools() -
     assert "result_interpreter" in profile.available_tools
     assert "code_executor" in profile.available_tools
     assert "deliverable_submit" in profile.available_tools
-    assert profile.max_iterations == 6
+    assert profile.max_iterations == 100
 
 
 def test_followthrough_data_analysis_followup_routes_to_execute_task() -> None:
@@ -655,7 +656,7 @@ def test_manual_deepthink_followup_keeps_local_inspect_floor() -> None:
         ],
     )
 
-    assert decision.request_tier == "light"
+    assert decision.request_tier == "standard"
     assert decision.request_route_mode == "manual_deepthink"
 
     profile = build_request_tier_profile(
@@ -667,7 +668,7 @@ def test_manual_deepthink_followup_keeps_local_inspect_floor() -> None:
     assert "file_operations" in profile.available_tools
     assert "result_interpreter" in profile.available_tools
     assert "code_executor" in profile.available_tools
-    assert profile.max_iterations == 6
+    assert profile.max_iterations == 100
 
 
 def test_phagescope_remote_verify_elevates_to_research_with_phagescope_tool() -> None:
@@ -955,11 +956,12 @@ def test_execute_tier_profile_includes_deliverable_submit() -> None:
     assert "deliverable_submit" in profile.available_tools
 
 
-def test_light_request_no_longer_delegates_to_simple_chat() -> None:
-    """Even light requests route via auto_deepthink with full tool access."""
+def test_short_request_routes_via_auto_deepthink_with_full_tools() -> None:
+    """Even short requests route via auto_deepthink with full tool access."""
     decision = resolve_request_routing(message="你好")
 
-    assert decision.request_tier == "light"
+    assert decision.request_tier == "standard"
+    assert decision.brevity_hint is True
     assert decision.request_route_mode == "auto_deepthink"
 
 
@@ -1214,7 +1216,7 @@ def test_explicit_task_override_execute_profile_gets_more_iterations() -> None:
         simple_thinking_budget=2000,
         default_max_iterations=64,
     )
-    assert profile.max_iterations == 48
+    assert profile.max_iterations == 64  # min(default=64, execute_cap=100)
 
 
 def test_explicit_task_id_does_not_override_genuine_execute() -> None:
@@ -1260,7 +1262,8 @@ def test_classify_request_tier_returns_confidence() -> None:
         message="你好",
         intent_type="chat",
     )
-    assert tier == "light"
+    assert tier == "standard"
+    assert brevity is True
     assert isinstance(confidence, float)
     assert 0.0 <= confidence <= 1.0
 
@@ -1364,4 +1367,37 @@ def test_full_plan_imperative_request_triggers_execution() -> None:
     assert decision.full_plan_execution is False
     assert decision.intent_type == "execute_task"
     assert decision.request_tier == "execute"
-    assert "plan_execution_hint" in decision.route_reason_codes
+
+
+def test_short_affirmation_no_longer_downgrades_to_light() -> None:
+    from app.routers.chat.request_routing import classify_request_tier
+
+    for msg in ("好的", "收到", "明白", "可以", "ok", "okay"):
+        tier, reasons, brevity, confidence = classify_request_tier(
+            message=msg,
+            intent_type="chat",
+        )
+        assert tier == "standard", f"affirmation '{msg}' must not downgrade to light tier"
+        assert brevity is False, f"affirmation '{msg}' must not trigger brevity_hint (carry-forward preserved)"
+
+
+def test_short_direct_request_token_triggers_brevity_hint() -> None:
+    from app.routers.chat.request_routing import classify_request_tier
+
+    history = [{"role": "assistant", "content": "分析完成。"}]
+    for msg in ("继续", "然后呢", "接下来", "next"):
+        tier, reasons, brevity, confidence = classify_request_tier(
+            message=msg,
+            intent_type="chat",
+            history=history,
+        )
+        assert tier == "standard", f"short request '{msg}' must route to standard"
+        assert brevity is True, f"short request '{msg}' must trigger brevity_hint"
+
+
+def test_greeting_routes_to_standard_with_brevity_hint_via_resolve() -> None:
+    decision = resolve_request_routing(message="hello")
+
+    assert decision.request_tier == "standard"
+    assert decision.brevity_hint is True
+    assert "greeting_or_social" in decision.route_reason_codes
