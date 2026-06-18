@@ -222,6 +222,26 @@ class TaskVerificationService:
         accepted = manual_acceptance.get("accepted")
         return accepted is True
 
+    @staticmethod
+    def _is_delegation_successfully_executed(metadata: Optional[Dict[str, Any]]) -> bool:
+        if not isinstance(metadata, dict):
+            return False
+        if not metadata.get("delegated_task_execution"):
+            return False
+        executor = str(metadata.get("executor") or "").strip().lower()
+        if executor and executor not in ("qwen_code", "code_executor"):
+            return False
+        if str(metadata.get("delegation_status") or "").strip().lower() != "completed":
+            return False
+        if metadata.get("execution_success") is not True:
+            return False
+        artifact_paths = metadata.get("artifact_paths")
+        if isinstance(artifact_paths, list) and not artifact_paths:
+            contract_artifacts = metadata.get("contract_artifacts")
+            if not isinstance(contract_artifacts, list) or not contract_artifacts:
+                return False
+        return True
+
     def collect_artifact_paths(self, payload: Any) -> List[str]:
         return self._extract_artifact_paths(payload)
 
@@ -1131,9 +1151,11 @@ class TaskVerificationService:
         metadata["artifact_authority"] = authority_summary
 
         manual_acceptance_active = self.is_manual_acceptance_active(metadata)
+        delegation_success = self._is_delegation_successfully_executed(metadata)
 
         if (
             not manual_acceptance_active
+            and not delegation_success
             and require_aliases
             and finalization.final_status in _COMPLETED_LIKE
             and missing_require_aliases
@@ -1144,12 +1166,9 @@ class TaskVerificationService:
             payload["status"] = "skipped"
             finalization.final_status = "skipped"
 
-        # Missing publish aliases are now recorded as warnings for completed
-        # executions. Downstream tasks with explicit `requires` still block on
-        # missing canonical inputs, but the producer itself is not failed solely
-        # because a manifest/path contract was not satisfied.
         if (
             not manual_acceptance_active
+            and not delegation_success
             and publish_aliases
             and finalization.final_status in _COMPLETED_LIKE
             and missing_publish_aliases
