@@ -7,14 +7,22 @@ import os
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from app.routers import register_router
-from app.services.sso import get_project_context
+from app.services.request_principal import get_request_owner_id
+from app.services.sso import get_main_platform_user_id, get_project_context
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/project", tags=["project"])
+
+
+def _resolve_user_id(request: Request, user_id: Optional[int]) -> Optional[int]:
+    if user_id is not None:
+        return user_id
+    owner_id = get_request_owner_id(request)
+    return get_main_platform_user_id(owner_id)
 
 
 register_router(
@@ -35,8 +43,11 @@ class DataRoot(BaseModel):
 
 
 class ModelProvider(BaseModel):
+    type: Optional[str] = None
+    model: Optional[str] = None
     base_url: str
     api_key: str
+    model_options: Optional[list[str]] = None
 
 
 class ProjectData(BaseModel):
@@ -84,9 +95,14 @@ class SelectedFilesResponse(BaseModel):
 
 
 @router.get("/{project_id}", response_model=ProjectResponse)
-async def get_project(project_id: int) -> ProjectResponse:
+async def get_project(
+    project_id: int,
+    request: Request,
+    user_id: Optional[int] = Query(None, description="Main platform user ID"),
+) -> ProjectResponse:
     try:
-        project_data = get_project_context(project_id)
+        resolved_uid = _resolve_user_id(request, user_id)
+        project_data = get_project_context(resolved_uid, project_id)
         
         if not project_data:
             return ProjectResponse(
@@ -138,11 +154,14 @@ async def get_project(project_id: int) -> ProjectResponse:
 @router.get("/{project_id}/files", response_model=FileTreeResponse)
 async def get_project_files(
     project_id: int,
+    request: Request,
+    user_id: Optional[int] = Query(None, description="Main platform user ID"),
     path: Optional[str] = Query(None, description="Relative path within data_root"),
     data_root_index: int = Query(0, description="Index of data_root to browse"),
 ) -> FileTreeResponse:
     try:
-        project_data = get_project_context(project_id)
+        resolved_uid = _resolve_user_id(request, user_id)
+        project_data = get_project_context(resolved_uid, project_id)
         if not project_data:
             raise HTTPException(status_code=404, detail="Project not found")
         
@@ -242,10 +261,13 @@ def _build_file_tree(path: Path, root_path: str, relative_prefix: str = "") -> l
 @router.post("/{project_id}/select-files", response_model=SelectedFilesResponse)
 async def select_project_files(
     project_id: int,
-    request: SelectedFilesRequest,
+    request: Request,
+    payload: SelectedFilesRequest,
+    user_id: Optional[int] = Query(None, description="Main platform user ID"),
 ) -> SelectedFilesResponse:
     try:
-        project_data = get_project_context(project_id)
+        resolved_uid = _resolve_user_id(request, user_id)
+        project_data = get_project_context(resolved_uid, project_id)
         if not project_data:
             raise HTTPException(status_code=404, detail="Project not found")
         
@@ -260,15 +282,15 @@ async def select_project_files(
         valid_roots = [root.get("path", "") for root in data_roots_raw]
         
         session_upload_dir = None
-        if request.session_id:
+        if payload.session_id:
             from app.services.session_paths import get_session_upload_dir
             try:
-                session_upload_dir = get_session_upload_dir(request.session_id, create=True)
+                session_upload_dir = get_session_upload_dir(payload.session_id, create=True)
             except Exception as e:
                 logger.warning(f"Failed to create session upload dir: {e}")
         
         files = []
-        for selected_path in request.selected_paths:
+        for selected_path in payload.selected_paths:
             is_valid = False
             matched_root = ""
             source_full_path = None

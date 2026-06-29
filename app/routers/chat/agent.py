@@ -1830,7 +1830,23 @@ class StructuredChatAgent:
             self.extra_context.pop("default_llm_provider", None)
 
         override_llm_service: Optional[LLMService] = None
-        if llm_provider:
+        mp = (self.extra_context or {}).get("model_provider") or {}
+        mp_base_url = mp.get("base_url") if isinstance(mp, dict) else None
+        mp_api_key = mp.get("api_key") if isinstance(mp, dict) else None
+        if mp_base_url and mp_api_key:
+            mp_model = mp.get("model") or base_model or "qwen3.7-max"
+            mp_provider = mp.get("type") or "openai"
+            mp_url = mp_base_url.rstrip("/") + "/v1/chat/completions"
+            override_llm_service = LLMService(LLMClient(
+                provider=mp_provider,
+                url=mp_url,
+                api_key=mp_api_key,
+                model=mp_model,
+            ))
+            if mp_model:
+                base_model = mp_model
+            llm_provider = mp_provider
+        elif llm_provider:
             override_llm_service = LLMService(LLMClient(provider=llm_provider, model=base_model))
 
         self.plan_session = plan_session or PlanSession(repo=plan_repository)

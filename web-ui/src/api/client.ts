@@ -142,8 +142,8 @@ export class BaseApi {
   return this.request<T>('get', url, undefined, params);
   }
 
-  protected async post<T>(url: string, data?: any): Promise<T> {
-  return this.request<T>('post', url, data);
+  protected async post<T>(url: string, data?: any, params?: Record<string, any>): Promise<T> {
+    return this.request<T>('post', url, data, params);
   }
 
   protected async put<T>(url: string, data?: any): Promise<T> {
