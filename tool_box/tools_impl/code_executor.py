@@ -3227,7 +3227,7 @@ def _promote_task_results_to_session_root(
     task_work_dir: Path,
     subdirs: Optional[Sequence[str]] = None,
     max_files: int = _MAX_SESSION_PROMOTE_FILES,
-) -> List[str]:
+) -> tuple[List[str], List[str]]:
     """
     Copy deliverable run outputs into a task/run-scoped namespace under
     ``<session>/results/``.
@@ -3245,7 +3245,7 @@ def _promote_task_results_to_session_root(
         subdirs=effective_subdirs,
     )
     if not promotable_files:
-        return []
+        return [], []
 
     try:
         task_scope_rel = task_resolved.relative_to(session_resolved)
@@ -3254,10 +3254,11 @@ def _promote_task_results_to_session_root(
 
     dst_root = (session_resolved / "results" / task_scope_rel).resolve()
     if not _is_path_within(dst_root, session_resolved):
-        return []
+        return [], []
 
     dst_root.mkdir(parents=True, exist_ok=True)
     promoted: List[str] = []
+    skipped_large: List[str] = []
     count = 0
     for path, rel in promotable_files:
         if count >= max_files:
@@ -3277,6 +3278,7 @@ def _promote_task_results_to_session_root(
                 path,
                 size,
             )
+            skipped_large.append(str(path.resolve()))
             continue
         dest = (dst_root / rel).resolve()
         if not _is_path_within(dest, dst_root):
@@ -3298,7 +3300,7 @@ def _promote_task_results_to_session_root(
             task_resolved.name,
             str(task_scope_rel).replace("\\", "/"),
         )
-    return promoted
+    return promoted, skipped_large
 
 
 def _promote_external_contract_artifacts(
@@ -3867,8 +3869,7 @@ def _build_verification_artifact_paths(
     _append(str(task_work_dir.resolve()))
     for name in subdirs:
         root = (task_work_dir / str(name)).resolve()
-        if root.exists():
-            _append(str(root))
+        _append(str(root))
     for path in produced_files:
         _append(str(path))
     for rel in session_artifact_paths:
@@ -5073,7 +5074,7 @@ async def code_executor_handler(
                 "This redundant copy will be removed in a future phase.",
                 resolved_task_id,
             )
-            session_artifact_paths = _promote_task_results_to_session_root(
+            session_artifact_paths, _skipped_large = _promote_task_results_to_session_root(
                 session_dir=session_dir,
                 task_work_dir=task_work_dir,
                 subdirs=task_subdirs,
@@ -5102,6 +5103,9 @@ async def code_executor_handler(
                 produced_files=produced_files,
             )
             _append_contract_artifact_paths(verification_artifact_paths, contract_artifacts)
+            for skipped_path in _skipped_large:
+                if skipped_path not in verification_artifact_paths:
+                    verification_artifact_paths.append(skipped_path)
             if unified_output_dir and contract_artifacts:
                 _promote_external_contract_artifacts(
                     contract_artifacts=contract_artifacts,
@@ -5697,7 +5701,7 @@ async def code_executor_handler(
                     session_dir=session_dir,
                 )
 
-            session_artifact_paths = _promote_task_results_to_session_root(
+            session_artifact_paths, _skipped_large = _promote_task_results_to_session_root(
                 session_dir=session_dir,
                 task_work_dir=task_work_dir,
                 subdirs=task_subdirs,
@@ -5734,7 +5738,7 @@ async def code_executor_handler(
                             subdirs=task_subdirs,
                             session_dir=session_dir,
                         )
-                    session_artifact_paths = _promote_task_results_to_session_root(
+                    session_artifact_paths, _skipped_large = _promote_task_results_to_session_root(
                         session_dir=session_dir,
                         task_work_dir=task_work_dir,
                         subdirs=task_subdirs,
@@ -5767,6 +5771,9 @@ async def code_executor_handler(
                 produced_files=produced_files,
             )
             _append_contract_artifact_paths(verification_artifact_paths, contract_artifacts)
+            for skipped_path in _skipped_large:
+                if skipped_path not in verification_artifact_paths:
+                    verification_artifact_paths.append(skipped_path)
             code_directory, primary_code_file = _extract_code_workspace_metadata(
                 run_dir=task_work_dir,
                 produced_files=produced_files,
@@ -5834,7 +5841,7 @@ async def code_executor_handler(
                                 subdirs=task_subdirs,
                                 session_dir=session_dir,
                             )
-                        session_artifact_paths = _promote_task_results_to_session_root(
+                        session_artifact_paths, _skipped_large = _promote_task_results_to_session_root(
                             session_dir=session_dir,
                             task_work_dir=task_work_dir,
                             subdirs=task_subdirs,
@@ -5857,6 +5864,9 @@ async def code_executor_handler(
                             produced_files=produced_files,
                         )
                         _append_contract_artifact_paths(verification_artifact_paths, contract_artifacts)
+                        for skipped_path in _skipped_large:
+                            if skipped_path not in verification_artifact_paths:
+                                verification_artifact_paths.append(skipped_path)
                         success, execution_failure = _classify_execution_success(
                             stdout=stdout,
                             output_data=output_data,

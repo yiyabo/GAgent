@@ -871,9 +871,8 @@ class DeepThinkAgent:
     ) -> Optional[Dict[str, Any]]:
         """Scan tool_results for a code_executor call that flagged partial completion.
 
-        Returns a dict with keys ``partial_ratio``, ``produced_files``,
-        ``task_directory_full`` when partial completion is detected; otherwise
-        ``None``.
+        Returns a dict with failure context when partial completion is detected;
+        otherwise ``None``.
         """
         for item in tool_results:
             if item.get("tool_name") != "code_executor":
@@ -881,19 +880,43 @@ class DeepThinkAgent:
             raw_text = item.get("tool_result_text") or ""
             try:
                 payload = json.loads(raw_text) if isinstance(raw_text, str) else raw_text
-            except (json.JSONDecodeError, TypeError):
+            except (JSONDecodeError, TypeError):
                 continue
-            # The payload might be nested: {"success": ..., "result": {actual_payload}}
             inner = payload
             if isinstance(payload, dict) and "result" in payload and isinstance(payload["result"], dict):
                 inner = payload["result"]
             if not isinstance(inner, dict):
                 continue
             if inner.get("partial_completion_suspected"):
+                stderr = str(inner.get("stderr") or "")
+                error_summary = str(inner.get("error_summary") or "")
+                contract_error_summary = str(inner.get("contract_error_summary") or "")
+                contract_diff = inner.get("contract_diff")
+                missing_outputs: List[str] = []
+                if isinstance(contract_diff, dict):
+                    missing_outputs = list(contract_diff.get("missing_required_outputs") or [])
+                verification = inner.get("verification")
+                verification_failures: List[str] = []
+                if isinstance(verification, dict):
+                    for f in verification.get("failures", []):
+                        if isinstance(f, dict):
+                            msg = str(f.get("message") or f.get("type") or "")
+                            if msg:
+                                verification_failures.append(msg[:200])
+                error_snippet = stderr[:500] if stderr else ""
+                if error_summary:
+                    error_snippet = error_summary + ("\n" + error_snippet if error_snippet else "")
+                if contract_error_summary and contract_error_summary not in error_snippet:
+                    error_snippet = contract_error_summary + ("\n" + error_snippet if error_snippet else "")
                 return {
                     "partial_ratio": inner.get("partial_ratio"),
                     "produced_files": inner.get("produced_files", []),
                     "task_directory_full": inner.get("task_directory_full", ""),
+                    "error_snippet": error_snippet[:800],
+                    "missing_outputs": missing_outputs[:10],
+                    "verification_failures": verification_failures[:5],
+                    "failure_kind": str(inner.get("failure_kind") or ""),
+                    "exit_code": inner.get("exit_code"),
                 }
         return None
 
@@ -905,22 +928,27 @@ class DeepThinkAgent:
         user_query: str,
         retry_count: int,
     ) -> str:
-        """Build a bilingual nudge instructing the agent to retry remaining items.
-
-        Follows the same pattern as ``_build_probe_only_followthrough_nudge``.
-        """
         language = detect_reasoning_language(user_query)
         ratio = partial_info.get("partial_ratio", "?/?")
         produced = partial_info.get("produced_files", [])
         task_dir = partial_info.get("task_directory_full", "")
+        error_snippet = str(partial_info.get("error_snippet") or "")
+        missing_outputs = partial_info.get("missing_outputs", [])
+        verification_failures = partial_info.get("verification_failures", [])
+        failure_kind = str(partial_info.get("failure_kind") or "")
 
         produced_hint = ""
         if produced:
-            # Show at most 15 file basenames to keep the nudge compact
             names = [p.rsplit("/", 1)[-1] if "/" in p else p for p in produced[:15]]
             produced_hint = ", ".join(names)
             if len(produced) > 15:
                 produced_hint += f" … ({len(produced)} total)"
+
+        missing_hint = ""
+        if missing_outputs:
+            missing_hint = ", ".join(missing_outputs[:10])
+        elif verification_failures:
+            missing_hint = "; ".join(verification_failures[:3])
 
         task_bits: List[str] = []
         if task_context:
@@ -930,24 +958,62 @@ class DeepThinkAgent:
                 task_bits.append(f"Task Name={task_context.task_name}")
         task_label = " | ".join(task_bits) if task_bits else ""
 
-        zh = (
-            f"⚠️ 上一次 code_executor 执行检测到 **部分完成**：仅处理了 {ratio} 项。\n"
-            f"（已生成文件: {produced_hint or '无'}）\n"
-            f"这是第 {retry_count} 次重试提示。请按以下步骤操作：\n"
-            f"1. 检查 results/ 目录，确认哪些项已经完成（从已有输出文件推断）。\n"
-            f"2. 再次调用 `code_executor`，**仅处理尚未完成的剩余项**。\n"
-            f"3. 新结果 **追加** 到 results/ 目录，不要覆盖已有文件。\n"
-            f"4. 在所有项处理完成之前，**不要提交最终答案**。\n"
-        )
-        en = (
-            f"⚠️ The previous code_executor run detected **partial completion**: only {ratio} items were processed.\n"
-            f"(Produced files so far: {produced_hint or 'none'})\n"
-            f"This is retry nudge #{retry_count}. Follow these steps:\n"
-            f"1. Check the results/ directory to determine which items are already done (infer from existing output files).\n"
-            f"2. Call `code_executor` again for ONLY the remaining unfinished items.\n"
-            f"3. Append new results to results/ — do NOT overwrite existing files.\n"
-            f"4. Do NOT submit a final answer until ALL items have been processed.\n"
-        )
+        error_block = ""
+        if error_snippet:
+            error_block = f"\n🔴 **上次错误信息**:\n```\n{error_snippet}\n```"
+        if missing_hint:
+            error_block += f"\n❌ **缺失产出**: {missing_hint}"
+
+        if retry_count >= 3:
+            zh = (
+                f"⚠️ 这是第 {retry_count} 次重试，之前的方案持续失败。\n"
+                f"{error_block}\n"
+                f"请**停止重试相同的方法**。要么：\n"
+                f"1. 用完全不同的技术路线完成任务（换库、换算法、简化流程）\n"
+                f"2. 如果任务确实无法完成，提交最终答案，说明失败原因和已尝试的方法，标记任务为失败。\n"
+            )
+            en = (
+                f"⚠️ Retry #{retry_count}. Previous approaches keep failing.\n"
+                f"{error_block}\n"
+                f"**Stop retrying the same approach.** Either:\n"
+                f"1. Use a fundamentally different technique (different library, algorithm, or simplified pipeline).\n"
+                f"2. If the task is genuinely infeasible, submit a final answer explaining what was attempted, "
+                f"why it failed, and mark the task as failed.\n"
+            )
+        elif retry_count >= 2:
+            zh = (
+                f"⚠️ 同样的错误第 2 次出现。上次代码执行只完成了 {ratio} 项。\n"
+                f"{error_block}\n"
+                f"请**先分析错误原因**，然后**尝试不同的方法**（不要重复相同的代码）。\n"
+                f"已产出文件: {produced_hint or '无'}\n"
+                f"如果当前方法行不通，考虑替代方案。\n"
+            )
+            en = (
+                f"⚠️ Same error appeared twice. Last run only completed {ratio} items.\n"
+                f"{error_block}\n"
+                f"**Analyze the error first**, then **try a different approach** (do NOT repeat the same code).\n"
+                f"Files produced so far: {produced_hint or 'none'}\n"
+                f"Consider alternative techniques if the current one is not working.\n"
+            )
+        else:
+            zh = (
+                f"⚠️ 上次 code_executor 执行检测到**部分完成**：仅处理了 {ratio} 项。\n"
+                f"{error_block}\n"
+                f"已产出文件: {produced_hint or '无'}\n"
+                f"请按以下步骤操作：\n"
+                f"1. 先**诊断失败原因**（查看上面的错误信息），理解为什么部分产出缺失。\n"
+                f"2. 修复根因后调用 `code_executor`，仅处理尚未完成的剩余项。\n"
+                f"3. 新结果追加到 results/ 目录，不要覆盖已有文件。\n"
+            )
+            en = (
+                f"⚠️ Previous code_executor run: **partial completion** ({ratio} items).\n"
+                f"{error_block}\n"
+                f"Files produced: {produced_hint or 'none'}\n"
+                f"Steps:\n"
+                f"1. **Diagnose the failure** (see error above) — understand WHY some outputs are missing.\n"
+                f"2. Fix the root cause, then call `code_executor` for remaining items only.\n"
+                f"3. Append new results to results/ — do NOT overwrite existing files.\n"
+            )
         base = _localized_text(language, zh, en)
         if task_dir:
             base += f"\nWork directory: {task_dir}"
@@ -4022,7 +4088,7 @@ class DeepThinkAgent:
         forced_handoff_followthrough_attempts = 0
         had_real_execution_tool = False
         partial_completion_retry_count = 0
-        _MAX_PARTIAL_RETRIES = 6
+        _MAX_PARTIAL_RETRIES = 3
         _MAX_HANDOFF_ITERATION_EXTENSIONS = 4
         last_real_execution_tool_results: List[Dict[str, Any]] = []
         force_verified_execution_finalization = False

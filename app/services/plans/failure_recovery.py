@@ -32,6 +32,7 @@ RECOVERABLE = frozenset({
     FailureCategory.UPSTREAM_INCOMPLETE,
     FailureCategory.CODE_BUG,
     FailureCategory.TIMEOUT,
+    FailureCategory.DATA_MISSING,
 })
 
 
