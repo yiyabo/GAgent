@@ -1,6 +1,6 @@
 /**
  * SessionStorage 
- * sessionrelated localStorage 
+ * sessionrelated sessionStorage 
  */
 
 export class SessionStorage {
@@ -14,9 +14,9 @@ export class SessionStorage {
   */
   static getCurrentSessionId(): string | null {
   try {
-  return localStorage.getItem(this.KEYS.CURRENT_SESSION_ID);
+  return sessionStorage.getItem(this.KEYS.CURRENT_SESSION_ID);
   } catch (error) {
-  console.warn('Failed to get current session ID from localStorage:', error);
+  console.warn('Failed to get current session ID from sessionStorage:', error);
   return null;
   }
   }
@@ -26,9 +26,9 @@ export class SessionStorage {
   */
   static setCurrentSessionId(sessionId: string): void {
   try {
-  localStorage.setItem(this.KEYS.CURRENT_SESSION_ID, sessionId);
+  sessionStorage.setItem(this.KEYS.CURRENT_SESSION_ID, sessionId);
   } catch (error) {
-  console.error('Failed to set current session ID to localStorage:', error);
+  console.error('Failed to set current session ID to sessionStorage:', error);
   }
   }
 
@@ -37,9 +37,9 @@ export class SessionStorage {
   */
   static clearCurrentSessionId(): void {
   try {
-  localStorage.removeItem(this.KEYS.CURRENT_SESSION_ID);
+  sessionStorage.removeItem(this.KEYS.CURRENT_SESSION_ID);
   } catch (error) {
-  console.error('Failed to clear current session ID from localStorage:', error);
+  console.error('Failed to clear current session ID from sessionStorage:', error);
   }
   }
 
@@ -48,11 +48,11 @@ export class SessionStorage {
   */
   static getAllSessionIds(): string[] {
   try {
-  const idsStr = localStorage.getItem(this.KEYS.ALL_SESSION_IDS);
+  const idsStr = sessionStorage.getItem(this.KEYS.ALL_SESSION_IDS);
   if (!idsStr) return [];
   return JSON.parse(idsStr) as string[];
   } catch (error) {
-  console.warn('Failed to get all session IDs from localStorage:', error);
+  console.warn('Failed to get all session IDs from sessionStorage:', error);
   return [];
   }
   }
@@ -62,9 +62,9 @@ export class SessionStorage {
   */
   static setAllSessionIds(sessionIds: string[]): void {
   try {
-  localStorage.setItem(this.KEYS.ALL_SESSION_IDS, JSON.stringify(sessionIds));
+  sessionStorage.setItem(this.KEYS.ALL_SESSION_IDS, JSON.stringify(sessionIds));
   } catch (error) {
-  console.error('Failed to set all session IDs to localStorage:', error);
+  console.error('Failed to set all session IDs to sessionStorage:', error);
   }
   }
 
@@ -94,9 +94,9 @@ export class SessionStorage {
   static clearAll(): void {
   this.clearCurrentSessionId();
   try {
-  localStorage.removeItem(this.KEYS.ALL_SESSION_IDS);
+  sessionStorage.removeItem(this.KEYS.ALL_SESSION_IDS);
   } catch (error) {
-  console.error('Failed to clear all session data from localStorage:', error);
+  console.error('Failed to clear all session data from sessionStorage:', error);
   }
   }
 

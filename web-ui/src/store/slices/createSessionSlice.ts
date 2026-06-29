@@ -263,7 +263,8 @@ export const createSessionSlice: ChatSliceCreator = (set, get) => ({
 
   loadSessions: async () => {
   try {
-  const response = await chatApi.getSessions({ limit: 100, offset: 0 });
+    const projectId = (window as any).__PROJECT_ID__ || undefined;
+    const response = await chatApi.getSessions({ limit: 100, offset: 0, project_id: projectId });
   const summaries = response.sessions ?? [];
   const existingSessions = get().sessions;
   const existingMap = new Map(existingSessions.map((s) => [s.id, s]));
