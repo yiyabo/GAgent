@@ -23,8 +23,17 @@ SSO_API_KEY = "E9-U3-Or-TH9al3aB9twT5wBv6J541636jAh18PBm4IuVwsmtBoyhQ"
 PROJECT_API_BASE = "http://119.147.24.196:3087/api/v1/bioagent"
 SSO_TIMEOUT_SECONDS = 10.0
 
+import time as _time
+_project_context_cache: Dict[str, Any] = {}
+_PROJECT_CONTEXT_TTL = 300.0  # 5 minutes
+
 
 def get_project_context(user_id: Optional[int], project_id: int) -> Dict[str, Any]:
+    cache_key = f"{user_id}:{project_id}"
+    cached = _project_context_cache.get(cache_key)
+    if cached and (_time.time() - cached["ts"]) < _PROJECT_CONTEXT_TTL:
+        return cached["data"]
+
     try:
         if user_id is not None:
             url = f"{PROJECT_API_BASE}/users/{user_id}/projects/{project_id}/"
@@ -51,8 +60,10 @@ def get_project_context(user_id: Optional[int], project_id: int) -> Dict[str, An
                     status_code=400,
                     detail=f"Project context retrieval failed: {data.get('message')}"
                 )
-            
-            return data.get("data", {})
+
+            result = data.get("data", {})
+            _project_context_cache[cache_key] = {"data": result, "ts": _time.time()}
+            return result
             
     except httpx.TimeoutException:
         logger.error("Project context retrieval timeout")
