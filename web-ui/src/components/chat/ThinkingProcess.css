@@ -13,8 +13,8 @@
 }
 
 .tp-container.tp-active {
-  border-color: var(--primary-color, #c96442);
-  border-color: color-mix(in srgb, var(--primary-color, #c96442) 30%, var(--border-color));
+  border-color: var(--primary-color, #3080ff);
+  border-color: color-mix(in srgb, var(--primary-color, #3080ff) 30%, var(--border-color));
 }
 
 /* ================================================================
@@ -283,7 +283,7 @@
   display: inline-block;
   width: 2px;
   height: 14px;
-  background: var(--primary-color, #c96442);
+  background: var(--primary-color, #3080ff);
   margin-left: 1px;
   vertical-align: text-bottom;
   animation: tp-cursor-blink 0.8s ease-in-out infinite;
@@ -450,7 +450,7 @@
   }
 
   .tp-container.tp-active {
-    border-color: color-mix(in srgb, var(--primary-color, #c96442) 25%, var(--border-color));
+    border-color: color-mix(in srgb, var(--primary-color, #3080ff) 25%, var(--border-color));
   }
 
   .tp-header:hover {

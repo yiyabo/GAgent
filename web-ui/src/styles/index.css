@@ -5,9 +5,9 @@
 /* CSS  */
 :root {
   /*  - Claude  */
-  --primary-gradient: linear-gradient(135deg, #C96442 0%, #d4886e 100%);
-  --primary-color: #C96442;
-  --primary-hover: #b55332;
+  --primary-gradient: linear-gradient(135deg, #3080ff 0%, #155dfc 100%);
+  --primary-color: #3080ff;
+  --primary-hover: #155dfc;
   
   /*  */
   --success-color: #22c55e;
@@ -20,11 +20,11 @@
   --info-bg: rgba(59, 130, 246, 0.1);
   
   /*  - Claude  */
-  --bg-primary: #F5F4ED;  /*  -  */
-  --bg-secondary: #FFFFFF;  /*  */
-  --bg-tertiary: #FAF9F5;  /*  */
-  --bg-user: #F0EEE6;  /*  */
-  --bg-assistant: #FAF9F5;  /* AI */
+  --bg-primary: #f9fafb;
+  --bg-secondary: #FFFFFF;
+  --bg-tertiary: #f3f4f6;
+  --bg-user: #eff6ff;
+  --bg-assistant: #f3f4f6;
   
   /*  -  */
   --border-color: rgba(120, 120, 120, 0.08);
@@ -324,7 +324,7 @@ body,
   inset: 0;
   z-index: 100;
   background: rgba(255, 255, 255, 0.92);
-  border: 3px dashed var(--primary-color, #c96442);
+  border: 3px dashed var(--primary-color, #3080ff);
   border-radius: 8px;
   display: flex;
   align-items: center;
@@ -346,7 +346,7 @@ body,
   margin-top: 12px;
   font-size: 16px;
   font-weight: 600;
-  color: var(--primary-color, #c96442);
+  color: var(--primary-color, #3080ff);
 }
 
 .chat-drop-overlay-hint {

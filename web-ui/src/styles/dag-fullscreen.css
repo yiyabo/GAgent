@@ -2,7 +2,7 @@
 
 :root {
   --dag-bg: #faf9f7;
-  --dag-bg-secondary: #f5f4f2;
+  --dag-bg-secondary: #f3f4f6;
   --dag-text-primary: #1a1a1a;
   --dag-text-secondary: #666666;
   --dag-text-muted: #999999;
@@ -371,12 +371,12 @@
 /* ============================================ */
 
 .dag-sticky-container {
-  background: #f5f3ed;
+  background: #f9fafb;
   font-family: Georgia, 'Times New Roman', serif;
 }
 
 .dag-sticky-container:fullscreen {
-  background: #f5f3ed;
+  background: #f9fafb;
 }
 
 /*  */
@@ -566,11 +566,11 @@
 /* ============================================ */
 
 .dag-3d-container {
-  background: linear-gradient(180deg, #fafaf9 0%, #f4f4f3 100%);
+  background: linear-gradient(180deg, #ffffff 0%, #f3f4f6 100%);
 }
 
 .dag-3d-container:fullscreen {
-  background: linear-gradient(180deg, #fafaf9 0%, #f4f4f3 100%);
+  background: linear-gradient(180deg, #ffffff 0%, #f3f4f6 100%);
 }
 
 .dag-3d-container::before {
