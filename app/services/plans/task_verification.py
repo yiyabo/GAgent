@@ -614,6 +614,36 @@ class TaskVerificationService:
         normalized_payload["metadata"] = metadata
 
 
+        format_mismatch_failures = [
+            f for f in failures
+            if isinstance(f, dict) and f.get("format_mismatch")
+        ]
+        if format_mismatch_failures and (normalized_execution_status in _COMPLETED_LIKE or execution_output_recovered):
+            metadata["format_mismatch_recovery"] = True
+            metadata["verification_status"] = "warning"
+            metadata["verification_warning"] = True
+            metadata["verification_warnings"] = format_mismatch_failures
+            metadata.pop("failure_kind", None)
+            metadata.pop("contract_diff", None)
+            verification["status"] = "warning"
+            verification["blocking"] = False
+            verification["format_mismatch_recovery"] = True
+            verification["warnings"] = format_mismatch_failures
+            failures = [f for f in failures if not f.get("format_mismatch")]
+            if not failures:
+                verification["status"] = "passed"
+                metadata["verification_status"] = "passed"
+                metadata.pop("verification_warning", None)
+                normalized_payload["status"] = "completed"
+                normalized_payload["metadata"] = metadata
+                return VerificationFinalization(
+                    final_status="completed",
+                    execution_status=normalized_execution_status,
+                    payload=normalized_payload,
+                    verification=verification,
+                    artifact_paths=local_artifact_paths,
+                )
+
         if failures and normalized_execution_status in _COMPLETED_LIKE and not hard_failures:
             source_discovery_verification = self._source_discovery_verification(
                 node=node,
@@ -1747,6 +1777,22 @@ class TaskVerificationService:
                     if fallback:
                         path = fallback
                 if not path.exists():
+                    diagnostic = self._diagnose_file_state(raw_check.get("path"), base_dir, artifact_paths)
+                    if diagnostic.get("found"):
+                        return {
+                            "type": check_type,
+                            "success": False,
+                            "path": str(path),
+                            "key_path": key_path,
+                            "message": (
+                                f"File exists at {diagnostic['found_at']} "
+                                f"({diagnostic['size_mb']:.1f} MB, {diagnostic['format']} format) "
+                                f"but check type '{check_type}' expects JSON. "
+                                f"Output is present — consider 'file_exists' or 'file_nonempty' check."
+                            ),
+                            "diagnostic": diagnostic,
+                            "format_mismatch": True,
+                        }
                     raise FileNotFoundError(f"JSON file does not exist: {path}")
                 if self._looks_like_tabular_row_count_check(path, key_path):
                     actual = self._read_tabular_row_count(path)
@@ -1857,6 +1903,42 @@ class TaskVerificationService:
             isinstance(item, dict) and bool(item.get("verification_config_error"))
             for item in failures
         )
+
+    def _diagnose_file_state(
+        self,
+        raw_path: Any,
+        base_dir: Path,
+        artifact_paths: Sequence[str] = (),
+    ) -> Dict[str, Any]:
+        raw_str = str(raw_path or "").strip()
+        candidates: List[Path] = []
+        if raw_str:
+            candidates.append((base_dir / raw_str).resolve())
+            candidates.append(Path(raw_str).expanduser().resolve())
+        for ap in artifact_paths:
+            p = Path(str(ap or "")).expanduser()
+            candidates.append(p)
+            if p.is_dir():
+                name = Path(raw_str).name if raw_str else ""
+                if name:
+                    candidates.append(p / name)
+        for p in candidates:
+            try:
+                if p.exists() and p.is_file() and p.stat().st_size > 0:
+                    size = p.stat().st_size
+                    ext = p.suffix.lower().lstrip(".")
+                    fmt = "json" if ext in ("json", "jsonl") else ext or "unknown"
+                    return {
+                        "found": True,
+                        "found_at": str(p),
+                        "size_bytes": size,
+                        "size_mb": size / 1048576,
+                        "format": fmt,
+                        "extension": ext,
+                    }
+            except OSError:
+                continue
+        return {"found": False}
 
     def _has_output_evidence(self, artifact_paths: Sequence[str]) -> bool:
         for raw_path in artifact_paths:
