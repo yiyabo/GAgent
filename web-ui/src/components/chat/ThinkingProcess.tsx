@@ -224,7 +224,7 @@ function useLiveNow(active: boolean): number {
   useEffect(() => {
     if (!active) return;
     setNow(Date.now());
-    const handle = window.setInterval(() => setNow(Date.now()), 1000);
+    const handle = window.setInterval(() => setNow(Date.now()), 5000);
     return () => window.clearInterval(handle);
   }, [active]);
   return now;

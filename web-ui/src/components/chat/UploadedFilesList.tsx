@@ -5,7 +5,8 @@ import { useChatStore } from '@store/chat';
 import type { UploadedFile } from '@/types';
 
 const UploadedFilesList: React.FC = () => {
-  const { uploadedFiles, removeUploadedFile } = useChatStore();
+  const uploadedFiles = useChatStore((s) => s.uploadedFiles);
+  const removeUploadedFile = useChatStore((s) => s.removeUploadedFile);
 
   if (uploadedFiles.length === 0) {
     return null;
