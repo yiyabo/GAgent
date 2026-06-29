@@ -31,7 +31,6 @@ import { resolveChatSessionProcessingKey } from '@/utils/chatSessionKeys';
 import { useMessages } from '@/hooks/useMessages';
 import ChatMessage from '@components/chat/ChatMessage';
 import FileUploadButton from '@components/chat/FileUploadButton';
-import ModelSelector from '@components/chat/ModelSelector';
 import UploadedFilesList from '@components/chat/UploadedFilesList';
 import { shouldRenderWelcomeState } from './chatMainAreaState';
 import { shallow } from 'zustand/shallow';
@@ -747,15 +746,6 @@ const ChatMainArea: React.FC = () => {
         flexShrink: 0,
       }}>
         <div style={{ maxWidth: 920, margin: '0 auto' }}>
-          {/* Model selector */}
-          <div style={{
-            display: 'flex',
-            justifyContent: 'flex-end',
-            marginBottom: 8,
-          }}>
-            <ModelSelector />
-          </div>
-
           {/* Uploaded files list */}
           <UploadedFilesList />
 
