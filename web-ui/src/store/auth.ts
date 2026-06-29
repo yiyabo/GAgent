@@ -10,8 +10,10 @@ interface AuthState {
   initialized: boolean;
   loading: boolean;
   projectId: number | null;
+  userId: number | null;
   setUser: (user: AuthUser | null) => void;
   setProjectId: (projectId: number | null) => void;
+  setUserId: (userId: number | null) => void;
   clearAuth: () => void;
   bootstrap: () => Promise<void>;
   login: (email: string, password: string) => Promise<void>;
@@ -27,6 +29,7 @@ export const useAuthStore = create<AuthState>((set) => ({
   initialized: false,
   loading: false,
   projectId: null,
+  userId: null,
   setUser: (user) =>
     set({
       user,
@@ -38,10 +41,15 @@ export const useAuthStore = create<AuthState>((set) => ({
     set({
       projectId,
     }),
+  setUserId: (userId) =>
+    set({
+      userId,
+    }),
   clearAuth: () =>
     {
       resetClientStateForAuthChange();
-      localStorage.removeItem('project_id');
+      sessionStorage.removeItem('project_id');
+      sessionStorage.removeItem('user_id');
       set({
         user: null,
         authenticated: false,
@@ -49,6 +57,7 @@ export const useAuthStore = create<AuthState>((set) => ({
         initialized: true,
         loading: false,
         projectId: null,
+        userId: null,
       });
     },
   bootstrap: async () => {
@@ -58,15 +67,15 @@ export const useAuthStore = create<AuthState>((set) => ({
       const ssoSession = urlParams.get('__sso_session');
       const projectIdParam = urlParams.get('project_id');
       const projectId = projectIdParam ? parseInt(projectIdParam, 10) : null;
+      const userIdParam = urlParams.get('user_id');
+      const userId = userIdParam ? parseInt(userIdParam, 10) : null;
       
       if (projectId && !isNaN(projectId)) {
         set({ projectId });
         (window as any).__PROJECT_ID__ = projectId;
-        // 持久化 project_id 到 localStorage
-        localStorage.setItem('project_id', String(projectId));
+        sessionStorage.setItem('project_id', String(projectId));
       } else {
-        // 尝试从 localStorage 恢复 project_id
-        const storedProjectId = localStorage.getItem('project_id');
+        const storedProjectId = sessionStorage.getItem('project_id');
         if (storedProjectId) {
           const parsed = parseInt(storedProjectId, 10);
           if (!isNaN(parsed)) {
@@ -76,11 +85,27 @@ export const useAuthStore = create<AuthState>((set) => ({
         }
       }
       
+      if (userId && !isNaN(userId)) {
+        set({ userId });
+        (window as any).__USER_ID__ = userId;
+        sessionStorage.setItem('user_id', String(userId));
+      } else {
+        const storedUserId = sessionStorage.getItem('user_id');
+        if (storedUserId) {
+          const parsed = parseInt(storedUserId, 10);
+          if (!isNaN(parsed)) {
+            set({ userId: parsed });
+            (window as any).__USER_ID__ = parsed;
+          }
+        }
+      }
+      
       if (ssoSession) {
         try {
           const payload = await authApi.ssoComplete(ssoSession);
           urlParams.delete('__sso_session');
           urlParams.delete('project_id');
+          urlParams.delete('user_id');
           const newUrl = urlParams.toString() 
             ? `${window.location.pathname}?${urlParams.toString()}`
             : window.location.pathname;
@@ -98,6 +123,7 @@ export const useAuthStore = create<AuthState>((set) => ({
         } catch {
           urlParams.delete('__sso_session');
           urlParams.delete('project_id');
+          urlParams.delete('user_id');
           const newUrl = urlParams.toString() 
             ? `${window.location.pathname}?${urlParams.toString()}`
             : window.location.pathname;

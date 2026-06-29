@@ -21,7 +21,9 @@ interface ChatRequest {
   history?: ChatMessage[];
   context?: Record<string, any>;
   mode?: 'assistant' | 'planner' | 'analyzer';
-  session_id?: string; // 🔒 : sessionparameter
+  session_id?: string;
+  project_id?: number;
+  user_id?: number;
 }
 
 export interface ModelEntry {
@@ -56,12 +58,15 @@ export class ChatApi extends BaseApi {
   session_id?: string;
   metadata?: Record<string, any>;
   project_id?: number;
+  user_id?: number;
   }): Promise<ChatResponsePayload> => {
   const request: ChatRequest = {
   message,
   mode: context?.mode || 'assistant',
   history: context?.history || [],
   session_id: context?.session_id,
+  project_id: context?.project_id,
+  user_id: context?.user_id,
   context: {
   plan_id: context?.plan_id,
   task_id: context?.task_id,
@@ -93,6 +98,7 @@ export class ChatApi extends BaseApi {
   limit?: number;
   offset?: number;
   active?: boolean;
+  project_id?: number;
   }): Promise<ChatSessionsResponse> => {
   return this.get('/chat/sessions', params);
   };
