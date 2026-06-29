@@ -152,6 +152,7 @@ async def chat_message(
             request.session_id,
             incoming_plan_id,
             owner_id=owner_id,
+            project_id=request.project_id,
         )
         plan_session = PlanSession(repo=plan_repository, plan_id=plan_id)
         try:
@@ -270,7 +271,11 @@ async def chat_message(
         if request.project_id:
             from app.services.sso import get_project_context
             try:
-                project_data = get_project_context(request.project_id)
+                resolved_uid = request.user_id
+                if resolved_uid is None:
+                    from app.services.sso import get_main_platform_user_id
+                    resolved_uid = get_main_platform_user_id(owner_id)
+                project_data = get_project_context(resolved_uid, request.project_id)
                 if project_data:
                     context["project_id"] = request.project_id
                     data_roots = project_data.get("data_roots", [])
@@ -279,8 +284,11 @@ async def chat_message(
                     model_provider = project_data.get("model_provider")
                     if model_provider:
                         context["model_provider"] = {
+                            "type": model_provider.get("type", "openai"),
+                            "model": model_provider.get("model", ""),
                             "base_url": model_provider.get("base_url", ""),
                             "api_key": model_provider.get("api_key", ""),
+                            "model_options": model_provider.get("model_options", []),
                         }
                     logger.info(
                         "[CHAT][PROJECT] Loaded project context: project_id=%s, data_roots=%d",
@@ -617,6 +625,7 @@ async def list_chat_sessions(
     limit: int = Query(20, ge=1, le=200),
     offset: int = Query(0, ge=0),
     active: Optional[bool] = None,
+    project_id: Optional[int] = Query(None),
 ):
     """List existing chat sessions."""
     from ...database import get_db  # lazy import
@@ -629,6 +638,9 @@ async def list_chat_sessions(
             if active is not None:
                 where_clauses.append("s.is_active = ?")
                 params.append(1 if active else 0)
+            if project_id is not None:
+                where_clauses.append("s.project_id = ?")
+                params.append(project_id)
 
             where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
 
