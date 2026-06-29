@@ -49,7 +49,11 @@ def build_agent_for_chat_request(
         except (TypeError, ValueError):
             incoming_plan_id = None
 
-    plan_id = _resolve_plan_binding(request.session_id, incoming_plan_id)
+    plan_id = _resolve_plan_binding(
+        request.session_id,
+        incoming_plan_id,
+        project_id=request.project_id,
+    )
     plan_session = PlanSession(repo=plan_repository, plan_id=plan_id)
     try:
         plan_session.refresh()

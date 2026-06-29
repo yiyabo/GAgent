@@ -85,6 +85,7 @@ def init_db() -> None:
                 last_message_at TIMESTAMP,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                project_id INTEGER,
                 is_active BOOLEAN DEFAULT TRUE,
                 FOREIGN KEY (plan_id) REFERENCES plans (id) ON DELETE SET NULL
             )
@@ -92,6 +93,10 @@ def init_db() -> None:
         )
         _ensure_chat_session_columns(conn)
         _backfill_chat_session_owners(conn)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_chat_sessions_project_owner "
+            "ON chat_sessions(project_id, owner_id, updated_at DESC)"
+        )
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS chat_messages (
@@ -319,6 +324,8 @@ def _ensure_chat_session_columns(conn) -> None:
         conn.execute("ALTER TABLE chat_sessions ADD COLUMN name_source TEXT")
     if "is_user_named" not in existing:
         conn.execute("ALTER TABLE chat_sessions ADD COLUMN is_user_named BOOLEAN DEFAULT 0")
+    if "project_id" not in existing:
+        conn.execute("ALTER TABLE chat_sessions ADD COLUMN project_id INTEGER")
 
 
 def _ensure_chat_action_run_columns(conn) -> None:
@@ -367,6 +374,9 @@ def _ensure_sso_user_columns(conn) -> None:
     
     if "sso_enabled" not in existing:
         conn.execute("ALTER TABLE users ADD COLUMN sso_enabled BOOLEAN DEFAULT 0")
+
+    if "main_platform_user_id" not in existing:
+        conn.execute("ALTER TABLE users ADD COLUMN main_platform_user_id INTEGER")
 
 
 def _ensure_plan_decomposition_job_index_columns(conn) -> None:

@@ -53,7 +53,7 @@ def start_background_chat_run(
     # chat_runs.session_id FK references chat_sessions; frontend-only sessions must be materialized first.
     plan_id = _plan_id_from_request(request)
     with get_db() as conn:
-        _ensure_session_exists(session_id, conn, plan_id, owner_id=owner_id)
+        _ensure_session_exists(session_id, conn, plan_id, owner_id=owner_id, project_id=request.project_id)
 
     run_id = new_chat_run_id()
     request_json = request.model_dump_json()

@@ -877,6 +877,7 @@ def _ensure_session_exists(
     conn,
     plan_id: Optional[int] = None,
     owner_id: Optional[str] = None,
+    project_id: Optional[int] = None,
 ) -> Optional[int]:
     """Ensure the chat_sessions table contains this session."""
     normalized_owner_id = _resolve_session_owner_id(conn, session_id, owner_id)
@@ -899,13 +900,14 @@ def _ensure_session_exists(
                 metadata,
                 plan_id,
                 plan_title,
+                project_id,
                 last_message_at,
                 created_at,
                 updated_at,
                 is_active
             )
             VALUES (
-                ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1
             )
             """,
             (
@@ -917,6 +919,7 @@ def _ensure_session_exists(
                 None,
                 plan_id,
                 plan_title,
+                project_id,
             ),
         )
         logger.info("Created new chat session: %s (plan_id=%s)", session_id, plan_id)
@@ -954,6 +957,7 @@ def _resolve_plan_binding(
     requested_plan_id: Optional[int],
     *,
     owner_id: Optional[str] = None,
+    project_id: Optional[int] = None,
 ) -> Optional[int]:
     """Determine the final bound plan ID based on session state and request parameters."""
     if not session_id:
@@ -967,6 +971,7 @@ def _resolve_plan_binding(
             conn,
             requested_plan_id,
             owner_id=owner_id,
+            project_id=project_id,
         )
         if current_plan_id is not None:
             return current_plan_id
