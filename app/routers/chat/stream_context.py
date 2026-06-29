@@ -54,6 +54,32 @@ def build_agent_for_chat_request(
         incoming_plan_id,
         project_id=request.project_id,
     )
+
+    if request.project_id and request.user_id:
+        from app.services.sso import get_project_context
+        try:
+            project_data = get_project_context(request.user_id, request.project_id)
+            if project_data:
+                context["project_id"] = request.project_id
+                data_roots = project_data.get("data_roots", [])
+                if data_roots:
+                    context["data_roots"] = [root.get("path", "") for root in data_roots]
+                model_provider = project_data.get("model_provider")
+                if model_provider:
+                    context["model_provider"] = {
+                        "type": model_provider.get("type", "openai"),
+                        "model": model_provider.get("model", ""),
+                        "base_url": model_provider.get("base_url", ""),
+                        "api_key": model_provider.get("api_key", ""),
+                        "model_options": model_provider.get("model_options", []),
+                    }
+                logger.info(
+                    "[CHAT][PROJECT] Loaded project context (stream): project_id=%s, data_roots=%d",
+                    request.project_id,
+                    len(data_roots),
+                )
+        except Exception as e:
+            logger.warning("[CHAT][PROJECT] Failed to load project context (stream): %s", e)
     plan_session = PlanSession(repo=plan_repository, plan_id=plan_id)
     try:
         plan_session.refresh()
