@@ -99,6 +99,7 @@ export const usePlanTree = (planId?: number | null) => {
     staleTime: 15_000,
     refetchOnWindowFocus: false,
     retry: 1,
+    placeholderData: undefined,
   });
 };
 

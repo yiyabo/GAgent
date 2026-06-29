@@ -299,6 +299,7 @@ const AgentWorkPanel: React.FC<AgentWorkPanelProps> = ({ sessionId }) => {
       return;
     }
 
+    setEvents([]);
     setIsLoading(true);
     findActiveJob().finally(() => setIsLoading(false));
 
