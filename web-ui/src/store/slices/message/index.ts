@@ -225,7 +225,10 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   }
   const limit = pageSize ?? get().historyPageSize ?? 50;
   try {
-  set({ historyLoading: true });
+    if (!append) {
+      set({ messages: [], historyBeforeId: null, historyHasMore: false });
+    }
+    set({ historyLoading: true });
   const query = new URLSearchParams({ limit: String(limit) });
   if (beforeId !== null && beforeId !== undefined) {
   query.set('before_id', String(beforeId));
