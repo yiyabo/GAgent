@@ -11,7 +11,8 @@ interface FileUploadButtonProps {
 }
 
 const FileUploadButton: React.FC<FileUploadButtonProps> = ({ size = 'middle' }) => {
-  const { uploadFile, currentSession } = useChatStore();
+  const uploadFile = useChatStore((s) => s.uploadFile);
+  const currentSession = useChatStore((s) => s.currentSession);
   const { projectId } = useAuthStore();
   const [uploading, setUploading] = useState(false);
   const [treeSelectorVisible, setTreeSelectorVisible] = useState(false);

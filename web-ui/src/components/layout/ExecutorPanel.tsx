@@ -402,6 +402,8 @@ const ExecutorPanel: React.FC = () => {
   const boardFingerprintRef = useRef<string>('');
   const sseSourceRef = useRef<EventSource | null>(null);
   const pollerRef = useRef<number | null>(null);
+  const pendingSnapshotRef = useRef<any>(null);
+  const rafRef = useRef<number | null>(null);
 
   // ── helpers ──────────────────────────────────────────────────────────────
 
@@ -495,17 +497,24 @@ const ExecutorPanel: React.FC = () => {
   stopPolling(); // SSE is live; no need for polling
   };
 
-  source.onmessage = (event) => {
-  try {
-  const data = JSON.parse(event.data);
-  if (data?.type === 'snapshot' && data.board) {
-  applySnapshot(data.board as BackgroundTaskBoardResponse);
-  }
-  // heartbeat: do nothing
-  } catch (_) {
-  // ignore parse errors
-  }
-  };
+   source.onmessage = (event) => {
+   try {
+   const data = JSON.parse(event.data);
+   if (data?.type === 'snapshot' && data.board) {
+     pendingSnapshotRef.current = data.board;
+     if (rafRef.current === null) {
+       rafRef.current = requestAnimationFrame(() => {
+         rafRef.current = null;
+         if (pendingSnapshotRef.current) {
+           applySnapshot(pendingSnapshotRef.current);
+           pendingSnapshotRef.current = null;
+         }
+       });
+     }
+   }
+   } catch (_) {
+   }
+   };
 
   source.onerror = () => {
   // SSE dropped – fall back to polling
@@ -518,10 +527,14 @@ const ExecutorPanel: React.FC = () => {
   startPolling();
   }
 
-  return () => {
-  closeSse();
-  stopPolling();
-  };
+   return () => {
+   closeSse();
+   stopPolling();
+   if (rafRef.current !== null) {
+     cancelAnimationFrame(rafRef.current);
+     rafRef.current = null;
+   }
+   };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentSessionId, currentPlanId]);
 

@@ -95,7 +95,8 @@ const ChatPanel: React.FC = () => {
     shallow
   );
 
-  const { selectedTask, currentPlan } = useTasksStore();
+  const selectedTask = useTasksStore((s) => s.selectedTask);
+  const currentPlan = useTasksStore((s) => s.currentPlan);
 
   // ---- Prevent browser from opening dropped files globally ----
   // Without this, dropping a file anywhere on the page causes the browser

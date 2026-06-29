@@ -309,7 +309,8 @@ const ChatMainArea: React.FC = () => {
     shallow
   );
 
-  const { selectedTask, currentPlan } = useTasksStore();
+  const selectedTask = useTasksStore((s) => s.selectedTask);
+  const currentPlan = useTasksStore((s) => s.currentPlan);
   const [inputText, setInputText] = useState('');
   const [deepThinkEnabled, setDeepThinkEnabled] = useState(false);
   const [steerSending, setSteerSending] = useState(false);

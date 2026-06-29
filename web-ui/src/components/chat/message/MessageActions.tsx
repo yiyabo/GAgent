@@ -24,7 +24,9 @@ interface MessageActionsProps {
 
 const MessageActions: React.FC<MessageActionsProps> = ({ message }) => {
   const { type, content, timestamp, metadata } = message;
-  const { saveMessageAsMemory, retryActionRun, retryLastMessage } = useChatStore();
+  const saveMessageAsMemory = useChatStore((s) => s.saveMessageAsMemory);
+  const retryActionRun = useChatStore((s) => s.retryActionRun);
+  const retryLastMessage = useChatStore((s) => s.retryLastMessage);
   const isProcessing = useChatStore((state) =>
     state.processingSessionIds.has(resolveChatSessionProcessingKey(state.currentSession))
   );

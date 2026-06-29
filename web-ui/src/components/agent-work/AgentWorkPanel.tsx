@@ -193,8 +193,29 @@ const AgentWorkPanel: React.FC<AgentWorkPanelProps> = ({ sessionId }) => {
   const sourceRef = useRef<EventSource | null>(null);
   const pollerRef = useRef<number | null>(null);
   const eventsRef = useRef<ParsedEvent[]>([]);
+  const pendingEventsRef = useRef<ParsedEvent[]>([]);
+  const rafRef = useRef<number | null>(null);
 
   eventsRef.current = events;
+
+  const flushPendingEvents = useCallback(() => {
+    rafRef.current = null;
+    const pending = pendingEventsRef.current;
+    if (pending.length === 0) return;
+    pendingEventsRef.current = [];
+    setEvents((prev) => {
+      const next = [...prev, ...pending];
+      if (next.length > 500) {
+        return next.slice(-500);
+      }
+      return next;
+    });
+  }, []);
+
+  const scheduleFlush = useCallback(() => {
+    if (rafRef.current !== null) return;
+    rafRef.current = requestAnimationFrame(flushPendingEvents);
+  }, [flushPendingEvents]);
 
   const findActiveJob = useCallback(async () => {
     if (!sessionId) return;
@@ -349,13 +370,8 @@ const AgentWorkPanel: React.FC<AgentWorkPanelProps> = ({ sessionId }) => {
             metadata: eventData.metadata || {},
           };
 
-          setEvents((prev) => {
-            const next = [...prev, newEvent];
-            if (next.length > 500) {
-              return next.slice(-500);
-            }
-            return next;
-          });
+          pendingEventsRef.current.push(newEvent);
+          scheduleFlush();
         };
 
         source.onerror = () => {
@@ -376,8 +392,13 @@ const AgentWorkPanel: React.FC<AgentWorkPanelProps> = ({ sessionId }) => {
       cancelled = true;
       closeStream();
       stopPolling();
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+      flushPendingEvents();
     };
-  }, [activeJob?.jobId, closeStream, startPolling, stopPolling]);
+  }, [activeJob?.jobId, closeStream, startPolling, stopPolling, flushPendingEvents]);
 
   useEffect(() => {
     if (scrollRef.current) {
