@@ -71,6 +71,7 @@ def sso_login(
     token: str = Query(..., description="SSO token from main platform"),
     redirect_url: Optional[str] = Query(None, description="URL to redirect after login"),
     project_id: Optional[int] = Query(None, description="Project ID from main platform"),
+    user_id: Optional[int] = Query(None, description="Main platform user ID"),
 ):
     """SSO login endpoint.
     
@@ -78,7 +79,12 @@ def sso_login(
     """
     user_data = verify_sso_token(token)
     
+    if user_id is not None:
+        user_data.setdefault("user", {})["id"] = user_id
+    
     sso_user = SSOUserData(user_data)
+    
+    resolved_user_id = user_id if user_id is not None else sso_user.main_platform_user_id
     
     existing_user = get_user_by_global_uuid(sso_user.uuid)
     
@@ -118,6 +124,9 @@ def sso_login(
     
     if project_id is not None:
         final_redirect += f"&project_id={project_id}"
+    
+    if resolved_user_id is not None:
+        final_redirect += f"&user_id={resolved_user_id}"
     
     return RedirectResponse(url=final_redirect, status_code=302)
 

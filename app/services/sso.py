@@ -20,15 +20,19 @@ _password_hasher = PasswordHasher()
 
 SSO_VERIFY_URL = "http://119.147.24.196:3087/api/v1/sso/verify-token/"
 SSO_API_KEY = "E9-U3-Or-TH9al3aB9twT5wBv6J541636jAh18PBm4IuVwsmtBoyhQ"
-PROJECT_API_URL = "http://119.147.24.196:3087/api/v1/bioagent/projects/"
+PROJECT_API_BASE = "http://119.147.24.196:3087/api/v1/bioagent"
 SSO_TIMEOUT_SECONDS = 10.0
 
 
-def get_project_context(project_id: int) -> Dict[str, Any]:
+def get_project_context(user_id: Optional[int], project_id: int) -> Dict[str, Any]:
     try:
+        if user_id is not None:
+            url = f"{PROJECT_API_BASE}/users/{user_id}/projects/{project_id}/"
+        else:
+            url = f"{PROJECT_API_BASE}/projects/{project_id}/"
         with httpx.Client(timeout=SSO_TIMEOUT_SECONDS) as client:
             response = client.get(
-                f"{PROJECT_API_URL}{project_id}/",
+                url,
                 headers={"X-Api-Key": SSO_API_KEY}
             )
             
@@ -115,6 +119,16 @@ class SSOUserData:
     @property
     def profile(self) -> Dict[str, Any]:
         return self.user.get("profile", {})
+    
+    @property
+    def main_platform_user_id(self) -> Optional[int]:
+        raw = self.user.get("id")
+        if raw is None:
+            return None
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return None
 
 
 def verify_sso_token(token: str) -> Dict[str, Any]:
@@ -220,8 +234,8 @@ def _create_sso_user(sso_data: SSOUserData) -> Dict[str, Any]:
                     id, email, password_hash, role, is_active,
                     global_uuid, name, username, department,
                     department_code, department_display, profile,
-                    sso_enabled, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    sso_enabled, main_platform_user_id, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     user_id,
@@ -237,6 +251,7 @@ def _create_sso_user(sso_data: SSOUserData) -> Dict[str, Any]:
                     sso_data.department_display,
                     profile_json,
                     1,
+                    sso_data.main_platform_user_id,
                     _serialize_timestamp(_now_utc())
                 )
             )
@@ -301,6 +316,10 @@ def _update_sso_user(sso_data: SSOUserData) -> Dict[str, Any]:
                 update_fields.append("password_hash = ?")
                 update_values.append(password_hash)
             
+            if sso_data.main_platform_user_id is not None:
+                update_fields.append("main_platform_user_id = ?")
+                update_values.append(sso_data.main_platform_user_id)
+            
             if not update_fields:
                 logger.info(f"No fields to update for SSO user: {sso_data.uuid}")
                 return {"code": "SKIPPED", "message": "No fields to update"}
@@ -360,4 +379,25 @@ def get_user_by_global_uuid(global_uuid: str) -> Optional[Dict[str, Any]]:
             return None
     except Exception as e:
         logger.error(f"Failed to get user by global_uuid: {e}")
+        return None
+
+
+def get_main_platform_user_id(local_user_id: str) -> Optional[int]:
+    try:
+        with get_db() as conn:
+            row = conn.execute(
+                "SELECT main_platform_user_id FROM users WHERE id = ?",
+                (str(local_user_id),)
+            ).fetchone()
+            if row:
+                raw = row["main_platform_user_id"]
+                if raw is None:
+                    return None
+                try:
+                    return int(raw)
+                except (TypeError, ValueError):
+                    return None
+            return None
+    except Exception as e:
+        logger.error(f"Failed to get main_platform_user_id: {e}")
         return None

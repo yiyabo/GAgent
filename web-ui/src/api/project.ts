@@ -7,8 +7,11 @@ export interface DataRoot {
 }
 
 export interface ModelProvider {
+  type?: string;
+  model?: string;
   base_url: string;
   api_key: string;
+  model_options?: string[];
 }
 
 export interface ProjectData {
@@ -50,18 +53,26 @@ export interface SelectedFilesResponse {
 }
 
 export class ProjectApi extends BaseApi {
-  getProject = async (projectId: number): Promise<ProjectResponse> => {
-    return this.get<ProjectResponse>(`/project/${projectId}`);
+  getProject = async (projectId: number, userId?: number): Promise<ProjectResponse> => {
+    const params: Record<string, any> = {};
+    if (userId !== undefined && userId !== null) {
+      params.user_id = userId;
+    }
+    return this.get<ProjectResponse>(`/project/${projectId}`, params);
   };
 
   getProjectFiles = async (
     projectId: number,
     path?: string,
-    dataRootIndex: number = 0
+    dataRootIndex: number = 0,
+    userId?: number
   ): Promise<FileTreeResponse> => {
     const params: Record<string, any> = { data_root_index: dataRootIndex };
     if (path) {
       params.path = path;
+    }
+    if (userId !== undefined && userId !== null) {
+      params.user_id = userId;
     }
     return this.get<FileTreeResponse>(`/project/${projectId}/files`, params);
   };
@@ -69,13 +80,22 @@ export class ProjectApi extends BaseApi {
   selectFiles = async (
     projectId: number,
     selectedPaths: string[],
-    sessionId?: string
+    sessionId?: string,
+    userId?: number
   ): Promise<SelectedFilesResponse> => {
-    return this.post<SelectedFilesResponse>(`/project/${projectId}/select-files`, {
-      project_id: projectId,
-      selected_paths: selectedPaths,
-      session_id: sessionId,
-    });
+    const queryParams: Record<string, any> = {};
+    if (userId !== undefined && userId !== null) {
+      queryParams.user_id = userId;
+    }
+    return this.post<SelectedFilesResponse>(
+      `/project/${projectId}/select-files`,
+      {
+        project_id: projectId,
+        selected_paths: selectedPaths,
+        session_id: sessionId,
+      },
+      queryParams
+    );
   };
 }
 
