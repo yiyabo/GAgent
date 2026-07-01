@@ -9,7 +9,7 @@ import uuid
 from collections import deque
 from contextvars import ContextVar
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any, Callable, Deque, Dict, List, Optional, Tuple
 
 from ...repository.plan_storage import (
@@ -37,7 +37,7 @@ _job_context: ContextVar[Optional[str]] = ContextVar(
 
 
 def _utc_now() -> datetime:
-    return datetime.utcnow()
+    return datetime.now(timezone(timedelta(hours=8)))
 
 
 def _to_iso(value: Optional[datetime]) -> Optional[str]:

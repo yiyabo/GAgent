@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -797,7 +797,7 @@ def cleanup_action_logs(
     with plan_db_connection(db_path) as conn:
         _ensure_action_log_tables(conn, plan_id=plan_id)
         if older_than_days is not None and older_than_days > 0:
-            cutoff = datetime.utcnow() - timedelta(days=older_than_days)
+            cutoff = datetime.now(timezone(timedelta(hours=8))) - timedelta(days=older_than_days)
             conn.execute(
                 "DELETE FROM plan_action_logs WHERE created_at < ?",
                 (cutoff.isoformat(),),
@@ -828,7 +828,7 @@ def fix_stale_jobs_on_startup() -> int:
         job count
     """
     fixed_count = 0
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone(timedelta(hours=8))).isoformat()
 
     system_db = get_system_job_db_path()
     if system_db.exists():
@@ -923,7 +923,7 @@ def record_phagescope_tracking(
                     json.dumps(modulelist or []),
                     float(poll_interval),
                     float(poll_timeout),
-                    datetime.utcnow().isoformat(),
+                    datetime.now(timezone(timedelta(hours=8))).isoformat(),
                 ),
             )
     except Exception as exc:
@@ -941,7 +941,7 @@ def update_phagescope_tracking_status(job_id: str, status: str) -> None:
                 SET status=?, finished_at=?
                 WHERE job_id=?
                 """,
-                (status, datetime.utcnow().isoformat(), job_id),
+                (status, datetime.now(timezone(timedelta(hours=8))).isoformat(), job_id),
             )
     except Exception as exc:
         logger.warning("Failed to update phagescope tracking status for %s: %s", job_id, exc)

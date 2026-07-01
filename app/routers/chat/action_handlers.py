@@ -13,7 +13,7 @@ import json
 import logging
 import re
 import inspect
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -1092,7 +1092,7 @@ def _update_runtime_context_from_tool(
             "verified_facts": [summary] if summary else [],
             "produced_artifacts": produced_artifacts,
             "unresolved": [],
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.now(timezone(timedelta(hours=8))).isoformat(),
         }
         if subject_ref:
             failure_state = extra_context.get("last_failure_state")
@@ -1124,14 +1124,14 @@ def _update_runtime_context_from_tool(
                 "tool_name": tool_name,
                 "operation": str(params.get("operation") or tool_name).strip() or tool_name,
                 "error_message": error_message,
-                "timestamp": datetime.utcnow().isoformat() + "Z",
+                "timestamp": datetime.now(timezone(timedelta(hours=8))).isoformat(),
             }
         extra_context["last_evidence_state"] = {
             "status": "failed",
             "verified_facts": [],
             "produced_artifacts": produced_artifacts,
             "unresolved": [error_message] if error_message else [],
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.now(timezone(timedelta(hours=8))).isoformat(),
         }
 
     agent.extra_context = extra_context
@@ -3165,7 +3165,7 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
         session_id=agent.session_id,
         source_tool=tool_name,
         tracking_id=get_current_job(),
-        created_at=datetime.utcnow().replace(microsecond=0).isoformat() + "Z",
+        created_at=datetime.now(timezone(timedelta(hours=8))).replace(microsecond=0).isoformat(),
     )
     if artifact_gallery:
         sanitized["artifact_gallery"] = artifact_gallery

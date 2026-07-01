@@ -72,6 +72,7 @@ def sso_login(
     redirect_url: Optional[str] = Query(None, description="URL to redirect after login"),
     project_id: Optional[int] = Query(None, description="Project ID from main platform"),
     user_id: Optional[int] = Query(None, description="Main platform user ID"),
+    project_label: Optional[str] = Query(None, description="Project label from main platform"),
 ):
     """SSO login endpoint.
     
@@ -124,7 +125,11 @@ def sso_login(
     
     if project_id is not None:
         final_redirect += f"&project_id={project_id}"
-    
+
+    if project_label:
+        from urllib.parse import quote
+        final_redirect += f"&project_label={quote(project_label)}"
+
     if resolved_user_id is not None:
         final_redirect += f"&user_id={resolved_user_id}"
     

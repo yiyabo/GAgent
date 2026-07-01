@@ -143,6 +143,7 @@ def build_agent_for_chat_request(
                 "user",
                 request.message,
                 user_message_metadata,
+                model_provider=context.get("model_provider"),
             )
         session_settings = _get_session_settings(request.session_id)
         runtime_context = _load_session_runtime_context(request.session_id)

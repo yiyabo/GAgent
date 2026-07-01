@@ -89,6 +89,7 @@ class UnifiedToolExecutor:
             job_id=context.current_job_id,
             owner_id=context.owner_id,
             work_dir=context.work_dir or "",
+            model_provider=getattr(context, 'model_provider', None),
         )
 
         timeout = int(self.TOOL_TIMEOUTS.get(tool_name, self._default_timeout))

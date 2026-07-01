@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ..interfaces import TaskRepository
@@ -328,7 +328,7 @@ def generate_index(
     content = "\n".join(lines).rstrip() + "\n"
 
     meta = {
-        "generated_at": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+        "generated_at": datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S"),
         "plans": len(plans),
         "tasks_total": int(total_tasks),
         "done_total": int(total_done),
@@ -356,7 +356,7 @@ def write_index(content: str, path: Optional[str] = None, meta: Optional[Dict[st
     # Append history JSONL
     history_path = f"{resolved_path}.history.jsonl"
     rec = {
-        "ts": (meta or {}).get("generated_at") or datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+        "ts": (meta or {}).get("generated_at") or datetime.now(timezone(timedelta(hours=8))).strftime("%Y-%m-%d %H:%M:%S"),
         "plans": (meta or {}).get("plans"),
         "tasks_total": (meta or {}).get("tasks_total"),
         "done_total": (meta or {}).get("done_total"),

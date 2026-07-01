@@ -6,7 +6,7 @@ import logging
 import re
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.llm import LLMClient
@@ -699,7 +699,7 @@ def evaluate_plan_rubric(
 
     Output is always English (textual feedback/evidence).
     """
-    evaluated_at = datetime.utcnow().isoformat() + "Z"
+    evaluated_at = datetime.now(timezone(timedelta(hours=8))).isoformat()
     rule_evidence = _build_rule_evidence(tree)
     outline = _build_plan_outline_for_eval(tree)
     rubric = rubric_definition_en()

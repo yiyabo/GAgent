@@ -9,7 +9,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Literal, Mapping, Optional, Sequence
 
-from app.llm import LLMClient
+from app.llm import LLMClient, get_default_client
 
 from .guardrails import (
     extract_task_ids_from_text,
@@ -1164,7 +1164,7 @@ def resolve_request_routing(
         if request_tier != "execute":
             request_tier = "execute"
             combined_reasons.append("tier_elevated_plan_lifecycle")
-    if confidence < 0.5 and effective_plan_bound:
+    if confidence < 0.5 and effective_plan_bound and "greeting_or_social" not in combined_reasons:
         llm_result = _llm_routing_fallback(
             effective_user_message,
             plan_bound=effective_plan_bound,
@@ -1464,7 +1464,7 @@ def _llm_routing_fallback(
     )
 
     try:
-        client = LLMClient()
+        client = get_default_client()
         response = client.chat(
             prompt=prompt,
             messages=[],

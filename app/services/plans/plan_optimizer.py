@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.llm import LLMClient
@@ -152,7 +152,7 @@ class PlanAutoReviewOptimizeOutcome:
 
 
 def _utc_now_iso() -> str:
-    return datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    return datetime.now(timezone(timedelta(hours=8))).replace(microsecond=0).isoformat()
 
 
 def _safe_text(value: Any, *, limit: int = 240) -> str:
