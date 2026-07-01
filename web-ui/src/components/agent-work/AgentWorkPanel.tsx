@@ -190,6 +190,8 @@ const AgentWorkPanel: React.FC<AgentWorkPanelProps> = ({ sessionId }) => {
   const [consoleExpanded, setConsoleExpanded] = useState(false);
 
   const scrollRef = useRef<HTMLDivElement>(null);
+  const autoScrollRef = useRef(true);
+  const [showScrollBtn, setShowScrollBtn] = useState(false);
   const sourceRef = useRef<EventSource | null>(null);
   const pollerRef = useRef<number | null>(null);
   const eventsRef = useRef<ParsedEvent[]>([]);
@@ -402,7 +404,7 @@ const AgentWorkPanel: React.FC<AgentWorkPanelProps> = ({ sessionId }) => {
   }, [activeJob?.jobId, closeStream, startPolling, stopPolling, flushPendingEvents]);
 
   useEffect(() => {
-    if (scrollRef.current) {
+    if (scrollRef.current && autoScrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [events.length]);
@@ -674,10 +676,18 @@ const AgentWorkPanel: React.FC<AgentWorkPanelProps> = ({ sessionId }) => {
       {header}
       <div
         ref={scrollRef}
+        onScroll={() => {
+          const el = scrollRef.current;
+          if (!el) return;
+          const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+          autoScrollRef.current = atBottom;
+          setShowScrollBtn(!atBottom);
+        }}
         style={{
           flex: 1,
           overflowY: 'auto',
           padding: '16px 16px 24px',
+          position: 'relative',
         }}
       >
         {mainEvents.length === 0 && !isLoading && (
@@ -766,6 +776,32 @@ const AgentWorkPanel: React.FC<AgentWorkPanelProps> = ({ sessionId }) => {
               </div>
             )}
           </div>
+        )}
+        {showScrollBtn && (
+          <div
+            onClick={() => {
+              if (scrollRef.current) {
+                scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+                autoScrollRef.current = true;
+                setShowScrollBtn(false);
+              }
+            }}
+            style={{
+              position: 'sticky',
+              bottom: 8,
+              alignSelf: 'center',
+              background: 'var(--bg-secondary)',
+              border: '1px solid var(--border-color)',
+              borderRadius: 6,
+              padding: '2px 12px',
+              cursor: 'pointer',
+              fontSize: 13,
+              boxShadow: 'var(--shadow-sm)',
+              zIndex: 10,
+              width: 'fit-content',
+              margin: '0 auto',
+            }}
+          >↓ 回到底部</div>
         )}
       </div>
     </div>
