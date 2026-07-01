@@ -11,6 +11,7 @@ interface AuthState {
   loading: boolean;
   projectId: number | null;
   userId: number | null;
+  projectLabel: string | null;
   setUser: (user: AuthUser | null) => void;
   setProjectId: (projectId: number | null) => void;
   setUserId: (userId: number | null) => void;
@@ -30,6 +31,7 @@ export const useAuthStore = create<AuthState>((set) => ({
   loading: false,
   projectId: null,
   userId: null,
+  projectLabel: null,
   setUser: (user) =>
     set({
       user,
@@ -50,6 +52,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       resetClientStateForAuthChange();
       sessionStorage.removeItem('project_id');
       sessionStorage.removeItem('user_id');
+      sessionStorage.removeItem('project_label');
       set({
         user: null,
         authenticated: false,
@@ -58,6 +61,7 @@ export const useAuthStore = create<AuthState>((set) => ({
         loading: false,
         projectId: null,
         userId: null,
+        projectLabel: null,
       });
     },
   bootstrap: async () => {
@@ -69,7 +73,8 @@ export const useAuthStore = create<AuthState>((set) => ({
       const projectId = projectIdParam ? parseInt(projectIdParam, 10) : null;
       const userIdParam = urlParams.get('user_id');
       const userId = userIdParam ? parseInt(userIdParam, 10) : null;
-      
+      const projectLabel = urlParams.get('project_label');
+
       if (projectId && !isNaN(projectId)) {
         set({ projectId });
         (window as any).__PROJECT_ID__ = projectId;
@@ -82,6 +87,18 @@ export const useAuthStore = create<AuthState>((set) => ({
             set({ projectId: parsed });
             (window as any).__PROJECT_ID__ = parsed;
           }
+        }
+      }
+
+      if (projectLabel) {
+        set({ projectLabel });
+        (window as any).__PROJECT_LABEL__ = projectLabel;
+        sessionStorage.setItem('project_label', projectLabel);
+      } else {
+        const storedLabel = sessionStorage.getItem('project_label');
+        if (storedLabel) {
+          set({ projectLabel: storedLabel });
+          (window as any).__PROJECT_LABEL__ = storedLabel;
         }
       }
       
@@ -103,9 +120,10 @@ export const useAuthStore = create<AuthState>((set) => ({
       if (ssoSession) {
         try {
           const payload = await authApi.ssoComplete(ssoSession);
-          urlParams.delete('__sso_session');
-          urlParams.delete('project_id');
-          urlParams.delete('user_id');
+      urlParams.delete('__sso_session');
+      urlParams.delete('project_id');
+      urlParams.delete('user_id');
+      urlParams.delete('project_label');
           const newUrl = urlParams.toString() 
             ? `${window.location.pathname}?${urlParams.toString()}`
             : window.location.pathname;
@@ -121,9 +139,10 @@ export const useAuthStore = create<AuthState>((set) => ({
             return;
           }
         } catch {
-          urlParams.delete('__sso_session');
-          urlParams.delete('project_id');
-          urlParams.delete('user_id');
+      urlParams.delete('__sso_session');
+      urlParams.delete('project_id');
+      urlParams.delete('user_id');
+      urlParams.delete('project_label');
           const newUrl = urlParams.toString() 
             ? `${window.location.pathname}?${urlParams.toString()}`
             : window.location.pathname;

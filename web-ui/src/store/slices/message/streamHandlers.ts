@@ -411,7 +411,6 @@ export function handleThinkingStep(ctx: StreamHandlerContext, event: any): void 
   if ((existingMetadata as any).thinking_visibility !== 'visible') {
     (existingMetadata as any).thinking_visibility = 'visible';
   }
-  (existingMetadata as any).thinking_display_mode = 'full_thinking';
 
   ctx.get().updateMessage(ctx.assistantMessageId, {
     metadata: existingMetadata,
@@ -491,7 +490,6 @@ function _flushThinkingDeltaBuffer(ctx: StreamHandlerContext, force: boolean = f
     if ((existingMetadata as any).thinking_visibility !== 'visible') {
       (existingMetadata as any).thinking_visibility = 'visible';
     }
-    (existingMetadata as any).thinking_display_mode = 'full_thinking';
     ctx.get().updateMessage(ctx.assistantMessageId, {
       metadata: existingMetadata,
       thinking_process: {
@@ -709,7 +707,7 @@ export function handleProgressStatus(ctx: StreamHandlerContext, event: any): voi
     updated_at: new Date().toISOString(),
   };
   (existingMetadata as any).thinking_visibility = 'progress';
-  (existingMetadata as any).thinking_display_mode = 'compact_progress';
+  (existingMetadata as any).thinking_display_mode = 'full_thinking';
   (existingMetadata as any).unified_stream = true;
   if (!(existingMetadata as any).status || (existingMetadata as any).status === 'pending') {
     (existingMetadata as any).status = 'running';

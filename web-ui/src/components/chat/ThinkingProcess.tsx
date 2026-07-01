@@ -288,6 +288,8 @@ const ThinkingStepItem: React.FC<{
 }> = ({ step, isLast, isFinished, isProcessActive, nextStep, language, liveNow, hintText }) => {
   const [detailExpanded, setDetailExpanded] = useState(false);
   const streamRef = useRef<HTMLDivElement>(null);
+  const autoScrollRef = useRef(true);
+  const [showScrollBtn, setShowScrollBtn] = useState(false);
 
   const isTool = !!step.action;
   const isError = stepHasToolError(step);
@@ -348,7 +350,7 @@ const ThinkingStepItem: React.FC<{
 
   // Auto-scroll the streaming area to bottom
   useEffect(() => {
-    if (isStepActive && streamRef.current) {
+    if (isStepActive && streamRef.current && autoScrollRef.current) {
       streamRef.current.scrollTop = streamRef.current.scrollHeight;
     }
   }, [rawThought, isStepActive]);
@@ -356,9 +358,9 @@ const ThinkingStepItem: React.FC<{
   // Whether the step is a reasoning step with thought content worth showing in detail
   const hasFullThought = !!rawThought && rawThought.length > 100;
   // Whether to show live stream: active reasoning steps with thought content
-  const showLiveStream = !isTool && rawThought && (isStepActive || (isLast && isProcessActive));
+  const showLiveStream = rawThought && (isStepActive || (isLast && isProcessActive));
   // Whether to show the thought content inline (completed reasoning steps)
-  const showCompletedThought = !isTool && rawThought && !showLiveStream && isStepComplete;
+  const showCompletedThought = rawThought && !showLiveStream && isStepComplete;
 
   const renderStatus = () => {
     if (isStepActive) {
@@ -418,11 +420,41 @@ const ThinkingStepItem: React.FC<{
 
       {/* ===== LIVE STREAMING: Active reasoning step — show thought as it streams ===== */}
       {showLiveStream && liveThought && (
-        <div className="tp-step-stream" ref={streamRef}>
+        <div className="tp-step-stream" ref={streamRef} onScroll={() => {
+          const el = streamRef.current;
+          if (!el) return;
+          const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+          autoScrollRef.current = atBottom;
+          setShowScrollBtn(!atBottom);
+        }} style={{ position: 'relative' }}>
           {liveThought.truncated && (
             <div className="tp-stream-truncated">···</div>
           )}
           <span className="tp-stream-text">{liveThought.text}</span>
+          {showScrollBtn && (
+            <div
+              onClick={() => {
+                if (streamRef.current) {
+                  streamRef.current.scrollTop = streamRef.current.scrollHeight;
+                  autoScrollRef.current = true;
+                  setShowScrollBtn(false);
+                }
+              }}
+              style={{
+                position: 'absolute',
+                bottom: 4,
+                right: 8,
+                background: 'var(--bg-secondary)',
+                border: '1px solid var(--border-color)',
+                borderRadius: 6,
+                padding: '2px 8px',
+                cursor: 'pointer',
+                fontSize: 12,
+                boxShadow: 'var(--shadow-sm)',
+                zIndex: 10,
+              }}
+            >↓</div>
+          )}
           <span className="tp-stream-cursor" />
         </div>
       )}
@@ -709,19 +741,35 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
             <div
               className={`tp-steps${isActive ? '' : ' tp-steps-scroll'}`}
             >
-              {mainSteps.map((step, idx) => (
-                <ThinkingStepItem
-                  key={`${step.iteration}_${idx}`}
-                  step={step}
-                  isLast={idx === mainSteps.length - 1}
-                  isFinished={isFinished}
-                  isProcessActive={isActive}
-                  nextStep={idx < mainSteps.length - 1 ? mainSteps[idx + 1] : undefined}
-                  language={language}
-                  liveNow={liveNow}
-                  hintText={hintText}
-                />
-              ))}
+              {mainSteps.map((step, idx) => {
+                const prevStep = idx > 0 ? mainSteps[idx - 1] : null;
+                const showHeader = step.iteration > 0 && (!prevStep || step.iteration !== prevStep.iteration);
+                return (
+                <React.Fragment key={`${step.iteration}_${idx}`}>
+                  {showHeader && (
+                    <div style={{
+                      fontSize: 11,
+                      color: 'var(--text-tertiary)',
+                      padding: '8px 0 4px',
+                      borderTop: idx > 0 ? '1px solid var(--border-light)' : 'none',
+                      marginTop: idx > 0 ? 8 : 0,
+                    }}>
+                      {language === 'zh' ? `思考 ${step.iteration}` : `Thinking ${step.iteration}`}
+                    </div>
+                  )}
+                  <ThinkingStepItem
+                    step={step}
+                    isLast={idx === mainSteps.length - 1}
+                    isFinished={isFinished}
+                    isProcessActive={isActive}
+                    nextStep={idx < mainSteps.length - 1 ? mainSteps[idx + 1] : undefined}
+                    language={language}
+                    liveNow={liveNow}
+                    hintText={hintText}
+                  />
+                </React.Fragment>
+                );
+              })}
 
               {/* "Preparing next step" indicator — only when active and last step is complete */}
               {isActive && mainSteps.length > 0 && !['thinking', 'calling_tool'].includes(mainSteps[mainSteps.length - 1]?.status || '') && (
