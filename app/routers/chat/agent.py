@@ -10,7 +10,7 @@ import os
 import re
 import threading
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional, Tuple, Union
 from uuid import uuid4
@@ -2833,7 +2833,7 @@ class StructuredChatAgent:
                         self.plan_session.plan_id,
                         job_id=job_id,
                         status="succeeded" if success else "failed",
-                        finished_at=datetime.utcnow(),
+                        finished_at=datetime.now(timezone(timedelta(hours=8))),
                         stats={
                             "step_count": len(steps),
                             "success": success,
@@ -2893,6 +2893,7 @@ class StructuredChatAgent:
                         "assistant",
                         response_text,
                         metadata=response_metadata,
+                        model_provider=(self.extra_context or {}).get("model_provider"),
                     )
                 except Exception as save_err:  # pragma: no cover - defensive
                     logger.warning(
@@ -3130,6 +3131,7 @@ class StructuredChatAgent:
                                 "assistant",
                                 response_text,
                                 metadata=metadata,
+                                model_provider=(self.extra_context or {}).get("model_provider"),
                             )
                         except Exception as save_err:
                             logger.warning(
@@ -4644,6 +4646,7 @@ class StructuredChatAgent:
                             "assistant",
                             full_response,
                             metadata=final_metadata,
+                            model_provider=(self.extra_context or {}).get("model_provider"),
                         )
                         logger.info(
                             "[CHAT][DEEP_THINK] Response saved to database for session=%s",
@@ -4821,6 +4824,7 @@ class StructuredChatAgent:
                     "assistant",
                     display_text,
                     metadata=save_meta,
+                    model_provider=(self.extra_context or {}).get("model_provider"),
                 )
             except Exception as save_err:
                 logger.warning("[SIMPLE_CHAT] Failed to save response: %s", save_err)
@@ -5027,6 +5031,7 @@ class StructuredChatAgent:
                         "skipped_count": skipped_count,
                         "execution_summary": summary.to_dict(),
                     },
+                    model_provider=(self.extra_context or {}).get("model_provider"),
                 )
         except Exception as save_err:
             logger.warning("[CHAT][FULL_PLAN_EXECUTOR] Failed to save summary: %s", save_err)

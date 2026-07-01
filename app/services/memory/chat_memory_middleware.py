@@ -29,6 +29,7 @@ class ChatMemoryMiddleware:
         role: str = "user",
         session_id: Optional[str] = None,
         force_save: bool = False,
+        model_provider: Optional[dict] = None,
     ) -> Optional[str]:
         """
         Process one chat message and conditionally persist it to memory.
@@ -134,9 +135,20 @@ Only return JSON, no other content."""
 
                 import asyncio
                 loop = asyncio.get_event_loop()
+                if model_provider and model_provider.get("base_url") and model_provider.get("api_key"):
+                    from ...llm import LLMClient
+                    _mp = model_provider
+                    _client = LLMClient(
+                        provider=_mp.get("type") or "openai",
+                        url=_mp["base_url"].rstrip("/") + "/v1/chat/completions",
+                        api_key=_mp["api_key"],
+                        model=_mp.get("model") or "qwen3.7-max",
+                    )
+                else:
+                    _client = self.llm_client
                 response = await loop.run_in_executor(
                     None,
-                    lambda: self.llm_client.chat(prompt, temperature=0.3)
+                    lambda: _client.chat(prompt, temperature=0.3)
                 )
 
                 response_text = response.strip() if isinstance(response, str) else response.get("content", "").strip()

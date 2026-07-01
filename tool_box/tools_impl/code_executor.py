@@ -2031,37 +2031,34 @@ def _validate_api_mode_config(env_map: Dict[str, str]) -> Optional[str]:
 # Qwen Code CLI helpers
 # ---------------------------------------------------------------------------
 
-def _build_qwen_code_subprocess_env() -> Dict[str, str]:
+def _build_qwen_code_subprocess_env(model_provider: Optional[Dict] = None) -> Dict[str, str]:
     """Build a subprocess environment for Qwen Code CLI.
 
     Uses OpenAI-compatible auth pointing at dashscope.
-
-    The ``qwen`` CLI shebang is ``#!/usr/bin/env node`` and requires
-    Node >= 20.  When nvm is loaded in the shell, its node path may
-    shadow the conda environment's node (v20).  We detect the conda
-    env's bin directory and prepend it to PATH so the correct node is
-    resolved first.
     """
     env_map = dict(os.environ)
 
-    # --- Ensure conda-env node takes priority over nvm ---
     conda_prefix = os.environ.get("CONDA_PREFIX", "")
     if conda_prefix:
         conda_bin = os.path.join(conda_prefix, "bin")
         current_path = env_map.get("PATH", "")
-        # Only prepend if not already at the front.
         if not current_path.startswith(conda_bin):
             env_map["PATH"] = conda_bin + os.pathsep + current_path
 
-    # Inject OpenAI-compatible credentials for QC.
-    qwen_key = str(os.getenv("QWEN_API_KEY", "")).strip()
-    if qwen_key:
-        env_map["OPENAI_API_KEY"] = qwen_key
-    env_map["OPENAI_BASE_URL"] = (
-        str(os.getenv("QWEN_CODE_BASE_URL", "")).strip()
-        or _DEFAULT_QC_BASE_URL
-    )
-    # Remove variables that might confuse QC.
+    mp = model_provider or {}
+    mp_api_key = mp.get("api_key")
+    mp_base_url = mp.get("base_url")
+    if mp_api_key and mp_base_url:
+        env_map["OPENAI_API_KEY"] = mp_api_key
+        env_map["OPENAI_BASE_URL"] = mp_base_url.rstrip("/") + "/v1"
+    else:
+        qwen_key = str(os.getenv("QWEN_API_KEY", "")).strip()
+        if qwen_key:
+            env_map["OPENAI_API_KEY"] = qwen_key
+        env_map["OPENAI_BASE_URL"] = (
+            str(os.getenv("QWEN_CODE_BASE_URL", "")).strip()
+            or _DEFAULT_QC_BASE_URL
+        )
     for key in ("ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL",
                 "ANTHROPIC_SMALL_FAST_MODEL", "ANTHROPIC_AUTH_TOKEN", "CLAUDECODE"):
         env_map.pop(key, None)
@@ -4265,6 +4262,19 @@ async def _execute_task_locally(
     from app.services.interpreter.code_execution import CodeExecutionSpec, execute_code_locally
     from app.services.llm.llm_service import get_llm_service
 
+    _mp = (getattr(tool_context, 'model_provider', None) or {}) if tool_context else {}
+    if _mp.get("base_url") and _mp.get("api_key"):
+        from app.llm import LLMClient
+        from app.services.llm.llm_service import LLMService
+        _llm_override = LLMService(LLMClient(
+            provider=_mp.get("type") or "openai",
+            url=_mp["base_url"].rstrip("/") + "/v1/chat/completions",
+            api_key=_mp["api_key"],
+            model=_mp.get("model") or "qwen3.7-max",
+        ))
+    else:
+        _llm_override = get_llm_service()
+
     effective_runtime_mode = _resolve_code_executor_local_runtime(runtime_mode)
     execution_backend = "docker" if effective_runtime_mode == "docker" else "local"
     effective_docker_image = (
@@ -4388,7 +4398,7 @@ async def _execute_task_locally(
         task_title="Code execution task",
         task_description=task_desc,
         metadata_list=[],
-        llm_service=get_llm_service(),
+        llm_service=_llm_override,
         work_dir=work_dir,
         data_dir=data_dir,
         auto_fix=auto_fix,
@@ -5165,15 +5175,19 @@ async def code_executor_handler(
         _container_execution_lock: Optional[asyncio.Lock] = None
         if use_qwen_code_backend:
             # Qwen Code path
-            subprocess_env = _build_qwen_code_subprocess_env()
+            subprocess_env = _build_qwen_code_subprocess_env(
+                model_provider=getattr(tool_context, 'model_provider', None) if tool_context else None
+            )
             _ensure_writable_subprocess_cache_env(subprocess_env, task_work_dir)
             _inject_env_mutation_guard(subprocess_env, str(task_work_dir))
             qc_config_error = _validate_qwen_code_config(subprocess_env)
             if qc_config_error:
                 return {"success": False, "error": qc_config_error, "task": task}
+            _mp = (getattr(tool_context, 'model_provider', None) or {}) if tool_context else {}
             effective_model = (
                 str(
                     model
+                    or _mp.get("model", "")
                     or os.getenv("QWEN_CODE_MODEL", "")
                     or os.getenv("QWEN_MODEL", "")
                 ).strip()

@@ -5,7 +5,7 @@ import hashlib
 import json
 import logging
 import re
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from .models import ChatMessage, ChatResponse
@@ -771,7 +771,7 @@ def _record_phagescope_task_memory(
         "userid": params.get("userid"),
         "phageid": params.get("phageid"),
         "modulelist": _normalize_modulelist_value(params.get("modulelist")),
-        "created_at": datetime.utcnow().isoformat(),
+        "created_at": datetime.now(timezone(timedelta(hours=8))).isoformat(),
     }
 
     def _updater(metadata: Dict[str, Any]) -> Dict[str, Any]:
@@ -1019,6 +1019,7 @@ def _save_chat_message(
     metadata: Optional[Dict[str, Any]] = None,
     *,
     owner_id: Optional[str] = None,
+    model_provider: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Persist chat message."""
     try:
@@ -1055,7 +1056,8 @@ def _save_chat_message(
                     middleware.process_message(
                         content=content,
                         role=role,
-                        session_id=session_id
+                        session_id=session_id,
+                        model_provider=model_provider,
                     )
                 )
             except Exception as mem_err:

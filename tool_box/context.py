@@ -55,6 +55,7 @@ class ToolContext:
     """Async callback for reporting intermediate progress to the UI."""
 
     # --- extensible metadata ---
+    model_provider: Optional[Dict[str, Any]] = None
     extra: Dict[str, Any] = field(default_factory=dict)
     """Bag for future or caller-specific data without breaking the interface."""
 
