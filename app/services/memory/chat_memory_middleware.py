@@ -47,7 +47,7 @@ class ChatMemoryMiddleware:
             return None
 
         should_save, importance, memory_type = await self._should_save_message(
-            content, role, force_save
+            content, role, force_save, model_provider=model_provider
         )
 
         if not should_save:
@@ -91,6 +91,7 @@ class ChatMemoryMiddleware:
         content: str,
         role: str,
         force_save: bool = False,
+        model_provider: Optional[dict] = None,
     ) -> tuple[bool, ImportanceLevel, Optional[MemoryType]]:
         """
         Ask LLM whether a message should be saved as memory.
