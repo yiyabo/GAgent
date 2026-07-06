@@ -2,9 +2,10 @@ import React from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { vi } from 'vitest';
+import { App as AntdApp } from 'antd';
 
 import ArtifactsPanel from './ArtifactsPanel';
-import { artifactsApi } from '@api/artifacts';
+import { artifactsApi, downloadSessionBatch } from '@api/artifacts';
 import { useTasksStore } from '@store/tasks';
 import { useLayoutStore } from '@store/layout';
 
@@ -19,10 +20,12 @@ vi.mock('@api/artifacts', async () => {
       getSessionDeliverableText: vi.fn(),
       renderArtifact: vi.fn(),
     },
+    downloadSessionBatch: vi.fn(),
   };
 });
 
 const mockedArtifactsApi = vi.mocked(artifactsApi);
+const mockedDownloadSessionBatch = vi.mocked(downloadSessionBatch);
 
 function renderPanel() {
   const queryClient = new QueryClient({
@@ -36,9 +39,30 @@ function renderPanel() {
 
   return render(
     <QueryClientProvider client={queryClient}>
-      <ArtifactsPanel sessionId="session_1776695619644_hb1elmfc0" />
+      <AntdApp>
+        <ArtifactsPanel sessionId="session_1776695619644_hb1elmfc0" />
+      </AntdApp>
     </QueryClientProvider>
   );
+}
+
+function setupDeliverableItems() {
+  mockedArtifactsApi.listSessionDeliverables.mockResolvedValue({
+    session_id: 'session_1776695619644_hb1elmfc0',
+    scope: 'latest',
+    root_path: 'deliverables/latest',
+    count: 2,
+    items: [
+      { name: 'report.md', path: 'report.md', extension: 'md', size: 1024, module: 'writing', status: 'final' },
+      { name: 'figure.png', path: 'figures/figure.png', extension: 'png', size: 2048, module: 'image_tabular', status: 'final' },
+    ],
+    modules: {},
+    paper_status: {},
+    release_state: 'draft',
+    public_release_ready: false,
+    hidden_artifact_prefixes: [],
+    available_versions: [],
+  } as any);
 }
 
 describe('ArtifactsPanel', () => {
@@ -99,6 +123,7 @@ describe('ArtifactsPanel', () => {
       cached: false,
       url: null,
     });
+    mockedDownloadSessionBatch.mockResolvedValue(undefined);
   });
 
   it('opens raw file preview using sourcePath instead of trimmed display path', async () => {
@@ -152,6 +177,140 @@ describe('ArtifactsPanel', () => {
         'session_1776695619644_hb1elmfc0',
         expect.objectContaining({ pathPrefix: 'raw_files/task_1/task_8/task_34' })
       );
+    });
+  });
+
+  describe('batch download', () => {
+    it('renders Tree with checkable prop (checkboxes present)', async () => {
+      setupDeliverableItems();
+      const { container } = renderPanel();
+
+      await screen.findByText('report.md');
+
+      const checkboxes = container.querySelectorAll('.ant-tree-checkbox');
+      expect(checkboxes.length).toBeGreaterThan(0);
+    });
+
+    it('disables Download Selected when no files are checked', async () => {
+      setupDeliverableItems();
+      renderPanel();
+
+      await screen.findByText('report.md');
+
+      const btn = screen.getByRole('button', { name: /download selected/i });
+      expect(btn).toBeDisabled();
+    });
+
+    it('enables Download Selected after checking a file', async () => {
+      setupDeliverableItems();
+      const { container } = renderPanel();
+
+      await screen.findByText('report.md');
+
+      const checkboxes = container.querySelectorAll('.ant-tree-checkbox');
+      fireEvent.click(checkboxes[checkboxes.length - 1]);
+
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: /download selected/i })).not.toBeDisabled();
+      });
+    });
+
+    it('Download All calls downloadSessionBatch with deliverable entries using item.path', async () => {
+      setupDeliverableItems();
+      renderPanel();
+
+      await screen.findByText('report.md');
+
+      const btn = screen.getByRole('button', { name: /download all/i });
+      fireEvent.click(btn);
+
+      await waitFor(() => {
+        expect(mockedDownloadSessionBatch).toHaveBeenCalledWith(
+          'session_1776695619644_hb1elmfc0',
+          [
+            { path: 'report.md', scope: 'deliverables' },
+            { path: 'figures/figure.png', scope: 'deliverables' },
+          ]
+        );
+      });
+    });
+
+    it('Download All calls downloadSessionBatch with raw entries using item.sourcePath', async () => {
+      renderPanel();
+
+      fireEvent.click(screen.getByRole('radio', { name: 'Raw Files' }));
+
+      await screen.findByText('coverage_report.json');
+
+      const btn = screen.getByRole('button', { name: /download all/i });
+      fireEvent.click(btn);
+
+      await waitFor(() => {
+        expect(mockedDownloadSessionBatch).toHaveBeenCalledWith(
+          'session_1776695619644_hb1elmfc0',
+          [
+            {
+              path: 'raw_files/task_1/task_8/task_34/merge/coverage_report.json',
+              scope: 'raw',
+            },
+          ]
+        );
+      });
+    });
+
+    it('Download Selected calls downloadSessionBatch with only checked items', async () => {
+      setupDeliverableItems();
+      const { container } = renderPanel();
+
+      await screen.findByText('report.md');
+
+      const checkboxes = container.querySelectorAll('.ant-tree-checkbox');
+      fireEvent.click(checkboxes[checkboxes.length - 1]);
+
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: /download selected/i })).not.toBeDisabled();
+      });
+
+      fireEvent.click(screen.getByRole('button', { name: /download selected/i }));
+
+      await waitFor(() => {
+        expect(mockedDownloadSessionBatch).toHaveBeenCalledWith(
+          'session_1776695619644_hb1elmfc0',
+          [{ path: 'report.md', scope: 'deliverables' }]
+        );
+      });
+    });
+
+    it('toggles loading state during Download All', async () => {
+      setupDeliverableItems();
+      renderPanel();
+
+      await screen.findByText('report.md');
+
+      let resolveDownload: (v?: unknown) => void;
+      mockedDownloadSessionBatch.mockImplementation(
+        () => new Promise((resolve) => { resolveDownload = resolve; })
+      );
+
+      const btn = screen.getByRole('button', { name: /download all/i });
+      fireEvent.click(btn);
+
+      await waitFor(() => expect(mockedDownloadSessionBatch).toHaveBeenCalled());
+      expect(btn).toBeDisabled();
+
+      resolveDownload!();
+
+      await waitFor(() => expect(btn).not.toBeDisabled());
+    });
+
+    it('disables Download All when no files are visible', async () => {
+      renderPanel();
+
+      await waitFor(() => {
+        expect(screen.getByText('No files')).toBeInTheDocument();
+      });
+
+      expect(screen.getByRole('button', { name: /download all/i })).toBeDisabled();
     });
   });
 });

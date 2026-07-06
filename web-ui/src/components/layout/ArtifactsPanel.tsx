@@ -1,6 +1,7 @@
 import React from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
+  App,
   Button,
   Empty,
   Input,
@@ -17,6 +18,7 @@ import {
   CheckCircleOutlined,
   CloudDownloadOutlined,
   CloseOutlined,
+  DownloadOutlined,
   EditOutlined,
   FileImageOutlined,
   FileOutlined,
@@ -35,7 +37,9 @@ import {
   buildArtifactFileUrl,
   buildDeliverableFileUrl,
   buildRenderedFileUrl,
+  downloadSessionBatch,
 } from '@api/artifacts';
+import type { BatchDownloadEntry } from '@api/artifacts';
 import type { ArtifactItem, DeliverableItem } from '@/types';
 import type { DataNode } from 'antd/es/tree';
 import type { ColumnsType } from 'antd/es/table';
@@ -187,6 +191,7 @@ const trimDisplayPrefix = (path: string, prefix: string | null): string => {
 };
 
 const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
+  const { message } = App.useApp();
   const { dagSidebarFullscreen, toggleDagSidebarFullscreen } = useLayoutStore();
   const { tasks, selectedTaskId } = useTasksStore((state) => ({
     tasks: state.tasks,
@@ -198,6 +203,8 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
   const [selectedPath, setSelectedPath] = React.useState<string | null>(null);
   const [previewOpen, setPreviewOpen] = React.useState(false);
   const [showSource, setShowSource] = React.useState(false); // Toggle for renderable files
+  const [checkedKeys, setCheckedKeys] = React.useState<string[]>([]);
+  const [isBatchDownloading, setIsBatchDownloading] = React.useState(false);
 
   const taskScopedRawPathPrefix = React.useMemo(() => {
     if (!Array.isArray(tasks) || tasks.length === 0 || selectedTaskId == null) {
@@ -490,6 +497,43 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
     void refetchRaw();
   };
 
+  const toBatchEntries = (items: DisplayFileItem[]): BatchDownloadEntry[] =>
+    items.map((item) => ({
+      path: item.sourceType === 'deliverables' ? item.path : item.sourcePath,
+      scope: item.sourceType,
+    }));
+
+  const handleDownloadSelected = async () => {
+    const leafSet = new Set(displayItems.map((i) => i.sourcePath));
+    const selectedItems = checkedKeys
+      .filter((k) => leafSet.has(k))
+      .map((k) => displayItems.find((i) => i.sourcePath === k))
+      .filter((i): i is DisplayFileItem => i != null);
+    const entries = toBatchEntries(selectedItems);
+    if (!entries.length) return;
+    setIsBatchDownloading(true);
+    try {
+      await downloadSessionBatch(sessionId!, entries);
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : 'Batch download failed');
+    } finally {
+      setIsBatchDownloading(false);
+    }
+  };
+
+  const handleDownloadAll = async () => {
+    const entries = toBatchEntries(filteredItems);
+    if (!entries.length) return;
+    setIsBatchDownloading(true);
+    try {
+      await downloadSessionBatch(sessionId!, entries);
+    } catch (err) {
+      message.error(err instanceof Error ? err.message : 'Batch download failed');
+    } finally {
+      setIsBatchDownloading(false);
+    }
+  };
+
   if (!sessionId) {
     return (
       <div style={{ padding: 16 }}>
@@ -561,6 +605,28 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
               )}
             </Space>
             <Space size={6}>
+              <Tooltip title="Download selected files as zip">
+                <Button
+                  size="small"
+                  icon={<DownloadOutlined />}
+                  onClick={handleDownloadSelected}
+                  loading={isBatchDownloading}
+                  disabled={checkedKeys.length === 0 || isBatchDownloading}
+                >
+                  Download Selected
+                </Button>
+              </Tooltip>
+              <Tooltip title="Download all visible files as zip">
+                <Button
+                  size="small"
+                  icon={<CloudDownloadOutlined />}
+                  onClick={handleDownloadAll}
+                  loading={isBatchDownloading}
+                  disabled={filteredItems.length === 0 || isBatchDownloading}
+                >
+                  Download All
+                </Button>
+              </Tooltip>
               <Tooltip title={dagSidebarFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}>
                 <Button
                   size="small"
@@ -645,6 +711,12 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
           ) : filteredItems.length ? (
             <Tree
               showIcon
+              checkable
+              checkedKeys={checkedKeys}
+              onCheck={(keys) => {
+                const checked = Array.isArray(keys) ? keys : keys.checked;
+                setCheckedKeys(checked.map(String));
+              }}
               treeData={treeData}
               selectedKeys={selectedPath ? [selectedPath] : []}
               onSelect={(keys, info) => {

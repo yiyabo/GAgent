@@ -100,6 +100,40 @@ class ArtifactsApi extends BaseApi {
 
 export const artifactsApi = new ArtifactsApi();
 
+export interface BatchDownloadEntry {
+  path: string;
+  scope: 'raw' | 'deliverables';
+  version?: string;
+}
+
+export const downloadSessionBatch = async (
+  sessionId: string,
+  files: BatchDownloadEntry[],
+): Promise<void> => {
+  const url = `${ENV.API_BASE_URL}/artifacts/sessions/${sessionId}/batch-download`;
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ files }),
+    credentials: 'include',
+  });
+  if (!response.ok) {
+    throw new Error(`Batch download failed: ${response.status} ${response.statusText}`);
+  }
+  const blob = await response.blob();
+  const cd = response.headers.get('Content-Disposition') ?? '';
+  const match = cd.match(/filename="?([^";]+)"?/);
+  const filename = match?.[1] ?? `artifacts-${sessionId}.zip`;
+  const blobUrl = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = blobUrl;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(blobUrl);
+};
+
 export const buildArtifactFileUrl = (sessionId: string, path: string) => {
   const encoded = encodeURIComponent(path);
   return `${ENV.API_BASE_URL}/artifacts/sessions/${sessionId}/file?path=${encoded}`;

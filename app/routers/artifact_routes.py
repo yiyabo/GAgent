@@ -10,12 +10,13 @@ import re
 import shutil
 import subprocess
 import tempfile
+import zipfile
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Literal, Optional, Tuple
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.database import get_db
@@ -116,6 +117,16 @@ class ArtifactRenderResponse(BaseModel):
     content: Optional[str] = None
     rendered_at: str
     cached: bool = False
+
+
+class BatchDownloadFileEntry(BaseModel):
+    path: str
+    scope: Literal["raw", "deliverables"]
+    version: Optional[str] = None
+
+
+class BatchDownloadRequest(BaseModel):
+    files: List[BatchDownloadFileEntry]
 
 
 def _assert_path_within(target: Path, root: Path, detail: str = "Invalid path") -> None:
@@ -950,6 +961,147 @@ async def get_session_deliverable_text(
         raw = raw[:max_bytes]
     content = raw.decode("utf-8", errors="replace")
     return ArtifactTextResponse(path=path, content=content, truncated=truncated)
+
+
+def _collect_batch_files(
+    session_id: str,
+    files: List[BatchDownloadFileEntry],
+) -> List[Tuple[Path, str]]:
+    raw_session_dir: Optional[Path] = None
+    deliverable_session_dir: Optional[Path] = None
+    hidden_prefixes: Optional[List[str]] = None
+    deliverable_view_cache: Dict[str, Path] = {}
+
+    collected: List[Tuple[Path, str]] = []
+    for entry in files:
+        raw_path = str(entry.path or "").strip()
+        if not raw_path:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="File path is required",
+            )
+        normalized_path = raw_path.lstrip("/").replace("\\", "/")
+
+        if entry.scope == "raw":
+            if raw_session_dir is None:
+                raw_session_dir = _resolve_session_dir(session_id, purpose="raw")
+            if hidden_prefixes is None:
+                hidden_prefixes = _load_hidden_artifact_prefixes(session_id)
+
+            target = (raw_session_dir / normalized_path).resolve()
+            try:
+                _assert_path_within(target, raw_session_dir, detail="Invalid artifact path")
+            except HTTPException as exc:
+                if exc.status_code == status.HTTP_400_BAD_REQUEST:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="Invalid artifact path",
+                    )
+                raise
+            rel_path = str(target.relative_to(raw_session_dir)).replace("\\", "/")
+            if _path_is_hidden(rel_path, hidden_prefixes):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Artifact is hidden",
+                )
+            if not target.exists() or not target.is_file():
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Artifact not found",
+                )
+            arcname = rel_path
+        else:
+            if deliverable_session_dir is None:
+                deliverable_session_dir = _resolve_session_dir(session_id, purpose="deliverables")
+            if hidden_prefixes is None:
+                hidden_prefixes = _load_hidden_artifact_prefixes(session_id)
+
+            version_key = entry.version or ""
+            if version_key not in deliverable_view_cache:
+                _, _, files_root, _, _ = _resolve_deliverable_view(
+                    session_dir=deliverable_session_dir,
+                    scope="history" if entry.version else "latest",
+                    version=entry.version,
+                )
+                deliverable_view_cache[version_key] = files_root
+
+            files_root = deliverable_view_cache[version_key]
+            resolved_files_root = files_root.resolve()
+            target = (files_root / normalized_path).resolve()
+            try:
+                _assert_path_within(target, resolved_files_root, detail="Invalid deliverable path")
+            except HTTPException as exc:
+                if exc.status_code == status.HTTP_400_BAD_REQUEST:
+                    raise HTTPException(
+                        status_code=status.HTTP_403_FORBIDDEN,
+                        detail="Invalid deliverable path",
+                    )
+                raise
+            rel_for_hidden = str(target.relative_to(resolved_files_root)).replace("\\", "/")
+            if _path_is_hidden(rel_for_hidden, hidden_prefixes):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Deliverable is hidden",
+                )
+            if not target.exists() or not target.is_file():
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Deliverable file not found",
+                )
+            arcname = str(target.relative_to(deliverable_session_dir)).replace("\\", "/")
+
+        collected.append((target, arcname))
+
+    return collected
+
+
+@router.post("/sessions/{session_id}/batch-download")
+async def batch_download_session_artifacts(
+    session_id: str,
+    request: Request,
+    body: BatchDownloadRequest,
+) -> StreamingResponse:
+    _ensure_session_access(session_id, request)
+
+    if not body.files:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No files requested",
+        )
+    if len(body.files) > 500:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Too many files (max 500)",
+        )
+
+    collected = _collect_batch_files(session_id, body.files)
+
+    tmp = tempfile.SpooledTemporaryFile(max_size=64 * 1024 * 1024)
+    try:
+        with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as zf:
+            for resolved_path, arcname in collected:
+                zf.write(resolved_path, arcname)
+        tmp.seek(0)
+    except Exception:
+        tmp.close()
+        raise
+
+    def _iter_chunks() -> Iterator[bytes]:
+        try:
+            while True:
+                chunk = tmp.read(64 * 1024)
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            tmp.close()
+
+    filename = f"artifacts-{session_id}-{datetime.now().strftime('%Y%m%dT%H%M%S')}.zip"
+    return StreamingResponse(
+        _iter_chunks(),
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 # ----- Document Rendering (LaTeX -> PDF, Markdown -> HTML) -----
