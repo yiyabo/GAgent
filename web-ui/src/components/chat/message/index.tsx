@@ -348,6 +348,23 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
     );
   };
 
+  const renderAiDisclaimer = () => {
+    if (type !== 'assistant') return null;
+    if (!displayTextForUi || displayTextForUi.trim().length === 0) return null;
+    return (
+      <div
+        style={{
+          marginTop: 6,
+          fontSize: 11,
+          color: '#999',
+          opacity: 0.7,
+        }}
+      >
+        此内容由 AI 生成，请注意甄别
+      </div>
+    );
+  };
+
   const renderUnifiedStatusLine = () => {
     return null;
   };
@@ -515,6 +532,7 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
                   ) : null}
                   {showThinkingProcess && renderThinkingProcessBlock()}
                   {summaryBlock}
+                  {renderAiDisclaimer()}
                   {showInlineArtifactGallery && (
                     <ArtifactGallery items={artifactGallery} sessionId={effectiveSessionId} />
                   )}
@@ -535,6 +553,7 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
                 )}
                 {showThinkingProcess && renderThinkingProcessBlock()}
                 {summaryBlock ?? renderContent()}
+                {renderAiDisclaimer()}
                 {showInlineArtifactGallery && (
                   <ArtifactGallery items={artifactGallery} sessionId={effectiveSessionId} />
                 )}
