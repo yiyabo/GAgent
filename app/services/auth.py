@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import threading
 from datetime import datetime, timedelta, timezone
@@ -313,20 +314,98 @@ def create_auth_session(
     *,
     ip: Optional[str] = None,
     user_agent: Optional[str] = None,
+    access_mode: str = "local",
+    platform_user_id: Optional[int] = None,
+    platform_project_id: Optional[int] = None,
+    platform_project_label: Optional[str] = None,
 ) -> Dict[str, Any]:
+    normalized_mode = str(access_mode or "local").strip().lower()
+    if normalized_mode not in {"local", "platform"}:
+        raise ValueError("Unsupported auth session access mode")
+    if normalized_mode == "platform" and platform_user_id is None:
+        raise ValueError("Platform auth sessions require a platform user ID")
+    if normalized_mode == "local":
+        platform_user_id = None
+        platform_project_id = None
+        platform_project_label = None
+
     session_id = token_urlsafe(32)
     expires_at = _session_expiry()
     with get_db() as conn:
         conn.execute(
             """
             INSERT INTO auth_sessions (
-                id, user_id, expires_at, created_at, last_seen_at, ip, user_agent
+                id, user_id, expires_at, created_at, last_seen_at, ip, user_agent,
+                access_mode, platform_user_id, platform_project_id, platform_project_label
             )
-            VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?, ?)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?)
             """,
-            (session_id, str(user_id), _serialize_timestamp(expires_at), ip, user_agent),
+            (
+                session_id,
+                str(user_id),
+                _serialize_timestamp(expires_at),
+                ip,
+                user_agent,
+                normalized_mode,
+                platform_user_id,
+                platform_project_id,
+                platform_project_label,
+            ),
         )
-    return {"id": session_id, "expires_at": expires_at}
+    return {"id": session_id, "expires_at": expires_at, "access_mode": normalized_mode}
+
+
+def create_sso_handoff(session_id: str, *, ttl_seconds: int = 120) -> str:
+    """Create a single-use browser handoff token without exposing a session ID."""
+    if ttl_seconds <= 0:
+        raise ValueError("SSO handoff TTL must be positive")
+    token = token_urlsafe(32)
+    expires_at = _now_utc() + timedelta(seconds=ttl_seconds)
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    with get_db() as conn:
+        conn.execute("DELETE FROM sso_handoffs WHERE expires_at <= ?", (_serialize_timestamp(_now_utc()),))
+        conn.execute(
+            """
+            INSERT INTO sso_handoffs (token_hash, session_id, expires_at)
+            VALUES (?, ?, ?)
+            """,
+            (token_hash, str(session_id), _serialize_timestamp(expires_at)),
+        )
+    return token
+
+
+def consume_sso_handoff(token: str) -> Optional[str]:
+    """Atomically consume a short-lived SSO handoff and return its session ID."""
+    if not token:
+        return None
+    token_hash = hashlib.sha256(str(token).encode("utf-8")).hexdigest()
+    now = _serialize_timestamp(_now_utc())
+    with get_db() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            """
+            SELECT session_id
+            FROM sso_handoffs
+            WHERE token_hash=? AND consumed_at IS NULL AND expires_at > ?
+            """,
+            (token_hash, now),
+        ).fetchone()
+        if row is None:
+            conn.rollback()
+            return None
+        updated = conn.execute(
+            """
+            UPDATE sso_handoffs
+            SET consumed_at=CURRENT_TIMESTAMP
+            WHERE token_hash=? AND consumed_at IS NULL
+            """,
+            (token_hash,),
+        ).rowcount
+        if updated != 1:
+            conn.rollback()
+            return None
+        conn.commit()
+        return str(row["session_id"])
 
 
 def get_auth_session(
@@ -339,7 +418,17 @@ def get_auth_session(
     with get_db() as conn:
         row = conn.execute(
             """
-            SELECT s.id, s.user_id, s.expires_at, u.email, u.role, u.is_active
+            SELECT
+                s.id,
+                s.user_id,
+                s.expires_at,
+                s.access_mode,
+                s.platform_user_id,
+                s.platform_project_id,
+                s.platform_project_label,
+                u.email,
+                u.role,
+                u.is_active
             FROM auth_sessions s
             JOIN users u ON u.id = s.user_id
             WHERE s.id=?
@@ -414,12 +503,25 @@ def session_principal_from_session_id(session_id: str, *, touch: bool = False) -
     if session is None:
         return None
     expires_at = _parse_timestamp(session.get("expires_at")) or _session_expiry()
+    access_mode = str(session.get("access_mode") or "local").strip().lower()
+    if access_mode not in {"local", "platform"}:
+        access_mode = "local"
+    platform_user_id = session.get("platform_user_id") if access_mode == "platform" else None
+    platform_project_id = session.get("platform_project_id") if access_mode == "platform" else None
     principal = RequestPrincipal(
         user_id=str(session["user_id"]),
         email=str(session["email"]),
         role=str(session.get("role") or AUTH_ROLE_USER),
-        auth_source="session",
+        auth_source="sso" if access_mode == "platform" else "session",
         is_authenticated=True,
+        access_mode=access_mode,
+        platform_user_id=int(platform_user_id) if platform_user_id is not None else None,
+        platform_project_id=int(platform_project_id) if platform_project_id is not None else None,
+        platform_project_label=(
+            str(session["platform_project_label"])
+            if session.get("platform_project_label") is not None
+            else None
+        ),
     )
     return principal, expires_at
 

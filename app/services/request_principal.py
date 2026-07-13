@@ -22,10 +22,28 @@ class RequestPrincipal:
     role: str = "user"
     auth_source: str = "proxy"
     is_authenticated: bool = True
+    access_mode: str = "local"
+    platform_user_id: Optional[int] = None
+    platform_project_id: Optional[int] = None
+    platform_project_label: Optional[str] = None
 
     @property
     def owner_id(self) -> str:
         return self.user_id
+
+    @property
+    def is_platform_access(self) -> bool:
+        return self.access_mode == "platform"
+
+    def require_platform_project_id(self) -> int:
+        if not self.is_platform_access or self.platform_project_id is None:
+            raise HTTPException(status_code=403, detail="A platform project binding is required")
+        return self.platform_project_id
+
+    def require_platform_user_id(self) -> int:
+        if not self.is_platform_access or self.platform_user_id is None:
+            raise HTTPException(status_code=403, detail="A platform user binding is required")
+        return self.platform_user_id
 
 
 def make_legacy_principal(*, authenticated: bool = False, source: str = "fallback") -> RequestPrincipal:

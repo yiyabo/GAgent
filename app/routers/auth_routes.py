@@ -13,6 +13,7 @@ from app.services.auth import (
     change_password,
     legacy_proxy_access_allowed,
     clear_session_cookie,
+    consume_sso_handoff,
     create_auth_session,
     rate_limiter,
     register_user,
@@ -37,11 +38,19 @@ register_router(
 )
 
 
+class PlatformContextResponse(BaseModel):
+    user_id: int
+    project_id: Optional[int] = None
+    project_label: Optional[str] = None
+
+
 class AuthUserResponse(BaseModel):
     user_id: str
     email: str
     role: str
     auth_source: str
+    access_mode: str = "local"
+    platform_context: Optional[PlatformContextResponse] = None
 
 
 class AuthSessionResponse(BaseModel):
@@ -88,9 +97,28 @@ def _request_user_agent(request: Request) -> Optional[str]:
     return text[:512] if text else None
 
 
+def _principal_user_response(principal) -> AuthUserResponse:
+    platform_context = None
+    if principal.is_platform_access:
+        platform_context = PlatformContextResponse(
+            user_id=principal.require_platform_user_id(),
+            project_id=principal.platform_project_id,
+            project_label=principal.platform_project_label,
+        )
+    return AuthUserResponse(
+        user_id=principal.user_id,
+        email=principal.email or "",
+        role=principal.role,
+        auth_source=principal.auth_source,
+        access_mode=principal.access_mode,
+        platform_context=platform_context,
+    )
+
+
 def _auth_success_response(user: Dict[str, Any], *, auth_source: str = "session") -> AuthSessionResponse:
     payload = build_user_payload(user)
     payload["auth_source"] = auth_source
+    payload["access_mode"] = "local"
     return AuthSessionResponse(user=AuthUserResponse(**payload))
 
 
@@ -145,10 +173,9 @@ def logout_current_session(
     response: Response,
 ):
     principal = get_request_principal(request)
-    if principal.auth_source == "session":
-        raw_session = request.cookies.get(auth_cookie_name())
-        if raw_session:
-            revoke_auth_session(raw_session)
+    raw_session = request.cookies.get(auth_cookie_name())
+    if raw_session:
+        revoke_auth_session(raw_session)
     request.state.skip_auth_cookie_refresh = True
     clear_session_cookie(response, host=_request_host(request))
     return {"success": True}
@@ -165,12 +192,7 @@ def get_current_auth_state(request: Request):
         )
     return AuthMeResponse(
         authenticated=True,
-        user=AuthUserResponse(
-            user_id=principal.user_id,
-            email=principal.email or "",
-            role=principal.role,
-            auth_source=principal.auth_source,
-        ),
+        user=_principal_user_response(principal),
         legacy_access_allowed=False,
     )
 
@@ -207,7 +229,7 @@ def change_local_password(
 
 
 class SSOCompleteRequest(BaseModel):
-    session_token: str = Field(..., min_length=1, max_length=512)
+    handoff_token: str = Field(..., min_length=1, max_length=512)
 
 
 @router.post("/sso-complete", response_model=AuthSessionResponse)
@@ -216,27 +238,17 @@ def complete_sso_login(
     request: Request,
     response: Response,
 ):
-    """Exchange SSO session token for a proper session cookie.
-    
-    Called by frontend after SSO redirect to set cookie on the correct domain.
-    """
-    resolved = session_principal_from_session_id(payload.session_token, touch=True)
+    """Consume a single-use SSO handoff and set the real session cookie."""
+    session_id = consume_sso_handoff(payload.handoff_token)
+    if session_id is None:
+        raise HTTPException(status_code=401, detail="Invalid, expired, or already used SSO handoff")
+    resolved = session_principal_from_session_id(session_id, touch=True)
     if resolved is None:
-        raise HTTPException(status_code=401, detail="Invalid or expired session token")
-    
+        raise HTTPException(status_code=401, detail="Invalid or expired SSO session")
     principal, expires_at = resolved
-    if not principal.is_authenticated:
-        raise HTTPException(status_code=401, detail="Session is not authenticated")
-    
+    if not principal.is_authenticated or not principal.is_platform_access:
+        raise HTTPException(status_code=401, detail="Session is not a platform SSO session")
+
     request.state.skip_auth_cookie_refresh = True
-    set_session_cookie(response, session_id=payload.session_token, expires_at=expires_at, host=_request_host(request))
-    
-    return AuthSessionResponse(
-        authenticated=True,
-        user=AuthUserResponse(
-            user_id=principal.user_id,
-            email=principal.email or "",
-            role=principal.role,
-            auth_source="sso",
-        ),
-    )
+    set_session_cookie(response, session_id=session_id, expires_at=expires_at, host=_request_host(request))
+    return AuthSessionResponse(authenticated=True, user=_principal_user_response(principal))

@@ -151,6 +151,13 @@ if _USE_PYDANTIC:
         auth_cookie_domain: Optional[str] = Field(default=None, env="AUTH_COOKIE_DOMAIN")
         auth_session_ttl_hours: int = Field(default=168, env="AUTH_SESSION_TTL_HOURS")
         auth_open_signup: bool = Field(default=True, env="AUTH_OPEN_SIGNUP")
+        platform_api_base_url: Optional[str] = Field(default=None, env="PLATFORM_API_BASE_URL")
+        platform_api_key: Optional[str] = Field(default=None, env="PLATFORM_API_KEY")
+        platform_sso_verify_url: Optional[str] = Field(default=None, env="PLATFORM_SSO_VERIFY_URL")
+        platform_api_timeout_seconds: float = Field(default=10.0, env="PLATFORM_API_TIMEOUT_SECONDS")
+        sso_handoff_ttl_seconds: int = Field(default=120, env="SSO_HANDOFF_TTL_SECONDS")
+        sso_allowed_redirect_origins: str = Field(default="", env="SSO_ALLOWED_REDIRECT_ORIGINS")
+        sso_user_sync_api_key: Optional[str] = Field(default=None, env="SSO_USER_SYNC_API_KEY")
         chat_include_action_summary: bool = Field(
             default=True, env="CHAT_INCLUDE_ACTION_SUMMARY"
         )
@@ -396,6 +403,23 @@ else:
                 "yes",
                 "on",
             }
+            self.platform_api_base_url = os.getenv("PLATFORM_API_BASE_URL") or None
+            self.platform_api_key = os.getenv("PLATFORM_API_KEY") or None
+            self.platform_sso_verify_url = os.getenv("PLATFORM_SSO_VERIFY_URL") or None
+            try:
+                self.platform_api_timeout_seconds = max(
+                    1.0, float(os.getenv("PLATFORM_API_TIMEOUT_SECONDS", "10"))
+                )
+            except Exception:
+                self.platform_api_timeout_seconds = 10.0
+            try:
+                self.sso_handoff_ttl_seconds = max(
+                    30, min(900, int(os.getenv("SSO_HANDOFF_TTL_SECONDS", "120")))
+                )
+            except Exception:
+                self.sso_handoff_ttl_seconds = 120
+            self.sso_allowed_redirect_origins = os.getenv("SSO_ALLOWED_REDIRECT_ORIGINS", "")
+            self.sso_user_sync_api_key = os.getenv("SSO_USER_SYNC_API_KEY") or None
             self.chat_include_action_summary = os.getenv("CHAT_INCLUDE_ACTION_SUMMARY", "1").strip().lower() in {
                 "1",
                 "true",

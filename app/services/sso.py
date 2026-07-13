@@ -1,82 +1,28 @@
-"""SSO (Single Sign-On) service for integration with main platform."""
+"""SSO user synchronization and compatibility wrappers for main-platform integration."""
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 from uuid import uuid4
 
-import httpx
 from argon2 import PasswordHasher
-from fastapi import HTTPException
 
 from app.database_pool import get_db
 from app.services.auth import normalize_email
+from app.services.platform_api import get_platform_api_client
 
 logger = logging.getLogger(__name__)
-
 _password_hasher = PasswordHasher()
-
-SSO_VERIFY_URL = "http://119.147.24.196:3087/api/v1/sso/verify-token/"
-SSO_API_KEY = "E9-U3-Or-TH9al3aB9twT5wBv6J541636jAh18PBm4IuVwsmtBoyhQ"
-PROJECT_API_BASE = "http://119.147.24.196:3087/api/v1/bioagent"
-SSO_TIMEOUT_SECONDS = 10.0
-
-import time as _time
-_project_context_cache: Dict[str, Any] = {}
-_PROJECT_CONTEXT_TTL = 300.0  # 5 minutes
 
 
 def get_project_context(user_id: Optional[int], project_id: int) -> Dict[str, Any]:
-    cache_key = f"{user_id}:{project_id}"
-    cached = _project_context_cache.get(cache_key)
-    if cached and (_time.time() - cached["ts"]) < _PROJECT_CONTEXT_TTL:
-        return cached["data"]
-
-    try:
-        if user_id is not None:
-            url = f"{PROJECT_API_BASE}/users/{user_id}/projects/{project_id}/"
-        else:
-            url = f"{PROJECT_API_BASE}/projects/{project_id}/"
-        with httpx.Client(timeout=SSO_TIMEOUT_SECONDS) as client:
-            response = client.get(
-                url,
-                headers={"X-Api-Key": SSO_API_KEY}
-            )
-            
-            if response.status_code != 200:
-                logger.error(f"Project context retrieval failed: {response.status_code} - {response.text}")
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Project context retrieval failed: {response.status_code}"
-                )
-            
-            data = response.json()
-            
-            if data.get("code") != 0:
-                logger.error(f"Project context retrieval failed: {data.get('message')}")
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Project context retrieval failed: {data.get('message')}"
-                )
-
-            result = data.get("data", {})
-            _project_context_cache[cache_key] = {"data": result, "ts": _time.time()}
-            return result
-            
-    except httpx.TimeoutException:
-        logger.error("Project context retrieval timeout")
-        raise HTTPException(
-            status_code=504,
-            detail="Project context retrieval timeout"
-        )
-    except httpx.RequestError as e:
-        logger.error(f"Project context retrieval request error: {e}")
-        raise HTTPException(
-            status_code=502,
-            detail=f"Project context retrieval request error: {str(e)}"
-        )
+    """Compatibility wrapper requiring an authenticated main-platform user."""
+    if user_id is None:
+        raise ValueError("Platform project access requires a platform user ID")
+    return get_platform_api_client().get_project_context(int(user_id), int(project_id))
 
 
 def _now_utc() -> datetime:
@@ -88,308 +34,176 @@ def _serialize_timestamp(value: datetime) -> str:
 
 
 class SSOUserData:
-    """SSO user data structure from main platform."""
-    
+    """Normalized user payload verified by the main platform."""
+
     def __init__(self, data: Dict[str, Any]):
-        self.global_uuid: str = data.get("global_uuid", "")
-        self.action: str = data.get("action", "create")
-        self.user: Dict[str, Any] = data.get("user", {})
-        
+        self.global_uuid: str = str(data.get("global_uuid") or "")
+        self.action: str = str(data.get("action") or "create")
+        raw_user = data.get("user")
+        self.user: Dict[str, Any] = raw_user if isinstance(raw_user, dict) else {}
+
     @property
     def uuid(self) -> str:
-        return self.user.get("uuid", self.global_uuid)
-    
+        return str(self.user.get("uuid") or self.global_uuid or "")
+
     @property
     def name(self) -> str:
-        return self.user.get("name", "")
-    
+        return str(self.user.get("name") or "")
+
     @property
     def username(self) -> str:
-        return self.user.get("username", "")
-    
+        return str(self.user.get("username") or "")
+
     @property
     def email(self) -> str:
-        return self.user.get("email", "")
-    
+        return str(self.user.get("email") or "")
+
     @property
     def password(self) -> Optional[str]:
-        return self.user.get("password")
-    
+        raw = self.user.get("password")
+        return str(raw) if raw else None
+
     @property
     def department(self) -> Optional[int]:
-        return self.user.get("department")
-    
+        raw = self.user.get("department")
+        try:
+            return int(raw) if raw is not None else None
+        except (TypeError, ValueError):
+            return None
+
     @property
     def department_code(self) -> str:
-        return self.user.get("department_code", "")
-    
+        return str(self.user.get("department_code") or "")
+
     @property
     def department_display(self) -> str:
-        return self.user.get("department_display", "")
-    
+        return str(self.user.get("department_display") or "")
+
     @property
     def profile(self) -> Dict[str, Any]:
-        return self.user.get("profile", {})
-    
+        raw = self.user.get("profile")
+        return raw if isinstance(raw, dict) else {}
+
     @property
     def main_platform_user_id(self) -> Optional[int]:
         raw = self.user.get("id")
-        if raw is None:
-            return None
         try:
-            return int(raw)
+            return int(raw) if raw is not None else None
         except (TypeError, ValueError):
             return None
 
 
 def verify_sso_token(token: str) -> Dict[str, Any]:
-    """Verify SSO token with main platform and return user data.
-    
-    Args:
-        token: SSO token from main platform
-        
-    Returns:
-        User data dictionary from main platform
-        
-    Raises:
-        HTTPException: If token verification fails
-    """
-    try:
-        with httpx.Client(timeout=SSO_TIMEOUT_SECONDS) as client:
-            response = client.post(
-                f"{SSO_VERIFY_URL}?token={token}",
-                headers={"X-Api-Key": SSO_API_KEY}
-            )
-            
-            if response.status_code != 200:
-                logger.error(f"SSO token verification failed: {response.status_code} - {response.text}")
-                raise HTTPException(
-                    status_code=401,
-                    detail=f"SSO token verification failed: {response.status_code}"
-                )
-            
-            data = response.json()
-            
-            if data.get("code") != 0:
-                logger.error(f"SSO token verification failed: {data.get('message')}")
-                raise HTTPException(
-                    status_code=401,
-                    detail=f"SSO token verification failed: {data.get('message')}"
-                )
-            
-            return data.get("data", {})
-            
-    except httpx.TimeoutException:
-        logger.error("SSO token verification timeout")
-        raise HTTPException(
-            status_code=504,
-            detail="SSO token verification timeout"
-        )
-    except httpx.RequestError as e:
-        logger.error(f"SSO token verification request error: {e}")
-        raise HTTPException(
-            status_code=502,
-            detail=f"SSO token verification request error: {str(e)}"
-        )
+    return get_platform_api_client().verify_sso_token(token)
 
 
 def sync_sso_user(sso_data: SSOUserData) -> Dict[str, Any]:
-    """Synchronize SSO user data to local database.
-    
-    Args:
-        sso_data: SSO user data from main platform
-        
-    Returns:
-        Dictionary with sync result: {"code": "CREATED"|"UPDATED"|"SKIPPED", "message": "..."}
-    """
     action = sso_data.action
-    
     if action == "create":
         return _create_sso_user(sso_data)
-    elif action == "update":
+    if action == "update":
         return _update_sso_user(sso_data)
-    elif action == "delete":
+    if action == "delete":
         return _delete_sso_user(sso_data)
-    else:
-        logger.warning(f"Unknown SSO action: {action}")
-        return {"code": "SKIPPED", "message": f"Unknown action: {action}"}
+    return {"code": "SKIPPED", "message": f"Unknown SSO action: {action}"}
 
 
 def _create_sso_user(sso_data: SSOUserData) -> Dict[str, Any]:
-    """Create new SSO user in local database."""
+    if not sso_data.uuid or not normalize_email(sso_data.email):
+        return {"code": "INVALID_REQUEST", "message": "SSO user requires UUID and email"}
     try:
         with get_db() as conn:
             existing = conn.execute(
                 "SELECT id FROM users WHERE global_uuid = ? OR email = ?",
-                (sso_data.uuid, normalize_email(sso_data.email))
+                (sso_data.uuid, normalize_email(sso_data.email)),
             ).fetchone()
-            
             if existing:
-                logger.info(f"SSO user already exists: {sso_data.uuid}")
                 return {"code": "SKIPPED", "message": "User already exists"}
-            
             user_id = str(uuid4())
-            
-            password_hash = ""
-            if sso_data.password:
-                password_hash = _password_hasher.hash(sso_data.password)
-            else:
-                password_hash = _password_hasher.hash(str(uuid4()))
-            
-            import json
-            profile_json = json.dumps(sso_data.profile, ensure_ascii=False)
-            
+            password_hash = _password_hasher.hash(sso_data.password or str(uuid4()))
             conn.execute(
                 """
                 INSERT INTO users (
-                    id, email, password_hash, role, is_active,
-                    global_uuid, name, username, department,
-                    department_code, department_display, profile,
+                    id, email, password_hash, role, is_active, global_uuid, name,
+                    username, department, department_code, department_display, profile,
                     sso_enabled, main_platform_user_id, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, 'user', 1, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
                 """,
                 (
                     user_id,
                     normalize_email(sso_data.email),
                     password_hash,
-                    "user",
-                    1,
                     sso_data.uuid,
                     sso_data.name,
                     sso_data.username,
                     sso_data.department,
                     sso_data.department_code,
                     sso_data.department_display,
-                    profile_json,
-                    1,
+                    json.dumps(sso_data.profile, ensure_ascii=False),
                     sso_data.main_platform_user_id,
-                    _serialize_timestamp(_now_utc())
-                )
+                    _serialize_timestamp(_now_utc()),
+                ),
             )
-            
-            logger.info(f"Created SSO user: {sso_data.uuid} ({sso_data.email})")
-            return {"code": "CREATED", "message": "User created successfully"}
-            
-    except Exception as e:
-        logger.error(f"Failed to create SSO user: {e}")
-        return {"code": "INTERNAL_ERROR", "message": str(e)}
+        return {"code": "CREATED", "message": "User created successfully"}
+    except Exception:
+        logger.exception("Failed to create SSO user")
+        return {"code": "INTERNAL_ERROR", "message": "Failed to create SSO user"}
 
 
 def _update_sso_user(sso_data: SSOUserData) -> Dict[str, Any]:
-    """Update existing SSO user in local database."""
     try:
         with get_db() as conn:
-            user = conn.execute(
-                "SELECT id FROM users WHERE global_uuid = ?",
-                (sso_data.uuid,)
-            ).fetchone()
-            
-            if not user:
-                logger.warning(f"SSO user not found for update: {sso_data.uuid}")
+            row = conn.execute("SELECT id FROM users WHERE global_uuid = ?", (sso_data.uuid,)).fetchone()
+            if not row:
                 return {"code": "SKIPPED", "message": "User not found"}
-            
-            user_id = user["id"]
-            
-            update_fields = []
-            update_values = []
-            
-            if sso_data.email:
-                update_fields.append("email = ?")
-                update_values.append(normalize_email(sso_data.email))
-            
-            if sso_data.name:
-                update_fields.append("name = ?")
-                update_values.append(sso_data.name)
-            
-            if sso_data.username:
-                update_fields.append("username = ?")
-                update_values.append(sso_data.username)
-            
-            if sso_data.department is not None:
-                update_fields.append("department = ?")
-                update_values.append(sso_data.department)
-            
-            if sso_data.department_code:
-                update_fields.append("department_code = ?")
-                update_values.append(sso_data.department_code)
-            
-            if sso_data.department_display:
-                update_fields.append("department_display = ?")
-                update_values.append(sso_data.department_display)
-            
-            if sso_data.profile:
-                import json
-                update_fields.append("profile = ?")
-                update_values.append(json.dumps(sso_data.profile, ensure_ascii=False))
-            
-            if sso_data.password:
-                password_hash = _password_hasher.hash(sso_data.password)
-                update_fields.append("password_hash = ?")
-                update_values.append(password_hash)
-            
-            if sso_data.main_platform_user_id is not None:
-                update_fields.append("main_platform_user_id = ?")
-                update_values.append(sso_data.main_platform_user_id)
-            
-            if not update_fields:
-                logger.info(f"No fields to update for SSO user: {sso_data.uuid}")
-                return {"code": "SKIPPED", "message": "No fields to update"}
-            
-            update_values.append(user_id)
-            
-            update_sql = f"UPDATE users SET {', '.join(update_fields)} WHERE id = ?"
-            conn.execute(update_sql, update_values)
-            
-            logger.info(f"Updated SSO user: {sso_data.uuid}")
-            return {"code": "UPDATED", "message": "User updated successfully"}
-            
-    except Exception as e:
-        logger.error(f"Failed to update SSO user: {e}")
-        return {"code": "INTERNAL_ERROR", "message": str(e)}
+            conn.execute(
+                """
+                UPDATE users SET
+                    email=?, name=?, username=?, department=?, department_code=?,
+                    department_display=?, profile=?, main_platform_user_id=?, sso_enabled=1
+                WHERE id=?
+                """,
+                (
+                    normalize_email(sso_data.email),
+                    sso_data.name,
+                    sso_data.username,
+                    sso_data.department,
+                    sso_data.department_code,
+                    sso_data.department_display,
+                    json.dumps(sso_data.profile, ensure_ascii=False),
+                    sso_data.main_platform_user_id,
+                    row["id"],
+                ),
+            )
+        return {"code": "UPDATED", "message": "User updated successfully"}
+    except Exception:
+        logger.exception("Failed to update SSO user")
+        return {"code": "INTERNAL_ERROR", "message": "Failed to update SSO user"}
 
 
 def _delete_sso_user(sso_data: SSOUserData) -> Dict[str, Any]:
-    """Delete SSO user from local database."""
     try:
         with get_db() as conn:
-            user = conn.execute(
-                "SELECT id FROM users WHERE global_uuid = ?",
-                (sso_data.uuid,)
-            ).fetchone()
-            
-            if not user:
-                logger.warning(f"SSO user not found for deletion: {sso_data.uuid}")
-                return {"code": "SKIPPED", "message": "User not found"}
-            
-            user_id = user["id"]
-            
-            conn.execute(
-                "UPDATE users SET is_active = 0 WHERE id = ?",
-                (user_id,)
-            )
-            
-            logger.info(f"Deleted SSO user: {sso_data.uuid}")
-            return {"code": "UPDATED", "message": "User deleted successfully"}
-            
-    except Exception as e:
-        logger.error(f"Failed to delete SSO user: {e}")
-        return {"code": "INTERNAL_ERROR", "message": str(e)}
+            cursor = conn.execute("UPDATE users SET is_active=0 WHERE global_uuid=?", (sso_data.uuid,))
+        if cursor.rowcount:
+            return {"code": "UPDATED", "message": "User disabled successfully"}
+        return {"code": "SKIPPED", "message": "User not found"}
+    except Exception:
+        logger.exception("Failed to disable SSO user")
+        return {"code": "INTERNAL_ERROR", "message": "Failed to disable SSO user"}
 
 
 def get_user_by_global_uuid(global_uuid: str) -> Optional[Dict[str, Any]]:
-    """Get user by global_uuid from main platform."""
+    if not global_uuid:
+        return None
     try:
         with get_db() as conn:
-            user = conn.execute(
-                "SELECT * FROM users WHERE global_uuid = ? AND is_active = 1",
-                (global_uuid,)
+            row = conn.execute(
+                "SELECT * FROM users WHERE global_uuid=? AND is_active=1", (str(global_uuid),)
             ).fetchone()
-            
-            if user:
-                return dict(user)
-            return None
-    except Exception as e:
-        logger.error(f"Failed to get user by global_uuid: {e}")
+        return dict(row) if row else None
+    except Exception:
+        logger.exception("Failed to load SSO user")
         return None
 
 
@@ -397,44 +211,30 @@ def get_main_platform_user_id(local_user_id: str) -> Optional[int]:
     try:
         with get_db() as conn:
             row = conn.execute(
-                "SELECT main_platform_user_id FROM users WHERE id = ?",
-                (str(local_user_id),)
+                "SELECT main_platform_user_id FROM users WHERE id=?", (str(local_user_id),)
             ).fetchone()
-            if row:
-                raw = row["main_platform_user_id"]
-                if raw is None:
-                    return None
-                try:
-                    return int(raw)
-                except (TypeError, ValueError):
-                    return None
+        if not row or row["main_platform_user_id"] is None:
             return None
-    except Exception as e:
-        logger.error(f"Failed to get main_platform_user_id: {e}")
+        return int(row["main_platform_user_id"])
+    except (TypeError, ValueError):
+        return None
+    except Exception:
+        logger.exception("Failed to load main platform user ID")
         return None
 
 
 def backfill_main_platform_user_id(local_user_id: str, main_platform_user_id: int) -> bool:
-    """回填 NULL 的 main_platform_user_id（主平台 pack_user_data 不返回 user.id 导致的遗留）。"""
     try:
         with get_db() as conn:
-            row = conn.execute(
-                "SELECT main_platform_user_id FROM users WHERE id = ?",
-                (str(local_user_id),)
-            ).fetchone()
-            if not row:
-                return False
-            if row["main_platform_user_id"] is not None:
-                return False
-            conn.execute(
-                "UPDATE users SET main_platform_user_id = ? WHERE id = ?",
-                (int(main_platform_user_id), str(local_user_id))
+            cursor = conn.execute(
+                """
+                UPDATE users
+                SET main_platform_user_id=?
+                WHERE id=? AND main_platform_user_id IS NULL
+                """,
+                (int(main_platform_user_id), str(local_user_id)),
             )
-            logger.info(
-                "Backfilled main_platform_user_id=%s for local user %s",
-                main_platform_user_id, local_user_id
-            )
-            return True
-    except Exception as e:
-        logger.error(f"Failed to backfill main_platform_user_id: {e}")
+        return cursor.rowcount == 1
+    except Exception:
+        logger.exception("Failed to backfill main platform user ID")
         return False

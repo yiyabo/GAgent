@@ -65,9 +65,29 @@ def init_db() -> None:
                 last_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 ip TEXT,
                 user_agent TEXT,
+                access_mode TEXT NOT NULL DEFAULT 'local',
+                platform_user_id INTEGER,
+                platform_project_id INTEGER,
+                platform_project_label TEXT,
                 FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
             )
             """
+        )
+        _ensure_auth_session_columns(conn)
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS sso_handoffs (
+                token_hash TEXT PRIMARY KEY,
+                session_id TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                consumed_at TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (session_id) REFERENCES auth_sessions (id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sso_handoffs_expiry ON sso_handoffs(expires_at)"
         )
         conn.execute(
             """
@@ -343,6 +363,22 @@ def plan_db_connection(plan_path: Path) -> Iterator:
 
 def _ensure_plan_directory(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
+
+
+def _ensure_auth_session_columns(conn) -> None:
+    """Add platform-origin context to existing authenticated sessions."""
+    info_rows = conn.execute("PRAGMA table_info(auth_sessions)").fetchall()
+    existing = {row["name"] for row in info_rows}
+    if "access_mode" not in existing:
+        conn.execute(
+            "ALTER TABLE auth_sessions ADD COLUMN access_mode TEXT NOT NULL DEFAULT 'local'"
+        )
+    if "platform_user_id" not in existing:
+        conn.execute("ALTER TABLE auth_sessions ADD COLUMN platform_user_id INTEGER")
+    if "platform_project_id" not in existing:
+        conn.execute("ALTER TABLE auth_sessions ADD COLUMN platform_project_id INTEGER")
+    if "platform_project_label" not in existing:
+        conn.execute("ALTER TABLE auth_sessions ADD COLUMN platform_project_label TEXT")
 
 
 def _ensure_chat_session_columns(conn) -> None:

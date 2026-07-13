@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any, Dict, Optional
+from urllib.parse import quote, urlparse
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 from fastapi.responses import RedirectResponse
@@ -10,13 +11,13 @@ from pydantic import BaseModel, Field
 
 from app.routers import register_router
 from app.services.auth import (
-    auth_cookie_name,
     create_auth_session,
-    set_session_cookie,
+    create_sso_handoff,
 )
+from app.services.foundation.settings import get_settings
+from app.services.platform_api import get_platform_api_client
 from app.services.sso import (
     SSOUserData,
-    backfill_main_platform_user_id,
     get_user_by_global_uuid,
     sync_sso_user,
     verify_sso_token,
@@ -65,6 +66,22 @@ def _request_user_agent(request: Request) -> Optional[str]:
     return text[:512] if text else None
 
 
+def _allowed_frontend_redirect(redirect_url: Optional[str]) -> str:
+    configured = [
+        item.strip().rstrip("/")
+        for item in str(get_settings().sso_allowed_redirect_origins or "").split(",")
+        if item.strip()
+    ]
+    if not configured:
+        raise HTTPException(status_code=503, detail="SSO redirect origins are not configured")
+    candidate = str(redirect_url or configured[0]).strip()
+    parsed = urlparse(candidate)
+    origin = f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
+    if parsed.scheme not in {"http", "https"} or origin not in configured:
+        raise HTTPException(status_code=400, detail="SSO redirect URL is not allowed")
+    return candidate
+
+
 @router.get("/login/")
 def sso_login(
     request: Request,
@@ -75,68 +92,49 @@ def sso_login(
     user_id: Optional[int] = Query(None, description="Main platform user ID"),
     project_label: Optional[str] = Query(None, description="Project label from main platform"),
 ):
-    """SSO login endpoint.
-    
-    Verifies token with main platform, creates/updates local user, and establishes session.
-    """
+    """Verify platform SSO, bind one authorized project, then issue a handoff."""
+    frontend_base = _allowed_frontend_redirect(redirect_url)
+    if project_id is None:
+        raise HTTPException(status_code=400, detail="Platform SSO requires a project binding")
+
     user_data = verify_sso_token(token)
-    
-    if user_id is not None:
-        user_data.setdefault("user", {})["id"] = user_id
-    
     sso_user = SSOUserData(user_data)
-    
-    resolved_user_id = user_id if user_id is not None else sso_user.main_platform_user_id
-    
+    resolved_user_id = sso_user.main_platform_user_id
+    if resolved_user_id is None:
+        raise HTTPException(status_code=502, detail="Platform SSO verification omitted the user ID")
+    if user_id is not None and int(user_id) != resolved_user_id:
+        raise HTTPException(status_code=403, detail="SSO user binding mismatch")
+
     existing_user = get_user_by_global_uuid(sso_user.uuid)
-    
     if not existing_user:
         sync_result = sync_sso_user(sso_user)
         if sync_result.get("code") not in {"CREATED", "UPDATED"}:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to create SSO user: {sync_result.get('message')}"
-            )
+            raise HTTPException(status_code=500, detail="Failed to synchronize SSO user")
         existing_user = get_user_by_global_uuid(sso_user.uuid)
-    
     if not existing_user:
-        raise HTTPException(
-            status_code=500,
-            detail="Failed to retrieve user after SSO sync"
-        )
-    
+        raise HTTPException(status_code=500, detail="Failed to retrieve synchronized SSO user")
     if not existing_user.get("is_active"):
-        raise HTTPException(
-            status_code=403,
-            detail="User account is disabled"
-        )
+        raise HTTPException(status_code=403, detail="User account is disabled")
 
-    if resolved_user_id is not None and existing_user.get("main_platform_user_id") is None:
-        backfill_main_platform_user_id(existing_user["id"], resolved_user_id)
+    project_data = get_platform_api_client().get_project_context(resolved_user_id, project_id)
+    validated_project_id = int(project_data.get("id") or project_id)
+    validated_project_label = str(project_data.get("label") or "").strip() or None
 
     session = create_auth_session(
         existing_user["id"],
         ip=_request_ip(request),
         user_agent=_request_user_agent(request),
+        access_mode="platform",
+        platform_user_id=resolved_user_id,
+        platform_project_id=validated_project_id,
+        platform_project_label=validated_project_label,
     )
-    
-    request.state.skip_auth_cookie_refresh = True
-    set_session_cookie(response, session_id=session["id"], expires_at=session["expires_at"], host=_request_host(request))
-    
-    frontend_base = redirect_url or "http://bioagent.byoryn.cn"
+    handoff = create_sso_handoff(
+        session["id"],
+        ttl_seconds=get_settings().sso_handoff_ttl_seconds,
+    )
     separator = "&" if "?" in frontend_base else "?"
-    final_redirect = f"{frontend_base}{separator}__sso_session={session['id']}"
-    
-    if project_id is not None:
-        final_redirect += f"&project_id={project_id}"
-
-    if project_label:
-        from urllib.parse import quote
-        final_redirect += f"&project_label={quote(project_label)}"
-
-    if resolved_user_id is not None:
-        final_redirect += f"&user_id={resolved_user_id}"
-    
+    final_redirect = f"{frontend_base}{separator}__sso_handoff={quote(handoff)}"
     return RedirectResponse(url=final_redirect, status_code=302)
 
 
@@ -146,17 +144,21 @@ def sync_sso_user_endpoint(
     request: Request,
 ):
     """User synchronization endpoint.
-    
-    Called by main platform to create, update, or delete users.
+
+    Called by main platform to create, update, or delete users. Requires a
+    shared service key via the X-Sso-Sync-Key header when configured.
     """
+    expected_key = get_settings().sso_user_sync_api_key
+    if expected_key:
+        provided = request.headers.get("X-Sso-Sync-Key", "")
+        if not provided or provided != expected_key:
+            raise HTTPException(status_code=401, detail="Missing or invalid SSO sync key")
     sso_data = SSOUserData({
         "global_uuid": payload.global_uuid,
         "action": payload.action,
         "user": payload.user,
     })
-    
     result = sync_sso_user(sso_data)
-    
     return SSOUserSyncResponse(
         code=result.get("code", "INTERNAL_ERROR"),
         message=result.get("message"),
