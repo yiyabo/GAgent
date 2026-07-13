@@ -191,7 +191,7 @@ def test_scientific_figure_generator_publishes_deliverables_through_executor(
     work_dir = project_root / "work"
     work_dir.mkdir(parents=True)
     publisher = DeliverablePublisher(
-        settings=DeliverableSettings(ingest_mode="explicit"),
+        settings=DeliverableSettings(),
         project_root=project_root,
         runtime_dir=runtime_dir,
     )
@@ -244,7 +244,7 @@ def test_scientific_figure_generator_action_handler_executes_not_unsupported(
     project_root = tmp_path
 
     publisher = DeliverablePublisher(
-        settings=DeliverableSettings(ingest_mode="explicit"),
+        settings=DeliverableSettings(),
         project_root=project_root,
         runtime_dir=runtime_dir,
     )
@@ -309,7 +309,7 @@ def test_scientific_figure_generator_action_handler_recovers_dataset_name_from_u
     runtime_dir = tmp_path / "runtime"
     project_root = tmp_path
     publisher = DeliverablePublisher(
-        settings=DeliverableSettings(ingest_mode="explicit"),
+        settings=DeliverableSettings(),
         project_root=project_root,
         runtime_dir=runtime_dir,
     )
@@ -362,7 +362,7 @@ def test_scientific_figure_generator_action_result_is_json_safe(
     runtime_dir = tmp_path / "runtime"
     project_root = tmp_path
     publisher = DeliverablePublisher(
-        settings=DeliverableSettings(ingest_mode="explicit"),
+        settings=DeliverableSettings(),
         project_root=project_root,
         runtime_dir=runtime_dir,
     )

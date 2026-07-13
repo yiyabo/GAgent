@@ -54,7 +54,7 @@ const CSV_EXTS = new Set(['csv', 'tsv']);
 const PDF_EXTS = new Set(['pdf']);
 const TEXT_EXTS = new Set(['md', 'txt', 'csv', 'tsv', 'json', 'log', 'py', 'r', 'html', 'tex', 'bib']);
 // Files that need rendering (LaTeX -> PDF, Markdown -> HTML)
-const RENDERABLE_EXTS = new Set(['tex', 'md']);
+const RENDERABLE_EXTS = new Set(['tex', 'md', 'docx']);
 
 function getReleaseStatePresentation(releaseState?: string): {
   color: string;
@@ -1007,7 +1007,7 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
                     <iframe
                       title={`${selectedItem.name}-rendered-html`}
                       srcDoc={renderedPreview.content}
-                      sandbox="allow-popups allow-popups-to-escape-sandbox allow-same-origin"
+                      sandbox=""
                       style={{
                         width: '100%',
                         flex: 1,

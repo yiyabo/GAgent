@@ -391,6 +391,11 @@ def _render_figure(
     if pdf_path is not None:
         fig.savefig(pdf_path, bbox_inches="tight", facecolor="white")
     plt.close(fig)
+    from tool_box.watermark import apply_watermark_inplace
+
+    apply_watermark_inplace(png_path)
+    if pdf_path is not None:
+        apply_watermark_inplace(pdf_path)
     return rendered
 
 

@@ -367,6 +367,26 @@ def _first_context_path(context_paths: Iterable[str], suffix: str) -> Optional[s
     return None
 
 
+def _discover_sibling_context_path(
+    context_paths: Iterable[str],
+    target_name: str,
+) -> Optional[str]:
+    existing = _first_context_path(context_paths, target_name)
+    if existing:
+        return existing
+    for raw in context_paths:
+        value = str(raw or "").strip()
+        if not value:
+            continue
+        try:
+            candidate = Path(value).parent / target_name
+            if candidate.is_file():
+                return str(candidate)
+        except Exception:
+            continue
+    return None
+
+
 def _take_unique(items: Iterable[str], *, limit: int) -> List[str]:
     seen: set[str] = set()
     out: List[str] = []
@@ -518,8 +538,14 @@ def _load_review_evidence(
     max_context_bytes: int,
 ) -> Dict[str, Any]:
     study_cards_path = _first_context_path(context_paths, "study_cards.jsonl")
+    if not study_cards_path:
+        study_cards_path = _discover_sibling_context_path(context_paths, "study_cards.jsonl")
     coverage_report_path = _first_context_path(context_paths, "coverage_report.json")
+    if not coverage_report_path:
+        coverage_report_path = _discover_sibling_context_path(context_paths, "coverage_report.json")
     evidence_md_path = _first_context_path(context_paths, "evidence.md")
+    if not evidence_md_path:
+        evidence_md_path = _discover_sibling_context_path(context_paths, "evidence.md")
     reference_library_path = _first_context_path(context_paths, ".bib")
 
     study_cards: List[Dict[str, Any]] = []
@@ -2405,6 +2431,8 @@ async def manuscript_writer_handler(
             )
             analysis_file.write_text(analysis_memo, encoding="utf-8")
             output_file.write_text(draft_text, encoding="utf-8")
+            from tool_box.watermark import apply_watermark_inplace
+            apply_watermark_inplace(output_file)
             section_profile = _infer_section_profile(section_list)
             applicable_sections = [section for section in section_list if section != "references"]
             structured_section_dir = output_file.parent / f".{output_file.stem}_sections"
@@ -2870,6 +2898,8 @@ async def manuscript_writer_handler(
             polished_workspace_path.write_text(polished_text, encoding="utf-8")
 
         output_file.write_text(polished_text, encoding="utf-8")
+        from tool_box.watermark import apply_watermark_inplace
+        apply_watermark_inplace(output_file)
 
         hidden_artifact_prefixes = _hidden_prefixes(
             work_dir,

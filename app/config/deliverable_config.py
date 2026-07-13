@@ -15,7 +15,6 @@ RESEARCH_MODULES: Tuple[str, ...] = (
 )
 
 
-DeliverablesIngestMode = Literal["legacy", "explicit"]
 DeliverableConflictStrategy = Literal["error", "rename", "keep_first"]
 
 
@@ -27,8 +26,6 @@ class DeliverableSettings:
     history_max: int = 1
     single_version_only: bool = True
     modules: Tuple[str, ...] = RESEARCH_MODULES
-    #: legacy: mirror paths from tool results heuristically; explicit: only manifest + deliverable_submit + manuscript tools
-    ingest_mode: DeliverablesIngestMode = "explicit"
     #: basename collision policy when different source files target the same deliverable name
     basename_conflict_strategy: DeliverableConflictStrategy = "error"
 
@@ -62,11 +59,6 @@ def get_deliverable_settings() -> DeliverableSettings:
     )
     history_max = 1 if single_version_only else max(1, _env_int("DELIVERABLES_HISTORY_MAX", defaults.history_max))
 
-    raw_ingest = (os.getenv("DELIVERABLES_INGEST_MODE", defaults.ingest_mode) or "explicit").strip().lower()
-    if raw_ingest not in {"legacy", "explicit"}:
-        raw_ingest = "explicit"
-    ingest_mode: DeliverablesIngestMode = raw_ingest  # type: ignore[assignment]
-
     raw_conflict_strategy = (
         os.getenv(
             "DELIVERABLES_BASENAME_CONFLICT_STRATEGY",
@@ -85,7 +77,6 @@ def get_deliverable_settings() -> DeliverableSettings:
         history_max=history_max,
         single_version_only=single_version_only,
         modules=defaults.modules,
-        ingest_mode=ingest_mode,
         basename_conflict_strategy=basename_conflict_strategy,
     )
 
@@ -93,7 +84,6 @@ def get_deliverable_settings() -> DeliverableSettings:
 __all__ = [
     "DeliverableConflictStrategy",
     "DeliverableSettings",
-    "DeliverablesIngestMode",
     "RESEARCH_MODULES",
     "get_deliverable_settings",
 ]

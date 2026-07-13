@@ -35,6 +35,12 @@ try:
 except ImportError:
     MARKDOWN_AVAILABLE = False
 
+try:
+    import mammoth
+    MAMMOTH_AVAILABLE = True
+except ImportError:
+    MAMMOTH_AVAILABLE = False
+
 RUNTIME_DIR = Path(__file__).parent.parent.parent.resolve() / "runtime"
 INFO_SESSIONS_DIR = Path(__file__).parent.parent.parent.resolve() / "data" / "information_sessions"
 
@@ -1267,6 +1273,56 @@ def _render_markdown_to_html(content: str) -> str:
 </html>"""
 
 
+def _render_docx_to_html(source_path: Path) -> str:
+    if not MAMMOTH_AVAILABLE:
+        raise RuntimeError("mammoth is not installed")
+    with open(source_path, "rb") as f:
+        result = mammoth.convert_to_html(f)
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'">
+    <style>
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            line-height: 1.6;
+            max-width: 900px;
+            margin: 40px auto;
+            padding: 0 20px;
+            color: #333;
+        }}
+        table {{
+            border-collapse: collapse;
+            width: 100%;
+            margin: 16px 0;
+        }}
+        th, td {{
+            border: 1px solid #ddd;
+            padding: 8px 12px;
+            text-align: left;
+        }}
+        th {{
+            background: #f5f5f5;
+            font-weight: 600;
+        }}
+        img {{
+            max-width: 100%;
+            height: auto;
+        }}
+        h1, h2, h3, h4 {{
+            color: #1a1a1a;
+            margin-top: 24px;
+            margin-bottom: 16px;
+        }}
+    </style>
+</head>
+<body>
+{result.value}
+</body>
+</html>"""
+
+
 def _render_latex_to_pdf(source_path: Path, output_path: Path) -> bool:
     """Render LaTeX file to PDF using pdflatex or xelatex."""
     # Try xelatex first (better Unicode support), then pdflatex
@@ -1428,6 +1484,26 @@ async def render_artifact(
             html = _render_markdown_to_html(content)
             cache_path.write_text(html, encoding="utf-8")
 
+        return ArtifactRenderResponse(
+            path=path,
+            format="html",
+            content=cache_path.read_text(encoding="utf-8"),
+            rendered_at=datetime.fromtimestamp(cache_path.stat().st_mtime).isoformat(),
+            cached=cached,
+        )
+
+    elif extension == "docx":
+        if not MAMMOTH_AVAILABLE:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="mammoth is not installed. Run: pip install mammoth",
+            )
+        context_hash = f"{session_id}:{source_type}:{str(target.relative_to(root_dir))}"
+        cache_path = _get_render_cache_path(target, "html", extra_hash=context_hash)
+        cached = cache_path.exists()
+        if not cached:
+            html = _render_docx_to_html(target)
+            cache_path.write_text(html, encoding="utf-8")
         return ArtifactRenderResponse(
             path=path,
             format="html",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 
 import tool_box
 
@@ -32,6 +33,39 @@ def test_tool_executor_ignores_empty_deliverable_report(monkeypatch) -> None:
     assert result["success"] is True
     assert "deliverables" not in result
     assert "deliverable_error" not in result
+
+
+def test_tool_executor_schedules_platform_archive_without_blocking(monkeypatch) -> None:
+    async def _fake_execute_tool(_tool_name: str, **_kwargs):
+        return {"success": True}
+
+    archived: list[str] = []
+    archive_started = threading.Event()
+
+    def _archive(session_id: str) -> bool:
+        archived.append(session_id)
+        archive_started.set()
+        return True
+
+    monkeypatch.setattr(tool_box, "execute_tool", _fake_execute_tool)
+    monkeypatch.setattr(
+        "app.services.deliverables.platform_archiver.archive_session_to_platform",
+        _archive,
+    )
+
+    async def _run() -> None:
+        executor = UnifiedToolExecutor()
+        result = await executor.execute(
+            "scientific_figure_generator",
+            {},
+            context=ToolExecutionContext(session_id="session-demo"),
+        )
+        assert result["success"] is True
+
+    asyncio.run(_run())
+
+    assert archive_started.wait(timeout=1)
+    assert archived == ["session-demo"]
 
 
 def test_tool_executor_uses_deliverable_submit_publish_summary(monkeypatch) -> None:

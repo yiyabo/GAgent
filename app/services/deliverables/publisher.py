@@ -9,7 +9,7 @@ import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 from app.config.deliverable_config import (
@@ -108,8 +108,6 @@ MANUSCRIPT_PDF_STEMS = {
     "preprint",
 }
 
-DELIVERABLE_EXTS = CODE_EXTS | TABULAR_EXTS | IMAGE_EXTS | DOC_EXTS | PAPER_EXTS | REF_EXTS
-
 DOC_ALLOWED_STEMS = {
     "abstract",
     "introduction",
@@ -133,79 +131,7 @@ DOC_ALLOWED_STEMS = {
 
 SOURCE_OWNERSHIP_MAP = ".source_owners.json"
 
-PATH_HINT_KEYS = {
-    "path",
-    "file_path",
-    "output_path",
-    "save_path",
-    "manifest_path",
-    "result_path",
-    "preview_path",
-    "pdf_dir",
-    "references_bib",
-    "reference_library_path",
-    "evidence_md",
-    "evidence_coverage_md",
-    "study_matrix_md",
-    "coverage_report_path",
-    "evidence_coverage_path",
-    "study_matrix_path",
-    "study_cards_jsonl",
-    "coverage_report_json",
-    "library_jsonl",
-    "manuscript_output",
-    "manuscript_partial",
-    "effective_output_path",
-    "effective_analysis_path",
-    "analysis_path",
-    "partial_output_path",
-    "sections_dir",
-    "reviews_dir",
-    "combined_path",
-    "combined_partial",
-    "merge_queue",
-    "citation_validation_path",
-    "out_dir",
-    "output_dir",
-    "task_directory",
-    "task_directory_full",
-    "task_root_directory",
-    "run_directory",
-    "working_directory",
-    "session_directory",
-    "log_path",
-}
-
-PATH_CONTAINER_KEYS = {
-    "artifacts",
-    "files",
-    "generated_files",
-    "outputs",
-    "produced_files",
-    "saved_files",
-}
-
 MAX_PATH_CANDIDATE_LENGTH = 1024
-PATH_LIST_KEYS = {"paths", "files", "directories", "dirs", "file_paths"}
-EXPLICIT_FILE_LIST_KEYS = {
-    "produced_files",
-    "generated_files",
-}
-EXPLICIT_FILE_ITEM_KEYS = {
-    "path",
-    "file",
-    "file_path",
-    "output_path",
-    "save_path",
-    "result_path",
-}
-
-TEXT_DELIVERABLE_TOOLS = {
-    "code_executor",
-    "manuscript_writer",
-    "review_pack_writer",
-    "paper_replication",
-}
 
 NOISE_PATH_SEGMENTS = {
     "/tool_outputs/",
@@ -252,9 +178,8 @@ BLOCKED_SOURCE_FILENAMES = {
 
 _CC_RUN_ARTIFACT_RE = re.compile(r"^run_\d{8}_\d{6}_")
 
-# Agent-explicit deliverables (see DELIVERABLES_INGEST_MODE=explicit)
+# Agent-explicit deliverables (only deliverable_submit + manuscript tools publish)
 DELIVERABLE_SUBMIT_KEY = "deliverable_submit"
-EXPLICIT_AUTO_PUBLISH_TOOLS = frozenset({"manuscript_writer", "review_pack_writer"})
 
 CC_INTERMEDIATE_SCRIPT_EXTS = {".py", ".sh", ".bash", ".r", ".jl"}
 
@@ -452,38 +377,6 @@ class DeliverablePublisher:
                 if submit_artifacts_requested and submit_artifacts_skipped:
                     source_payload["submit_status"] = "partial" if submit_artifacts_published else "failed"
                     source_payload["submit_warnings"] = list(submit_warnings)
-            if self._should_use_legacy_file_ingest(normalized_tool):
-                explicit_file_candidates = self._extract_explicit_file_candidates(raw_result)
-                if explicit_file_candidates:
-                    resolved_files = self._resolve_files(
-                        path_candidates=explicit_file_candidates,
-                        session_dir=session_dir,
-                        allow_directories=False,
-                    )
-                else:
-                    path_candidates = self._extract_path_candidates(raw_result)
-                    resolved_files = self._resolve_files(
-                        path_candidates=path_candidates,
-                        session_dir=session_dir,
-                        allow_directories=True,
-                    )
-                for file_path in resolved_files:
-                    module = self._classify_module(file_path)
-                    if module is None:
-                        continue
-                    copied = self._copy_resolved_file_to_deliverables(
-                        file_path=file_path,
-                        module=module,
-                        latest_root=latest_root,
-                        session_dir=session_dir,
-                        raw_result=raw_result,
-                        publish_status=publish_status,
-                        now=now,
-                        previous_manifest=previous_manifest,
-                        from_explicit_submit=False,
-                    )
-                    if copied is not None:
-                        items.append(copied)
 
         manuscript_result = self._extract_manuscript_result(raw_result)
         manuscript_structure = self._extract_manuscript_structure_metadata(raw_result)
@@ -501,104 +394,9 @@ class DeliverablePublisher:
             if manuscript_items:
                 items.extend(manuscript_items)
 
-        manuscript_has_section_artifacts = any(
-            isinstance(item, dict)
-            and str(item.get("module") or "").strip().lower() == "paper"
-            and str(item.get("path") or "").strip().startswith("paper/sections/")
-            for item in manuscript_items
-        )
-
-        text_blob = self._extract_text_blob(raw_result=raw_result, summary=summary)
-        section: Optional[str] = None
-        # manuscript_writer outputs with explicit section artifacts should be source of truth;
-        # skip generic text-based section inference to avoid overwriting section content with
-        # summaries (e.g., "manuscript finished").
-        if (
-            not blocked_manuscript_release
-            and not isinstance(manuscript_result, dict)
-            and not manuscript_has_section_artifacts
-            and self._should_use_legacy_file_ingest(normalized_tool)
-        ):
-            if normalized_tool == "code_executor":
-                # CC: only publish to paper when task_name implies a section; do not use instruction/text
-                section = self._paper_builder.infer_section(
-                    task_name=task_name,
-                    task_instruction=None,
-                    text=None,
-                )
-            elif self._should_publish_text_blob(tool_name=tool_name, raw_result=raw_result):
-                section = self._paper_builder.infer_section(
-                    task_name=task_name,
-                    task_instruction=task_instruction,
-                    text=text_blob,
-                )
         title = task_name or "Research Project"
         paper_dir = latest_root / "paper"
         refs_dir = latest_root / "refs"
-        if section is not None:
-            self._paper_builder.ensure_structure(
-                paper_dir=paper_dir,
-                refs_dir=refs_dir,
-                title=title,
-                section_profile=manuscript_structure.get("section_profile"),
-                section_order=manuscript_structure.get("applicable_sections"),
-            )
-            section_path = self._paper_builder.update_section(
-                paper_dir=paper_dir,
-                section=section,
-                content=text_blob or summary or "",
-            )
-            items.append(
-                {
-                    "module": "paper",
-                    "path": str(section_path.relative_to(latest_root)),
-                    "status": publish_status,
-                    "size": section_path.stat().st_size,
-                    "updated_at": now,
-                    "source_path": f"task:{task_id or 'unknown'}",
-                }
-            )
-            doc_section = "methods" if section == "method" else section
-            if doc_section in DOC_ALLOWED_STEMS and (text_blob or summary):
-                docs_dir = latest_root / "docs"
-                docs_dir.mkdir(parents=True, exist_ok=True)
-                section_doc_path = docs_dir / f"{doc_section}.md"
-                doc_text = (text_blob or summary or "").strip()
-                section_doc_path.write_text(doc_text + ("\n" if doc_text else ""), encoding="utf-8")
-                items.append(
-                    {
-                        "module": "docs",
-                        "path": str(section_doc_path.relative_to(latest_root)),
-                        "status": publish_status,
-                        "size": section_doc_path.stat().st_size,
-                        "updated_at": now,
-                        "source_path": f"task:{task_id or 'unknown'}",
-                    }
-                )
-
-        bib_text_candidates = self._extract_bib_text_candidates(raw_result)
-        if self._should_use_legacy_file_ingest(normalized_tool):
-            for bib_text in bib_text_candidates:
-                self._paper_builder.ensure_structure(
-                    paper_dir=paper_dir,
-                    refs_dir=refs_dir,
-                    title=title,
-                    section_profile=manuscript_structure.get("section_profile"),
-                    section_order=manuscript_structure.get("applicable_sections"),
-                )
-                merged = self._paper_builder.merge_bib_entries(refs_dir=refs_dir, bib_text=bib_text)
-                if merged is None:
-                    continue
-                items.append(
-                    {
-                        "module": "refs",
-                        "path": str(merged.relative_to(latest_root)),
-                        "status": publish_status,
-                        "size": merged.stat().st_size,
-                        "updated_at": now,
-                        "source_path": "inline_bib",
-                    }
-                )
 
         if not items and submit_artifacts_requested is None:
             return None
@@ -1215,172 +1013,6 @@ class DeliverablePublisher:
                 item["source_path"] = source_tag
         return items
 
-    def _extract_explicit_file_candidates(self, payload: Any) -> List[str]:
-        found: Set[str] = set()
-
-        def _collect(value: Any) -> None:
-            if isinstance(value, str):
-                candidate = value.strip()
-                if candidate and self._is_path_like(candidate, key_hint="produced_files"):
-                    found.add(candidate)
-                return
-            if isinstance(value, dict):
-                for key in EXPLICIT_FILE_ITEM_KEYS:
-                    entry = value.get(key)
-                    if isinstance(entry, str):
-                        candidate = entry.strip()
-                        if candidate and self._is_path_like(candidate, key_hint=key):
-                            found.add(candidate)
-                return
-
-        def _visit(value: Any, key: Optional[str] = None) -> None:
-            if value is None:
-                return
-            if isinstance(value, dict):
-                for item_key, item_value in value.items():
-                    lowered = str(item_key).strip().lower()
-                    if lowered in EXPLICIT_FILE_LIST_KEYS:
-                        if isinstance(item_value, dict):
-                            for nested in item_value.values():
-                                _collect(nested)
-                        elif isinstance(item_value, (list, tuple, set)):
-                            for nested in item_value:
-                                _collect(nested)
-                        else:
-                            _collect(item_value)
-                    if isinstance(item_value, (dict, list, tuple, set)):
-                        _visit(item_value, key=lowered)
-                return
-            if isinstance(value, (list, tuple, set)):
-                if key in EXPLICIT_FILE_LIST_KEYS:
-                    for item in value:
-                        _collect(item)
-                    return
-                for item in value:
-                    if isinstance(item, (dict, list, tuple, set)):
-                        _visit(item, key=key)
-
-        _visit(payload, key=None)
-        return sorted(found)
-
-    def _extract_path_candidates(self, payload: Any) -> List[str]:
-        """Collect path-like strings from tool JSON (legacy ingest only; see ingest_mode)."""
-        found: Set[str] = set()
-
-        def _visit(value: Any, key: Optional[str] = None) -> None:
-            if value is None:
-                return
-            if isinstance(value, str):
-                hinted = bool(
-                    key
-                    and (
-                        key in PATH_HINT_KEYS
-                        or key in PATH_CONTAINER_KEYS
-                        or key in PATH_LIST_KEYS
-                        or key.endswith("_path")
-                        or key.endswith("_file")
-                        or key.endswith("_dir")
-                        or key.endswith("_paths")
-                        or key.endswith("_files")
-                    )
-                )
-                if hinted and self._is_path_like(value, key_hint=key):
-                    found.add(value.strip())
-                return
-            if isinstance(value, dict):
-                for item_key, item_value in value.items():
-                    lowered = str(item_key).strip().lower()
-                    if lowered in PATH_HINT_KEYS or lowered.endswith("_path") or lowered.endswith("_file"):
-                        if isinstance(item_value, str) and self._is_path_like(item_value, key_hint=lowered):
-                            found.add(item_value.strip())
-                    if lowered in PATH_CONTAINER_KEYS:
-                        if isinstance(item_value, dict):
-                            for nested in item_value.values():
-                                if isinstance(nested, str) and self._is_path_like(nested, key_hint=lowered):
-                                    found.add(nested.strip())
-                        elif isinstance(item_value, list):
-                            for nested in item_value:
-                                if isinstance(nested, str) and self._is_path_like(nested, key_hint=lowered):
-                                    found.add(nested.strip())
-                    if isinstance(item_value, (dict, list, tuple, set)):
-                        _visit(item_value, key=lowered)
-                return
-            if isinstance(value, (list, tuple, set)):
-                for item in value:
-                    if isinstance(item, (dict, list, tuple, set)):
-                        _visit(item, key=key)
-                    elif (
-                        isinstance(item, str)
-                        and key is not None
-                        and (
-                            key in PATH_CONTAINER_KEYS
-                            or key in PATH_LIST_KEYS
-                            or key.endswith("_paths")
-                            or key.endswith("_files")
-                        )
-                        and self._is_path_like(item, key_hint=key)
-                    ):
-                        found.add(item.strip())
-
-        _visit(payload, key=None)
-        return sorted(found)
-
-    def _extract_bib_text_candidates(self, payload: Any) -> List[str]:
-        candidates: List[str] = []
-
-        def _visit(value: Any, key: Optional[str] = None) -> None:
-            if value is None:
-                return
-            if isinstance(value, str):
-                if "@" in value and "{" in value and (
-                    key == "bibtex"
-                    or "@article" in value.lower()
-                    or "@inproceedings" in value.lower()
-                ):
-                    candidates.append(value)
-                return
-            if isinstance(value, dict):
-                for item_key, item_value in value.items():
-                    _visit(item_value, key=str(item_key).strip().lower())
-                return
-            if isinstance(value, (list, tuple, set)):
-                for item in value:
-                    _visit(item, key=key)
-
-        _visit(payload, key=None)
-        return candidates
-
-    def _extract_text_blob(self, *, raw_result: Any, summary: Optional[str]) -> str:
-        chunks: List[str] = []
-        if isinstance(summary, str) and summary.strip():
-            chunks.append(summary.strip())
-        if isinstance(raw_result, dict):
-            # Claude Code returns {"type":"result","result":"...", "duration_ms":...}; prefer "result" as main text
-            cc_text = raw_result.get("result")
-            if isinstance(cc_text, str) and cc_text.strip():
-                chunks.append(cc_text.strip())
-            for key in ("content", "response", "answer", "summary", "text"):
-                if key == "result":
-                    continue
-                value = raw_result.get(key)
-                if isinstance(value, str) and value.strip():
-                    chunks.append(value.strip())
-        elif isinstance(raw_result, str) and raw_result.strip():
-            # If raw_result is a JSON string (e.g. CC wrapper), try to parse and extract "result"
-            raw_str = raw_result.strip()
-            if raw_str.startswith("{"):
-                try:
-                    parsed = json.loads(raw_str)
-                    if isinstance(parsed, dict):
-                        cc_text = parsed.get("result")
-                        if isinstance(cc_text, str) and cc_text.strip():
-                            chunks.append(cc_text.strip())
-                except Exception:
-                    pass
-        if not chunks:
-            return ""
-        return "\n\n".join(chunks)[:12000]
-
     def _read_manifest(self, path: Path) -> Dict[str, Any]:
         if not path.exists() or not path.is_file():
             return {}
@@ -1531,78 +1163,6 @@ class DeliverablePublisher:
             return True
         return True
 
-    def _resolve_files(
-        self,
-        *,
-        path_candidates: Iterable[str],
-        session_dir: Path,
-        allow_directories: bool = True,
-    ) -> List[Path]:
-        files: List[Path] = []
-        seen: Set[Path] = set()
-        for candidate in path_candidates:
-            resolved = self._resolve_path(candidate, session_dir=session_dir)
-            if resolved is None:
-                continue
-            if resolved.is_file():
-                if resolved not in seen:
-                    seen.add(resolved)
-                    files.append(resolved)
-                continue
-            if resolved.is_dir():
-                if not allow_directories:
-                    continue
-                if not self._should_scan_directory(resolved, session_dir=session_dir):
-                    continue
-                count = 0
-                for path in sorted(resolved.rglob("*")):
-                    if not path.is_file() or not self._is_allowed_source(path):
-                        continue
-                    if path in seen:
-                        continue
-                    seen.add(path)
-                    files.append(path)
-                    count += 1
-                    if count >= 200:
-                        break
-        return files
-
-    def _should_scan_directory(self, path: Path, *, session_dir: Path) -> bool:
-        try:
-            resolved = path.resolve()
-        except Exception:
-            return False
-
-        if resolved in {self._project_root, self._runtime_dir, session_dir.resolve()}:
-            return False
-
-        blocked_names = {
-            ".git",
-            "node_modules",
-            "__pycache__",
-            ".venv",
-            "venv",
-            ".pytest_cache",
-            ".mypy_cache",
-            ".tox",
-            ".eggs",
-            "dist",
-            "tool_outputs",
-            "deliverables",
-        }
-        if any(part in blocked_names for part in resolved.parts):
-            return False
-
-        if resolved.parent == self._runtime_dir and resolved.name.startswith(("session_", "session-")):
-            return False
-
-        for blocked_dir in BLOCKED_PROJECT_DIRS:
-            blocked_path = (self._project_root / blocked_dir).resolve()
-            if self._is_within(resolved, blocked_path):
-                return False
-
-        return True
-
     def _resolve_path(self, value: str, *, session_dir: Path) -> Optional[Path]:
         raw = str(value or "").strip()
         if not raw:
@@ -1678,31 +1238,6 @@ class DeliverablePublisher:
             return True
         except ValueError:
             return False
-
-    def _is_path_like(self, value: str, key_hint: Optional[str] = None) -> bool:
-        raw = str(value or "").strip()
-        if not raw:
-            return False
-        if "\n" in raw or "\r" in raw:
-            return False
-        if len(raw) > MAX_PATH_CANDIDATE_LENGTH:
-            return False
-        if raw.startswith("http://") or raw.startswith("https://"):
-            return False
-        if raw.startswith("{") and raw.endswith("}"):
-            return False
-        if key_hint in PATH_HINT_KEYS or key_hint in PATH_CONTAINER_KEYS:
-            return True
-        if key_hint and (key_hint.endswith("_path") or key_hint.endswith("_file")):
-            return True
-        if "/" in raw or "\\" in raw:
-            if " " in raw and Path(raw).suffix.lower() not in DELIVERABLE_EXTS:
-                return False
-            if "|" in raw and Path(raw).suffix.lower() not in DELIVERABLE_EXTS:
-                return False
-            return True
-        suffix = Path(raw).suffix.lower()
-        return bool(suffix and suffix in DELIVERABLE_EXTS)
 
     def _classify_module(self, path: Path) -> Optional[str]:
         path_lower = str(path).lower()
@@ -1787,43 +1322,6 @@ class DeliverablePublisher:
         """Only actual code files belong in the code module; raw JSON/YAML data files do not."""
         return path.suffix.lower() in CODE_EXTS
 
-    def _should_publish_deliverable_code(
-        self,
-        file_path: Path,
-        *,
-        raw_result: Any,
-        session_dir: Path,
-    ) -> bool:
-        """RAW session results may contain full code trees; only promote paths under submission/ or deliverable/, or listed in deliverable_code_paths."""
-        if not isinstance(raw_result, dict):
-            raw_result = {}
-        explicit = raw_result.get("deliverable_code_paths")
-        if isinstance(explicit, list) and explicit:
-            for entry in explicit:
-                if not isinstance(entry, str) or not entry.strip():
-                    continue
-                resolved = self._resolve_path(entry.strip(), session_dir=session_dir)
-                if resolved is None:
-                    continue
-                try:
-                    if resolved.resolve() == file_path.resolve():
-                        return True
-                except OSError:
-                    continue
-            return False
-        norm = str(file_path).replace("\\", "/").lower()
-        return "/submission/" in norm or "/deliverable/" in norm
-
-    def _should_use_legacy_file_ingest(self, tool_name: str) -> bool:
-        """Heuristic path extraction from tool JSON; off in explicit mode except manuscript tools."""
-        normalized = tool_name.strip().lower()
-        if normalized == DELIVERABLE_SUBMIT_KEY:
-            return False
-        mode = getattr(self._settings, "ingest_mode", "legacy") or "legacy"
-        if mode != "explicit":
-            return True
-        return normalized in EXPLICIT_AUTO_PUBLISH_TOOLS
-
     @staticmethod
     def _extract_deliverable_submit(raw_result: Any) -> Optional[Dict[str, Any]]:
         if not isinstance(raw_result, dict):
@@ -1874,9 +1372,6 @@ class DeliverablePublisher:
         module_key = str(module or "").strip().lower()
         if module_key not in self._settings.modules:
             return None, f"unsupported module '{module_key}'"
-        if module_key == "code" and not from_explicit_submit:
-            if not self._should_publish_deliverable_code(file_path, raw_result=raw_result, session_dir=session_dir):
-                return None, "code artifact must be under submission/ or deliverable/, or listed in deliverable_code_paths"
         if not self._should_publish_file(module_key, file_path):
             if self._is_noise_artifact_file(file_path):
                 return None, "artifact matches noise-file filter"
@@ -2084,19 +1579,6 @@ class DeliverablePublisher:
         return bool(raw_result.get("partial"))
 
     @staticmethod
-    def _should_publish_text_blob(*, tool_name: str, raw_result: Any) -> bool:
-        normalized_tool = str(tool_name or "").strip().lower()
-        # Claude Code: only publish to paper when infer_section returns a section (handled at call site)
-        if normalized_tool == "code_executor":
-            return False
-        if normalized_tool in TEXT_DELIVERABLE_TOOLS:
-            return True
-        if normalized_tool != "file_operations" or not isinstance(raw_result, dict):
-            return False
-        operation = str(raw_result.get("operation") or "").strip().lower()
-        return operation == "write" and raw_result.get("success") is True
-
-    @staticmethod
     def _is_allowed_doc_file(path: Path) -> bool:
         if path.suffix.lower() not in DOC_EXTS:
             return False
@@ -2253,11 +1735,28 @@ class DeliverablePublisher:
                 target = module_dir / renamed_name
             else:
                 raise ValueError(conflict_message)
-        shutil.copy2(source_path, target)
+        if self._should_watermark_deliverable(module_dir, source_path):
+            from tool_box.watermark import apply_watermark
+
+            apply_watermark(source_path, target)
+        else:
+            shutil.copy2(source_path, target)
         if source_identity:
             owners[target.name] = source_identity
             self._write_source_ownership(module_dir, owners)
         return target
+
+    @staticmethod
+    def _should_watermark_deliverable(module_dir: Path, source_path: Path) -> bool:
+        module = module_dir.name
+        suffix = source_path.suffix.lower()
+        if module == "docs":
+            return suffix in {".md", ".markdown", ".txt"}
+        if module == "image_tabular":
+            return suffix in IMAGE_EXTS | {".pdf"}
+        if module == "paper":
+            return suffix in {".md", ".markdown", ".txt", ".pdf"}
+        return False
 
     def _extract_markdown_image_paths(self, text: str) -> List[str]:
         if not text:

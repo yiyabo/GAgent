@@ -1650,6 +1650,9 @@ async def literature_pipeline_handler(
         _write_text(evidence_path, _build_section_oriented_evidence_md(study_cards, coverage_report, topic=query))
         _write_text(evidence_coverage_path, _build_coverage_markdown(coverage_report))
         _write_text(study_matrix_path, _build_study_matrix_md(study_cards))
+        from tool_box.watermark import apply_watermark_inplace
+        apply_watermark_inplace(evidence_path)
+        apply_watermark_inplace(study_matrix_path)
 
     result: Dict[str, Any] = {
         "tool": "literature_pipeline",
