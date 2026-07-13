@@ -29,7 +29,22 @@ _AGENT_RESULTS_DIRNAME = "agent_results"
 
 
 def archive_session_to_platform(session_id: str) -> bool:
-    """同步 session raw_files 到项目的独立归档目录。"""
+    """Do not materialize platform-owned artifacts through Agent-host paths.
+
+    Platform-origin artifact publishing must use the main platform's versioned
+    artifact API.  That API is not available yet, so callers receive a safe
+    no-op instead of an implicit filesystem fallback.
+    """
+    logger.info(
+        "[PlatformArchiver] Skipped local filesystem archive for session %s; "
+        "platform artifact API is required",
+        str(session_id or "").strip() or "<empty>",
+    )
+    return False
+
+
+def _legacy_archive_session_to_platform(session_id: str) -> bool:
+    """Legacy local filesystem implementation retained only for migration reference."""
     try:
         session_id = str(session_id or "").strip()
         if not session_id:

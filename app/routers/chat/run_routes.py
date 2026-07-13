@@ -24,6 +24,7 @@ from app.routers.chat.session_helpers import _ensure_session_exists, _save_chat_
 from app.services.chat_run_worker import execute_chat_run
 from app.services import chat_run_hub as hub
 from app.services.realtime_bus import EventSubscription, get_realtime_bus, route_control_message
+from app.services.platform_access import bind_chat_request_to_principal
 from app.services.request_principal import ensure_owner_access, get_request_owner_id
 
 logger = logging.getLogger(__name__)
@@ -167,6 +168,7 @@ async def iterate_chat_run_sse(
 async def create_run(request: ChatRequest, raw_request: Request) -> Dict[str, str]:
     if not request.session_id:
         raise HTTPException(status_code=400, detail="session_id is required for chat runs")
+    request = bind_chat_request_to_principal(raw_request, request)
     owner_id = get_request_owner_id(raw_request)
     run_id = start_background_chat_run(request, session_id=request.session_id, owner_id=owner_id)
     return {

@@ -8,6 +8,7 @@ from typing import AsyncIterator
 from fastapi import BackgroundTasks, Request
 from fastapi.responses import StreamingResponse
 
+from app.services.platform_access import bind_chat_request_to_principal
 from app.services.request_principal import get_request_owner_id
 
 from .background import _sse_message
@@ -26,6 +27,7 @@ async def chat_stream(
     _ = background_tasks
 
     if request.session_id:
+        request = bind_chat_request_to_principal(raw_request, request)
         owner_id = get_request_owner_id(raw_request)
         run_id = start_background_chat_run(
             request,

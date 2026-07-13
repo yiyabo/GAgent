@@ -55,31 +55,38 @@ def build_agent_for_chat_request(
         project_id=request.project_id,
     )
 
-    if request.project_id and request.user_id:
-        from app.services.sso import get_project_context
-        try:
-            project_data = get_project_context(request.user_id, request.project_id)
-            if project_data:
-                context["project_id"] = request.project_id
-                data_roots = project_data.get("data_roots", [])
-                if data_roots:
-                    context["data_roots"] = [root.get("path", "") for root in data_roots]
-                model_provider = project_data.get("model_provider")
-                if model_provider:
-                    context["model_provider"] = {
-                        "type": model_provider.get("type", "openai"),
-                        "model": model_provider.get("model", ""),
-                        "base_url": model_provider.get("base_url", ""),
-                        "api_key": model_provider.get("api_key", ""),
-                        "model_options": model_provider.get("model_options", []),
-                    }
-                logger.info(
-                    "[CHAT][PROJECT] Loaded project context (stream): project_id=%s, data_roots=%d",
-                    request.project_id,
-                    len(data_roots),
-                )
-        except Exception as e:
-            logger.warning("[CHAT][PROJECT] Failed to load project context (stream): %s", e)
+    if context.get("platform_access_mode") == "platform":
+        from app.services.platform_api import get_platform_api_client
+
+        platform_user_id = context.get("platform_user_id")
+        platform_project_id = context.get("platform_project_id")
+        if not isinstance(platform_user_id, int) or not isinstance(platform_project_id, int):
+            raise ValueError("Missing trusted platform context for chat run")
+        project_data = get_platform_api_client().get_project_context(
+            platform_user_id,
+            platform_project_id,
+        )
+        context["project_id"] = platform_project_id
+        data_roots = project_data.get("data_roots", [])
+        context["platform_data_roots"] = [
+            {"label": root.get("label"), "mode": root.get("mode", "readonly")}
+            for root in data_roots
+            if isinstance(root, dict)
+        ]
+        model_provider = project_data.get("model_provider")
+        if isinstance(model_provider, dict):
+            context["model_provider"] = {
+                "type": model_provider.get("type", "openai"),
+                "model": model_provider.get("model", ""),
+                "base_url": model_provider.get("base_url", ""),
+                "api_key": model_provider.get("api_key", ""),
+                "model_options": model_provider.get("model_options", []),
+            }
+        logger.info(
+            "[CHAT][PROJECT] Loaded trusted platform context (stream): project_id=%s, data_roots=%d",
+            platform_project_id,
+            len(data_roots),
+        )
     plan_session = PlanSession(repo=plan_repository, plan_id=plan_id)
     try:
         plan_session.refresh()

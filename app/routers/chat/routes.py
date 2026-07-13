@@ -19,7 +19,9 @@ from app.routers import register_router
 from app.services.llm.llm_service import get_llm_service
 from app.services.plans.decomposition_jobs import plan_decomposition_jobs
 from app.services.plans.plan_session import PlanSession
-from app.services.request_principal import get_request_owner_id
+from app.services.platform_access import bind_chat_request_to_principal
+from app.services.platform_api import get_platform_api_client
+from app.services.request_principal import get_request_owner_id, get_request_principal
 from app.services.session_title_service import SessionNotFoundError
 from app.services.upload_storage import delete_session_storage
 
@@ -138,7 +140,9 @@ async def chat_message(
     raw_request: Request,
 ):
     """Main chat entry: respond with LLM actions first, then execute in the background."""
+    request = bind_chat_request_to_principal(raw_request, request)
     owner_id = get_request_owner_id(raw_request)
+    principal = get_request_principal(raw_request)
     try:
         context = dict(request.context or {})
         incoming_plan_id = context.get("plan_id")
@@ -268,35 +272,36 @@ async def chat_message(
 
         session_settings: Dict[str, Any] = {}
 
-        if request.project_id:
-            from app.services.sso import get_project_context
-            try:
-                resolved_uid = request.user_id
-                if resolved_uid is None:
-                    from app.services.sso import get_main_platform_user_id
-                    resolved_uid = get_main_platform_user_id(owner_id)
-                project_data = get_project_context(resolved_uid, request.project_id)
-                if project_data:
-                    context["project_id"] = request.project_id
-                    data_roots = project_data.get("data_roots", [])
-                    if data_roots:
-                        context["data_roots"] = [root.get("path", "") for root in data_roots]
-                    model_provider = project_data.get("model_provider")
-                    if model_provider:
-                        context["model_provider"] = {
-                            "type": model_provider.get("type", "openai"),
-                            "model": model_provider.get("model", ""),
-                            "base_url": model_provider.get("base_url", ""),
-                            "api_key": model_provider.get("api_key", ""),
-                            "model_options": model_provider.get("model_options", []),
-                        }
-                    logger.info(
-                        "[CHAT][PROJECT] Loaded project context: project_id=%s, data_roots=%d",
-                        request.project_id,
-                        len(data_roots),
-                    )
-            except Exception as e:
-                logger.warning("[CHAT][PROJECT] Failed to load project context: %s", e)
+        if principal.is_platform_access:
+            project_data = get_platform_api_client().get_project_context(
+                principal.require_platform_user_id(),
+                principal.require_platform_project_id(),
+            )
+            context["platform_access_mode"] = "platform"
+            context["platform_user_id"] = principal.require_platform_user_id()
+            context["project_id"] = principal.require_platform_project_id()
+            data_roots = project_data.get("data_roots", [])
+            # Project file paths are platform-owned and intentionally never injected
+            # into Agent host tools until the platform file-access API is available.
+            context["platform_data_roots"] = [
+                {"label": root.get("label"), "mode": root.get("mode", "readonly")}
+                for root in data_roots
+                if isinstance(root, dict)
+            ]
+            model_provider = project_data.get("model_provider")
+            if isinstance(model_provider, dict):
+                context["model_provider"] = {
+                    "type": model_provider.get("type", "openai"),
+                    "model": model_provider.get("model", ""),
+                    "base_url": model_provider.get("base_url", ""),
+                    "api_key": model_provider.get("api_key", ""),
+                    "model_options": model_provider.get("model_options", []),
+                }
+            logger.info(
+                "[CHAT][PROJECT] Loaded trusted platform context: project_id=%s, data_roots=%d",
+                principal.platform_project_id,
+                len(data_roots),
+            )
 
         if "task_id" in context and "current_task_id" not in context:
             context["current_task_id"] = context["task_id"]

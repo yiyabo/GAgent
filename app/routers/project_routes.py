@@ -1,37 +1,24 @@
-"""Project routes for managing project context and data roots."""
+"""Platform-bound project context routes.
+
+Project data belongs to the main platform.  These routes only expose the
+server-verified project binding from a platform SSO session; they never trust
+browser-supplied platform identity or fall back to Agent-host filesystem paths.
+"""
 
 from __future__ import annotations
 
 import logging
-import os
-from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from app.routers import register_router
-from app.services.request_principal import get_request_owner_id
-from app.services.sso import get_main_platform_user_id, get_project_context
+from app.services.platform_access import require_bound_platform_project
+from app.services.platform_api import get_platform_api_client
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/project", tags=["project"])
-
-
-def _resolve_user_id(request: Request, user_id: Optional[int]) -> Optional[int]:
-    if user_id is not None:
-        return user_id
-    owner_id = get_request_owner_id(request)
-    resolved = get_main_platform_user_id(owner_id)
-    if resolved is None:
-        logger.warning(
-            "main_platform_user_id is NULL for local user %s; project context "
-            "fetch will fall back to project-only URL (may 404 on main platform). "
-            "Backfill via SSO login with user_id query param is recommended.",
-            owner_id,
-        )
-    return resolved
-
 
 register_router(
     namespace="project",
@@ -39,13 +26,12 @@ register_router(
     path="/project",
     router=router,
     tags=["project"],
-    description="Project context and data roots management",
-    allow_anonymous=True,
+    description="Server-bound main-platform project context",
 )
 
 
 class DataRoot(BaseModel):
-    path: str
+    path: str = ""
     label: Optional[str] = None
     mode: str = "readonly"
 
@@ -53,8 +39,7 @@ class DataRoot(BaseModel):
 class ModelProvider(BaseModel):
     type: Optional[str] = None
     model: Optional[str] = None
-    base_url: str
-    api_key: str
+    base_url: str = ""
     model_options: Optional[list[str]] = None
 
 
@@ -103,168 +88,50 @@ class SelectedFilesResponse(BaseModel):
     files: list[FileReference]
 
 
+def _project_context_for_request(request: Request, project_id: int) -> dict:
+    platform_user_id, trusted_project_id = require_bound_platform_project(request, project_id)
+    return get_platform_api_client().get_project_context(platform_user_id, trusted_project_id)
+
+
 @router.get("/{project_id}", response_model=ProjectResponse)
-async def get_project(
-    project_id: int,
-    request: Request,
-    user_id: Optional[int] = Query(None, description="Main platform user ID"),
-) -> ProjectResponse:
-    try:
-        resolved_uid = _resolve_user_id(request, user_id)
-        project_data = get_project_context(resolved_uid, project_id)
-        
-        if not project_data:
-            return ProjectResponse(
-                code=404,
-                message="Project not found",
-                data=None
-            )
-        
-        data_roots_raw = project_data.get("data_roots", [])
-        data_roots = []
-        for root in data_roots_raw:
-            data_roots.append(DataRoot(
-                path=root.get("path", ""),
-                label=root.get("label"),
-                mode=root.get("mode", "readonly")
-            ))
-        
-        model_provider_raw = project_data.get("model_provider")
-        model_provider = None
-        if model_provider_raw:
-            model_provider = ModelProvider(
-                base_url=model_provider_raw.get("base_url", ""),
-                api_key=model_provider_raw.get("api_key", "")
-            )
-        
-        project = ProjectData(
-            id=project_data.get("id", project_id),
+async def get_project(project_id: int, request: Request) -> ProjectResponse:
+    project_data = _project_context_for_request(request, project_id)
+    raw_roots = project_data.get("data_roots") or []
+    data_roots = [
+        DataRoot(
+            # Platform file roots are opaque to browsers and Agent-host APIs.
+            path="",
+            label=str(root.get("label") or root.get("name") or f"Data root {index + 1}"),
+            mode=str(root.get("mode") or "readonly"),
+        )
+        for index, root in enumerate(raw_roots)
+        if isinstance(root, dict)
+    ]
+    raw_provider = project_data.get("model_provider")
+    model_provider = None
+    if isinstance(raw_provider, dict):
+        model_provider = ModelProvider(
+            type=str(raw_provider.get("type") or "") or None,
+            model=str(raw_provider.get("model") or "") or None,
+            base_url=str(raw_provider.get("base_url") or ""),
+            model_options=raw_provider.get("model_options")
+            if isinstance(raw_provider.get("model_options"), list)
+            else None,
+        )
+    return ProjectResponse(
+        data=ProjectData(
+            id=int(project_data.get("id") or project_id),
             data_roots=data_roots,
-            model_provider=model_provider
+            model_provider=model_provider,
         )
-        
-        return ProjectResponse(
-            code=0,
-            message="success",
-            data=project
-        )
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to get project context: {e}")
-        return ProjectResponse(
-            code=500,
-            message=f"Failed to get project context: {str(e)}",
-            data=None
-        )
+    )
 
 
 @router.get("/{project_id}/files", response_model=FileTreeResponse)
-async def get_project_files(
-    project_id: int,
-    request: Request,
-    user_id: Optional[int] = Query(None, description="Main platform user ID"),
-    path: Optional[str] = Query(None, description="Relative path within data_root"),
-    data_root_index: int = Query(0, description="Index of data_root to browse"),
-) -> FileTreeResponse:
-    try:
-        resolved_uid = _resolve_user_id(request, user_id)
-        project_data = get_project_context(resolved_uid, project_id)
-        if not project_data:
-            raise HTTPException(status_code=404, detail="Project not found")
-        
-        data_roots_raw = project_data.get("data_roots", [])
-        if not data_roots_raw:
-            return FileTreeResponse(
-                code=0,
-                message="success",
-                data=[]
-            )
-        
-        if data_root_index >= len(data_roots_raw):
-            raise HTTPException(status_code=400, detail="Invalid data_root index")
-        
-        data_root = data_roots_raw[data_root_index]
-        root_path = data_root.get("path", "")
-        
-        if not root_path or not os.path.exists(root_path):
-            return FileTreeResponse(
-                code=0,
-                message="Data root path not accessible",
-                data=[]
-            )
-        
-        target_path = Path(root_path)
-        if path:
-            target_path = target_path / path
-            target_path = target_path.resolve()
-            root_resolved = Path(root_path).resolve()
-            
-            try:
-                target_path.relative_to(root_resolved)
-            except ValueError:
-                raise HTTPException(status_code=403, detail="Access denied: path outside data root")
-        
-        if not target_path.exists():
-            return FileTreeResponse(
-                code=404,
-                message="Path not found",
-                data=[]
-            )
-        
-        nodes = _build_file_tree(target_path, root_path)
-        
-        return FileTreeResponse(
-            code=0,
-            message="success",
-            data=nodes
-        )
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to get project files: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to get project files: {str(e)}")
-
-
-def _build_file_tree(path: Path, root_path: str, relative_prefix: str = "") -> list[FileTreeNode]:
-    nodes = []
-    
-    try:
-        items = sorted(path.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower()))
-    except PermissionError:
-        logger.warning(f"Permission denied accessing: {path}")
-        return nodes
-    except Exception as e:
-        logger.error(f"Error reading directory {path}: {e}")
-        return nodes
-    
-    for item in items:
-        if item.name.startswith("."):
-            continue
-            
-        relative_path = str(item.relative_to(Path(root_path)))
-        key = f"{relative_prefix}/{relative_path}" if relative_prefix else relative_path
-        
-        if item.is_dir():
-            children = _build_file_tree(item, root_path, relative_prefix)
-            nodes.append(FileTreeNode(
-                key=key,
-                title=item.name,
-                path=str(item),
-                is_leaf=False,
-                children=children if children else []
-            ))
-        else:
-            nodes.append(FileTreeNode(
-                key=key,
-                title=item.name,
-                path=str(item),
-                is_leaf=True
-            ))
-    
-    return nodes
+async def get_project_files(project_id: int, request: Request) -> FileTreeResponse:
+    _project_context_for_request(request, project_id)
+    get_platform_api_client().require_project_files_capability()
+    raise AssertionError("platform capability method must raise")
 
 
 @router.post("/{project_id}/select-files", response_model=SelectedFilesResponse)
@@ -272,96 +139,9 @@ async def select_project_files(
     project_id: int,
     request: Request,
     payload: SelectedFilesRequest,
-    user_id: Optional[int] = Query(None, description="Main platform user ID"),
 ) -> SelectedFilesResponse:
-    try:
-        resolved_uid = _resolve_user_id(request, user_id)
-        project_data = get_project_context(resolved_uid, project_id)
-        if not project_data:
-            raise HTTPException(status_code=404, detail="Project not found")
-        
-        data_roots_raw = project_data.get("data_roots", [])
-        if not data_roots_raw:
-            return SelectedFilesResponse(
-                code=404,
-                message="No data roots configured for this project",
-                files=[]
-            )
-        
-        if payload.data_root_index < 0 or payload.data_root_index >= len(data_roots_raw):
-            raise HTTPException(status_code=400, detail="Invalid data_root index")
-        selected_root = str(
-            data_roots_raw[payload.data_root_index].get("path", "")
-        ).strip()
-        if not selected_root:
-            raise HTTPException(status_code=400, detail="Selected data root has no path")
-
-        session_upload_dir = None
-        if payload.session_id:
-            from app.services.session_paths import get_session_upload_dir
-            try:
-                session_upload_dir = get_session_upload_dir(payload.session_id, create=True)
-            except Exception as e:
-                logger.warning(f"Failed to create session upload dir: {e}")
-        
-        files = []
-        selected_root_path = Path(selected_root)
-        selected_root_resolved = selected_root_path.resolve()
-        for selected_path in payload.selected_paths:
-            source_full_path = None
-            try:
-                candidate = (selected_root_path / selected_path).resolve()
-                candidate.relative_to(selected_root_resolved)
-                if candidate.exists() and candidate.is_file():
-                    source_full_path = candidate
-            except (ValueError, FileNotFoundError):
-                source_full_path = None
-
-            if source_full_path:
-                file_ref = FileReference(
-                    path=selected_path,
-                    name=Path(selected_path).name,
-                    data_root_path=selected_root,
-                )
-                
-                if session_upload_dir:
-                    try:
-                        import shutil
-                        dest_path = session_upload_dir / file_ref.name
-                        
-                        original_dest = dest_path
-                        counter = 1
-                        while dest_path.exists():
-                            stem = original_dest.stem
-                            suffix = original_dest.suffix
-                            dest_path = original_dest.with_name(f"{stem}_{counter}{suffix}")
-                            counter += 1
-                        
-                        shutil.copy2(source_full_path, dest_path)
-                        file_ref.path = str(dest_path)
-                        logger.info(
-                            "Copied project file to session upload: %s -> %s",
-                            source_full_path,
-                            dest_path
-                        )
-                    except Exception as e:
-                        logger.warning(
-                            "Failed to copy file to session upload, using original path: %s",
-                            e
-                        )
-                
-                files.append(file_ref)
-            else:
-                logger.warning(f"Invalid or non-existent file path: {selected_path}")
-        
-        return SelectedFilesResponse(
-            code=0,
-            message=f"Selected {len(files)} files",
-            files=files
-        )
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to select project files: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to select files: {str(e)}")
+    if payload.project_id != project_id:
+        raise HTTPException(status_code=400, detail="Project path and payload must match")
+    _project_context_for_request(request, project_id)
+    get_platform_api_client().require_project_file_selection_capability()
+    raise AssertionError("platform capability method must raise")
