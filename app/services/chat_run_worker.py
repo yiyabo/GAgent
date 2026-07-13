@@ -366,7 +366,7 @@ async def execute_chat_run(run_id: str) -> None:
         mark_chat_run_started(run_id)
         await emitter.emit({"type": "start", "run_id": run_id})
 
-        agent, message_to_send = build_agent_for_chat_request(
+        agent, message_to_send = await build_agent_for_chat_request(
             request, save_user_message=False
         )
         agent._current_user_message = message_to_send

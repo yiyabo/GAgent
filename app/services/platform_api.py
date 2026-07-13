@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 import httpx
 from fastapi import HTTPException
@@ -60,14 +60,14 @@ class PlatformApiClient:
             raise HTTPException(status_code=502, detail=f"Platform {operation} returned invalid data")
         return data
 
-    def verify_sso_token(self, token: str) -> Dict[str, Any]:
+    async def verify_sso_token(self, token: str) -> Dict[str, Any]:
         if not token:
             raise HTTPException(status_code=401, detail="SSO token is required")
         if not self.sso_verify_url:
             raise PlatformCapabilityUnavailable("SSO token verification")
         try:
-            with httpx.Client(timeout=self.timeout) as client:
-                response = client.post(
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.post(
                     self.sso_verify_url,
                     params={"token": token},
                     headers=self._headers(),
@@ -78,10 +78,10 @@ class PlatformApiClient:
             raise HTTPException(status_code=502, detail="Platform SSO verification failed") from exc
         return self._unwrap_response(response, operation="SSO verification")
 
-    def get_project_context(self, platform_user_id: int, project_id: int) -> Dict[str, Any]:
+    async def get_project_context(self, platform_user_id: int, project_id: int) -> Dict[str, Any]:
         try:
-            with httpx.Client(timeout=self.timeout) as client:
-                response = client.get(
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                response = await client.get(
                     self._project_url(platform_user_id, project_id),
                     headers=self._headers(),
                 )

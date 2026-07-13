@@ -3444,6 +3444,7 @@ async def handle_plan_action(agent: Any, action: LLMAction) -> AgentStep:
                 tree,
                 evaluator_provider="qwen",
                 evaluator_model="qwen3.7-max",
+                model_provider=(agent.extra_context or {}).get("model_provider"),
             )
         except Exception as exc:
             logger.warning("review_plan rubric evaluation failed: %s", exc)
@@ -3521,6 +3522,7 @@ async def handle_plan_action(agent: Any, action: LLMAction) -> AgentStep:
             outcome = await auto_optimize_plan(
                 plan_id=plan_id,
                 repo=repo,
+                model_provider=(agent.extra_context or {}).get("model_provider"),
             )
             review_before = outcome.review_before
             review_after = outcome.review_after or review_before

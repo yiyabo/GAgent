@@ -503,6 +503,7 @@ async def _review_plan(plan_id: Optional[int], tool_context: Optional[Any] = Non
             plan_tree,
             evaluator_provider="qwen",
             evaluator_model="qwen3.7-max",
+            model_provider=getattr(tool_context, "model_provider", None) if tool_context is not None else None,
         )
 
         # Persist evaluation into plan metadata (merge, do not overwrite).
@@ -762,6 +763,7 @@ async def _optimize_plan(
             outcome = await auto_optimize_plan(
                 plan_id=plan_id,
                 repo=repo,
+                model_provider=getattr(tool_context, "model_provider", None) if tool_context is not None else None,
             )
             review_before = outcome.review_before
             review_after = outcome.review_after or review_before

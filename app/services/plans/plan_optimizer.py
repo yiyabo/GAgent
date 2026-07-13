@@ -511,14 +511,46 @@ def _normalize_generated_changes(
     return deduped
 
 
+def _client_from_model_provider(
+    model_provider: Optional[Dict[str, Any]],
+    *,
+    fallback_model: Optional[str] = None,
+    timeout: float = 180,
+) -> Optional[LLMClient]:
+    if not isinstance(model_provider, dict):
+        return None
+    base_url = str(model_provider.get("base_url") or "").strip()
+    api_key = str(model_provider.get("api_key") or "").strip()
+    if not base_url or not api_key:
+        return None
+    model = str(model_provider.get("model") or fallback_model or DEFAULT_OPTIMIZER_MODEL).strip()
+    provider = str(model_provider.get("type") or "openai").strip() or "openai"
+    try:
+        return LLMClient(
+            provider=provider,
+            url=base_url.rstrip("/") + "/v1/chat/completions",
+            api_key=api_key,
+            model=model,
+            timeout=timeout,
+        )
+    except Exception as exc:
+        logger.warning("Plan optimizer platform client initialization failed: %s", exc)
+        return None
+
+
 def _call_optimizer_llm(
     prompt: str,
     *,
     provider: str,
     model: str,
+    model_provider: Optional[Dict[str, Any]] = None,
 ) -> PlanOptimizationProposal:
     try:
-        client = LLMClient(provider=provider, model=model, timeout=180)
+        client = _client_from_model_provider(model_provider, fallback_model=model, timeout=180)
+        if client is not None:
+            model = str((model_provider or {}).get("model") or model or client.model)
+        else:
+            client = LLMClient(provider=provider, model=model, timeout=180)
     except Exception as exc:
         logger.warning("Plan optimizer client initialization failed: %s", exc)
         return PlanOptimizationProposal(
@@ -625,6 +657,7 @@ async def resolve_plan_review_result(
     review_result: Optional[PlanRubricResult] = None,
     evaluator_provider: str = DEFAULT_OPTIMIZER_PROVIDER,
     evaluator_model: str = DEFAULT_OPTIMIZER_MODEL,
+    model_provider: Optional[Dict[str, Any]] = None,
 ) -> Optional[PlanRubricResult]:
     current_review = review_result
     if current_review is None and isinstance(tree.metadata, dict):
@@ -636,6 +669,7 @@ async def resolve_plan_review_result(
         tree,
         evaluator_provider=evaluator_provider,
         evaluator_model=evaluator_model,
+        model_provider=model_provider,
     )
 
 
@@ -703,6 +737,7 @@ async def capture_plan_optimization_outcome(
     review_before: Optional[PlanRubricResult] = None,
     optimizer_provider: str = DEFAULT_OPTIMIZER_PROVIDER,
     optimizer_model: str = DEFAULT_OPTIMIZER_MODEL,
+    model_provider: Optional[Dict[str, Any]] = None,
     auto_generated: bool = False,
     skip_evaluation: bool = False,
 ) -> PlanAutoOptimizationOutcome:
@@ -722,6 +757,7 @@ async def capture_plan_optimization_outcome(
                 review_result=review_before,
                 evaluator_provider=optimizer_provider,
                 evaluator_model=optimizer_model,
+                model_provider=model_provider,
             )
         review_after = await asyncio.to_thread(
             evaluate_plan_rubric,
@@ -734,6 +770,7 @@ async def capture_plan_optimization_outcome(
                 current_review,
                 fallback=optimizer_model,
             ),
+            model_provider=model_provider,
         )
 
     normalized_generated_changes = list(
@@ -778,6 +815,7 @@ async def auto_optimize_plan(
     dimension_threshold: Optional[float] = None,
     optimizer_provider: str = DEFAULT_OPTIMIZER_PROVIDER,
     optimizer_model: str = DEFAULT_OPTIMIZER_MODEL,
+    model_provider: Optional[Dict[str, Any]] = None,
 ) -> PlanAutoOptimizationOutcome:
     config = get_plan_auto_optimize_config()
     resolved_max_changes = (
@@ -802,6 +840,7 @@ async def auto_optimize_plan(
         review_result=review_result,
         evaluator_provider=optimizer_provider,
         evaluator_model=optimizer_model,
+        model_provider=model_provider,
     )
 
     if current_review is None or is_rubric_evaluation_unavailable(current_review):
@@ -836,6 +875,7 @@ async def auto_optimize_plan(
         prompt,
         provider=optimizer_provider,
         model=optimizer_model,
+        model_provider=model_provider,
     )
     generated_changes = _normalize_generated_changes(tree, proposal.changes)[:resolved_max_changes]
     if not generated_changes:
@@ -877,6 +917,7 @@ async def auto_optimize_plan(
             review_before=current_review,
             optimizer_provider=optimizer_provider,
             optimizer_model=optimizer_model,
+            model_provider=model_provider,
             auto_generated=True,
         )
     except Exception as exc:
@@ -941,6 +982,7 @@ async def auto_review_and_optimize_plan(
     dimension_threshold: Optional[float] = None,
     optimizer_provider: str = DEFAULT_OPTIMIZER_PROVIDER,
     optimizer_model: str = DEFAULT_OPTIMIZER_MODEL,
+    model_provider: Optional[Dict[str, Any]] = None,
     trigger: str = "post_create",
 ) -> PlanAutoReviewOptimizeOutcome:
     repo = repo or PlanRepository()
@@ -950,6 +992,7 @@ async def auto_review_and_optimize_plan(
         review_result=review_result,
         evaluator_provider=optimizer_provider,
         evaluator_model=optimizer_model,
+        model_provider=model_provider,
     )
 
     if review is None:
@@ -1003,6 +1046,7 @@ async def auto_review_and_optimize_plan(
         dimension_threshold=dimension_threshold,
         optimizer_provider=optimizer_provider,
         optimizer_model=optimizer_model,
+        model_provider=model_provider,
     )
 
     refreshed = repo.get_plan_tree(plan_id)

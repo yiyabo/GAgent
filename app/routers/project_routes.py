@@ -88,14 +88,14 @@ class SelectedFilesResponse(BaseModel):
     files: list[FileReference]
 
 
-def _project_context_for_request(request: Request, project_id: int) -> dict:
+async def _project_context_for_request(request: Request, project_id: int) -> dict:
     platform_user_id, trusted_project_id = require_bound_platform_project(request, project_id)
-    return get_platform_api_client().get_project_context(platform_user_id, trusted_project_id)
+    return await get_platform_api_client().get_project_context(platform_user_id, trusted_project_id)
 
 
 @router.get("/{project_id}", response_model=ProjectResponse)
 async def get_project(project_id: int, request: Request) -> ProjectResponse:
-    project_data = _project_context_for_request(request, project_id)
+    project_data = await _project_context_for_request(request, project_id)
     raw_roots = project_data.get("data_roots") or []
     data_roots = [
         DataRoot(
@@ -129,9 +129,8 @@ async def get_project(project_id: int, request: Request) -> ProjectResponse:
 
 @router.get("/{project_id}/files", response_model=FileTreeResponse)
 async def get_project_files(project_id: int, request: Request) -> FileTreeResponse:
-    _project_context_for_request(request, project_id)
+    await _project_context_for_request(request, project_id)
     get_platform_api_client().require_project_files_capability()
-    raise AssertionError("platform capability method must raise")
 
 
 @router.post("/{project_id}/select-files", response_model=SelectedFilesResponse)
@@ -142,6 +141,5 @@ async def select_project_files(
 ) -> SelectedFilesResponse:
     if payload.project_id != project_id:
         raise HTTPException(status_code=400, detail="Project path and payload must match")
-    _project_context_for_request(request, project_id)
+    await _project_context_for_request(request, project_id)
     get_platform_api_client().require_project_file_selection_capability()
-    raise AssertionError("platform capability method must raise")

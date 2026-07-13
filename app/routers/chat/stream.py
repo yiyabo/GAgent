@@ -5,11 +5,11 @@ from __future__ import annotations
 import logging
 from typing import AsyncIterator
 
-from fastapi import BackgroundTasks, Request
+from fastapi import BackgroundTasks, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from app.services.platform_access import bind_chat_request_to_principal
-from app.services.request_principal import get_request_owner_id
+from app.services.request_principal import get_request_owner_id, get_request_principal
 
 from .background import _sse_message
 from .models import ChatRequest
@@ -49,9 +49,13 @@ async def chat_stream(
             event_generator(), media_type="text/event-stream", headers=headers
         )
 
+    principal = get_request_principal(raw_request)
+    if principal.is_authenticated and principal.is_platform_access:
+        raise HTTPException(status_code=403, detail="Platform SSO sessions require a chat session id")
+
     async def event_generator_legacy() -> AsyncIterator[str]:
         try:
-            agent, message_to_send = build_agent_for_chat_request(
+            agent, message_to_send = await build_agent_for_chat_request(
                 request, save_user_message=True
             )
             yield _sse_message({"type": "start"})

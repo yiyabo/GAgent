@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, Optional
 from urllib.parse import quote, urlparse
 
@@ -13,6 +14,7 @@ from app.routers import register_router
 from app.services.auth import (
     create_auth_session,
     create_sso_handoff,
+    rate_limiter,
 )
 from app.services.foundation.settings import get_settings
 from app.services.platform_api import get_platform_api_client
@@ -24,6 +26,8 @@ from app.services.sso import (
 )
 
 router = APIRouter(prefix="/sso", tags=["sso"])
+
+logger = logging.getLogger(__name__)
 
 
 register_router(
@@ -68,7 +72,7 @@ def _request_user_agent(request: Request) -> Optional[str]:
 
 def _allowed_frontend_redirect(redirect_url: Optional[str]) -> str:
     configured = [
-        item.strip().rstrip("/")
+        item.strip().rstrip("/").lower()
         for item in str(get_settings().sso_allowed_redirect_origins or "").split(",")
         if item.strip()
     ]
@@ -76,14 +80,14 @@ def _allowed_frontend_redirect(redirect_url: Optional[str]) -> str:
         raise HTTPException(status_code=503, detail="SSO redirect origins are not configured")
     candidate = str(redirect_url or configured[0]).strip()
     parsed = urlparse(candidate)
-    origin = f"{parsed.scheme}://{parsed.netloc}".rstrip("/")
+    origin = f"{parsed.scheme}://{parsed.netloc.lower()}".rstrip("/")
     if parsed.scheme not in {"http", "https"} or origin not in configured:
         raise HTTPException(status_code=400, detail="SSO redirect URL is not allowed")
     return candidate
 
 
 @router.get("/login/")
-def sso_login(
+async def sso_login(
     request: Request,
     response: Response,
     token: str = Query(..., description="SSO token from main platform"),
@@ -93,16 +97,44 @@ def sso_login(
     project_label: Optional[str] = Query(None, description="Project label from main platform"),
 ):
     """Verify platform SSO, bind one authorized project, then issue a handoff."""
+    rate_limiter.check("sso_login", _request_ip(request), limit=10, window_seconds=60)
     frontend_base = _allowed_frontend_redirect(redirect_url)
     if project_id is None:
         raise HTTPException(status_code=400, detail="Platform SSO requires a project binding")
 
-    user_data = verify_sso_token(token)
+    user_data = await verify_sso_token(token)
+    if not isinstance(user_data, dict):
+        user_data = {}
     sso_user = SSOUserData(user_data)
     resolved_user_id = sso_user.main_platform_user_id
+    if resolved_user_id is None and user_id is not None:
+        try:
+            resolved_user_id = int(user_id)
+        except (TypeError, ValueError):
+            resolved_user_id = None
+        if resolved_user_id is not None:
+            user_bucket = user_data.get("user")
+            if not isinstance(user_bucket, dict):
+                user_bucket = {}
+                user_data["user"] = user_bucket
+            user_bucket.setdefault("id", resolved_user_id)
+            sso_user = SSOUserData(user_data)
+            logger.info(
+                "[SSO] Platform verify omitted user.id; using URL user_id=%s after token verify",
+                resolved_user_id,
+            )
     if resolved_user_id is None:
+        logger.error(
+            "[SSO] Platform verify response missing user id; data_keys=%s user_keys=%s",
+            sorted(str(k) for k in user_data.keys()),
+            sorted(str(k) for k in (sso_user.user or {}).keys()),
+        )
         raise HTTPException(status_code=502, detail="Platform SSO verification omitted the user ID")
     if user_id is not None and int(user_id) != resolved_user_id:
+        logger.warning(
+            "[SSO] User binding mismatch: URL user_id=%s vs token user_id=%s",
+            user_id, resolved_user_id,
+        )
         raise HTTPException(status_code=403, detail="SSO user binding mismatch")
 
     existing_user = get_user_by_global_uuid(sso_user.uuid)
@@ -116,8 +148,14 @@ def sso_login(
     if not existing_user.get("is_active"):
         raise HTTPException(status_code=403, detail="User account is disabled")
 
-    project_data = get_platform_api_client().get_project_context(resolved_user_id, project_id)
-    validated_project_id = int(project_data.get("id") or project_id)
+    project_data = await get_platform_api_client().get_project_context(resolved_user_id, project_id)
+    raw_project_id = project_data.get("id")
+    if raw_project_id is None:
+        raise HTTPException(
+            status_code=502,
+            detail="Platform project context omitted the project ID",
+        )
+    validated_project_id = int(raw_project_id)
     validated_project_label = str(project_data.get("label") or "").strip() or None
 
     session = create_auth_session(

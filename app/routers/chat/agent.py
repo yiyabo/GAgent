@@ -4907,6 +4907,7 @@ class StructuredChatAgent:
             "recent_tool_results": [],
             "deep_think_enabled": True,
             "paper_mode": bool(self.extra_context.get("paper_mode", False)),
+            "model_provider": (self.extra_context or {}).get("model_provider"),
         }
 
         completed_ids: List[int] = []
@@ -4961,13 +4962,14 @@ class StructuredChatAgent:
             await event_sink(start_payload)
         yield _sse_message(start_payload)
 
-        # Run PlanExecutor in a thread (it's synchronous internally)
         try:
-            from app.services.plans.plan_executor import PlanExecutor, PlanExecutorLLMService
-            executor = PlanExecutor(
-                repo=self.plan_session.repo,
-                llm_service=PlanExecutorLLMService(),
-            )
+            executor = self.plan_executor
+            if executor is None:
+                from app.services.plans.plan_executor import PlanExecutor, PlanExecutorLLMService
+                executor = PlanExecutor(
+                    repo=self.plan_session.repo,
+                    llm_service=PlanExecutorLLMService(llm=self.llm_service),
+                )
             summary = await asyncio.to_thread(
                 executor.execute_plan,
                 plan_id,

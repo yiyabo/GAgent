@@ -273,7 +273,7 @@ async def chat_message(
         session_settings: Dict[str, Any] = {}
 
         if principal.is_platform_access:
-            project_data = get_platform_api_client().get_project_context(
+            project_data = await get_platform_api_client().get_project_context(
                 principal.require_platform_user_id(),
                 principal.require_platform_project_id(),
             )

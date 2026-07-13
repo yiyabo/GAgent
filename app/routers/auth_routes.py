@@ -229,7 +229,8 @@ def change_local_password(
 
 
 class SSOCompleteRequest(BaseModel):
-    handoff_token: str = Field(..., min_length=1, max_length=512)
+    handoff_token: Optional[str] = Field(None, min_length=1, max_length=512)
+    session_token: Optional[str] = Field(None, min_length=1, max_length=512)
 
 
 @router.post("/sso-complete", response_model=AuthSessionResponse)
@@ -238,15 +239,25 @@ def complete_sso_login(
     request: Request,
     response: Response,
 ):
-    """Consume a single-use SSO handoff and set the real session cookie."""
-    session_id = consume_sso_handoff(payload.handoff_token)
-    if session_id is None:
-        raise HTTPException(status_code=401, detail="Invalid, expired, or already used SSO handoff")
+    rate_limiter.check("sso_complete", _request_ip(request), limit=10, window_seconds=60)
+    handoff = str(payload.handoff_token or "").strip()
+    legacy_session = str(payload.session_token or "").strip()
+    if handoff:
+        session_id = consume_sso_handoff(handoff)
+        if session_id is None:
+            raise HTTPException(status_code=401, detail="Invalid, expired, or already used SSO handoff")
+    elif legacy_session:
+        session_id = legacy_session
+    else:
+        raise HTTPException(status_code=400, detail="SSO complete requires handoff_token or session_token")
+
     resolved = session_principal_from_session_id(session_id, touch=True)
     if resolved is None:
         raise HTTPException(status_code=401, detail="Invalid or expired SSO session")
     principal, expires_at = resolved
-    if not principal.is_authenticated or not principal.is_platform_access:
+    if not principal.is_authenticated:
+        raise HTTPException(status_code=401, detail="Session is not authenticated")
+    if handoff and not principal.is_platform_access:
         raise HTTPException(status_code=401, detail="Session is not a platform SSO session")
 
     request.state.skip_auth_cookie_refresh = True

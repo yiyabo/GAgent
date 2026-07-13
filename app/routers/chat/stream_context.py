@@ -30,7 +30,7 @@ from .session_helpers import (
 logger = logging.getLogger(__name__)
 
 
-def build_agent_for_chat_request(
+async def build_agent_for_chat_request(
     request: ChatRequest,
     *,
     save_user_message: bool = True,
@@ -62,7 +62,7 @@ def build_agent_for_chat_request(
         platform_project_id = context.get("platform_project_id")
         if not isinstance(platform_user_id, int) or not isinstance(platform_project_id, int):
             raise ValueError("Missing trusted platform context for chat run")
-        project_data = get_platform_api_client().get_project_context(
+        project_data = await get_platform_api_client().get_project_context(
             platform_user_id,
             platform_project_id,
         )

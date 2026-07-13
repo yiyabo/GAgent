@@ -38,10 +38,17 @@ export const authApi = {
     return response.data as AuthSessionResponse;
   },
 
-  async ssoComplete(handoffToken: string): Promise<AuthSessionResponse> {
+  async ssoComplete(
+    token: string,
+    mode: 'handoff' | 'session' = 'handoff',
+  ): Promise<AuthSessionResponse> {
+    const body =
+      mode === 'session'
+        ? { session_token: token }
+        : { handoff_token: token };
     const response = await apiClient.post<AuthSessionResponse>(
       '/auth/sso-complete',
-      { handoff_token: handoffToken },
+      body,
       AUTH_REQUEST_OPTIONS
     );
     return response.data as AuthSessionResponse;

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import threading
 from datetime import datetime, timedelta, timezone
@@ -16,6 +17,8 @@ from app.database_pool import get_db
 from app.services.foundation.settings import get_settings
 from app.services.request_principal import RequestPrincipal
 from app.utils.route_helpers import parse_bool
+
+logger = logging.getLogger(__name__)
 
 AUTH_MODE_LOCAL = "local"
 AUTH_MODE_PROXY = "proxy"
@@ -391,6 +394,12 @@ def consume_sso_handoff(token: str) -> Optional[str]:
             (token_hash, now),
         ).fetchone()
         if row is None:
+            replay_row = conn.execute(
+                "SELECT consumed_at FROM sso_handoffs WHERE token_hash=?",
+                (token_hash,),
+            ).fetchone()
+            if replay_row and replay_row["consumed_at"] is not None:
+                logger.warning("[SSO] Handoff replay attempt for already-consumed token")
             conn.rollback()
             return None
         updated = conn.execute(

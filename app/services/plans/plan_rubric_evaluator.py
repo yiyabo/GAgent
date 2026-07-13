@@ -680,12 +680,40 @@ def _invoke_evaluator_client(
         return executor.submit(lambda: asyncio.run(_runner())).result()
 
 
+def _client_from_model_provider(
+    model_provider: Optional[Dict[str, Any]],
+    *,
+    fallback_model: Optional[str] = None,
+    timeout: float = 180,
+) -> Optional[LLMClient]:
+    if not isinstance(model_provider, dict):
+        return None
+    base_url = str(model_provider.get("base_url") or "").strip()
+    api_key = str(model_provider.get("api_key") or "").strip()
+    if not base_url or not api_key:
+        return None
+    model = str(model_provider.get("model") or fallback_model or "qwen3.7-max").strip()
+    provider = str(model_provider.get("type") or "openai").strip() or "openai"
+    try:
+        return LLMClient(
+            provider=provider,
+            url=base_url.rstrip("/") + "/v1/chat/completions",
+            api_key=api_key,
+            model=model,
+            timeout=timeout,
+        )
+    except (TypeError, ValueError) as exc:
+        logger.warning("Rubric evaluator platform client init failed: %s", exc)
+        return None
+
+
 def evaluate_plan_rubric(
     tree: PlanTree,
     *,
     evaluator_client: Optional[LLMClient] = None,
     evaluator_provider: str = "qwen",
     evaluator_model: Optional[str] = None,
+    model_provider: Optional[Dict[str, Any]] = None,
     dim_weights: Optional[Dict[str, float]] = None,
     sub_weights: Optional[Dict[str, Dict[str, float]]] = None,
     strict_json: bool = True,
@@ -705,6 +733,20 @@ def evaluate_plan_rubric(
     rubric = rubric_definition_en()
 
     client = evaluator_client
+    if client is None:
+        platform_client = _client_from_model_provider(
+            model_provider,
+            fallback_model=evaluator_model,
+            timeout=180,
+        )
+        if platform_client is not None:
+            client = platform_client
+            evaluator_provider = str(
+                (model_provider or {}).get("type") or evaluator_provider or "openai"
+            )
+            evaluator_model = str(
+                (model_provider or {}).get("model") or evaluator_model or client.model
+            )
     if client is None:
         try:
             client = LLMClient(provider=evaluator_provider, model=evaluator_model, timeout=180)

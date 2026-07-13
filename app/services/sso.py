@@ -18,11 +18,11 @@ logger = logging.getLogger(__name__)
 _password_hasher = PasswordHasher()
 
 
-def get_project_context(user_id: Optional[int], project_id: int) -> Dict[str, Any]:
+async def get_project_context(user_id: Optional[int], project_id: int) -> Dict[str, Any]:
     """Compatibility wrapper requiring an authenticated main-platform user."""
     if user_id is None:
         raise ValueError("Platform project access requires a platform user ID")
-    return get_platform_api_client().get_project_context(int(user_id), int(project_id))
+    return await get_platform_api_client().get_project_context(int(user_id), int(project_id))
 
 
 def _now_utc() -> datetime:
@@ -37,10 +37,16 @@ class SSOUserData:
     """Normalized user payload verified by the main platform."""
 
     def __init__(self, data: Dict[str, Any]):
+        self._root: Dict[str, Any] = data if isinstance(data, dict) else {}
         self.global_uuid: str = str(data.get("global_uuid") or "")
         self.action: str = str(data.get("action") or "create")
         raw_user = data.get("user")
-        self.user: Dict[str, Any] = raw_user if isinstance(raw_user, dict) else {}
+        if isinstance(raw_user, dict):
+            self.user = raw_user
+        elif any(k in data for k in ("id", "user_id", "email", "uuid", "username")):
+            self.user = dict(data)
+        else:
+            self.user = {}
 
     @property
     def uuid(self) -> str:
@@ -86,15 +92,25 @@ class SSOUserData:
 
     @property
     def main_platform_user_id(self) -> Optional[int]:
-        raw = self.user.get("id")
-        try:
-            return int(raw) if raw is not None else None
-        except (TypeError, ValueError):
-            return None
+        candidates = (
+            self.user.get("id"),
+            self.user.get("user_id"),
+            self.user.get("userId"),
+            getattr(self, "_root", {}).get("id") if isinstance(getattr(self, "_root", None), dict) else None,
+            getattr(self, "_root", {}).get("user_id") if isinstance(getattr(self, "_root", None), dict) else None,
+        )
+        for raw in candidates:
+            if raw is None or raw == "":
+                continue
+            try:
+                return int(raw)
+            except (TypeError, ValueError):
+                continue
+        return None
 
 
-def verify_sso_token(token: str) -> Dict[str, Any]:
-    return get_platform_api_client().verify_sso_token(token)
+async def verify_sso_token(token: str) -> Dict[str, Any]:
+    return await get_platform_api_client().verify_sso_token(token)
 
 
 def sync_sso_user(sso_data: SSOUserData) -> Dict[str, Any]:

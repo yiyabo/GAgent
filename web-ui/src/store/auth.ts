@@ -63,9 +63,27 @@ export const useAuthStore = create<AuthState>((set) => ({
   bootstrap: async () => {
     set({ loading: true });
     const urlParams = new URLSearchParams(window.location.search);
-    const handoffToken = urlParams.get('__sso_handoff');
-    const clearHandoffFromUrl = () => {
+    let handoffToken = urlParams.get('__sso_handoff');
+    let legacySessionToken = urlParams.get('__sso_session');
+    if (!handoffToken && !legacySessionToken) {
+      const nextRaw = urlParams.get('next');
+      if (nextRaw) {
+        try {
+          const nextUrl = new URL(decodeURIComponent(nextRaw), window.location.origin);
+          handoffToken = nextUrl.searchParams.get('__sso_handoff');
+          legacySessionToken = nextUrl.searchParams.get('__sso_session');
+        } catch {
+          handoffToken = null;
+          legacySessionToken = null;
+        }
+      }
+    }
+    const clearSsoParamsFromUrl = () => {
       urlParams.delete('__sso_handoff');
+      urlParams.delete('__sso_session');
+      urlParams.delete('project_id');
+      urlParams.delete('user_id');
+      urlParams.delete('project_label');
       const nextUrl = urlParams.toString()
         ? `${window.location.pathname}?${urlParams.toString()}`
         : window.location.pathname;
@@ -96,16 +114,20 @@ export const useAuthStore = create<AuthState>((set) => ({
     };
 
     try {
-      if (handoffToken) {
+      if (handoffToken || legacySessionToken) {
+        const mode = handoffToken ? 'handoff' : 'session';
+        const token = handoffToken || legacySessionToken || '';
         try {
-          const payload = await authApi.ssoComplete(handoffToken);
-          clearHandoffFromUrl();
+          const payload = await authApi.ssoComplete(token, mode);
+          clearSsoParamsFromUrl();
           if (payload.authenticated && payload.user) {
             await applyAuthenticatedUser(payload.user);
             return;
           }
-        } catch {
-          clearHandoffFromUrl();
+          console.error('[auth] SSO complete returned unauthenticated payload', payload);
+        } catch (error) {
+          console.error('[auth] SSO complete failed', error);
+          clearSsoParamsFromUrl();
         }
       }
 
