@@ -46,6 +46,19 @@ def create_chat_run(
         conn.commit()
 
 
+def set_chat_run_user_message_id(run_id: str, user_message_id: int) -> None:
+    with get_db() as conn:
+        conn.execute(
+            """
+            UPDATE chat_runs
+            SET user_message_id = COALESCE(user_message_id, ?)
+            WHERE run_id = ?
+            """,
+            (user_message_id, run_id),
+        )
+        conn.commit()
+
+
 def mark_chat_run_started(run_id: str) -> None:
     with get_db() as conn:
         conn.execute(

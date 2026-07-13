@@ -207,11 +207,29 @@ async def lifespan(_fastapi_app: FastAPI):
             "Failed to clean up orphaned qwen/node processes: %s", e
         )
 
-    yield
+    quality_runner = None
+    try:
+        from .services.conversation_quality import (
+            ConversationQualityRunner,
+            get_conversation_quality_service,
+        )
 
-    # Gracefully close shared HTTP connection pools on shutdown.
-    await close_realtime_bus()
-    await close_shared_clients()
+        quality_runner = ConversationQualityRunner(get_conversation_quality_service())
+        await quality_runner.start()
+    except Exception as e:
+        logging.getLogger("app.main").warning("Failed to start conversation quality runner: %s", e)
+
+    try:
+        yield
+    finally:
+        if quality_runner is not None:
+            await quality_runner.stop()
+
+        # Gracefully close shared HTTP connection pools on shutdown.
+        try:
+            await close_realtime_bus()
+        finally:
+            await close_shared_clients()
 
 
 async def base_error_handler(_request: Request, exc: BaseError):

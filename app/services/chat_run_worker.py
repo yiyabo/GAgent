@@ -20,6 +20,15 @@ logger = logging.getLogger(__name__)
 _CASCADE_MAX_TASKS = 50
 
 
+def _capture_quality_snapshot(run_id: str) -> None:
+    try:
+        from app.services.conversation_quality import get_conversation_quality_service
+
+        get_conversation_quality_service().capture_completed_run(run_id)
+    except Exception as exc:  # pragma: no cover - observability must not affect chat delivery
+        logger.warning("[QUALITY] snapshot capture failed run=%s error=%s", run_id, type(exc).__name__)
+
+
 def _build_explicit_execution_final_payload(
     *,
     summary: str,
@@ -27,6 +36,8 @@ def _build_explicit_execution_final_payload(
     completed_ids: list[int],
     failed_id: Optional[int],
     total_tasks: int,
+    tools_used: Optional[list[str]] = None,
+    tool_failures: Optional[list[str]] = None,
 ) -> dict:
     status = "failed" if failed_id is not None else "completed"
     metadata = {
@@ -40,6 +51,8 @@ def _build_explicit_execution_final_payload(
         "analysis_text": summary,
         "final_summary": summary,
         "thinking_display_mode": "final_answer",
+        "tools_used": list(tools_used or []),
+        "tool_failures": list(tool_failures or []),
     }
     return {
         "type": "final",
@@ -92,6 +105,8 @@ async def _run_explicit_task_execution(
     )
     completed_ids = []
     failed_id = None
+    tools_used: list[str] = []
+    tool_failures: list[str] = []
 
     for idx, task_id in enumerate(all_task_ids):
         if cancel_ev.is_set():
@@ -148,8 +163,20 @@ async def _run_explicit_task_execution(
             logger.exception(
                 "[EXPLICIT_EXEC] Task %d exception: %s", task_id, exc
             )
+            tool_failures.append(str(exc))
             failed_id = task_id
             break
+
+        result_metadata = getattr(exec_result, "metadata", {}) or {}
+        if isinstance(result_metadata, dict):
+            for tool_name in result_metadata.get("tools_used") or []:
+                name = str(tool_name).strip()
+                if name and name not in tools_used:
+                    tools_used.append(name)
+            for failure in result_metadata.get("tool_failures") or []:
+                message = str(failure).strip()
+                if message and message not in tool_failures:
+                    tool_failures.append(message)
 
         task_status = (exec_result.status or "").strip().lower()
         logger.info(
@@ -185,6 +212,8 @@ async def _run_explicit_task_execution(
         completed_ids=completed_ids,
         failed_id=failed_id,
         total_tasks=len(all_task_ids),
+        tools_used=tools_used,
+        tool_failures=tool_failures,
     )
 
     try:
@@ -329,6 +358,7 @@ async def execute_chat_run(run_id: str) -> None:
         raw = row.get("request_json")
         if not raw:
             mark_chat_run_finished(run_id, "failed", error="missing request_json")
+            _capture_quality_snapshot(run_id)
             return
         data = json.loads(raw)
         request = ChatRequest.model_validate(data)
@@ -385,6 +415,7 @@ async def execute_chat_run(run_id: str) -> None:
             mark_chat_run_finished(run_id, "cancelled", error="cancelled")
         else:
             mark_chat_run_finished(run_id, "succeeded")
+        _capture_quality_snapshot(run_id)
     except Exception as exc:
         logger.exception("chat_run worker failed run_id=%s", run_id)
         try:
@@ -398,6 +429,7 @@ async def execute_chat_run(run_id: str) -> None:
         except Exception:
             pass
         mark_chat_run_finished(run_id, "failed", error=str(exc))
+        _capture_quality_snapshot(run_id)
     finally:
         stop_owner_lease("run", run_id)
         hub.forget_worker_task(run_id)

@@ -15,6 +15,7 @@ const Dashboard = retryLazy(() => import('@pages/Dashboard'));
 const Tasks = retryLazy(() => import('@pages/Tasks'));
 const Plans = retryLazy(() => import('@pages/Plans'));
 const Memory = retryLazy(() => import('@pages/Memory'));
+const QualityAnalytics = retryLazy(() => import('@pages/QualityAnalytics'));
 const System = retryLazy(() => import('@pages/System'));
 const Login = retryLazy(() => import('@pages/Login'));
 const Register = retryLazy(() => import('@pages/Register'));
@@ -213,6 +214,7 @@ function App() {
           <Route path="/tasks" element={<RouteContent><Tasks /></RouteContent>} />
           <Route path="/plans" element={<RouteContent><Plans /></RouteContent>} />
           <Route path="/memory" element={<RouteContent><Memory /></RouteContent>} />
+          <Route path="/analytics" element={<RouteContent><QualityAnalytics /></RouteContent>} />
           <Route path="/system" element={<RouteContent><System /></RouteContent>} />
         </Route>
       </Route>

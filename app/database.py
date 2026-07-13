@@ -262,6 +262,50 @@ def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS idx_chat_run_events_run_seq "
             "ON chat_run_events(run_id, seq)"
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS conversation_quality_evaluations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                target_run_id TEXT NOT NULL UNIQUE,
+                session_id TEXT NOT NULL,
+                owner_id TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                evaluation_basis TEXT,
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT,
+                observed_until TIMESTAMP NOT NULL,
+                feedback_message_id INTEGER,
+                feedback_received_at TIMESTAMP,
+                snapshot_json TEXT NOT NULL,
+                satisfaction_level TEXT,
+                confidence REAL,
+                label_source TEXT,
+                evaluation_json TEXT,
+                evaluator_provider TEXT,
+                evaluator_model TEXT,
+                prompt_version TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                evaluated_at TIMESTAMP,
+                finalized_at TIMESTAMP,
+                FOREIGN KEY (target_run_id) REFERENCES chat_runs(run_id) ON DELETE CASCADE,
+                FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE,
+                FOREIGN KEY (feedback_message_id) REFERENCES chat_messages(id) ON DELETE SET NULL
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_quality_session_status_created "
+            "ON conversation_quality_evaluations(session_id, status, created_at DESC)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_quality_owner_finalized "
+            "ON conversation_quality_evaluations(owner_id, finalized_at DESC)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_quality_status_observed_until "
+            "ON conversation_quality_evaluations(status, observed_until)"
+        )
 
     try:
         cleaned = config.cleanup_old_sessions(max_age_days=30)

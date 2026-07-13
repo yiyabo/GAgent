@@ -71,6 +71,24 @@ def test_run_explicit_task_execution_emits_standard_final_payload_and_persists_m
     assert saved_messages[0]["metadata"]["explicit_task_execution"] is True
 
 
+def test_explicit_execution_final_payload_preserves_tool_facts() -> None:
+    from app.services.chat_run_worker import _build_explicit_execution_final_payload
+
+    payload = _build_explicit_execution_final_payload(
+        summary="Executed task.",
+        plan_id=77,
+        completed_ids=[43],
+        failed_id=None,
+        total_tasks=1,
+        tools_used=["code_executor"],
+        tool_failures=["timeout"],
+    )
+
+    metadata = payload["payload"]["metadata"]
+    assert metadata["tools_used"] == ["code_executor"]
+    assert metadata["tool_failures"] == ["timeout"]
+
+
 def test_execute_chat_run_uses_unified_stream_for_single_explicit_task(monkeypatch) -> None:
     request = ChatRequest(
         message="执行任务43",

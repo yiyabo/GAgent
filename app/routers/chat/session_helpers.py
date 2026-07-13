@@ -883,7 +883,7 @@ def _ensure_session_exists(
     normalized_owner_id = _resolve_session_owner_id(conn, session_id, owner_id)
     cursor = conn.cursor()
     cursor.execute(
-        "SELECT id, plan_id, owner_id FROM chat_sessions WHERE id = ?",
+        "SELECT id, plan_id, owner_id, project_id FROM chat_sessions WHERE id = ?",
         (session_id,),
     )
     row = cursor.fetchone()
@@ -930,6 +930,23 @@ def _ensure_session_exists(
         raise PermissionError(f"Session {session_id} belongs to another owner")
 
     current_plan_id = row["plan_id"]
+    current_project_id = row["project_id"]
+    if project_id is not None and current_project_id is None:
+        cursor.execute(
+            """
+            UPDATE chat_sessions
+            SET project_id=?,
+                updated_at=CURRENT_TIMESTAMP
+            WHERE id=? AND owner_id=? AND project_id IS NULL
+            """,
+            (project_id, session_id, normalized_owner_id),
+        )
+        logger.info(
+            "Bound existing chat session %s to project %s",
+            session_id,
+            project_id,
+        )
+
     if plan_id is not None and current_plan_id != plan_id:
         plan_title = _lookup_plan_title(conn, plan_id)
         cursor.execute(
@@ -1020,7 +1037,7 @@ def _save_chat_message(
     *,
     owner_id: Optional[str] = None,
     model_provider: Optional[Dict[str, Any]] = None,
-) -> None:
+) -> Optional[int]:
     """Persist chat message."""
     try:
         from ...database import get_db  # lazy import to avoid circular deps
@@ -1045,6 +1062,7 @@ def _save_chat_message(
                 """,
                 (session_id, role, content, metadata_json),
             )
+            message_id = int(cursor.lastrowid)
 
             # Process message through chat memory middleware
             try:
@@ -1072,10 +1090,12 @@ def _save_chat_message(
                 (session_id,),
             )
             conn.commit()
+            return message_id
     except PermissionError:
         raise
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning("Failed to save chat message: %s", exc)
+    return None
 
 
 def _load_chat_history(

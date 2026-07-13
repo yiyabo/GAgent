@@ -10,6 +10,7 @@ _DEFAULT_MODULES: Iterable[str] = (
     "app.routers.sso_routes",
     "app.routers.project_routes",
     "app.routers.chat.routes",
+    "app.routers.conversation_quality_routes",
     "app.routers.system_health_routes",
     "app.routers.plan_routes",
     "app.routers.plan_audit_repair_routes",

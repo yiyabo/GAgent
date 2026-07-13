@@ -13,6 +13,7 @@ from fastapi.responses import StreamingResponse
 from app.repository.chat_runs import (
     create_chat_run,
     fetch_events_after,
+    set_chat_run_user_message_id,
     get_chat_run,
     list_session_runs,
 )
@@ -30,6 +31,27 @@ logger = logging.getLogger(__name__)
 
 def new_chat_run_id() -> str:
     return f"dt_{uuid4().hex}"
+
+
+def _schedule_quality_follow_up(
+    *,
+    session_id: str,
+    owner_id: str,
+    feedback_message_id: int,
+) -> None:
+    async def _handle() -> None:
+        try:
+            from app.services.conversation_quality import get_conversation_quality_service
+
+            await get_conversation_quality_service().handle_follow_up(
+                session_id=session_id,
+                owner_id=owner_id,
+                feedback_message_id=feedback_message_id,
+            )
+        except Exception as exc:  # pragma: no cover - observability must not affect chat delivery
+            logger.warning("[QUALITY] follow-up handling failed error=%s", type(exc).__name__)
+
+    asyncio.create_task(_handle())
 
 
 def _plan_id_from_request(request: ChatRequest) -> Optional[int]:
@@ -65,13 +87,20 @@ def start_background_chat_run(
         if request.client_message_id
         else None
     )
-    _save_chat_message(
+    user_message_id = _save_chat_message(
         session_id,
         "user",
         request.message,
         user_message_metadata,
         owner_id=owner_id,
     )
+    if isinstance(user_message_id, int):
+        set_chat_run_user_message_id(run_id, user_message_id)
+        _schedule_quality_follow_up(
+            session_id=session_id,
+            owner_id=owner_id,
+            feedback_message_id=user_message_id,
+        )
     loop = asyncio.get_running_loop()
     task = loop.create_task(execute_chat_run(run_id))
     hub.register_worker_task(run_id, task)

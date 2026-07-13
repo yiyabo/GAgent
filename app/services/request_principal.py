@@ -6,6 +6,8 @@ from typing import Optional
 
 from fastapi import HTTPException, Request
 
+from app.services.foundation.settings import get_settings
+
 
 LEGACY_LOCAL_OWNER_ID = "legacy-local"
 _current_principal: ContextVar["RequestPrincipal"] = ContextVar(
@@ -74,6 +76,19 @@ def require_authenticated_principal(
     if not principal.is_authenticated:
         raise HTTPException(status_code=401, detail=detail)
     return principal
+
+
+def _quality_analytics_admin_ids() -> set[str]:
+    raw = str(get_settings().quality_analytics_admin_ids or "")
+    return {item.strip() for item in raw.split(",") if item.strip()}
+
+
+def require_quality_analytics_access(request: Request) -> RequestPrincipal:
+    """Require an authenticated internal operator for conversation analytics."""
+    principal = require_authenticated_principal(request)
+    if principal.role == "admin" or principal.user_id in _quality_analytics_admin_ids():
+        return principal
+    raise HTTPException(status_code=403, detail="Conversation quality analytics access is restricted")
 
 
 def ensure_owner_access(

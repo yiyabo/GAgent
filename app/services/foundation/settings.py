@@ -166,6 +166,34 @@ if _USE_PYDANTIC:
             default=10000, env="JOB_LOG_MAX_ROWS"
         )
 
+        quality_evaluation_enabled: bool = Field(
+            default=False, env="QUALITY_EVALUATION_ENABLED"
+        )
+        quality_evaluator_provider: Optional[str] = Field(
+            default=None, env="QUALITY_EVALUATOR_PROVIDER"
+        )
+        quality_evaluator_model: Optional[str] = Field(
+            default=None, env="QUALITY_EVALUATOR_MODEL"
+        )
+        quality_evaluation_observation_hours: int = Field(
+            default=24, ge=1, le=720, env="QUALITY_EVALUATION_OBSERVATION_HOURS"
+        )
+        quality_evaluation_poll_seconds: int = Field(
+            default=300, ge=10, le=3600, env="QUALITY_EVALUATION_POLL_SECONDS"
+        )
+        quality_evaluation_max_concurrency: int = Field(
+            default=2, ge=1, le=10, env="QUALITY_EVALUATION_MAX_CONCURRENCY"
+        )
+        quality_evaluation_max_snapshot_chars: int = Field(
+            default=12000, ge=1000, le=100000, env="QUALITY_EVALUATION_MAX_SNAPSHOT_CHARS"
+        )
+        quality_evaluation_max_attempts: int = Field(
+            default=3, ge=1, le=10, env="QUALITY_EVALUATION_MAX_ATTEMPTS"
+        )
+        quality_analytics_admin_ids: str = Field(
+            default="", env="QUALITY_ANALYTICS_ADMIN_IDS"
+        )
+
         # Plan rubric evaluation & auto-optimization
         plan_rubric_threshold: int = Field(default=80, env="PLAN_RUBRIC_THRESHOLD")
         plan_optimize_max_iters: int = Field(default=3, env="PLAN_OPTIMIZE_MAX_ITERS")
@@ -382,6 +410,46 @@ else:
                 self.job_log_max_rows = int(os.getenv("JOB_LOG_MAX_ROWS", "10000"))
             except Exception:
                 self.job_log_max_rows = 10000
+
+            self.quality_evaluation_enabled = os.getenv(
+                "QUALITY_EVALUATION_ENABLED", "0"
+            ).strip().lower() in {"1", "true", "yes", "on"}
+            self.quality_evaluator_provider = os.getenv("QUALITY_EVALUATOR_PROVIDER") or None
+            self.quality_evaluator_model = os.getenv("QUALITY_EVALUATOR_MODEL") or None
+            try:
+                self.quality_evaluation_observation_hours = max(
+                    1, min(720, int(os.getenv("QUALITY_EVALUATION_OBSERVATION_HOURS", "24")))
+                )
+            except Exception:
+                self.quality_evaluation_observation_hours = 24
+            try:
+                self.quality_evaluation_poll_seconds = max(
+                    10, min(3600, int(os.getenv("QUALITY_EVALUATION_POLL_SECONDS", "300")))
+                )
+            except Exception:
+                self.quality_evaluation_poll_seconds = 300
+            try:
+                self.quality_evaluation_max_concurrency = max(
+                    1, min(10, int(os.getenv("QUALITY_EVALUATION_MAX_CONCURRENCY", "2")))
+                )
+            except Exception:
+                self.quality_evaluation_max_concurrency = 2
+            try:
+                self.quality_evaluation_max_snapshot_chars = max(
+                    1000, min(100000, int(os.getenv("QUALITY_EVALUATION_MAX_SNAPSHOT_CHARS", "12000")))
+                )
+            except Exception:
+                self.quality_evaluation_max_snapshot_chars = 12000
+            try:
+                self.quality_evaluation_max_attempts = max(
+                    1, min(10, int(os.getenv("QUALITY_EVALUATION_MAX_ATTEMPTS", "3")))
+                )
+            except Exception:
+                self.quality_evaluation_max_attempts = 3
+            self.quality_analytics_admin_ids = os.getenv(
+                "QUALITY_ANALYTICS_ADMIN_IDS", ""
+            )
+
             # Plan rubric evaluation & auto-optimization
             try:
                 self.plan_rubric_threshold = int(os.getenv("PLAN_RUBRIC_THRESHOLD", "80"))

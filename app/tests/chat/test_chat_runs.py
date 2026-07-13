@@ -97,6 +97,15 @@ def test_list_session_runs_filter(memory_chat_run_db: sqlite3.Connection) -> Non
     assert "r2" in ids and "r1" not in ids
 
 
+def test_set_chat_run_user_message_id_is_idempotent(memory_chat_run_db: sqlite3.Connection) -> None:
+    cr.create_chat_run("run_message", "sess_unit", "{}")
+    cr.set_chat_run_user_message_id("run_message", 41)
+    cr.set_chat_run_user_message_id("run_message", 99)
+    row = cr.get_chat_run("run_message")
+    assert row is not None
+    assert row["user_message_id"] == 41
+
+
 def test_hub_cancel_sets_event() -> None:
     hub.cleanup_run_signals("tmp_cancel")
     ev = hub.ensure_cancel_event("tmp_cancel")
