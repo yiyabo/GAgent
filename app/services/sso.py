@@ -412,3 +412,29 @@ def get_main_platform_user_id(local_user_id: str) -> Optional[int]:
     except Exception as e:
         logger.error(f"Failed to get main_platform_user_id: {e}")
         return None
+
+
+def backfill_main_platform_user_id(local_user_id: str, main_platform_user_id: int) -> bool:
+    """回填 NULL 的 main_platform_user_id（主平台 pack_user_data 不返回 user.id 导致的遗留）。"""
+    try:
+        with get_db() as conn:
+            row = conn.execute(
+                "SELECT main_platform_user_id FROM users WHERE id = ?",
+                (str(local_user_id),)
+            ).fetchone()
+            if not row:
+                return False
+            if row["main_platform_user_id"] is not None:
+                return False
+            conn.execute(
+                "UPDATE users SET main_platform_user_id = ? WHERE id = ?",
+                (int(main_platform_user_id), str(local_user_id))
+            )
+            logger.info(
+                "Backfilled main_platform_user_id=%s for local user %s",
+                main_platform_user_id, local_user_id
+            )
+            return True
+    except Exception as e:
+        logger.error(f"Failed to backfill main_platform_user_id: {e}")
+        return False

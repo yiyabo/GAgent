@@ -16,6 +16,7 @@ from app.services.auth import (
 )
 from app.services.sso import (
     SSOUserData,
+    backfill_main_platform_user_id,
     get_user_by_global_uuid,
     sync_sso_user,
     verify_sso_token,
@@ -109,7 +110,10 @@ def sso_login(
             status_code=403,
             detail="User account is disabled"
         )
-    
+
+    if resolved_user_id is not None and existing_user.get("main_platform_user_id") is None:
+        backfill_main_platform_user_id(existing_user["id"], resolved_user_id)
+
     session = create_auth_session(
         existing_user["id"],
         ip=_request_ip(request),

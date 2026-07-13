@@ -5,6 +5,7 @@ import json
 import pytest
 
 from app.database_pool import get_db
+from app.routers.chat.session_helpers import _ensure_session_exists
 
 
 @pytest.mark.integration
@@ -20,7 +21,7 @@ def test_real_app_chat_session_crud_persists_state(app_client_factory) -> None:
                 "current_task_name": "Validate deployment safety rails",
                 "settings": {
                     "default_search_provider": "builtin",
-                    "default_base_model": "qwen3.6-plus",
+                    "default_base_model": "qwen3.7-max",
                     "default_llm_provider": "qwen",
                 },
             },
@@ -32,7 +33,7 @@ def test_real_app_chat_session_crud_persists_state(app_client_factory) -> None:
         assert payload["current_task_id"] == 7
         assert payload["current_task_name"] == "Validate deployment safety rails"
         assert payload["settings"]["default_search_provider"] == "builtin"
-        assert payload["settings"]["default_base_model"] == "qwen3.6-plus"
+        assert payload["settings"]["default_base_model"] == "qwen3.7-max"
         assert payload["settings"]["default_llm_provider"] == "qwen"
 
         with get_db() as conn:
@@ -80,6 +81,76 @@ def test_real_app_chat_session_crud_persists_state(app_client_factory) -> None:
                 (session_id,),
             ).fetchone()
         assert deleted_row is None
+
+
+@pytest.mark.integration
+def test_existing_unbound_session_becomes_visible_in_its_project(
+    app_client_factory,
+) -> None:
+    session_id = "integration-session-project-backfill-001"
+    owner_headers = {"X-Forwarded-User": "project-owner"}
+
+    with app_client_factory() as client:
+        client.patch(
+            f"/chat/sessions/{session_id}",
+            json={"name": "Unbound Project Session"},
+            headers=owner_headers,
+        ).raise_for_status()
+
+        with get_db() as conn:
+            _ensure_session_exists(
+                session_id,
+                conn,
+                owner_id="project-owner",
+                project_id=15,
+            )
+            conn.commit()
+            row = conn.execute(
+                "SELECT project_id FROM chat_sessions WHERE id=?",
+                (session_id,),
+            ).fetchone()
+        assert row is not None
+        assert row["project_id"] == 15
+
+        visible_sessions = client.get(
+            "/chat/sessions",
+            params={"project_id": 15},
+            headers=owner_headers,
+        )
+        assert visible_sessions.status_code == 200
+        assert session_id in {
+            item["id"] for item in visible_sessions.json()["sessions"]
+        }
+
+
+@pytest.mark.integration
+def test_existing_session_project_binding_is_not_overwritten(
+    app_client_factory,
+) -> None:
+    session_id = "integration-session-project-isolation-001"
+
+    with app_client_factory():
+        with get_db() as conn:
+            _ensure_session_exists(
+                session_id,
+                conn,
+                owner_id="project-owner",
+                project_id=15,
+            )
+            _ensure_session_exists(
+                session_id,
+                conn,
+                owner_id="project-owner",
+                project_id=16,
+            )
+            conn.commit()
+            row = conn.execute(
+                "SELECT project_id FROM chat_sessions WHERE id=?",
+                (session_id,),
+            ).fetchone()
+
+    assert row is not None
+    assert row["project_id"] == 15
 
 
 @pytest.mark.integration

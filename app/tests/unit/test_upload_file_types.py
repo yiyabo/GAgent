@@ -59,3 +59,26 @@ def test_validate_file_accepts_h5ad_with_empty_browser_mime_type() -> None:
     assert is_valid is True
     assert error == ""
     assert category == "bioinformatics"
+
+
+def test_upload_file_initializes_missing_chat_session(app_client_factory) -> None:
+    session_id = "session_upload_init_test"
+
+    with app_client_factory() as client:
+        response = client.post(
+            "/upload/file",
+            data={"session_id": session_id},
+            files={"file": ("notes.txt", b"hello", "text/plain")},
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["success"] is True
+        assert payload["session_id"] == session_id
+
+        sessions_response = client.get("/chat/sessions", params={"limit": 50})
+        assert sessions_response.status_code == 200
+        sessions = sessions_response.json()["sessions"]
+        initialized = next((session for session in sessions if session["id"] == session_id), None)
+        assert initialized is not None
+        assert initialized["name"] == "Session session_"

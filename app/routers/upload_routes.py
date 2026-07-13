@@ -19,7 +19,7 @@ from pydantic import BaseModel
 
 from . import register_router
 from ..database import get_db
-from ..services.request_principal import ensure_owner_access
+from ..services.request_principal import ensure_owner_access, get_request_owner_id
 from ..services.upload_storage import ensure_session_dir
 
 logger = logging.getLogger(__name__)
@@ -301,13 +301,35 @@ def _get_session_upload_dir(session_id: str) -> Path:
 
 
 def _ensure_session_access(session_id: str, request: Request) -> None:
+    owner_id = get_request_owner_id(request)
     with get_db() as conn:
         row = conn.execute(
             "SELECT owner_id FROM chat_sessions WHERE id=?",
             (session_id,),
         ).fetchone()
-    if row is None:
-        raise HTTPException(status_code=404, detail="Session not found")
+        if row is None:
+            conn.execute(
+                """
+                INSERT INTO chat_sessions (
+                    id,
+                    owner_id,
+                    name,
+                    name_source,
+                    is_user_named,
+                    metadata,
+                    last_message_at,
+                    created_at,
+                    updated_at,
+                    is_active
+                )
+                VALUES (?, ?, ?, 'default', 0, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 1)
+                """,
+                (session_id, owner_id, f"Session {session_id[:8]}"),
+            )
+            conn.commit()
+            logger.info("Initialized chat session from upload: %s", session_id)
+            return
+
     ensure_owner_access(request, row["owner_id"], detail="session owner mismatch")
 
 

@@ -1,6 +1,8 @@
 import { create } from 'zustand';
 import { authApi } from '@api/auth';
+import { projectApi } from '@api/project';
 import { resetClientStateForAuthChange } from '@/auth/clientState';
+import { useProjectStore } from './project';
 import type { AuthUser } from '@/types/auth';
 
 interface AuthState {
@@ -50,6 +52,7 @@ export const useAuthStore = create<AuthState>((set) => ({
   clearAuth: () =>
     {
       resetClientStateForAuthChange();
+      useProjectStore.getState().clearProject();
       sessionStorage.removeItem('project_id');
       sessionStorage.removeItem('user_id');
       sessionStorage.removeItem('project_label');
@@ -69,9 +72,9 @@ export const useAuthStore = create<AuthState>((set) => ({
     try {
       const urlParams = new URLSearchParams(window.location.search);
       const ssoSession = urlParams.get('__sso_session');
-      const projectIdParam = urlParams.get('project_id');
+      const projectIdParam = urlParams.get('project_id') || sessionStorage.getItem('project_id');
       const projectId = projectIdParam ? parseInt(projectIdParam, 10) : null;
-      const userIdParam = urlParams.get('user_id');
+      const userIdParam = urlParams.get('user_id') || sessionStorage.getItem('user_id');
       const userId = userIdParam ? parseInt(userIdParam, 10) : null;
       const projectLabel = urlParams.get('project_label');
 
@@ -117,6 +120,20 @@ export const useAuthStore = create<AuthState>((set) => ({
         }
       }
       
+      const loadProjectContext = async () => {
+        const pid = projectId ?? null;
+        const uid = userId ?? undefined;
+        if (!pid) return;
+        try {
+          const resp = await projectApi.getProject(pid, uid);
+          if (resp.code === 0 && resp.data) {
+            useProjectStore.getState().setProjectData(resp.data);
+          }
+        } catch (e) {
+          console.warn('[bootstrap] loadProjectContext failed:', e);
+        }
+      };
+
       if (ssoSession) {
         try {
           const payload = await authApi.ssoComplete(ssoSession);
@@ -136,6 +153,7 @@ export const useAuthStore = create<AuthState>((set) => ({
               initialized: true,
               loading: false,
             });
+            await loadProjectContext();
             return;
           }
         } catch {
@@ -159,6 +177,7 @@ export const useAuthStore = create<AuthState>((set) => ({
           initialized: true,
           loading: false,
         });
+        await loadProjectContext();
       } else {
         resetClientStateForAuthChange();
         set({
@@ -217,6 +236,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       await authApi.logout();
     } finally {
       resetClientStateForAuthChange();
+      useProjectStore.getState().clearProject();
       set({
         user: null,
         authenticated: false,

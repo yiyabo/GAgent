@@ -29,11 +29,11 @@ const rawWsUrl = import.meta.env.VITE_WS_BASE_URL;
 export const ENV = {
   API_BASE_URL: rawApiUrl !== undefined
     ? rawApiUrl
-    : defaultApiBaseUrl,
+    : (import.meta.env.DEV ? '' : defaultApiBaseUrl),
 
   WS_BASE_URL: rawWsUrl !== undefined
     ? rawWsUrl
-    : defaultWsBaseUrl,
+    : (import.meta.env.DEV ? '' : defaultWsBaseUrl),
 
   TERMINAL_ENABLED: String(import.meta.env.VITE_TERMINAL_ENABLED || 'true').toLowerCase() === 'true',
 

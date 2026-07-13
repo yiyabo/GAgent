@@ -22,7 +22,15 @@ def _resolve_user_id(request: Request, user_id: Optional[int]) -> Optional[int]:
     if user_id is not None:
         return user_id
     owner_id = get_request_owner_id(request)
-    return get_main_platform_user_id(owner_id)
+    resolved = get_main_platform_user_id(owner_id)
+    if resolved is None:
+        logger.warning(
+            "main_platform_user_id is NULL for local user %s; project context "
+            "fetch will fall back to project-only URL (may 404 on main platform). "
+            "Backfill via SSO login with user_id query param is recommended.",
+            owner_id,
+        )
+    return resolved
 
 
 register_router(
@@ -85,6 +93,7 @@ class FileReference(BaseModel):
 class SelectedFilesRequest(BaseModel):
     project_id: int
     selected_paths: list[str]
+    data_root_index: int = 0
     session_id: Optional[str] = None
 
 
@@ -279,8 +288,14 @@ async def select_project_files(
                 files=[]
             )
         
-        valid_roots = [root.get("path", "") for root in data_roots_raw]
-        
+        if payload.data_root_index < 0 or payload.data_root_index >= len(data_roots_raw):
+            raise HTTPException(status_code=400, detail="Invalid data_root index")
+        selected_root = str(
+            data_roots_raw[payload.data_root_index].get("path", "")
+        ).strip()
+        if not selected_root:
+            raise HTTPException(status_code=400, detail="Selected data root has no path")
+
         session_upload_dir = None
         if payload.session_id:
             from app.services.session_paths import get_session_upload_dir
@@ -290,33 +305,23 @@ async def select_project_files(
                 logger.warning(f"Failed to create session upload dir: {e}")
         
         files = []
+        selected_root_path = Path(selected_root)
+        selected_root_resolved = selected_root_path.resolve()
         for selected_path in payload.selected_paths:
-            is_valid = False
-            matched_root = ""
             source_full_path = None
-            
-            for root_path in valid_roots:
-                if not root_path:
-                    continue
-                    
-                try:
-                    full_path = (Path(root_path) / selected_path).resolve()
-                    root_resolved = Path(root_path).resolve()
-                    full_path.relative_to(root_resolved)
-                    
-                    if full_path.exists() and full_path.is_file():
-                        is_valid = True
-                        matched_root = root_path
-                        source_full_path = full_path
-                        break
-                except (ValueError, FileNotFoundError):
-                    continue
-            
-            if is_valid and source_full_path:
+            try:
+                candidate = (selected_root_path / selected_path).resolve()
+                candidate.relative_to(selected_root_resolved)
+                if candidate.exists() and candidate.is_file():
+                    source_full_path = candidate
+            except (ValueError, FileNotFoundError):
+                source_full_path = None
+
+            if source_full_path:
                 file_ref = FileReference(
                     path=selected_path,
                     name=Path(selected_path).name,
-                    data_root_path=matched_root
+                    data_root_path=selected_root,
                 )
                 
                 if session_upload_dir:

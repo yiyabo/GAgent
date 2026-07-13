@@ -1,5 +1,5 @@
 import React from 'react';
-import { App, Layout, Button, Badge, Tooltip, Space, Typography, Modal, Form, Input } from 'antd';
+import { App, Layout, Button, Badge, Tooltip, Space, Typography, Modal, Form, Input, Tag } from 'antd';
 import {
   BellOutlined,
   LogoutOutlined,
@@ -20,7 +20,7 @@ const AppHeader: React.FC = () => {
   const { message } = App.useApp();
   const { apiConnected } = useSystemStore();
   const { chatListVisible, toggleChatList } = useLayoutStore();
-  const { user, logout, changePassword, loading } = useAuthStore();
+  const { user, logout, changePassword, loading, projectLabel } = useAuthStore();
   const location = useLocation();
   const navigate = useNavigate();
   const isChatRoute = location.pathname.startsWith('/chat');
@@ -72,6 +72,7 @@ const AppHeader: React.FC = () => {
             <Text style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
               {user?.email || 'anonymous'}
             </Text>
+            {projectLabel ? <Tag color="blue">{projectLabel}</Tag> : null}
             {canManageLocalSession ? (
               <Tooltip title="Change password">
                 <Button

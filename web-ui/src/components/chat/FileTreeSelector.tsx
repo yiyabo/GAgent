@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { Tree, Modal, Button, Spin, message, Space, Typography } from 'antd';
+import { Tree, Modal, Button, Spin, message, Space, Typography, Select } from 'antd';
 import { FolderOutlined, FileOutlined } from '@ant-design/icons';
 import { projectApi, FileTreeNode } from '@api/project';
+import { useProjectStore } from '@store/project';
 
 interface FileTreeSelectorProps {
   projectId: number;
@@ -22,19 +23,22 @@ const FileTreeSelector: React.FC<FileTreeSelectorProps> = ({
   const [loading, setLoading] = useState(false);
   const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
   const [expandedKeys, setExpandedKeys] = useState<string[]>([]);
+  const [dataRootIndex, setDataRootIndex] = useState(0);
+  const { projectData } = useProjectStore();
+  const dataRoots = projectData?.data_roots ?? [];
 
   useEffect(() => {
     if (visible) {
       loadTreeData();
     }
-  }, [visible, projectId]);
+  }, [visible, projectId, dataRootIndex]);
 
   const loadTreeData = async () => {
     setLoading(true);
     try {
       const userId = (window as any).__USER_ID__;
-      console.log('📁 Loading project files for projectId:', projectId, 'userId:', userId);
-      const response = await projectApi.getProjectFiles(projectId, undefined, 0, userId);
+      console.log('📁 Loading project files for projectId:', projectId, 'userId:', userId, 'dataRootIndex:', dataRootIndex);
+      const response = await projectApi.getProjectFiles(projectId, undefined, dataRootIndex, userId);
       console.log('📁 Project files response:', response);
       if (response.code === 0) {
         setTreeData(response.data);
@@ -66,7 +70,13 @@ const FileTreeSelector: React.FC<FileTreeSelectorProps> = ({
 
     try {
       const userId = (window as any).__USER_ID__;
-      const response = await projectApi.selectFiles(projectId, selectedKeys, sessionId, userId);
+      const response = await projectApi.selectFiles(
+        projectId,
+        selectedKeys,
+        dataRootIndex,
+        sessionId,
+        userId,
+      );
       if (response.code === 0) {
         onSelect(response.files);
         message.success(`Selected ${response.files.length} files`);
@@ -109,7 +119,23 @@ const FileTreeSelector: React.FC<FileTreeSelectorProps> = ({
         <Typography.Text type="secondary">
           Select files from the project data roots to use in your chat session.
         </Typography.Text>
-        
+        {dataRoots.length > 1 && (
+          <Select
+            value={dataRootIndex}
+            onChange={(val) => {
+              setDataRootIndex(val);
+              setTreeData([]);
+              setSelectedKeys([]);
+              setExpandedKeys([]);
+            }}
+            style={{ width: '100%' }}
+            options={dataRoots.map((root, idx) => ({
+              value: idx,
+              label: root.label || root.path,
+            }))}
+            placeholder="Select data root"
+          />
+        )}
         {loading ? (
           <div style={{ textAlign: 'center', padding: '20px' }}>
             <Spin tip="Loading files..." />

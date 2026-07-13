@@ -80,6 +80,7 @@ export class ProjectApi extends BaseApi {
   selectFiles = async (
     projectId: number,
     selectedPaths: string[],
+    dataRootIndex: number,
     sessionId?: string,
     userId?: number
   ): Promise<SelectedFilesResponse> => {
@@ -92,6 +93,7 @@ export class ProjectApi extends BaseApi {
       {
         project_id: projectId,
         selected_paths: selectedPaths,
+        data_root_index: dataRootIndex,
         session_id: sessionId,
       },
       queryParams
