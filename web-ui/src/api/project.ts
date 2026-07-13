@@ -10,7 +10,6 @@ export interface ModelProvider {
   type?: string;
   model?: string;
   base_url: string;
-  api_key: string;
   model_options?: string[];
 }
 
@@ -53,52 +52,24 @@ export interface SelectedFilesResponse {
 }
 
 export class ProjectApi extends BaseApi {
-  getProject = async (projectId: number, userId?: number): Promise<ProjectResponse> => {
-    const params: Record<string, any> = {};
-    if (userId !== undefined && userId !== null) {
-      params.user_id = userId;
-    }
-    return this.get<ProjectResponse>(`/project/${projectId}`, params);
-  };
+  getProject = async (projectId: number): Promise<ProjectResponse> =>
+    this.get<ProjectResponse>(`/project/${projectId}`);
 
-  getProjectFiles = async (
-    projectId: number,
-    path?: string,
-    dataRootIndex: number = 0,
-    userId?: number
-  ): Promise<FileTreeResponse> => {
-    const params: Record<string, any> = { data_root_index: dataRootIndex };
-    if (path) {
-      params.path = path;
-    }
-    if (userId !== undefined && userId !== null) {
-      params.user_id = userId;
-    }
-    return this.get<FileTreeResponse>(`/project/${projectId}/files`, params);
-  };
+  getProjectFiles = async (projectId: number): Promise<FileTreeResponse> =>
+    this.get<FileTreeResponse>(`/project/${projectId}/files`);
 
   selectFiles = async (
     projectId: number,
     selectedPaths: string[],
     dataRootIndex: number,
     sessionId?: string,
-    userId?: number
-  ): Promise<SelectedFilesResponse> => {
-    const queryParams: Record<string, any> = {};
-    if (userId !== undefined && userId !== null) {
-      queryParams.user_id = userId;
-    }
-    return this.post<SelectedFilesResponse>(
-      `/project/${projectId}/select-files`,
-      {
-        project_id: projectId,
-        selected_paths: selectedPaths,
-        data_root_index: dataRootIndex,
-        session_id: sessionId,
-      },
-      queryParams
-    );
-  };
+  ): Promise<SelectedFilesResponse> =>
+    this.post<SelectedFilesResponse>(`/project/${projectId}/select-files`, {
+      project_id: projectId,
+      selected_paths: selectedPaths,
+      data_root_index: dataRootIndex,
+      session_id: sessionId,
+    });
 }
 
 export const projectApi = new ProjectApi();

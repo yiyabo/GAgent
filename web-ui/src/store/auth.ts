@@ -12,11 +12,8 @@ interface AuthState {
   initialized: boolean;
   loading: boolean;
   projectId: number | null;
-  userId: number | null;
   projectLabel: string | null;
   setUser: (user: AuthUser | null) => void;
-  setProjectId: (projectId: number | null) => void;
-  setUserId: (userId: number | null) => void;
   clearAuth: () => void;
   bootstrap: () => Promise<void>;
   login: (email: string, password: string) => Promise<void>;
@@ -25,6 +22,16 @@ interface AuthState {
   changePassword: (currentPassword: string, newPassword: string) => Promise<void>;
 }
 
+const trustedProjectState = (user: AuthUser | null) => {
+  if (user?.access_mode !== 'platform') {
+    return { projectId: null, projectLabel: null };
+  }
+  return {
+    projectId: user.platform_context?.project_id ?? null,
+    projectLabel: user.platform_context?.project_label ?? null,
+  };
+};
+
 export const useAuthStore = create<AuthState>((set) => ({
   user: null,
   authenticated: false,
@@ -32,30 +39,95 @@ export const useAuthStore = create<AuthState>((set) => ({
   initialized: false,
   loading: false,
   projectId: null,
-  userId: null,
   projectLabel: null,
-  setUser: (user) =>
+  setUser: (user) => set({
+    user,
+    authenticated: Boolean(user),
+    legacyAccessAllowed: false,
+    initialized: true,
+    ...trustedProjectState(user),
+  }),
+  clearAuth: () => {
+    resetClientStateForAuthChange();
+    useProjectStore.getState().clearProject();
     set({
-      user,
-      authenticated: Boolean(user),
+      user: null,
+      authenticated: false,
       legacyAccessAllowed: false,
       initialized: true,
-    }),
-  setProjectId: (projectId) =>
-    set({
-      projectId,
-    }),
-  setUserId: (userId) =>
-    set({
-      userId,
-    }),
-  clearAuth: () =>
-    {
+      loading: false,
+      projectId: null,
+      projectLabel: null,
+    });
+  },
+  bootstrap: async () => {
+    set({ loading: true });
+    const urlParams = new URLSearchParams(window.location.search);
+    const handoffToken = urlParams.get('__sso_handoff');
+    const clearHandoffFromUrl = () => {
+      urlParams.delete('__sso_handoff');
+      const nextUrl = urlParams.toString()
+        ? `${window.location.pathname}?${urlParams.toString()}`
+        : window.location.pathname;
+      window.history.replaceState({}, '', nextUrl);
+    };
+    const applyAuthenticatedUser = async (user: AuthUser) => {
+      const projectState = trustedProjectState(user);
+      set({
+        user,
+        authenticated: true,
+        legacyAccessAllowed: false,
+        initialized: true,
+        loading: false,
+        ...projectState,
+      });
+      if (user.access_mode === 'platform' && projectState.projectId) {
+        try {
+          const response = await projectApi.getProject(projectState.projectId);
+          if (response.code === 0 && response.data) {
+            useProjectStore.getState().setProjectData(response.data);
+          }
+        } catch (error) {
+          console.warn('[auth] platform project context unavailable', error);
+        }
+      } else {
+        useProjectStore.getState().clearProject();
+      }
+    };
+
+    try {
+      if (handoffToken) {
+        try {
+          const payload = await authApi.ssoComplete(handoffToken);
+          clearHandoffFromUrl();
+          if (payload.authenticated && payload.user) {
+            await applyAuthenticatedUser(payload.user);
+            return;
+          }
+        } catch {
+          clearHandoffFromUrl();
+        }
+      }
+
+      const payload = await authApi.me();
+      if (payload.authenticated && payload.user) {
+        await applyAuthenticatedUser(payload.user);
+        return;
+      }
       resetClientStateForAuthChange();
       useProjectStore.getState().clearProject();
-      sessionStorage.removeItem('project_id');
-      sessionStorage.removeItem('user_id');
-      sessionStorage.removeItem('project_label');
+      set({
+        user: null,
+        authenticated: false,
+        legacyAccessAllowed: Boolean(payload.legacy_access_allowed),
+        initialized: true,
+        loading: false,
+        projectId: null,
+        projectLabel: null,
+      });
+    } catch {
+      resetClientStateForAuthChange();
+      useProjectStore.getState().clearProject();
       set({
         user: null,
         authenticated: false,
@@ -63,139 +135,7 @@ export const useAuthStore = create<AuthState>((set) => ({
         initialized: true,
         loading: false,
         projectId: null,
-        userId: null,
         projectLabel: null,
-      });
-    },
-  bootstrap: async () => {
-    set({ loading: true });
-    try {
-      const urlParams = new URLSearchParams(window.location.search);
-      const ssoSession = urlParams.get('__sso_session');
-      const projectIdParam = urlParams.get('project_id') || sessionStorage.getItem('project_id');
-      const projectId = projectIdParam ? parseInt(projectIdParam, 10) : null;
-      const userIdParam = urlParams.get('user_id') || sessionStorage.getItem('user_id');
-      const userId = userIdParam ? parseInt(userIdParam, 10) : null;
-      const projectLabel = urlParams.get('project_label');
-
-      if (projectId && !isNaN(projectId)) {
-        set({ projectId });
-        (window as any).__PROJECT_ID__ = projectId;
-        sessionStorage.setItem('project_id', String(projectId));
-      } else {
-        const storedProjectId = sessionStorage.getItem('project_id');
-        if (storedProjectId) {
-          const parsed = parseInt(storedProjectId, 10);
-          if (!isNaN(parsed)) {
-            set({ projectId: parsed });
-            (window as any).__PROJECT_ID__ = parsed;
-          }
-        }
-      }
-
-      if (projectLabel) {
-        set({ projectLabel });
-        (window as any).__PROJECT_LABEL__ = projectLabel;
-        sessionStorage.setItem('project_label', projectLabel);
-      } else {
-        const storedLabel = sessionStorage.getItem('project_label');
-        if (storedLabel) {
-          set({ projectLabel: storedLabel });
-          (window as any).__PROJECT_LABEL__ = storedLabel;
-        }
-      }
-      
-      if (userId && !isNaN(userId)) {
-        set({ userId });
-        (window as any).__USER_ID__ = userId;
-        sessionStorage.setItem('user_id', String(userId));
-      } else {
-        const storedUserId = sessionStorage.getItem('user_id');
-        if (storedUserId) {
-          const parsed = parseInt(storedUserId, 10);
-          if (!isNaN(parsed)) {
-            set({ userId: parsed });
-            (window as any).__USER_ID__ = parsed;
-          }
-        }
-      }
-      
-      const loadProjectContext = async () => {
-        const pid = projectId ?? null;
-        const uid = userId ?? undefined;
-        if (!pid) return;
-        try {
-          const resp = await projectApi.getProject(pid, uid);
-          if (resp.code === 0 && resp.data) {
-            useProjectStore.getState().setProjectData(resp.data);
-          }
-        } catch (e) {
-          console.warn('[bootstrap] loadProjectContext failed:', e);
-        }
-      };
-
-      if (ssoSession) {
-        try {
-          const payload = await authApi.ssoComplete(ssoSession);
-      urlParams.delete('__sso_session');
-      urlParams.delete('project_id');
-      urlParams.delete('user_id');
-      urlParams.delete('project_label');
-          const newUrl = urlParams.toString() 
-            ? `${window.location.pathname}?${urlParams.toString()}`
-            : window.location.pathname;
-          window.history.replaceState({}, '', newUrl);
-          if (payload.authenticated && payload.user) {
-            set({
-              user: payload.user,
-              authenticated: true,
-              legacyAccessAllowed: false,
-              initialized: true,
-              loading: false,
-            });
-            await loadProjectContext();
-            return;
-          }
-        } catch {
-      urlParams.delete('__sso_session');
-      urlParams.delete('project_id');
-      urlParams.delete('user_id');
-      urlParams.delete('project_label');
-          const newUrl = urlParams.toString() 
-            ? `${window.location.pathname}?${urlParams.toString()}`
-            : window.location.pathname;
-          window.history.replaceState({}, '', newUrl);
-        }
-      }
-
-      const payload = await authApi.me();
-      if (payload.authenticated && payload.user) {
-        set({
-          user: payload.user,
-          authenticated: true,
-          legacyAccessAllowed: false,
-          initialized: true,
-          loading: false,
-        });
-        await loadProjectContext();
-      } else {
-        resetClientStateForAuthChange();
-        set({
-          user: null,
-          authenticated: false,
-          legacyAccessAllowed: Boolean(payload.legacy_access_allowed),
-          initialized: true,
-          loading: false,
-        });
-      }
-    } catch {
-      resetClientStateForAuthChange();
-      set({
-        user: null,
-        authenticated: false,
-        legacyAccessAllowed: false,
-        initialized: true,
-        loading: false,
       });
     }
   },
@@ -209,6 +149,7 @@ export const useAuthStore = create<AuthState>((set) => ({
         legacyAccessAllowed: false,
         initialized: true,
         loading: false,
+        ...trustedProjectState(payload.user),
       });
     } catch (error) {
       set({ loading: false });
@@ -225,6 +166,7 @@ export const useAuthStore = create<AuthState>((set) => ({
         legacyAccessAllowed: false,
         initialized: true,
         loading: false,
+        ...trustedProjectState(payload.user),
       });
     } catch (error) {
       set({ loading: false });
@@ -243,6 +185,8 @@ export const useAuthStore = create<AuthState>((set) => ({
         legacyAccessAllowed: false,
         initialized: true,
         loading: false,
+        projectId: null,
+        projectLabel: null,
       });
     }
   },
@@ -259,6 +203,7 @@ export const useAuthStore = create<AuthState>((set) => ({
         legacyAccessAllowed: false,
         initialized: true,
         loading: false,
+        ...trustedProjectState(payload.user),
       });
     } catch (error) {
       set({ loading: false });

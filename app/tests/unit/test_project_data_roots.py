@@ -1,33 +1,60 @@
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+from fastapi import HTTPException
 
 from app.routers import project_routes
+from app.services.request_principal import RequestPrincipal
 
 
-def test_select_files_uses_the_requested_data_root(tmp_path: Path, monkeypatch) -> None:
-    root_a = tmp_path / "root-a"
-    root_b = tmp_path / "root-b"
-    (root_a / "shared.txt").parent.mkdir(parents=True)
-    root_b.mkdir()
-    (root_a / "shared.txt").write_text("from-a", encoding="utf-8")
-    (root_b / "shared.txt").write_text("from-b", encoding="utf-8")
+def _platform_request(project_id: int = 9):
+    return SimpleNamespace(
+        state=SimpleNamespace(
+            principal=RequestPrincipal(
+                user_id="local-user",
+                email="user@example.com",
+                auth_source="sso",
+                access_mode="platform",
+                platform_user_id=17,
+                platform_project_id=project_id,
+            )
+        )
+    )
 
-    monkeypatch.setattr(project_routes, "_resolve_user_id", lambda request, user_id: 1)
+
+def test_project_context_hides_agent_host_data_root_paths(monkeypatch) -> None:
     monkeypatch.setattr(
         project_routes,
-        "get_project_context",
-        lambda user_id, project_id: {
-            "data_roots": [{"path": str(root_a)}, {"path": str(root_b)}]
+        "_project_context_for_request",
+        lambda request, project_id: {
+            "id": project_id,
+            "data_roots": [{"path": "/agent-host/private", "label": "Study data"}],
         },
     )
 
+    response = asyncio.run(project_routes.get_project(9, _platform_request()))
+
+    assert response.code == 0
+    assert response.data is not None
+    assert response.data.data_roots[0].path == ""
+    assert response.data.data_roots[0].label == "Study data"
+
+
+def test_project_file_selection_fails_without_platform_file_api(monkeypatch) -> None:
+    monkeypatch.setattr(
+        project_routes,
+        "_project_context_for_request",
+        lambda request, project_id: {"id": project_id, "data_roots": []},
+    )
     payload = project_routes.SelectedFilesRequest(
         project_id=9,
-        selected_paths=["shared.txt"],
-        data_root_index=1,
+        selected_paths=["private.tsv"],
     )
-    result = asyncio.run(project_routes.select_project_files(9, object(), payload))
 
-    assert result.files[0].data_root_path == str(root_b)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(project_routes.select_project_files(9, _platform_request(), payload))
+
+    assert exc.value.status_code == 501
