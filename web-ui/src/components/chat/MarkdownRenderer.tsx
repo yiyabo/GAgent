@@ -5,8 +5,15 @@ import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { tomorrow } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import { DownloadOutlined } from '@ant-design/icons';
 import 'katex/dist/katex.min.css';
 import { resolveArtifactImageSrc } from '@/utils/artifactImageUrl';
+import {
+  buildGeneratedFileDownloadUrl,
+  classifyDownloadScope,
+  normalizeSessionRelativePath,
+  type GeneratedDownloadFile,
+} from '@/utils/generatedFileDownloads';
 import { SessionArtifactImage } from './SessionArtifactImage';
 
 interface MarkdownRendererProps {
@@ -118,7 +125,73 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, cla
                             />
                         );
                     },
-                    // Code block with syntax highlighting
+                    a({ href, children }) {
+                        const hrefText = typeof href === 'string' ? href.trim() : '';
+                        const sid = typeof sessionId === 'string' ? sessionId.trim() : '';
+                        const rel =
+                            sid && hrefText && !/^https?:\/\//i.test(hrefText)
+                                ? normalizeSessionRelativePath(hrefText, sid)
+                                : null;
+                        if (sid && rel) {
+                            const file: GeneratedDownloadFile = {
+                                path: rel,
+                                name: rel.split('/').filter(Boolean).pop() || rel,
+                                scope: classifyDownloadScope(rel),
+                            };
+                            const downloadUrl = buildGeneratedFileDownloadUrl(sid, file);
+                            return (
+                                <span
+                                    style={{
+                                        display: 'inline-flex',
+                                        alignItems: 'center',
+                                        gap: 6,
+                                        verticalAlign: 'middle',
+                                    }}
+                                >
+                                    <a
+                                        href={downloadUrl}
+                                        download={file.name}
+                                        style={{ color: '#1677ff', fontWeight: 500 }}
+                                        title={file.path}
+                                    >
+                                        {children}
+                                    </a>
+                                    <a
+                                        href={downloadUrl}
+                                        download={file.name}
+                                        aria-label={`Download ${file.name}`}
+                                        title={`Download ${file.name}`}
+                                        style={{
+                                            display: 'inline-flex',
+                                            alignItems: 'center',
+                                            justifyContent: 'center',
+                                            width: 22,
+                                            height: 22,
+                                            borderRadius: 4,
+                                            border: '1px solid #91caff',
+                                            background: '#e6f4ff',
+                                            color: '#1677ff',
+                                            fontSize: 12,
+                                            lineHeight: 1,
+                                            textDecoration: 'none',
+                                        }}
+                                    >
+                                        <DownloadOutlined />
+                                    </a>
+                                </span>
+                            );
+                        }
+                        return (
+                            <a
+                                href={href}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                style={{ color: '#1677ff' }}
+                            >
+                                {children}
+                            </a>
+                        );
+                    },
                     code(props) {
                         const { children, className: codeClassName, ...rest } = props;
                         const match = /language-(\w+)/.exec(codeClassName || '');

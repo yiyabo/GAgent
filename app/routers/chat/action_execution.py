@@ -87,6 +87,7 @@ _AUTO_DEEP_THINK_RETRY_TOOL_TIMEOUT_ENV = "CHAT_AUTO_DEEP_THINK_RETRY_TOOL_TIMEO
 _AUTO_DEEP_THINK_RETRY_CONTEXT_KEY = "auto_deep_think_retry_on_blocking_failure"
 _AUTO_DEEP_THINK_RETRY_AVAILABLE_TOOLS: List[str] = [
     "web_search",
+    "lightrag_query",
     "graph_rag",
     "sequence_fetch",
     "url_fetch",

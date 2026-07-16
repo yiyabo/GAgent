@@ -153,6 +153,9 @@ def _is_relative_to(path: Path, root: Path) -> bool:
         return str(path).startswith(str(root))
 
 
+_PROJECT_ARTIFACT_SUBDIRS = frozenset({"runtime", "results", "data", "log", "output"})
+
+
 def _resolve_project_path(path_str: str) -> Path:
     raw_path = Path(path_str)
     if not raw_path.is_absolute():
@@ -163,16 +166,59 @@ def _resolve_project_path(path_str: str) -> Path:
     return resolved
 
 
+def _is_disallowed_project_source_write(resolved: Path) -> bool:
+    if not _is_relative_to(resolved, _PROJECT_ROOT):
+        return False
+    try:
+        rel = resolved.relative_to(_PROJECT_ROOT)
+    except Exception:
+        return True
+    parts = rel.parts
+    if not parts:
+        return True
+    return parts[0] not in _PROJECT_ARTIFACT_SUBDIRS
+
+
+def _session_tmp_output_dir(session_dir: Path) -> Path:
+    tmp_dir = (session_dir / "raw_files" / "tmp").resolve()
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    return tmp_dir
+
+
 def _resolve_session_scoped_project_path(path_str: str, session_dir: Optional[Path]) -> Path:
     raw_path = Path(path_str).expanduser()
-    if raw_path.is_absolute():
-        return _resolve_project_path(str(raw_path))
     if session_dir is not None:
-        resolved = (session_dir / raw_path).resolve()
-        if not _is_relative_to(resolved, session_dir):
-            raise ValueError(f"Path escapes session workspace: {path_str}")
+        tmp_dir = _session_tmp_output_dir(session_dir)
+        if not raw_path.is_absolute():
+            resolved = (tmp_dir / raw_path).resolve()
+            if not _is_relative_to(resolved, session_dir):
+                raise ValueError(f"Path escapes session workspace: {path_str}")
+            return resolved
+        resolved = raw_path.resolve()
+        if _is_relative_to(resolved, session_dir):
+            try:
+                rel = resolved.relative_to(session_dir.resolve())
+                if len(rel.parts) == 1:
+                    return (tmp_dir / rel.name).resolve()
+            except Exception:
+                pass
+            return resolved
+        if _is_disallowed_project_source_write(resolved):
+            redirected = (tmp_dir / resolved.name).resolve()
+            if not _is_relative_to(redirected, session_dir):
+                raise ValueError(f"Path escapes session workspace: {path_str}")
+            return redirected
         return resolved
-    return _resolve_project_path(path_str)
+    if raw_path.is_absolute():
+        resolved = _resolve_project_path(str(raw_path))
+    else:
+        resolved = _resolve_project_path(path_str)
+    if _is_disallowed_project_source_write(resolved):
+        raise ValueError(
+            "Writing to project repository root/source tree is not allowed; "
+            "provide a session_id or an output path under runtime/results/data."
+        )
+    return resolved
 
 
 def _read_text_file(path: Path, max_bytes: int) -> str:

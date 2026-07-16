@@ -62,6 +62,7 @@ _FOLLOWTHROUGH_EXECUTE_TOKENS = (
 _LOCAL_MANUSCRIPT_PREP_TOOLS = frozenset(
     {
         "web_search",
+        "lightrag_query",
         "graph_rag",
         "literature_pipeline",
         "file_operations",
@@ -246,7 +247,7 @@ async def apply_experiment_fallback(
         )
         return structured
 
-    retrieval_only_tools = {"web_search", "graph_rag", "literature_pipeline"}
+    retrieval_only_tools = {"web_search", "lightrag_query", "graph_rag", "literature_pipeline"}
     if tool_actions and not all(action.name in retrieval_only_tools for action in tool_actions):
         logger.info(
             "[CHAT][GUARDRAIL][WRITE] leaving actions unchanged because non-retrieval tool present: %s",

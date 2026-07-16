@@ -961,6 +961,7 @@ ALL_TOOLS: List[str] = [
     "vision_reader",
     "result_interpreter",
     "web_search",
+    "lightrag_query",
     "graph_rag",
     "literature_pipeline",
     "review_pack_writer",

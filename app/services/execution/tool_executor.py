@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import threading
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, List, Optional
@@ -19,16 +18,6 @@ _MUTATING_FILE_OPERATIONS = {"write", "copy", "move", "delete"}
 _DELIVERABLE_PUBLISH_TOOLS = frozenset({
     "deliverable_submit",
     "manuscript_writer",
-    "review_pack_writer",
-    "scientific_figure_generator",
-})
-_ARCHIVE_TRIGGER_TOOLS = frozenset({
-    "bio_tools",
-    "code_executor",
-    "deliverable_submit",
-    "literature_pipeline",
-    "manuscript_writer",
-    "phagescope",
     "review_pack_writer",
     "scientific_figure_generator",
 })
@@ -197,21 +186,6 @@ class UnifiedToolExecutor:
             except Exception as exc:  # pragma: no cover - defensive
                 logger.warning("Deliverable publishing failed: %s", exc)
                 payload["deliverables_error"] = str(exc)
-
-        if context.session_id and tool_success and tool_name in _ARCHIVE_TRIGGER_TOOLS:
-            try:
-                from app.services.deliverables.platform_archiver import (
-                    archive_session_to_platform,
-                )
-
-                threading.Thread(
-                    target=archive_session_to_platform,
-                    args=(context.session_id,),
-                    name=f"platform-archive-{context.session_id}",
-                    daemon=True,
-                ).start()
-            except Exception as archiver_exc:
-                logger.warning("[PlatformArchiver] trigger failed: %s", archiver_exc)
 
         if on_tool_result:
             await self._safe_callback(on_tool_result, tool_name, dict(payload))

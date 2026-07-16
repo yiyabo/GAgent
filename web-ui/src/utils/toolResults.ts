@@ -107,6 +107,35 @@ const normalizeToolResultPayload = (raw: any): ToolResultPayload | null => {
         .map((item: string) => item.trim()),
     };
   }
+  for (const key of [
+    'path',
+    'destination',
+    'output_path',
+    'effective_output_path',
+    'polished_output_path',
+    'pre_polish_output_path',
+    'partial_output_path',
+    'analysis_path',
+    'file_path',
+    'saved_path',
+    'local_path',
+  ] as const) {
+    if (isNonEmptyString((result as any)[key])) {
+      normalized.result = {
+        ...(normalized.result ?? {}),
+        [key]: String((result as any)[key]).trim(),
+      };
+    }
+  }
+  for (const key of ['produced_files', 'files', 'saved_files', 'downloaded_files'] as const) {
+    const value = (result as any)[key];
+    if (Array.isArray(value) && value.length > 0) {
+      normalized.result = {
+        ...(normalized.result ?? {}),
+        [key]: value,
+      };
+    }
+  }
   if (result.storage && typeof result.storage === 'object') {
     normalized.result = {
       ...(normalized.result ?? {}),

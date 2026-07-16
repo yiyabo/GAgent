@@ -7,6 +7,7 @@ that can be used by AI agents.
 
 from .file_operations import file_operations_tool
 from .graph_rag import graph_rag_tool
+from .lightrag_query import lightrag_query_tool
 from .web_search import web_search_tool
 from .code_executor import code_executor_tool
 from .document_reader import document_reader_tool
@@ -30,6 +31,7 @@ __all__ = [
     "web_search_tool",
     "file_operations_tool",
     "graph_rag_tool",
+    "lightrag_query_tool",
     "code_executor_tool",
     "document_reader_tool",
     "vision_reader_tool",

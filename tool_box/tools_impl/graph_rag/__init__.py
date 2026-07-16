@@ -106,7 +106,11 @@ async def graph_rag_handler(
 
 graph_rag_tool = {
     "name": "graph_rag",
-    "description": "Query phage knowledge graph, return relevant triples, prompts, and optional subgraph.",
+    "description": (
+        "LEGACY small local triples graph (limited coverage). Prefer `lightrag_query` "
+        "for literature/knowledge-graph questions. Use only if LightRAG is unavailable "
+        "or the user explicitly requests the small local graph."
+    ),
     "category": "knowledge_graph",
     "parameters_schema": {
         "type": "object",

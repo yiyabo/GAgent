@@ -89,19 +89,38 @@ def _redirect_session_workspace_path(
     )
     return str(redirected)
 
+_PROJECT_ARTIFACT_SUBDIRS = frozenset({"runtime", "results", "data", "log", "output"})
+
+
+def _get_project_root() -> Path:
+    try:
+        from app.services.session_paths import get_runtime_root
+
+        return get_runtime_root().parent.resolve()
+    except Exception:
+        return Path(os.getcwd()).resolve()
+
+
 def _normalize_allowed_base_paths() -> List[str]:
     cwd = Path(os.getcwd()).resolve()
+    project_root = _get_project_root()
     defaults = [
         Path("/tmp"),
         Path("/var/tmp"),
         Path("/data"),
-        Path("/home/zczhao/GAgent"),  # Project directory on server
+        Path("/home/zczhao/GAgent"),
         Path(os.path.expanduser("~/Documents")),
         Path(os.path.expanduser("~/Downloads")),
-        cwd,  # Current working directory
-        cwd / "data",  # Project data directory
-        cwd / "results",  # Project results directory
-        cwd / "runtime",  # Runtime directory
+        project_root / "data",
+        project_root / "results",
+        project_root / "runtime",
+        project_root / "log",
+        project_root / "output",
+        cwd / "data",
+        cwd / "results",
+        cwd / "runtime",
+        cwd / "log",
+        cwd / "output",
         *DEFAULT_EXTERNAL_ALLOWED_BASE_PATHS,
     ]
 
@@ -130,12 +149,143 @@ def _normalize_allowed_base_paths() -> List[str]:
 
 ALLOWED_BASE_PATHS = _normalize_allowed_base_paths()
 
+
 def _path_is_within(candidate: Path, base: Path) -> bool:
     try:
         candidate.relative_to(base)
         return True
     except ValueError:
         return False
+
+
+_SESSION_RESERVED_TOPLEVEL = frozenset({
+    "raw_files",
+    "uploads",
+    "deliverables",
+    "tool_outputs",
+    "results",
+    "workspace",
+    "_scratch",
+})
+
+
+def _disallowed_project_source_write_error(resolved: Path) -> Optional[str]:
+    project_root = _get_project_root()
+    try:
+        rel = resolved.resolve(strict=False).relative_to(project_root)
+    except Exception:
+        return None
+    parts = rel.parts
+    if not parts:
+        return (
+            "Writing to the project repository root is not allowed. "
+            "Use runtime/session_<id>/raw_files/tmp or deliverables."
+        )
+    if parts[0] in _PROJECT_ARTIFACT_SUBDIRS:
+        return None
+    return (
+        f"Writing under project source tree '{parts[0]}/' is not allowed. "
+        "Use runtime/session_<id>/raw_files/tmp or deliverables."
+    )
+
+
+def _session_dir_from_context(tool_context: Optional[ToolContext]) -> Optional[Path]:
+    if tool_context is None:
+        return None
+    session_id = str(tool_context.session_id or "").strip()
+    if not session_id:
+        return None
+    try:
+        from app.services.session_paths import get_runtime_session_dir
+
+        return get_runtime_session_dir(session_id, create=True).resolve()
+    except Exception:
+        return None
+
+
+def _session_output_base(tool_context: Optional[ToolContext]) -> Optional[Path]:
+    if tool_context is None:
+        return None
+    work_dir = str(tool_context.work_dir or "").strip()
+    if work_dir:
+        try:
+            return Path(work_dir).expanduser().resolve(strict=False)
+        except Exception:
+            pass
+    session_id = str(tool_context.session_id or "").strip()
+    if not session_id:
+        return None
+    try:
+        from app.services.path_router import get_path_router
+
+        return get_path_router().get_tmp_output_dir(session_id, create=True)
+    except Exception:
+        try:
+            from app.services.session_paths import get_runtime_session_dir
+
+            base = get_runtime_session_dir(session_id, create=True) / "raw_files" / "tmp"
+            base.mkdir(parents=True, exist_ok=True)
+            return base.resolve()
+        except Exception:
+            return None
+
+
+def _redirect_mutation_path_to_session(
+    raw_path: Optional[str],
+    *,
+    tool_context: Optional[ToolContext],
+) -> Optional[str]:
+    text = str(raw_path or "").strip()
+    if not text or tool_context is None:
+        return raw_path
+    base = _session_output_base(tool_context)
+    if base is None:
+        return raw_path
+
+    candidate = Path(text).expanduser()
+    if not candidate.is_absolute():
+        redirected = (base / candidate).resolve(strict=False)
+        logger.info("Redirecting relative mutation path into session output: %s -> %s", text, redirected)
+        return str(redirected)
+
+    try:
+        resolved = candidate.resolve(strict=False)
+    except Exception:
+        return raw_path
+
+    session_dir = _session_dir_from_context(tool_context)
+    if session_dir is not None:
+        try:
+            rel_session = resolved.relative_to(session_dir)
+        except ValueError:
+            rel_session = None
+        if rel_session is not None:
+            parts = rel_session.parts
+            if len(parts) == 1:
+                redirected = (base / parts[0]).resolve(strict=False)
+                logger.info(
+                    "Redirecting session-root mutation path into tmp: %s -> %s",
+                    resolved,
+                    redirected,
+                )
+                return str(redirected)
+            if parts and parts[0] not in _SESSION_RESERVED_TOPLEVEL:
+                redirected = (base / Path(*parts)).resolve(strict=False)
+                logger.info(
+                    "Redirecting non-reserved session path into tmp: %s -> %s",
+                    resolved,
+                    redirected,
+                )
+                return str(redirected)
+            return raw_path
+
+    err = _disallowed_project_source_write_error(resolved)
+    if err is None:
+        return raw_path
+
+    redirected = (base / resolved.name).resolve(strict=False)
+    logger.info("Redirecting project-root mutation path into session output: %s -> %s", resolved, redirected)
+    return str(redirected)
 
 
 def _enforce_session_scope(
@@ -237,6 +387,7 @@ def _validate_path_security(
     *,
     enforce_file_size_limit: bool = False,
     tool_context: Optional[ToolContext] = None,
+    for_mutation: bool = False,
 ) -> Tuple[bool, str]:
     """
     Validate file path for security.
@@ -247,6 +398,9 @@ def _validate_path_security(
     while paths inside cross-session / global artifact directories
     (``runtime/``, ``output/``, ``results/`` under the project root) that do
     NOT belong to the current session are rejected outright.
+
+    Mutating operations also reject writes into the project source tree /
+    repository root (outside runtime/results/data/log/output).
 
     Returns:
         (is_safe, error_message)
@@ -268,6 +422,11 @@ def _validate_path_security(
         if scope_verdict is False:
             return False, scope_error or "Access denied by session isolation"
         # scope_verdict is None -> not session-scoped, fall through to whitelist.
+
+        if for_mutation:
+            mutation_error = _disallowed_project_source_write_error(resolved_abs)
+            if mutation_error:
+                return False, mutation_error
 
         # Global guard: resolved paths landing in dangerous system dirs are
         # rejected REGARDLESS of the allowed-base-paths check below, so a
@@ -406,6 +565,10 @@ async def file_operations_handler(
                 path,
                 tool_context=tool_context,
             )
+            rewritten_path = _redirect_mutation_path_to_session(
+                rewritten_path,
+                tool_context=tool_context,
+            )
         elif operation in {"copy", "move", "delete"}:
             rewritten_path = _redirect_session_workspace_path(
                 path,
@@ -415,6 +578,10 @@ async def file_operations_handler(
         if operation in {"copy", "move"}:
             rewritten_destination = _redirect_session_workspace_path(
                 destination,
+                tool_context=tool_context,
+            )
+            rewritten_destination = _redirect_mutation_path_to_session(
+                rewritten_destination,
                 tool_context=tool_context,
             )
 
@@ -432,6 +599,17 @@ async def file_operations_handler(
             if destination
             else None
         )
+        if operation == "write":
+            resolved_path = _redirect_mutation_path_to_session(
+                resolved_path,
+                tool_context=tool_context,
+            ) or resolved_path
+        if operation in {"copy", "move"} and resolved_destination:
+            resolved_destination = _redirect_mutation_path_to_session(
+                resolved_destination,
+                tool_context=tool_context,
+            ) or resolved_destination
+
         if operation == "read":
             return await _read_file(resolved_path, tool_context=tool_context)
         elif operation == "write":
@@ -546,7 +724,11 @@ async def _read_file(file_path: str, max_chars: Optional[int] = None, max_lines:
 async def _write_file(file_path: str, content: str, tool_context: Optional[ToolContext] = None) -> Dict[str, Any]:
     """Write content to file with security validation"""
     try:
-        is_safe, error_msg = _validate_path_security(file_path, tool_context=tool_context)
+        is_safe, error_msg = _validate_path_security(
+            file_path,
+            tool_context=tool_context,
+            for_mutation=True,
+        )
         if not is_safe:
             return {
                 "operation": "write",
@@ -1334,7 +1516,11 @@ async def _profile_directory(
 async def _delete_path(target_path: str, tool_context: Optional[ToolContext] = None) -> Dict[str, Any]:
     """Delete file or directory with security validation"""
     try:
-        is_safe, error_msg = _validate_path_security(target_path, tool_context=tool_context)
+        is_safe, error_msg = _validate_path_security(
+            target_path,
+            tool_context=tool_context,
+            for_mutation=True,
+        )
         if not is_safe:
             return {
                 "operation": "delete",
@@ -1382,7 +1568,11 @@ async def _copy_path(source: str, destination: str, tool_context: Optional[ToolC
                 "error": f"Source security violation: {size_error}",
             }
 
-        is_safe_dest, error_msg_dest = _validate_path_security(destination, tool_context=tool_context)
+        is_safe_dest, error_msg_dest = _validate_path_security(
+            destination,
+            tool_context=tool_context,
+            for_mutation=True,
+        )
         if not is_safe_dest:
             return {
                 "operation": "copy",
@@ -1443,7 +1633,11 @@ async def _move_path(source: str, destination: str, tool_context: Optional[ToolC
                 "error": f"Source security violation: {size_error}",
             }
 
-        is_safe_dest, error_msg_dest = _validate_path_security(destination, tool_context=tool_context)
+        is_safe_dest, error_msg_dest = _validate_path_security(
+            destination,
+            tool_context=tool_context,
+            for_mutation=True,
+        )
         if not is_safe_dest:
             return {
                 "operation": "move",

@@ -197,7 +197,9 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
     tasks: state.tasks,
     selectedTaskId: state.selectedTaskId,
   }));
-  const [mode, setMode] = React.useState<PanelMode>('deliverables');
+  const hasPlanTasks = Array.isArray(tasks) && tasks.length > 0;
+  const [mode, setMode] = React.useState<PanelMode>('raw');
+  const [userPickedMode, setUserPickedMode] = React.useState(false);
   const [showAllRawFiles, setShowAllRawFiles] = React.useState(true);
   const [keyword, setKeyword] = React.useState('');
   const [selectedPath, setSelectedPath] = React.useState<string | null>(null);
@@ -206,8 +208,29 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
   const [checkedKeys, setCheckedKeys] = React.useState<string[]>([]);
   const [isBatchDownloading, setIsBatchDownloading] = React.useState(false);
 
+  React.useEffect(() => {
+    setUserPickedMode(false);
+    setMode(hasPlanTasks ? 'deliverables' : 'raw');
+    setShowAllRawFiles(true);
+    setSelectedPath(null);
+    setPreviewOpen(false);
+    setKeyword('');
+    setCheckedKeys([]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- reset on session change only
+  }, [sessionId]);
+
+  React.useEffect(() => {
+    if (userPickedMode) {
+      return;
+    }
+    if (!hasPlanTasks) {
+      setMode('raw');
+      setShowAllRawFiles(true);
+    }
+  }, [hasPlanTasks, userPickedMode]);
+
   const taskScopedRawPathPrefix = React.useMemo(() => {
-    if (!Array.isArray(tasks) || tasks.length === 0 || selectedTaskId == null) {
+    if (!hasPlanTasks || selectedTaskId == null) {
       return 'raw_files';
     }
     const taskMap = new Map(tasks.map((task) => [task.id, task]));
@@ -235,7 +258,7 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
     return ['raw_files', ...ancestors.map((id) => `task_${id}`), `task_${selectedTaskId}`].join('/');
   }, [selectedTaskId, tasks]);
 
-  const rawPathPrefix = showAllRawFiles ? 'raw_files' : taskScopedRawPathPrefix;
+  const rawPathPrefix = !hasPlanTasks || showAllRawFiles ? 'raw_files' : taskScopedRawPathPrefix;
 
   const {
     data: rawData,
@@ -647,6 +670,7 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
               { label: 'Raw Files', value: 'raw' },
             ]}
             onChange={(value) => {
+              setUserPickedMode(true);
               setMode(value as PanelMode);
               setSelectedPath(null);
               setPreviewOpen(false);
@@ -659,8 +683,8 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
             <Space size={8} wrap align="center">
               <Switch
                 size="small"
-                checked={showAllRawFiles}
-                disabled={selectedTaskId == null}
+                checked={!hasPlanTasks || showAllRawFiles}
+                disabled={!hasPlanTasks || selectedTaskId == null}
                 aria-label="All Raw Files"
                 onChange={(checked) => {
                   setShowAllRawFiles(checked);
@@ -672,7 +696,9 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
                 All Raw Files
               </Text>
               <Text type="secondary" style={{ fontSize: 12 }}>
-                {showAllRawFiles
+                {!hasPlanTasks
+                  ? 'No plan bound — showing full raw_files (including tmp/).'
+                  : showAllRawFiles
                   ? 'Showing the full raw_files tree.'
                   : selectedTaskId != null
                   ? `Showing only Task #${selectedTaskId}.`

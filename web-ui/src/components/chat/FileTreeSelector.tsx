@@ -36,7 +36,7 @@ const FileTreeSelector: React.FC<FileTreeSelectorProps> = ({
   const loadTreeData = async () => {
     setLoading(true);
     try {
-      const response = await projectApi.getProjectFiles(projectId);
+      const response = await projectApi.getProjectFiles(projectId, dataRootIndex);
       console.log('📁 Project files response:', response);
       if (response.code === 0) {
         setTreeData(response.data);

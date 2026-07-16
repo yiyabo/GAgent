@@ -709,6 +709,17 @@ def sanitize_tool_result(tool_name: str, raw_result: Any) -> Dict[str, Any]:
             else:
                 triples = sanitized.get("triples")
                 sanitized["empty_result"] = not bool(triples)
+        if tool_name == "lightrag_query":
+            if not sanitized.get("success"):
+                sanitized["empty_result"] = False
+            else:
+                has_evidence = bool(
+                    sanitized.get("context_preview")
+                    or sanitized.get("entities")
+                    or sanitized.get("relationships")
+                    or sanitized.get("chunks")
+                )
+                sanitized["empty_result"] = not has_evidence
         return sanitized
 
     if raw_result is None:
@@ -1010,6 +1021,34 @@ def summarize_tool_result(tool_name: str, result: Dict[str, Any]) -> str:
             snippet = prompt.strip()
             return f"{prefix} finished. Prompt summary: {snippet}"
         return f"{prefix} finished."
+
+    if tool_name == "lightrag_query":
+        query = result.get("query") or ""
+        prefix = f"LightRAG search\u201c{query}\u201d" if query else "LightRAG search"
+        if result.get("success") is False:
+            error = result.get("error") or "Execution failed"
+            return f"{prefix} failed: {error}"
+        summary = result.get("summary") if isinstance(result.get("summary"), dict) else {}
+        entities = summary.get("entities") if isinstance(summary, dict) else None
+        relationships = summary.get("relationships") if isinstance(summary, dict) else None
+        chunks = summary.get("chunks") if isinstance(summary, dict) else None
+        shards_ok = summary.get("shards_ok") if isinstance(summary, dict) else None
+        shards_total = summary.get("shards_total") if isinstance(summary, dict) else None
+        if result.get("empty_result"):
+            return f"{prefix} finished, but no relevant evidence was found."
+        parts = []
+        if isinstance(entities, int):
+            parts.append(f"{entities} entities")
+        if isinstance(relationships, int):
+            parts.append(f"{relationships} relations")
+        if isinstance(chunks, int):
+            parts.append(f"{chunks} chunks")
+        shard_info = ""
+        if isinstance(shards_ok, int) and isinstance(shards_total, int):
+            shard_info = f" (shards {shards_ok}/{shards_total})"
+        if parts:
+            return f"{prefix} finished, returning {', '.join(parts)}{shard_info}."
+        return f"{prefix} finished{shard_info}."
 
     if tool_name == "code_executor":
         category = result.get("error_category") or ""

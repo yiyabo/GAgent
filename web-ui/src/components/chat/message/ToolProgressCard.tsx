@@ -66,6 +66,7 @@ const TOOL_LABELS: Record<string, string> = {
   literature_pipeline: 'literature_pipeline',
   document_reader: 'document_reader',
   file_operations: 'file_operations',
+  lightrag_query: 'lightrag_query',
   graph_rag: 'graph_rag',
   result_interpreter: 'result_interpreter',
   code_executor: 'code_executor',

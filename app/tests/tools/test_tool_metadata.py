@@ -111,6 +111,7 @@ _READ_ONLY_CONCURRENT_TOOLS = {
     "literature_pipeline",
     "document_reader",
     "vision_reader",
+    "lightrag_query",
     "graph_rag",
     "sequence_fetch",
 }

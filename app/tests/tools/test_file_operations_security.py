@@ -43,6 +43,111 @@ def test_default_allowed_base_paths_include_mnt_sdm_zczhao() -> None:
     assert "/mnt/sdm/zczhao" in file_operations.ALLOWED_BASE_PATHS
 
 
+def test_default_allowed_base_paths_exclude_bare_project_root() -> None:
+    project_root = str(file_operations._get_project_root())
+    assert project_root not in file_operations.ALLOWED_BASE_PATHS
+    assert any(
+        path.startswith(project_root) and path.rstrip("/").endswith(("/runtime", "/results", "/data"))
+        for path in file_operations.ALLOWED_BASE_PATHS
+    )
+
+
+def test_write_rejects_project_root_without_session(monkeypatch, tmp_path: Path) -> None:
+    project_root = tmp_path / "project"
+    project_root.mkdir(parents=True, exist_ok=True)
+    target = project_root / "开题报告_leak.md"
+
+    monkeypatch.setattr(file_operations, "_get_project_root", lambda: project_root.resolve())
+    monkeypatch.setattr(file_operations, "ALLOWED_BASE_PATHS", [str(project_root)])
+
+    result = asyncio.run(
+        file_operations.file_operations_handler(
+            "write",
+            str(target),
+            content="should not land at repo root",
+        )
+    )
+
+    assert result["success"] is False
+    assert "not allowed" in str(result.get("error") or "").lower()
+    assert not target.exists()
+
+
+def test_write_redirects_project_root_into_session_raw_files_tmp(monkeypatch, tmp_path: Path) -> None:
+    from tool_box.context import ToolContext
+
+    project_root = tmp_path / "project"
+    runtime_root = project_root / "runtime"
+    session_tmp = runtime_root / "session_demo_redirect" / "raw_files" / "tmp"
+    session_tmp.mkdir(parents=True, exist_ok=True)
+    target = project_root / "开题报告_redirect.md"
+
+    monkeypatch.setattr(file_operations, "_get_project_root", lambda: project_root.resolve())
+    monkeypatch.setattr(
+        file_operations,
+        "_session_output_base",
+        lambda tool_context: session_tmp.resolve(),
+    )
+    monkeypatch.setattr(file_operations, "ALLOWED_BASE_PATHS", [str(project_root), str(runtime_root)])
+
+    result = asyncio.run(
+        file_operations.file_operations_handler(
+            "write",
+            str(target),
+            content="session redirected content",
+            tool_context=ToolContext(session_id="session_demo_redirect"),
+        )
+    )
+
+    assert result["success"] is True
+    assert not target.exists()
+    written = Path(result["path"])
+    assert written == (session_tmp / "开题报告_redirect.md").resolve()
+    assert written.read_text(encoding="utf-8") == "session redirected content"
+
+
+def test_write_redirects_session_root_file_into_raw_files_tmp(monkeypatch, tmp_path: Path) -> None:
+    from tool_box.context import ToolContext
+
+    project_root = tmp_path / "project"
+    session_dir = project_root / "runtime" / "session_demo_root"
+    session_tmp = session_dir / "raw_files" / "tmp"
+    session_tmp.mkdir(parents=True, exist_ok=True)
+    loose = session_dir / "AlphaMissense_中文翻译.md"
+
+    monkeypatch.setattr(file_operations, "_get_project_root", lambda: project_root.resolve())
+    monkeypatch.setattr(
+        file_operations,
+        "_session_output_base",
+        lambda tool_context: session_tmp.resolve(),
+    )
+    monkeypatch.setattr(
+        file_operations,
+        "_session_dir_from_context",
+        lambda tool_context: session_dir.resolve(),
+    )
+    monkeypatch.setattr(
+        file_operations,
+        "ALLOWED_BASE_PATHS",
+        [str(project_root), str(project_root / "runtime")],
+    )
+
+    result = asyncio.run(
+        file_operations.file_operations_handler(
+            "write",
+            str(loose),
+            content="must not stay at session root",
+            tool_context=ToolContext(session_id="session_demo_root"),
+        )
+    )
+
+    assert result["success"] is True
+    assert not loose.exists()
+    written = Path(result["path"])
+    assert written == (session_tmp / "AlphaMissense_中文翻译.md").resolve()
+    assert written.read_text(encoding="utf-8") == "must not stay at session root"
+
+
 def test_file_operations_accepts_session_id(monkeypatch, tmp_path: Path) -> None:
     project_root = tmp_path / "project"
     project_root.mkdir(parents=True, exist_ok=True)

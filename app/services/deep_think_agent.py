@@ -498,8 +498,10 @@ def summarize_tool_step_display(step: ThinkingStep, *, language: str) -> str:
         return _localized_text(language, "运行分析工具", "Running analysis tools")
     if tool_name == "vision_reader":
         return _localized_text(language, "分析图像内容", "Analyzing visual content")
+    if tool_name == "lightrag_query":
+        return _localized_text(language, "查询 LightRAG 知识库", "Querying LightRAG knowledge base")
     if tool_name == "graph_rag":
-        return _localized_text(language, "查询知识图谱", "Querying knowledge graph")
+        return _localized_text(language, "查询本地小图谱", "Querying local triples graph")
     if tool_name == "result_interpreter":
         return _localized_text(language, "汇总分析结果", "Interpreting results")
     if tool_name == "plan_operation":
@@ -6900,7 +6902,15 @@ Respond with ONLY a JSON object:
                 "Prefer this over code_executor for standard scientific figure generation."
             ),
             "web_search": "Search the internet for information. USE THIS ONLY for web-based queries, NOT for local files. For broad comparisons, prefer focused parallel subqueries with Params: {\"query\": \"original request\", \"queries\": [\"focused query 1\", \"focused query 2\"]}.",
-            "graph_rag": "Query knowledge graph for structured information. Params: {\"query\": \"your question\", \"mode\": \"global|local|hybrid\"}",
+            "lightrag_query": (
+                "PREFERRED knowledge-graph / literature RAG over the large LightRAG corpus. "
+                "Use for corpus factual questions, entity/relation evidence, and literature-backed context. "
+                "Params: {\"query\": \"your question\", \"mode\": \"mix|hybrid|local|global|naive\", \"top_k\": 5, \"max_chunks\": 12}."
+            ),
+            "graph_rag": (
+                "LEGACY small local triples graph with limited coverage. Prefer lightrag_query. "
+                "Params: {\"query\": \"your question\", \"top_k\": 12, \"hops\": 1, \"return_subgraph\": true}."
+            ),
             "file_operations": "File system operations: list directories, profile/census directory contents, read/write files, copy/move/delete. USE profile/census before making global all/every/completed claims about large directory trees. Use operation=write when the user asks to save, export, create, or update a Markdown/text/JSON/CSV artifact; do not substitute chat prose for a requested saved file. list/read/profile/census/exists/info are inspection-only in bound execute_task requests and do not count as task completion. Params: {\"operation\": \"profile|census|list|read|write|copy|move|delete\", \"path\": \"/path\"}",
             "document_reader": (
                 "Read local documents (.docx, .pdf, .txt, .md). For .csv/.tsv, this tool "

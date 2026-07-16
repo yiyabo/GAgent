@@ -20,6 +20,7 @@ from .tools_impl import (
     file_operations_tool,
     generate_experiment_card_tool,
     graph_rag_tool,
+    lightrag_query_tool,
     literature_pipeline_tool,
     manuscript_writer_tool,
     paper_replication_tool,
@@ -67,10 +68,15 @@ _TOOL_METADATA: Dict[str, Dict[str, Any]] = {
         "is_concurrent_safe": True,
         "search_hint": "image screenshot ocr visual analyze picture",
     },
+    "lightrag_query": {
+        "is_read_only": True,
+        "is_concurrent_safe": True,
+        "search_hint": "lightrag knowledge graph rag literature corpus entity relation shard",
+    },
     "graph_rag": {
         "is_read_only": True,
         "is_concurrent_safe": True,
-        "search_hint": "knowledge graph rag entity relation",
+        "search_hint": "legacy small triples knowledge graph rag entity relation",
     },
     "sequence_fetch": {
         "is_read_only": True,
@@ -152,6 +158,7 @@ _STANDARD_TOOLS: List[Dict[str, Any]] = [
     vision_reader_tool,
     paper_replication_tool,
     generate_experiment_card_tool,
+    lightrag_query_tool,
     graph_rag_tool,
     manuscript_writer_tool,
     phagescope_tool,

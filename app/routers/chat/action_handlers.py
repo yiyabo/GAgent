@@ -1570,6 +1570,37 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
                 details={"error": "invalid_operation", "tool": tool_name},
             )
 
+    elif tool_name == "lightrag_query":
+        query = params.get("query")
+        if not isinstance(query, str) or not query.strip():
+            return AgentStep(
+                action=action,
+                success=False,
+                message="lightrag_query requires a non-empty query.",
+                details={"error": "missing_query", "tool": tool_name},
+            )
+
+        def _safe_lightrag_int(value: Any, default: int, minimum: int, maximum: int) -> int:
+            try:
+                parsed = int(value)
+            except (TypeError, ValueError):
+                parsed = default
+            return max(minimum, min(parsed, maximum))
+
+        mode_raw = params.get("mode")
+        mode = str(mode_raw or "mix").strip() or "mix"
+        include_references = params.get("include_references")
+        if include_references is None:
+            include_references = True
+        params = {
+            "query": query.strip(),
+            "mode": mode,
+            "top_k": _safe_lightrag_int(params.get("top_k"), 5, 1, 20),
+            "max_chunks": _safe_lightrag_int(params.get("max_chunks"), 12, 1, 40),
+            "max_references": _safe_lightrag_int(params.get("max_references"), 12, 1, 40),
+            "include_references": bool(include_references),
+        }
+
     elif tool_name == "graph_rag":
         query = params.get("query")
         if not isinstance(query, str) or not query.strip():

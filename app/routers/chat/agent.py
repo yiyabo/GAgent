@@ -76,6 +76,7 @@ _OBSERVATION_ONLY_TOOLS = {
     "vision_reader",
     "result_interpreter",
     "web_search",
+    "lightrag_query",
     "graph_rag",
     "literature_pipeline",
 }

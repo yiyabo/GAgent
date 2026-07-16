@@ -154,6 +154,25 @@ describe('ArtifactsPanel', () => {
     });
   });
 
+  it('defaults to Raw Files when the session has no plan tasks', async () => {
+    useTasksStore.setState({
+      tasks: [],
+      selectedTaskId: null,
+      selectedTask: null,
+    } as any);
+
+    renderPanel();
+
+    await waitFor(() => {
+      expect(mockedArtifactsApi.listSessionArtifacts).toHaveBeenCalledWith(
+        'session_1776695619644_hb1elmfc0',
+        expect.objectContaining({ pathPrefix: 'raw_files' })
+      );
+    });
+
+    expect(screen.getByText(/No plan bound/i)).toBeInTheDocument();
+  });
+
   it('defaults raw browsing to all raw files and can toggle back to the selected task subtree', async () => {
     renderPanel();
 

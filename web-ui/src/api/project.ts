@@ -55,8 +55,13 @@ export class ProjectApi extends BaseApi {
   getProject = async (projectId: number): Promise<ProjectResponse> =>
     this.get<ProjectResponse>(`/project/${projectId}`);
 
-  getProjectFiles = async (projectId: number): Promise<FileTreeResponse> =>
-    this.get<FileTreeResponse>(`/project/${projectId}/files`);
+  getProjectFiles = async (
+    projectId: number,
+    dataRootIndex = 0,
+  ): Promise<FileTreeResponse> =>
+    this.get<FileTreeResponse>(`/project/${projectId}/files`, {
+      data_root_index: dataRootIndex,
+    });
 
   selectFiles = async (
     projectId: number,

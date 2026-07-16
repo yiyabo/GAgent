@@ -14,8 +14,11 @@ from .deliverable_config import DeliverableSettings, get_deliverable_settings
 from .executor_config import ExecutorSettings, get_executor_settings
 from .rag_config import (
     GraphRAGSettings,
+    LightRAGGatewaySettings,
     get_graph_rag_settings,
+    get_lightrag_gateway_settings,
     reset_graph_rag_settings_cache,
+    reset_lightrag_gateway_settings_cache,
 )
 from .search_config import SearchSettings, get_search_settings, reset_search_settings_cache
 
@@ -29,8 +32,11 @@ __all__ = [
     "ExecutorSettings",
     "get_executor_settings",
     "GraphRAGSettings",
+    "LightRAGGatewaySettings",
     "get_graph_rag_settings",
+    "get_lightrag_gateway_settings",
     "reset_graph_rag_settings_cache",
+    "reset_lightrag_gateway_settings_cache",
     "SearchSettings",
     "get_search_settings",
     "reset_search_settings_cache",
