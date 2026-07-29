@@ -630,6 +630,15 @@ class DeepThinkAgent:
     )
     URL_RE = re.compile(r"https?://[^\s`\"'<>]+", re.IGNORECASE)
 
+    # Matches transitional narration that the LLM may emit as a standalone
+    # response (e.g. "Now let me also search..."). Such content must NOT be
+    # treated as a final answer under the standard-tier early-stop rule.
+    _PROCESS_NARRATION_RE = re.compile(
+        r"^(?:now\s+)?(?:let me|let's|i'll|i will|i'm going to|now i|i should|"
+        r"接下来|让我|我先|我将|下面让我|我会先|我应该先).+",
+        re.IGNORECASE,
+    )
+
     def __init__(
         self,
         llm_client: Any,
@@ -3424,6 +3433,8 @@ class DeepThinkAgent:
                 "- Keep the tone professional and plain; avoid decorative emojis or hype.\n"
                 "- Prefer low-overhead execution, but do not ignore required evidence.\n"
                 "- Prioritize tool-backed facts over stylistic completeness.\n"
+                "- Prefer finishing in one short reasoning pass; do not output transitional narration (e.g. 'Let me search...', '接下来让我...') as a standalone response.\n"
+                "- If the answer depends on file/workspace/remote state, call the relevant tool now; otherwise call submit_final_answer. A no-tool guess is not an acceptable substitute for a check you could run.\n"
             )
         if tier == "research":
             return (
@@ -3587,7 +3598,15 @@ class DeepThinkAgent:
             "- If you need to find a previously generated file in this session, use file_operations with a path scoped to "
             f"`{session_dir}/`, not the project root.\n"
             "- When listing files to discover outputs, scope the listing to the session directory. Do NOT list "
-            "`/home/zczhao/Phage-Agent` or `/home/zczhao/Phage-Agent/results` — that will surface unrelated session files.\n\n"
+            "`/home/zczhao/Phage-Agent` or `/home/zczhao/Phage-Agent/results` — that will surface unrelated session files.\n"
+            "- USER DATA INPUTS: If the current user message lists attachments, analyze ONLY those attachment paths. "
+            f"Do NOT treat leftover files under `{session_dir}/uploads/` from previous upload attempts as additional datasets "
+            "unless the user explicitly asks to reuse them.\n"
+            "- NUMBERED REFERENCE POLICY: When the user selects 方向N / 研究方向N / option N, you MUST resolve N to the exact title from your earlier numbered list in this conversation (or from GROUNDED NUMBERED REFERENCES in the user message). Restate that title before writing any protocol. Never invent a different topic that reuses the same number. Priority tables use the same 方向N ids (not row rank).\n"
+            "- SPREADSHEET SHEET POLICY: If user names a sheet, use only that sheet. If unspecified, analyze only the "
+            "primary/main data sheet (typically the first or the detailed clinical table). Do NOT auto-analyze every "
+            "sheet in a workbook as separate datasets; secondary sheets (rosters/codebooks) are optional context only "
+            "unless the user asks. Always state which sheet(s) were analyzed.\n\n"
         )
 
     @staticmethod
@@ -5034,6 +5053,8 @@ class DeepThinkAgent:
                         and _content_for_early_stop
                         and len(_content_for_early_stop) >= 20
                         and not self._is_execute_task_request()
+                        and not self._PROCESS_NARRATION_RE.match(_content_for_early_stop)
+                        and not self._collect_tool_failures_from_steps(thinking_steps)
                     ):
                         final_answer = _content_for_early_stop
                         confidence = max(confidence, 0.85)
@@ -7196,7 +7217,10 @@ When ready to answer:
         """Generate prompt for the next step, encouraging completion if steps are getting long."""
         tier = self._request_tier()
         if tier == "standard":
-            return 'Prefer answering now. Continue only if one more brief step materially improves the response.'
+            return (
+                'Prefer answering now. If you still need file or tool evidence, call the tool now; '
+                'otherwise call submit_final_answer. Do not output transitional narration as a standalone response.'
+            )
         if iteration >= self.max_iterations - 1:
             return (
                 'CRITICAL: This is your LAST step. You MUST call submit_final_answer NOW with the best answer '

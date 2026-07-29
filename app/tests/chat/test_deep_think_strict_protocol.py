@@ -4156,3 +4156,101 @@ def test_native_standard_tier_no_early_stop_on_short_content() -> None:
     # Should NOT have early-stopped because content is too short
     assert result.total_iterations == 2
     assert result.final_answer == "Detailed answer after more thinking"
+
+
+def test_native_standard_tier_no_early_stop_on_process_narration() -> None:
+    """Regression guard for 2e20ac63: transitional narration (e.g. 'Now let me
+    search...') must NOT be treated as a final answer under standard-tier
+    early-stop — the anti-narration prompt was removed when light tier was
+    deprecated, so the early-stop rule needs an explicit regex guard."""
+
+    llm = _NativeDummyLLM([
+        NativeStreamResult(
+            content="Now let me also search for recent ERCP research hotspots to ensure my additional recommendations are aligned with current trends.",
+            tool_calls=[],
+        ),
+        NativeStreamResult(
+            content="",
+            tool_calls=[
+                NativeToolCall(
+                    id="final1",
+                    name="submit_final_answer",
+                    arguments={"answer": "Recommendation 1, 2, 3 based on data", "confidence": 0.9},
+                )
+            ],
+        ),
+    ])
+
+    agent = DeepThinkAgent(
+        llm_client=llm,
+        available_tools=["web_search"],
+        tool_executor=_noop_tool_executor,
+        max_iterations=3,
+        request_profile={"request_tier": "standard"},
+    )
+
+    result = asyncio.run(agent.think("请继续推荐几个可以基于这批数据的研究方向"))
+
+    assert result.total_iterations == 2
+    assert result.final_answer == "Recommendation 1, 2, 3 based on data"
+    assert "Now let me" not in result.final_answer
+
+
+def test_native_standard_tier_no_early_stop_when_tool_failed() -> None:
+    """Regression guard: when any prior tool call failed, standard-tier
+    early-stop must NOT fire on a subsequent text-only response — the LLM
+    needs a chance to recover or synthesize from the failure instead of
+    stranding the user with transitional narration as the final answer."""
+
+    async def _failing_tool_executor(_name: str, _params: dict):
+        return {
+            "success": False,
+            "error": "Directory not found",
+            "summary": "file_operations profile failed: Directory not found",
+            "result": {"success": False, "error": "Directory not found"},
+        }
+
+    llm = _NativeDummyLLM([
+        # Iteration 1: tool call that fails.
+        NativeStreamResult(
+            content="",
+            tool_calls=[
+                NativeToolCall(
+                    id="call_file_ops_1",
+                    name="file_operations",
+                    arguments={"operation": "profile", "path": "/nonexistent"},
+                )
+            ],
+        ),
+        # Iteration 2: narration without tool calls. Without the
+        # tool_failure guard this would become the final answer.
+        NativeStreamResult(
+            content="Let me try a different approach to gather the required evidence.",
+            tool_calls=[],
+        ),
+        # Iteration 3: real answer.
+        NativeStreamResult(
+            content="",
+            tool_calls=[
+                NativeToolCall(
+                    id="final1",
+                    name="submit_final_answer",
+                    arguments={"answer": "Real answer synthesized after recovery", "confidence": 0.85},
+                )
+            ],
+        ),
+    ])
+
+    agent = DeepThinkAgent(
+        llm_client=llm,
+        available_tools=["file_operations"],
+        tool_executor=_failing_tool_executor,
+        max_iterations=4,
+        request_profile={"request_tier": "standard"},
+    )
+
+    result = asyncio.run(agent.think("继续推荐几个研究方向"))
+
+    assert result.total_iterations == 3
+    assert result.final_answer == "Real answer synthesized after recovery"
+    assert "Let me try a different approach" not in result.final_answer
