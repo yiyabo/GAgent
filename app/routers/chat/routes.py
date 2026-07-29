@@ -54,6 +54,7 @@ from .services import (
     plan_repository,
     session_title_service,
 )
+from .reference_resolution import maybe_inject_direction_resolution
 from .session_helpers import (
     _convert_history_to_agent_format,
     _derive_conversation_id,
@@ -260,6 +261,23 @@ async def chat_message(
             if hints:
                 attachment_info += f"\n💡 Hint: {'; '.join(hints)}."
 
+            attachment_info += (
+                "\n=== CURRENT ATTACHMENT POLICY (CRITICAL) ===\n"
+                "- The files listed above are the ONLY user data files authorized for this turn.\n"
+                "- Analyze ONLY these current attachments. Do NOT list or analyze other leftover files "
+                "under the session uploads/ directory from previous uploads.\n"
+                "- Do NOT reopen older attachment paths from chat history unless the user explicitly asks "
+                "to reuse a previous file.\n"
+                "- If you need a data file path, use the paths listed above (or their extracted_path).\n"
+            "- SPREADSHEET SHEET POLICY (CRITICAL):\n"
+            "  * If the user names a sheet (e.g. Sheet1 / 主表 / 某工作表), analyze ONLY that sheet.\n"
+            "  * If the user does NOT specify a sheet: prefer the primary/main data sheet only "
+            "(usually the first sheet, or the sheet with detailed clinical columns — NOT every sheet).\n"
+            "  * Do NOT automatically scan and fully analyze ALL sheets in a workbook as separate datasets.\n"
+            "  * Secondary sheets (e.g. patient roster / codebooks / 全队列名单) may be briefly noted "
+            "for context, but do not treat them as additional full analysis targets unless the user asks.\n"
+            "  * When reporting, state which sheet(s) were analyzed.\n"
+            )
             message_to_send = request.message + attachment_info
             logger.info("[CHAT][ATTACHMENTS] session=%s count=%d", request.session_id, len(attachments))
 
@@ -269,6 +287,10 @@ async def chat_message(
             context.pop("plan_id", None)
 
         converted_history = _convert_history_to_agent_format(request.history)
+        message_to_send = maybe_inject_direction_resolution(
+            message_to_send,
+            converted_history,
+        )
 
         session_settings: Dict[str, Any] = {}
 
@@ -635,7 +657,17 @@ async def list_chat_sessions(
     """List existing chat sessions."""
     from ...database import get_db  # lazy import
 
+    # Security: bind to the trusted SSO principal so platform users cannot
+    # forge a project_id query param to enumerate other projects' sessions.
+    # This GET endpoint has no body, so an empty ChatRequest is supplied only
+    # to satisfy the bind contract; the returned payload is discarded.
+    bind_chat_request_to_principal(raw_request, ChatRequest(message=""))
     owner_id = get_request_owner_id(raw_request)
+    principal = get_request_principal(raw_request)
+    if principal.is_platform_access:
+        # Security: principal is the sole authority for project scope in SSO
+        # mode; override any client-supplied project_id to prevent leakage.
+        project_id = principal.require_platform_project_id()
     try:
         with get_db() as conn:
             where_clauses: List[str] = ["s.owner_id = ?"]

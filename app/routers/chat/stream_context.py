@@ -14,6 +14,7 @@ from .services import (
     plan_executor_service,
     plan_repository,
 )
+from .reference_resolution import maybe_inject_direction_resolution
 from .session_helpers import (
     _convert_history_to_agent_format,
     _derive_conversation_id,
@@ -125,6 +126,24 @@ async def build_agent_for_chat_request(
             attachment_info += (
                 "\n💡 Hint: use vision_reader for images and document_reader for documents."
             )
+
+        attachment_info += (
+            "\n=== CURRENT ATTACHMENT POLICY (CRITICAL) ===\n"
+            "- The files listed above are the ONLY user data files authorized for this turn.\n"
+            "- Analyze ONLY these current attachments. Do NOT list or analyze other leftover files "
+            "under the session uploads/ directory from previous uploads.\n"
+            "- Do NOT reopen older attachment paths from chat history unless the user explicitly asks "
+            "to reuse a previous file.\n"
+            "- If you need a data file path, use the paths listed above (or their extracted_path).\n"
+            "- SPREADSHEET SHEET POLICY (CRITICAL):\n"
+            "  * If the user names a sheet (e.g. Sheet1 / 主表 / 某工作表), analyze ONLY that sheet.\n"
+            "  * If the user does NOT specify a sheet: prefer the primary/main data sheet only "
+            "(usually the first sheet, or the sheet with detailed clinical columns — NOT every sheet).\n"
+            "  * Do NOT automatically scan and fully analyze ALL sheets in a workbook as separate datasets.\n"
+            "  * Secondary sheets (e.g. patient roster / codebooks / 全队列名单) may be briefly noted "
+            "for context, but do not treat them as additional full analysis targets unless the user asks.\n"
+            "  * When reporting, state which sheet(s) were analyzed.\n"
+        )
         message_to_send = request.message + attachment_info
 
     if plan_session.plan_id is not None:
@@ -133,6 +152,10 @@ async def build_agent_for_chat_request(
         context.pop("plan_id", None)
 
     converted_history = _convert_history_to_agent_format(request.history)
+    message_to_send = maybe_inject_direction_resolution(
+        message_to_send,
+        converted_history,
+    )
     session_settings: Dict[str, Any] = {}
 
     if "task_id" in context and "current_task_id" not in context:
