@@ -3,6 +3,7 @@ import { ChatSession } from '@/types';
 import { SessionStorage } from '@/utils/sessionStorage';
 import { chatApi } from '@api/chat';
 import { ENV } from '@/config/env';
+import { useAuthStore } from '@store/auth';
 import { useTasksStore } from '@store/tasks';
 import { dispatchPlanSyncEvent } from '@utils/planSyncEvents';
 import {
@@ -43,6 +44,13 @@ export const createSessionSlice: ChatSliceCreator = (set, get) => ({
   SessionStorage.setCurrentSessionId(storageSessionId);
   } else {
   SessionStorage.clearCurrentSessionId();
+  }
+
+  // Composer chips must mirror server uploads disk for this session.
+  if (session) {
+    void get().syncUploadedFilesFromServer();
+  } else {
+    get().clearUploadedFiles();
   }
   },
 
@@ -262,8 +270,9 @@ export const createSessionSlice: ChatSliceCreator = (set, get) => ({
   },
 
   loadSessions: async () => {
-  try {
-    const response = await chatApi.getSessions({ limit: 100, offset: 0 });
+    try {
+      const projectId = useAuthStore.getState().projectId ?? undefined;
+      const response = await chatApi.getSessions({ limit: 100, offset: 0, project_id: projectId });
   const summaries = response.sessions ?? [];
   const existingSessions = get().sessions;
   const existingMap = new Map(existingSessions.map((s) => [s.id, s]));
