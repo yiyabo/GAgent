@@ -17,6 +17,75 @@ from .services.foundation.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
+
+def _format_http_error(exc: "httpx.HTTPStatusError", *, body: str = "") -> str:
+    """Build a user-visible LLM HTTP error that includes upstream body text."""
+    status = None
+    url = ""
+    if exc.response is not None:
+        status = exc.response.status_code
+        try:
+            url = str(exc.request.url) if exc.request is not None else ""
+        except Exception:
+            url = ""
+    raw = (body or "").strip()
+    if not raw and exc.response is not None:
+        try:
+            raw = (exc.response.text or "").strip()
+        except Exception:
+            raw = ""
+    detail = raw
+    if raw:
+        try:
+            obj = json.loads(raw)
+            if isinstance(obj, dict):
+                err = obj.get("error")
+                if isinstance(err, dict):
+                    detail = (
+                        err.get("message")
+                        or err.get("msg")
+                        or err.get("code")
+                        or raw
+                    )
+                elif isinstance(err, str) and err.strip():
+                    detail = err.strip()
+                else:
+                    detail = (
+                        obj.get("message")
+                        or obj.get("msg")
+                        or obj.get("detail")
+                        or raw
+                    )
+                if isinstance(detail, (dict, list)):
+                    detail = json.dumps(detail, ensure_ascii=False)
+        except Exception:
+            detail = raw
+    detail = str(detail).strip() if detail is not None else ""
+    if len(detail) > 800:
+        detail = detail[:800] + "…"
+    base = f"LLM HTTP {status}" if status is not None else "LLM HTTP error"
+    if detail:
+        msg = f"{base}: {detail}"
+    else:
+        msg = f"{base}: {exc}"
+    if url:
+        msg = f"{msg} (url={url})"
+    return msg
+
+
+async def _read_stream_error_body(response: "httpx.Response") -> str:
+    try:
+        data = await response.aread()
+        if isinstance(data, bytes):
+            return data.decode("utf-8", errors="replace")
+        return str(data)
+    except Exception:
+        try:
+            return response.text or ""
+        except Exception:
+            return ""
+
+
 _usage_context: contextvars.ContextVar[Optional[Dict[str, Any]]] = contextvars.ContextVar(
     "llm_usage_context", default=None
 )
@@ -486,8 +555,8 @@ class LLMClient(LLMProvider):
                 try:
                     body = e.response.text if e.response is not None else ""
                 except Exception:
-                    body = str(e)
-                raise RuntimeError(f"LLM HTTPError: {status_code} {body}".strip())
+                    body = ""
+                raise RuntimeError(_format_http_error(e, body=body)) from e
             except Exception as e:
                 # Treat as transient (network) and retry
                 if attempt < request_retries:
@@ -562,8 +631,8 @@ class LLMClient(LLMProvider):
                 try:
                     body = e.response.text if e.response is not None else ""
                 except Exception:
-                    body = str(e)
-                raise RuntimeError(f"LLM HTTPError: {status_code} {body}".strip())
+                    body = ""
+                raise RuntimeError(_format_http_error(e, body=body)) from e
             except Exception as e:
                 if attempt < request_retries:
                     delay = max(0.0, self.backoff_base * (2**attempt) + random.uniform(0, self.backoff_base / 4.0))
@@ -620,7 +689,12 @@ class LLMClient(LLMProvider):
             "POST", self.url, headers=headers, json=payload,
             timeout=timeout,
         ) as resp:
-            resp.raise_for_status()
+            if resp.status_code >= 400:
+                body = await _read_stream_error_body(resp)
+                try:
+                    resp.raise_for_status()
+                except httpx.HTTPStatusError as e:
+                    raise RuntimeError(_format_http_error(e, body=body)) from e
             async for line in resp.aiter_lines():
                 if not line:
                     continue
@@ -778,7 +852,12 @@ class LLMClient(LLMProvider):
         client = _get_shared_async_client()
         async with client.stream("POST", self.url, headers=headers, json=payload,
                                  timeout=timeout) as resp:
-            resp.raise_for_status()
+            if resp.status_code >= 400:
+                body = await _read_stream_error_body(resp)
+                try:
+                    resp.raise_for_status()
+                except httpx.HTTPStatusError as e:
+                    raise RuntimeError(_format_http_error(e, body=body)) from e
             async for line in resp.aiter_lines():
                 if not line or not line.startswith("data:"):
                     continue
