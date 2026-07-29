@@ -48,23 +48,34 @@ const FileUploadButton: React.FC<FileUploadButtonProps> = ({ size = 'middle' }) 
 
   const handleFileTreeSelect = (files: Array<{ path: string; name: string; data_root_path: string }>) => {
     setTreeSelectorVisible(false);
-    
+
     if (files.length > 0 && currentSession) {
       const store = useChatStore.getState();
-      const fileRefs = files.map(file => ({
-        file_id: `project_${file.path}`,
-        file_path: file.path,
-        file_name: file.name,
-        original_name: file.name,
-        file_size: 'Project File',
-        file_type: 'project_reference',
-        uploaded_at: new Date().toISOString(),
-        category: 'project',
-        is_archive: false,
-      }));
+      const existing = store.uploadedFiles;
+      const existingKeys = new Set(
+        existing.map((f) => f.file_path || f.file_id || f.original_name),
+      );
+      const fileRefs = files
+        .map((file) => ({
+          file_id: `project_${file.path}`,
+          file_path: file.path,
+          file_name: file.name,
+          original_name: file.name,
+          file_size: 'Project File',
+          file_type: 'project_reference',
+          uploaded_at: new Date().toISOString(),
+          category: 'project',
+          is_archive: false,
+        }))
+        .filter((f) => !existingKeys.has(f.file_path) && !existingKeys.has(f.file_id));
 
-      store.setUploadedFiles([...store.uploadedFiles, ...fileRefs]);
-      message.success(`Added ${files.length} project files to session`);
+      if (fileRefs.length === 0) {
+        message.info('Selected files are already attached');
+        return;
+      }
+
+      store.setUploadedFiles([...existing, ...fileRefs]);
+      message.success(`Added ${fileRefs.length} project files to session`);
     }
   };
 
