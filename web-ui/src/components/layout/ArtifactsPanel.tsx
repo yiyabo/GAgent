@@ -581,12 +581,12 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
 
   return (
     <div style={{ height: '100%', display: 'flex', flexDirection: 'column', position: 'relative', minHeight: 0 }}>
-      {/* Header */}
       <div
+        className="artifacts-panel-header"
         style={{
-          padding: isFocusedPreview ? '0 16px' : '12px 16px',
+          padding: isFocusedPreview ? '0 12px' : '10px 12px 12px',
           borderBottom: isFocusedPreview ? '1px solid transparent' : '1px solid var(--border-color)',
-          maxHeight: isFocusedPreview ? 0 : 180,
+          maxHeight: isFocusedPreview ? 0 : 260,
           opacity: isFocusedPreview ? 0 : 1,
           transform: isFocusedPreview ? 'translateY(-8px)' : 'translateY(0)',
           overflow: 'hidden',
@@ -594,10 +594,10 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
           transition: 'max-height 320ms cubic-bezier(0.22, 1, 0.36, 1), opacity 240ms ease, transform 320ms cubic-bezier(0.22, 1, 0.36, 1), padding 240ms ease, border-color 240ms ease',
         }}
       >
-        <Space direction="vertical" size={8} style={{ width: '100%' }}>
-          <Space style={{ width: '100%', justifyContent: 'space-between' }}>
-            <Space direction="vertical" size={2}>
-              <Text type="secondary" style={{ fontSize: 12 }}>
+        <div className="artifacts-panel-header-inner">
+          <div className="artifacts-panel-title-row">
+            <div className="artifacts-panel-title-block">
+              <div className="artifacts-panel-title">
                 {mode === 'deliverables'
                   ? 'Deliverables'
                   : showAllRawFiles
@@ -605,65 +605,67 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
                   : selectedTaskId != null
                   ? `Raw Files · Task #${selectedTaskId}`
                   : 'Raw Files'}
-              </Text>
+              </div>
               {mode === 'deliverables' && (
-                <>
-                  <Space size={8} wrap>
-                    <Text type="secondary" style={{ fontSize: 12 }}>
-                      {deliverableData?.count ?? 0} files
-                      {showPaperProgress ? ` · Paper ${paperCompleted}/${paperTotal}` : ''}
-                    </Text>
-                    {releaseStateMeta && (
-                      <Tag icon={releaseStateMeta.icon} color={releaseStateMeta.color} style={{ marginInlineEnd: 0 }}>
-                        {releaseStateMeta.label}
-                      </Tag>
-                    )}
-                  </Space>
-                  {releaseSummary && (
-                    <Text type="secondary" style={{ fontSize: 12 }}>
-                      {releaseSummary}
-                    </Text>
+                <div className="artifacts-panel-subtitle">
+                  <span>
+                    {deliverableData?.count ?? 0} files
+                    {showPaperProgress ? ` · Paper ${paperCompleted}/${paperTotal}` : ''}
+                  </span>
+                  {releaseStateMeta && (
+                    <Tag icon={releaseStateMeta.icon} color={releaseStateMeta.color} style={{ marginInlineEnd: 0 }}>
+                      {releaseStateMeta.label}
+                    </Tag>
                   )}
-                </>
+                </div>
               )}
-            </Space>
-            <Space size={6}>
-              <Tooltip title="Download selected files as zip">
-                <Button
-                  size="small"
-                  icon={<DownloadOutlined />}
-                  onClick={handleDownloadSelected}
-                  loading={isBatchDownloading}
-                  disabled={checkedKeys.length === 0 || isBatchDownloading}
-                >
-                  Download Selected
-                </Button>
-              </Tooltip>
-              <Tooltip title="Download all visible files as zip">
-                <Button
-                  size="small"
-                  icon={<CloudDownloadOutlined />}
-                  onClick={handleDownloadAll}
-                  loading={isBatchDownloading}
-                  disabled={filteredItems.length === 0 || isBatchDownloading}
-                >
-                  Download All
-                </Button>
-              </Tooltip>
-              <Tooltip title={dagSidebarFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}>
-                <Button
-                  size="small"
-                  icon={dagSidebarFullscreen ? <FullscreenExitOutlined /> : <FullscreenOutlined />}
-                  onClick={toggleDagSidebarFullscreen}
-                />
-              </Tooltip>
-              <Button size="small" icon={<ReloadOutlined />} onClick={handleRefetch} loading={isFetching}>
-                Refresh
+              {mode === 'deliverables' && releaseSummary ? (
+                <div className="artifacts-panel-hint" title={releaseSummary}>
+                  {releaseSummary}
+                </div>
+              ) : null}
+            </div>
+          </div>
+
+          <div className="artifacts-panel-actions">
+            <Tooltip title="Download selected files as zip">
+              <Button
+                size="small"
+                className="artifacts-action-btn"
+                icon={<DownloadOutlined />}
+                onClick={handleDownloadSelected}
+                loading={isBatchDownloading}
+                disabled={checkedKeys.length === 0 || isBatchDownloading}
+              >
+                <span className="artifacts-action-label">Selected</span>
               </Button>
-            </Space>
-          </Space>
+            </Tooltip>
+            <Tooltip title="Download all visible files as zip">
+              <Button
+                size="small"
+                className="artifacts-action-btn"
+                icon={<CloudDownloadOutlined />}
+                onClick={handleDownloadAll}
+                loading={isBatchDownloading}
+                disabled={filteredItems.length === 0 || isBatchDownloading}
+              >
+                <span className="artifacts-action-label">All</span>
+              </Button>
+            </Tooltip>
+            <Tooltip title={dagSidebarFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}>
+              <Button
+                size="small"
+                icon={dagSidebarFullscreen ? <FullscreenExitOutlined /> : <FullscreenOutlined />}
+                onClick={toggleDagSidebarFullscreen}
+              />
+            </Tooltip>
+            <Tooltip title="Refresh">
+              <Button size="small" icon={<ReloadOutlined />} onClick={handleRefetch} loading={isFetching} />
+            </Tooltip>
+          </div>
 
           <Segmented
+            className="artifacts-panel-segmented"
             value={mode}
             options={[
               { label: 'Deliverables', value: 'deliverables' },
@@ -680,7 +682,7 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
           />
 
           {mode === 'raw' && (
-            <Space size={8} wrap align="center">
+            <div className="artifacts-panel-raw-filter">
               <Switch
                 size="small"
                 checked={!hasPlanTasks || showAllRawFiles}
@@ -692,28 +694,27 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
                   setPreviewOpen(false);
                 }}
               />
-              <Text type="secondary" style={{ fontSize: 12 }}>
-                All Raw Files
-              </Text>
-              <Text type="secondary" style={{ fontSize: 12 }}>
+              <span className="artifacts-panel-raw-label">All Raw Files</span>
+              <span className="artifacts-panel-hint">
                 {!hasPlanTasks
-                  ? 'No plan bound — showing full raw_files (including tmp/).'
+                  ? 'No plan bound — full raw_files'
                   : showAllRawFiles
-                  ? 'Showing the full raw_files tree.'
+                  ? 'Full raw_files tree'
                   : selectedTaskId != null
-                  ? `Showing only Task #${selectedTaskId}.`
-                  : 'Select a task to scope raw files.'}
-              </Text>
-            </Space>
+                  ? `Task #${selectedTaskId} only`
+                  : 'Select a task to scope'}
+              </span>
+            </div>
           )}
 
           <Input.Search
+            className="artifacts-panel-search"
             placeholder="Search file paths"
             value={keyword}
             onChange={(event) => setKeyword(event.target.value)}
             allowClear
           />
-        </Space>
+        </div>
       </div>
 
       {/* Main Content Area - Horizontal layout with file list and preview */}

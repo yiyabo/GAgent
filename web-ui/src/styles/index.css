@@ -879,3 +879,136 @@ pre, code {
   border-radius: var(--radius-md) !important;
   border: 1px solid var(--border-color) !important;
 }
+
+/* Artifacts panel header (narrow right sidebar safe) */
+.artifacts-panel-header-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  width: 100%;
+  font-family: inherit;
+}
+
+.artifacts-panel-title-row {
+  min-width: 0;
+  width: 100%;
+}
+
+.artifacts-panel-title-block {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.artifacts-panel-title {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--text-primary, rgba(0, 0, 0, 0.88));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  letter-spacing: 0;
+  writing-mode: horizontal-tb;
+}
+
+.artifacts-panel-subtitle {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-secondary, rgba(0, 0, 0, 0.45));
+  min-width: 0;
+}
+
+.artifacts-panel-hint {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-secondary, rgba(0, 0, 0, 0.45));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.artifacts-panel-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  width: 100%;
+}
+
+.artifacts-panel-actions .ant-btn {
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.artifacts-panel-actions .artifacts-action-btn {
+  max-width: 100%;
+}
+
+.artifacts-panel-segmented {
+  width: 100%;
+  min-width: 0;
+}
+
+.artifacts-panel-segmented .ant-segmented-item-label {
+  font-size: 12px;
+  font-family: inherit;
+  line-height: 1.2;
+}
+
+.artifacts-panel-raw-filter {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.artifacts-panel-raw-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-primary, rgba(0, 0, 0, 0.88));
+  white-space: nowrap;
+}
+
+.artifacts-panel-search {
+  width: 100%;
+  min-width: 0;
+}
+
+.artifacts-panel-search .ant-input {
+  font-size: 13px;
+  font-family: inherit;
+}
+
+.artifacts-panel-header {
+  container-type: inline-size;
+  container-name: artifacts-header;
+}
+
+@container artifacts-header (max-width: 320px) {
+  .artifacts-action-label {
+    display: none;
+  }
+  .artifacts-panel-actions .ant-btn.artifacts-action-btn {
+    padding-inline: 8px;
+  }
+}
+
+.dag-sidebar-tabs .ant-tabs-tab {
+  font-size: 13px;
+  font-family: inherit;
+  letter-spacing: 0;
+}
+
+.dag-sidebar-tabs .ant-tabs-tab-btn {
+  white-space: nowrap;
+}
