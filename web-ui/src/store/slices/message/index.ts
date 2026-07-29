@@ -43,6 +43,155 @@ import {
 import type { StreamMutableState, StreamHandlerContext } from './types';
 import type { ChatStreamEvent } from '../../chatUtils';
 
+
+const _sleep = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms));
+
+const _looksLikeSubstantialAssistant = (content: unknown): boolean => {
+  const text = typeof content === 'string' ? content.trim() : '';
+  if (text.length < 40) return false;
+  const lower = text.toLowerCase();
+  if (lower.includes('backend returned a server error')) return false;
+  if (lower.includes('request failed. please check')) return false;
+  if (lower.includes('reconnect failed')) return false;
+  if (lower.includes('对话已中断')) return false;
+  if (lower.includes('连接中断')) return false;
+  return true;
+};
+
+/**
+ * After SSE/stream drop: backend may still be running or already saved the reply.
+ * Prefer resume active run, then poll history — only fail if both miss.
+ */
+const _recoverAfterStreamFailure = async (
+  get: any,
+  opts: {
+    apiSessionId: string;
+    localSessionId: string;
+    assistantMessageId: string;
+    processingKey: string;
+    runId?: string | null;
+    partialContent?: string;
+    set: any;
+    currentSession: any;
+  },
+): Promise<boolean> => {
+  const {
+    apiSessionId,
+    localSessionId,
+    assistantMessageId,
+    processingKey,
+    runId,
+    partialContent,
+    set,
+    currentSession,
+  } = opts;
+
+  const keepPending = (note: string) => {
+    const prev =
+      (get().messages.find((m: ChatMessage) => m.id === assistantMessageId)?.metadata ??
+        {}) as Record<string, any>;
+    get().updateMessage(assistantMessageId, {
+      content: (partialContent && String(partialContent).trim()) || note,
+      metadata: {
+        ...prev,
+        status: 'pending',
+        recovering: true,
+        errors: undefined,
+        chat_run_id: runId || prev.chat_run_id,
+      },
+    });
+    get().setSessionProcessing(processingKey, true);
+    if (runId) {
+      get().setActiveRunId(processingKey, runId);
+    }
+  };
+
+  // 1) Active run still on server → reconnect event stream
+  try {
+    const response = await chatApi.getActiveRun(apiSessionId);
+    const run = selectActiveChatRun(response.data);
+    const activeRunId = (run?.run_id as string | undefined) || undefined;
+    if (activeRunId) {
+      keepPending('连接中断，正在自动重连并继续接收结果…');
+      get().setActiveRunId(processingKey, activeRunId);
+      const state: StreamMutableState = {
+        streamedContent: partialContent || '',
+        lastFlushedContent: partialContent || '',
+        flushHandle: null,
+        thinkingDeltaFlushHandle: null,
+        pendingThinkingDeltas: {},
+        pendingThinkingDeltaStartedAt: {},
+        finalPayload: null,
+        jobFinalized: false,
+        isBackgroundDispatch: false,
+      };
+      const targetMsg = get().messages.find((m: ChatMessage) => m.id === assistantMessageId);
+      const mergedMetadata = {
+        ...((targetMsg?.metadata as Record<string, unknown> | undefined) ?? {}),
+        status: 'pending',
+        chat_run_id: activeRunId,
+        recovering: true,
+      };
+      const boundFlush = (force: boolean = false) =>
+        flushAnalysisText(get, assistantMessageId, state, force);
+      const boundScheduleFlush = () => scheduleFlush(state, boundFlush);
+      const boundStartPolling = (
+        trackingId: string | null | undefined,
+        messageId: string,
+        initialStatus?: ChatActionStatus,
+        initialContent?: string | null,
+      ) => startActionStatusPolling(get, trackingId, messageId, initialStatus, initialContent);
+      const ctx: StreamHandlerContext = {
+        get,
+        set,
+        assistantMessageId,
+        mergedMetadata,
+        currentSession,
+        state,
+        startActionStatusPolling: boundStartPolling,
+        flushAnalysisText: boundFlush,
+        scheduleFlush: boundScheduleFlush,
+      };
+      await _consumeUnifiedStream(ctx, streamRunEvents(apiSessionId, activeRunId, -1));
+      await _finalizeAfterUnifiedStream(ctx, state, boundFlush);
+      return true;
+    }
+  } catch (err) {
+    console.warn('[chat] stream recovery resume failed:', err);
+  }
+
+  // 2) Run already finished — poll history for persisted assistant reply
+  keepPending('连接中断，正在从服务端同步已完成的结果…');
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    if (attempt > 0) {
+      await _sleep(Math.min(1200 * attempt, 5000));
+    } else {
+      await _sleep(800);
+    }
+    try {
+      const response = await chatApi.getHistory(apiSessionId, { limit: 30 });
+      const data = response.data as any;
+      const rawMessages: any[] = Array.isArray(data?.messages) ? data.messages : [];
+      const lastAssistant = [...rawMessages]
+        .reverse()
+        .find(
+          (m) =>
+            (m?.role === 'assistant' || m?.type === 'assistant') &&
+            _looksLikeSubstantialAssistant(m?.content),
+        );
+      if (lastAssistant) {
+        await get().loadChatHistory(localSessionId);
+        get().setActiveRunId(processingKey, null);
+        get().setSessionProcessing(processingKey, false);
+        return true;
+      }
+    } catch (err) {
+      console.warn('[chat] stream recovery history poll failed:', err);
+    }
+  }
+  return false;
+};
+
 const _consumeUnifiedStream = async (
   ctx: StreamHandlerContext,
   source: AsyncIterable<{ seq: number | null; event: ChatStreamEvent }>
@@ -505,18 +654,70 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
 
   await _consumeUnifiedStream(ctx, eventSource);
   await _finalizeAfterUnifiedStream(ctx, state, boundFlush);
-  // Clear file attachments after successful send so they don't
-  // get re-sent with every subsequent message.
-  get().clearUploadedFiles();
+  // Keep composer chips in sync with server uploads (disk truth).
+  // User can ✕ to delete; otherwise same files remain attached for follow-ups.
+  try {
+    await get().syncUploadedFilesFromServer();
+  } catch {
+    /* keep current chips */
+  }
   } catch (error) {
   console.error('Failed to send message:', error);
+  const apiSid = currentSession?.session_id ?? currentSession?.id ?? undefined;
+  const localSid = currentSession?.id ?? apiSid;
+  const runIdForRecovery =
+    (get().activeRunIds.get(processingKey) as string | undefined) ||
+    ((get().messages.find((m) => m.id === assistantMessageId)?.metadata as any)?.chat_run_id as string | undefined) ||
+    null;
+  const partialContent =
+    (get().messages.find((m) => m.id === assistantMessageId)?.content as string | undefined) || '';
+  let recovered = false;
+  if (assistantMessageAdded && apiSid && localSid) {
+    try {
+      recovered = await _recoverAfterStreamFailure(get, {
+        apiSessionId: String(apiSid),
+        localSessionId: String(localSid),
+        assistantMessageId,
+        processingKey,
+        runId: runIdForRecovery,
+        partialContent,
+        set,
+        currentSession,
+      });
+    } catch (recoverErr) {
+      console.warn('[chat] recoverAfterStreamFailure threw:', recoverErr);
+      recovered = false;
+    }
+  }
+  if (recovered) {
+    return;
+  }
   get().setActiveRunId(processingKey, null);
   get().setSessionProcessing(processingKey, false);
-  const errorContent = resolveRequestFailureMessage(error);
+  const errorContent =
+    resolveRequestFailureMessage(error) +
+    '\n\n若任务较长，服务端可能仍在继续或已完成：请刷新页面查看最新结果，或稍后重试。';
   if (assistantMessageAdded) {
-  get().updateMessage(assistantMessageId, { content: errorContent, metadata: { status: 'failed', errors: [error instanceof Error ? error.message : String(error)] } });
+    const prev =
+      (get().messages.find((m) => m.id === assistantMessageId)?.metadata ?? {}) as Record<string, any>;
+    const keepPartial = _looksLikeSubstantialAssistant(partialContent);
+    get().updateMessage(assistantMessageId, {
+      content: keepPartial ? `${partialContent}\n\n---\n${errorContent}` : errorContent,
+      metadata: {
+        ...prev,
+        status: 'failed',
+        recovering: false,
+        errors: [error instanceof Error ? error.message : String(error)],
+      },
+    });
   } else {
-  get().addMessage({ id: `msg_${Date.now()}_assistant`, type: 'assistant', content: errorContent, timestamp: new Date() });
+    get().addMessage({
+      id: `msg_${Date.now()}_assistant`,
+      type: 'assistant',
+      content: errorContent,
+      timestamp: new Date(),
+      metadata: { status: 'failed' },
+    });
   }
   }
   },
@@ -640,14 +841,35 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   await _finalizeAfterUnifiedStream(ctx, state, boundFlush);
   } catch (error) {
   console.error('Resume chat run failed:', error);
+  const partialContent =
+    (get().messages.find((m) => m.id === assistantMessageId)?.content as string | undefined) || '';
+  let recovered = false;
+  try {
+    recovered = await _recoverAfterStreamFailure(get, {
+      apiSessionId: String(apiSid),
+      localSessionId: String(currentSession?.id ?? apiSid),
+      assistantMessageId,
+      processingKey: resumeKey,
+      runId,
+      partialContent,
+      set,
+      currentSession,
+    });
+  } catch (recoverErr) {
+    console.warn('[chat] resume recover threw:', recoverErr);
+  }
+  if (recovered) {
+    return;
+  }
   get().setActiveRunId(resumeKey, null);
   get().setSessionProcessing(resumeKey, false);
   get().updateMessage(assistantMessageId, {
   content:
-  'Reconnect failed. Refresh the page or send a new message.\n\n' +
+  '连接中断且自动恢复失败。请刷新页面查看是否已有结果，或重新发送消息。\n\n' +
   (error instanceof Error ? error.message : String(error)),
   metadata: {
   status: 'failed',
+  recovering: false,
   errors: [error instanceof Error ? error.message : String(error)],
   },
   });

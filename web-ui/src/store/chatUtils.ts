@@ -159,7 +159,7 @@ export async function* streamRunEvents(
     sessionId: string,
     runId: string,
     initialAfterSeq: number = -1,
-    maxRetriesPerFetch: number = 8
+    maxRetriesPerFetch: number = 16
 ): AsyncGenerator<ChatRunStreamItem> {
     let afterSeq = initialAfterSeq;
     let terminal = false;
