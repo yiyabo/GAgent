@@ -2,6 +2,7 @@ import { BaseApi } from './client';
 
 export interface UploadResponse {
   success: boolean;
+  file_id?: string;
   file_path: string;
   file_name: string;
   original_name: string;
@@ -67,6 +68,24 @@ export class UploadApi extends BaseApi {
   */
   listFiles = async (sessionId: string): Promise<FileListResponse> => {
   return this.get('/upload/list', { session_id: sessionId });
+  };
+
+  /**
+   * Clear all session uploads, optionally keeping one file_id.
+   */
+  clearUploads = async (
+    sessionId: string,
+    keepFileId?: string,
+  ): Promise<{ success: boolean; deleted_count?: number; retained_count?: number }> => {
+    const formData = new FormData();
+    formData.append('session_id', sessionId);
+    if (keepFileId) {
+      formData.append('keep_file_id', keepFileId);
+    }
+    const response = await this.client.post('/upload/clear', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+    return response.data;
   };
 }
 

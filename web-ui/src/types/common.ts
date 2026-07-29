@@ -10,6 +10,8 @@ export interface UploadedFile {
   is_archive?: boolean;
   extracted_path?: string;
   extracted_files?: number;
+  /** server = listed from session uploads disk; project = platform ref */
+  source?: 'server' | 'project' | 'local';
 }
 
 export interface ApiResponse<T = any> {
