@@ -213,6 +213,7 @@ class UploadResponse(BaseModel):
     """upload"""
 
     success: bool
+    file_id: str
     file_path: str
     file_name: str
     original_name: str
@@ -389,6 +390,50 @@ def _get_max_size(category: str) -> Optional[int]:
     return MAX_FILE_SIZE.get(category, DEFAULT_MAX_FILE_SIZE)
 
 
+
+def _purge_session_uploads(session_id: str, keep_file_ids: Optional[set] = None) -> Dict[str, Any]:
+    keep = {str(x).strip() for x in (keep_file_ids or set()) if str(x).strip()}
+    session_dir = _get_session_upload_dir(session_id)
+    session_root = ensure_session_dir(session_id)
+    deleted = []
+    retained = []
+
+    for file_path in list(session_dir.glob("*")):
+        if not file_path.is_file() or file_path.name == ".gitignore":
+            continue
+        stem_id = file_path.name.split("_", 1)[0]
+        if stem_id in keep or file_path.name in keep:
+            retained.append(str(file_path))
+            continue
+        try:
+            file_path.unlink(missing_ok=True)
+            deleted.append(str(file_path))
+        except Exception as exc:
+            logger.warning("Failed to delete upload %s: %s", file_path, exc)
+
+    extract_root = session_root / EXTRACT_SUBDIR
+    if extract_root.exists():
+        for child in list(extract_root.iterdir()):
+            name = child.name
+            stem = name.split("_", 1)[0]
+            if stem in keep or name in keep:
+                continue
+            try:
+                if child.is_dir():
+                    shutil.rmtree(child, ignore_errors=True)
+                else:
+                    child.unlink(missing_ok=True)
+            except Exception as exc:
+                logger.warning("Failed to delete extract path %s: %s", child, exc)
+
+    return {
+        "deleted_count": len(deleted),
+        "deleted": deleted,
+        "retained_count": len(retained),
+        "retained": retained,
+    }
+
+
 async def _save_upload_file(
     file: UploadFile,
     session_id: str,
@@ -503,6 +548,7 @@ async def upload_file(
 
         return UploadResponse(
             success=True,
+            file_id=file_info["file_id"],
             file_path=file_info["file_path"],
             file_name=file_info["file_name"],
             original_name=file_info["original_name"],
@@ -553,6 +599,7 @@ async def upload_image(
 
         return UploadResponse(
             success=True,
+            file_id=file_info["file_id"],
             file_path=file_info["file_path"],
             file_name=file_info["file_name"],
             original_name=file_info["original_name"],
@@ -589,22 +636,82 @@ async def delete_file(file_id: str, session_id: str, request: Request) -> Dict[s
     _ensure_session_access(session_id, request)
 
     session_dir = _get_session_upload_dir(session_id)
+    session_root = ensure_session_dir(session_id)
+
+    # Accept either bare file_id ("abc123...") or full stored filename ("abc123_name.xlsx").
+    lookup = file_id.strip()
+    if "/" in lookup or "\\" in lookup:
+        lookup = Path(lookup).name
+    if lookup.endswith("_"):
+        lookup = lookup[:-1]
 
     found_file = None
-    for file_path in session_dir.glob(f"{file_id}_*"):
-        found_file = file_path
-        break
+    # 1) exact filename in uploads/
+    exact = session_dir / lookup
+    if exact.exists() and exact.is_file():
+        found_file = exact
+    # 2) classic "{file_id}_*" pattern
+    if found_file is None:
+        for file_path in session_dir.glob(f"{lookup}_*"):
+            if file_path.is_file():
+                found_file = file_path
+                break
+    # 3) if client sent full "{id}_{name}", also try id prefix only
+    if found_file is None and "_" in lookup:
+        prefix = lookup.split("_", 1)[0]
+        for file_path in session_dir.glob(f"{prefix}_*"):
+            if file_path.is_file():
+                found_file = file_path
+                break
 
     if not found_file:
         raise HTTPException(status_code=404, detail="File not found")
 
     try:
-        found_file.unlink()
+        # Resolve file_id used for extract dir naming.
+        stem_id = found_file.name.split("_", 1)[0]
+        found_file.unlink(missing_ok=True)
+
+        # Best-effort cleanup of archive extraction directories.
+        extract_root = session_root / EXTRACT_SUBDIR
+        if extract_root.exists():
+            for child in extract_root.iterdir():
+                name = child.name
+                if name == stem_id or name.startswith(f"{stem_id}_"):
+                    if child.is_dir():
+                        shutil.rmtree(child, ignore_errors=True)
+                    else:
+                        child.unlink(missing_ok=True)
+
         logger.info(f"Deleted file: {found_file}, session: {session_id}")
         return {"success": True, "message": "File deleted"}
     except Exception as e:
         logger.error(f"Delete file failed: {e}")
         raise HTTPException(status_code=500, detail=f"Delete failed: {str(e)}")
+
+
+
+
+@router.post("/clear")
+async def clear_uploads(
+    request: Request,
+    session_id: str = Form(...),
+    keep_file_id: Optional[str] = Form(None),
+) -> Dict[str, Any]:
+    if not session_id or not session_id.strip():
+        raise HTTPException(status_code=400, detail="session_id is required")
+    _ensure_session_access(session_id, request)
+    keep: set = set()
+    if keep_file_id and str(keep_file_id).strip():
+        keep.add(str(keep_file_id).strip())
+    result = _purge_session_uploads(session_id, keep_file_ids=keep)
+    logger.info(
+        "Cleared session uploads session=%s deleted=%s kept=%s",
+        session_id,
+        result.get("deleted_count"),
+        result.get("retained_count"),
+    )
+    return {"success": True, **result}
 
 
 @router.get("/list")
