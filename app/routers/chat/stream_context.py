@@ -143,6 +143,13 @@ async def build_agent_for_chat_request(
             "  * Secondary sheets (e.g. patient roster / codebooks / 全队列名单) may be briefly noted "
             "for context, but do not treat them as additional full analysis targets unless the user asks.\n"
             "  * When reporting, state which sheet(s) were analyzed.\n"
+            "- SAMPLE ADEQUACY / MODELING GATE (CRITICAL):\n"
+            "  * After profiling tabular data, honor SAMPLE ADEQUACY AUDIT (red/yellow/green).\n"
+            "  * RED: no multi-model AUC as main path; prefer descriptive/univariable/sample-size planning;\n"
+            "    do not default research directions to prediction models; if user insists, exploratory LR <=3 + disclaimer.\n"
+            "  * YELLOW: simple model + CV/CI only; no multi-model beauty contest as conclusion.\n"
+            "  * GREEN: limited supervised modeling with calibration/validation caveats.\n"
+            "  * Restate N/events/EPV/tier and suggested sample size before proposing modeling.\n"
         )
         message_to_send = request.message + attachment_info
 

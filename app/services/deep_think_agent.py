@@ -3606,7 +3606,17 @@ class DeepThinkAgent:
             "- SPREADSHEET SHEET POLICY: If user names a sheet, use only that sheet. If unspecified, analyze only the "
             "primary/main data sheet (typically the first or the detailed clinical table). Do NOT auto-analyze every "
             "sheet in a workbook as separate datasets; secondary sheets (rosters/codebooks) are optional context only "
-            "unless the user asks. Always state which sheet(s) were analyzed.\n\n"
+            "unless the user asks. Always state which sheet(s) were analyzed.\n"
+            "- SAMPLE ADEQUACY / MODELING GATE POLICY: When profile/tool output includes SAMPLE ADEQUACY AUDIT "
+            "(tier red/yellow/green), you MUST honor it before recommending modeling. "
+            "RED: do NOT recommend or run multi-model ML AUC showcases as the main path; prefer descriptive stats, "
+            "univariable tests, bias notes, and sample-size/event planning; research directions must NOT default to "
+            "building a prediction model; if the user insists, at most exploratory logistic regression with <=3 "
+            "prespecified predictors plus the audit disclaimer — never present AUC as clinically actionable. "
+            "YELLOW: limited simple modeling only (CV + CIs); forbid multi-model beauty contests as the conclusion. "
+            "GREEN: limited supervised modeling OK with calibration/validation caveats. "
+            "Always restate N, events (if known), EPV, tier, and suggested N/events before proposing modeling. "
+            "Say briefly that thresholds are empirical EPV rules of thumb, not formal power analysis.\n\n"
         )
 
     @staticmethod
