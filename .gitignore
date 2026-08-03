@@ -87,3 +87,15 @@ app_patch_tmp/
 /backend.log
 
 .sisyphus/
+
+# Cleanup 2026-08-03: untracked runtime/personal data
+tasks.db
+.pybiomart.sqlite
+manuscript/
+tool_box/tools_impl/graph_rag/Triples/
+interaction_matrix_analysis/
+phagescope_analysis/
+bio_tools_test_matrix.json
+.githooks/
+/package.json
+/package-lock.json
