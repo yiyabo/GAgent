@@ -493,6 +493,10 @@ def sanitize_tool_result(tool_name: str, raw_result: Any) -> Dict[str, Any]:
                         compact_structured.append(compact_item)
                 if compact_structured:
                     compact_profile["structured_datasets"] = compact_structured
+                sa = profile.get("sample_adequacy")
+                if isinstance(sa, list) and sa:
+                    compact_profile["sample_adequacy"] = sa
+
 
             lookup_files = profile.get("lookup_files")
             if isinstance(lookup_files, list):

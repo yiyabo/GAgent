@@ -17,6 +17,14 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
+try:
+    from app.services.context.sample_adequacy import (
+        audit_from_dataset_metadata,
+    )
+except Exception:  # pragma: no cover
+    audit_from_dataset_metadata = None  # type: ignore
+
+
 # OpenAI tool schemas only require `operation`; models often omit title/description for
 # analyze/generate. Defaults keep the pipeline usable without failing the whole turn.
 _DEFAULT_TASK_TITLE = "Data analysis"
@@ -343,6 +351,41 @@ def _build_deterministic_profile(
             if match_summary:
                 identifier_match_summaries.append(match_summary)
 
+    sample_adequacy_audits: List[Dict[str, Any]] = []
+    if audit_from_dataset_metadata is not None:
+        for file_path, structured_profile in structured_sources:
+            meta_match = next(
+                (
+                    m
+                    for m in metadata_payloads
+                    if str(m.get("filename") or "") == structured_profile.get("filename")
+                ),
+                None,
+            )
+            try:
+                audit = audit_from_dataset_metadata(
+                    meta_match
+                    or {
+                        "total_rows": structured_profile.get("total_rows"),
+                        "total_columns": structured_profile.get("total_columns"),
+                        "columns": structured_profile.get("columns") or [],
+                    },
+                    file_path=file_path,
+                )
+                audit_dict = audit.to_dict()
+                structured_profile["sample_adequacy"] = audit_dict
+                sample_adequacy_audits.append(
+                    {
+                        "filename": structured_profile.get("filename"),
+                        "file_path": file_path,
+                        **audit_dict,
+                    }
+                )
+            except Exception as exc:
+                logger.warning(
+                    "sample adequacy audit failed for %s: %s", file_path, exc
+                )
+
     summary_lines = [
         "Deterministic dataset profile (code-derived, no model synthesis):"
     ]
@@ -374,11 +417,33 @@ def _build_deterministic_profile(
             f"{match['missing_count']} missing"
         )
 
+    if sample_adequacy_audits and audit_from_dataset_metadata is not None:
+        from app.services.context.sample_adequacy import SampleAdequacyAudit
+
+        summary_lines.append("")
+        for item in sample_adequacy_audits:
+            try:
+                payload = {
+                    k: v
+                    for k, v in item.items()
+                    if k not in {"filename", "file_path"}
+                }
+                audit_obj = SampleAdequacyAudit(**payload)
+                summary_lines.append(f"Sample adequacy ({item.get('filename')}):")
+                summary_lines.append(audit_obj.to_prompt_block(language="zh"))
+            except Exception as exc:
+                logger.warning("failed to format sample adequacy summary: %s", exc)
+                summary_lines.append(
+                    f"- sample_adequacy tier={item.get('tier')} N={item.get('n_rows')} "
+                    f"gate={item.get('gate')}"
+                )
+
     return {
         "metadata": metadata_payloads,
         "structured_datasets": structured_profiles,
         "lookup_files": lookup_profiles,
         "identifier_matches": identifier_match_summaries,
+        "sample_adequacy": sample_adequacy_audits,
         "summary": "\n".join(summary_lines),
     }
 
@@ -468,6 +533,7 @@ async def result_interpreter_handler(
                     "structured_datasets": profile["structured_datasets"],
                     "lookup_files": profile["lookup_files"],
                     "identifier_matches": profile["identifier_matches"],
+                    "sample_adequacy": profile.get("sample_adequacy") or [],
                     "summary": profile["summary"],
                 },
                 "code_description": "Deterministic dataset profile",
