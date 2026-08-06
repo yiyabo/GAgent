@@ -97,7 +97,7 @@ async def sso_login(
     project_label: Optional[str] = Query(None, description="Project label from main platform"),
 ):
     """Verify platform SSO, bind one authorized project, then issue a handoff."""
-    rate_limiter.check("sso_login", _request_ip(request), limit=10, window_seconds=60)
+    rate_limiter.check("sso_login", _request_ip(request), limit=get_settings().rate_limit_sso_login, window_seconds=60)
     frontend_base = _allowed_frontend_redirect(redirect_url)
     if project_id is None:
         raise HTTPException(status_code=400, detail="Platform SSO requires a project binding")

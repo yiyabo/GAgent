@@ -22,6 +22,7 @@ from app.services.auth import (
     set_session_cookie,
     session_principal_from_session_id,
 )
+from app.services.foundation.settings import get_settings
 from app.services.request_principal import get_request_principal, require_authenticated_principal
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -129,7 +130,7 @@ def register_local_account(
     response: Response,
 ):
     require_local_auth_enabled()
-    rate_limiter.check("register", _request_ip(request), limit=5, window_seconds=15 * 60)
+    rate_limiter.check("register", _request_ip(request), limit=get_settings().rate_limit_register, window_seconds=15 * 60)
 
     user = register_user(payload.email, payload.password)
     session = create_auth_session(
@@ -152,7 +153,7 @@ def login_local_account(
     rate_limiter.check(
         "login",
         f"{_request_ip(request)}:{str(payload.email).strip().lower()}",
-        limit=10,
+        limit=get_settings().rate_limit_login,
         window_seconds=15 * 60,
     )
 
@@ -210,7 +211,7 @@ def change_local_password(
     rate_limiter.check(
         "change-password",
         principal.user_id,
-        limit=5,
+        limit=get_settings().rate_limit_change_password,
         window_seconds=15 * 60,
     )
     updated_user = change_password(
@@ -239,7 +240,7 @@ def complete_sso_login(
     request: Request,
     response: Response,
 ):
-    rate_limiter.check("sso_complete", _request_ip(request), limit=10, window_seconds=60)
+    rate_limiter.check("sso_complete", _request_ip(request), limit=get_settings().rate_limit_sso_complete, window_seconds=60)
     handoff = str(payload.handoff_token or "").strip()
     legacy_session = str(payload.session_token or "").strip()
     if handoff:

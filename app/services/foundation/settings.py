@@ -158,6 +158,14 @@ if _USE_PYDANTIC:
         sso_handoff_ttl_seconds: int = Field(default=120, env="SSO_HANDOFF_TTL_SECONDS")
         sso_allowed_redirect_origins: str = Field(default="", env="SSO_ALLOWED_REDIRECT_ORIGINS")
         sso_user_sync_api_key: Optional[str] = Field(default=None, env="SSO_USER_SYNC_API_KEY")
+
+        # Auth endpoint rate limits; raise via env for stress tests.
+        rate_limit_register: int = Field(default=5, ge=1, env="RATE_LIMIT_REGISTER")
+        rate_limit_login: int = Field(default=10, ge=1, env="RATE_LIMIT_LOGIN")
+        rate_limit_change_password: int = Field(default=5, ge=1, env="RATE_LIMIT_CHANGE_PASSWORD")
+        rate_limit_sso_complete: int = Field(default=10, ge=1, env="RATE_LIMIT_SSO_COMPLETE")
+        rate_limit_sso_login: int = Field(default=10, ge=1, env="RATE_LIMIT_SSO_LOGIN")
+
         chat_include_action_summary: bool = Field(
             default=True, env="CHAT_INCLUDE_ACTION_SUMMARY"
         )
@@ -420,6 +428,26 @@ else:
                 self.sso_handoff_ttl_seconds = 120
             self.sso_allowed_redirect_origins = os.getenv("SSO_ALLOWED_REDIRECT_ORIGINS", "")
             self.sso_user_sync_api_key = os.getenv("SSO_USER_SYNC_API_KEY") or None
+            try:
+                self.rate_limit_register = max(1, int(os.getenv("RATE_LIMIT_REGISTER", "5")))
+            except Exception:
+                self.rate_limit_register = 5
+            try:
+                self.rate_limit_login = max(1, int(os.getenv("RATE_LIMIT_LOGIN", "10")))
+            except Exception:
+                self.rate_limit_login = 10
+            try:
+                self.rate_limit_change_password = max(1, int(os.getenv("RATE_LIMIT_CHANGE_PASSWORD", "5")))
+            except Exception:
+                self.rate_limit_change_password = 5
+            try:
+                self.rate_limit_sso_complete = max(1, int(os.getenv("RATE_LIMIT_SSO_COMPLETE", "10")))
+            except Exception:
+                self.rate_limit_sso_complete = 10
+            try:
+                self.rate_limit_sso_login = max(1, int(os.getenv("RATE_LIMIT_SSO_LOGIN", "10")))
+            except Exception:
+                self.rate_limit_sso_login = 10
             self.chat_include_action_summary = os.getenv("CHAT_INCLUDE_ACTION_SUMMARY", "1").strip().lower() in {
                 "1",
                 "true",
