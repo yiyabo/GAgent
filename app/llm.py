@@ -295,6 +295,49 @@ def _log_usage(
         logger.warning("[LLM] Failed to log usage: %s", exc)
 
 
+def _log_call_metrics(
+    *,
+    method: str,
+    provider: str,
+    model: str,
+    status: str,
+    latency_ms: float,
+    attempts: int = 1,
+    usage: Optional[Dict[str, Any]] = None,
+    ttft_ms: Optional[float] = None,
+    error: Optional[str] = None,
+) -> None:
+    """Emit one structured latency/token line per LLM call; must never raise."""
+    try:
+        try:
+            ctx = _usage_context.get()
+        except Exception:
+            ctx = None
+        usage_dict = usage if isinstance(usage, dict) else {}
+        logger.info(
+            "[LLM][metrics] method=%s provider=%s model=%s status=%s latency_ms=%.0f "
+            "ttft_ms=%s attempts=%d prompt_tokens=%s completion_tokens=%s total_tokens=%s "
+            "session_id=%s plan_id=%s task_id=%s call_purpose=%s error=%s",
+            method,
+            provider,
+            model,
+            status,
+            latency_ms,
+            f"{ttft_ms:.0f}" if ttft_ms is not None else "-",
+            attempts,
+            usage_dict.get("prompt_tokens", "-"),
+            usage_dict.get("completion_tokens", "-"),
+            usage_dict.get("total_tokens", "-"),
+            ctx.get("session_id") if ctx else "-",
+            ctx.get("plan_id") if ctx else "-",
+            ctx.get("task_id") if ctx else "-",
+            ctx.get("call_purpose") if ctx else "-",
+            error or "-",
+        )
+    except Exception:
+        pass
+
+
 @dataclass
 class NativeToolCall:
     """A single tool call returned by the model via native function calling."""
@@ -522,6 +565,7 @@ class LLMClient(LLMProvider):
 
         client = _get_shared_sync_client()
         last_err: Optional[Exception] = None
+        _t0 = time.perf_counter()
         for attempt in range(request_retries + 1):
             try:
                 response = client.post(
@@ -541,6 +585,11 @@ class LLMClient(LLMProvider):
                             completion_tokens=usage.get("completion_tokens", 0),
                             total_tokens=usage.get("total_tokens", 0),
                         )
+                    _log_call_metrics(
+                        method="chat", provider=self.provider, model=model or self.model,
+                        status="ok", latency_ms=(time.perf_counter() - _t0) * 1000,
+                        attempts=attempt + 1, usage=usage,
+                    )
                     return content
                 except Exception:
                     raise RuntimeError(f"Unexpected LLM response: {obj}")
@@ -556,6 +605,11 @@ class LLMClient(LLMProvider):
                     body = e.response.text if e.response is not None else ""
                 except Exception:
                     body = ""
+                _log_call_metrics(
+                    method="chat", provider=self.provider, model=model or self.model,
+                    status="error", latency_ms=(time.perf_counter() - _t0) * 1000,
+                    attempts=attempt + 1, error=f"HTTPStatusError:{status_code}",
+                )
                 raise RuntimeError(_format_http_error(e, body=body)) from e
             except Exception as e:
                 # Treat as transient (network) and retry
@@ -564,6 +618,11 @@ class LLMClient(LLMProvider):
                     time.sleep(delay)
                     last_err = e
                     continue
+                _log_call_metrics(
+                    method="chat", provider=self.provider, model=model or self.model,
+                    status="error", latency_ms=(time.perf_counter() - _t0) * 1000,
+                    attempts=attempt + 1, error=type(e).__name__,
+                )
                 raise RuntimeError(f"LLM request failed: {e}")
 
     async def chat_async(
@@ -599,6 +658,7 @@ class LLMClient(LLMProvider):
         timeout = _make_request_timeout(timeout_override)
         client = _get_shared_async_client()
 
+        _t0 = time.perf_counter()
         for attempt in range(request_retries + 1):
             try:
                 response = await client.post(
@@ -618,6 +678,11 @@ class LLMClient(LLMProvider):
                             completion_tokens=usage.get("completion_tokens", 0),
                             total_tokens=usage.get("total_tokens", 0),
                         )
+                    _log_call_metrics(
+                        method="chat_async", provider=self.provider, model=model or self.model,
+                        status="ok", latency_ms=(time.perf_counter() - _t0) * 1000,
+                        attempts=attempt + 1, usage=usage,
+                    )
                     return content
                 except Exception:
                     raise RuntimeError(f"Unexpected LLM response: {obj}")
@@ -632,12 +697,22 @@ class LLMClient(LLMProvider):
                     body = e.response.text if e.response is not None else ""
                 except Exception:
                     body = ""
+                _log_call_metrics(
+                    method="chat_async", provider=self.provider, model=model or self.model,
+                    status="error", latency_ms=(time.perf_counter() - _t0) * 1000,
+                    attempts=attempt + 1, error=f"HTTPStatusError:{status_code}",
+                )
                 raise RuntimeError(_format_http_error(e, body=body)) from e
             except Exception as e:
                 if attempt < request_retries:
                     delay = max(0.0, self.backoff_base * (2**attempt) + random.uniform(0, self.backoff_base / 4.0))
                     await asyncio.sleep(delay)
                     continue
+                _log_call_metrics(
+                    method="chat_async", provider=self.provider, model=model or self.model,
+                    status="error", latency_ms=(time.perf_counter() - _t0) * 1000,
+                    attempts=attempt + 1, error=type(e).__name__,
+                )
                 raise RuntimeError(f"LLM request failed: {e}")
 
     async def stream_chat_async(
@@ -685,60 +760,82 @@ class LLMClient(LLMProvider):
 
         timeout = _make_request_timeout(self.stream_timeout)
         client = _get_shared_async_client()
-        async with client.stream(
-            "POST", self.url, headers=headers, json=payload,
-            timeout=timeout,
-        ) as resp:
-            if resp.status_code >= 400:
-                body = await _read_stream_error_body(resp)
-                try:
-                    resp.raise_for_status()
-                except httpx.HTTPStatusError as e:
-                    raise RuntimeError(_format_http_error(e, body=body)) from e
-            async for line in resp.aiter_lines():
-                if not line:
-                    continue
-                if not line.startswith("data:"):
-                    continue
-                data = line[len("data:"):].strip()
-                if not data:
-                    continue
-                if data == "[DONE]":
-                    break
-                try:
-                    obj = json.loads(data)
-                except json.JSONDecodeError:
-                    continue
+        _t0 = time.perf_counter()
+        _ttft_ms: Optional[float] = None
+        _last_usage: Optional[Dict[str, Any]] = None
+        _stream_status = "ok"
+        _stream_err: Optional[str] = None
+        try:
+            async with client.stream(
+                "POST", self.url, headers=headers, json=payload,
+                timeout=timeout,
+            ) as resp:
+                if resp.status_code >= 400:
+                    body = await _read_stream_error_body(resp)
+                    try:
+                        resp.raise_for_status()
+                    except httpx.HTTPStatusError as e:
+                        raise RuntimeError(_format_http_error(e, body=body)) from e
+                async for line in resp.aiter_lines():
+                    if not line:
+                        continue
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[len("data:"):].strip()
+                    if not data:
+                        continue
+                    if data == "[DONE]":
+                        break
+                    try:
+                        obj = json.loads(data)
+                    except json.JSONDecodeError:
+                        continue
 
-                # Extract usage from last chunk (typically has finish_reason)
-                usage = obj.get("usage")
-                if isinstance(usage, dict):
-                    _log_usage(
-                        provider=self.provider,
-                        model=model or self.model,
-                        prompt_tokens=usage.get("prompt_tokens", 0),
-                        completion_tokens=usage.get("completion_tokens", 0),
-                        total_tokens=usage.get("total_tokens", 0),
-                    )
+                    # Extract usage from last chunk (typically has finish_reason)
+                    usage = obj.get("usage")
+                    if isinstance(usage, dict):
+                        _last_usage = usage
+                        _log_usage(
+                            provider=self.provider,
+                            model=model or self.model,
+                            prompt_tokens=usage.get("prompt_tokens", 0),
+                            completion_tokens=usage.get("completion_tokens", 0),
+                            total_tokens=usage.get("total_tokens", 0),
+                        )
 
-                # Extract reasoning_content delta if present
-                choices = obj.get("choices")
-                if isinstance(choices, list) and choices:
-                    delta = choices[0].get("delta") if isinstance(choices[0], dict) else None
-                    if isinstance(delta, dict):
-                        reasoning = delta.get("reasoning_content")
-                        if isinstance(reasoning, str) and reasoning and on_reasoning_delta is not None:
-                            try:
-                                ret = on_reasoning_delta(reasoning)
-                                if asyncio.iscoroutine(ret):
-                                    await ret
-                            except Exception:
-                                pass
+                    # Extract reasoning_content delta if present
+                    choices = obj.get("choices")
+                    if isinstance(choices, list) and choices:
+                        delta = choices[0].get("delta") if isinstance(choices[0], dict) else None
+                        if isinstance(delta, dict):
+                            reasoning = delta.get("reasoning_content")
+                            if isinstance(reasoning, str) and reasoning and on_reasoning_delta is not None:
+                                try:
+                                    ret = on_reasoning_delta(reasoning)
+                                    if asyncio.iscoroutine(ret):
+                                        await ret
+                                except Exception:
+                                    pass
 
-                # Yield regular content
-                content_delta = self._extract_stream_delta(obj)
-                if content_delta:
-                    yield content_delta
+                    # Yield regular content
+                    content_delta = self._extract_stream_delta(obj)
+                    if content_delta:
+                        if _ttft_ms is None:
+                            _ttft_ms = (time.perf_counter() - _t0) * 1000
+                        yield content_delta
+        except GeneratorExit:
+            _stream_status = "abandoned"
+            raise
+        except Exception as exc:
+            _stream_status = "error"
+            _stream_err = type(exc).__name__
+            raise
+        finally:
+            _log_call_metrics(
+                method="stream_chat", provider=self.provider, model=model or self.model,
+                status=_stream_status, latency_ms=(time.perf_counter() - _t0) * 1000,
+                ttft_ms=_ttft_ms, usage=_last_usage, error=_stream_err,
+            )
 
     async def stream_chat_with_tools_async(
         self,
@@ -764,9 +861,10 @@ class LLMClient(LLMProvider):
         """
         max_retries = max(1, self.retries)
         last_err: Optional[Exception] = None
+        _t0 = time.perf_counter()
         for attempt in range(max_retries + 1):
             try:
-                return await self._stream_chat_with_tools_inner(
+                result = await self._stream_chat_with_tools_inner(
                     messages=messages,
                     tools=tools,
                     tool_choice=tool_choice,
@@ -776,6 +874,13 @@ class LLMClient(LLMProvider):
                     enable_thinking=enable_thinking,
                     thinking_budget=thinking_budget,
                 )
+                _log_call_metrics(
+                    method="stream_chat_with_tools", provider=self.provider,
+                    model=model or self.model, status="ok",
+                    latency_ms=(time.perf_counter() - _t0) * 1000,
+                    attempts=attempt + 1, usage=result.usage,
+                )
+                return result
             except Exception as e:
                 err_text = str(e).lower()
                 is_transient = (
@@ -793,7 +898,20 @@ class LLMClient(LLMProvider):
                     await asyncio.sleep(delay)
                     last_err = e
                     continue
+                _log_call_metrics(
+                    method="stream_chat_with_tools", provider=self.provider,
+                    model=model or self.model, status="error",
+                    latency_ms=(time.perf_counter() - _t0) * 1000,
+                    attempts=attempt + 1, error=type(e).__name__,
+                )
                 raise
+        _log_call_metrics(
+            method="stream_chat_with_tools", provider=self.provider,
+            model=model or self.model, status="error",
+            latency_ms=(time.perf_counter() - _t0) * 1000,
+            attempts=max_retries + 1,
+            error=type(last_err).__name__ if last_err else "unknown",
+        )
         raise RuntimeError(f"stream_chat_with_tools failed after {max_retries + 1} attempts: {last_err}")
 
     async def _stream_chat_with_tools_inner(
