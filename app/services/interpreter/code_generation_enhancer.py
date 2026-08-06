@@ -28,7 +28,7 @@ class CodeGenerationEnhancer:
         # Before generating code, profile the data
         enhanced_description = await enhancer.enhance_task_description(
             task_description="Filter cells based on QC metrics",
-            data_dir="/home/zczhao/GAgent/data/ovarian_cancer_scRNA",
+            data_dir=os.getenv("EXAMPLE_DATA_DIR", ""),
         )
         
         # Now generate code with enhanced_description

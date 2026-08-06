@@ -177,13 +177,14 @@ class DataProfiler:
         data_path = Path(real_path)
         
         # Validate path is within allowed directories
-        allowed_roots = [
-            '/home/zczhao/GAgent', 
-            '/mnt/sdm/zczhao',
-            '/tmp', 
-            '/var/folders',  # macOS temp (symlink)
-            '/private/var/folders',  # macOS temp (actual)
-        ]
+        env_roots = os.getenv("DATA_PROFILER_ALLOWED_ROOTS", "")
+        if env_roots:
+            allowed_roots = [r.strip() for r in env_roots.split(",") if r.strip()]
+        else:
+            allowed_roots = [
+                os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+                '/tmp',
+            ]
         if not any(real_path.startswith(root) for root in allowed_roots):
             return self._create_error_profile(
                 data_dir, 

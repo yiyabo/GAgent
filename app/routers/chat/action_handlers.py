@@ -205,7 +205,7 @@ def _build_phagescope_research_seed_tasks(goal: Any) -> List[Dict[str, Any]]:
     if not _looks_like_phagescope_research_paper_goal(goal):
         return []
 
-    data_dir = "/home/zczhao/Phage-Agent/phagescope"
+    data_dir = os.getenv("PHAGESCOPE_DATA_DIR", "phagescope")
     output_md = "manuscript.md"
     output_pdf = "phagescope_research_topic1_production_report.pdf"
     specs: List[Dict[str, Any]] = [

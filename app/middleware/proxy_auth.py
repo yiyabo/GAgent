@@ -42,7 +42,14 @@ def _is_anonymous_path(path: str) -> bool:
         return True
     if normalized.startswith("/project"):
         return True
-    return False
+    _API_PREFIXES = (
+        "/api/", "/chat/", "/mcp/", "/plans/", "/jobs/", "/upload/",
+        "/artifacts/", "/execution/", "/interpreter/", "/system/",
+        "/quality/", "/terminal/", "/models/",
+    )
+    if any(normalized.startswith(p) for p in _API_PREFIXES):
+        return False
+    return True
 
 
 class ProxyAuthMiddleware(BaseHTTPMiddleware):

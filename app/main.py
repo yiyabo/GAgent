@@ -368,6 +368,31 @@ def _register_routes(app: FastAPI) -> None:
     app.add_api_route("/health/llm", llm_health, methods=["GET"])
 
 
+
+def _register_spa(app: "FastAPI") -> None:
+    from pathlib import Path as _Path
+    from fastapi.responses import FileResponse
+    from starlette.exceptions import HTTPException as _HTTP
+
+    dist = _Path(__file__).resolve().parent.parent / "web-ui" / "dist"
+    if not dist.exists():
+        return
+
+    _API_PREFIXES = (
+        "api/", "auth/", "chat/", "health", "docs", "openapi.json", "mcp/",
+        "plans", "jobs", "upload", "artifacts", "project", "execution",
+        "interpreter", "sso", "system", "quality", "terminal", "models",
+    )
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def _spa(full_path: str):
+        if full_path.startswith(_API_PREFIXES):
+            raise _HTTP(status_code=404, detail="Not Found")
+        candidate = (dist / full_path).resolve()
+        if full_path and candidate.is_file() and str(candidate).startswith(str(dist)):
+            return FileResponse(candidate)
+        return FileResponse(dist / "index.html")
+
 def create_app() -> FastAPI:
     app = FastAPI(
         title="AI-Driven Task Orchestration System",
@@ -385,6 +410,7 @@ def create_app() -> FastAPI:
     app.add_middleware(ProxyAuthMiddleware)
     _register_exception_handlers(app)
     _register_routes(app)
+    _register_spa(app)
     return app
 
 
