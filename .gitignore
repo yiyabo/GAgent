@@ -21,7 +21,6 @@ docs/
 .cursor/
 phagescope
 .kiro/
-.github/
 .pytest_cache/
 .claude/
 strict_analysis/
