@@ -1,10 +1,12 @@
 import { type Page } from '@playwright/test';
 
 /**
- * Page object model for the Chat page.
+ * Page object model for the chat panel.
  *
- * Encapsulates selectors and interactions for the chat panel rendered by
- * `src/components/chat/ChatPanel.tsx`.
+ * Selectors target the current Ant Design + rc-virtual-list implementation:
+ * the message input is the only textarea on the page (identified by its
+ * placeholder), and messages render as `.message` rows (user rows carry
+ * `.user`) with `.message-bubble` content inside a virtualized list.
  */
 export class ChatPage {
   constructor(private page: Page) {}
@@ -16,58 +18,47 @@ export class ChatPage {
 
   /** Return `true` when the message input area is visible. */
   async isLoaded(): Promise<boolean> {
-    const input = this.page.locator('.chat-input-area textarea');
-    return input.isVisible({ timeout: 10000 }).catch(() => false);
+    const input = this.page.getByRole('textbox', { name: /输入消息/ });
+    try {
+      await input.waitFor({ state: 'visible', timeout: 45000 });
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /**
    * Type a message into the chat input and click the Send button.
+   * The Send button stays disabled until the input has text.
    */
   async sendMessage(text: string): Promise<void> {
-    const input = this.page.locator('.chat-input-area textarea');
+    const input = this.page.getByRole('textbox', { name: /输入消息/ });
     await input.fill(text);
-    await this.page.locator('.chat-input-main button', { hasText: 'Send' }).click();
+    await this.page.locator('button', { hasText: 'Send' }).first().click();
+    await this.page
+      .locator('.message-bubble', { hasText: text })
+      .first()
+      .waitFor({ state: 'visible', timeout: 15000 });
   }
 
-  /**
-   * Return an array of visible message text contents from the message list.
-   */
+  /** Return text content of all rendered message bubbles. */
   async getMessages(): Promise<string[]> {
-    const container = this.page.locator('.chat-messages');
-    await container.waitFor({ state: 'visible', timeout: 10000 });
+    return this.page.locator('.message-bubble').allInnerTexts();
+  }
 
-    // Each ChatMessage component renders inside the .chat-messages container.
-    // Collect all direct child text content.
-    const messageElements = container.locator('.chat-message-content');
-    const count = await messageElements.count();
-
-    const messages: string[] = [];
-    for (let i = 0; i < count; i++) {
-      const text = await messageElements.nth(i).textContent();
-      if (text) {
-        messages.push(text.trim());
-      }
-    }
-    return messages;
+  /** Number of currently rendered message rows. */
+  async getMessageCount(): Promise<number> {
+    return this.page.locator('.message').count();
   }
 
   /**
-   * Wait for a new message to appear in the chat (e.g. a system response).
-   * Polls the message list until the count increases.
-   *
-   * @param timeoutMs Maximum time to wait in milliseconds (default 30 000).
+   * Wait until more than `initialCount` message rows are rendered, up to
+   * `timeout` ms. Used to await the assistant's streamed reply.
    */
-  async waitForResponse(timeoutMs = 30000): Promise<void> {
-    const container = this.page.locator('.chat-messages');
-    const initialCount = await container.locator('.chat-message-content').count();
-
+  async waitForResponse(timeoutMs = 30000, initialCount = 0): Promise<void> {
     await this.page.waitForFunction(
-      ({ selector, startCount }) => {
-        const el = document.querySelector(selector);
-        if (!el) return false;
-        return el.querySelectorAll('.chat-message-content').length > startCount;
-      },
-      { selector: '.chat-messages', startCount: initialCount },
+      (start) => document.querySelectorAll('.message').length > start,
+      initialCount,
       { timeout: timeoutMs },
     );
   }

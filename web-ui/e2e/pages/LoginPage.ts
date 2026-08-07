@@ -34,11 +34,13 @@ export class LoginPage {
    * error alert is visible.
    */
   async getErrorAlert(): Promise<string | null> {
-    const alert = this.page.locator('.ant-alert-error');
-    if (await alert.isVisible({ timeout: 5000 }).catch(() => false)) {
+    const alert = this.page.getByRole('alert');
+    try {
+      await alert.waitFor({ state: 'visible', timeout: 8000 });
       return alert.textContent();
+    } catch {
+      return null;
     }
-    return null;
   }
 
   /** Check whether the current URL contains `/login`. */

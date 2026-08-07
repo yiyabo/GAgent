@@ -40,11 +40,12 @@ test.describe('Chat interaction', () => {
   });
 
   test('system response appears within 30 seconds', async () => {
+    const initialCount = await chatPage.getMessageCount();
     const testMessage = 'What can you help me with?';
     await chatPage.sendMessage(testMessage);
 
     // Wait for the system to respond (new message count increases)
-    await chatPage.waitForResponse(30000);
+    await chatPage.waitForResponse(30000, initialCount);
 
     const messages = await chatPage.getMessages();
     // There should be at least 2 messages: the user message and the system response

@@ -1,79 +1,46 @@
 import { type Page } from '@playwright/test';
 
 /**
- * Page object model for the Plans page.
+ * Page object model for the plan side-panel on the chat page.
  *
- * Encapsulates selectors and interactions for the plan list, plan detail, and
- * plan DAG visualization rendered by `src/pages/Plans.tsx`.
+ * The standalone /plans route was removed from the SPA; plan visualization
+ * now lives in the right-hand tab panel of /chat ("Plan" / "Execution
+ * Status" / "Artifacts" / "Agent Work").
  */
 export class PlansPage {
   constructor(private page: Page) {}
 
-  /** Navigate to the plans page. */
+  /** The plan panel is part of the chat page; nothing to navigate to. */
   async navigate(): Promise<void> {
-    await this.page.goto('/plans');
-  }
-
-  /**
-   * Return an array of plan titles from the plan selector dropdown.
-   *
-   * The Plans page uses an Ant Design `<Select>` for plan selection.
-   * We open the dropdown, read the option labels, then close it.
-   */
-  async getPlansList(): Promise<string[]> {
-    const select = this.page.locator('.ant-select');
-    await select.first().click();
-
-    // Ant Design renders dropdown options in a portal with class `.ant-select-item-option`
-    const options = this.page.locator('.ant-select-item-option');
-    await options.first().waitFor({ state: 'visible', timeout: 10000 }).catch(() => {});
-
-    const count = await options.count();
-    const titles: string[] = [];
-    for (let i = 0; i < count; i++) {
-      const text = await options.nth(i).textContent();
-      if (text) {
-        titles.push(text.trim());
-      }
+    if (!this.page.url().includes('/chat')) {
+      await this.page.goto('/chat');
     }
-
-    // Close the dropdown by pressing Escape
-    await this.page.keyboard.press('Escape');
-    return titles;
   }
 
-  /**
-   * Click the plan option at the given index in the dropdown.
-   */
-  async clickPlan(index: number): Promise<void> {
-    const select = this.page.locator('.ant-select');
-    await select.first().click();
-
-    const options = this.page.locator('.ant-select-item-option');
-    await options.first().waitFor({ state: 'visible', timeout: 10000 });
-    await options.nth(index).click();
+  /** Return `true` when the plan tab panel is rendered. */
+  async isPanelLoaded(): Promise<boolean> {
+    const tablist = this.page.getByRole('tablist');
+    try {
+      await tablist.waitFor({ state: 'visible', timeout: 45000 });
+      return true;
+    } catch {
+      return false;
+    }
   }
 
-  /**
-   * Return the plan detail title from the Task Details card.
-   * The selected plan's title is shown in the Descriptions component
-   * under the "Task Name" label.
-   */
-  async getPlanDetailTitle(): Promise<string> {
-    const titleCell = this.page.locator('.ant-descriptions-item-content').first();
-    await titleCell.waitFor({ state: 'visible', timeout: 10000 });
-    const text = await titleCell.textContent();
-    return text?.trim() ?? '';
+  /** Visible tab names in the plan panel. */
+  async getTabNames(): Promise<string[]> {
+    return this.page.getByRole('tab').allInnerTexts();
   }
 
-  /**
-   * Check whether the plan DAG / tree visualization container is visible.
-   * The PlanDagVisualization component renders inside the main card.
-   */
-  async isPlanTreeVisible(): Promise<boolean> {
-    // The DAG visualization is rendered as a canvas or SVG inside the plan card.
-    // Look for the visualization container or the canvas element.
-    const dagContainer = this.page.locator('.plan-dag-container, canvas, svg.react-flow__renderer');
-    return dagContainer.first().isVisible({ timeout: 10000 }).catch(() => false);
+  /** Select a tab by name. */
+  async openTab(name: string): Promise<void> {
+    await this.page.getByRole('tab', { name }).click();
+  }
+
+  /** Text content of the currently active tab panel. */
+  async getActivePanelText(): Promise<string> {
+    const panel = this.page.locator('[role="tabpanel"]').first();
+    return (await panel.innerText()) ?? '';
   }
 }

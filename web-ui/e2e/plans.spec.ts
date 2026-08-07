@@ -1,18 +1,17 @@
-import { test, expect, type Page } from '@playwright/test';
+import { test, expect } from '@playwright/test';
 import { LoginPage } from './pages/LoginPage';
 import { PlansPage } from './pages/PlansPage';
 
 /**
- * Plan viewing E2E tests.
+ * Plan panel E2E tests.
  *
- * Validates Requirements: 11.1, 11.2
+ * The standalone /plans page no longer exists in the SPA; plan visualization
+ * lives in the right-hand tab panel of /chat. These tests validate that the
+ * panel renders and its tabs switch.
  */
-test.describe('Plan viewing', () => {
+test.describe('Plan panel', () => {
   let plansPage: PlansPage;
 
-  /**
-   * Log in before each test so the user has an authenticated session.
-   */
   test.beforeEach(async ({ page }) => {
     const loginPage = new LoginPage(page);
     await loginPage.navigate();
@@ -25,33 +24,20 @@ test.describe('Plan viewing', () => {
     await plansPage.navigate();
   });
 
-  test('plans list is rendered for logged-in user', async ({ page }) => {
-    // The plan selector (Ant Design Select) should be visible
-    const select = page.locator('.ant-select');
-    await expect(select.first()).toBeVisible({ timeout: 10000 });
+  test('plan panel renders with all tabs for logged-in user', async () => {
+    expect(await plansPage.isPanelLoaded()).toBe(true);
 
-    // Attempt to read plan titles from the dropdown
-    const plans = await plansPage.getPlansList();
-    // The list should be rendered (may be empty if no plans exist yet,
-    // but the select component itself should be present)
-    expect(plans).toBeDefined();
+    const tabs = await plansPage.getTabNames();
+    for (const expected of ['Plan', 'Execution Status', 'Artifacts', 'Agent Work']) {
+      expect(tabs).toContain(expected);
+    }
   });
 
-  test('clicking a plan shows detail view with title', async ({ page }) => {
-    // Open the dropdown and check if there are plans available
-    const plans = await plansPage.getPlansList();
+  test('switching to Execution Status tab shows its panel', async () => {
+    await plansPage.openTab('Execution Status');
 
-    if (plans.length === 0) {
-      // If no plans exist, skip this test gracefully
-      test.skip(true, 'No plans available to select');
-      return;
-    }
-
-    // Select the first plan
-    await plansPage.clickPlan(0);
-
-    // The plan detail title should be visible in the Task Details card
-    const detailTitle = await plansPage.getPlanDetailTitle();
-    expect(detailTitle.length).toBeGreaterThan(0);
+    const panelText = await plansPage.getActivePanelText();
+    // Empty state or content — either way the panel must render something.
+    expect(panelText.trim().length).toBeGreaterThan(0);
   });
 });

@@ -68,6 +68,34 @@ Example with overrides:
 BASE_URL=http://localhost:5173 API_BASE_URL=http://localhost:8000 npx playwright test
 ```
 
+## External-instance mode (recommended)
+
+When `BASE_URL` is set, the config skips starting the local dev server and
+tests run against any already-running instance — e.g. an isolated backend
+serving the built SPA:
+
+```bash
+# On the server: boot an isolated instance (own empty DB, mocked LLM, no rate limits)
+LLM_MOCK=true RATE_LIMIT_LOGIN=100000 RATE_LIMIT_REGISTER=100000 \
+  python -m uvicorn app.main:app --host 127.0.0.1 --port 9126 --no-access-log
+
+# Register the test user the specs expect (one time per fresh DB)
+curl -X POST http://127.0.0.1:9126/auth/register \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"test@example.com","password":"password123"}'
+
+# Locally: tunnel if needed, then run
+ssh -N -L 9200:127.0.0.1:9126 user@server &
+BASE_URL=http://localhost:9200 API_BASE_URL=http://localhost:9200 npx playwright test
+```
+
+Notes:
+
+- `LLM_MOCK=true` makes the LLM health ping instant; in real mode it does a
+  live ~10 s LLM call per page load, which can gate first paint.
+- The suite is configured with `workers: 1` because it shares one backend
+  instance (login rate limits, per-session state).
+
 ## Page Object Models
 
 Test specs use page objects to encapsulate UI selectors and interactions. This keeps tests resilient to UI changes — when a selector changes, only the page object needs updating.
@@ -76,7 +104,7 @@ Test specs use page objects to encapsulate UI selectors and interactions. This k
 |-------------|------|----------------|
 | `LoginPage` | `pages/LoginPage.ts` | Login form: email, password, submit, error alert |
 | `ChatPage` | `pages/ChatPage.ts` | Chat panel: message input, send, message list, response wait |
-| `PlansPage` | `pages/PlansPage.ts` | Plans: plan selector dropdown, plan detail, DAG visualization |
+| `PlansPage` | `pages/PlansPage.ts` | Plan side-panel on /chat: tab list, tab switching, active panel |
 
 ## Directory Structure
 
@@ -94,4 +122,7 @@ web-ui/e2e/
 
 ## CI
 
-Frontend E2E tests run nightly via `.github/workflows/nightly-e2e.yml` with `E2E_LLM_MODE=mock` so no LLM API keys are required. On failure, Playwright trace files are uploaded as build artifacts.
+Unit tests run in GitHub Actions on every push (`.github/workflows/ci.yml`).
+E2E currently runs on demand against an isolated instance (see above);
+wiring it into CI requires booting the backend in the workflow and is
+tracked as follow-up work.
