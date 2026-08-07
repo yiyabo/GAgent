@@ -9,6 +9,7 @@ import asyncio
 import functools
 import json
 import logging
+import re
 import time
 from typing import Any, AsyncIterator, Dict, List, Optional, Tuple, Union
 
@@ -32,6 +33,7 @@ class LLMProviderError(RuntimeError):
         retryable: bool = True,
         status_code: Optional[int] = None,
         raw_error: Optional[str] = None,
+        retry_delay_hint: Optional[float] = None,
     ):
         super().__init__(message)
         self.error_code = error_code
@@ -40,32 +42,65 @@ class LLMProviderError(RuntimeError):
         self.retryable = retryable
         self.status_code = status_code
         self.raw_error = raw_error
+        self.retry_delay_hint = retry_delay_hint
+
+
+_HTTP_STATUS_RE = re.compile(r"LLM HTTP (\d{3})")
+_RETRY_AFTER_RE = re.compile(r"retry_after=(\d+(?:\.\d+)?)")
 
 
 def _classify_llm_exception(exc: Exception) -> Optional[LLMProviderError]:
+    """Classify by HTTP status code embedded in client error messages.
+
+    Text-pattern matching rotted once before (the client format changed and
+    the patterns silently stopped matching), so this reads the status code.
+    Returns None for unknown/transient failures, which stay retryable.
+    """
     raw = str(exc)
     lowered = raw.lower()
-    status_code: Optional[int] = None
-    if "llm httperror: 429" in lowered or "429 too many requests" in lowered:
-        status_code = 429
+
     if "insufficient_quota" in lowered:
         return LLMProviderError(
-            "DashScope/Qwen quota is insufficient. Please check the plan or billing details before retrying.",
+            "LLM provider quota is insufficient. Check plan/billing before retrying.",
             error_code="llm_insufficient_quota",
             category="llm_quota",
-            provider="dashscope",
+            provider="llm",
             retryable=False,
-            status_code=status_code or 429,
+            status_code=429,
             raw_error=raw,
         )
+
+    match = _HTTP_STATUS_RE.search(raw)
+    if match is None:
+        return None
+    status_code = int(match.group(1))
+
     if status_code == 429:
+        delay_hint = 5.0
+        ra_match = _RETRY_AFTER_RE.search(raw)
+        if ra_match is not None:
+            try:
+                delay_hint = max(delay_hint, float(ra_match.group(1)))
+            except (TypeError, ValueError):
+                pass
         return LLMProviderError(
-            "DashScope/Qwen rate limit was exceeded. Please wait before retrying.",
+            "LLM provider rate limit exceeded; backing off before retrying.",
             error_code="llm_rate_limited",
             category="llm_rate_limit",
-            provider="dashscope",
+            provider="llm",
             retryable=True,
             status_code=429,
+            raw_error=raw,
+            retry_delay_hint=delay_hint,
+        )
+    if 400 <= status_code < 500:
+        return LLMProviderError(
+            f"LLM provider rejected the request (HTTP {status_code}); not retryable.",
+            error_code="llm_client_error",
+            category="llm_client_error",
+            provider="llm",
+            retryable=False,
+            status_code=status_code,
             raw_error=raw,
         )
     return None
@@ -130,7 +165,10 @@ class LLMService:
                     raise classified
                 logger.warning(f"LLM chat attempt {attempt + 1} failed: {e}")
                 if attempt < retry_attempts - 1:
-                    time.sleep(retry_delay * (attempt + 1))
+                    delay = retry_delay * (attempt + 1)
+                    if classified is not None and classified.retry_delay_hint:
+                        delay = max(delay, classified.retry_delay_hint)
+                    time.sleep(delay)
                 else:
                     logger.error(f"All LLM chat attempts failed for prompt: {prompt[:100]}...")
                     if classified is not None:
@@ -178,7 +216,10 @@ class LLMService:
                     raise classified
                 logger.warning(f"Async LLM chat attempt {attempt + 1} failed: {e}")
                 if attempt < retry_attempts - 1:
-                    await asyncio.sleep(retry_delay * (attempt + 1))
+                    delay = retry_delay * (attempt + 1)
+                    if classified is not None and classified.retry_delay_hint:
+                        delay = max(delay, classified.retry_delay_hint)
+                    await asyncio.sleep(delay)
                 else:
                     logger.error(f"All async LLM chat attempts failed for prompt: {prompt[:100]}...")
                     if classified is not None:

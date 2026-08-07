@@ -75,6 +75,13 @@ if _USE_PYDANTIC:
         llm_mock: bool = Field(default=False, env="LLM_MOCK")
         llm_retries: int = Field(default=2, env="LLM_RETRIES")
         llm_backoff_base: float = Field(default=0.5, env="LLM_BACKOFF_BASE")
+        # Outbound HTTP pool sizing for LLM calls; raise on stress-test deployments.
+        llm_pool_max_connections: int = Field(default=20, ge=1, env="LLM_POOL_MAX_CONNECTIONS")
+        llm_pool_max_keepalive: int = Field(default=10, ge=1, env="LLM_POOL_MAX_KEEPALIVE")
+        llm_sync_pool_max_connections: int = Field(default=10, ge=1, env="LLM_SYNC_POOL_MAX_CONNECTIONS")
+        llm_sync_pool_max_keepalive: int = Field(default=5, ge=1, env="LLM_SYNC_POOL_MAX_KEEPALIVE")
+        # Outbound requests-per-minute cap shared across all LLM calls; 0 = unlimited.
+        llm_outbound_rpm: int = Field(default=0, ge=0, env="LLM_OUTBOUND_RPM")
 
         perplexity_api_key: Optional[str] = Field(default=None, env="PERPLEXITY_API_KEY")
         perplexity_api_url: str = Field(
@@ -320,6 +327,26 @@ else:
                 self.llm_backoff_base = float(os.getenv("LLM_BACKOFF_BASE", "0.5"))
             except Exception:
                 self.llm_backoff_base = 0.5
+            try:
+                self.llm_pool_max_connections = max(1, int(os.getenv("LLM_POOL_MAX_CONNECTIONS", "20")))
+            except Exception:
+                self.llm_pool_max_connections = 20
+            try:
+                self.llm_pool_max_keepalive = max(1, int(os.getenv("LLM_POOL_MAX_KEEPALIVE", "10")))
+            except Exception:
+                self.llm_pool_max_keepalive = 10
+            try:
+                self.llm_sync_pool_max_connections = max(1, int(os.getenv("LLM_SYNC_POOL_MAX_CONNECTIONS", "10")))
+            except Exception:
+                self.llm_sync_pool_max_connections = 10
+            try:
+                self.llm_sync_pool_max_keepalive = max(1, int(os.getenv("LLM_SYNC_POOL_MAX_KEEPALIVE", "5")))
+            except Exception:
+                self.llm_sync_pool_max_keepalive = 5
+            try:
+                self.llm_outbound_rpm = max(0, int(os.getenv("LLM_OUTBOUND_RPM", "0")))
+            except Exception:
+                self.llm_outbound_rpm = 0
             self.openai_api_key = os.getenv("OPENAI_API_KEY") or os.getenv("GPT_API_KEY")
             self.xai_api_key = os.getenv("XAI_API_KEY") or os.getenv("GROK_API_KEY")
             self.anthropic_api_key = os.getenv("ANTHROPIC_API_KEY") or os.getenv("CLAUDE_API_KEY")

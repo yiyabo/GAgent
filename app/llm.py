@@ -133,20 +133,72 @@ _shared_sync_client: Optional[httpx.Client] = None
 
 # Default pool limits — generous enough for multi-provider concurrent usage
 # while keeping resource consumption bounded.
-_POOL_LIMITS = httpx.Limits(
-    max_connections=20,
-    max_keepalive_connections=10,
-    keepalive_expiry=30.0,
-)
-_SYNC_POOL_LIMITS = httpx.Limits(
-    max_connections=10,
-    max_keepalive_connections=5,
-    keepalive_expiry=30.0,
-)
+def _pool_limits() -> httpx.Limits:
+    s = get_settings()
+    return httpx.Limits(
+        max_connections=int(getattr(s, "llm_pool_max_connections", 20)),
+        max_keepalive_connections=int(getattr(s, "llm_pool_max_keepalive", 10)),
+        keepalive_expiry=30.0,
+    )
+
+
+def _sync_pool_limits() -> httpx.Limits:
+    s = get_settings()
+    return httpx.Limits(
+        max_connections=int(getattr(s, "llm_sync_pool_max_connections", 10)),
+        max_keepalive_connections=int(getattr(s, "llm_sync_pool_max_keepalive", 5)),
+        keepalive_expiry=30.0,
+    )
 # Default connect timeout (TCP + TLS); per-request read timeout is overridden
 # at call sites to match the configured ``self.timeout`` / ``self.stream_timeout``.
 _DEFAULT_CONNECT_TIMEOUT = 10.0
 _DEFAULT_TIMEOUT = httpx.Timeout(60.0, connect=_DEFAULT_CONNECT_TIMEOUT)
+
+
+class _OutboundRateLimiter:
+    """Process-wide sliding-window limiter for outbound LLM requests (LLM_OUTBOUND_RPM)."""
+
+    def __init__(self, window_seconds: float = 60.0) -> None:
+        self._lock = threading.Lock()
+        self._events: List[float] = []
+        self._window = window_seconds
+
+    def _rpm(self) -> int:
+        try:
+            return max(0, int(getattr(get_settings(), "llm_outbound_rpm", 0)))
+        except Exception:
+            return 0
+
+    def _wait_seconds_locked(self) -> float:
+        rpm = self._rpm()
+        if rpm <= 0:
+            return 0.0
+        now = time.monotonic()
+        floor = now - self._window
+        self._events = [t for t in self._events if t > floor]
+        if len(self._events) < rpm:
+            self._events.append(now)
+            return 0.0
+        return max(0.0, self._events[0] + self._window - now)
+
+    def acquire(self) -> None:
+        while True:
+            with self._lock:
+                wait = self._wait_seconds_locked()
+            if wait <= 0:
+                return
+            time.sleep(wait)
+
+    async def acquire_async(self) -> None:
+        while True:
+            with self._lock:
+                wait = self._wait_seconds_locked()
+            if wait <= 0:
+                return
+            await asyncio.sleep(wait)
+
+
+_outbound_limiter = _OutboundRateLimiter()
 
 
 def _make_request_timeout(overall: Optional[float]) -> Optional[httpx.Timeout]:
@@ -178,7 +230,7 @@ def _get_shared_async_client() -> httpx.AsyncClient:
                 id(loop),
             )
             client = httpx.AsyncClient(
-                limits=_POOL_LIMITS,
+                limits=_pool_limits(),
                 timeout=_DEFAULT_TIMEOUT,
                 follow_redirects=True,
             )
@@ -208,7 +260,7 @@ def _get_shared_sync_client() -> httpx.Client:
     if _shared_sync_client is None:
         logger.info("[LLM] Creating shared sync httpx client (connection pool)")
         _shared_sync_client = httpx.Client(
-            limits=_SYNC_POOL_LIMITS,
+            limits=_sync_pool_limits(),
             timeout=_DEFAULT_TIMEOUT,
             follow_redirects=True,
         )
@@ -568,6 +620,7 @@ class LLMClient(LLMProvider):
         _t0 = time.perf_counter()
         for attempt in range(request_retries + 1):
             try:
+                _outbound_limiter.acquire()
                 response = client.post(
                     self.url, headers=headers, json=payload,
                     timeout=timeout,
@@ -605,12 +658,17 @@ class LLMClient(LLMProvider):
                     body = e.response.text if e.response is not None else ""
                 except Exception:
                     body = ""
+                try:
+                    _ra = e.response.headers.get("retry-after") if e.response is not None else None
+                except Exception:
+                    _ra = None
+                _ra_suffix = f" (retry_after={_ra})" if _ra else ""
                 _log_call_metrics(
                     method="chat", provider=self.provider, model=model or self.model,
                     status="error", latency_ms=(time.perf_counter() - _t0) * 1000,
                     attempts=attempt + 1, error=f"HTTPStatusError:{status_code}",
                 )
-                raise RuntimeError(_format_http_error(e, body=body)) from e
+                raise RuntimeError(_format_http_error(e, body=body) + _ra_suffix) from e
             except Exception as e:
                 # Treat as transient (network) and retry
                 if attempt < request_retries:
@@ -661,6 +719,7 @@ class LLMClient(LLMProvider):
         _t0 = time.perf_counter()
         for attempt in range(request_retries + 1):
             try:
+                await _outbound_limiter.acquire_async()
                 response = await client.post(
                     self.url, headers=headers, json=payload,
                     timeout=timeout,
@@ -697,12 +756,17 @@ class LLMClient(LLMProvider):
                     body = e.response.text if e.response is not None else ""
                 except Exception:
                     body = ""
+                try:
+                    _ra = e.response.headers.get("retry-after") if e.response is not None else None
+                except Exception:
+                    _ra = None
+                _ra_suffix = f" (retry_after={_ra})" if _ra else ""
                 _log_call_metrics(
                     method="chat_async", provider=self.provider, model=model or self.model,
                     status="error", latency_ms=(time.perf_counter() - _t0) * 1000,
                     attempts=attempt + 1, error=f"HTTPStatusError:{status_code}",
                 )
-                raise RuntimeError(_format_http_error(e, body=body)) from e
+                raise RuntimeError(_format_http_error(e, body=body) + _ra_suffix) from e
             except Exception as e:
                 if attempt < request_retries:
                     delay = max(0.0, self.backoff_base * (2**attempt) + random.uniform(0, self.backoff_base / 4.0))
@@ -766,6 +830,7 @@ class LLMClient(LLMProvider):
         _stream_status = "ok"
         _stream_err: Optional[str] = None
         try:
+            await _outbound_limiter.acquire_async()
             async with client.stream(
                 "POST", self.url, headers=headers, json=payload,
                 timeout=timeout,
@@ -775,7 +840,9 @@ class LLMClient(LLMProvider):
                     try:
                         resp.raise_for_status()
                     except httpx.HTTPStatusError as e:
-                        raise RuntimeError(_format_http_error(e, body=body)) from e
+                        _ra = resp.headers.get("retry-after")
+                        _ra_suffix = f" (retry_after={_ra})" if _ra else ""
+                        raise RuntimeError(_format_http_error(e, body=body) + _ra_suffix) from e
                 async for line in resp.aiter_lines():
                     if not line:
                         continue
@@ -968,6 +1035,7 @@ class LLMClient(LLMProvider):
 
         timeout = _make_request_timeout(self.stream_timeout)
         client = _get_shared_async_client()
+        await _outbound_limiter.acquire_async()
         async with client.stream("POST", self.url, headers=headers, json=payload,
                                  timeout=timeout) as resp:
             if resp.status_code >= 400:
@@ -975,7 +1043,9 @@ class LLMClient(LLMProvider):
                 try:
                     resp.raise_for_status()
                 except httpx.HTTPStatusError as e:
-                    raise RuntimeError(_format_http_error(e, body=body)) from e
+                    _ra = resp.headers.get("retry-after")
+                    _ra_suffix = f" (retry_after={_ra})" if _ra else ""
+                    raise RuntimeError(_format_http_error(e, body=body) + _ra_suffix) from e
             async for line in resp.aiter_lines():
                 if not line or not line.startswith("data:"):
                     continue
