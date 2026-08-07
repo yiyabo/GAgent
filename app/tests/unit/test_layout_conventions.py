@@ -7,20 +7,28 @@ _ROOT = Path(__file__).resolve().parents[3]
 _APP_TESTS = _ROOT / "app" / "tests"
 _UNIT_DIR = _APP_TESTS / "unit"
 _ALLOWED_UNIT_PREFIXES = {
+    "artifact",
     "audit",
     "auth",
     "command",
     "context",
+    "conversation",
     "executor",
     "layout",
     "llm",
+    "log",
     "memory",
+    "platform",
+    "project",
     "protocol",
     "qwen",
     "realtime",
     "resource",
+    "route",
     "semantic",
     "session",
+    "sqlite",
+    "sso",
     "upload",
 }
 

@@ -40,6 +40,9 @@ class _Tree:
     def children_ids(self, task_id: int) -> list:
         return [n.id for n in self.nodes.values() if n.parent_id == task_id]
 
+    def root_node_ids(self) -> list:
+        return [n.id for n in self.nodes.values() if n.parent_id is None]
+
 
 class _RepoStub:
     def __init__(self, tree: _Tree):

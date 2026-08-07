@@ -92,6 +92,8 @@ def test_native_tool_stream_uses_stream_timeout(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
     class _FakeStreamResponse:
+        status_code = 200
+
         def raise_for_status(self) -> None:
             return
 
