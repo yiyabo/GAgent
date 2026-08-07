@@ -28,3 +28,4 @@ asyncssh>=2.14.2
 redis>=5.0.0
 argon2-cffi>=23.1.0
 mammoth>=1.6.0
+email-validator>=2.0.0
