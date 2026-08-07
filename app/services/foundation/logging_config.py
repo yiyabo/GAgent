@@ -7,9 +7,14 @@ JSON/ , default JSON, support LOG_LEVEL  LOG_FORMAT .
 import json
 import logging
 import sys
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
 from typing import Any, Dict
 
 from app.services.foundation.settings import get_settings
+
+_LOG_FILE_MAX_BYTES = 50 * 1024 * 1024
+_LOG_FILE_BACKUP_COUNT = 10
 
 
 class JsonFormatter(logging.Formatter):
@@ -73,3 +78,24 @@ def setup_logging() -> None:
         handler.setFormatter(formatter)
 
     root.addHandler(handler)
+
+    try:
+        file_enabled = bool(getattr(settings, "log_file_enabled", True))
+    except Exception:
+        file_enabled = True
+    if file_enabled:
+        try:
+            log_dir = Path(str(getattr(settings, "log_dir", "logs") or "logs"))
+            log_dir.mkdir(parents=True, exist_ok=True)
+            file_handler = RotatingFileHandler(
+                log_dir / "app.log",
+                maxBytes=_LOG_FILE_MAX_BYTES,
+                backupCount=_LOG_FILE_BACKUP_COUNT,
+                encoding="utf-8",
+            )
+            file_handler.setFormatter(handler.formatter)
+            root.addHandler(file_handler)
+        except Exception as exc:
+            logging.getLogger(__name__).warning(
+                "File logging disabled: cannot open log file (%s)", exc
+            )

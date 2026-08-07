@@ -99,3 +99,5 @@ bio_tools_test_matrix.json
 .githooks/
 /package.json
 /package-lock.json
+
+logs/

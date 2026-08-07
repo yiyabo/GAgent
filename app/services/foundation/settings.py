@@ -56,6 +56,8 @@ if _USE_PYDANTIC:
         log_level: str = Field(default="INFO", env="LOG_LEVEL")
         # json|plain
         log_format: str = Field(default="json", env="LOG_FORMAT")
+        log_file_enabled: bool = Field(default=True, env="LOG_FILE_ENABLED")
+        log_dir: str = Field(default="logs", env="LOG_DIR")
 
         database_url: str = Field(default="sqlite:///./tasks.db", env="DATABASE_URL")
 
@@ -279,6 +281,13 @@ else:
                     pass
             self.log_level = os.getenv("LOG_LEVEL", "INFO")
             self.log_format = os.getenv("LOG_FORMAT", "json")
+            self.log_file_enabled = os.getenv("LOG_FILE_ENABLED", "1").strip().lower() in {
+                "1",
+                "true",
+                "yes",
+                "on",
+            }
+            self.log_dir = os.getenv("LOG_DIR", "logs")
             self.database_url = os.getenv("DATABASE_URL", "sqlite:///./tasks.db")
             self.base_url = os.getenv("BASE_URL")
             self.glm_api_key = os.getenv("GLM_API_KEY")
