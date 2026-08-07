@@ -9,6 +9,8 @@ import hashlib
 import json
 import logging
 import sqlite3
+
+from app.services.foundation.sqlite_pragmas import apply_sqlite_pragmas
 import threading
 import time
 from collections import OrderedDict
@@ -124,7 +126,7 @@ class LLMCache:
         """Initialize SQLite persistent cache."""
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
 
-        conn = sqlite3.connect(self.db_path)
+        conn = apply_sqlite_pragmas(sqlite3.connect(self.db_path))
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS llm_cache (

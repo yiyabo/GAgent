@@ -11,6 +11,8 @@ import json
 import logging
 import os
 import sqlite3
+
+from app.services.foundation.sqlite_pragmas import apply_sqlite_pragmas
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
@@ -56,7 +58,7 @@ class EmbeddingCache:
     def _init_persistent_cache(self):
         """Initialize persistent cache database"""
         try:
-            with sqlite3.connect(self.cache_db_path) as conn:
+            with apply_sqlite_pragmas(sqlite3.connect(self.cache_db_path)) as conn:
                 conn.execute(
                     """
                     CREATE TABLE IF NOT EXISTS embedding_cache (

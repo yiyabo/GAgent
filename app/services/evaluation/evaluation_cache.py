@@ -9,6 +9,8 @@ import hashlib
 import json
 import logging
 import sqlite3
+
+from app.services.foundation.sqlite_pragmas import apply_sqlite_pragmas
 import threading
 import time
 from dataclasses import asdict
@@ -35,7 +37,7 @@ class EvaluationCache:
     def _init_cache_db(self):
         """Initialize cache database"""
         try:
-            with sqlite3.connect(self.cache_db_path) as conn:
+            with apply_sqlite_pragmas(sqlite3.connect(self.cache_db_path)) as conn:
                 conn.execute(
                     """
                     CREATE TABLE IF NOT EXISTS evaluation_cache (

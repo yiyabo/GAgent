@@ -350,6 +350,9 @@ def plan_db_connection(plan_path: Path) -> Iterator:
     conn = sqlite3.connect(plan_path, isolation_level="DEFERRED")
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys=ON")
+    from .services.foundation.sqlite_pragmas import apply_sqlite_pragmas
+
+    apply_sqlite_pragmas(conn)
 
     try:
         yield conn

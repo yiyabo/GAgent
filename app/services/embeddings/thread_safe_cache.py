@@ -11,6 +11,8 @@ import json
 import logging
 import os
 import sqlite3
+
+from app.services.foundation.sqlite_pragmas import apply_sqlite_pragmas
 import threading
 import time
 from contextlib import contextmanager
@@ -101,8 +103,8 @@ class ThreadSafeEmbeddingCache:
 
         with self._db_lock:
             if thread_id not in self._db_connections:
-                self._db_connections[thread_id] = sqlite3.connect(
-                    self.cache_db_path, timeout=30.0, check_same_thread=False
+                self._db_connections[thread_id] = apply_sqlite_pragmas(
+                    sqlite3.connect(self.cache_db_path, timeout=30.0, check_same_thread=False)
                 )
 
         conn = self._db_connections[thread_id]

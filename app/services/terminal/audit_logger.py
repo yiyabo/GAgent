@@ -6,6 +6,8 @@ import base64
 import json
 import os
 import sqlite3
+
+from app.services.foundation.sqlite_pragmas import apply_sqlite_pragmas
 import threading
 import time
 from pathlib import Path
@@ -22,7 +24,7 @@ class AuditLogger:
         self.audit_root.mkdir(parents=True, exist_ok=True)
         self.db_path = self.audit_root / f"{self.terminal_id}.sqlite"
         self._lock = threading.Lock()
-        self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
+        self._conn = apply_sqlite_pragmas(sqlite3.connect(str(self.db_path), check_same_thread=False))
         self._conn.row_factory = sqlite3.Row
         self._initialize()
 
