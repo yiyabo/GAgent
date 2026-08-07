@@ -23,7 +23,14 @@ from app.services.llm.llm_service import LLMProviderError
 from app.services.foundation.settings import CHAT_HISTORY_ABS_MAX, get_settings
 from app.services.llm.decomposer_service import PlanDecomposerLLMService
 from app.services.llm.llm_service import LLMService, get_llm_service
-from app.services.llm.structured_response import LLMAction, LLMStructuredResponse, schema_as_json
+from app.services.llm.structured_response import (
+    LLMAction,
+    LLMStructuredResponse,
+    build_repair_prompt,
+    fallback_reply_response,
+    parse_structured_response,
+    schema_as_json,
+)
 from app.services.plans.decomposition_jobs import (
     JobRuntimeController,
     get_current_job,
@@ -5222,8 +5229,22 @@ class StructuredChatAgent:
         raw = await self.llm_service.chat_async(
             prompt, force_real=True, model=model_override
         )
-        cleaned = self._strip_code_fence(raw)
-        return LLMStructuredResponse.model_validate_json(cleaned)
+        parsed = parse_structured_response(raw)
+        if parsed is not None:
+            return parsed
+        logger.warning("[DeepThink] LLM output was not protocol JSON; attempting one repair pass")
+        try:
+            repaired_raw = await self.llm_service.chat_async(
+                build_repair_prompt(raw), force_real=True, model=model_override
+            )
+        except Exception as exc:
+            logger.warning("[DeepThink] Repair pass call failed: %s", exc)
+            repaired_raw = ""
+        repaired = parse_structured_response(repaired_raw)
+        if repaired is not None:
+            return repaired
+        logger.warning("[DeepThink] Falling back to plain reply for unparseable LLM output")
+        return fallback_reply_response(raw)
 
     def _build_prompt(self, user_message):
         return _build_prompt_fn(self, user_message)
