@@ -6,6 +6,7 @@ configuration, lifecycle management, and route registration.
 
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -328,6 +329,10 @@ def health_check():
     return {"status": "healthy", "service": "AI-Driven Task Orchestration System"}
 
 
+_LLM_PING_TTL_SECONDS = float(os.getenv("LLM_HEALTH_PING_TTL", "60") or 60)
+_llm_ping_cache = {"checked": False, "value": None, "expires_at": 0.0}
+
+
 def llm_health(ping: bool = False):
     """Check LLM service health and configuration.
 
@@ -340,7 +345,17 @@ def llm_health(ping: bool = False):
     client = get_default_client()
     info = client.config()
     if ping:
-        info["ping_ok"] = client.ping()
+        now = time.monotonic()
+        if _llm_ping_cache["checked"] and now < _llm_ping_cache["expires_at"]:
+            info["ping_ok"] = _llm_ping_cache["value"]
+            info["ping_cached"] = True
+        else:
+            value = bool(client.ping())
+            _llm_ping_cache["checked"] = True
+            _llm_ping_cache["value"] = value
+            _llm_ping_cache["expires_at"] = now + _LLM_PING_TTL_SECONDS
+            info["ping_ok"] = value
+            info["ping_cached"] = False
     else:
         info["ping_ok"] = None
     return info

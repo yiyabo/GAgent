@@ -7,6 +7,7 @@ JSON/ , default JSON, support LOG_LEVEL  LOG_FORMAT .
 import json
 import logging
 import sys
+from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Any, Dict
@@ -20,6 +21,9 @@ _LOG_FILE_BACKUP_COUNT = 10
 class JsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:  # type: ignore[override]
         payload: Dict[str, Any] = {
+            "ts": datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(
+                timespec="milliseconds"
+            ),
             "level": record.levelname,
             "logger": record.name,
             "message": record.getMessage(),

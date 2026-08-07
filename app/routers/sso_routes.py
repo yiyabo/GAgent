@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hmac
 import logging
 from typing import Any, Dict, Optional
 from urllib.parse import quote, urlparse
@@ -187,10 +188,12 @@ def sync_sso_user_endpoint(
     shared service key via the X-Sso-Sync-Key header when configured.
     """
     expected_key = get_settings().sso_user_sync_api_key
-    if expected_key:
-        provided = request.headers.get("X-Sso-Sync-Key", "")
-        if not provided or provided != expected_key:
-            raise HTTPException(status_code=401, detail="Missing or invalid SSO sync key")
+    if not expected_key:
+        # Security: fail closed — endpoint disabled unless SSO_USER_SYNC_API_KEY is set.
+        raise HTTPException(status_code=503, detail="SSO user sync is not configured")
+    provided = request.headers.get("X-Sso-Sync-Key", "")
+    if not provided or not hmac.compare_digest(provided, expected_key):
+        raise HTTPException(status_code=401, detail="Missing or invalid SSO sync key")
     sso_data = SSOUserData({
         "global_uuid": payload.global_uuid,
         "action": payload.action,

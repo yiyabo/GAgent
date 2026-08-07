@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 
 import pytest
@@ -36,6 +37,20 @@ def test_file_handler_writes_json_line(tmp_path, monkeypatch) -> None:
     content = log_file.read_text(encoding="utf-8")
     assert "persist-me-hello" in content
     assert '"logger": "app.test"' in content
+
+
+def test_json_lines_include_timestamp(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("LOG_DIR", str(tmp_path))
+    monkeypatch.setenv("LOG_FILE_ENABLED", "1")
+    get_settings.cache_clear()
+
+    setup_logging()
+    logging.getLogger("app.test").info("ts-check")
+
+    content = (tmp_path / "app.log").read_text(encoding="utf-8")
+    payload = json.loads(content.strip().splitlines()[-1])
+    assert payload["message"] == "ts-check"
+    assert payload["ts"].endswith("+00:00")
 
 
 def test_file_logging_can_be_disabled(tmp_path, monkeypatch) -> None:

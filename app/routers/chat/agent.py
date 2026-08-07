@@ -59,6 +59,34 @@ from app.services.deep_think_agent import (
 )
 from tool_box import execute_tool
 
+# Plan auto-review runs in a worker thread (no ambient loop). Reuse ONE
+# daemon-thread loop instead of asyncio.run() per call, which would create a
+# fresh loop and fresh LLM/DB connections every time. Do not "simplify" back.
+_plan_review_loop = None
+_plan_review_loop_lock = threading.Lock()
+
+
+def _get_plan_review_loop():
+    global _plan_review_loop
+    with _plan_review_loop_lock:
+        if _plan_review_loop is None or _plan_review_loop.is_closed():
+            loop = asyncio.new_event_loop()
+            thread = threading.Thread(
+                target=loop.run_forever,
+                name="plan-review-loop",
+                daemon=True,
+            )
+            thread.start()
+            _plan_review_loop = loop
+    return _plan_review_loop
+
+
+def _run_blocking_on_review_loop(coro):
+    """asyncio.run() equivalent for worker threads, on the shared review loop."""
+    future = asyncio.run_coroutine_threadsafe(coro, _get_plan_review_loop())
+    return future.result()
+
+
 _DEEP_THINK_MAX_ITER_DEFAULT = 64
 _DEEP_THINK_MAX_ITER_CAP = 128
 _READ_ONLY_FILE_OPERATIONS = {"read", "list", "exists", "info", "profile", "census"}
@@ -5464,7 +5492,7 @@ class StructuredChatAgent:
         from app.services.plans.plan_optimizer import plan_review_needs_optimization
 
         try:
-            review_result = asyncio.run(
+            review_result = _run_blocking_on_review_loop(
                 execute_tool(
                     "plan_operation",
                     operation="review",
@@ -5503,7 +5531,7 @@ class StructuredChatAgent:
 
         if plan_review_needs_optimization(review_result):
             try:
-                optimize_result = asyncio.run(
+                optimize_result = _run_blocking_on_review_loop(
                     execute_tool(
                         "plan_operation",
                         operation="optimize",

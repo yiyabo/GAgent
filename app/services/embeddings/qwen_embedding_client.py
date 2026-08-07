@@ -6,6 +6,7 @@ DashScope  text-embedding-v4 model.
 support OpenAI  API , model fallback. 
 """
 
+import asyncio
 import logging
 import time
 from typing import Any, Dict, List, Optional
@@ -33,6 +34,9 @@ class QwenEmbeddingClient:
 
         self._local_client = None
         self._fallback_to_local = False
+        self._sync_session = requests.Session()
+        # aiohttp sessions are bound to their event loop; cache one per loop.
+        self._async_sessions: Dict[int, aiohttp.ClientSession] = {}
 
         logger.info(
             f"QwenEmbeddingClient initialized - "
@@ -92,7 +96,7 @@ class QwenEmbeddingClient:
             "dimensions": self.dimension,
         }
 
-        response = requests.post(
+        response = self._sync_session.post(
             self.api_url,
             headers=headers,
             json=payload,
@@ -139,6 +143,16 @@ class QwenEmbeddingClient:
         self._fallback_to_local = True
         return self._get_local_embeddings(texts)
 
+    def _get_async_session(self) -> aiohttp.ClientSession:
+        loop = asyncio.get_running_loop()
+        key = id(loop)
+        session = self._async_sessions.get(key)
+        if session is None or session.closed:
+            timeout = aiohttp.ClientTimeout(total=self.timeout)
+            session = aiohttp.ClientSession(timeout=timeout)
+            self._async_sessions[key] = session
+        return session
+
     async def _call_qwen_api_async(self, texts: List[str]) -> List[List[float]]:
         """ Qwen Embedding API"""
         if not self.api_key:
@@ -155,14 +169,13 @@ class QwenEmbeddingClient:
             "dimensions": self.dimension,
         }
 
-        timeout = aiohttp.ClientTimeout(total=self.timeout)
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post(self.api_url, headers=headers, json=payload) as response:
-                if response.status != 200:
-                    text = await response.text()
-                    raise RuntimeError(f"Qwen API error {response.status}: {text}")
+        session = self._get_async_session()
+        async with session.post(self.api_url, headers=headers, json=payload) as response:
+            if response.status != 200:
+                text = await response.text()
+                raise RuntimeError(f"Qwen API error {response.status}: {text}")
 
-                result = await response.json()
+            result = await response.json()
 
         embeddings = []
         for item in sorted(result.get("data", []), key=lambda x: x.get("index", 0)):
