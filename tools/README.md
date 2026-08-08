@@ -70,6 +70,9 @@
 # 在有网的机器上生成 wheelhouse（默认精简集，不含 torch，约 150MB）
 bash tools/download.sh
 
+# 国内服务器直连 PyPI 慢/不可用时，走镜像（110 实测必需）
+bash tools/download.sh --mirror tsinghua     # 或 aliyun
+
 # 需要本地嵌入回退时下载全集（含 torch，约 2–3GB）
 bash tools/download.sh --full
 
