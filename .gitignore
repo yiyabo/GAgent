@@ -102,3 +102,4 @@ bio_tools_test_matrix.json
 logs/
 tools/pkgs/
 web-ui/test-results/
+lightrag.log
