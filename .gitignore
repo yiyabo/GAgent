@@ -100,3 +100,4 @@ bio_tools_test_matrix.json
 /package-lock.json
 
 logs/
+tools/pkgs/

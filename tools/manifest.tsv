@@ -1,0 +1,59 @@
+category	name	version_spec	purpose	used_by	source
+runtime	python	>=3.10	后端运行时	全站	python.org / 系统包管理器
+runtime	nodejs	>=18	前端构建与 E2E	web-ui	nodejs.org / nvm
+runtime	sqlite	3.x (python 内置)	主存储（WAL）	app/services/foundation/sqlite_pragmas.py	内置
+system_tool	docker	>=20.10	代码执行沙箱编排	app/services/interpreter/docker_interpreter.py	docker.com
+system_tool	npm	>=9	JS 运行时校验	app/services/interpreter/runtime_guardrails.py	随 Node.js
+system_tool	qwen	-	qwen 代码运行时	app/services/interpreter/task_executer.py	qwen CLI
+system_tool	bibtex	-	文献引用导出	app/routers/artifact_routes.py	TeX 发行版
+python	fastapi	>=0.111.0	Web 框架	app/main.py	PyPI
+python	starlette	>=0.37.2	ASGI 框架	app/main.py	PyPI
+python	uvicorn[standard]	>=0.30.0	ASGI 服务器	start_backend.sh	PyPI
+python	pydantic	>=2.8.0	数据校验	全站	PyPI
+python	pydantic-settings	>=2.0.0	配置管理	app/services/foundation/settings.py	PyPI
+python	python-dotenv	>=1.0.0	.env 加载	settings/start_backend.sh	PyPI
+python	python-multipart	>=0.0.9	文件上传	app/routers/upload_routes.py	PyPI
+python	httpx	>=0.23.0	LLM HTTP 连接池	app/llm.py	PyPI
+python	socksio	>=1.0.0	SOCKS 代理支持	httpx 传输层	PyPI
+python	requests	>=2.31.0	同步 HTTP（embedding 等）	app/services/embeddings/qwen_embedding_client.py	PyPI
+python	aiohttp	>=3.8.0	异步 HTTP（embedding）	app/services/embeddings/qwen_embedding_client.py	PyPI
+python	numpy	>=1.26.0	数值计算	向量/分析	PyPI
+python	pandas	>=2.0.0	表格数据	分析/导出	PyPI
+python	networkx	>=3.0.0	图算法（轻量）	执行器提示词示例	PyPI
+python	docker	>=6.0.0	Docker SDK	app/services/interpreter/docker_interpreter.py	PyPI
+python	scipy	>=1.10.0	科学计算	分析	PyPI
+python	PyYAML	>=6.0.0	YAML 配置	配置加载	PyPI
+python	sentence-transformers	>=2.7.0	本地嵌入（重）	app/services/embeddings/local_embedding_client.py	PyPI
+python	torch	>=2.0.0	ML 运行时（重）	app/services/embeddings/local_embedding_client.py	PyPI
+python	psutil	>=5.9.0	系统资源指标	app/routers/system_health_routes.py	PyPI
+python	pypdf	>=3.0.0	PDF 读取	app/routers/chat/routes.py	PyPI
+python	Pillow	>=10.0.0	图像处理	视觉/产物	PyPI
+python	reportlab	>=4.0.0	PDF 生成	导出/工具箱	PyPI
+python	pytest	>=7.0.0	单元测试	app/tests	PyPI
+python	pytest-asyncio	>=0.21.0	异步测试	app/tests	PyPI
+python	markdown	>=3.5.0	Markdown 渲染	渲染	PyPI
+python	asyncssh	>=2.14.2	SSH 终端后端	app/services/terminal/ssh_backend.py	PyPI
+python	redis	>=5.0.0	实时事件总线	app/services/realtime_bus.py	PyPI
+python	argon2-cffi	>=23.1.0	口令哈希	app/services/auth.py	PyPI
+python	mammoth	>=1.6.0	DOCX 读取	app/routers/artifact_routes.py	PyPI
+python	email-validator	>=2.0.0	邮箱校验	auth 模型	PyPI
+docker_image	phage-code-executor	本地构建	代码执行沙箱	docker/code_executor	docker build
+docker_image	phage-qwen-runtime	本地构建	qwen 代码运行时	docker/qwen_code_runtime	docker build
+frontend	react	^18.2.0	前端框架	web-ui	npm
+frontend	antd	^5.9.0	UI 组件库	web-ui	npm
+frontend	vite	-	前端构建	web-ui	npm
+frontend	monaco-editor	^0.41.0	代码编辑器	web-ui	npm
+frontend	xterm	^5.3.0	终端模拟	web-ui	npm
+frontend	three	^0.182.0	3D 可视化	web-ui	npm
+frontend	vis-network	^9.1.6	网络图可视化	web-ui	npm
+frontend	react-markdown	^10.1.0	Markdown 渲染	web-ui	npm
+frontend	katex	^0.16.27	公式渲染	web-ui	npm
+frontend	zustand	^4.4.1	状态管理	web-ui	npm
+frontend	@tanstack/react-query	^4.32.6	数据请求缓存	web-ui	npm
+frontend	axios	^1.5.0	HTTP 客户端	web-ui	npm
+frontend	socket.io-client	^4.7.2	实时通信	web-ui	npm
+frontend	framer-motion	^12.23.26	动画	web-ui	npm
+frontend	@playwright/test	^1.59.1	E2E 测试	web-ui/e2e	npm (dev)
+external_service	LLM 网关	-	模型调用（OpenAI 兼容）	.env LLM_*	sub2api / moma
+external_service	嵌入 API	-	远程嵌入	.env QWEN_*/EMBEDDING_*	随 LLM 网关
+external_service	平台 SSO	-	用户同步/登录	.env SSO_*	主平台
