@@ -20,7 +20,7 @@ def test_manuscript_writer_draft_only_sets_task_output_location(monkeypatch, tmp
     monkeypatch.setattr(manuscript_writer_module, "_RUNTIME_DIR", runtime_root.resolve())
     monkeypatch.setattr(path_router_module, "_default_router", None)
 
-    context_file = repo_root / "context.md"
+    context_file = repo_root / "evidence_summary.md"
     context_file.write_text("Key result: accepted evidence.", encoding="utf-8")
 
     router = get_path_router()
@@ -31,7 +31,7 @@ def test_manuscript_writer_draft_only_sets_task_output_location(monkeypatch, tmp
         manuscript_writer_module.manuscript_writer_handler(
             task="Write a concise draft based on the accepted evidence.",
             output_path=str(output_file),
-            context_paths=["context.md"],
+            context_paths=["evidence_summary.md"],
             draft_only=True,
             keep_workspace=True,
             session_id="demo",

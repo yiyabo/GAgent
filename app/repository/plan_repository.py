@@ -1618,6 +1618,13 @@ def fix_stale_plan_task_statuses_on_startup() -> int:
             continue
         try:
             with plan_db_connection(plan_path) as conn:
+                # Skip legacy/empty plan DB files that predate the tasks table;
+                # there is nothing to reconcile in them.
+                has_tasks_table = conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='tasks'"
+                ).fetchone()
+                if not has_tasks_table:
+                    continue
                 recovered += repo._reconcile_active_task_statuses_from_execution_results(
                     conn,
                     plan_id,

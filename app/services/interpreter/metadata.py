@@ -7,6 +7,7 @@ Dataset Metadata Processing Module
 import os
 from typing import List, Any, Optional
 
+import json
 import numpy as np
 import pandas as pd
 from pydantic import BaseModel
@@ -326,7 +327,20 @@ class DataProcessor:
             elif file_ext in ('.xlsx', '.xls', '.xlsm', '.ods'):
                 df = pd.read_excel(file_path)
             elif file_ext == '.json':
-                df = pd.read_json(file_path)
+                try:
+                    df = pd.read_json(file_path)
+                except ValueError:
+                    # Scalar-valued JSON objects (e.g. tool result previews)
+                    # are not tabular; treat them as a single-row frame
+                    # instead of failing metadata extraction.
+                    with open(file_path, encoding='utf-8') as fh:
+                        payload = json.load(fh)
+                    if isinstance(payload, dict):
+                        df = pd.DataFrame([payload])
+                    elif isinstance(payload, list):
+                        df = pd.DataFrame(payload)
+                    else:
+                        df = pd.DataFrame({'value': [payload]})
             elif file_ext in ('.jsonl', '.ndjson'):
                 df = pd.read_json(file_path, lines=True)
             elif file_ext == '.parquet':
