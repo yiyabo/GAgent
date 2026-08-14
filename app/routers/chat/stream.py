@@ -8,6 +8,7 @@ from typing import AsyncIterator
 from fastapi import BackgroundTasks, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
+from app.services.moderation import scan_user_input
 from app.services.platform_access import bind_chat_request_to_principal
 from app.services.request_principal import get_request_owner_id, get_request_principal
 
@@ -25,6 +26,9 @@ async def chat_stream(
     raw_request: Request,
 ):
     _ = background_tasks
+
+    # Log-only moderation audit of the raw user message (never blocks)
+    scan_user_input(request.message, session_id=request.session_id)
 
     if request.session_id:
         request = bind_chat_request_to_principal(raw_request, request)

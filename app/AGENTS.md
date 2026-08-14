@@ -24,6 +24,7 @@ app/
 | Config | `services/foundation/settings.py` | Pydantic settings, `.env`, selected env aliases. |
 | LLM client | `llm.py` | Multi-provider client and shared pools. |
 | Principal/session context | `services/request_principal.py`, `services/session_context.py` | Owner/session propagation. |
+| Content moderation audit | `services/moderation/` | Log-only sensitive-keyword scanning (TC260 library) on chat input and LLM output; audit JSONL in `logs/moderation.log`; toggle via `MODERATION_ENABLED`. |
 | Database | `repository/`, `database_pool.py` | Raw SQL; row factory returns dict-like rows. |
 
 ## CONVENTIONS

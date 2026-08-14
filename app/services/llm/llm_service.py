@@ -16,6 +16,7 @@ from typing import Any, AsyncIterator, Dict, List, Optional, Tuple, Union
 from ...llm import get_default_client, LLMClient
 from ...interfaces import LLMProvider
 from app.services.foundation.settings import get_settings
+from app.services.moderation import scan_llm_output
 
 logger = logging.getLogger(__name__)
 
@@ -154,7 +155,9 @@ class LLMService:
 
         for attempt in range(retry_attempts):
             try:
-                return self._execute_chat(prompt, **kwargs)
+                result = self._execute_chat(prompt, **kwargs)
+                self._moderation_scan(result)
+                return result
             except Exception as e:
                 classified = _classify_llm_exception(e)
                 if classified is not None and not classified.retryable:
@@ -205,7 +208,9 @@ class LLMService:
 
         for attempt in range(retry_attempts):
             try:
-                return await self._execute_chat_async(prompt, **kwargs)
+                result = await self._execute_chat_async(prompt, **kwargs)
+                self._moderation_scan(result)
+                return result
             except Exception as e:
                 classified = _classify_llm_exception(e)
                 if classified is not None and not classified.retryable:
@@ -230,17 +235,35 @@ class LLMService:
         raise RuntimeError("Unexpected error in async LLM chat")
 
     async def stream_chat_async(self, prompt: str, **kwargs) -> AsyncIterator[str]:
-        stream_fn = getattr(self.client, "stream_chat_async", None)
-        if callable(stream_fn):
-            async for chunk in stream_fn(prompt, **kwargs):
-                yield chunk
-            return
-        stream_sync = getattr(self.client, "stream_chat", None)
-        if callable(stream_sync):
-            for chunk in stream_sync(prompt, **kwargs):
-                yield chunk
-            return
-        raise RuntimeError("LLM client does not support streaming")
+        chunks: List[str] = []
+        try:
+            stream_fn = getattr(self.client, "stream_chat_async", None)
+            if callable(stream_fn):
+                async for chunk in stream_fn(prompt, **kwargs):
+                    chunks.append(chunk)
+                    yield chunk
+                return
+            stream_sync = getattr(self.client, "stream_chat", None)
+            if callable(stream_sync):
+                for chunk in stream_sync(prompt, **kwargs):
+                    chunks.append(chunk)
+                    yield chunk
+                return
+            raise RuntimeError("LLM client does not support streaming")
+        finally:
+            if chunks:
+                self._moderation_scan("".join(chunks))
+
+    def _moderation_scan(self, text: Optional[str]) -> None:
+        """Log-only moderation audit of LLM output (never blocks, never raises)."""
+        try:
+            scan_llm_output(
+                text,
+                provider=getattr(self.client, "provider", None),
+                model=getattr(self.client, "model", None),
+            )
+        except Exception:  # pragma: no cover - defensive
+            pass
 
     async def stream_chat_with_tools_async(self, messages: list, tools: list, **kwargs):
         """Pass-through to the underlying client's native tool calling method."""

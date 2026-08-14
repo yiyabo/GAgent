@@ -97,6 +97,15 @@ async def lifespan(_fastapi_app: FastAPI):
     except Exception as e:
         logging.getLogger("app.main").warning("Failed to initialize LLM usage table: %s", e)
 
+    # Pre-warm the moderation keyword engine so the first chat request
+    # does not pay the Aho-Corasick build cost (log-only audit, never blocks)
+    try:
+        from .services.moderation import prewarm_moderation
+        if prewarm_moderation():
+            logging.getLogger("app.main").info("Moderation keyword engine pre-warmed")
+    except Exception as e:
+        logging.getLogger("app.main").warning("Moderation engine pre-warm failed: %s", e)
+
     # Fix any stale jobs from previous server runs
     try:
         fixed_count = fix_stale_jobs_on_startup()

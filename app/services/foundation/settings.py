@@ -175,6 +175,18 @@ if _USE_PYDANTIC:
         rate_limit_sso_complete: int = Field(default=10, ge=1, env="RATE_LIMIT_SSO_COMPLETE")
         rate_limit_sso_login: int = Field(default=10, ge=1, env="RATE_LIMIT_SSO_LOGIN")
 
+        # Sensitive-keyword moderation audit (log-only; never blocks content)
+        moderation_enabled: bool = Field(default=False, env="MODERATION_ENABLED")
+        moderation_keywords_path: str = Field(
+            default="data/moderation/keywords.tsv", env="MODERATION_KEYWORDS_PATH"
+        )
+        moderation_whitelist_path: str = Field(
+            default="data/moderation/whitelist.txt", env="MODERATION_WHITELIST_PATH"
+        )
+        moderation_log_file: str = Field(
+            default="logs/moderation.log", env="MODERATION_LOG_FILE"
+        )
+
         chat_include_action_summary: bool = Field(
             default=True, env="CHAT_INCLUDE_ACTION_SUMMARY"
         )
@@ -424,6 +436,18 @@ else:
             self.budget_debug = _truthy(os.getenv("BUDGET_DEBUG", ""))
             self.decomp_debug = _truthy(os.getenv("DECOMP_DEBUG", ""))
             self.global_index_path = os.getenv("GLOBAL_INDEX_PATH", "INDEX.md")
+
+            # Sensitive-keyword moderation audit (log-only; never blocks content)
+            self.moderation_enabled = _truthy(os.getenv("MODERATION_ENABLED", ""))
+            self.moderation_keywords_path = os.getenv(
+                "MODERATION_KEYWORDS_PATH", "data/moderation/keywords.tsv"
+            )
+            self.moderation_whitelist_path = os.getenv(
+                "MODERATION_WHITELIST_PATH", "data/moderation/whitelist.txt"
+            )
+            self.moderation_log_file = os.getenv(
+                "MODERATION_LOG_FILE", "logs/moderation.log"
+            )
 
             self.backend_host = os.getenv("BACKEND_HOST", "0.0.0.0")
             try:

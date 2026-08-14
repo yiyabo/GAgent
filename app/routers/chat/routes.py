@@ -17,6 +17,7 @@ from app.repository.chat_action_runs import create_action_run
 from app.repository.plan_storage import append_action_log_entry
 from app.routers import register_router
 from app.services.llm.llm_service import get_llm_service
+from app.services.moderation import scan_user_input
 from app.services.plans.decomposition_jobs import plan_decomposition_jobs
 from app.services.plans.plan_session import PlanSession
 from app.services.platform_access import bind_chat_request_to_principal
@@ -144,6 +145,8 @@ async def chat_message(
     request = bind_chat_request_to_principal(raw_request, request)
     owner_id = get_request_owner_id(raw_request)
     principal = get_request_principal(raw_request)
+    # Log-only moderation audit of the raw user message (never blocks)
+    scan_user_input(request.message, session_id=request.session_id, user_id=owner_id)
     try:
         context = dict(request.context or {})
         incoming_plan_id = context.get("plan_id")
