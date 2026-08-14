@@ -185,6 +185,16 @@ def _session_tmp_output_dir(session_dir: Path) -> Path:
     return tmp_dir
 
 
+def _is_project_level_results_write(resolved: Path) -> bool:
+    """True when *resolved* points at the project-level ``results/`` tree.
+
+    Project-root ``results/`` sits outside every session workspace, so files
+    written there are invisible to the session-scoped Artifacts UI.  Within a
+    session context these writes are redirected into the session instead.
+    """
+    return _is_relative_to(resolved, (_PROJECT_ROOT / "results").resolve())
+
+
 def _resolve_session_scoped_project_path(path_str: str, session_dir: Optional[Path]) -> Path:
     raw_path = Path(path_str).expanduser()
     if session_dir is not None:
@@ -203,7 +213,7 @@ def _resolve_session_scoped_project_path(path_str: str, session_dir: Optional[Pa
             except Exception:
                 pass
             return resolved
-        if _is_disallowed_project_source_write(resolved):
+        if _is_disallowed_project_source_write(resolved) or _is_project_level_results_write(resolved):
             redirected = (tmp_dir / resolved.name).resolve()
             if not _is_relative_to(redirected, session_dir):
                 raise ValueError(f"Path escapes session workspace: {path_str}")
@@ -2475,6 +2485,29 @@ async def manuscript_writer_handler(
                 max_context_bytes=max_context_bytes,
                 section_list=section_list,
             )
+            if not used_sources:
+                # Refuse to publish an empty placeholder draft: every section
+                # would read "Not available in provided context.", which looks
+                # like a real deliverable in the Artifacts UI but carries no
+                # content.  Fail loudly instead of writing anything to disk.
+                return {
+                    "tool": "manuscript_writer",
+                    "success": False,
+                    "error": "no_usable_context_sources",
+                    "error_code": "no_usable_context_sources",
+                    "message": (
+                        "Local draft assembly found no usable task output files in the "
+                        "provided context; refusing to publish an empty placeholder draft. "
+                        "Provide context_paths pointing at completed task outputs, or run "
+                        "the full manuscript generation instead."
+                    ),
+                    "draft_only": True,
+                    "release_state": "blocked",
+                    "public_release_ready": False,
+                    "output_path": _to_rel(output_file),
+                    "effective_output_path": _to_rel(output_file),
+                    "analysis_path": _to_rel(analysis_file),
+                }
             analysis_file.write_text(analysis_memo, encoding="utf-8")
             output_file.write_text(draft_text, encoding="utf-8")
             from tool_box.watermark import apply_watermark_inplace

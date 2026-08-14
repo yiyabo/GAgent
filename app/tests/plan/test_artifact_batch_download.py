@@ -383,3 +383,29 @@ def test_batch_download_nonexistent_file_returns_404(
         )
 
     assert exc_info.value.status_code == status.HTTP_404_NOT_FOUND
+
+
+def test_iter_items_hidden_filter_applies_with_path_prefix(tmp_path: Path) -> None:
+    """Regression: hidden prefixes are session-root-relative, so a listing
+    rooted at a sub-directory (path_prefix views) must re-root paths before
+    comparing — otherwise hidden files leak into the UI listing and then fail
+    batch download with 403 'Artifact is hidden'."""
+    session_dir = tmp_path / "runtime" / "session_prefix"
+    hidden_file = session_dir / "raw_files" / "tmp" / "draft.md"
+    hidden_file.parent.mkdir(parents=True, exist_ok=True)
+    hidden_file.write_text("hidden\n", encoding="utf-8")
+    visible_file = session_dir / "raw_files" / "tmp" / "keep.md"
+    visible_file.write_text("visible\n", encoding="utf-8")
+
+    hidden = ["raw_files/tmp/draft.md"]
+    base = (session_dir / "raw_files").resolve()
+
+    fixed = artifact_routes._iter_items(
+        base,
+        max_depth=4,
+        include_dirs=False,
+        limit=100,
+        hidden_prefixes=hidden,
+        hidden_check_prefix="raw_files",
+    )
+    assert [item.path for item in fixed] == ["tmp/keep.md"]

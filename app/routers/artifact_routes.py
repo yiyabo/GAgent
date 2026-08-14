@@ -560,9 +560,15 @@ def _iter_items(
     limit: int,
     extensions: Optional[List[str]] = None,
     hidden_prefixes: Optional[List[str]] = None,
+    hidden_check_prefix: str = "",
 ) -> List[ArtifactItem]:
     items: List[ArtifactItem] = []
     base_dir = base_dir.resolve()
+
+    # Hidden prefixes are session-root-relative; when the walk starts from a
+    # sub-directory (path_prefix views), re-root the relative paths before
+    # comparing or hidden entries would leak into the listing.
+    hidden_check_prefix = str(hidden_check_prefix or "").strip().strip("/").replace("\\", "/")
 
     _SKIP_DIR_NAMES = {
         "deliverables",
@@ -605,7 +611,12 @@ def _iter_items(
             except ValueError:
                 continue
             normalized_rel = str(rel_path).replace("\\", "/")
-            if _path_is_hidden(normalized_rel, hidden_prefixes or []):
+            hidden_rel = (
+                f"{hidden_check_prefix}/{normalized_rel}"
+                if hidden_check_prefix
+                else normalized_rel
+            )
+            if _path_is_hidden(hidden_rel, hidden_prefixes or []):
                 continue
 
             if path.is_dir():
@@ -686,6 +697,7 @@ async def list_session_artifacts(
         limit=limit,
         extensions=ext_list,
         hidden_prefixes=hidden_prefixes,
+        hidden_check_prefix=normalized_prefix,
     )
 
     if normalized_prefix:

@@ -106,6 +106,53 @@ def test_write_redirects_project_root_into_session_raw_files_tmp(monkeypatch, tm
     assert written.read_text(encoding="utf-8") == "session redirected content"
 
 
+def test_write_redirects_project_results_into_session_raw_files_tmp(monkeypatch, tmp_path: Path) -> None:
+    """Project-root results/ writes in a session context must land in the
+    session workspace, otherwise they are invisible to the Artifacts UI."""
+    from tool_box.context import ToolContext
+
+    project_root = tmp_path / "project"
+    runtime_root = project_root / "runtime"
+    session_dir = runtime_root / "session_results_redirect"
+    session_tmp = session_dir / "raw_files" / "tmp"
+    session_tmp.mkdir(parents=True, exist_ok=True)
+    results_root = project_root / "results"
+    results_root.mkdir(parents=True, exist_ok=True)
+    target = results_root / "Protocol_D2HGA_Type_I.md"
+
+    monkeypatch.setattr(file_operations, "_get_project_root", lambda: project_root.resolve())
+    monkeypatch.setattr(
+        file_operations,
+        "_session_output_base",
+        lambda tool_context: session_tmp.resolve(),
+    )
+    monkeypatch.setattr(
+        file_operations,
+        "_session_dir_from_context",
+        lambda tool_context: session_dir.resolve(),
+    )
+    monkeypatch.setattr(
+        file_operations,
+        "ALLOWED_BASE_PATHS",
+        [str(project_root), str(runtime_root), str(results_root)],
+    )
+
+    result = asyncio.run(
+        file_operations.file_operations_handler(
+            "write",
+            str(target),
+            content="session-scoped protocol content",
+            tool_context=ToolContext(session_id="session_results_redirect"),
+        )
+    )
+
+    assert result["success"] is True
+    assert not target.exists()
+    written = Path(result["path"])
+    assert written == (session_tmp / "Protocol_D2HGA_Type_I.md").resolve()
+    assert written.read_text(encoding="utf-8") == "session-scoped protocol content"
+
+
 def test_write_redirects_session_root_file_into_raw_files_tmp(monkeypatch, tmp_path: Path) -> None:
     from tool_box.context import ToolContext
 

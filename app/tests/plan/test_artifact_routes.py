@@ -136,10 +136,13 @@ def test_list_session_artifacts_scopes_to_requested_raw_subtree(
     ]
 
 
-def test_list_session_artifacts_scoped_raw_subtree_ignores_session_relative_hidden_prefixes(
+def test_list_session_artifacts_scoped_raw_subtree_applies_session_relative_hidden_prefixes(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
+    # Listing and batch download must agree on what is hidden: a file the
+    # download endpoint rejects with 403 must not appear in the listing,
+    # even when the listing is scoped into a sub-directory via path_prefix.
     runtime_root = tmp_path / "runtime"
     session_dir = runtime_root / "session_abc123"
     target_dir = session_dir / "raw_files" / "task_1" / "task_8" / "task_34"
@@ -168,9 +171,7 @@ def test_list_session_artifacts_scoped_raw_subtree_ignores_session_relative_hidd
         )
     )
 
-    assert [item.path for item in response.items] == [
-        "raw_files/task_1/task_8/task_34/combined_partial.md"
-    ]
+    assert response.items == []
 
 
 def test_workspace_file_route_rejects_non_image_files(
