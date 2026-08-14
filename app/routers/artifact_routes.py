@@ -577,6 +577,7 @@ def _iter_items(
         "node_modules",
         ".venv",
         "venv",
+        "_scratch",
     }
 
     _SKIP_DIR_PREFIXES = ("run_",)
@@ -709,6 +710,26 @@ async def list_session_artifacts(
                 item.model_copy(update={"path": item_path})
             )
         items = prefixed_items
+
+    # The "raw_files" view is the user-facing workspace listing, but agents
+    # also write final outputs to the session-level results/ tree.  Union it
+    # in so those files are visible (and downloadable) from the same panel.
+    if normalized_prefix == "raw_files":
+        results_dir = (session_dir / "results").resolve()
+        if results_dir.is_dir():
+            for item in _iter_items(
+                results_dir,
+                max_depth=max_depth,
+                include_dirs=include_dirs,
+                limit=limit,
+                extensions=ext_list,
+                hidden_prefixes=hidden_prefixes,
+                hidden_check_prefix="results",
+            ):
+                rel_path = str(item.path or "").strip().strip("/")
+                item_path = "results" if not rel_path else f"results/{rel_path}"
+                items.append(item.model_copy(update={"path": item_path}))
+            items = items[:limit]
 
     return ArtifactListResponse(
         session_id=session_id,

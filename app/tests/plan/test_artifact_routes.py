@@ -474,3 +474,41 @@ def test_workspace_file_route_blocks_paths_outside_workspace(
         )
 
     assert exc_info.value.status_code == status.HTTP_400_BAD_REQUEST
+
+
+def test_list_session_artifacts_raw_files_view_unions_session_results(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Agents write final outputs to the session-level results/ tree; the
+    raw_files listing must union it in or those files are invisible in the UI."""
+    runtime_root = tmp_path / "runtime"
+    session_dir = runtime_root / "session_results_union"
+
+    raw_file = session_dir / "raw_files" / "tmp" / "task_1" / "script.py"
+    raw_file.parent.mkdir(parents=True, exist_ok=True)
+    raw_file.write_text("print('hi')\n", encoding="utf-8")
+    result_file = session_dir / "results" / "患者临床数据提取.csv"
+    result_file.parent.mkdir(parents=True, exist_ok=True)
+    result_file.write_text("id,name\n", encoding="utf-8")
+
+    monkeypatch.setattr(artifact_routes, "RUNTIME_DIR", runtime_root)
+    monkeypatch.setattr(artifact_routes, "INFO_SESSIONS_DIR", tmp_path / "information_sessions")
+    monkeypatch.setattr(artifact_routes, "_ensure_session_access", _allow_access)
+    monkeypatch.setattr(artifact_routes, "_load_hidden_artifact_prefixes", lambda _sid: [])
+
+    response = asyncio.run(
+        artifact_routes.list_session_artifacts(
+            "session_results_union",
+            None,
+            max_depth=4,
+            include_dirs=False,
+            limit=50,
+            extensions=None,
+            path_prefix="raw_files",
+        )
+    )
+
+    paths = [item.path for item in response.items]
+    assert "raw_files/tmp/task_1/script.py" in paths
+    assert "results/患者临床数据提取.csv" in paths

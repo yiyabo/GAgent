@@ -147,7 +147,16 @@ export const createFileSlice: ChatSliceCreator = (set, get) => ({
       const res = await uploadApi.listFiles(sessionId);
       const serverFiles = (res.files || []).map(mapServerFileToUploaded);
       // Prefer server list as source of truth for real uploads.
-      set({ uploadedFiles: [...localRefs, ...serverFiles] });
+      // A local/project ref that duplicates a server file by display name is
+      // the same attachment added twice via two entries — drop it so the
+      // composer does not render identical chips.
+      const serverNames = new Set(
+        serverFiles.map((f) => f.original_name || f.file_name),
+      );
+      const dedupedLocalRefs = localRefs.filter(
+        (f) => !serverNames.has(f.original_name || f.file_name),
+      );
+      set({ uploadedFiles: [...dedupedLocalRefs, ...serverFiles] });
     } catch (error) {
       console.warn('Failed to sync uploads from server:', error);
       // On failure keep localRefs + any existing server-tagged chips.
