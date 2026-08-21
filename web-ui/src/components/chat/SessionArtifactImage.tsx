@@ -144,18 +144,37 @@ export const SessionArtifactImage: React.FC<SessionArtifactImageProps> = ({
   const downloadMenu: MenuProps = {
     items: [
       {
+        key: 'preview-pdf',
+        label: '📄 在侧边栏预览 PDF',
+        onClick: () => {
+          if (!sessionId || !filePath) return;
+          const base = filePath.replace(/\.[^/.]+$/, '');
+          const pdfPath = `${base}.pdf`;
+          const pdfUrl = `/api/artifacts/sessions/${sessionId}/file?path=${encodeURIComponent(pdfPath)}`;
+          window.dispatchEvent(
+            new CustomEvent('phage:open-pdf-viewer', {
+              detail: {
+                url: pdfUrl,
+                title: pdfPath.split('/').pop() || 'figure.pdf',
+                downloadUrl: pdfUrl,
+              },
+            })
+          );
+        },
+      },
+      {
         key: 'svg',
-        label: 'SVG 矢量图 (可编辑文字/图形)',
+        label: '📥 下载 SVG 矢量图 (可编辑文字/图形)',
         onClick: () => handleDownloadFormat('svg'),
       },
       {
         key: 'pdf',
-        label: 'PDF 矢量图 (高清出版级)',
+        label: '📥 下载 PDF 出版级高清文件',
         onClick: () => handleDownloadFormat('pdf'),
       },
       {
         key: 'png',
-        label: 'PNG 标清预览图 (300 DPI)',
+        label: '📥 下载 PNG 标清图 (300 DPI)',
         onClick: () => handleDownloadFormat('png'),
       },
     ],

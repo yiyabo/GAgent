@@ -758,10 +758,13 @@ async def get_session_artifact_file(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Artifact not found")
 
     media_type, _ = mimetypes.guess_type(str(target))
+    ext = target.suffix.lower()
+    is_inline_type = ext in (".pdf", ".png", ".jpg", ".jpeg", ".svg", ".webp", ".gif", ".html", ".txt", ".json", ".md")
     return FileResponse(
         path=target,
         media_type=media_type or "application/octet-stream",
-        filename=target.name,
+        filename=target.name if not is_inline_type else None,
+        content_disposition_type="inline" if is_inline_type else "attachment",
     )
 
 
@@ -789,10 +792,13 @@ async def get_session_workspace_file(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workspace file not found")
 
     media_type, _ = mimetypes.guess_type(str(target))
+    ext = target.suffix.lower()
+    is_inline_type = ext in (".pdf", ".png", ".jpg", ".jpeg", ".svg", ".webp", ".gif", ".html", ".txt", ".json", ".md")
     return FileResponse(
         path=target,
         media_type=media_type or "application/octet-stream",
-        filename=target.name,
+        filename=target.name if not is_inline_type else None,
+        content_disposition_type="inline" if is_inline_type else "attachment",
     )
 
 
@@ -966,10 +972,13 @@ async def get_session_deliverable_file(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Deliverable file not found")
 
     media_type, _ = mimetypes.guess_type(str(target))
+    ext = target.suffix.lower()
+    is_inline_type = ext in (".pdf", ".png", ".jpg", ".jpeg", ".svg", ".webp", ".gif", ".html", ".txt", ".json", ".md")
     return FileResponse(
         path=target,
         media_type=media_type or "application/octet-stream",
-        filename=target.name,
+        filename=target.name if not is_inline_type else None,
+        content_disposition_type="inline" if is_inline_type else "attachment",
     )
 
 

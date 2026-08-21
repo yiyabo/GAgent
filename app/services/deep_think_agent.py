@@ -3506,7 +3506,16 @@ class DeepThinkAgent:
 
     def _build_artifact_deliverable_workflow_block(self) -> str:
         return (
-            "=== ARTIFACT AND DELIVERABLE WORKFLOW ===\n"
+            """=== FIGURE FINE-TUNING & ITERATIVE REFINEMENT RULES ===
+- When the user requests a figure fine-tuning (e.g., prompt starting with '【图表局部微调】针对目标图表' or asking to modify colors, fonts, margins, annotations, or panel layouts of an existing figure):
+  1. ALWAYS treat this as a DIFFERENTIAL MODIFICATION on the existing figure, NOT a new figure from scratch.
+  2. DO NOT state that the previous figure is missing or absent from session directory.
+  3. Inspect the existing figure provenance table (*_provenance.tsv), legend (summary.md), or datasets in conversation history to retain the exact same underlying data points, values, and group names.
+  4. Apply the requested visual modifications (e.g. palette change, font size, highlighting, bounding box focus) while keeping all other untouched elements strictly intact.
+  5. In-place overwrite the target figure with the exact same output_basename and generate all three formats (PNG 300dpi, editable vector SVG, publication PDF).
+
+=== ARTIFACT AND DELIVERABLE WORKFLOW ===
+"""
             "- Treat requests to analyze, combine, summarize, regenerate, export, save, or visualize existing files, plan outputs, task outputs, or deliverables as action requests, not prose-only answers.\n"
             "- For such requests, choose the needed tools yourself: discover relevant artifacts, read or profile supporting files, synthesize or compute, create/write the requested output, verify it when a file is requested, then submit the final answer.\n"
             "- Do not substitute chat prose, copy-paste Markdown, or a code snippet for a requested saved file, generated figure, or deliverable.\n"

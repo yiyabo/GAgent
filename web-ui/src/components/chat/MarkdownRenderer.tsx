@@ -233,6 +233,45 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, cla
                         }
 
                         // Inline code
+                        const textStr = String(children || '').trim();
+                        if (sessionId && /\.pdf$/i.test(textStr)) {
+                            const pdfUrl = `/api/artifacts/sessions/${sessionId}/file?path=${encodeURIComponent(textStr)}`;
+                            const handleOpenPdf = (e: React.MouseEvent) => {
+                                e.preventDefault();
+                                window.dispatchEvent(
+                                    new CustomEvent('phage:open-pdf-viewer', {
+                                        detail: {
+                                            url: pdfUrl,
+                                            title: textStr.split('/').pop() || textStr,
+                                            downloadUrl: pdfUrl,
+                                        },
+                                    })
+                                );
+                            };
+
+                            return (
+                                <span
+                                    onClick={handleOpenPdf}
+                                    style={{
+                                        display: 'inline-flex',
+                                        alignItems: 'center',
+                                        gap: 4,
+                                        backgroundColor: '#fff1f0',
+                                        border: '1px solid #ffa39e',
+                                        color: '#cf1322',
+                                        padding: '2px 8px',
+                                        borderRadius: '4px',
+                                        fontSize: '0.9em',
+                                        cursor: 'pointer',
+                                        fontWeight: 500,
+                                    }}
+                                    title={`点击在侧边栏预览 PDF: ${textStr}`}
+                                >
+                                    📄 {textStr}
+                                </span>
+                            );
+                        }
+
                         return (
                             <code
                                 className={codeClassName}
