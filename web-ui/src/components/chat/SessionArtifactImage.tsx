@@ -268,8 +268,8 @@ export const SessionArtifactImage: React.FC<SessionArtifactImageProps> = ({
           sessionId={sessionId}
           onSubmitPrompt={(prompt) => {
             window.dispatchEvent(
-              new CustomEvent('phage:insert-chat-prompt', {
-                detail: { prompt },
+              new CustomEvent('phage:send-chat-prompt', {
+                detail: { prompt, autoSend: true },
               })
             );
           }}

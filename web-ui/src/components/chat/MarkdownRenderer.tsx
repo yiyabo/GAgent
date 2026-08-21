@@ -139,7 +139,23 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, cla
                                 scope: classifyDownloadScope(rel),
                             };
                             const downloadUrl = buildGeneratedFileDownloadUrl(sid, file);
-                            return (
+                            const isPdf = file.name.toLowerCase().endsWith('.pdf');
+                                const handlePdfOrFileClick = (e: React.MouseEvent) => {
+                                    if (isPdf) {
+                                        e.preventDefault();
+                                        window.dispatchEvent(
+                                            new CustomEvent('phage:open-pdf-viewer', {
+                                                detail: {
+                                                    url: downloadUrl,
+                                                    title: file.name,
+                                                    downloadUrl,
+                                                },
+                                            })
+                                        );
+                                    }
+                                };
+
+                                return (
                                 <span
                                     style={{
                                         display: 'inline-flex',
@@ -150,9 +166,10 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, cla
                                 >
                                     <a
                                         href={downloadUrl}
-                                        download={file.name}
-                                        style={{ color: '#1677ff', fontWeight: 500 }}
-                                        title={file.path}
+                                        onClick={handlePdfOrFileClick}
+                                        download={isPdf ? undefined : file.name}
+                                        style={{ color: '#1677ff', fontWeight: 500, cursor: 'pointer' }}
+                                        title={isPdf ? `点击在侧边栏预览 ${file.name}` : file.path}
                                     >
                                         {children}
                                     </a>

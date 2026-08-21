@@ -297,9 +297,7 @@ export const FigureCatalogDrawer: React.FC<FigureCatalogDrawerProps> = ({
           imagePath={activeFineTuneFigure.baseName}
           sessionId={sessionId}
           onSubmitPrompt={(prompt) => {
-            if (onInsertPrompt) {
-              onInsertPrompt(prompt);
-            }
+            window.dispatchEvent(new CustomEvent('phage:send-chat-prompt', { detail: { prompt, autoSend: true } }));
           }}
         />
       )}

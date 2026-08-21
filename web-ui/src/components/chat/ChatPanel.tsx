@@ -20,6 +20,7 @@ import ChatMessage from './ChatMessage';
 import FileUploadButton from './FileUploadButton';
 import UploadedFilesList from './UploadedFilesList';
 import FigureCatalogDrawer from './FigureCatalogDrawer';
+import PdfViewerDrawer from './PdfViewerDrawer';
 import { isAllowedUploadFile } from '@/constants/uploadFileTypes';
 
 const { TextArea } = Input;
@@ -66,21 +67,7 @@ const ChatPanel: React.FC = () => {
   const [pasteUploading, setPasteUploading] = useState(false);
   const [figureCatalogOpen, setFigureCatalogOpen] = useState(false);
 
-  // Listen to external figure fine-tune prompt dispatch
-  useEffect(() => {
-    const handleInsertPrompt = (e: any) => {
-      const prompt = e.detail?.prompt;
-      if (prompt) {
-        const current = useChatStore.getState().inputText;
-        useChatStore.getState().setInputText(current ? current + String.fromCharCode(10, 10) + prompt : prompt);
-        inputRef.current?.focus();
-      }
-    };
-    window.addEventListener('phage:insert-chat-prompt', handleInsertPrompt);
-    return () => {
-      window.removeEventListener('phage:insert-chat-prompt', handleInsertPrompt);
-    };
-  }, []);
+
 
   const {
     messages,
@@ -482,6 +469,7 @@ const ChatPanel: React.FC = () => {
         </div>
       </div>
 
+      <PdfViewerDrawer />
       <FigureCatalogDrawer
         visible={figureCatalogOpen}
         onClose={() => setFigureCatalogOpen(false)}
