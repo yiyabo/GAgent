@@ -144,6 +144,9 @@ class ConversationQualityService:
         )
         if row is None:
             return False
+
+        # Yield to active chat turn
+        await asyncio.sleep(2.0)
         resolved_basis = str(row.get("evaluation_basis") or "observation_timeout")
         try:
             feedback = repository.get_feedback_message(row)

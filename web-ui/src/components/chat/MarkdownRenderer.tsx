@@ -72,6 +72,9 @@ function MarkdownArtifactImage({
  * Preprocess content to normalize LaTeX delimiters.
  * Converts \[...\] and \(...\) to $$...$$ and $...$ respectively.
  */
+const REMARK_PLUGINS = [remarkGfm, remarkMath];
+const REHYPE_PLUGINS = [rehypeKatex];
+
 const preprocessLaTeX = (content: string): string => {
     let processed = content;
 
@@ -107,13 +110,13 @@ const preprocessLaTeX = (content: string): string => {
 };
 
 export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, className, sessionId, sourceType }) => {
-    const processedContent = preprocessLaTeX(content);
+    const processedContent = React.useMemo(() => preprocessLaTeX(content), [content]);
 
     return (
         <div className={className}>
             <ReactMarkdown
-                remarkPlugins={[remarkGfm, remarkMath]}
-                rehypePlugins={[rehypeKatex]}
+                remarkPlugins={REMARK_PLUGINS}
+                rehypePlugins={REHYPE_PLUGINS}
                 components={{
                     img({ src, alt }) {
                         return (

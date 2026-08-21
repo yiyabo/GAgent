@@ -46,6 +46,10 @@ class ChatMemoryMiddleware:
         if not self.enabled and not force_save:
             return None
 
+        # Yield to active foreground chat turn to avoid competing for DashScope RPM limits
+        if role == "user":
+            await asyncio.sleep(4.0)
+
         should_save, importance, memory_type = await self._should_save_message(
             content, role, force_save, model_provider=model_provider
         )
