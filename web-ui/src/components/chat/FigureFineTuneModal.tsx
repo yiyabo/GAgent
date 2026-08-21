@@ -5,6 +5,7 @@ import {
   SendOutlined,
   ClearOutlined,
 } from '@ant-design/icons';
+import { useChatStore } from '@store/chat';
 
 const { TextArea } = Input;
 const { Text } = Typography;
@@ -142,7 +143,7 @@ export const FigureFineTuneModal: React.FC<FigureFineTuneModalProps> = ({
     setInstruction((prev) => (prev ? `${prev}\n${prompt}` : prompt));
   };
 
-  const handleSubmit = () => {
+  const handleSubmit = async () => {
     if (!instruction.trim() && rects.length === 0) {
       antMessage.warning('请输入微调要求或在图上框选标注区域');
       return;
@@ -157,10 +158,19 @@ export const FigureFineTuneModal: React.FC<FigureFineTuneModalProps> = ({
     }
     finalPrompt += `- 规范要求: 请在保持全文风格一致（统一字体字号、Nature配色、纯白背景、无多余边框）的前提下进行定向修改，并覆盖更新 \`results/${fileName}\`（输出 PNG, 可编辑矢量 SVG, 出版级 PDF）。`;
 
+    try {
+      await useChatStore.getState().sendMessage(finalPrompt);
+      antMessage.success('已发送微调指令，AI 正在为您修改图表...');
+    } catch (err) {
+      console.error('Failed to send fine-tune message directly:', err);
+      const cur = useChatStore.getState().inputText;
+      useChatStore.getState().setInputText(cur ? `${cur}\n\n${finalPrompt}` : finalPrompt);
+      antMessage.info('微调指令已载入对话输入框');
+    }
+
     if (onSubmitPrompt) {
       onSubmitPrompt(finalPrompt);
     }
-    antMessage.success('微调指令已载入对话');
     onClose();
   };
 
