@@ -11,19 +11,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from tool_box.context import ToolContext
+from tool_box.figure_style import apply_scientific_style, get_palette
 
 
-COLORS = [
-    "#ABD1BC",
-    "#BED0F9",
-    "#CCCC99",
-    "#DBE4FB",
-    "#E3BBED",
-    "#EDC3A5",
-    "#F1F1F1",
-    "#FCB6A5",
-    "#FDEBAA",
-]
+COLORS = get_palette("nature")
 
 FORBIDDEN_CLAIM_PHRASES = (
     "therapeutic priority",
@@ -363,8 +354,10 @@ def _render_figure(
     panels: List[Dict[str, Any]],
     png_path: Path,
     pdf_path: Optional[Path],
+    svg_path: Optional[Path] = None,
     dpi: int,
 ) -> List[Dict[str, Any]]:
+    apply_scientific_style("nature", dpi=dpi)
     import matplotlib
 
     matplotlib.use("Agg")
@@ -388,6 +381,8 @@ def _render_figure(
         axes[index // columns][index % columns].axis("off")
     fig.tight_layout(rect=(0, 0, 1, 0.965))
     fig.savefig(png_path, dpi=dpi, bbox_inches="tight", facecolor="white")
+    if svg_path is not None:
+        fig.savefig(svg_path, format="svg", bbox_inches="tight", facecolor="white")
     if pdf_path is not None:
         fig.savefig(pdf_path, bbox_inches="tight", facecolor="white")
     plt.close(fig)
@@ -426,13 +421,15 @@ def _write_provenance(path: Path, rendered_panels: List[Dict[str, Any]], dataset
             writer.writerow([panel["label"], panel["title"], panel["type"], panel["dataset"], panel["row_count"], dataset.source])
 
 
-def _qa_image(png_path: Path, pdf_path: Optional[Path], legend_path: Path, provenance_path: Path) -> Dict[str, Any]:
+def _qa_image(png_path: Path, pdf_path: Optional[Path], legend_path: Path, provenance_path: Path, svg_path: Optional[Path] = None) -> Dict[str, Any]:
     checks: List[Dict[str, Any]] = []
 
     def add(name: str, passed: bool, details: Dict[str, Any]) -> None:
         checks.append({"name": name, "passed": bool(passed), "details": details})
 
     add("png_exists", png_path.is_file() and png_path.stat().st_size > 0, {"path": str(png_path), "bytes": png_path.stat().st_size if png_path.exists() else 0})
+    if svg_path is not None:
+        add("svg_exists", svg_path.is_file() and svg_path.stat().st_size > 0, {"path": str(svg_path), "bytes": svg_path.stat().st_size if svg_path.exists() else 0})
     if pdf_path is not None:
         add("pdf_exists", pdf_path.is_file() and pdf_path.stat().st_size > 0, {"path": str(pdf_path), "bytes": pdf_path.stat().st_size if pdf_path.exists() else 0})
     add("legend_exists", legend_path.is_file() and legend_path.stat().st_size > 0, {"path": str(legend_path), "bytes": legend_path.stat().st_size if legend_path.exists() else 0})
@@ -479,11 +476,12 @@ async def scientific_figure_generator_handler(
         if len(panel_list) > 26:
             raise ValueError("At most 26 panels are supported")
 
-        normalized_formats = {str(item or "").strip().lower() for item in (formats or ["png", "pdf"])}
+        normalized_formats = {str(item or "").strip().lower() for item in (formats or ["png", "svg", "pdf"])}
         normalized_formats.discard("")
         output_root = _resolve_output_dir(output_dir, tool_context)
         base = _slugify(output_basename)
         png_path = output_root / f"{base}.png"
+        svg_path = output_root / f"{base}.svg" if "svg" in normalized_formats else None
         pdf_path = output_root / f"{base}.pdf" if "pdf" in normalized_formats else None
         legend_path = output_root / "summary.md"
         provenance_path = output_root / f"{base}_provenance.tsv"
@@ -495,11 +493,12 @@ async def scientific_figure_generator_handler(
             panels=panel_list,
             png_path=png_path,
             pdf_path=pdf_path,
+            svg_path=svg_path,
             dpi=max(150, int(dpi or 300)),
         )
         _write_legend(legend_path, title, rendered_panels, loaded)
         _write_provenance(provenance_path, rendered_panels, loaded)
-        qa = _qa_image(png_path, pdf_path, legend_path, provenance_path)
+        qa = _qa_image(png_path, pdf_path, legend_path, provenance_path, svg_path=svg_path)
         qa_path.write_text(json.dumps(qa, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
         artifacts = [
@@ -508,8 +507,10 @@ async def scientific_figure_generator_handler(
             {"path": str(provenance_path), "module": "image_tabular", "reason": "Figure provenance table"},
             {"path": str(qa_path), "module": "image_tabular", "reason": "Figure QA report"},
         ]
+        if svg_path is not None:
+            artifacts.insert(1, {"path": str(svg_path), "module": "image_tabular", "reason": "Editable scientific composite figure SVG"})
         if pdf_path is not None:
-            artifacts.insert(1, {"path": str(pdf_path), "module": "image_tabular", "reason": "Final scientific composite figure PDF"})
+            artifacts.insert(2 if svg_path is not None else 1, {"path": str(pdf_path), "module": "image_tabular", "reason": "Final scientific composite figure PDF"})
 
         result = {
             "success": bool(qa["passed"]),
@@ -519,6 +520,7 @@ async def scientific_figure_generator_handler(
                 "title": title,
                 "output_dir": str(output_root),
                 "figure_png": str(png_path),
+                "figure_svg": str(svg_path) if svg_path is not None else None,
                 "figure_pdf": str(pdf_path) if pdf_path is not None else None,
                 "legend_md": str(legend_path),
                 "provenance_tsv": str(provenance_path),

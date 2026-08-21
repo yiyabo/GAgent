@@ -294,12 +294,20 @@ You must return a **strict JSON object** with the following fields:
    - **When multiple datasets are provided, read all of them as needed for the analysis.**
    - **All generated files (plots, CSVs, etc.) MUST be saved to `results/` directory**. Create this directory if it doesn't exist using `os.makedirs('results', exist_ok=True)`.
    - **NEVER use `plt.show()` or any interactive display**. Always save plots directly using `plt.savefig('results/<filename>.png')` and then `plt.close()`.
-    - **For publication-quality figures: ALWAYS save in BOTH PNG (300 dpi) and PDF formats**:
+    - **Consistent Figure Styling (Nature/Science Standards across Document)**:
+      - **Style & Typography**: Maintain unified typography across all figures in the same document. Sans-serif font (Arial/Helvetica/DejaVu Sans), Title: 12pt bold, Axis Labels: 10pt, Tick Labels: 9pt, Legend: 9pt (frameon=False).
+      - **Geometry & Spines**: Clean white background ('facecolor="white"'), despine top and right borders ('ax.spines["top"].set_visible(False); ax.spines["right"].set_visible(False)').
+      - **Cohesive Color Palette**: Use consistent Nature/Cell/Science palette (e.g. '["#E64B35", "#4DBBD5", "#00A087", "#3C5488", "#F39B7F", "#8491B4"]').
+      - Alternatively, you may import `from tool_box.figure_style import apply_scientific_style, save_figure_bundle` and call `apply_scientific_style("nature")`.
+    - **Multi-Format Vector & Raster Export: ALWAYS save in PNG (300 dpi), SVG (editable vector for user customization), and PDF**:
       ```python
-      plt.savefig('results/figure_name.png', dpi=300, bbox_inches='tight')
-      plt.savefig('results/figure_name.pdf', bbox_inches='tight')
+      plt.savefig("results/figure_name.png", dpi=300, bbox_inches="tight", facecolor="white")
+      plt.savefig("results/figure_name.svg", bbox_inches="tight", facecolor="white")
+      plt.savefig("results/figure_name.pdf", bbox_inches="tight", facecolor="white")
       plt.close()
       ```
+    - **In-place Figure Fine-tuning & Hot Backfill**:
+      - When asked to fine-tune, adjust, or iterate an existing figure (e.g. user screenshot crop, label change, color tweak), maintain the original base file name and overwrite in `results/` so all linked documents refresh seamlessly without broken references.
     - **Artifact Attribution**: Add `本内容由AI生成，请核实` to human-facing figures and narrative reports. Do not alter machine-readable source data, including CSV/TSV, FASTA, JSON/JSONL, BibTeX, or analysis manifests: changing their content can invalidate parsers, checksums, and downstream pipelines.
       - **Figures (matplotlib)**: Before calling `plt.savefig(...)`, add a bottom-right attribution on the current figure.
       - **Narrative reports**: Add the attribution at the end of Markdown or plain-text reports.

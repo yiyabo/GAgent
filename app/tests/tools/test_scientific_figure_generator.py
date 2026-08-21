@@ -74,7 +74,7 @@ def test_scientific_figure_generator_creates_qa_provenance_and_deliverable_paylo
     result = _mapping(raw_result)
     assert result["success"] is True
     payload = _mapping(result["result"])
-    for key in ("figure_png", "figure_pdf", "legend_md", "provenance_tsv", "qa_json"):
+    for key in ("figure_png", "figure_svg", "figure_pdf", "legend_md", "provenance_tsv", "qa_json"):
         path = Path(_string(payload[key]))
         assert path.is_file(), key
         assert path.stat().st_size > 0, key
@@ -82,7 +82,7 @@ def test_scientific_figure_generator_creates_qa_provenance_and_deliverable_paylo
     assert qa["passed"] is True
     deliverable_submit = _mapping(result["deliverable_submit"])
     assert deliverable_submit["publish"] is True
-    assert len(_object_list(deliverable_submit["artifacts"])) == 5
+    assert len(_object_list(deliverable_submit["artifacts"])) == 6
 
 
 def test_scientific_figure_generator_accepts_direct_row_list_from_llm(tmp_path: Path) -> None:

@@ -19,6 +19,7 @@ import { useTasksStore } from '@store/tasks';
 import ChatMessage from './ChatMessage';
 import FileUploadButton from './FileUploadButton';
 import UploadedFilesList from './UploadedFilesList';
+import FigureCatalogDrawer from './FigureCatalogDrawer';
 import { isAllowedUploadFile } from '@/constants/uploadFileTypes';
 
 const { TextArea } = Input;
@@ -63,6 +64,23 @@ const ChatPanel: React.FC = () => {
   const [isDragOver, setIsDragOver] = useState(false);
   // Paste feedback
   const [pasteUploading, setPasteUploading] = useState(false);
+  const [figureCatalogOpen, setFigureCatalogOpen] = useState(false);
+
+  // Listen to external figure fine-tune prompt dispatch
+  useEffect(() => {
+    const handleInsertPrompt = (e: any) => {
+      const prompt = e.detail?.prompt;
+      if (prompt) {
+        const current = useChatStore.getState().inputText;
+        useChatStore.getState().setInputText(current ? current + String.fromCharCode(10, 10) + prompt : prompt);
+        inputRef.current?.focus();
+      }
+    };
+    window.addEventListener('phage:insert-chat-prompt', handleInsertPrompt);
+    return () => {
+      window.removeEventListener('phage:insert-chat-prompt', handleInsertPrompt);
+    };
+  }, []);
 
   const {
     messages,
@@ -321,6 +339,15 @@ const ChatPanel: React.FC = () => {
         </Space>
 
         <Space size="small">
+          <Tooltip title="查看文档图表全景索引与批量导出 (PNG/SVG/PDF)">
+            <Button
+              size="small"
+              icon={<FileImageOutlined style={{ color: '#1677ff' }} />}
+              onClick={() => setFigureCatalogOpen(true)}
+            >
+              图表索引
+            </Button>
+          </Tooltip>
           <Tooltip title="Clear chat">
             <Button
               type="text"
@@ -454,6 +481,17 @@ const ChatPanel: React.FC = () => {
           </Text>
         </div>
       </div>
+
+      <FigureCatalogDrawer
+        visible={figureCatalogOpen}
+        onClose={() => setFigureCatalogOpen(false)}
+        sessionId={currentSession?.session_id ?? currentSession?.id ?? null}
+        onInsertPrompt={(prompt) => {
+          const current = useChatStore.getState().inputText;
+          useChatStore.getState().setInputText(current ? current + String.fromCharCode(10, 10) + prompt : prompt);
+          inputRef.current?.focus();
+        }}
+      />
     </div>
   );
 };
