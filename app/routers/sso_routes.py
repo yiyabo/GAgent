@@ -191,8 +191,10 @@ def sync_sso_user_endpoint(
     if not expected_key:
         # Security: fail closed — endpoint disabled unless SSO_USER_SYNC_API_KEY is set.
         raise HTTPException(status_code=503, detail="SSO user sync is not configured")
-    provided = request.headers.get("X-Sso-Sync-Key", "")
+    # 平台侧实际以 X-Api-Key 头发送（ms sso_sync.py），X-Sso-Sync-Key 为本文档约定头，两者都认
+    provided = request.headers.get("X-Sso-Sync-Key", "") or request.headers.get("X-Api-Key", "")
     if not provided or not hmac.compare_digest(provided, expected_key):
+        logger.warning("[SSO] sync key rejected: provided_len=%d prefix=%r", len(provided), provided[:4])
         raise HTTPException(status_code=401, detail="Missing or invalid SSO sync key")
     sso_data = SSOUserData({
         "global_uuid": payload.global_uuid,

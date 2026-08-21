@@ -62,19 +62,24 @@
 
 ---
 
-## 
+## 参考数据库
 
-：
+以下工具需要参考数据库，挂载到容器内 `/work/database`。本地执行前会校验路径存在且非空，
+不可用直接报 `database_unavailable`（不会再由 docker 自动创建空目录后在容器内失败）。
+路径默认为下表，可用对应 env 变量覆盖（数据库体量大，建议放大盘后在 `.env` 配置）：
 
-|  |  |  |  |
-|:---|:---|:---:|:---|
-| bakta | `/home/zczhao/GAgent/data/databases/bio_tools/bakta/db` | ~71 GB | ✅  |
-| checkm | `/home/zczhao/GAgent/data/databases/bio_tools/checkm_data` | ~1.7 GB | ✅  |
-| checkv | `/home/zczhao/GAgent/data/databases/bio_tools/checkv/checkv-db-v1.5` | ~6.4 GB | ✅  |
-| genomad | `/home/zczhao/GAgent/data/databases/bio_tools/genomad/genomad_db` | ~2.7 GB | ✅  |
-| gtdbtk | `/home/zczhao/GAgent/data/databases/bio_tools/gtdbtk/gtdbtk_r220_data` | ~105 GB | ✅  |
-| virsorter2 | `/home/zczhao/GAgent/data/databases/bio_tools/virsorter2/db/db` | ~12 GB | ✅  |
-| iphop 🆕 | `/home/zczhao/GAgent/data/databases/bio_tools/iphop` | ~20 GB | ⚠️  |
+| 工具 | 默认路径 | env 覆盖 | 大小 | 状态 |
+|:---|:---|:---|:---:|:---|
+| bakta | `/home/zczhao/GAgent/data/databases/bio_tools/bakta/db/db` | `BIO_TOOLS_BAKTA_DB_PATH` | ~71 GB | ❌ 缺失 |
+| checkm | `/home/zczhao/GAgent/data/databases/bio_tools/checkm_data` | `BIO_TOOLS_CHECKM_DB_PATH` | ~1.7 GB | ❌ 缺失 |
+| checkv | `/home/zczhao/GAgent/data/databases/bio_tools/checkv/checkv-db-v1.5` | `BIO_TOOLS_CHECKV_DB_PATH` | ~6.4 GB | ❌ 缺失 |
+| genomad | `/home/zczhao/GAgent/data/databases/bio_tools/genomad/genomad_db` | `BIO_TOOLS_GENOMAD_DB_PATH` | ~2.7 GB | ❌ 缺失 |
+| gtdbtk | `/home/zczhao/GAgent/data/databases/bio_tools/gtdbtk/gtdbtk_r220_data` | `BIO_TOOLS_GTDBTK_DB_PATH` | ~105 GB | ❌ 缺失 |
+| virsorter2 | `/home/zczhao/GAgent/data/databases/bio_tools/virsorter2/db/db` | `BIO_TOOLS_VIRSORTER2_DB_PATH` | ~12 GB | ❌ 缺失 |
+| iphop | `/home/zczhao/GAgent/data/databases/bio_tools/iphop/Aug_2023_pub_rw` | `BIO_TOOLS_IPHOP_DB_PATH` | ~20 GB | ❌ 缺失 |
+
+> 2026-08-08 核实：上述数据库在 119 上均已不存在（旧 GAgent 目录只剩 docker 自动创建的空目录）。
+> 重新下载/恢复后放到任意位置，并在 `.env` 设置对应 `BIO_TOOLS_*_DB_PATH` 即可。
 
 ---
 

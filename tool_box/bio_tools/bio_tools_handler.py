@@ -45,6 +45,54 @@ BIO_TOOLS_BACKGROUND_JOB_TYPE = "bio_tools_run"
 BIO_TOOLS_BACKGROUND_MODE = "bio_tools_background"
 JOB_STATUS_OPERATION = "job_status"
 
+# 需要把参考数据库挂载到 /work/database 的工具：tool_name -> (env 覆盖变量, 默认路径)
+# 数据库体量大（见 BIO_TOOLS_TABLE.md），通常放在项目外的大盘上，用对应 env 覆盖
+DATABASE_MOUNT_CONFIG: Dict[str, Tuple[str, str]] = {
+    "checkv": ("BIO_TOOLS_CHECKV_DB_PATH", "/home/zczhao/GAgent/data/databases/bio_tools/checkv/checkv-db-v1.5"),
+    "genomad": ("BIO_TOOLS_GENOMAD_DB_PATH", "/home/zczhao/GAgent/data/databases/bio_tools/genomad/genomad_db"),
+    "virsorter2": ("BIO_TOOLS_VIRSORTER2_DB_PATH", "/home/zczhao/GAgent/data/databases/bio_tools/virsorter2/db/db"),
+    "iphop": ("BIO_TOOLS_IPHOP_DB_PATH", "/home/zczhao/GAgent/data/databases/bio_tools/iphop/Aug_2023_pub_rw"),
+    "checkm": ("BIO_TOOLS_CHECKM_DB_PATH", "/home/zczhao/GAgent/data/databases/bio_tools/checkm_data"),
+    "gtdbtk": ("BIO_TOOLS_GTDBTK_DB_PATH", "/home/zczhao/GAgent/data/databases/bio_tools/gtdbtk/gtdbtk_r220_data"),
+    "bakta": ("BIO_TOOLS_BAKTA_DB_PATH", "/home/zczhao/GAgent/data/databases/bio_tools/bakta/db/db"),
+}
+
+
+class DatabaseUnavailableError(ValueError):
+    """工具的参考数据库在本机不可用（路径不存在、为空或不可读）。"""
+
+
+def _resolve_database_mount(tool_name: str, *, validate: bool) -> Optional[str]:
+    """返回需挂载到 /work/database 的宿主机数据库路径；无需数据库的工具返回 None。
+
+    validate=True（本地执行）时，路径不存在/为空/不可读直接抛 DatabaseUnavailableError，
+    避免 docker 为缺失路径自动创建空目录、让工具在容器内拿到空库才报错。
+    """
+    entry = DATABASE_MOUNT_CONFIG.get(tool_name)
+    if entry is None:
+        return None
+    env_name, default_path = entry
+    db_path = os.getenv(env_name, "").strip() or default_path
+    if not validate:
+        return db_path
+    path_obj = Path(db_path)
+    try:
+        available = path_obj.is_dir() and any(path_obj.iterdir())
+    except OSError as exc:
+        raise DatabaseUnavailableError(
+            f"{tool_name} reference database is not readable at '{db_path}': {exc}. "
+            "Do not retry with different parameters; ask the operator to install the "
+            f"database or point {env_name} to the correct location."
+        ) from exc
+    if not available:
+        raise DatabaseUnavailableError(
+            f"{tool_name} reference database is unavailable: host path '{db_path}' "
+            "does not exist or is empty. Do not retry with different parameters; "
+            f"ask the operator to install the database or set {env_name} to the "
+            "correct location."
+        )
+    return db_path
+
 _CONTROL_PARAM_KEYS = {"background", "async", "detached", "wait", "job_id"}
 _SYSTEM_RESERVED_PARAM_KEYS = {
     "input_file",
@@ -533,6 +581,7 @@ def _build_docker_command_args(
     work_dir_override: Optional[str] = None,
     validate_input_exists: bool = True,
     run_as_user: Optional[Tuple[int, int]] = None,
+    validate_database: bool = True,
 ) -> List[str]:
     """Build docker command as argv list."""
     config = get_tools_config()
@@ -580,39 +629,10 @@ def _build_docker_command_args(
         elif validate_input_exists:
             logger.warning(f"Input file not found: {input_path}")
 
-    #  checkv，
-    if tool_name == "checkv":
-        # CheckV  ()
-        db_path = "/home/zczhao/GAgent/data/databases/bio_tools/checkv/checkv-db-v1.5"
-        mounts.append(f"{db_path}:/work/database")
-
-    #  genomad，
-    if tool_name == "genomad":
-        db_path = "/home/zczhao/GAgent/data/databases/bio_tools/genomad/genomad_db"
-        mounts.append(f"{db_path}:/work/database")
-
-    #  virsorter2，
-    if tool_name == "virsorter2":
-        db_path = "/home/zczhao/GAgent/data/databases/bio_tools/virsorter2/db/db"
-        mounts.append(f"{db_path}:/work/database")
-
-    #  iphop，
-    if tool_name == "iphop":
-        db_path = os.getenv(
-            "BIO_TOOLS_IPHOP_DB_PATH",
-            "/home/zczhao/GAgent/data/databases/bio_tools/iphop/Aug_2023_pub_rw",
-        )
-        mounts.append(f"{db_path}:/work/database")
-
-    #  checkm，
-    if tool_name == "checkm":
-        db_path = "/home/zczhao/GAgent/data/databases/bio_tools/checkm_data"
-        mounts.append(f"{db_path}:/work/database")
-
-    #  gtdbtk，
-    if tool_name == "gtdbtk":
-        db_path = "/home/zczhao/GAgent/data/databases/bio_tools/gtdbtk/gtdbtk_r220_data"
-        mounts.append(f"{db_path}:/work/database")
+    # 需要参考数据库的工具统一挂载到 /work/database（路径可用 env 覆盖，本地执行前校验）
+    db_mount_path = _resolve_database_mount(tool_name, validate=validate_database)
+    if db_mount_path:
+        mounts.append(f"{db_mount_path}:/work/database")
 
     # 
     params = {
@@ -649,11 +669,6 @@ def _build_docker_command_args(
         elif not db_path_obj.is_absolute():
             # ， tool_dir 
             params['db'] = f"/work/{db_path}"
-
-    #  bakta，
-    if tool_name == "bakta":
-        db_path = "/home/zczhao/GAgent/data/databases/bio_tools/bakta/db/db"
-        mounts.append(f"{db_path}:/work/database")
 
     #  minimap2 filter，
     if tool_name == "minimap2" and operation == "filter":
@@ -740,6 +755,7 @@ def build_docker_command(
     work_dir_override: Optional[str] = None,
     validate_input_exists: bool = True,
     run_as_user: Optional[Tuple[int, int]] = None,
+    validate_database: bool = True,
 ) -> str:
     docker_args = _build_docker_command_args(
         tool_name=tool_name,
@@ -750,6 +766,7 @@ def build_docker_command(
         work_dir_override=work_dir_override,
         validate_input_exists=validate_input_exists,
         run_as_user=run_as_user,
+        validate_database=validate_database,
     )
     return shlex.join(docker_args)
 
@@ -1306,6 +1323,7 @@ async def _execute_remote_bio_tool(
         work_dir_override=remote_run_dir,
         validate_input_exists=False,
         run_as_user=(remote_uid, remote_gid),
+        validate_database=False,  # 数据库在远端宿主机上，本机不做存在性校验
     )
     docker_cmd = shlex.join(docker_args)
 
@@ -1926,6 +1944,15 @@ async def bio_tools_handler(
                     tool_name, operation, requires_input=op_requires_input,
                 ),
             },
+        )
+    except DatabaseUnavailableError as e:
+        return _build_bio_tools_error(
+            tool_name=tool_name,
+            operation=operation,
+            error=str(e),
+            error_code="database_unavailable",
+            error_stage="database_validation",
+            no_claude_fallback=True,
         )
     except ValueError as e:
         return _build_bio_tools_error(

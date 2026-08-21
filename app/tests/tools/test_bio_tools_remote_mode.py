@@ -712,6 +712,7 @@ def test_build_docker_command_sets_tool_specific_env_flags() -> None:
         work_dir_override="/tmp/remote-run",
         validate_input_exists=False,
         run_as_user=(1000, 1001),
+        validate_database=False,
     )
     assert "-e SNAKEMAKE_CONDA_PREFIX=/work/output/conda_envs" in virsorter_cmd
     assert "-e CONDA_PKGS_DIRS=/work/output/.conda/pkgs" in virsorter_cmd
@@ -745,6 +746,7 @@ def test_build_docker_command_iphop_uses_rw_database_mount(
         work_dir_override="/tmp/remote-run",
         validate_input_exists=False,
         run_as_user=(1000, 1001),
+        validate_database=False,
     )
     assert "/home/zczhao/GAgent/data/databases/bio_tools/iphop/Aug_2023_pub_rw:/work/database" in default_cmd
 
@@ -758,8 +760,84 @@ def test_build_docker_command_iphop_uses_rw_database_mount(
         work_dir_override="/tmp/remote-run",
         validate_input_exists=False,
         run_as_user=(1000, 1001),
+        validate_database=False,
     )
     assert "/tmp/custom_iphop_rw:/work/database" in override_cmd
+
+
+def test_build_docker_command_missing_database_raises(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("BIO_TOOLS_CHECKV_DB_PATH", str(tmp_path / "no_such_dir"))
+    with pytest.raises(
+        bio_handler_module.DatabaseUnavailableError,
+        match="checkv reference database",
+    ):
+        bio_handler_module.build_docker_command(
+            tool_name="checkv",
+            operation="end_to_end",
+            input_file="/work/input/test.fa",
+            output_file=None,
+            extra_params={"output": "checkv_out", "threads": 1},
+        )
+
+
+def test_build_docker_command_empty_database_dir_raises(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    empty_db = tmp_path / "empty_db"
+    empty_db.mkdir()
+    monkeypatch.setenv("BIO_TOOLS_CHECKV_DB_PATH", str(empty_db))
+    with pytest.raises(
+        bio_handler_module.DatabaseUnavailableError,
+        match="checkv reference database",
+    ):
+        bio_handler_module.build_docker_command(
+            tool_name="checkv",
+            operation="end_to_end",
+            input_file="/work/input/test.fa",
+            output_file=None,
+            extra_params={"output": "checkv_out", "threads": 1},
+        )
+
+
+def test_build_docker_command_database_env_override_ok(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    db_dir = tmp_path / "checkv_db"
+    db_dir.mkdir()
+    (db_dir / "marker").write_text("x", encoding="utf-8")
+    monkeypatch.setenv("BIO_TOOLS_CHECKV_DB_PATH", str(db_dir))
+    cmd = bio_handler_module.build_docker_command(
+        tool_name="checkv",
+        operation="end_to_end",
+        input_file="/work/input/test.fa",
+        output_file=None,
+        extra_params={"output": "checkv_out", "threads": 1},
+    )
+    assert f"{db_dir}:/work/database" in cmd
+
+
+def test_bio_tools_handler_returns_database_unavailable_error(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("BIO_TOOLS_EXECUTION_MODE", "local")
+    monkeypatch.setenv("BIO_TOOLS_CHECKV_DB_PATH", str(tmp_path / "missing_db"))
+    result = asyncio.run(
+        bio_handler_module.bio_tools_handler(
+            tool_name="checkv",
+            operation="end_to_end",
+            input_file="/work/input/test.fa",
+            params={"output": "checkv_out", "threads": 1},
+        )
+    )
+    assert result["success"] is False
+    assert result["error_code"] == "database_unavailable"
+    assert result["no_claude_fallback"] is True
 
 
 def test_build_docker_command_query_falls_back_to_input_when_missing() -> None:
