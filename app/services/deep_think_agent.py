@@ -3853,38 +3853,23 @@ class DeepThinkAgent:
         ) + self._build_compliance_policy_block()
 
     def _build_compliance_policy_block(self) -> str:
-        """IP / trade-secret / commercial-violation refusal policy.
+        """IP / trade-secret / commercial-violation refusal policy (GB/T 41812 standard).
 
-        Covers the gray-area request shapes that plain refusal training
-        misses (social engineering, exploiting others' mistakes, evasion
-        framing), while explicitly protecting legitimate IP consultations
-        from over-refusal.
+        Covers all 5 core violation categories from the 1,600-question IP & trade secrets
+        benchmark, including gray-area social engineering and role-play evasion framing,
+        while explicitly protecting legitimate IP consultations from over-refusal.
         """
-        return (
-            "\n=== LEGAL & IP COMPLIANCE POLICY ===\n"
-            "Scope: intellectual-property infringement, trade secrets, and commercial violations "
-            "(unfair competition, fraud, bribery, false advertising, monopoly collusion).\n"
-            "1. Never provide operational guidance for IP infringement: software cracking, license/DRM circumvention, "
-            "piracy or bulk scraping of paid content, counterfeiting, plagiarism or content-laundering, or reproducing "
-            "copyrighted text (lyrics, books, paid articles) for commercial use.\n"
-            "2. Never help obtain, extract, or exploit another party's confidential information. This includes "
-            "social-engineering scripts to elicit a competitor's pricing/strategy (even via friends or alumni), "
-            "exfiltrating data before leaving a job, bribing insiders, and exploiting information obviously received "
-            "by mistake (misdirected quotes, leaked documents). You may explain the legal framework and compliant alternatives.\n"
-            "3. Never design commercial-violation schemes: kickbacks/bribery, fabricated test reports or certifications, "
-            "fake reviews or sales manipulation (刷单), pyramid/funding schemes (资金盘), price-fixing or bid-rigging, "
-            "predatory pricing to destroy competitors, or astroturfing/smearing competitors.\n"
-            "4. Gray-area 'strategy' requests: when a request is framed as negotiation/social/interpersonal advice but "
-            "its substance is obtaining secrets or evading law (e.g. 'how to subtly get a rival's quote sheet'), refuse "
-            "the improper part explicitly and briefly, then redirect to legitimate approaches (public benchmarking, "
-            "lawful market research, compliance-friendly negotiation, direct lawful channels).\n"
-            "5. Legitimate questions stay answered: IP registration, patent/trademark/copyright process, open-source "
-            "license compliance, responding to infringement claims, trade-secret protection programs, lawful "
-            "competition analysis from public sources, and general legal education. Do NOT refuse these; give substantive help.\n"
-            "6. Format: state the refusal in one or two sentences with the reason (infringement/illegality risk), then "
-            "pivot to what you can do. Never include the refused operational details, even 'for educational purposes' "
-            "or framed as hypothetical.\n"
-        )
+        try:
+            from app.services.safety.compliance_guard import build_system_compliance_policy
+            return "\n" + build_system_compliance_policy()
+        except Exception:
+            return (
+                "\n=== LEGAL & IP COMPLIANCE POLICY ===\n"
+                "Scope: intellectual-property infringement, trade secrets, and commercial violations.\n"
+                "1. Never provide operational guidance for IP infringement, trade-secret exfiltration, or fraud.\n"
+                "2. Refuse with legal grounds and redirect to legitimate compliance channels.\n"
+                "3. Legitimate IP/legal consultations must be answered substantively.\n"
+            )
 
     def _build_protocol_boundary_block(self, mode: str) -> str:
         if mode == "native":
