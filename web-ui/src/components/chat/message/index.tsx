@@ -94,12 +94,7 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
     () => collectArtifactGallery((metadata as any)?.artifact_gallery),
     [metadata],
   );
-  const showInlineArtifactGallery =
-    artifactGallery.length > 0 &&
-    Boolean(
-      (metadata as any)?.show_inline_artifacts === true ||
-      (metadata as any)?.show_artifact_gallery_inline === true
-    );
+  const showInlineArtifactGallery = artifactGallery.length > 0;
   const normalizedAssistantContent = useMemo(
     () => (type === 'assistant' ? extractLlmReplyMessage(content) : content),
     [type, content],

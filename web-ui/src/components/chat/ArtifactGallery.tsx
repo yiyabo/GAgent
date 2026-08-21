@@ -32,7 +32,7 @@ export const ArtifactGallery: React.FC<ArtifactGalleryProps> = ({ items, session
       <div
         style={{
           display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
           gap: 10,
         }}
       >
