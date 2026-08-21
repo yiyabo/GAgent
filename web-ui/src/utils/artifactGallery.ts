@@ -39,7 +39,9 @@ export const collectArtifactGallery = (value: any): ArtifactGalleryItem[] => {
     if (!normalized) {
       continue;
     }
-    const key = `${normalized.origin ?? 'artifact'}::${normalized.path}`;
+    // Normalize path to prevent duplicate raw_files vs root duplicates
+    const cleanPath = normalized.path.replace(/^raw_files\//, '');
+    const key = `${normalized.origin ?? 'artifact'}::${cleanPath}`;
     if (seen.has(key)) {
       continue;
     }
