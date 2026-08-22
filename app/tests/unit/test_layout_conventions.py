@@ -11,6 +11,7 @@ _ALLOWED_UNIT_PREFIXES = {
     "audit",
     "auth",
     "command",
+    "compliance",
     "context",
     "conversation",
     "executor",
