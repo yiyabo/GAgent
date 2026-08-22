@@ -32,6 +32,7 @@ import { useMessages } from '@/hooks/useMessages';
 import ChatMessage from '@components/chat/ChatMessage';
 import FileUploadButton from '@components/chat/FileUploadButton';
 import UploadedFilesList from '@components/chat/UploadedFilesList';
+import HeroWelcome from '@components/chat/HeroWelcome';
 import { shouldRenderWelcomeState } from './chatMainAreaState';
 import { shallow } from 'zustand/shallow';
 import type { ChatMessage as ChatMessageType, Memory } from '@/types';
@@ -85,7 +86,7 @@ function extractPasteImages(clipboardData: DataTransfer): File[] {
 }
 
 // ---------------------------------------------------------------------------
-// ChatMessageList (unchanged)
+// ChatMessageList
 // ---------------------------------------------------------------------------
 
 interface ChatMessageListProps {
@@ -120,7 +121,7 @@ const ChatMessageList: React.FC<ChatMessageListProps> = React.memo(
     const listRef = useRef<ListRef>(null);
     const pendingAdjustRef = useRef<{ scrollTop: number; scrollHeight: number } | null>(null);
     const loadMoreLockRef = useRef(false);
-    const stickyBottomRef = useRef(true); // Track whether we should stay pinned to bottom
+    const stickyBottomRef = useRef(true);
     const listData = useMemo<ChatListItem[]>(() => {
       if (relevantMemories.length === 0) {
         return messages;
@@ -156,35 +157,27 @@ const ChatMessageList: React.FC<ChatMessageListProps> = React.memo(
       );
     }, [sessionId]);
 
-    // Aggressively scroll to bottom: index-based + native DOM, repeated with delays
-    // to handle rc-virtual-list's unreliable initial positioning and async image loading.
     const scrollTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
 
     const forceScrollToBottom = useCallback(() => {
-      // Clear any pending scroll timers to avoid stacking.
       scrollTimersRef.current.forEach(clearTimeout);
       scrollTimersRef.current = [];
 
       const doScroll = () => {
         if (!listRef.current || !stickyBottomRef.current) return;
-        // Index-based: tells VirtualList to render items near the end.
         listRef.current.scrollTo({ index: listData.length - 1, align: 'bottom' });
-        // Native DOM: scrolls to true bottom regardless of estimation.
         const el = listRef.current.nativeElement;
         if (el) el.scrollTop = el.scrollHeight;
       };
 
       doScroll();
-      // Retry at increasing delays to catch VirtualList measurement + image loading.
       for (const delay of [50, 150, 400, 1000]) {
         scrollTimersRef.current.push(setTimeout(doScroll, delay));
       }
     }, [listData.length]);
 
-    // Clean up timers on unmount.
     useEffect(() => () => scrollTimersRef.current.forEach(clearTimeout), []);
 
-    // Trigger scroll-to-bottom when messages change or history finishes loading.
     useEffect(() => {
       if (!listRef.current || listData.length === 0) return;
       if (pendingAdjustRef.current || isHistoryLoading) return;
@@ -212,7 +205,6 @@ const ChatMessageList: React.FC<ChatMessageListProps> = React.memo(
     const handleScroll = useCallback(
       (event: React.UIEvent<HTMLElement>) => {
         const target = event.currentTarget;
-        // Track whether user is near the bottom (within 150px).
         const distanceToBottom = target.scrollHeight - target.scrollTop - target.clientHeight;
         stickyBottomRef.current = distanceToBottom < 150;
 
@@ -311,7 +303,6 @@ const ChatMainArea: React.FC = () => {
   const selectedTask = useTasksStore((s) => s.selectedTask);
   const currentPlan = useTasksStore((s) => s.currentPlan);
   const [inputText, setInputText] = useState('');
-  const [deepThinkEnabled, setDeepThinkEnabled] = useState(false);
   const [steerSending, setSteerSending] = useState(false);
 
   const activeRunId = useChatStore((s) => {
@@ -353,6 +344,7 @@ const ChatMainArea: React.FC = () => {
     });
     return [...allHistoryMessages, ...activeOnly];
   }, [allHistoryMessages, messages]);
+
   const showWelcomeState = shouldRenderWelcomeState(
     combinedMessages.length,
     historyLoading || isHistoryLoadingData
@@ -494,8 +486,8 @@ const ChatMainArea: React.FC = () => {
 
   // ---- Message handlers ----
 
-  const handleSendMessage = async () => {
-    const draft = inputText.trim();
+  const executeSendMessage = async (textToSend: string, mode?: string) => {
+    const draft = textToSend.trim();
     if (!draft) return;
 
     if (isProcessing && activeRunId) {
@@ -531,14 +523,13 @@ const ChatMainArea: React.FC = () => {
       task_id: selectedTask?.id ?? undefined,
       plan_title: currentPlan || currentPlanTitle || undefined,
       task_name: selectedTask?.name ?? currentTaskName ?? undefined,
+      mode: mode || 'standard',
     };
-
-    let messageToSend = draft;
 
     setInputText('');
     inputRef.current?.focus();
     try {
-      await sendMessage(messageToSend, metadata);
+      await sendMessage(draft, metadata);
     } catch (err) {
       console.error('[ChatMainArea] Failed to send message:', err);
       setInputText(draft);
@@ -546,7 +537,9 @@ const ChatMainArea: React.FC = () => {
     }
   };
 
-
+  const handleSendMessage = async () => {
+    await executeSendMessage(inputText);
+  };
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -554,88 +547,6 @@ const ChatMainArea: React.FC = () => {
       handleSendMessage();
     }
   };
-
-  const handleLoadMoreHistory = useCallback(async () => {
-    if (!currentSession || !historyHasMore || historyLoading) {
-      return;
-    }
-    const sessionId = currentSession.session_id ?? currentSession.id;
-    await loadChatHistory(sessionId, { beforeId: historyBeforeId, append: true });
-  }, [currentSession, historyHasMore, historyLoading, historyBeforeId, loadChatHistory]);
-
-  // Quick actions.
-  const quickActions = [
-    { text: 'Create a new plan', action: () => setInputText('Help me create a new plan') },
-    { text: 'View task status', action: () => setInputText('Show the status of all current tasks') },
-    { text: 'System help', action: () => setInputText('I need help. Tell me what you can do') },
-  ];
-
-  // Render welcome view.
-  const renderWelcome = () => (
-    <div style={{
-      display: 'flex',
-      flexDirection: 'column',
-      alignItems: 'center',
-      justifyContent: 'center',
-      height: '100%',
-      padding: '0 40px',
-      textAlign: 'center',
-    }}>
-      <Avatar
-        size={64}
-        icon={<RobotOutlined />}
-        style={{
-          background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-          marginBottom: 16,
-        }}
-      />
-
-      <Title level={3} style={{ marginBottom: 12, color: '#1f2937' }}>
-        AI Intelligent Task Orchestration Assistant
-      </Title>
-
-      <Text
-        style={{
-          fontSize: 14,
-          color: '#6b7280',
-          marginBottom: 24,
-          lineHeight: 1.5,
-        }}
-      >
-        I can help you create plans, decompose tasks, and orchestrate execution to make complex projects simpler and more efficient.
-      </Text>
-
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 10, minWidth: 280 }}>
-        {quickActions.map((action, index) => (
-          <Button
-            key={index}
-            size="middle"
-            style={{
-              height: 40,
-              borderRadius: 8,
-              border: '1px solid #e5e7eb',
-              background: 'white',
-              boxShadow: '0 1px 2px rgba(0, 0, 0, 0.05)',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'flex-start',
-              paddingLeft: 16,
-            }}
-            onClick={action.action}
-          >
-            <MessageOutlined style={{ marginRight: 10, color: '#6366f1', fontSize: 14 }} />
-            <span style={{ color: '#374151', fontWeight: 500, fontSize: 14 }}>{action.text}</span>
-          </Button>
-        ))}
-      </div>
-
-      <Divider style={{ margin: '24px 0', width: '100%' }} />
-
-      <Text type="secondary" style={{ fontSize: 13 }}>
-        You can describe your needs in natural language and I will understand and help execute.
-      </Text>
-    </div>
-  );
 
   return (
     <div
@@ -660,70 +571,75 @@ const ChatMainArea: React.FC = () => {
               松开以上传文件
             </div>
             <div className="chat-drop-overlay-hint">
-              支持图片、PDF、文档、生信数据等文件
+              支持图片、PDF、FASTA、PDB、生信数据等文件
             </div>
           </div>
         </div>
       )}
 
-      {/* Header */}
-      <div style={{
-        padding: '12px 20px',
-        borderBottom: '1px solid var(--border-color)',
-        background: 'var(--bg-primary)',
-        flexShrink: 0,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <Avatar
-            size={28}
-            icon={<RobotOutlined />}
-            style={{
-              background: 'var(--primary-gradient)',
-              borderRadius: 6,
-            }}
-          />
-          <div>
-            <Text strong style={{ fontSize: 14, color: 'var(--text-primary)' }}>
-              {currentSession?.title || 'AI Task Orchestration Assistant'}
-            </Text>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 2 }}>
-              <Text type="secondary" style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
-                Online
-              </Text>
-            </div>
-          </div>
-        </div>
-
-        {/* Controls */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-          <Tooltip title={memoryEnabled ? "Memory enabled" : "Memory disabled"}>
-            <Switch
-              checked={memoryEnabled}
-              onChange={toggleMemory}
-              size="small"
+      {/* Header - only show session title bar if we have active chat messages */}
+      {!showWelcomeState && (
+        <div style={{
+          padding: '12px 20px',
+          borderBottom: '1px solid var(--border-color)',
+          background: 'var(--bg-primary)',
+          flexShrink: 0,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <Avatar
+              size={28}
+              icon={<RobotOutlined />}
               style={{
-                background: memoryEnabled ? 'var(--primary-color)' : undefined,
+                background: 'var(--primary-gradient)',
+                borderRadius: 6,
               }}
             />
-          </Tooltip>
-        </div>
-      </div>
+            <div>
+              <Text strong style={{ fontSize: 14, color: 'var(--text-primary)' }}>
+                {currentSession?.title || 'Phage-Agent Assistant'}
+              </Text>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 2 }}>
+                <Text type="secondary" style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+                  Online
+                </Text>
+              </div>
+            </div>
+          </div>
 
-      {/* Message area */}
+          {/* Controls */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+            <Tooltip title={memoryEnabled ? "Memory enabled" : "Memory disabled"}>
+              <Switch
+                checked={memoryEnabled}
+                onChange={toggleMemory}
+                size="small"
+                style={{
+                  background: memoryEnabled ? 'var(--primary-color)' : undefined,
+                }}
+              />
+            </Tooltip>
+          </div>
+        </div>
+      )}
+
+      {/* Message / Hero area */}
       <div
         ref={messageContainerRef}
         style={{
           flex: 1,
-          overflow: 'hidden',
+          overflow: showWelcomeState ? 'auto' : 'hidden',
           background: 'var(--bg-primary)',
-          padding: '16px 0',
+          padding: showWelcomeState ? '0' : '16px 0',
         }}
       >
         {showWelcomeState ? (
-          renderWelcome()
+          <HeroWelcome
+            onSendMessage={executeSendMessage}
+            isProcessing={isProcessing}
+          />
         ) : (
           <ChatMessageList
             messages={combinedMessages}
@@ -738,101 +654,103 @@ const ChatMainArea: React.FC = () => {
         )}
       </div>
 
-      {/* Input area */}
-      <div style={{
-        padding: '16px 24px 20px',
-        background: 'var(--bg-primary)',
-        borderTop: '1px solid var(--border-color)',
-        flexShrink: 0,
-      }}>
-        <div style={{ maxWidth: 920, margin: '0 auto' }}>
-          {/* Uploaded files list */}
-          <UploadedFilesList />
+      {/* Bottom Sticky Input area - only rendered once chat messages are active */}
+      {!showWelcomeState && (
+        <div style={{
+          padding: '16px 24px 20px',
+          background: 'var(--bg-primary)',
+          borderTop: '1px solid var(--border-color)',
+          flexShrink: 0,
+        }}>
+          <div style={{ maxWidth: 920, margin: '0 auto' }}>
+            {/* Uploaded files list */}
+            <UploadedFilesList />
 
-          {/* Paste uploading indicator */}
-          {pasteUploading && (
-            <div style={{ padding: '4px 0', fontSize: 12, color: 'var(--primary-color)' }}>
-              <FileImageOutlined style={{ marginRight: 4 }} />
-              正在上传粘贴的图片...
-            </div>
-          )}
+            {/* Paste uploading indicator */}
+            {pasteUploading && (
+              <div style={{ padding: '4px 0', fontSize: 12, color: 'var(--primary-color)' }}>
+                <FileImageOutlined style={{ marginRight: 4 }} />
+                正在上传粘贴的图片...
+              </div>
+            )}
 
-          <div
-            style={{
-              display: 'flex',
-              gap: 12,
-              alignItems: 'stretch',
-            }}
-          >
-            {/* Left-side upload controls */}
-            <div style={{
-              display: 'flex',
-              flexDirection: 'row',
-              gap: 8,
-              alignItems: 'center',
-              background: 'var(--bg-tertiary)',
-              padding: '6px 10px',
-              borderRadius: 'var(--radius-md)',
-            }}>
-              <FileUploadButton size="small" />
-            </div>
+            <div
+              style={{
+                display: 'flex',
+                gap: 12,
+                alignItems: 'stretch',
+              }}
+            >
+              {/* Left-side upload controls */}
+              <div style={{
+                display: 'flex',
+                flexDirection: 'row',
+                gap: 8,
+                alignItems: 'center',
+                background: 'var(--bg-tertiary)',
+                padding: '6px 10px',
+                borderRadius: 'var(--radius-md)',
+              }}>
+                <FileUploadButton size="small" />
+              </div>
 
-            {/* Input box */}
-            <div style={{
-              flex: 1,
-              background: '#FFFFFF',
-              borderRadius: 'var(--radius-xl)',
-              padding: '6px',
-              display: 'flex',
-              alignItems: 'flex-end',
-              border: '2px solid var(--border-color)',
-              boxShadow: '0 8px 32px -12px rgba(0, 0, 0, 0.03)',
-              transition: 'var(--transition-normal)',
-            }}>
-              <TextArea
-                ref={inputRef}
-                value={inputText}
-                onChange={(e) => setInputText(e.target.value)}
-                onKeyPress={handleKeyPress}
-                onPaste={handlePaste}
-                placeholder={isProcessing && activeRunId
-                  ? "输入引导内容，Agent 将在下一步参考..."
-                  : "输入消息... (可粘贴图片 / 拖放文件上传)"}
-                autoSize={{ minRows: 1, maxRows: 5 }}
-                disabled={false}
-                style={{
-                  resize: 'none',
-                  border: 'none',
-                  background: 'transparent',
-                  fontSize: 15,
-                  lineHeight: 1.7,
-                  letterSpacing: '0.018em',
-                  outline: 'none',
-                  boxShadow: 'none',
-                }}
-              />
-              <Button
-                type="primary"
-                icon={<SendOutlined />}
-                onClick={handleSendMessage}
-                disabled={!inputText.trim() || steerSending || (isProcessing && !activeRunId)}
-                loading={isProcessing && !activeRunId ? true : steerSending}
-                style={{
-                  height: 36,
-                  borderRadius: 'var(--radius-md)',
-                  minWidth: 80,
-                  background: isProcessing && activeRunId
-                    ? 'var(--accent-color, #e8854a)'
-                    : 'var(--primary-color)',
-                  border: 'none',
-                }}
-              >
-                {isProcessing && activeRunId ? '发送引导' : 'Send'}
-              </Button>
+              {/* Input box */}
+              <div style={{
+                flex: 1,
+                background: '#FFFFFF',
+                borderRadius: 'var(--radius-xl)',
+                padding: '6px',
+                display: 'flex',
+                alignItems: 'flex-end',
+                border: '2px solid var(--border-color)',
+                boxShadow: '0 8px 32px -12px rgba(0, 0, 0, 0.03)',
+                transition: 'var(--transition-normal)',
+              }}>
+                <TextArea
+                  ref={inputRef}
+                  value={inputText}
+                  onChange={(e) => setInputText(e.target.value)}
+                  onKeyPress={handleKeyPress}
+                  onPaste={handlePaste}
+                  placeholder={isProcessing && activeRunId
+                    ? "输入引导内容，Agent 将在下一步参考..."
+                    : "输入消息... (可粘贴图片 / 拖放文件上传)"}
+                  autoSize={{ minRows: 1, maxRows: 5 }}
+                  disabled={false}
+                  style={{
+                    resize: 'none',
+                    border: 'none',
+                    background: 'transparent',
+                    fontSize: 15,
+                    lineHeight: 1.7,
+                    letterSpacing: '0.018em',
+                    outline: 'none',
+                    boxShadow: 'none',
+                  }}
+                />
+                <Button
+                  type="primary"
+                  icon={<SendOutlined />}
+                  onClick={handleSendMessage}
+                  disabled={!inputText.trim() || steerSending || (isProcessing && !activeRunId)}
+                  loading={isProcessing && !activeRunId ? true : steerSending}
+                  style={{
+                    height: 36,
+                    borderRadius: 'var(--radius-md)',
+                    minWidth: 80,
+                    background: isProcessing && activeRunId
+                      ? 'var(--accent-color, #e8854a)'
+                      : 'var(--primary-color)',
+                    border: 'none',
+                  }}
+                >
+                  {isProcessing && activeRunId ? '发送引导' : 'Send'}
+                </Button>
+              </div>
             </div>
           </div>
         </div>
-      </div>
+      )}
     </div>
   );
 };

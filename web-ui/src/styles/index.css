@@ -1028,3 +1028,542 @@ pre, code {
 .dag-sidebar-tabs .ant-tabs-tab-btn {
   white-space: nowrap;
 }
+
+/* ==========================================================================
+   Biomni-Style Landing & Hero Welcome Interface
+   ========================================================================== */
+
+.hero-welcome-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  min-height: 100%;
+  padding: 40px 24px 60px;
+  max-width: 860px;
+  margin: 0 auto;
+  box-sizing: border-box;
+}
+
+.hero-welcome-header {
+  width: 100%;
+  margin-bottom: 24px;
+  text-align: left;
+}
+
+.hero-welcome-title-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.hero-welcome-logo {
+  font-size: 28px;
+  line-height: 1;
+}
+
+.hero-welcome-title {
+  font-size: 28px;
+  font-weight: 700;
+  color: var(--text-primary, #0f172a);
+  margin: 0;
+  letter-spacing: -0.02em;
+}
+
+.hero-welcome-subtitle {
+  font-size: 15px;
+  color: var(--text-secondary, #475569);
+  margin: 0;
+  line-height: 1.5;
+  font-weight: 400;
+}
+
+.hero-prompt-card {
+  width: 100%;
+  background: #ffffff;
+  border: 1.5px solid var(--border-color, #e2e8f0);
+  border-radius: 20px;
+  padding: 18px 20px 14px;
+  box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.05), 0 2px 6px -1px rgba(0, 0, 0, 0.02);
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  box-sizing: border-box;
+}
+
+.hero-prompt-card:focus-within,
+.hero-prompt-card:hover {
+  border-color: #cbd5e1;
+  box-shadow: 0 16px 36px -12px rgba(0, 0, 0, 0.08);
+}
+
+.hero-prompt-files {
+  margin-bottom: 8px;
+}
+
+.hero-prompt-textarea-wrapper {
+  width: 100%;
+}
+
+.hero-prompt-textarea {
+  font-size: 15px !important;
+  border: none !important;
+  box-shadow: none !important;
+  resize: none !important;
+  color: var(--text-primary, #0f172a) !important;
+  padding: 0 0 12px 0 !important;
+  background: transparent !important;
+  line-height: 1.6 !important;
+}
+
+.hero-prompt-textarea::placeholder {
+  color: var(--text-tertiary, #94a3b8) !important;
+}
+
+.hero-prompt-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: 10px;
+  border-top: 1px solid #f1f5f9;
+  margin-top: 4px;
+}
+
+.hero-prompt-toolbar-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.hero-prompt-toggle-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: #f8fafc;
+  padding: 3px 8px;
+  border-radius: 12px;
+  border: 1px solid #e2e8f0;
+  font-size: 12px;
+}
+
+.hero-toggle-label {
+  color: #475569;
+  font-weight: 500;
+  font-size: 12px;
+}
+
+.hero-toggle-help {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #e2e8f0;
+  color: #64748b;
+  font-size: 10px;
+  font-weight: bold;
+  cursor: help;
+}
+
+.hero-prompt-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.hero-mode-dropdown-btn {
+  border-radius: 14px !important;
+  border: 1px solid #e2e8f0 !important;
+  background: #f8fafc !important;
+  color: #334155 !important;
+  font-size: 12px !important;
+  font-weight: 500 !important;
+  height: 32px !important;
+  padding: 0 12px !important;
+}
+
+.hero-send-btn {
+  width: 34px !important;
+  height: 34px !important;
+  min-width: 34px !important;
+  background: #18181b !important;
+  border: none !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15) !important;
+}
+
+.hero-send-btn:hover {
+  background: #27272a !important;
+}
+
+.hero-welcome-footnote {
+  margin-top: 10px;
+  width: 100%;
+  text-align: right;
+  font-size: 12px;
+  color: #94a3b8;
+}
+
+.hero-footnote-link {
+  color: #64748b;
+  border-bottom: 1px dotted #cbd5e1;
+  cursor: pointer;
+}
+
+.hero-capabilities-section {
+  width: 100%;
+  margin-top: 36px;
+}
+
+.hero-capabilities-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  margin-bottom: 14px;
+  user-select: none;
+}
+
+.hero-capabilities-arrow {
+  font-size: 14px;
+  color: #94a3b8;
+  font-weight: bold;
+  transition: transform 0.2s ease;
+  display: inline-block;
+}
+
+.hero-capabilities-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: #94a3b8;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.hero-starter-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+}
+
+@media (max-width: 768px) {
+  .hero-starter-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.hero-starter-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 16px;
+  background: #ffffff;
+  border: 1px solid var(--border-color, #e2e8f0);
+  border-radius: 14px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.hero-starter-card:hover {
+  border-color: #cbd5e1;
+  transform: translateY(-1px);
+  box-shadow: 0 6px 16px -4px rgba(0, 0, 0, 0.05);
+}
+
+.hero-starter-icon {
+  font-size: 18px;
+  padding: 6px;
+  background: #f8fafc;
+  border-radius: 8px;
+  flex-shrink: 0;
+}
+
+.hero-starter-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.hero-starter-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: #1e293b;
+  margin-bottom: 3px;
+}
+
+.hero-starter-desc {
+  font-size: 12px;
+  color: #64748b;
+  line-height: 1.4;
+}
+
+/* ==========================================================================
+   Biomni-Style Sidebar
+   ========================================================================== */
+
+.biomni-sidebar-container {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-primary);
+  padding: 12px 10px;
+  font-family: inherit;
+  box-sizing: border-box;
+}
+
+.biomni-sidebar-project-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 8px 12px;
+  border-bottom: 1px solid var(--border-color);
+  margin-bottom: 10px;
+}
+
+.biomni-project-tag {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-tertiary, #94a3b8);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  display: block;
+  margin-bottom: 2px;
+}
+
+.biomni-project-title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.biomni-project-name {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.biomni-project-chevron {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.biomni-project-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.biomni-icon-btn {
+  color: var(--text-secondary) !important;
+  width: 28px !important;
+  height: 28px !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  border-radius: 6px !important;
+}
+
+.biomni-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 8px;
+  margin-bottom: 4px;
+}
+
+.biomni-section-title {
+  display: flex;
+  align-items: center;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.biomni-section-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.biomni-new-task-btn {
+  font-size: 12px !important;
+  color: var(--text-primary) !important;
+  font-weight: 500 !important;
+  height: 26px !important;
+  padding: 0 6px !important;
+  border-radius: 6px !important;
+}
+
+.biomni-action-icon-btn {
+  color: var(--text-secondary) !important;
+  font-size: 12px !important;
+  width: 26px !important;
+  height: 26px !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  border-radius: 6px !important;
+}
+
+.biomni-search-bar {
+  padding: 4px 8px 8px;
+}
+
+.biomni-session-list-scroll {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 2px;
+}
+
+.biomni-empty-sessions {
+  padding: 24px 8px;
+  text-align: center;
+}
+
+.biomni-group-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 8px;
+  margin-top: 4px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.biomni-group-title {
+  display: flex;
+  align-items: center;
+}
+
+.biomni-group-count {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-tertiary);
+  background: var(--bg-tertiary);
+  padding: 1px 6px;
+  border-radius: 10px;
+}
+
+.biomni-session-item {
+  display: flex;
+  align-items: center;
+  padding: 7px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  margin-bottom: 2px;
+  gap: 8px;
+  position: relative;
+}
+
+.biomni-session-item:hover {
+  background: var(--bg-tertiary);
+}
+
+.biomni-session-item.selected {
+  background: #f1f5f9;
+  font-weight: 500;
+}
+
+.biomni-session-bullet {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  flex-shrink: 0;
+}
+
+.biomni-bullet-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  border: 1.5px solid #94a3b8;
+  display: inline-block;
+  transition: all 0.15s ease;
+}
+
+.biomni-session-item.selected .biomni-bullet-dot {
+  border-color: var(--primary-color);
+  background: var(--primary-color);
+}
+
+.biomni-session-title-wrap {
+  flex: 1;
+  min-width: 0;
+}
+
+.biomni-session-title {
+  font-size: 13px !important;
+  color: var(--text-primary) !important;
+  line-height: 1.4 !important;
+  display: block;
+}
+
+.biomni-session-meta {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.biomni-session-time {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+.biomni-session-more-btn {
+  opacity: 0;
+  transition: opacity 0.15s;
+  width: 22px !important;
+  height: 22px !important;
+  padding: 0 !important;
+}
+
+.biomni-session-item:hover .biomni-session-more-btn {
+  opacity: 0.8;
+}
+
+.biomni-group-divider {
+  height: 1px;
+  background: var(--border-color);
+  margin: 8px 6px;
+}
+
+.biomni-drive-section {
+  border-top: 1px solid var(--border-color);
+  padding-top: 10px;
+  margin-top: 6px;
+  flex-shrink: 0;
+}
+
+.biomni-drive-header {
+  margin-bottom: 4px;
+}
+
+.biomni-drive-empty {
+  padding: 10px 8px;
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+
+.biomni-drive-file-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 4px 8px;
+}
+
+.biomni-drive-file-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  background: var(--bg-tertiary);
+}
