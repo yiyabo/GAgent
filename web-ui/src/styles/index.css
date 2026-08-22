@@ -958,10 +958,26 @@ pre, code {
   min-width: 0;
 }
 
+.artifacts-panel-segmented .ant-segmented-group {
+  align-items: center;
+}
+
+.artifacts-panel-segmented .ant-segmented-item {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .artifacts-panel-segmented .ant-segmented-item-label {
+  display: flex;
+  align-items: center;
+  justify-content: center;
   font-size: 12px;
+  font-weight: 500;
   font-family: inherit;
-  line-height: 1.2;
+  line-height: normal;
+  min-height: 28px;
+  padding: 0 12px;
 }
 
 .artifacts-panel-raw-filter {
