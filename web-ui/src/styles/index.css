@@ -1330,18 +1330,12 @@ pre, code {
   display: flex;
   align-items: center;
   gap: 6px;
-  cursor: pointer;
 }
 
 .biomni-project-name {
   font-size: 16px;
   font-weight: 700;
   color: var(--text-primary);
-}
-
-.biomni-project-chevron {
-  font-size: 11px;
-  color: var(--text-secondary);
 }
 
 .biomni-project-actions {
@@ -1374,7 +1368,6 @@ pre, code {
   font-size: 13px;
   font-weight: 600;
   color: var(--text-primary);
-  cursor: pointer;
 }
 
 .biomni-section-actions {

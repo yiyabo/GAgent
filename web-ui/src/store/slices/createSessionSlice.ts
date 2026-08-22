@@ -62,7 +62,7 @@ export const createSessionSlice: ChatSliceCreator = (set, get) => ({
   const exists = state.sessions.some((s) => s.id === normalized.id);
   const newSessions = exists
   ? state.sessions.map((s) => (s.id === normalized.id ? normalized : s))
-  : [...state.sessions, normalized];
+  : [normalized, ...state.sessions];
   SessionStorage.setAllSessionIds(newSessions.map((s) => s.id));
   return { sessions: newSessions };
   });

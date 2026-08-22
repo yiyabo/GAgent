@@ -1,14 +1,11 @@
 import React, { useMemo, useState } from 'react';
 import {
-  Avatar,
   Button,
   Dropdown,
   Input,
-  List,
   MenuProps,
   Modal,
   Spin,
-  Tag,
   Typography,
   Tooltip,
   message,
@@ -16,7 +13,6 @@ import {
 import {
   PlusOutlined,
   SearchOutlined,
-  MessageOutlined,
   MoreOutlined,
   EditOutlined,
   DeleteOutlined,
@@ -24,9 +20,6 @@ import {
   InboxOutlined,
   ReloadOutlined,
   MenuFoldOutlined,
-  SettingOutlined,
-  DownOutlined,
-  AppstoreOutlined,
 } from '@ant-design/icons';
 import { useChatStore } from '@store/chat';
 import { useLayoutStore } from '@store/layout';
@@ -94,12 +87,19 @@ export const ChatSidebar: React.FC = () => {
 
   const filteredSessions = useMemo(() => {
     const normalizedQuery = searchQuery.trim().toLowerCase();
-    return sessions.filter((session) => {
-      if (!normalizedQuery) return true;
-      const title = session.title?.toLowerCase?.() ?? '';
-      const planTitle = session.plan_title?.toLowerCase?.() ?? '';
-      return title.includes(normalizedQuery) || planTitle.includes(normalizedQuery);
-    });
+    return sessions
+      .filter((session) => {
+        if (!normalizedQuery) return true;
+        const title = session.title?.toLowerCase?.() ?? '';
+        const planTitle = session.plan_title?.toLowerCase?.() ?? '';
+        return title.includes(normalizedQuery) || planTitle.includes(normalizedQuery);
+      })
+      .slice()
+      .sort((a, b) => {
+        const ta = new Date(a.created_at ?? a.updated_at ?? 0).getTime();
+        const tb = new Date(b.created_at ?? b.updated_at ?? 0).getTime();
+        return tb - ta;
+      });
   }, [searchQuery, sessions]);
 
   // Split sessions into "Pending Input / In Progress" and "Recent History"
@@ -329,13 +329,9 @@ export const ChatSidebar: React.FC = () => {
           <span className="biomni-project-tag">PROJECT</span>
           <div className="biomni-project-title-row">
             <span className="biomni-project-name">{projectName}</span>
-            <DownOutlined className="biomni-project-chevron" />
           </div>
         </div>
         <div className="biomni-project-actions">
-          <Tooltip title="项目设置">
-            <Button type="text" size="small" icon={<SettingOutlined />} className="biomni-icon-btn" />
-          </Tooltip>
           <Tooltip title="收起侧边栏">
             <Button
               type="text"
@@ -351,7 +347,6 @@ export const ChatSidebar: React.FC = () => {
       {/* 2. Tasks / Sessions Section Header */}
       <div className="biomni-section-header">
         <div className="biomni-section-title">
-          <DownOutlined style={{ fontSize: 10, marginRight: 6 }} />
           <span>任务</span>
         </div>
         <div className="biomni-section-actions">
@@ -373,14 +368,6 @@ export const ChatSidebar: React.FC = () => {
           >
             新建任务
           </Button>
-          <Tooltip title="视图模式">
-            <Button
-              type="text"
-              size="small"
-              icon={<AppstoreOutlined />}
-              className="biomni-action-icon-btn"
-            />
-          </Tooltip>
         </div>
       </div>
 
@@ -418,7 +405,6 @@ export const ChatSidebar: React.FC = () => {
               <div className="biomni-group-container">
                 <div className="biomni-group-header">
                   <div className="biomni-group-title">
-                    <DownOutlined style={{ fontSize: 9, marginRight: 6 }} />
                     <span>等待输入</span>
                   </div>
                   <span className="biomni-group-count">{pendingSessions.length}</span>

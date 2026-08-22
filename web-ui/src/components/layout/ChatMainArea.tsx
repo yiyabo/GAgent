@@ -320,7 +320,7 @@ const ChatMainArea: React.FC = () => {
     fetchNextPage,
     hasNextPage,
     isFetchingNextPage,
-    isLoading: isHistoryLoadingData,
+    isInitialLoading: isHistoryLoadingData,
   } = useMessages(
     canQuerySessionHistory
       ? (currentSession?.session_id ?? currentSession?.id)
@@ -347,7 +347,7 @@ const ChatMainArea: React.FC = () => {
 
   const showWelcomeState = shouldRenderWelcomeState(
     combinedMessages.length,
-    historyLoading || isHistoryLoadingData
+    canQuerySessionHistory && (historyLoading || isHistoryLoadingData)
   );
 
   // ---- Prevent browser from opening dropped files globally ----

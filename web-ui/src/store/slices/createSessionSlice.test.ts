@@ -150,4 +150,34 @@ describe('createSessionSlice', () => {
     expect(store.currentSession.isUserNamed).toBe(true);
     expect(store.sessions[0].title).toBe('Renamed session');
   });
+
+  it('prepends newly created sessions so they appear at the top of the list', () => {
+    const store = buildStore();
+    store.sessions = [
+      {
+        id: 'older-session',
+        session_id: 'older-session',
+        title: 'Older session',
+        messages: [],
+        created_at: new Date('2026-04-20T04:00:00.000Z'),
+        updated_at: new Date('2026-04-20T04:00:00.000Z'),
+        workflow_id: null,
+        plan_id: null,
+        plan_title: null,
+        current_task_id: null,
+        current_task_name: null,
+        last_message_at: null,
+        is_active: true,
+        titleSource: 'local',
+        isUserNamed: false,
+      },
+    ];
+
+    const created = store.startNewSession('Newest session');
+
+    expect(store.sessions[0].id).toBe(created.id);
+    expect(store.sessions[0].title).toBe('Newest session');
+    expect(store.sessions[1].id).toBe('older-session');
+    expect(store.currentSession?.id).toBe(created.id);
+  });
 });
