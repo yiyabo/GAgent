@@ -1186,16 +1186,24 @@ pre, code {
   width: 34px !important;
   height: 34px !important;
   min-width: 34px !important;
-  background: #18181b !important;
+  background: var(--primary-color, #3080ff) !important;
   border: none !important;
+  color: #ffffff !important;
   display: flex !important;
   align-items: center !important;
   justify-content: center !important;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15) !important;
+  box-shadow: 0 4px 10px rgba(48, 128, 255, 0.28) !important;
 }
 
-.hero-send-btn:hover {
-  background: #27272a !important;
+.hero-send-btn:hover:not(:disabled) {
+  background: var(--primary-hover, #155dfc) !important;
+}
+
+.hero-send-btn:disabled,
+.hero-send-btn.ant-btn-disabled {
+  background: #e2e8f0 !important;
+  color: #94a3b8 !important;
+  box-shadow: none !important;
 }
 
 .hero-welcome-footnote {
