@@ -1,37 +1,24 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef } from 'react';
 import {
   Input,
   Button,
-  Switch,
-  Tooltip,
-  Dropdown,
   Typography,
-  Space,
-  Tag,
 } from 'antd';
 import {
   SendOutlined,
-  PlusOutlined,
-  DownOutlined,
-  ThunderboltOutlined,
   ExperimentOutlined,
   CompassOutlined,
+  ThunderboltOutlined,
   ReadOutlined,
-  RightOutlined,
-  RocketOutlined,
-  FileImageOutlined,
-  BulbOutlined,
 } from '@ant-design/icons';
 import { useAuthStore } from '@store/auth';
-import { useChatStore } from '@store/chat';
 import FileUploadButton from './FileUploadButton';
 import UploadedFilesList from './UploadedFilesList';
 
 const { TextArea } = Input;
-const { Title, Text, Paragraph } = Typography;
 
 export interface HeroWelcomeProps {
-  onSendMessage: (text: string, mode?: string) => Promise<void> | void;
+  onSendMessage: (text: string) => Promise<void> | void;
   isProcessing?: boolean;
 }
 
@@ -57,15 +44,9 @@ const STARTER_PROMPTS = [
   {
     icon: <ReadOutlined style={{ color: '#8b5cf6' }} />,
     title: '噬菌体疗法文献深度调研',
-    desc: '检索全球权威文献库，生成耐药菌鸡尾酒配方调研报告',
+    desc: '检索权威文献库，梳理耐药菌鸡尾酒配方与临床案例',
     prompt: '请对超级耐药肺炎克雷伯菌 (CRKP) 的噬菌体鸡尾酒协同疗法进行深度文献调研，总结最新临床试验案例并梳理治疗方案建议。',
   },
-];
-
-const EXECUTION_MODES = [
-  { key: 'standard', label: 'Standard (标准)', desc: '平衡速度与深度，适合常规对话与快速生信分析' },
-  { key: 'deepthink', label: 'DeepThink (深度思考)', desc: '启用多步推理、文献论证与复杂生信管线自省' },
-  { key: 'autonomous', label: 'Autonomous (全自主)', desc: '全自动目标分解、工具调度与错误自愈执行' },
 ];
 
 export const HeroWelcome: React.FC<HeroWelcomeProps> = ({
@@ -75,8 +56,6 @@ export const HeroWelcome: React.FC<HeroWelcomeProps> = ({
   const { user } = useAuthStore();
   const inputRef = useRef<any>(null);
   const [inputText, setInputText] = useState('');
-  const [autoMode, setAutoMode] = useState(true);
-  const [selectedModeKey, setSelectedModeKey] = useState<string>('standard');
   const [showCapabilities, setShowCapabilities] = useState(true);
 
   // Extract display name
@@ -91,12 +70,10 @@ export const HeroWelcome: React.FC<HeroWelcomeProps> = ({
     return '研究员';
   }, [user]);
 
-  const currentMode = EXECUTION_MODES.find((m) => m.key === selectedModeKey) || EXECUTION_MODES[0];
-
   const handleSend = () => {
     const trimmed = inputText.trim();
     if (!trimmed || isProcessing) return;
-    onSendMessage(trimmed, selectedModeKey);
+    onSendMessage(trimmed);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -111,19 +88,6 @@ export const HeroWelcome: React.FC<HeroWelcomeProps> = ({
     inputRef.current?.focus();
   };
 
-  const modeMenu = {
-    items: EXECUTION_MODES.map((m) => ({
-      key: m.key,
-      label: (
-        <div style={{ padding: '4px 0' }}>
-          <div style={{ fontWeight: 500, fontSize: 13, color: 'var(--text-primary)' }}>{m.label}</div>
-          <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{m.desc}</div>
-        </div>
-      ),
-    })),
-    onClick: ({ key }: { key: string }) => setSelectedModeKey(key),
-  };
-
   return (
     <div className="hero-welcome-container">
       {/* 1. Header Greeting */}
@@ -135,7 +99,7 @@ export const HeroWelcome: React.FC<HeroWelcomeProps> = ({
           </h1>
         </div>
         <p className="hero-welcome-subtitle">
-          我是 Phage-Agent，您的虚拟研究协作者——专为推理、计算和迭代而设计。
+          我是 Phage-Agent，专为噬菌体与生物医学研究设计的自主智能体。
         </p>
       </div>
 
@@ -153,7 +117,7 @@ export const HeroWelcome: React.FC<HeroWelcomeProps> = ({
             value={inputText}
             onChange={(e) => setInputText(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="今天我能帮您处理什么生物医学 / 噬菌体研究任务？"
+            placeholder="输入您的研究目标或生信分析需求... (支持拖放 / 粘贴文件与序列)"
             autoSize={{ minRows: 4, maxRows: 10 }}
             className="hero-prompt-textarea"
             autoFocus
@@ -164,33 +128,9 @@ export const HeroWelcome: React.FC<HeroWelcomeProps> = ({
         <div className="hero-prompt-toolbar">
           <div className="hero-prompt-toolbar-left">
             <FileUploadButton size="small" />
-            
-            <div className="hero-prompt-toggle-group">
-              <span className="hero-toggle-label">自动</span>
-              <Tooltip title="自动模式：AI将全自主分解任务、调用生信工具执行并汇总交付物">
-                <Switch
-                  size="small"
-                  checked={autoMode}
-                  onChange={setAutoMode}
-                  className="hero-mode-switch"
-                />
-              </Tooltip>
-              <Tooltip title="什么是自动模式？系统将在后台沙箱中自适应扩展算力并自主运行分析流水线。">
-                <span className="hero-toggle-help">?</span>
-              </Tooltip>
-            </div>
           </div>
 
           <div className="hero-prompt-toolbar-right">
-            <Dropdown menu={modeMenu} trigger={['click']} placement="topRight">
-              <Button size="small" className="hero-mode-dropdown-btn">
-                <Space size={4}>
-                  <span>{currentMode.label.split(' ')[0]}</span>
-                  <DownOutlined style={{ fontSize: 10 }} />
-                </Space>
-              </Button>
-            </Dropdown>
-
             <Button
               type="primary"
               shape="circle"
@@ -204,9 +144,9 @@ export const HeroWelcome: React.FC<HeroWelcomeProps> = ({
         </div>
       </div>
 
-      {/* Footnote */}
+      {/* Clean Footnote / Capability Hint */}
       <div className="hero-welcome-footnote">
-        我在<span className="hero-footnote-link">自动扩展的机器</span>上运行您的分析。
+        支持生信工具链自主调度、噬菌体多模态分析与出版级图表生成
       </div>
 
       {/* 3. Explore Capabilities / Starter Cards */}
@@ -218,7 +158,7 @@ export const HeroWelcome: React.FC<HeroWelcomeProps> = ({
           <span className="hero-capabilities-arrow" style={{ transform: showCapabilities ? 'rotate(90deg)' : 'none' }}>
             ›
           </span>
-          <span className="hero-capabilities-title">EXPLORE PHAGE-AGENT CAPABILITIES</span>
+          <span className="hero-capabilities-title">常用研究工作流 / WORKFLOWS</span>
         </div>
 
         {showCapabilities && (
