@@ -12,7 +12,6 @@ import {
   Typography,
   Tooltip,
   message,
-  Collapse,
 } from 'antd';
 import {
   PlusOutlined,
@@ -27,31 +26,15 @@ import {
   MenuFoldOutlined,
   SettingOutlined,
   DownOutlined,
-  CloudOutlined,
-  FolderOutlined,
   AppstoreOutlined,
-  ClockCircleOutlined,
-  CheckCircleOutlined,
-  LoadingOutlined,
 } from '@ant-design/icons';
 import { useChatStore } from '@store/chat';
 import { useLayoutStore } from '@store/layout';
-import { useProjectStore } from '@store/project';
 import { useAuthStore } from '@store/auth';
 import { ChatSession } from '@/types';
 import { shallow } from 'zustand/shallow';
 
 const { Text } = Typography;
-
-const TITLE_SOURCE_HINT: Record<string, string> = {
-  plan: '由计划标题生成',
-  'plan_task': '由计划与任务上下文生成',
-  heuristic: '由近期对话内容生成',
-  llm: '由模型自动总结',
-  default: '默认标题，建议重新生成',
-  local: '临时标题，建议重新生成',
-  user: '',
-};
 
 function formatTimeAgo(dateInput?: Date | string | null): string {
   if (!dateInput) return '';
@@ -84,7 +67,6 @@ export const ChatSidebar: React.FC = () => {
     loadChatHistory,
     autotitleSession,
     renameSession,
-    uploadedFiles,
   } = useChatStore(
     (state) => ({
       sessions: state.sessions,
@@ -95,7 +77,6 @@ export const ChatSidebar: React.FC = () => {
       loadChatHistory: state.loadChatHistory,
       autotitleSession: state.autotitleSession,
       renameSession: state.renameSession,
-      uploadedFiles: state.uploadedFiles,
     }),
     shallow
   );
@@ -455,56 +436,6 @@ export const ChatSidebar: React.FC = () => {
             </div>
           </>
         )}
-      </div>
-
-      {/* 4. Bottom Cloud Drive / Files Section */}
-      <div className="biomni-drive-section">
-        <div className="biomni-section-header biomni-drive-header">
-          <div className="biomni-section-title">
-            <DownOutlined style={{ fontSize: 10, marginRight: 6 }} />
-            <span>云盘</span>
-          </div>
-          <div className="biomni-section-actions">
-            <Tooltip title="搜索文件">
-              <Button type="text" size="small" icon={<SearchOutlined />} className="biomni-action-icon-btn" />
-            </Tooltip>
-            <Button
-              type="text"
-              size="small"
-              icon={<PlusOutlined />}
-              className="biomni-new-task-btn"
-            >
-              上传
-            </Button>
-            <Tooltip title="网格/列表视图">
-              <Button type="text" size="small" icon={<AppstoreOutlined />} className="biomni-action-icon-btn" />
-            </Tooltip>
-          </div>
-        </div>
-
-        <div className="biomni-drive-content">
-          {uploadedFiles && uploadedFiles.length > 0 ? (
-            <div className="biomni-drive-file-list">
-              {uploadedFiles.slice(0, 5).map((f, idx) => (
-                <div key={idx} className="biomni-drive-file-item">
-                  <FolderOutlined style={{ color: 'var(--primary-color)', fontSize: 13 }} />
-                  <Text ellipsis style={{ fontSize: 12, flex: 1 }}>
-                    {f.file_name || f.original_name}
-                  </Text>
-                </div>
-              ))}
-              {uploadedFiles.length > 5 && (
-                <div style={{ fontSize: 11, color: 'var(--text-tertiary)', padding: '2px 8px' }}>
-                  +{uploadedFiles.length - 5} 更多文件
-                </div>
-              )}
-            </div>
-          ) : (
-            <div className="biomni-drive-empty">
-              <span>No files yet</span>
-            </div>
-          )}
-        </div>
       </div>
 
       <Modal
