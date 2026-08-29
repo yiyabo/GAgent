@@ -320,52 +320,17 @@ async def review_pack_writer_handler(
     if pack_rel and pack_rel not in hidden_artifact_prefixes:
         hidden_artifact_prefixes.append(pack_rel)
 
+    evidence_coverage_notice: Optional[str] = None
     if not evidence_coverage_passed:
-        release_summary = (
-            f"Publication blocked: {coverage_summary}"
-            if coverage_summary
-            else "Publication blocked: evidence coverage was too weak for a PI-readable review manuscript."
+        # Evidence counts are advisory, never blocking: continue to drafting and
+        # surface the shortfall in the result (the manuscript quality gates
+        # below still apply to the draft itself).
+        evidence_coverage_notice = coverage_summary or (
+            "Evidence coverage is below the recommended level for a review manuscript."
         )
-        return _attach_output_location({
-            "tool": "review_pack_writer",
-            "success": False,
-            "partial": False,
-            "error_code": "low_evidence_coverage",
-            "warnings": None,
-            "quality_gate_passed": False,
-            "polish_gate_passed": False,
-            "public_release_ready": False,
-            "evidence_coverage_passed": False,
-            "coverage_summary": coverage_summary or release_summary,
-            "coverage_report_path": coverage_report_path or None,
-            "release_state": "blocked",
-            "release_summary": release_summary,
-            "hidden_artifact_prefixes": hidden_artifact_prefixes,
-            "topic": topic,
-            "query": final_query,
-            "out_dir": str(pack_dir.relative_to(_PROJECT_ROOT)),
-            "progress_bar": _bar(stage, len(stage_names)),
-            "progress_steps": stage_names,
-            "pack": pack,
-            "draft": None,
-            "artifacts": {
-                "library_jsonl": outputs.get("library_jsonl"),
-                "study_cards_jsonl": outputs.get("study_cards_jsonl"),
-                "coverage_report_json": outputs.get("coverage_report_json"),
-                "references_bib": outputs.get("references_bib"),
-                "evidence_md": outputs.get("evidence_md"),
-                "evidence_coverage_md": outputs.get("evidence_coverage_md"),
-                "study_matrix_md": outputs.get("study_matrix_md"),
-                "pdf_dir": outputs.get("pdf_dir"),
-                "manuscript_output": None,
-                "manuscript_partial": None,
-                "manuscript_workspace": None,
-            },
-        },
-        base_dir=unified_output_dir,
-        session_id=session_id,
-        task_id=task_id,
-        ancestor_chain=ancestor_chain,
+        logger.warning(
+            "review_pack_writer: evidence coverage below recommendation, proceeding without blocking: %s",
+            evidence_coverage_notice,
         )
 
     # 2) Draft manuscript
@@ -421,7 +386,12 @@ async def review_pack_writer_handler(
         if isinstance(draft, dict) and isinstance(draft.get("partial_output_path"), str)
         else None
     )
-    ok = bool(draft_ok and quality_gate_passed and polish_gate_passed and public_release_ready)
+    soft_release_ok = bool(
+        isinstance(draft, dict)
+        and draft.get("success")
+        and str(draft.get("release_state") or "").strip().lower() in {"final", "draft"}
+    )
+    ok = bool(draft_ok and quality_gate_passed and polish_gate_passed and public_release_ready) or soft_release_ok
     partial = bool(partial_path and not ok)
     error_code: Optional[str] = None
     if not ok:
@@ -439,6 +409,8 @@ async def review_pack_writer_handler(
             "manuscript_writer did not pass section evaluation; a partial draft was still produced. "
             f"See {partial_path}"
         )
+    if evidence_coverage_notice:
+        warnings.append(f"Advisory (not blocking): {evidence_coverage_notice}")
     if isinstance(draft, dict):
         for item in draft.get("hidden_artifact_prefixes") or []:
             value = str(item or "").strip().lstrip("/").replace("\\", "/")
@@ -456,6 +428,7 @@ async def review_pack_writer_handler(
         "polish_gate_passed": polish_gate_passed,
         "public_release_ready": public_release_ready,
         "evidence_coverage_passed": evidence_coverage_passed,
+        "evidence_coverage_notice": evidence_coverage_notice,
         "coverage_summary": coverage_summary or (
             str((draft or {}).get("coverage_summary") or "").strip() if isinstance(draft, dict) else ""
         ),

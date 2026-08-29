@@ -77,6 +77,22 @@ _COVERAGE_THRESHOLDS = {
     "min_quantitative_studies": 4,
     "min_support_per_core_section": 2,
 }
+
+
+def _coverage_thresholds() -> Dict[str, int]:
+    """Evidence-coverage gate thresholds, overridable via env for lighter editorial tasks."""
+    def _int(name: str, default: int) -> int:
+        try:
+            return int(os.getenv(name, str(default)))
+        except (TypeError, ValueError):
+            return default
+
+    return {
+        "min_total_studies": max(0, _int("MANUSCRIPT_MIN_TOTAL_STUDIES", _COVERAGE_THRESHOLDS["min_total_studies"])),
+        "min_full_text_studies": max(0, _int("MANUSCRIPT_MIN_FULL_TEXT_STUDIES", _COVERAGE_THRESHOLDS["min_full_text_studies"])),
+        "min_quantitative_studies": max(0, _int("MANUSCRIPT_MIN_QUANTITATIVE_STUDIES", _COVERAGE_THRESHOLDS["min_quantitative_studies"])),
+        "min_support_per_core_section": max(0, _int("MANUSCRIPT_MIN_SUPPORT_PER_CORE_SECTION", _COVERAGE_THRESHOLDS["min_support_per_core_section"])),
+    }
 _CORE_REVIEW_SECTIONS = (
     "introduction",
     "method",
@@ -1153,7 +1169,7 @@ def _build_section_oriented_evidence_md(cards: List[Dict[str, Any]], coverage_re
 
 
 def _build_coverage_report(cards: List[Dict[str, Any]]) -> Dict[str, Any]:
-    thresholds = dict(_COVERAGE_THRESHOLDS)
+    thresholds = _coverage_thresholds()
     section_support_counts = {
         section: len([card for card in cards if section in (card.get("section_support") or [])])
         for section in _CORE_REVIEW_SECTIONS
