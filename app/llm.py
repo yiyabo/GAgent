@@ -18,6 +18,30 @@ from .services.foundation.settings import get_settings
 logger = logging.getLogger(__name__)
 
 
+_BALANCE_ERROR_MARKERS = (
+    "insufficient account balance",
+    "insufficient balance",
+    "account balance",
+    "balance is not enough",
+    "余额不足",
+    "欠费",
+)
+
+
+def _user_facing_http_error(status: Optional[int], detail: str) -> Optional[str]:
+    """Map provider account/permission failures to an actionable message for end users.
+
+    Returns None when the raw upstream detail should be kept. Full upstream
+    detail is always logged server-side before the friendly text is returned.
+    """
+    lowered = (detail or "").lower()
+    if status == 403 and any(marker in lowered for marker in _BALANCE_ERROR_MARKERS):
+        return "LLM HTTP 403: 模型服务额度不足，请稍后再试或联系管理员充值。"
+    if status == 401:
+        return "LLM HTTP 401: 模型服务认证失败，请联系管理员检查 API Key 配置。"
+    return None
+
+
 def _format_http_error(exc: "httpx.HTTPStatusError", *, body: str = "") -> str:
     """Build a user-visible LLM HTTP error that includes upstream body text."""
     status = None
@@ -61,6 +85,19 @@ def _format_http_error(exc: "httpx.HTTPStatusError", *, body: str = "") -> str:
         except Exception:
             detail = raw
     detail = str(detail).strip() if detail is not None else ""
+
+    friendly = _user_facing_http_error(status, f"{detail} {raw}")
+    if friendly:
+        # Keep the full upstream detail in server logs only; end users get the
+        # actionable message without internal URLs or provider payloads.
+        logger.error(
+            "[LLM_UPSTREAM] status=%s url=%s detail=%s",
+            status,
+            url,
+            detail[:800],
+        )
+        return friendly
+
     if len(detail) > 800:
         detail = detail[:800] + "…"
     base = f"LLM HTTP {status}" if status is not None else "LLM HTTP error"
