@@ -15,6 +15,7 @@ import { ThinkingProcess } from '../ThinkingProcess';
 import { MarkdownRenderer } from '../MarkdownRenderer';
 import { TypingIndicator } from '../TypingIndicator';
 import ArtifactGallery from '../ArtifactGallery';
+import ArtifactFileList from '../ArtifactFileList';
 import type { DecompositionJobStatus } from '@/types';
 import {
   FINAL_JOB_STATUSES,
@@ -28,7 +29,7 @@ import ToolProgressCard, { BackgroundDispatchCard } from './ToolProgressCard';
 import MessageActions from './MessageActions';
 import ToolResultDrawer, { ToolStatusBar } from './ToolResultDrawer';
 import { extractLlmReplyMessage } from '@/utils/llmReplyDisplay';
-import { collectArtifactGallery } from '@/utils/artifactGallery';
+import { collectArtifactGallery, collectArtifactFiles } from '@/utils/artifactGallery';
 import { resolveThinkingDisplayMode } from '@store/slices/message/thinkingPresentation';
 
 const { Text } = Typography;
@@ -95,6 +96,10 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
     [metadata],
   );
   const showInlineArtifactGallery = artifactGallery.length > 0;
+  const artifactFiles = useMemo(
+    () => collectArtifactFiles((metadata as any)?.artifact_files),
+    [metadata],
+  );
   const normalizedAssistantContent = useMemo(
     () => (type === 'assistant' ? extractLlmReplyMessage(content) : content),
     [type, content],
@@ -531,6 +536,7 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
                   {showInlineArtifactGallery && (
                     <ArtifactGallery items={artifactGallery} sessionId={effectiveSessionId} />
                   )}
+                  <ArtifactFileList items={artifactFiles} sessionId={effectiveSessionId} />
                 </>
               );
             }
@@ -552,6 +558,7 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
                 {showInlineArtifactGallery && (
                   <ArtifactGallery items={artifactGallery} sessionId={effectiveSessionId} />
                 )}
+                <ArtifactFileList items={artifactFiles} sessionId={effectiveSessionId} />
                 {renderPendingActions()}
                 {!isPendingAction && renderUnifiedStatusLine()}
                 {!isPendingAction && (

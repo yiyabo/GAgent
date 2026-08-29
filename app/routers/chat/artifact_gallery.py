@@ -13,6 +13,9 @@ from .subject_identity import _workspace_root
 
 _IMAGE_EXT_RE = re.compile(r"\.(png|jpe?g|gif|webp|svg)$", re.IGNORECASE)
 _DEFAULT_GALLERY_LIMIT = 12
+# Results of these operations only enumerate/inspect existing content; nothing
+# was produced, so they must never contribute gallery or file entries.
+_READ_ONLY_OPERATIONS = frozenset({"read", "list", "tree", "glob", "search", "profile", "census"})
 
 
 def is_image_artifact_path(path: Any) -> bool:
@@ -259,6 +262,13 @@ def extract_artifact_gallery_from_result(
     if not isinstance(result, dict):
         return []
 
+    # Read-only enumeration/inspection results never *produce* artifacts.
+    # Scanning their directory listings is what stamped every message with
+    # whatever images happened to sit in the listed folder.
+    operation = str(result.get("operation") or "").strip().lower()
+    if operation in _READ_ONLY_OPERATIONS:
+        return []
+
     collected: List[Dict[str, Any]] = []
     existing_gallery = result.get("artifact_gallery")
     if isinstance(existing_gallery, list):
@@ -293,6 +303,8 @@ def extract_artifact_gallery_from_result(
     if isinstance(items, list):
         for row in items[:200]:
             if not isinstance(row, dict):
+                continue
+            if str(row.get("type") or "").strip().lower() == "directory":
                 continue
             _append_candidate_item(
                 collected,
@@ -358,3 +370,122 @@ def extract_artifact_gallery_from_result(
                 )
 
     return merge_artifact_gallery(None, collected)
+
+
+_FILE_OUTPUT_KEYS = (
+    "effective_output_path",
+    "output_path",
+    "output_file",
+    "output_file_rel",
+    "saved_path",
+    "saved_path_rel",
+    "preview_path",
+    "rendered_path",
+    "pdf_path",
+)
+_FILE_LIST_KEYS = ("artifact_paths", "produced_files", "session_artifact_paths")
+
+
+def extract_artifact_files_from_result(
+    result: Any,
+    *,
+    session_id: Optional[str],
+    source_tool: Optional[str] = None,
+    tracking_id: Optional[str] = None,
+    created_at: Optional[str] = None,
+    limit: int = 8,
+) -> List[Dict[str, Any]]:
+    """Collect produced NON-image files (documents, archives, data files) from
+    explicit output fields, so the UI can offer download entries under the
+    message. Directory listings are never scanned — only files the tool says
+    it produced.
+    """
+    if not isinstance(result, dict):
+        return []
+    operation = str(result.get("operation") or "").strip().lower()
+    if operation in _READ_ONLY_OPERATIONS:
+        return []
+
+    collected: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def _push(path: Any, display_name: Optional[str] = None, origin: Optional[str] = None) -> None:
+        raw = str(path or "").strip()
+        if not raw or raw.endswith("/"):
+            return
+        ext = os.path.splitext(raw)[1].lower()
+        if not ext or _IMAGE_EXT_RE.search(ext):
+            return
+        normalized = _normalize_session_relative_path_any(raw, session_id=session_id)
+        if not normalized:
+            return
+        if normalized in seen:
+            return
+        seen.add(normalized)
+        collected.append(
+            {
+                "path": normalized,
+                "display_name": _display_name_for_path(normalized, display_name),
+                "source_tool": str(source_tool or "unknown").strip() or "unknown",
+                "mime_family": "file",
+                "origin": _infer_origin(normalized, origin),
+                "created_at": _default_created_at(created_at),
+                "tracking_id": str(tracking_id or "").strip() or None,
+            }
+        )
+
+    for key in _FILE_OUTPUT_KEYS:
+        value = result.get(key)
+        if isinstance(value, str) and value.strip():
+            _push(value)
+    for key in _FILE_LIST_KEYS:
+        items = result.get(key)
+        if isinstance(items, list):
+            for item in items[:40]:
+                if isinstance(item, str) and item.strip():
+                    _push(item)
+    storage_payload = result.get("storage")
+    if isinstance(storage_payload, dict):
+        for path, display_name in _extract_storage_candidates(storage_payload):
+            _push(path, display_name)
+    deliverables_payload = result.get("deliverables")
+    if isinstance(deliverables_payload, dict):
+        artifacts = deliverables_payload.get("artifacts")
+        if isinstance(artifacts, list):
+            for row in artifacts[:40]:
+                if not isinstance(row, dict):
+                    continue
+                _push(
+                    row.get("path") or row.get("relative_path"),
+                    row.get("name") or row.get("display_name"),
+                    origin="deliverable",
+                )
+
+    return collected[: max(1, int(limit))]
+
+
+def _normalize_session_relative_path_any(path: str, *, session_id: Optional[str]) -> Optional[str]:
+    """Normalize a produced-file path to session-relative form (any file type).
+
+    Mirrors ``_normalize_session_relative_path`` but without the image-extension
+    requirement; absolute paths must live inside the session workspace.
+    """
+    raw = str(path or "").strip().replace("\\", "/")
+    if not raw or "://" in raw:
+        return None
+    try:
+        parts = Path(raw.lstrip("/")).parts
+    except Exception:
+        return None
+    if ".." in parts:
+        return None
+    if raw.startswith("/"):
+        try:
+            session_root = get_session_root_dir(str(session_id or "").strip()).resolve()
+            candidate = Path(raw).resolve()
+            relative = candidate.relative_to(session_root)
+        except Exception:
+            return None
+        return str(relative).replace("\\", "/")
+    return raw.lstrip("/")
+

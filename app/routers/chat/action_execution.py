@@ -44,6 +44,7 @@ from tool_box import execute_tool
 
 from .models import ActionStatusResponse
 from .artifact_gallery import (
+    extract_artifact_files_from_result,
     extract_artifact_gallery_from_result,
     merge_artifact_gallery,
 )
@@ -411,6 +412,38 @@ def _build_artifact_gallery_from_tool_results(
         if extracted:
             gallery = merge_artifact_gallery(gallery, extracted)
     return gallery
+
+
+def _build_artifact_files_from_tool_results(
+    tool_results_payload: List[Dict[str, Any]],
+    *,
+    session_id: Optional[str],
+    tracking_id: Optional[str],
+) -> List[Dict[str, Any]]:
+    files: List[Dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in tool_results_payload or []:
+        if not isinstance(item, dict):
+            continue
+        result_payload = item.get("result")
+        if not isinstance(result_payload, dict):
+            continue
+        # A failed tool run's "output paths" describe files that were never written.
+        if result_payload.get("success") is False:
+            continue
+        extracted = extract_artifact_files_from_result(
+            result_payload,
+            session_id=session_id,
+            source_tool=item.get("name") or item.get("tool"),
+            tracking_id=tracking_id,
+        )
+        for entry in extracted:
+            key = (str(entry.get("origin") or ""), str(entry.get("path") or ""))
+            if key in seen:
+                continue
+            seen.add(key)
+            files.append(entry)
+    return files[:8]
 
 
 def _extract_blocking_failures(steps: List[Any]) -> List[Dict[str, Any]]:
@@ -2244,6 +2277,7 @@ async def _execute_action_run(run_id: str) -> None:
         result_dict["errors"] = effective_errors
         tool_results_payload: List[Dict[str, Any]] = []
         artifact_gallery_payload: List[Dict[str, Any]] = []
+        artifact_files_payload: List[Dict[str, Any]] = []
 
         # Diagnostic logging: record all steps.
         logger.info(
@@ -2317,6 +2351,13 @@ async def _execute_action_run(run_id: str) -> None:
             )
             if artifact_gallery_payload:
                 result_dict["artifact_gallery"] = artifact_gallery_payload
+            artifact_files_payload = _build_artifact_files_from_tool_results(
+                tool_results_payload,
+                session_id=record.get("session_id"),
+                tracking_id=run_id,
+            )
+            if artifact_files_payload:
+                result_dict["artifact_files"] = artifact_files_payload
             logger.info(
                 "[CHAT][TOOL_RESULTS] session=%s tracking=%s collected %d tool results",
                 record.get("session_id"),
@@ -2459,6 +2500,7 @@ async def _execute_action_run(run_id: str) -> None:
                 actions_summary=result.actions_summary,
                 tool_results=tool_results_payload,
                 artifact_gallery=artifact_gallery_payload,
+                artifact_files=artifact_files_payload,
                 errors=effective_errors,
                 job_id=job.job_id,
                 job_payload=job_snapshot,

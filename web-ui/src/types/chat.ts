@@ -105,6 +105,16 @@ export interface ArtifactGalleryItem {
   tracking_id?: string | null;
 }
 
+export interface ArtifactFileItem {
+  path: string;
+  display_name?: string | null;
+  source_tool?: string | null;
+  mime_family?: 'file' | string | null;
+  origin?: string | null;
+  created_at?: string | null;
+  tracking_id?: string | null;
+}
+
 export interface ChatResponseMetadata {
   status?: ChatActionStatus;
   tracking_id?: string;
@@ -127,6 +137,7 @@ export interface ChatResponseMetadata {
   session_id?: string;
   tool_results?: ToolResultPayload[] | null;
   artifact_gallery?: ArtifactGalleryItem[] | null;
+  artifact_files?: ArtifactFileItem[] | null;
   request_tier?: RequestTier;
   request_route_mode?: RequestRouteMode;
   route_reason_codes?: string[];
@@ -156,6 +167,7 @@ export interface ActionStatusResponse {
   metadata?: {
     tool_results?: ToolResultPayload[] | null;
     artifact_gallery?: ArtifactGalleryItem[] | null;
+  artifact_files?: ArtifactFileItem[] | null;
     final_summary?: string;
     [key: string]: any;
   } | null;
@@ -203,6 +215,7 @@ export interface ChatMessage {
     tool_type?: string;
     tool_results?: ToolResultPayload[] | null;
     artifact_gallery?: ArtifactGalleryItem[] | null;
+  artifact_files?: ArtifactFileItem[] | null;
     request_tier?: RequestTier;
     request_route_mode?: RequestRouteMode;
     route_reason_codes?: string[];

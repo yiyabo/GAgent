@@ -1247,6 +1247,7 @@ def _merge_async_metadata(
     actions_summary: Optional[List[Dict[str, Any]]],
     tool_results: List[Dict[str, Any]],
     artifact_gallery: Optional[List[Dict[str, Any]]] = None,
+    artifact_files: Optional[List[Dict[str, Any]]] = None,
     errors: List[str],
     job_id: Optional[str] = None,
     job_payload: Optional[Dict[str, Any]] = None,
@@ -1273,6 +1274,10 @@ def _merge_async_metadata(
         metadata["artifact_gallery"] = artifact_gallery
     elif "artifact_gallery" in metadata:
         metadata.pop("artifact_gallery")
+    if artifact_files:
+        metadata["artifact_files"] = artifact_files
+    elif "artifact_files" in metadata:
+        metadata.pop("artifact_files")
     metadata["errors"] = errors or []
     if "raw_actions" not in metadata and actions:
         metadata["raw_actions"] = actions
