@@ -591,6 +591,11 @@ async def _run_blocking_failure_deep_think_retry_once(
             blocking=True,
             metadata={"origin": "auto_deep_think_retry"},
         )
+        try:
+            from app.llm import update_usage_context
+            update_usage_context(tool_name=str(name), phase="execution", call_purpose="tool_execution")
+        except Exception:
+            pass
         step = await agent._handle_tool_action(action)
         details = step.details if isinstance(step.details, dict) else {}
         result_payload = details.get("result")
@@ -1355,6 +1360,17 @@ async def _execute_action_run(run_id: str) -> None:
         record.get("session_id"),
         record.get("plan_id"),
     )
+
+    try:
+        from app.llm import update_usage_context
+        update_usage_context(
+            session_id=record.get("session_id"),
+            run_id=run_id,
+            phase="execution",
+            call_purpose="agent_run",
+        )
+    except Exception:
+        pass
 
     plan_session = PlanSession(repo=plan_repository, plan_id=record.get("plan_id"))
     try:
@@ -2278,6 +2294,7 @@ async def _execute_action_run(run_id: str) -> None:
         tool_results_payload: List[Dict[str, Any]] = []
         artifact_gallery_payload: List[Dict[str, Any]] = []
         artifact_files_payload: List[Dict[str, Any]] = []
+        run_token_usage = None
 
         # Diagnostic logging: record all steps.
         logger.info(
@@ -2358,6 +2375,13 @@ async def _execute_action_run(run_id: str) -> None:
             )
             if artifact_files_payload:
                 result_dict["artifact_files"] = artifact_files_payload
+            try:
+                from app.repository.llm_usage import get_run_usage_summary
+                run_token_usage = get_run_usage_summary(run_id)
+                if run_token_usage:
+                    result_dict["token_usage"] = run_token_usage
+            except Exception:
+                run_token_usage = None
             logger.info(
                 "[CHAT][TOOL_RESULTS] session=%s tracking=%s collected %d tool results",
                 record.get("session_id"),
@@ -2501,6 +2525,7 @@ async def _execute_action_run(run_id: str) -> None:
                 tool_results=tool_results_payload,
                 artifact_gallery=artifact_gallery_payload,
                 artifact_files=artifact_files_payload,
+                token_usage=run_token_usage,
                 errors=effective_errors,
                 job_id=job.job_id,
                 job_payload=job_snapshot,

@@ -134,14 +134,36 @@ def set_usage_context(
     plan_id: Optional[int] = None,
     task_id: Optional[int] = None,
     call_purpose: Optional[str] = None,
+    run_id: Optional[str] = None,
+    phase: Optional[str] = None,
+    tool_name: Optional[str] = None,
 ) -> contextvars.Token:
     ctx = {
         "session_id": session_id,
         "plan_id": plan_id,
         "task_id": task_id,
         "call_purpose": call_purpose,
+        "run_id": run_id,
+        "phase": phase,
+        "tool_name": tool_name,
     }
     return _usage_context.set(ctx)
+
+
+def update_usage_context(**fields: Any) -> None:
+    """Merge fields into the current usage context without replacing it.
+
+    Use this for sub-scoped attribution (e.g. tagging tool executions with
+    ``tool_name``/``phase`` inside a run whose session/plan context was set
+    upstream).  Unknown fields are ignored; ``None`` values are skipped so a
+    caller cannot accidentally erase previously set attribution.
+    """
+    ctx = _usage_context.get()
+    ctx = dict(ctx) if isinstance(ctx, dict) else {}
+    for key, value in fields.items():
+        if key in {"session_id", "plan_id", "task_id", "call_purpose", "run_id", "phase", "tool_name"} and value is not None:
+            ctx[key] = value
+    _usage_context.set(ctx)
 
 
 def clear_usage_context(token: contextvars.Token) -> None:
@@ -365,20 +387,27 @@ def _log_usage(
     prompt_tokens: int,
     completion_tokens: int,
     total_tokens: int,
+    call_status: Optional[str] = None,
+    duration_ms: Optional[float] = None,
 ) -> None:
     try:
         from .repository.llm_usage import log_llm_usage
-        ctx = _usage_context.get()
+        ctx = _usage_context.get() or {}
         log_llm_usage(
             provider=provider,
             model=model,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             total_tokens=total_tokens,
-            session_id=ctx.get("session_id") if ctx else None,
-            plan_id=ctx.get("plan_id") if ctx else None,
-            task_id=ctx.get("task_id") if ctx else None,
-            call_purpose=ctx.get("call_purpose") if ctx else None,
+            session_id=ctx.get("session_id"),
+            plan_id=ctx.get("plan_id"),
+            task_id=ctx.get("task_id"),
+            call_purpose=ctx.get("call_purpose"),
+            run_id=ctx.get("run_id"),
+            phase=ctx.get("phase") or "uncategorized",
+            tool_name=ctx.get("tool_name"),
+            call_status=call_status or "ok",
+            duration_ms=duration_ms,
         )
     except Exception as exc:
         logger.warning("[LLM] Failed to log usage: %s", exc)
@@ -674,6 +703,8 @@ class LLMClient(LLMProvider):
                             prompt_tokens=usage.get("prompt_tokens", 0),
                             completion_tokens=usage.get("completion_tokens", 0),
                             total_tokens=usage.get("total_tokens", 0),
+                            call_status="ok",
+                            duration_ms=(time.perf_counter() - _t0) * 1000,
                         )
                     _log_call_metrics(
                         method="chat", provider=self.provider, model=model or self.model,
@@ -773,6 +804,8 @@ class LLMClient(LLMProvider):
                             prompt_tokens=usage.get("prompt_tokens", 0),
                             completion_tokens=usage.get("completion_tokens", 0),
                             total_tokens=usage.get("total_tokens", 0),
+                            call_status="ok",
+                            duration_ms=(time.perf_counter() - _t0) * 1000,
                         )
                     _log_call_metrics(
                         method="chat_async", provider=self.provider, model=model or self.model,
@@ -905,6 +938,7 @@ class LLMClient(LLMProvider):
                             prompt_tokens=usage.get("prompt_tokens", 0),
                             completion_tokens=usage.get("completion_tokens", 0),
                             total_tokens=usage.get("total_tokens", 0),
+                            call_status="ok",
                         )
 
                     # Extract reasoning_content delta if present
@@ -1104,6 +1138,7 @@ class LLMClient(LLMProvider):
                         prompt_tokens=usage.get("prompt_tokens", 0),
                         completion_tokens=usage.get("completion_tokens", 0),
                         total_tokens=usage.get("total_tokens", 0),
+                        call_status="ok",
                     )
 
                 choices = obj.get("choices")

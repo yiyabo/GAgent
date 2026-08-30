@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 
@@ -63,8 +63,8 @@ def test_log_llm_usage_inserts_record(mock_db):
     assert params[7] is None  # plan_id
     assert params[8] is None  # task_id
     assert params[9] is None  # call_purpose
-    assert params[12] is not None  # estimated_cost
-    assert params[13] == "CNY"
+    assert params[17] is not None  # estimated_cost
+    assert params[18] == "CNY"
     mock_conn.commit.assert_called_once()
 
 
@@ -162,6 +162,11 @@ def test_log_usage_function_calls_repository():
             plan_id=None,
             task_id=None,
             call_purpose=None,
+            run_id=None,
+            phase="uncategorized",
+            tool_name=None,
+            call_status="ok",
+            duration_ms=None,
         )
 
 
@@ -192,6 +197,11 @@ def test_log_usage_propagates_context_from_contextvar():
                 plan_id=99,
                 task_id=5,
                 call_purpose="deep_think",
+                run_id=None,
+                phase="uncategorized",
+                tool_name=None,
+                call_status="ok",
+                duration_ms=None,
             )
     finally:
         clear_usage_context(token)
@@ -249,6 +259,8 @@ def test_chat_extracts_and_logs_usage(monkeypatch):
             prompt_tokens=100,
             completion_tokens=50,
             total_tokens=150,
+            call_status="ok",
+            duration_ms=ANY,
         )
 
 
@@ -300,6 +312,8 @@ def test_chat_async_extracts_and_logs_usage(monkeypatch):
             prompt_tokens=200,
             completion_tokens=100,
             total_tokens=300,
+            call_status="ok",
+            duration_ms=ANY,
         )
 
 
@@ -370,10 +384,11 @@ def test_log_llm_usage_accepts_explicit_cost(mock_db):
     assert params[7] == 122
     assert params[8] == 14
     assert params[9] == "qwen_code_cli_execution"
-    assert params[10] == 0.02
-    assert params[11] == 0.04
-    assert params[12] == 0.06
-    assert params[13] == "CNY"
+    assert params[10] is None  # run_id
+    assert params[15] == 0.02
+    assert params[16] == 0.04
+    assert params[17] == 0.06
+    assert params[18] == "CNY"
 
 
 def test_estimate_llm_cost_uses_default_qwen_code_rates():

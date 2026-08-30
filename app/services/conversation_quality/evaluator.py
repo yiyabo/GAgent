@@ -57,6 +57,7 @@ class ConversationQualityEvaluator:
         token = set_usage_context(
             session_id=session_id,
             call_purpose="conversation_quality_evaluation",
+            phase="audit",
         )
         try:
             raw = await self.client.chat_async(

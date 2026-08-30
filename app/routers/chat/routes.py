@@ -426,6 +426,8 @@ async def chat_message(
             session_id=request.session_id,
             plan_id=plan_session.plan_id,
             task_id=context.get("current_task_id"),
+            phase="chat",
+            call_purpose="chat_main",
         )
 
         structured = await agent.get_structured_response(message_to_send)

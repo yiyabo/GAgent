@@ -232,6 +232,8 @@ async def build_agent_for_chat_request(
         session_id=request.session_id,
         plan_id=plan_session.plan_id,
         task_id=context.get("current_task_id"),
+        phase="chat",
+        call_purpose="chat_main",
     )
 
     return agent, message_to_send

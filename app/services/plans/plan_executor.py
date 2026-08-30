@@ -1477,6 +1477,8 @@ class PlanExecutor:
             plan_id=plan_id,
             task_id=node.id,
             call_purpose="plan_task_execution",
+            phase="plan",
+            run_id=f"plan_{plan_id}_task_{node.id}",
         )
         try:
 
