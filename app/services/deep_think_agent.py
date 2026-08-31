@@ -45,6 +45,60 @@ def _describe_exception(exc: Exception) -> str:
     return exc_type
 
 
+def _classify_llm_provider_error(exc: Exception) -> Any:
+    """Classify an LLM client exception with the shared provider classifier.
+
+    Returns None when the classifier is unavailable or the failure is
+    unknown/transient (treated as retryable by the circuit breaker).
+    """
+    try:
+        from app.services.llm.llm_service import _classify_llm_exception
+    except Exception:
+        return None
+    try:
+        return _classify_llm_exception(exc)
+    except Exception:
+        return None
+
+
+def _build_llm_unavailable_final_answer(classified: Any) -> str:
+    """User-facing message when the run is aborted due to LLM provider failure."""
+    error_code = str(getattr(classified, "error_code", "") or "")
+    status = getattr(classified, "status_code", None)
+    if error_code == "llm_insufficient_quota":
+        return (
+            "LLM 模型服务额度不足，本次任务已暂停。"
+            "请联系管理员充值或调整模型配置后重试。"
+        )
+    if status == 401:
+        return (
+            "LLM 模型服务认证失败，本次任务已暂停。"
+            "请联系管理员检查 API Key 配置后重试。"
+        )
+    if status == 403:
+        return (
+            "LLM 模型服务拒绝请求（HTTP 403，通常为额度不足或权限受限），本次任务已暂停。"
+            "请联系管理员充值或检查配置后重试。"
+        )
+    if isinstance(status, int) and 400 <= status < 500:
+        return (
+            f"LLM 模型服务拒绝了请求（HTTP {status}），本次任务已暂停。"
+            "请联系管理员检查模型服务配置后重试。"
+        )
+    return (
+        "LLM 模型服务连续调用失败，本次任务已暂停。"
+        "请稍后重试；若问题持续，请联系管理员检查模型服务状态。"
+    )
+
+
+def _default_max_consecutive_llm_failures() -> int:
+    raw = os.getenv("DEEP_THINK_MAX_CONSECUTIVE_LLM_FAILURES", "5")
+    try:
+        return max(1, int(raw))
+    except (TypeError, ValueError):
+        return 5
+
+
 def _load_bio_tools_catalog() -> Dict[str, List[str]]:
     config_path = Path(__file__).resolve().parents[2] / "tool_box" / "bio_tools" / "tools_config.json"
     try:
@@ -4156,6 +4210,9 @@ class DeepThinkAgent:
         structured_plan_finalize_nudge_plan_id: Optional[int] = None
         runtime_iteration_limit = self.max_iterations
         handoff_iteration_extensions = 0
+        consecutive_llm_failures = 0
+        max_consecutive_llm_failures = _default_max_consecutive_llm_failures()
+        llm_fatal_abort = False
 
         logger.info("[DEEP_THINK_NATIVE] Starting for: %s", user_query[:50])
 
@@ -4235,8 +4292,27 @@ class DeepThinkAgent:
                 thinking_steps.append(current_step)
                 if self.on_thinking:
                     await self._safe_callback(current_step)
+                classified = _classify_llm_provider_error(exc)
+                if classified is not None and not classified.retryable:
+                    logger.error(
+                        "[DEEP_THINK_NATIVE] Non-retryable LLM provider error (%s); aborting run",
+                        getattr(classified, "error_code", "unknown"),
+                    )
+                    consecutive_llm_failures = max_consecutive_llm_failures
+                else:
+                    consecutive_llm_failures += 1
+                if consecutive_llm_failures >= max_consecutive_llm_failures:
+                    final_answer = _build_llm_unavailable_final_answer(classified)
+                    fallback_used = True
+                    llm_fatal_abort = True
+                    logger.error(
+                        "[DEEP_THINK_NATIVE] Circuit breaker tripped after %d consecutive LLM failure(s); aborting run",
+                        consecutive_llm_failures,
+                    )
+                    break
                 continue
 
+            consecutive_llm_failures = 0
             current_step.thought = result.content or ""
 
             if result.tool_calls:
@@ -5134,7 +5210,7 @@ class DeepThinkAgent:
                     ),
                 })
 
-        if final_answer and not self._is_valid_final_answer(final_answer, user_query=user_query):
+        if final_answer and not llm_fatal_abort and not self._is_valid_final_answer(final_answer, user_query=user_query):
             logger.info("[DEEP_THINK_NATIVE] Rejected process-only final answer; switching to fallback synthesis")
             final_answer = ""
 

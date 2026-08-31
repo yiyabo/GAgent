@@ -26,6 +26,7 @@ import logging
 import os
 import re
 import tarfile
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -39,8 +40,53 @@ logger = logging.getLogger(__name__)
 
 _PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve()
 _RUNTIME_DIR = _PROJECT_ROOT / "runtime"
-_MAX_FULLTEXT_CHARS = 80_000
+_MAX_FULLTEXT_CHARS = int(os.getenv("LITERATURE_MAX_FULLTEXT_CHARS", "12000") or "12000")
+_LITERATURE_CACHE_DIR = _RUNTIME_DIR / "literature_cache"
+_LITERATURE_CACHE_TTL_SEC = int(os.getenv("LITERATURE_CACHE_TTL_SEC", str(7 * 24 * 3600)) or "604800")
 _PMC_OA_UTILITY_TIMEOUT = 30.0
+
+
+def _literature_cache_paths(pmcid: str) -> Tuple[Path, Path]:
+    key = re.sub(r"[^A-Za-z0-9_-]", "_", str(pmcid or "").strip()) or "unknown"
+    return (
+        _LITERATURE_CACHE_DIR / f"{key}.txt",
+        _LITERATURE_CACHE_DIR / f"{key}.meta.json",
+    )
+
+
+def _literature_cache_read(pmcid: str) -> Optional[str]:
+    """Return cached full text for *pmcid* when fresh, else None."""
+    txt_path, meta_path = _literature_cache_paths(pmcid)
+    try:
+        if not txt_path.exists() or not meta_path.exists():
+            return None
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        ts = float(meta.get("fetched_at") or 0)
+        if ts <= 0 or (time.time() - ts) > _LITERATURE_CACHE_TTL_SEC:
+            return None
+        text = txt_path.read_text(encoding="utf-8")
+        if text and text.strip():
+            return text
+    except Exception as exc:
+        logger.debug("literature cache read failed for %s: %s", pmcid, exc)
+    return None
+
+
+def _literature_cache_write(pmcid: str, full_text: str) -> None:
+    if not full_text or not full_text.strip():
+        return
+    txt_path, meta_path = _literature_cache_paths(pmcid)
+    try:
+        _LITERATURE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        tmp_txt = txt_path.with_suffix(".txt.tmp")
+        tmp_txt.write_text(full_text, encoding="utf-8")
+        tmp_txt.replace(txt_path)
+        meta_path.write_text(
+            json.dumps({"pmcid": pmcid, "fetched_at": time.time()}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except Exception as exc:
+        logger.debug("literature cache write failed for %s: %s", pmcid, exc)
 _PMC_OA_PDF_TIMEOUT = 30.0
 _PMC_OA_ARCHIVE_TIMEOUT = 45.0
 _PMC_ARTICLE_PAGE_TIMEOUT = 20.0
@@ -903,12 +949,17 @@ def _fallback_pubmed_query(raw_query: str) -> Optional[str]:
 async def _download_pmc_pdf(
     client: httpx.AsyncClient, pmcid: str, out_path: Path
 ) -> Tuple[bool, Optional[str], Optional[str]]:
+    cached_text = _literature_cache_read(pmcid)
+    if cached_text is not None:
+        logger.info("literature cache hit for %s (%d chars)", pmcid, len(cached_text))
+        return True, None, cached_text
     oa_error: Optional[str] = None
     try:
         oa_pdf_path, oa_full_text, oa_error = await _download_pmc_oa_fulltext(client, pmcid, out_path)
         if oa_pdf_path is not None:
             return True, None, None
         if oa_full_text and oa_full_text.strip():
+            _literature_cache_write(pmcid, oa_full_text)
             return True, None, oa_full_text
     except Exception as exc:
         oa_error = f"OA utility error: {type(exc).__name__}: {exc}"
@@ -925,6 +976,7 @@ async def _download_pmc_pdf(
             full_text = _extract_text_from_oa_xml(xr.content)
             if full_text and len(full_text.strip()) > 200:
                 logger.info("Europe PMC XML fallback succeeded for %s (%d chars)", pmcid, len(full_text))
+                _literature_cache_write(pmcid, full_text)
                 return True, None, full_text
     except Exception as exc:
         logger.debug("Europe PMC XML fallback failed for %s: %s", pmcid, exc)

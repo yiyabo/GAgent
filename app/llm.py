@@ -1,5 +1,6 @@
 import asyncio
 import contextvars
+import functools
 import json
 import logging
 import os
@@ -188,6 +189,84 @@ def clear_usage_context(token: contextvars.Token) -> None:
 
 _shared_async_clients: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, httpx.AsyncClient]" = weakref.WeakKeyDictionary()
 _async_clients_lock = threading.RLock()
+
+# Registry of asyncio tasks currently blocked inside an outbound LLM call.
+# At shutdown these tasks are cancelled so upstream providers stop generating
+# (and billing) tokens that no client will ever receive.
+_inflight_llm_tasks: "weakref.WeakSet[asyncio.Task]" = weakref.WeakSet()
+_inflight_llm_lock = threading.RLock()
+
+
+def _register_inflight_task() -> "Optional[asyncio.Task]":
+    try:
+        task = asyncio.current_task()
+    except RuntimeError:
+        return None
+    if task is not None:
+        with _inflight_llm_lock:
+            _inflight_llm_tasks.add(task)
+    return task
+
+
+def _unregister_inflight_task(task: "Optional[asyncio.Task]") -> None:
+    if task is None:
+        return
+    with _inflight_llm_lock:
+        _inflight_llm_tasks.discard(task)
+
+
+def _track_inflight(coro):
+    """Decorator: register the caller task for the duration of a coroutine LLM call."""
+
+    @functools.wraps(coro)
+    async def wrapper(*args, **kwargs):
+        task = _register_inflight_task()
+        try:
+            return await coro(*args, **kwargs)
+        finally:
+            _unregister_inflight_task(task)
+
+    return wrapper
+
+
+def _track_inflight_gen(agen):
+    """Decorator: register the caller task while an async-generator LLM call is consumed."""
+
+    @functools.wraps(agen)
+    async def wrapper(*args, **kwargs):
+        task = _register_inflight_task()
+        try:
+            async for chunk in agen(*args, **kwargs):
+                yield chunk
+        finally:
+            _unregister_inflight_task(task)
+
+    return wrapper
+
+
+async def cancel_inflight_llm_calls(grace_sec: float = 5.0) -> int:
+    """Cancel all tasks currently inside an LLM call. Returns number cancelled.
+
+    Called during application shutdown, before the shared HTTP clients are
+    closed, so that long-running generations are aborted instead of becoming
+    orphans that keep billing after the backend is gone.
+    """
+    with _inflight_llm_lock:
+        tasks = [t for t in list(_inflight_llm_tasks) if not t.done()]
+    if not tasks:
+        return 0
+    logger.info("[LLM] Cancelling %d in-flight LLM task(s) for shutdown", len(tasks))
+    for t in tasks:
+        t.cancel()
+    _, pending = await asyncio.wait(tasks, timeout=max(0.5, float(grace_sec)))
+    if pending:
+        logger.warning(
+            "[LLM] %d in-flight LLM task(s) still pending after %.1fs grace",
+            len(pending),
+            grace_sec,
+        )
+    return len(tasks)
+
 _shared_sync_client: Optional[httpx.Client] = None
 
 # Default pool limits — generous enough for multi-provider concurrent usage
@@ -751,6 +830,7 @@ class LLMClient(LLMProvider):
                 )
                 raise RuntimeError(f"LLM request failed: {e}")
 
+    @_track_inflight
     async def chat_async(
         self,
         prompt: str,
@@ -849,6 +929,7 @@ class LLMClient(LLMProvider):
                 )
                 raise RuntimeError(f"LLM request failed: {e}")
 
+    @_track_inflight_gen
     async def stream_chat_async(
         self,
         prompt: str,
@@ -975,6 +1056,7 @@ class LLMClient(LLMProvider):
                 ttft_ms=_ttft_ms, usage=_last_usage, error=_stream_err,
             )
 
+    @_track_inflight
     async def stream_chat_with_tools_async(
         self,
         messages: list,

@@ -30,7 +30,7 @@ from .errors import (
 )
 from .errors.exceptions import ErrorCategory
 from .errors.exceptions import SystemError as CustomSystemError
-from .llm import get_default_client, init_shared_clients, close_shared_clients
+from .llm import get_default_client, init_shared_clients, close_shared_clients, cancel_inflight_llm_calls
 from .middleware.proxy_auth import ProxyAuthMiddleware
 from .services.realtime_bus import close_realtime_bus, init_realtime_bus
 
@@ -239,6 +239,14 @@ async def lifespan(_fastapi_app: FastAPI):
         try:
             await close_realtime_bus()
         finally:
+            # Cancel in-flight LLM calls first so upstream providers stop
+            # generating (and billing) tokens nobody will receive.
+            try:
+                await cancel_inflight_llm_calls(grace_sec=5.0)
+            except Exception as exc:
+                logging.getLogger("app.main").warning(
+                    "Failed to cancel in-flight LLM calls: %s", exc,
+                )
             await close_shared_clients()
 
 

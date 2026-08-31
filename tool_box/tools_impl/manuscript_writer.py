@@ -359,10 +359,28 @@ def _build_llm_service(
     return get_llm_service(), model
 
 
-async def _chat(llm: LLMService, prompt: str, model: Optional[str]) -> str:
+async def _chat(
+    llm: LLMService,
+    prompt: str,
+    model: Optional[str],
+    max_tokens: Optional[int] = None,
+) -> str:
+    kwargs: Dict[str, Any] = {}
     if model:
-        return await llm.chat_async(prompt, model=model)
-    return await llm.chat_async(prompt)
+        kwargs["model"] = model
+    if max_tokens is not None:
+        kwargs["max_tokens"] = max_tokens
+    return await llm.chat_async(prompt, **kwargs)
+
+
+# Per-stage output caps (tokens). Output tokens dominate cost on the current
+# relay (~86x input price), so long-form generation must not inherit the
+# client-side 16k default.
+_MAX_TOKENS_SECTION = int(os.getenv("MANUSCRIPT_MAX_TOKENS_SECTION", "4000") or "4000")
+_MAX_TOKENS_EVAL = int(os.getenv("MANUSCRIPT_MAX_TOKENS_EVAL", "2000") or "2000")
+_MAX_TOKENS_MEMO = int(os.getenv("MANUSCRIPT_MAX_TOKENS_MEMO", "3000") or "3000")
+_MAX_TOKENS_TRANSITION = int(os.getenv("MANUSCRIPT_MAX_TOKENS_TRANSITION", "1000") or "1000")
+_MAX_TOKENS_MERGE = int(os.getenv("MANUSCRIPT_MAX_TOKENS_MERGE", "8000") or "8000")
 
 
 async def _maybe_wait_with_timeout(
@@ -2504,6 +2522,7 @@ async def manuscript_writer_handler(
                     review_mode=review_mode,
                 ),
                 gen_model,
+                max_tokens=_MAX_TOKENS_SECTION,
             )
 
             evaluation_data: Optional[Dict[str, Any]] = None
@@ -2520,7 +2539,7 @@ async def manuscript_writer_handler(
                     requirements,
                     review_mode=review_mode,
                 )
-                eval_raw = await _chat(eval_llm, eval_prompt, eval_model)
+                eval_raw = await _chat(eval_llm, eval_prompt, eval_model, max_tokens=_MAX_TOKENS_EVAL)
                 evaluation_data = _parse_json_payload(eval_raw)
 
                 if evaluation_data is None:
@@ -2568,7 +2587,7 @@ async def manuscript_writer_handler(
                     requirements,
                     review_mode=review_mode,
                 )
-                text = await _chat(gen_llm, revision_prompt, gen_model)
+                text = await _chat(gen_llm, revision_prompt, gen_model, max_tokens=_MAX_TOKENS_SECTION)
 
             section_path.write_text(text, encoding="utf-8")
             return {
@@ -2751,7 +2770,7 @@ async def manuscript_writer_handler(
         )
 
         analysis_prompt = _build_analysis_prompt(task, context_text, section_list)
-        analysis_memo = await _chat(gen_llm, analysis_prompt, gen_model)
+        analysis_memo = await _chat(gen_llm, analysis_prompt, gen_model, max_tokens=_MAX_TOKENS_MEMO)
         analysis_file.write_text(analysis_memo, encoding="utf-8")
 
         # ---------------------------------------------------------------
@@ -2997,7 +3016,7 @@ async def manuscript_writer_handler(
                 f"End of '{_section_title(sec_a)}':\n{tail_a}\n\n"
                 f"Start of '{_section_title(sec_b)}':\n{head_b}"
             )
-            return await _chat(merge_llm, prompt, merge_model_name)
+            return await _chat(merge_llm, prompt, merge_model_name, max_tokens=_MAX_TOKENS_TRANSITION)
 
         # Run transition smoothing in parallel for all adjacent pairs
         if len(ordered_sections) >= 2:
@@ -3068,7 +3087,7 @@ async def manuscript_writer_handler(
                         )
                     current_polish_stage = "polish_generation"
                     polished_candidate = await _maybe_wait_with_timeout(
-                        _chat(final_polish_merge_llm, polish_prompt, merge_model_name),
+                        _chat(final_polish_merge_llm, polish_prompt, merge_model_name, max_tokens=_MAX_TOKENS_MERGE),
                         final_polish_step_timeout_sec,
                     )
                     attempt_path = merge_dir / f"polished_draft_attempt_{attempt}.md"
@@ -3082,7 +3101,7 @@ async def manuscript_writer_handler(
                     )
                     current_polish_stage = "release_review"
                     review_raw = await _maybe_wait_with_timeout(
-                        _chat(final_polish_eval_llm, review_prompt, eval_model),
+                        _chat(final_polish_eval_llm, review_prompt, eval_model, max_tokens=_MAX_TOKENS_EVAL),
                         final_polish_step_timeout_sec,
                     )
                     release_review = _parse_json_payload(review_raw)
