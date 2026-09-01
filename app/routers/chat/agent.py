@@ -3806,6 +3806,19 @@ class StructuredChatAgent:
                                 block_reason,
                                 blocked_ids,
                             )
+                            if block_reason == "all_completed":
+                                # Tasks already completed is not a failure: report a
+                                # successful no-op so downstream failure templates
+                                # (truth barrier) are not triggered.
+                                return {
+                                    "success": True,
+                                    "tool": "code_executor",
+                                    "summary": summary,
+                                    "error": None,
+                                    "skipped_reason": "already_completed",
+                                    "blocked_task_ids": blocked_ids,
+                                    "error_category": error_category,
+                                }
                             return {
                                 "success": False,
                                 "tool": "code_executor",

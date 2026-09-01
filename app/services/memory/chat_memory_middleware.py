@@ -4,6 +4,7 @@ Chat memory middleware.
 Uses LLM signals to decide whether chat content should be saved to long-term memory.
 """
 
+import asyncio
 import json
 import logging
 from typing import Optional
