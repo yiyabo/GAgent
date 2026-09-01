@@ -18,6 +18,7 @@ from app.services.response_style import (
     sanitize_professional_response_text,
 )
 from app.services.tool_schemas import build_tool_schemas
+from app.llm import update_usage_context
 
 logger = logging.getLogger(__name__)
 
@@ -4270,6 +4271,7 @@ class DeepThinkAgent:
                         except Exception:
                             pass
 
+                update_usage_context(call_purpose="deep_think_iteration", phase="deep_think", tool_name="deep_think")
                 result = await self.llm_client.stream_chat_with_tools_async(
                     messages=messages,
                     tools=tool_schemas,
@@ -8126,6 +8128,7 @@ When ready to answer:
         messages: List[Dict[str, Any]],
         task_context: Optional[TaskExecutionContext] = None,
     ) -> str:
+        update_usage_context(call_purpose="deep_think_forced_synthesis", phase="deep_think")
         """Make one final LLM call with all context asking it to synthesize a complete answer.
 
         This is more powerful than _generate_fallback_from_evidence because it

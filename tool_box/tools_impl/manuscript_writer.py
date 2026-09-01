@@ -12,6 +12,8 @@ Pipeline:
 
 from __future__ import annotations
 
+from app.llm import update_usage_context
+
 import asyncio
 import json
 import logging
@@ -31,6 +33,10 @@ logger = logging.getLogger(__name__)
 _PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve()
 _RUNTIME_DIR = _PROJECT_ROOT / "runtime"
 _DEFAULT_MAX_CONTEXT_BYTES = 200_000  # 200 KB per file
+# Evidence/context injection caps: re-sending full 200 KB files on every
+# section/memo call was the dominant input-token driver.
+_EVIDENCE_MD_MAX_BYTES = int(os.getenv("MANUSCRIPT_EVIDENCE_MD_MAX_BYTES", "32768") or "32768")
+_CONTEXT_FILE_MAX_BYTES = int(os.getenv("MANUSCRIPT_CONTEXT_FILE_MAX_BYTES", "49152") or "49152")
 _DEFAULT_MAX_REVISIONS = 5
 _DEFAULT_THRESHOLD = 0.8
 _DEFAULT_FINAL_POLISH_MAX_REVISIONS = 2
@@ -258,7 +264,7 @@ def _build_context_blocks(paths: Iterable[str], max_bytes: int) -> str:
             if path.suffix.lower() not in _ALLOWED_TEXT_EXTENSIONS:
                 logger.warning("Skipping unsupported context file type: %s", path)
                 continue
-            content = _read_text_file(path, max_bytes)
+            content = _read_text_file(path, min(max_bytes, _CONTEXT_FILE_MAX_BYTES))
             rel = path.relative_to(_PROJECT_ROOT)
             blocks.append(f"### File: {rel}\n{content}")
         except Exception as exc:
@@ -364,7 +370,11 @@ async def _chat(
     prompt: str,
     model: Optional[str],
     max_tokens: Optional[int] = None,
+    purpose: Optional[str] = None,
 ) -> str:
+    update_usage_context(
+        call_purpose=purpose or "manuscript_writer", tool_name="manuscript_writer", phase="tool"
+    )
     kwargs: Dict[str, Any] = {}
     if model:
         kwargs["model"] = model
@@ -772,7 +782,9 @@ def _load_review_evidence(
             coverage_report = None
     if evidence_md_path:
         try:
-            evidence_md_text = _read_text_file(_resolve_project_path(evidence_md_path), max_context_bytes)
+            evidence_md_text = _read_text_file(
+                _resolve_project_path(evidence_md_path), min(max_context_bytes, _EVIDENCE_MD_MAX_BYTES)
+            )
         except Exception:
             evidence_md_text = ""
 
@@ -1758,7 +1770,7 @@ def _assemble_local_draft_from_context(
         if bucket is None:
             continue
         try:
-            content = _read_text_file(path, max_context_bytes).strip()
+            content = _read_text_file(path, min(max_context_bytes, _CONTEXT_FILE_MAX_BYTES)).strip()
         except Exception:
             continue
         if not content:
@@ -2539,7 +2551,7 @@ async def manuscript_writer_handler(
                     requirements,
                     review_mode=review_mode,
                 )
-                eval_raw = await _chat(eval_llm, eval_prompt, eval_model, max_tokens=_MAX_TOKENS_EVAL)
+                eval_raw = await _chat(eval_llm, eval_prompt, eval_model, max_tokens=_MAX_TOKENS_EVAL, purpose="manuscript_writer:eval")
                 evaluation_data = _parse_json_payload(eval_raw)
 
                 if evaluation_data is None:
@@ -2587,7 +2599,7 @@ async def manuscript_writer_handler(
                     requirements,
                     review_mode=review_mode,
                 )
-                text = await _chat(gen_llm, revision_prompt, gen_model, max_tokens=_MAX_TOKENS_SECTION)
+                text = await _chat(gen_llm, revision_prompt, gen_model, max_tokens=_MAX_TOKENS_SECTION, purpose="manuscript_writer:section")
 
             section_path.write_text(text, encoding="utf-8")
             return {
@@ -2770,7 +2782,7 @@ async def manuscript_writer_handler(
         )
 
         analysis_prompt = _build_analysis_prompt(task, context_text, section_list)
-        analysis_memo = await _chat(gen_llm, analysis_prompt, gen_model, max_tokens=_MAX_TOKENS_MEMO)
+        analysis_memo = await _chat(gen_llm, analysis_prompt, gen_model, max_tokens=_MAX_TOKENS_MEMO, purpose="manuscript_writer:memo")
         analysis_file.write_text(analysis_memo, encoding="utf-8")
 
         # ---------------------------------------------------------------
@@ -3016,7 +3028,7 @@ async def manuscript_writer_handler(
                 f"End of '{_section_title(sec_a)}':\n{tail_a}\n\n"
                 f"Start of '{_section_title(sec_b)}':\n{head_b}"
             )
-            return await _chat(merge_llm, prompt, merge_model_name, max_tokens=_MAX_TOKENS_TRANSITION)
+            return await _chat(merge_llm, prompt, merge_model_name, max_tokens=_MAX_TOKENS_TRANSITION, purpose="manuscript_writer:merge")
 
         # Run transition smoothing in parallel for all adjacent pairs
         if len(ordered_sections) >= 2:
@@ -3087,7 +3099,7 @@ async def manuscript_writer_handler(
                         )
                     current_polish_stage = "polish_generation"
                     polished_candidate = await _maybe_wait_with_timeout(
-                        _chat(final_polish_merge_llm, polish_prompt, merge_model_name, max_tokens=_MAX_TOKENS_MERGE),
+                        _chat(final_polish_merge_llm, polish_prompt, merge_model_name, max_tokens=_MAX_TOKENS_MERGE, purpose="manuscript_writer:polish"),
                         final_polish_step_timeout_sec,
                     )
                     attempt_path = merge_dir / f"polished_draft_attempt_{attempt}.md"
@@ -3101,7 +3113,7 @@ async def manuscript_writer_handler(
                     )
                     current_polish_stage = "release_review"
                     review_raw = await _maybe_wait_with_timeout(
-                        _chat(final_polish_eval_llm, review_prompt, eval_model, max_tokens=_MAX_TOKENS_EVAL),
+                        _chat(final_polish_eval_llm, review_prompt, eval_model, max_tokens=_MAX_TOKENS_EVAL, purpose="manuscript_writer:eval"),
                         final_polish_step_timeout_sec,
                     )
                     release_review = _parse_json_payload(review_raw)
