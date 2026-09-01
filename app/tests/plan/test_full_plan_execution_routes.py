@@ -930,8 +930,8 @@ def test_get_plan_tree_exposes_effective_status_and_dependency_block_reason(
 
     assert payload["nodes"]["1"]["status"] == "failed"
     assert payload["nodes"]["1"]["effective_status"] == "failed"
-    assert payload["nodes"]["2"]["status"] == "blocked"
-    assert payload["nodes"]["2"]["blocked_by_dependencies"] is True
+    assert payload["nodes"]["2"]["status"] == "pending"  # blocked disabled by default
+    assert payload["nodes"]["2"]["blocked_by_dependencies"] is False  # blocked disabled by default
     assert payload["nodes"]["2"]["incomplete_dependencies"] == [1]
 
 
@@ -976,9 +976,9 @@ def test_get_plan_tree_keeps_alias_blocked_tasks_blocked_without_known_producer(
 
     payload = plan_routes.get_plan_tree(7, _build_request("alice"))
 
-    assert payload["nodes"]["1"]["status"] == "blocked"
-    assert payload["nodes"]["1"]["effective_status"] == "blocked"
-    assert payload["nodes"]["1"]["blocked_by_dependencies"] is True
+    assert payload["nodes"]["1"]["status"] == "pending"  # blocked disabled by default
+    assert payload["nodes"]["1"]["effective_status"] == "pending"  # blocked disabled by default
+    assert payload["nodes"]["1"]["blocked_by_dependencies"] is False  # blocked disabled by default
     assert "ai_dl.evidence_md" in payload["nodes"]["1"]["status_reason"]
 
 
