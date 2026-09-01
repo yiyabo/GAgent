@@ -4549,7 +4549,7 @@ class PlanExecutor:
             if bool(manifest.get("artifacts")):
                 metadata["artifact_manifest_path"] = str(artifact_manifest_path(plan_id, session_id))
             self._save_artifact_manifest(plan_id, manifest, session_context)
-            if final_status == "completed" and session_id:
+            if session_id:
                 self._publish_contract_deliverables(
                     plan_id=plan_id,
                     node=node,
@@ -4560,6 +4560,153 @@ class PlanExecutor:
         return payload
 
     def _publish_contract_deliverables(
+        self,
+        *,
+        plan_id: int,
+        node: PlanNode,
+        published: Dict[str, Dict[str, Any]],
+        session_context: Optional[Dict[str, Any]],
+        manifest: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        session_id = session_context.get("session_id") if isinstance(session_context, dict) else None
+        if not session_id:
+            logger.debug(f"Plan {plan_id} task {node.id}: No session_id, skipping deliverable publish")
+            return
+
+        from app.config.deliverable_config import get_deliverable_settings
+
+        settings = get_deliverable_settings()
+        if not getattr(settings, "artifact_event_stream_enabled", True):
+            self._legacy_publish_contract_deliverables(
+                plan_id=plan_id,
+                node=node,
+                published=published,
+                session_context=session_context,
+                manifest=manifest,
+            )
+            return
+
+        # Unified path: emit one artifact.produced event per output and let
+        # the registry projector materialize them.  Publishing no longer
+        # depends on the publisher's filename-keyword whitelists (which used
+        # to silently drop real task outputs like task1_evidence_cards.md).
+        from typing import List, Tuple
+
+        pairs: List[Tuple[Optional[str], str]] = []
+        seen_paths: set = set()
+
+        def _collect(alias: Optional[str], entry: Any) -> None:
+            if not isinstance(entry, dict):
+                return
+            path_text = str(entry.get("path") or "").strip()
+            if not path_text or path_text in seen_paths:
+                return
+            if not Path(path_text).is_file():
+                return
+            seen_paths.add(path_text)
+            pairs.append((alias, path_text))
+
+        for alias, entry in (published or {}).items():
+            if isinstance(alias, str):
+                _collect(alias, entry)
+        if isinstance(manifest, dict):
+            manifest_artifacts = manifest.get("artifacts", {})
+            if isinstance(manifest_artifacts, dict):
+                for key, entry in manifest_artifacts.items():
+                    if isinstance(key, str) and key.startswith("contract:"):
+                        _collect(key, entry)
+
+        if not pairs:
+            logger.info("Plan %s task %s: no publishable artifacts to deliver", plan_id, node.id)
+            return
+
+        finale = self._task_completes_plan(node)
+        from app.services.artifacts.events import ArtifactEvent
+
+        events: List[ArtifactEvent] = []
+        for alias, path_text in pairs:
+            path = Path(path_text)
+            try:
+                size = path.stat().st_size
+            except OSError:
+                size = None
+            is_contract_alias = bool(alias) and str(alias).startswith("contract:")
+            semantic_alias = None if is_contract_alias else alias
+            role = "final_report" if (finale or str(alias or "").startswith("report.")) else "normal"
+            events.append(
+                ArtifactEvent(
+                    session_id=session_id,
+                    file_path=str(path),
+                    alias=semantic_alias,
+                    path_aliases=[str(alias)] if alias else [],
+                    file_size=size,
+                    file_ext=path.suffix.lower(),
+                    producer_kind="plan_task",
+                    producer_plan_id=plan_id,
+                    producer_task_id=node.id,
+                    producer_task_name=node.display_name(),
+                    contract_declared=bool(semantic_alias),
+                    contract_alias_source="decomposer" if semantic_alias else "executor",
+                    publish_requested=True,
+                    publish_role=role,
+                )
+            )
+
+        logger.info(
+            "Plan %s task %s: emitting %d artifact event(s) to the registry projector",
+            plan_id,
+            node.id,
+            len(events),
+        )
+        try:
+            from app.services.artifacts.projector import get_registry_projector
+
+            get_registry_projector().consume_plan_events(
+                session_id=session_id,
+                events=events,
+                plan_id=plan_id,
+                task_id=node.id,
+                task_name=node.display_name(),
+                task_instruction=node.instruction or "",
+            )
+            logger.info(f"Plan {plan_id} task {node.id}: Successfully published contract deliverables")
+        except Exception as exc:
+            logger.warning(
+                "Failed to publish contract deliverables for plan %s task %s: %s",
+                plan_id, node.id, exc,
+            )
+
+    def _task_completes_plan(self, node: PlanNode) -> bool:
+        """True when this node is a leaf and every other leaf task is already
+        terminal — i.e. this completion finishes the plan (final report)."""
+        try:
+            tree = self._repo.get_plan_tree(node.plan_id)
+            nodes = getattr(tree, "nodes", {}) or {}
+        except Exception:
+            return False
+        try:
+            own_children = getattr(node, "children_ids", None) or getattr(node, "children", None) or []
+            if own_children:
+                return False
+            terminal = {"completed", "failed", "skipped", "cancelled", "canceled", "succeeded", "success"}
+            own_id = getattr(node, "id", None)
+            for other in nodes.values():
+                if getattr(other, "id", None) == own_id:
+                    continue
+                children = getattr(other, "children_ids", None) or getattr(other, "children", None) or []
+                if children:
+                    continue
+                node_type = str(getattr(other, "node_type", "") or "").strip().lower()
+                if node_type in {"root", "composite"}:
+                    continue
+                status = str(getattr(other, "status", "") or "").strip().lower()
+                if status and status not in terminal:
+                    return False
+            return True
+        except Exception:
+            return False
+
+    def _legacy_publish_contract_deliverables(
         self,
         *,
         plan_id: int,

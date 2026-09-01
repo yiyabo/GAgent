@@ -969,7 +969,10 @@ async def get_session_deliverable_file(
 
     _assert_path_within(target, files_root.resolve(), detail="Invalid deliverable path")
     if not target.exists() or not target.is_file():
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Deliverable file not found")
+        reference_target = _resolve_reference_deliverable(session_dir=session_dir, rel_path=path)
+        if reference_target is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Deliverable file not found")
+        target = reference_target
 
     media_type, _ = mimetypes.guess_type(str(target))
     ext = target.suffix.lower()
@@ -1001,7 +1004,10 @@ async def get_session_deliverable_text(
 
     _assert_path_within(target, files_root.resolve(), detail="Invalid deliverable path")
     if not target.exists() or not target.is_file():
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Deliverable not found")
+        reference_target = _resolve_reference_deliverable(session_dir=session_dir, rel_path=path)
+        if reference_target is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Deliverable not found")
+        target = reference_target
 
     raw = target.read_bytes()
     truncated = len(raw) > max_bytes
@@ -1009,6 +1015,64 @@ async def get_session_deliverable_text(
         raw = raw[:max_bytes]
     content = raw.decode("utf-8", errors="replace")
     return ArtifactTextResponse(path=path, content=content, truncated=truncated)
+
+
+def _resolve_reference_deliverable(*, session_dir: Path, rel_path: str) -> Optional[Path]:
+    """Resolve a manifest row stored as ``storage=reference`` to its source.
+
+    Reference rows are not copied into deliverables/latest (big-file policy);
+    the file is served from its source location, which must live inside the
+    session directory.
+    """
+    manifest = _safe_json_load(_deliverables_root(session_dir) / "manifest_latest.json")
+    normalized = rel_path.replace("\\", "/").strip("/")
+    for item in manifest.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        item_path = str(item.get("path") or "").replace("\\", "/").strip("/")
+        if item_path != normalized:
+            continue
+        if str(item.get("storage") or "") != "reference":
+            continue
+        source = str(item.get("reference_source") or "").strip()
+        if not source:
+            source_rel = str(item.get("source_path") or "").strip()
+            if not source_rel:
+                return None
+            try:
+                project_root = session_dir.resolve().parents[1]
+            except Exception:
+                return None
+            source = str(project_root / source_rel)
+        try:
+            resolved = Path(source).resolve()
+        except Exception:
+            return None
+        if not resolved.is_file():
+            return None
+        try:
+            resolved.relative_to(session_dir.resolve())
+        except Exception:
+            return None
+        return resolved
+    return None
+
+
+@router.get("/sessions/{session_id}/artifacts/registry")
+async def get_session_artifact_registry(session_id: str, request: Request) -> Dict[str, Any]:
+    """Per-session artifact registry snapshot (event-stream fact source)."""
+    _ensure_session_access(session_id, request)
+    session_dir = _resolve_session_dir(session_id, purpose="generic")
+    payload = _safe_json_load(session_dir / "artifacts" / "registry.json")
+    if not payload:
+        return {
+            "schema_version": 1,
+            "session_id": session_id,
+            "updated_at": None,
+            "event_ids": [],
+            "items": {},
+        }
+    return payload
 
 
 def _collect_batch_files(

@@ -3095,6 +3095,26 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
                 exc,
             )
 
+        if deliverable_report is not None:
+            try:
+                from app.services.artifacts.projector import get_registry_projector
+
+                get_registry_projector().record_chat_publish(
+                    session_id=agent.session_id,
+                    tool_name=tool_name,
+                    report=deliverable_report,
+                    job_id=get_current_job(),
+                    plan_id=agent.plan_session.plan_id,
+                    task_id=publish_task_id,
+                    task_name=publish_task_name,
+                )
+            except Exception:
+                logger.debug(
+                    "artifact event stream record failed for tool %s",
+                    tool_name,
+                    exc_info=True,
+                )
+
     if tool_name == "deliverable_submit":
         submit_summary = format_deliverable_submit_summary(deliverable_report)
         if submit_summary:

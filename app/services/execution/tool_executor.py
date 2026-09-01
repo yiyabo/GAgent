@@ -169,6 +169,24 @@ class UnifiedToolExecutor:
                     publish_status="final" if tool_success else "draft",
                 )
                 if report is not None:
+                    try:
+                        from app.services.artifacts.projector import get_registry_projector
+
+                        get_registry_projector().record_chat_publish(
+                            session_id=context.session_id,
+                            tool_name=tool_name,
+                            report=report,
+                            job_id=context.current_job_id,
+                            plan_id=context.plan_id,
+                            task_id=context.task_id,
+                            task_name=context.task_name,
+                        )
+                    except Exception:
+                        logger.debug(
+                            "artifact event stream record failed for tool %s",
+                            tool_name,
+                            exc_info=True,
+                        )
                     if tool_name == "deliverable_submit":
                         submit_summary = format_deliverable_submit_summary(report)
                         if submit_summary:

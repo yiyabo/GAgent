@@ -1080,13 +1080,13 @@ class DeliverablePublisher:
             module = rel_parts[0].strip().lower() if rel_parts else ""
             if module not in allowed_modules:
                 continue
-            if module == "docs" and not self._is_allowed_doc_file(file_path):
-                continue
-            if not self._should_publish_file(module, file_path):
-                continue
-
             key = f"{module}::{rel_path}"
             source = update_map.get(key) or previous_map.get(key) or {}
+            trusted_publish = bool(source.get("trusted_publish"))
+            if module == "docs" and not trusted_publish and not self._is_allowed_doc_file(file_path):
+                continue
+            if not trusted_publish and not self._should_publish_file(module, file_path):
+                continue
 
             source_path_str = str(source.get("source_path") or "").strip()
             if source_path_str and self._source_path_is_blocked(source_path_str):
@@ -1119,6 +1119,12 @@ class DeliverablePublisher:
                 "updated_at": updated_at or fallback_timestamp,
                 "source_path": str(source_path) if source_path is not None else None,
             }
+            if source.get("trusted_publish"):
+                row["trusted_publish"] = True
+            if source.get("storage"):
+                row["storage"] = source.get("storage")
+            if source.get("reference_source"):
+                row["reference_source"] = source.get("reference_source")
             checksum = source.get("sha256")
             if isinstance(checksum, str) and checksum.strip():
                 row["sha256"] = checksum.strip()
@@ -1368,11 +1374,20 @@ class DeliverablePublisher:
         previous_manifest: Dict[str, Any],
         from_explicit_submit: bool = False,
         conflict_strategy: Optional[DeliverableConflictStrategy] = None,
+        trusted: bool = False,
     ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
         module_key = str(module or "").strip().lower()
         if module_key not in self._settings.modules:
             return None, f"unsupported module '{module_key}'"
-        if not self._should_publish_file(module_key, file_path):
+        if trusted:
+            # Trusted artifacts (plan task outputs arriving via the artifact
+            # event stream) skip the filename-keyword whitelists; the noise /
+            # intermediate-script safety filters still apply.
+            if self._is_noise_artifact_file(file_path):
+                return None, "artifact matches noise-file filter"
+            if self._is_cc_intermediate_artifact(file_path):
+                return None, "artifact is a Claude Code intermediate script"
+        elif not self._should_publish_file(module_key, file_path):
             if self._is_noise_artifact_file(file_path):
                 return None, "artifact matches noise-file filter"
             if self._is_cc_intermediate_artifact(file_path):
@@ -1392,14 +1407,17 @@ class DeliverablePublisher:
             merged = self._paper_builder.merge_bib_entries(refs_dir=refs_dir, bib_text=bib_text)
             if merged is None:
                 return None, "failed to merge bibliography entries"
-            return {
+            row = {
                 "module": "refs",
                 "path": str(merged.relative_to(latest_root)),
                 "status": publish_status,
                 "size": merged.stat().st_size,
                 "updated_at": now,
                 "source_path": self._to_project_relative(file_path),
-            }, None
+            }
+            if trusted:
+                row["trusted_publish"] = True
+            return row, None
         source_identity = self._source_identity(file_path)
         try:
             target = self._copy_to_module(
@@ -1428,7 +1446,7 @@ class DeliverablePublisher:
             )
         rel_path = str(target.relative_to(latest_root))
         checksum = self._sha256_file(target)
-        return {
+        row = {
             "module": module_key,
             "path": rel_path,
             "status": publish_status,
@@ -1436,7 +1454,10 @@ class DeliverablePublisher:
             "sha256": checksum,
             "updated_at": now,
             "source_path": self._to_project_relative(file_path),
-        }, None
+        }
+        if trusted:
+            row["trusted_publish"] = True
+        return row, None
 
     def _apply_deliverable_submit_payload(
         self,
@@ -1472,6 +1493,7 @@ class DeliverablePublisher:
                 continue
             raw_path = row.get("path")
             module_hint = row.get("module")
+            trusted = bool(row.get("trusted"))
             if not isinstance(raw_path, str) or not raw_path.strip():
                 warnings.append(f"artifact[{idx}] skipped: missing path")
                 continue
@@ -1516,6 +1538,7 @@ class DeliverablePublisher:
                 previous_manifest=previous_manifest,
                 from_explicit_submit=True,
                 conflict_strategy=conflict_strategy,
+                trusted=trusted,
             )
             if item is not None:
                 out.append(item)
@@ -1937,8 +1960,24 @@ class DeliverablePublisher:
     def _cleanup_docs_module(self, docs_dir: Path) -> None:
         if not docs_dir.exists() or not docs_dir.is_dir():
             return
+        # Files published as trusted (plan task outputs via the artifact event
+        # stream) fail the docs keyword whitelist by design; keep them.
+        trusted_names: set = set()
+        manifest = self._read_manifest(docs_dir.parent.parent / "manifest_latest.json")
+        for row in self._manifest_items_from_manifest(manifest):
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("module") or "").strip().lower() != "docs":
+                continue
+            if not row.get("trusted_publish"):
+                continue
+            name = Path(str(row.get("path") or "")).name
+            if name:
+                trusted_names.add(name)
         for file_path in docs_dir.iterdir():
             if not file_path.is_file():
+                continue
+            if file_path.name in trusted_names:
                 continue
             if self._is_allowed_doc_file(file_path):
                 continue

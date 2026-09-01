@@ -28,6 +28,12 @@ class DeliverableSettings:
     modules: Tuple[str, ...] = RESEARCH_MODULES
     #: basename collision policy when different source files target the same deliverable name
     basename_conflict_strategy: DeliverableConflictStrategy = "error"
+    #: unified artifact event stream (registry + projector) for plan/chat artifacts
+    artifact_event_stream_enabled: bool = True
+    #: files larger than this are linked/referenced into deliverables instead of copied
+    copy_max_bytes: int = 268435456
+    #: big-file materialization strategy: hardlink | reference
+    link_strategy: str = "hardlink"
 
 
 @lru_cache(maxsize=1)
@@ -70,6 +76,14 @@ def get_deliverable_settings() -> DeliverableSettings:
         raw_conflict_strategy = defaults.basename_conflict_strategy
     basename_conflict_strategy: DeliverableConflictStrategy = raw_conflict_strategy  # type: ignore[assignment]
 
+    raw_link_strategy = (
+        os.getenv("DELIVERABLES_LINK_STRATEGY", defaults.link_strategy)
+        or defaults.link_strategy
+    ).strip().lower()
+    if raw_link_strategy not in {"hardlink", "reference"}:
+        raw_link_strategy = defaults.link_strategy
+    link_strategy = raw_link_strategy
+
     return DeliverableSettings(
         enabled=_env_bool("DELIVERABLES_ENABLED", defaults.enabled),
         default_template=template,
@@ -78,6 +92,12 @@ def get_deliverable_settings() -> DeliverableSettings:
         single_version_only=single_version_only,
         modules=defaults.modules,
         basename_conflict_strategy=basename_conflict_strategy,
+        artifact_event_stream_enabled=_env_bool(
+            "ARTIFACT_EVENT_STREAM_ENABLED",
+            defaults.artifact_event_stream_enabled,
+        ),
+        copy_max_bytes=max(0, _env_int("DELIVERABLES_COPY_MAX_BYTES", defaults.copy_max_bytes)),
+        link_strategy=link_strategy,
     )
 
 
