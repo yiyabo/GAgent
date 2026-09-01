@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from typing import Any, Dict, List, Optional, Set
 
 from .artifact_contracts import canonical_artifact_path, load_artifact_manifest
@@ -10,6 +11,18 @@ from .task_verification import TaskVerificationService
 
 _COMPLETED_LIKE = {"completed", "done", "success"}
 _FAILED_LIKE = {"failed", "failure", "error"}
+
+# The synthetic "blocked" effective status repeatedly confused users: tasks
+# that had genuinely finished were displayed as "blocked" because a contract
+# alias went unregistered, and dependency-waiting tasks read as failures.
+# By default "blocked" is now disabled — a task that really ran to
+# completion shows "completed" (with a warning reason), and tasks that
+# have not run yet show "pending".  Set PLAN_STATUS_BLOCKED_ENABLED=true
+# to restore the legacy behaviour.
+_BLOCKED_STATUS_DISABLED = (
+    os.getenv("PLAN_STATUS_BLOCKED_ENABLED", "false").strip().lower()
+    not in {"1", "true", "yes", "on"}
+)
 
 
 def _normalize_status(value: Any) -> str:
@@ -501,6 +514,29 @@ class PlanStatusResolver:
                 effective_status = "pending"
                 status_reason = "Ready to run."
                 reason_code = "ready"
+
+            if (
+                _BLOCKED_STATUS_DISABLED
+                and effective_status == "blocked"
+                and not is_active_execution
+            ):
+                if raw_status in _COMPLETED_LIKE or payload_status in _COMPLETED_LIKE:
+                    note = f" (note: {status_reason})" if status_reason else ""
+                    effective_status = "completed"
+                    status_reason = (
+                        _truncate_reason(content or raw_result_text) or "Completed."
+                    ) + note
+                    reason_code = "completed_with_contract_warning"
+                else:
+                    effective_status = "pending"
+                    status_reason = (
+                        f"Waiting to run. ({status_reason})" if status_reason else "Waiting to run."
+                    )
+                    reason_code = (
+                        "waiting_dependencies"
+                        if reason_code == "dependency_blocked"
+                        else "ready"
+                    )
 
             state = {
                 "task_id": task_id,

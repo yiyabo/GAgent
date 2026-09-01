@@ -60,9 +60,11 @@ def test_status_resolver_blocks_missing_required_alias_without_manifest(
 
     state = resolver.resolve_plan_states(30, tree)[1]
 
-    assert state["effective_status"] == "blocked"
+    # "blocked" is disabled by default: a dependency-waiting task now
+    # surfaces as pending (set PLAN_STATUS_BLOCKED_ENABLED=true for legacy).
+    assert state["effective_status"] == "pending"
     assert state["missing_required_aliases"] == ["general.evidence_md"]
-    assert state["reason_code"] == "artifact_input_missing"
+    assert state["reason_code"] == "ready"
 
 
 def test_status_resolver_does_not_block_unregistered_business_alias_without_manifest(
