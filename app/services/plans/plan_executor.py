@@ -4685,7 +4685,7 @@ class PlanExecutor:
         except Exception:
             return False
         try:
-            own_children = getattr(node, "children_ids", None) or getattr(node, "children", None) or []
+            own_children = getattr(node, "child_ids", None) or getattr(node, "children_ids", None) or getattr(node, "children", None) or []
             if own_children:
                 return False
             terminal = {"completed", "failed", "skipped", "cancelled", "canceled", "succeeded", "success"}
@@ -4693,7 +4693,7 @@ class PlanExecutor:
             for other in nodes.values():
                 if getattr(other, "id", None) == own_id:
                     continue
-                children = getattr(other, "children_ids", None) or getattr(other, "children", None) or []
+                children = getattr(other, "child_ids", None) or getattr(other, "children_ids", None) or getattr(other, "children", None) or []
                 if children:
                     continue
                 node_type = str(getattr(other, "node_type", "") or "").strip().lower()
