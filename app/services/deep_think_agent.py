@@ -4184,7 +4184,11 @@ class DeepThinkAgent:
             or getattr(getattr(self.llm_client, "client", None), "model", "")
             or ""
         )
-        ctx_mgr = ContextWindowManager(model=llm_model)
+        try:
+            _ctx_budget = int(os.getenv("DEEP_THINK_CONTEXT_BUDGET_TOKENS", "32000") or "32000")
+        except (TypeError, ValueError):
+            _ctx_budget = 32000
+        ctx_mgr = ContextWindowManager(model=llm_model, budget_tokens=max(0, _ctx_budget) or None)
 
         async def _summarize_for_compaction(text: str) -> str:
             prompt = build_summarization_prompt(text)

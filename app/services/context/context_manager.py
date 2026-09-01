@@ -195,21 +195,36 @@ class ContextWindowManager:
         max_context_tokens: Optional[int] = None,
         warning_ratio: float = WARNING_RATIO,
         critical_ratio: float = CRITICAL_RATIO,
+        budget_tokens: Optional[int] = None,
     ):
         self.max_context_tokens = max_context_tokens or get_context_window(model)
         self.warning_ratio = warning_ratio
         self.critical_ratio = critical_ratio
+        # Working-set budget (tokens): compaction warning fires at
+        # min(model_window * warning_ratio, budget).  The model-window ratio
+        # alone only guards against hitting the provider limit — with 1M-token
+        # windows that means a 30-iteration run can reach 100K input tokens
+        # per call without ever compacting.  The budget makes compaction a
+        # cost/latency control instead of just an overflow guard.
+        try:
+            budget = int(budget_tokens) if budget_tokens is not None else None
+        except (TypeError, ValueError):
+            budget = None
+        self.budget_tokens = budget if budget and budget > 0 else None
         self._compaction_count = 0
 
     def check_usage(self, messages: List[Dict[str, Any]]) -> ContextUsage:
         """Estimate token usage and return a usage snapshot."""
         used = estimate_messages_tokens(messages)
         ratio = used / self.max_context_tokens if self.max_context_tokens > 0 else 0.0
+        warning_line = self.warning_ratio * self.max_context_tokens
+        if self.budget_tokens:
+            warning_line = min(warning_line, float(self.budget_tokens))
         return ContextUsage(
             used_tokens=used,
             max_tokens=self.max_context_tokens,
             ratio=ratio,
-            warning=ratio >= self.warning_ratio,
+            warning=used >= warning_line,
             critical=ratio >= self.critical_ratio,
         )
 
@@ -240,10 +255,11 @@ class ContextWindowManager:
             return messages
 
         logger.info(
-            "[CONTEXT] Compaction triggered: used=%d/%d tokens (%.0f%%), compaction_count=%d",
+            "[CONTEXT] Compaction triggered: used=%d/%d tokens (%.0f%%), budget=%s, compaction_count=%d",
             usage.used_tokens,
             usage.max_tokens,
             usage.ratio * 100,
+            self.budget_tokens,
             self._compaction_count,
         )
 
