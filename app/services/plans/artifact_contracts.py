@@ -102,9 +102,17 @@ _DYNAMIC_DIRECTORY_ARTIFACT_SLOTS: Dict[str, str] = {
     "summary_tables": "summary_tables",
     "intermediate_data_dir": "intermediate_data",
 }
+# Free-form slots: LLM-generated decomposer contracts freely invent aliases
+# like "shrimp_phage.raw_literature_md".  Accept any reasonable file-style
+# slot and map it 1:1 to a canonical file named after the slot, so contract
+# publish aliases always have a canonical landing path.
+_DYNAMIC_FILE_SLOT_RE = r"[a-z][a-z0-9_]*(?:_md|_json|_bib|_parquet|_csv|_jsonl|_txt|_yaml|_html)".replace(
+    "_DYNAMIC_DIRECTORY_SLOT", ""
+)
 _DYNAMIC_ARTIFACT_ALIAS_RE = re.compile(
     r"^[a-z][a-z0-9_]*(?:_[a-z0-9]+)*\."
-    r"(?:" + "|".join(re.escape(slot) for slot in _DYNAMIC_DIRECTORY_ARTIFACT_SLOTS) + r")$"
+    r"(?:" + _DYNAMIC_FILE_SLOT_RE
+    + r"|" + "|".join(re.escape(slot) for slot in _DYNAMIC_DIRECTORY_ARTIFACT_SLOTS) + r")$"
 )
 
 
@@ -113,7 +121,10 @@ def _dynamic_artifact_spec(alias: str) -> Optional[tuple[str, str]]:
     if not _DYNAMIC_ARTIFACT_ALIAS_RE.fullmatch(text):
         return None
     namespace, slot = text.split(".", 1)
-    return namespace, _DYNAMIC_DIRECTORY_ARTIFACT_SLOTS[slot]
+    # Registered directory slots keep their canonical directory names;
+    # free-form slots map 1:1 to a file named after the slot.
+    directory_slot = _DYNAMIC_DIRECTORY_ARTIFACT_SLOTS.get(slot)
+    return namespace, directory_slot if directory_slot is not None else slot
 
 
 def _artifact_spec_for_alias(alias: str) -> Optional[tuple[str, str]]:
