@@ -4406,6 +4406,35 @@ class PlanExecutor:
                     except Exception:
                         preferred_namespace = "general"
                     inferred_aliases: List[str] = []
+                    # Contract-declared publish aliases are authoritative:
+                    # the decomposer wrote these semantic names into the task
+                    # metadata, and status_resolver/preflight match tasks by
+                    # exactly these names.  Register them first so the
+                    # manifest carries both spellings and future plans stop
+                    # tripping the contract-alias mismatch (which used to
+                    # demote genuinely-finished tasks to "blocked").
+                    try:
+                        _node_meta = node.metadata
+                        if isinstance(_node_meta, str):
+                            import json as _json
+                            _node_meta = _json.loads(_node_meta)
+                        _node_contract: Dict[str, Any] = {}
+                        if isinstance(_node_meta, dict):
+                            _raw_contract = (
+                                _node_meta.get("artifact_contract")
+                                or _node_meta.get("contract")
+                            )
+                            if isinstance(_raw_contract, str):
+                                import json as _json
+                                _raw_contract = _json.loads(_raw_contract)
+                            if isinstance(_raw_contract, dict):
+                                _node_contract = _raw_contract
+                        for _pub in _node_contract.get("publishes") or []:
+                            _pub_text = str(_pub or "").strip()
+                            if _pub_text and _pub_text not in inferred_aliases:
+                                inferred_aliases.append(_pub_text)
+                    except Exception:
+                        pass
                     for inferred in aliases_for_file_name(
                         expected, preferred_namespace=preferred_namespace
                     ):
