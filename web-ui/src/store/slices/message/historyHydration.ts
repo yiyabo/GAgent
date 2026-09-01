@@ -83,9 +83,24 @@ export const hydrateThinkingProcess = (raw: any): ThinkingProcess | undefined =>
     Number.isFinite(totalIterationsRaw) && totalIterationsRaw > 0
       ? Math.max(totalIterationsRaw, inferredIterations)
       : inferredIterations;
+  const processStatus = normalizeThinkingProcessStatus((payload as any).status);
+  // A hydrated process is historical: any step still stuck in an in-flight
+  // state belongs to a run that already finished. Finalize it, otherwise the
+  // step spinner spins forever on restored messages.
+  if (processStatus !== 'active') {
+    for (const step of steps) {
+      if (
+        step.status === 'thinking' ||
+        step.status === 'calling_tool' ||
+        step.status === 'analyzing'
+      ) {
+        step.status = 'done';
+      }
+    }
+  }
   return {
     steps,
-    status: normalizeThinkingProcessStatus((payload as any).status),
+    status: processStatus,
     total_iterations: totalIterations,
     summary:
       typeof (payload as any).summary === 'string'

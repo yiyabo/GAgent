@@ -854,8 +854,17 @@ export async function processFinalPayload(ctx: StreamHandlerContext): Promise<vo
       thinkingFromMeta && typeof thinkingFromMeta === 'object'
         ? (thinkingFromMeta as Record<string, unknown>).summary
         : undefined;
+    const streamedSteps = Array.isArray((streamedTp as { steps?: unknown }).steps)
+      ? ((streamedTp as { steps: unknown[] }).steps as Array<Record<string, any>>)
+      : [];
+    // Finalize any step still marked 'thinking' — otherwise the last step's
+    // spinner spins forever even after the answer has fully streamed.
+    const finalizedSteps = streamedSteps.map((s) =>
+      s && s.status === 'thinking' ? { ...s, status: 'done' } : s
+    );
     nextThinkingProcess = {
       ...(streamedTp as Record<string, unknown>),
+      steps: finalizedSteps,
       status: nextThinkingStatus,
       summary:
         (streamedTp as Record<string, unknown>).summary ??
