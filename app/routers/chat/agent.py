@@ -2087,6 +2087,18 @@ class StructuredChatAgent:
         )
 
     def _build_deterministic_execute_task_structured(self) -> Optional[LLMStructuredResponse]:
+        # Full-plan intent takes precedence over the single-task shortcut:
+        # "开始执行全部任务" with explicit task numbering still means "run the
+        # whole tree", so bail out and let the full-plan delegate handle it.
+        try:
+            from app.routers.chat.request_routing import _is_full_plan_execution_request
+            if _is_full_plan_execution_request(
+                str(self._current_user_message or ""),
+                plan_bound=self.plan_session.plan_id is not None,
+            ):
+                return None
+        except Exception:
+            pass
         request_tier = str(self.extra_context.get("request_tier") or "").strip().lower()
         intent_type = str(self.extra_context.get("intent_type") or "").strip().lower()
         if request_tier != "execute" or intent_type != "execute_task":
@@ -2913,6 +2925,28 @@ class StructuredChatAgent:
                 _persist_runtime_context(self)
             except Exception as exc:  # pragma: no cover - defensive
                 logger.debug("Failed to persist routing runtime context: %s", exc)
+
+        # ── Full plan execution ────────────────────────────────────────
+        # When routing detected an execute-the-whole-plan request, delegate
+        # to PlanExecutor immediately.  Without this hook the deterministic
+        # single-task shortcut below hijacked the turn and only one atomic
+        # task ever ran per chat message.
+        if (
+            routing_decision.full_plan_execution
+            and self.plan_session.plan_id is not None
+        ):
+            logger.info(
+                "[CHAT][ROUTING][FULL_PLAN] Delegating to PlanExecutor plan_id=%s",
+                self.plan_session.plan_id,
+            )
+            async for _fp_event in self._run_full_plan_via_executor(
+                user_message=effective_user_message,
+                routing_decision=routing_decision,
+                event_sink=event_sink,
+                run_id=run_id,
+            ):
+                yield _fp_event
+            return
 
         direct_image_response = _build_recent_image_display_response(
             self,
