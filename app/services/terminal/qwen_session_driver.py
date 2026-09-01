@@ -79,6 +79,18 @@ class QwenSessionDriver:
     def _get_lock(self) -> asyncio.Lock:
         if self._lock is None:
             self._lock = asyncio.Lock()
+        # asyncio.Lock is bound to the loop that first awaited it.  This
+        # singleton is shared across loops (main loop + the plan-review
+        # worker loop), so rebuild the lock when the running loop differs,
+        # otherwise 'Lock is bound to a different event loop' kills every
+        # delegated task after a restart or loop switch.
+        try:
+            running = asyncio.get_running_loop()
+            bound = getattr(self._lock, "_loop", None)
+            if bound is not None and bound is not running:
+                self._lock = asyncio.Lock()
+        except RuntimeError:
+            pass
         return self._lock
 
     # ------------------------------------------------------------------
@@ -365,6 +377,14 @@ class QwenSessionDriver:
         if lock is None:
             lock = asyncio.Lock()
             self._locks[session_id] = lock
+        try:
+            running = asyncio.get_running_loop()
+            bound = getattr(lock, "_loop", None)
+            if bound is not None and bound is not running:
+                lock = asyncio.Lock()
+                self._locks[session_id] = lock
+        except RuntimeError:
+            pass
         return lock
 
     async def cleanup(self, session_id: str) -> None:
