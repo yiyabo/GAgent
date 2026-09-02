@@ -506,7 +506,8 @@ def test_promote_task_results_to_session_root_copies_into_session_results(tmp_pa
     (run_dir / "results" / "line.png").write_bytes(b"png1")
     (run_dir / "results" / "nested" / "other.png").write_bytes(b"png2")
 
-    rels = _promote_task_results_to_session_root(session_dir=session_dir, task_work_dir=run_dir)
+    rels, skipped_large = _promote_task_results_to_session_root(session_dir=session_dir, task_work_dir=run_dir)
+    assert skipped_large == []
     assert set(rels) == {
         "results/task_a/run_1/line.png",
         "results/task_a/run_1/nested/other.png",
@@ -543,12 +544,13 @@ def test_promote_task_results_to_session_root_includes_run_root_and_custom_dirs(
     figures_dir.mkdir(parents=True)
     (figures_dir / "manifest.log").write_text("2 figures\n", encoding="utf-8")
 
-    rels = _promote_task_results_to_session_root(
+    rels, skipped_large = _promote_task_results_to_session_root(
         session_dir=session_dir,
         task_work_dir=run_dir,
         subdirs=("results", "figures_raw"),
     )
 
+    assert skipped_large == []
     assert set(rels) == {
         "results/plan7_task9/run_1/plot.png",
         "results/plan7_task9/run_1/summary.md",
