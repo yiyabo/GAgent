@@ -68,7 +68,7 @@ def test_file_operations_write_results_uses_task_work_dir(monkeypatch, tmp_path:
         )
     )
 
-    expected = (task_work_dir / "summary.md").resolve()
+    expected = (task_work_dir / "results" / "summary.md").resolve()
     assert result["success"] is True
     assert result["path"] == str(expected)
     assert expected.read_text(encoding="utf-8") == "scoped output"
