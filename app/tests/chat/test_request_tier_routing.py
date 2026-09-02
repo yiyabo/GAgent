@@ -1298,7 +1298,7 @@ def test_llm_routing_fallback_returns_none_on_failure(monkeypatch) -> None:
         def chat(self, *args, **kwargs):
             raise RuntimeError("LLM unavailable")
 
-    monkeypatch.setattr(_rr, "LLMClient", lambda: FakeClient(), raising=False)
+    monkeypatch.setattr(_rr, "get_default_client", lambda: FakeClient())
     result = _llm_routing_fallback("test message", plan_bound=True)
     assert result is None
 
@@ -1316,7 +1316,7 @@ def test_resolve_request_routing_uses_llm_fallback_for_plan_bound_low_confidence
                 "reason": "User wants to deepen analysis in the plan"
             })
 
-    monkeypatch.setattr(_rr, "LLMClient", lambda: FakeClient(), raising=False)
+    monkeypatch.setattr(_rr, "get_default_client", lambda: FakeClient())
 
     decision = resolve_request_routing(
         message="现在分析的很浅，跟最开始我给的最初的计划很不一样，我需要深层次的分析，现在太简单了，分析的不够深入，增加分析到计划里面",
