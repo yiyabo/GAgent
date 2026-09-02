@@ -374,11 +374,10 @@ def test_task_verifier_records_contract_diff_for_mismatch(tmp_path):
     assert metadata["verification_status"] == "warning"
     assert metadata["verification_warning"] is True
     assert "failure_kind" not in metadata
-    assert metadata["contract_diff"]["missing_required_outputs"] == [
+    assert metadata["artifact_verification"]["missing_required_outputs"] == [
         "results/enrichment/upregulated_genes.csv"
     ]
-    assert "results/NK_cell_upregulated_genes.csv" in metadata["contract_diff"]["unexpected_outputs"]
-    assert metadata["plan_patch_suggestion"]
+    assert "results/NK_cell_upregulated_genes.csv" in metadata["artifact_verification"]["unexpected_outputs"]
 
 
 def test_task_verifier_accepts_source_discovery_with_actual_source_dir_and_format_alternative(tmp_path):
@@ -832,7 +831,7 @@ def test_task_verifier_derives_acceptance_criteria_from_instruction(tmp_path):
     assert metadata["verification_status"] == "warning"
     assert metadata["verification_warning"] is True
     assert "contract_mismatch" in metadata["artifact_verification"]["tags"]
-    assert metadata["contract_diff"]["missing_required_outputs"] == [
+    assert metadata["artifact_verification"]["missing_required_outputs"] == [
         "subset_manifest.tsv",
         "results/qc_summary.md",
     ]
@@ -900,10 +899,10 @@ def test_task_verifier_marks_cross_extension_outputs_as_wrong_format(tmp_path):
 
     metadata = finalization.payload["metadata"]
     assert finalization.final_status == "completed"
-    assert metadata["contract_diff"]["missing_required_outputs"] == [
+    assert metadata["artifact_verification"]["missing_required_outputs"] == [
         "results/subset_manifest.csv"
     ]
-    assert metadata["contract_diff"]["wrong_format_outputs"] == [
+    assert metadata["artifact_verification"]["wrong_format_outputs"] == [
         "results/subset_manifest.tsv"
     ]
 
