@@ -84,7 +84,7 @@ def test_chat_message_propagates_request_owner_to_session_helpers(
     monkeypatch.setattr(chat_routes, "PlanSession", _PlanSessionStub)
     monkeypatch.setattr(chat_routes, "get_structured_chat_agent_cls", lambda: _AgentStub)
 
-    def _resolve_plan_binding(session_id, requested_plan_id, *, owner_id=None):
+    def _resolve_plan_binding(session_id, requested_plan_id, *, owner_id=None, project_id=None):
         seen["binding"] = (session_id, requested_plan_id, owner_id)
         return requested_plan_id
 

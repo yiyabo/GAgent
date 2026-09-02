@@ -61,7 +61,7 @@ def test_structured_action_catalog_includes_deliverable_submit() -> None:
     base_actions = prompts["action_catalog"]["base_actions"]
     line = next(line for line in base_actions if "tool_operation: deliverable_submit" in line)
     assert "artifacts" in line
-    assert "DELIVERABLES_INGEST_MODE" in line
+    assert "Deliverables" in line
 
 
 def test_structured_action_catalog_forbids_plan_status_mutation_via_plan_operation() -> None:
@@ -71,14 +71,13 @@ def test_structured_action_catalog_forbids_plan_status_mutation_via_plan_operati
     assert "Do not call plan_operation/task_operation just to mark the current task completed or failed" in note
 
 
-def test_unbound_rules_use_auto_create_plan_without_confirmation_language() -> None:
+def test_unbound_rules_create_plan_only_on_explicit_request() -> None:
     prompts = prompt_manager.get_category("structured_agent")
     unbound_actions = prompts["action_catalog"]["plan_actions"]["unbound"]
-    create_line = next(line for line in unbound_actions if "create_plan" in line)
+    create_line = next(line for line in unbound_actions if "plan_operation: create" in line)
     lower_line = create_line.lower()
-    assert "automatically create" in lower_line
-    assert "do not ask for confirmation first" in lower_line
-    assert "agree" not in lower_line
+    assert "explicitly requests" in lower_line
+    assert "do not auto-create" in lower_line
 
 
 def test_structured_info_rule_is_text_first_with_conditional_tool_use() -> None:

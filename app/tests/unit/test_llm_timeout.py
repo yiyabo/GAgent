@@ -56,7 +56,7 @@ def test_llm_client_chat_uses_shared_sync_client(monkeypatch) -> None:
 
 
 def test_llm_client_stream_timeout_defaults_to_longer_window(monkeypatch) -> None:
-    monkeypatch.delenv("LLM_STREAM_TIMEOUT", raising=False)
+    monkeypatch.setenv("LLM_STREAM_TIMEOUT", "300")
     get_settings.cache_clear()
     try:
         client = LLMClient(

@@ -105,13 +105,21 @@ def test_status_resolver_does_not_block_unregistered_business_alias_without_mani
 
     states = resolver.resolve_plan_states(31, tree)
 
+    # Free-form business aliases are first-class contract aliases since 91faf39:
+    # the declared publish is now tracked and its absence from the manifest is
+    # reported as a warning signal — but nothing is blocked: the completed
+    # producer stays completed and the dependency-waiting consumer stays pending.
     assert states[1]["effective_status"] == "completed"
-    assert states[1]["missing_publish_aliases"] == []
+    assert states[1]["missing_publish_aliases"] == [
+        "feature_engineering.derived_features_csv"
+    ]
     assert states[1]["authoritative_publish_aliases"] == [
         "feature_engineering.derived_features_csv"
     ]
     assert states[2]["effective_status"] == "pending"
-    assert states[2]["missing_required_aliases"] == []
+    assert states[2]["missing_required_aliases"] == [
+        "feature_engineering.derived_features_csv"
+    ]
 
 
 def test_status_resolver_marks_completed_task_completed_when_canonical_publish_exists(
