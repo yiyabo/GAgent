@@ -769,7 +769,13 @@ async def execute_code_locally(
             verification_details = verification or None
             if isinstance(verification, dict):
                 artifact_verification = verification.get("artifact_verification")
-            if finalization.final_status == "failed":
+            initial_artifact_summary = verification.get("artifact_verification") if isinstance(verification, dict) else {}
+            initial_missing_required_outputs = (
+                initial_artifact_summary.get("missing_required_outputs")
+                if isinstance(initial_artifact_summary, dict)
+                else []
+            )
+            if finalization.final_status == "failed" or verification_status == "failed" or initial_missing_required_outputs:
                 error_category = "acceptance_criteria_failed"
                 post_execution_error_summary = _summarize_verification_failures(verification)
                 fix_guidance = _format_verification_guidance(verification)
@@ -812,13 +818,29 @@ async def execute_code_locally(
                             verification_details = verification or None
                             if isinstance(verification, dict):
                                 artifact_verification = verification.get("artifact_verification")
-                            if finalization.final_status == "failed":
+                            artifact_summary = verification.get("artifact_verification") if isinstance(verification, dict) else {}
+                            unresolved_required_outputs = (
+                                artifact_summary.get("missing_required_outputs")
+                                if isinstance(artifact_summary, dict)
+                                else []
+                            )
+                            if finalization.final_status == "failed" or verification_status == "failed" or unresolved_required_outputs:
                                 success = False
+                                verification_status = "failed"
+                                failure_kind = "contract_mismatch"
+                                if isinstance(verification, dict):
+                                    verification["status"] = "failed"
+                                    verification["blocking"] = True
                                 error_category = "acceptance_criteria_failed"
                                 post_execution_error_summary = _summarize_verification_failures(verification)
                                 fix_guidance = _format_verification_guidance(verification)
                             else:
+                                # A repair satisfied every blocking contract check. Clear
+                                # stale warning state left by the pre-repair pass.
                                 success = True
+                                verification_status = "passed"
+                                if isinstance(verification, dict):
+                                    verification["status"] = "passed"
                                 error_category = None
                                 post_execution_error_summary = None
                                 fix_guidance = None

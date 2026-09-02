@@ -5905,7 +5905,17 @@ async def code_executor_handler(
                             verification, verification_status, failure_kind, contract_diff, plan_patch_suggestion = (
                                 _extract_verification_state(finalization)
                             )
-                            if finalization.final_status == "failed" or verification_status == "failed":
+                            artifact_summary = verification.get("artifact_verification") if isinstance(verification, dict) else {}
+                            unresolved_required_outputs = (
+                                artifact_summary.get("missing_required_outputs")
+                                if isinstance(artifact_summary, dict)
+                                else []
+                            )
+                            if (
+                                finalization.final_status == "failed"
+                                or verification_status == "failed"
+                                or bool(unresolved_required_outputs)
+                            ):
                                 success = False
                                 verification_payload = verification if isinstance(verification, dict) else {}
                                 contract_error_summary = _summarize_verification_failures(verification_payload)
