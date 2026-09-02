@@ -1301,6 +1301,18 @@ def _apply_grounded_local_answer(
             if isinstance(verified_facts, list) and verified_facts:
                 return text
 
+    if isinstance(failure_state, dict) and str(failure_state.get("error_message") or "").strip():
+        message = str(failure_state.get("error_message") or "").strip()
+        if message.lower() not in text.lower():
+            return f"{text}\n\n⚠️ 本次操作未被验证成功：{message}"
+
+    if isinstance(evidence_state, dict) and str(evidence_state.get("status") or "").strip().lower() == "failed":
+        unresolved = evidence_state.get("unresolved")
+        if isinstance(unresolved, list):
+            details = "；".join(str(item).strip() for item in unresolved if str(item).strip())
+            if details and details.lower() not in text.lower():
+                return f"{text}\n\n⚠️ 本次操作未被验证成功：{details}"
+
     return text
 
 

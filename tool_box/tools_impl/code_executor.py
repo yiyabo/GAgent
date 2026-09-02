@@ -5905,7 +5905,7 @@ async def code_executor_handler(
                             verification, verification_status, failure_kind, contract_diff, plan_patch_suggestion = (
                                 _extract_verification_state(finalization)
                             )
-                            if finalization.final_status == "failed":
+                            if finalization.final_status == "failed" or verification_status == "failed":
                                 success = False
                                 verification_payload = verification if isinstance(verification, dict) else {}
                                 contract_error_summary = _summarize_verification_failures(verification_payload)
