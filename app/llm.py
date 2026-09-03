@@ -276,7 +276,7 @@ def _pool_limits() -> httpx.Limits:
     return httpx.Limits(
         max_connections=int(getattr(s, "llm_pool_max_connections", 20)),
         max_keepalive_connections=int(getattr(s, "llm_pool_max_keepalive", 10)),
-        keepalive_expiry=30.0,
+        keepalive_expiry=900.0,
     )
 
 
@@ -285,7 +285,7 @@ def _sync_pool_limits() -> httpx.Limits:
     return httpx.Limits(
         max_connections=int(getattr(s, "llm_sync_pool_max_connections", 10)),
         max_keepalive_connections=int(getattr(s, "llm_sync_pool_max_keepalive", 5)),
-        keepalive_expiry=30.0,
+        keepalive_expiry=900.0,
     )
 # Default connect timeout (TCP + TLS); per-request read timeout is overridden
 # at call sites to match the configured ``self.timeout`` / ``self.stream_timeout``.

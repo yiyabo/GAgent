@@ -149,7 +149,12 @@ class QwenEmbeddingClient:
         session = self._async_sessions.get(key)
         if session is None or session.closed:
             timeout = aiohttp.ClientTimeout(total=self.timeout)
-            session = aiohttp.ClientSession(timeout=timeout)
+            # Keep pooled connections warm: the egress path to dashscope
+            # intermittently pays a ~13s TCP (SYN retransmit) toll per new
+            # connection, and aiohttp's default 15s keepalive expiry closed
+            # connections just in time to re-pay it on nearly every call.
+            connector = aiohttp.TCPConnector(limit=20, keepalive_timeout=1800)
+            session = aiohttp.ClientSession(timeout=timeout, connector=connector)
             self._async_sessions[key] = session
         return session
 
