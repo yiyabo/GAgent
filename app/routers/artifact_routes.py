@@ -672,6 +672,15 @@ async def list_session_artifacts(
 ) -> ArtifactListResponse:
     _ensure_session_access(session_id, request)
     session_dir = _resolve_session_dir(session_id, purpose="raw")
+    if not session_dir.exists():
+        # Sessions whose runtime files were never migrated (or already cleaned
+        # up) must return an empty listing instead of a 500 FileNotFoundError.
+        return ArtifactListResponse(
+            session_id=session_id,
+            root_path=str(session_dir),
+            items=[],
+            count=0,
+        )
     hidden_prefixes = _load_hidden_artifact_prefixes(session_id)
     ext_list = None
     if extensions:

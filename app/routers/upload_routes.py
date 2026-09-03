@@ -535,6 +535,12 @@ async def upload_file(
     """
     if not session_id or not session_id.strip():
         raise HTTPException(status_code=400, detail="session_id ")
+    logger.info(
+        "[UPLOAD] POST filename=%s size_hint=%s session=%s",
+        file.filename,
+        getattr(file, "size", None),
+        session_id,
+    )
     _ensure_session_access(session_id, request)
 
     is_valid, error_msg, category = _validate_file(file)

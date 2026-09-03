@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import AsyncIterator
 
@@ -20,12 +21,66 @@ from .stream_context import build_agent_for_chat_request
 logger = logging.getLogger(__name__)
 
 
+async def _sse_with_keepalive(
+    source: AsyncIterator[str], idle_seconds: float = 5.0
+) -> AsyncIterator[str]:
+    """Yield SSE comment lines while the source is idle.
+
+    Pre-stream work (routing, title generation, uploads) can be slow; without
+    traffic, intermediate gateways cut idle connections before the first real
+    event, which surfaced as disconnect-and-sync messages in the UI.
+    """
+    queue: asyncio.Queue = asyncio.Queue()
+    done_sentinel: object = object()
+
+    async def _pump() -> None:
+        try:
+            async for item in source:
+                await queue.put(item)
+        except Exception as exc:
+            await queue.put(exc)
+        finally:
+            await queue.put(done_sentinel)
+
+    pump_task = asyncio.create_task(_pump())
+    try:
+        while True:
+            getter = asyncio.create_task(queue.get())
+            sleeper = asyncio.create_task(asyncio.sleep(idle_seconds))
+            done, _ = await asyncio.wait(
+                {getter, sleeper}, return_when=asyncio.FIRST_COMPLETED
+            )
+            sleeper.cancel()
+            if getter in done:
+                item = getter.result()
+                if item is done_sentinel:
+                    break
+                if isinstance(item, BaseException):
+                    raise item
+                yield item
+            else:
+                getter.cancel()
+                yield ": keepalive\n\n"
+    finally:
+        pump_task.cancel()
+        try:
+            await pump_task
+        except BaseException:  # pragma: no cover - best-effort cleanup
+            pass
+
+
 async def chat_stream(
     request: ChatRequest,
     background_tasks: BackgroundTasks,
     raw_request: Request,
 ):
     _ = background_tasks
+
+    logger.info(
+        "[CHAT][STREAM] POST received session=%s msg_len=%d",
+        request.session_id,
+        len(request.message or ""),
+    )
 
     # Log-only moderation audit of the raw user message (never blocks)
     scan_user_input(request.message, session_id=request.session_id)
@@ -41,7 +96,9 @@ async def chat_stream(
         http = raw_request
 
         async def event_generator() -> AsyncIterator[str]:
-            async for line in iterate_chat_run_sse(http, run_id, after_seq=-1):
+            async for line in _sse_with_keepalive(
+                iterate_chat_run_sse(http, run_id, after_seq=-1)
+            ):
                 yield line
 
         headers = {
@@ -66,7 +123,9 @@ async def chat_stream(
             agent._current_user_message = message_to_send
             log_ctx = "plan-bound" if agent.plan_session.plan_id is not None else "no-plan"
             logger.info("[CHAT] Unified agent stream (%s, legacy no-session)", log_ctx)
-            async for chunk in agent.process_unified_stream(message_to_send):
+            async for chunk in _sse_with_keepalive(
+                agent.process_unified_stream(message_to_send)
+            ):
                 yield chunk
         except Exception as exc:  # pragma: no cover - defensive
             logger.error("Chat streaming failed: %s", exc)
