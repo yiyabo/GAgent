@@ -61,6 +61,33 @@ def test_validate_file_accepts_h5ad_with_empty_browser_mime_type() -> None:
     assert category == "bioinformatics"
 
 
+def test_upload_accepts_excel_extensions_and_mime_types() -> None:
+    assert upload_routes.get_upload_file_category(
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "results.xlsx",
+    ) == "data"
+    assert upload_routes.get_upload_file_category(
+        "application/vnd.ms-excel; charset=binary",
+        "legacy.xls",
+    ) == "data"
+    assert upload_routes.get_upload_file_category("", "results.xlsx") == "data"
+    assert upload_routes.get_upload_file_category("", "legacy.XLS") == "data"
+
+
+def test_validate_file_accepts_excel_with_browser_mime_type() -> None:
+    file = UploadFile(
+        BytesIO(b"PK\x03\x04"),
+        filename="results.xlsx",
+        headers={"content-type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"},
+    )
+
+    is_valid, error, category = upload_routes.validate_upload_file(file)
+
+    assert is_valid is True
+    assert error == ""
+    assert category == "data"
+
+
 def test_upload_file_initializes_missing_chat_session(app_client_factory) -> None:
     session_id = "session_upload_init_test"
 

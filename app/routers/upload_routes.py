@@ -33,6 +33,8 @@ ALLOWED_MIME_TYPES = {
         "text/plain",
         "text/markdown",
         "text/csv",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.ms-excel",
         "application/rtf",
     ],
     "image": [
@@ -86,6 +88,8 @@ ALLOWED_EXTENSION_CATEGORIES = {
     ".md": "document",
     ".rtf": "document",
     ".csv": "document",
+    ".xlsx": "data",
+    ".xls": "data",
     ".jpg": "image",
     ".jpeg": "image",
     ".png": "image",
