@@ -4681,6 +4681,9 @@ def _record_external_cli_usage(
     plan_id: Optional[int],
     task_id: Optional[int],
     call_purpose: str,
+    run_id: Optional[str] = None,
+    duration_ms: Optional[float] = None,
+    call_status: str = "ok",
 ) -> Optional[Dict[str, Any]]:
     try:
         from app.repository.llm_usage import estimate_llm_cost, log_llm_usage
@@ -4702,6 +4705,14 @@ def _record_external_cli_usage(
             plan_id=plan_id,
             task_id=task_id,
             call_purpose=call_purpose,
+            run_id=run_id,
+            phase="tool",
+            tool_name="code_executor",
+            call_status=call_status,
+            duration_ms=duration_ms,
+            billing_key="coding_agent.qwen_code_cli",
+            logical_call_id=uuid4().hex,
+            attempt_no=1,
             input_cost=cost["input_cost"],
             output_cost=cost["output_cost"],
             estimated_cost=cost["estimated_cost"],
@@ -5973,6 +5984,8 @@ async def code_executor_handler(
                 plan_id=resolved_plan_id,
                 task_id=resolved_task_id,
                 call_purpose="qwen_code_cli_execution",
+                run_id=run_id,
+                call_status="ok" if return_code == 0 else "error",
             )
 
         # Build return result

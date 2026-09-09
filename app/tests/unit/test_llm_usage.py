@@ -63,8 +63,8 @@ def test_log_llm_usage_inserts_record(mock_db):
     assert params[7] is None  # plan_id
     assert params[8] is None  # task_id
     assert params[9] is None  # call_purpose
-    assert params[17] is not None  # estimated_cost
-    assert params[18] == "CNY"
+    assert params[23] is not None  # estimated_cost
+    assert params[24] == "CNY"
     mock_conn.commit.assert_called_once()
 
 
@@ -167,6 +167,12 @@ def test_log_usage_function_calls_repository():
             tool_name=None,
             call_status="ok",
             duration_ms=None,
+            billing_key="internal.uncategorized",
+            logical_call_id=None,
+            attempt_no=None,
+            upstream_request_id=None,
+            cache_read_tokens=0,
+            cache_creation_tokens=0,
         )
 
 
@@ -202,6 +208,12 @@ def test_log_usage_propagates_context_from_contextvar():
                 tool_name=None,
                 call_status="ok",
                 duration_ms=None,
+                billing_key="internal.uncategorized",
+                logical_call_id=None,
+                attempt_no=None,
+                upstream_request_id=None,
+                cache_read_tokens=0,
+                cache_creation_tokens=0,
             )
     finally:
         clear_usage_context(token)
@@ -253,15 +265,17 @@ def test_chat_extracts_and_logs_usage(monkeypatch):
         )
         result = client.chat("hello")
         assert result == "ok"
-        mock_log.assert_called_once_with(
-            provider="qwen",
-            model="qwen-test",
-            prompt_tokens=100,
-            completion_tokens=50,
-            total_tokens=150,
-            call_status="ok",
-            duration_ms=ANY,
-        )
+        mock_log.assert_called_once()
+        logged = mock_log.call_args.kwargs
+        assert logged["provider"] == "qwen"
+        assert logged["model"] == "qwen-test"
+        assert logged["prompt_tokens"] == 100
+        assert logged["completion_tokens"] == 50
+        assert logged["total_tokens"] == 150
+        assert logged["call_status"] == "ok"
+        assert logged["attempt_no"] == 1
+        assert logged["logical_call_id"]
+        assert logged["cache_read_tokens"] == 0
 
 
 def test_chat_async_extracts_and_logs_usage(monkeypatch):
@@ -306,15 +320,17 @@ def test_chat_async_extracts_and_logs_usage(monkeypatch):
 
         result = asyncio.run(_call())
         assert result == "ok"
-        mock_log.assert_called_once_with(
-            provider="qwen",
-            model="qwen-test",
-            prompt_tokens=200,
-            completion_tokens=100,
-            total_tokens=300,
-            call_status="ok",
-            duration_ms=ANY,
-        )
+        mock_log.assert_called_once()
+        logged = mock_log.call_args.kwargs
+        assert logged["provider"] == "qwen"
+        assert logged["model"] == "qwen-test"
+        assert logged["prompt_tokens"] == 200
+        assert logged["completion_tokens"] == 100
+        assert logged["total_tokens"] == 300
+        assert logged["call_status"] == "ok"
+        assert logged["attempt_no"] == 1
+        assert logged["logical_call_id"]
+        assert logged["cache_read_tokens"] == 0
 
 
 def test_native_stream_result_includes_usage_field():
@@ -385,10 +401,10 @@ def test_log_llm_usage_accepts_explicit_cost(mock_db):
     assert params[8] == 14
     assert params[9] == "qwen_code_cli_execution"
     assert params[10] is None  # run_id
-    assert params[15] == 0.02
-    assert params[16] == 0.04
-    assert params[17] == 0.06
-    assert params[18] == "CNY"
+    assert params[21] == 0.02
+    assert params[22] == 0.04
+    assert params[23] == 0.06
+    assert params[24] == "CNY"
 
 
 def test_estimate_llm_cost_uses_default_qwen_code_rates():
@@ -403,3 +419,37 @@ def test_estimate_llm_cost_uses_default_qwen_code_rates():
     assert cost["output_cost"] > 0
     assert cost["estimated_cost"] == cost["input_cost"] + cost["output_cost"]
     assert cost["cost_currency"] == "CNY"
+
+
+def test_billing_key_registry_maps_legacy_attribution():
+    from app.billing_keys import (
+        CHAT_MAIN, CODING_AGENT_QWEN_CODE_CLI, TOOL_MANUSCRIPT_WRITER_EVALUATION,
+        billing_key_for_purpose,
+    )
+
+    assert billing_key_for_purpose("chat_main") == CHAT_MAIN
+    assert billing_key_for_purpose("qwen_code_cli_execution") == CODING_AGENT_QWEN_CODE_CLI
+    assert billing_key_for_purpose("manuscript_writer_eval", "manuscript_writer") == TOOL_MANUSCRIPT_WRITER_EVALUATION
+    assert billing_key_for_purpose("unknown") == "internal.uncategorized"
+
+
+def test_chat_sends_configurable_billing_headers(monkeypatch):
+    import httpx
+    from app.llm import LLMClient, clear_usage_context, set_usage_context
+
+    response = httpx.Response(200, json={
+        "choices": [{"message": {"content": "ok"}}],
+        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+    }, request=httpx.Request("POST", "https://example.com"))
+    client_mock = MagicMock(spec=httpx.Client)
+    client_mock.post.return_value = response
+    monkeypatch.setattr("app.llm._get_shared_sync_client", lambda: client_mock)
+    token = set_usage_context(call_purpose="chat_main")
+    try:
+        LLMClient(provider="qwen", api_key="test", url="https://example.com", retries=0).chat("hello")
+    finally:
+        clear_usage_context(token)
+    headers = client_mock.post.call_args.kwargs["headers"]
+    assert headers["X-Agent-Tool-Key"] == "chat.main"
+    assert headers["X-Agent-Call-ID"]
+    assert headers["X-Agent-Attempt"] == "1"

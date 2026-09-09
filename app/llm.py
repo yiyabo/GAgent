@@ -7,12 +7,14 @@ import os
 import random
 import time
 import threading
+import uuid
 import weakref
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Callable, Dict, List, Optional
 
 import httpx
 
+from .billing_keys import billing_key_for_purpose, normalize_billing_key
 from .interfaces import LLMProvider
 from .services.foundation.settings import get_settings
 
@@ -138,7 +140,11 @@ def set_usage_context(
     run_id: Optional[str] = None,
     phase: Optional[str] = None,
     tool_name: Optional[str] = None,
+    billing_key: Optional[str] = None,
 ) -> contextvars.Token:
+    resolved_billing_key = normalize_billing_key(
+        billing_key or billing_key_for_purpose(call_purpose, tool_name)
+    )
     ctx = {
         "session_id": session_id,
         "plan_id": plan_id,
@@ -147,6 +153,7 @@ def set_usage_context(
         "run_id": run_id,
         "phase": phase,
         "tool_name": tool_name,
+        "billing_key": resolved_billing_key,
     }
     return _usage_context.set(ctx)
 
@@ -161,9 +168,17 @@ def update_usage_context(**fields: Any) -> None:
     """
     ctx = _usage_context.get()
     ctx = dict(ctx) if isinstance(ctx, dict) else {}
+    attribution_changed = False
     for key, value in fields.items():
-        if key in {"session_id", "plan_id", "task_id", "call_purpose", "run_id", "phase", "tool_name"} and value is not None:
+        if key in {"session_id", "plan_id", "task_id", "call_purpose", "run_id", "phase", "tool_name", "billing_key"} and value is not None:
             ctx[key] = value
+            attribution_changed = attribution_changed or key in {"call_purpose", "tool_name", "billing_key"}
+    if attribution_changed:
+        ctx["billing_key"] = normalize_billing_key(
+            fields.get("billing_key") or billing_key_for_purpose(
+                ctx.get("call_purpose"), ctx.get("tool_name")
+            )
+        )
     _usage_context.set(ctx)
 
 
@@ -468,6 +483,11 @@ def _log_usage(
     total_tokens: int,
     call_status: Optional[str] = None,
     duration_ms: Optional[float] = None,
+    logical_call_id: Optional[str] = None,
+    attempt_no: Optional[int] = None,
+    upstream_request_id: Optional[str] = None,
+    cache_read_tokens: int = 0,
+    cache_creation_tokens: int = 0,
 ) -> None:
     try:
         from .repository.llm_usage import log_llm_usage
@@ -487,9 +507,45 @@ def _log_usage(
             tool_name=ctx.get("tool_name"),
             call_status=call_status or "ok",
             duration_ms=duration_ms,
+            billing_key=normalize_billing_key(
+                ctx.get("billing_key") or billing_key_for_purpose(
+                    ctx.get("call_purpose"), ctx.get("tool_name")
+                )
+            ),
+            logical_call_id=logical_call_id,
+            attempt_no=attempt_no,
+            upstream_request_id=upstream_request_id,
+            cache_read_tokens=cache_read_tokens,
+            cache_creation_tokens=cache_creation_tokens,
         )
     except Exception as exc:
         logger.warning("[LLM] Failed to log usage: %s", exc)
+
+
+def _new_logical_call_id() -> str:
+    return uuid.uuid4().hex
+
+
+def _billing_request_headers(logical_call_id: str, attempt_no: int) -> Dict[str, str]:
+    if os.getenv("LLM_BILLING_HEADERS_ENABLED", "true").strip().lower() in {"0", "false", "no"}:
+        return {}
+    ctx = _usage_context.get() or {}
+    billing_key = normalize_billing_key(
+        ctx.get("billing_key") or billing_key_for_purpose(
+            ctx.get("call_purpose"), ctx.get("tool_name")
+        )
+    )
+    key_header = os.getenv("LLM_BILLING_KEY_HEADER", "X-Agent-Tool-Key").strip()
+    call_header = os.getenv("LLM_BILLING_CALL_ID_HEADER", "X-Agent-Call-ID").strip()
+    attempt_header = os.getenv("LLM_BILLING_ATTEMPT_HEADER", "X-Agent-Attempt").strip()
+    headers: Dict[str, str] = {}
+    if key_header:
+        headers[key_header] = billing_key
+    if call_header:
+        headers[call_header] = logical_call_id
+    if attempt_header:
+        headers[attempt_header] = str(max(1, attempt_no))
+    return headers
 
 
 def _log_call_metrics(
@@ -758,6 +814,7 @@ class LLMClient(LLMProvider):
             "max_tokens": max_tokens,
         }
         headers = self._build_headers()
+        logical_call_id = _new_logical_call_id()
         timeout = _make_request_timeout(timeout_override)
 
         client = _get_shared_sync_client()
@@ -766,8 +823,10 @@ class LLMClient(LLMProvider):
         for attempt in range(request_retries + 1):
             try:
                 _outbound_limiter.acquire()
+                attempt_headers = dict(headers)
+                attempt_headers.update(_billing_request_headers(logical_call_id, attempt + 1))
                 response = client.post(
-                    self.url, headers=headers, json=payload,
+                    self.url, headers=attempt_headers, json=payload,
                     timeout=timeout,
                 )
                 response.raise_for_status()
@@ -784,6 +843,11 @@ class LLMClient(LLMProvider):
                             total_tokens=usage.get("total_tokens", 0),
                             call_status="ok",
                             duration_ms=(time.perf_counter() - _t0) * 1000,
+                            logical_call_id=logical_call_id,
+                            attempt_no=attempt + 1,
+                            upstream_request_id=response.headers.get("x-request-id") or response.headers.get("request-id"),
+                            cache_read_tokens=usage.get("cache_read_tokens", 0),
+                            cache_creation_tokens=usage.get("cache_creation_tokens", 0),
                         )
                     _log_call_metrics(
                         method="chat", provider=self.provider, model=model or self.model,
@@ -810,6 +874,13 @@ class LLMClient(LLMProvider):
                 except Exception:
                     _ra = None
                 _ra_suffix = f" (retry_after={_ra})" if _ra else ""
+                _log_usage(
+                    provider=self.provider, model=model or self.model,
+                    prompt_tokens=0, completion_tokens=0, total_tokens=0,
+                    call_status="error", duration_ms=(time.perf_counter() - _t0) * 1000,
+                    logical_call_id=logical_call_id, attempt_no=attempt + 1,
+                    upstream_request_id=(e.response.headers.get("x-request-id") if e.response is not None else None),
+                )
                 _log_call_metrics(
                     method="chat", provider=self.provider, model=model or self.model,
                     status="error", latency_ms=(time.perf_counter() - _t0) * 1000,
@@ -823,6 +894,12 @@ class LLMClient(LLMProvider):
                     time.sleep(delay)
                     last_err = e
                     continue
+                _log_usage(
+                    provider=self.provider, model=model or self.model,
+                    prompt_tokens=0, completion_tokens=0, total_tokens=0,
+                    call_status="error", duration_ms=(time.perf_counter() - _t0) * 1000,
+                    logical_call_id=logical_call_id, attempt_no=attempt + 1,
+                )
                 _log_call_metrics(
                     method="chat", provider=self.provider, model=model or self.model,
                     status="error", latency_ms=(time.perf_counter() - _t0) * 1000,
@@ -861,6 +938,7 @@ class LLMClient(LLMProvider):
             "max_tokens": max_tokens,
         }
         headers = self._build_headers()
+        logical_call_id = _new_logical_call_id()
         timeout = _make_request_timeout(timeout_override)
         client = _get_shared_async_client()
 
@@ -868,8 +946,10 @@ class LLMClient(LLMProvider):
         for attempt in range(request_retries + 1):
             try:
                 await _outbound_limiter.acquire_async()
+                attempt_headers = dict(headers)
+                attempt_headers.update(_billing_request_headers(logical_call_id, attempt + 1))
                 response = await client.post(
-                    self.url, headers=headers, json=payload,
+                    self.url, headers=attempt_headers, json=payload,
                     timeout=timeout,
                 )
                 response.raise_for_status()
@@ -886,6 +966,11 @@ class LLMClient(LLMProvider):
                             total_tokens=usage.get("total_tokens", 0),
                             call_status="ok",
                             duration_ms=(time.perf_counter() - _t0) * 1000,
+                            logical_call_id=logical_call_id,
+                            attempt_no=attempt + 1,
+                            upstream_request_id=response.headers.get("x-request-id") or response.headers.get("request-id"),
+                            cache_read_tokens=usage.get("cache_read_tokens", 0),
+                            cache_creation_tokens=usage.get("cache_creation_tokens", 0),
                         )
                     _log_call_metrics(
                         method="chat_async", provider=self.provider, model=model or self.model,
@@ -911,6 +996,13 @@ class LLMClient(LLMProvider):
                 except Exception:
                     _ra = None
                 _ra_suffix = f" (retry_after={_ra})" if _ra else ""
+                _log_usage(
+                    provider=self.provider, model=model or self.model,
+                    prompt_tokens=0, completion_tokens=0, total_tokens=0,
+                    call_status="error", duration_ms=(time.perf_counter() - _t0) * 1000,
+                    logical_call_id=logical_call_id, attempt_no=attempt + 1,
+                    upstream_request_id=(e.response.headers.get("x-request-id") if e.response is not None else None),
+                )
                 _log_call_metrics(
                     method="chat_async", provider=self.provider, model=model or self.model,
                     status="error", latency_ms=(time.perf_counter() - _t0) * 1000,
@@ -922,6 +1014,12 @@ class LLMClient(LLMProvider):
                     delay = max(0.0, self.backoff_base * (2**attempt) + random.uniform(0, self.backoff_base / 4.0))
                     await asyncio.sleep(delay)
                     continue
+                _log_usage(
+                    provider=self.provider, model=model or self.model,
+                    prompt_tokens=0, completion_tokens=0, total_tokens=0,
+                    call_status="error", duration_ms=(time.perf_counter() - _t0) * 1000,
+                    logical_call_id=logical_call_id, attempt_no=attempt + 1,
+                )
                 _log_call_metrics(
                     method="chat_async", provider=self.provider, model=model or self.model,
                     status="error", latency_ms=(time.perf_counter() - _t0) * 1000,
@@ -972,6 +1070,8 @@ class LLMClient(LLMProvider):
             payload["thinking_budget"] = thinking_budget
 
         headers = self._build_headers()
+        logical_call_id = _new_logical_call_id()
+        headers.update(_billing_request_headers(logical_call_id, 1))
 
         timeout = _make_request_timeout(self.stream_timeout)
         client = _get_shared_async_client()
@@ -1013,14 +1113,6 @@ class LLMClient(LLMProvider):
                     usage = obj.get("usage")
                     if isinstance(usage, dict):
                         _last_usage = usage
-                        _log_usage(
-                            provider=self.provider,
-                            model=model or self.model,
-                            prompt_tokens=usage.get("prompt_tokens", 0),
-                            completion_tokens=usage.get("completion_tokens", 0),
-                            total_tokens=usage.get("total_tokens", 0),
-                            call_status="ok",
-                        )
 
                     # Extract reasoning_content delta if present
                     choices = obj.get("choices")
@@ -1050,6 +1142,19 @@ class LLMClient(LLMProvider):
             _stream_err = type(exc).__name__
             raise
         finally:
+            usage = _last_usage if isinstance(_last_usage, dict) else {}
+            _log_usage(
+                provider=self.provider,
+                model=model or self.model,
+                prompt_tokens=usage.get("prompt_tokens", 0),
+                completion_tokens=usage.get("completion_tokens", 0),
+                total_tokens=usage.get("total_tokens", 0),
+                call_status=_stream_status,
+                logical_call_id=logical_call_id,
+                attempt_no=1,
+                cache_read_tokens=usage.get("cache_read_tokens", 0),
+                cache_creation_tokens=usage.get("cache_creation_tokens", 0),
+            )
             _log_call_metrics(
                 method="stream_chat", provider=self.provider, model=model or self.model,
                 status=_stream_status, latency_ms=(time.perf_counter() - _t0) * 1000,
@@ -1181,6 +1286,8 @@ class LLMClient(LLMProvider):
             payload["thinking_budget"] = thinking_budget
 
         headers = self._build_headers()
+        logical_call_id = _new_logical_call_id()
+        headers.update(_billing_request_headers(logical_call_id, 1))
 
         result = NativeStreamResult()
         # Accumulator for streamed tool_calls keyed by index
@@ -1214,14 +1321,6 @@ class LLMClient(LLMProvider):
                 usage = obj.get("usage")
                 if isinstance(usage, dict):
                     result.usage = usage
-                    _log_usage(
-                        provider=self.provider,
-                        model=model or self.model,
-                        prompt_tokens=usage.get("prompt_tokens", 0),
-                        completion_tokens=usage.get("completion_tokens", 0),
-                        total_tokens=usage.get("total_tokens", 0),
-                        call_status="ok",
-                    )
 
                 choices = obj.get("choices")
                 if not isinstance(choices, list) or not choices:
@@ -1293,6 +1392,20 @@ class LLMClient(LLMProvider):
             result.tool_calls.append(
                 NativeToolCall(id=raw["id"], name=raw["name"], arguments=args)
             )
+
+        usage = result.usage if isinstance(result.usage, dict) else {}
+        _log_usage(
+            provider=self.provider,
+            model=model or self.model,
+            prompt_tokens=usage.get("prompt_tokens", 0),
+            completion_tokens=usage.get("completion_tokens", 0),
+            total_tokens=usage.get("total_tokens", 0),
+            call_status="ok",
+            logical_call_id=logical_call_id,
+            attempt_no=1,
+            cache_read_tokens=usage.get("cache_read_tokens", 0),
+            cache_creation_tokens=usage.get("cache_creation_tokens", 0),
+        )
 
         return result
 
