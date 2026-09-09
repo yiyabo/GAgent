@@ -41,6 +41,7 @@ from .repository.plan_repository import fix_stale_plan_task_statuses_on_startup
 from .repository.plan_storage import fix_stale_jobs_on_startup
 from .services.foundation.logging_config import setup_logging
 from .services.foundation.settings import get_settings
+from .services.foundation.llm_config import is_production, platform_profile
 from .utils.route_helpers import parse_bool
 
 
@@ -61,6 +62,14 @@ async def lifespan(_fastapi_app: FastAPI):
     # Initialize Structured Logging with Global Configuration
     setup_logging()
     _ = get_settings()  # Trigger loading to make it easy to see in the logs if the configuration took effect or not
+    if is_production():
+        profile = platform_profile()
+        logging.getLogger("app.main").info(
+            "Production LLM gateway configured: provider=%s host=%s model=%s",
+            profile.provider,
+            profile.api_url.split("/", 3)[2],
+            profile.model,
+        )
     init_db()
 
     # Pre-warm shared HTTP connection pools for LLM API communication.

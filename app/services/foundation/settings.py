@@ -63,6 +63,12 @@ if _USE_PYDANTIC:
 
         base_url: Optional[str] = Field(default=None, env="BASE_URL")
 
+        platform_llm_api_key: Optional[str] = Field(default=None, env="PLATFORM_LLM_API_KEY")
+        platform_llm_api_url: Optional[str] = Field(default=None, env="PLATFORM_LLM_API_URL")
+        platform_llm_model: Optional[str] = Field(default=None, env="PLATFORM_LLM_MODEL")
+        platform_llm_responses_api_url: Optional[str] = Field(default=None, env="PLATFORM_LLM_RESPONSES_API_URL")
+        platform_llm_allowed_hosts: str = Field(default="", env="PLATFORM_LLM_ALLOWED_HOSTS")
+
         glm_api_key: Optional[str] = Field(default=None, env="GLM_API_KEY")
         glm_api_url: str = Field(
             default="https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
@@ -309,6 +315,11 @@ else:
             self.log_dir = os.getenv("LOG_DIR", "logs")
             self.database_url = os.getenv("DATABASE_URL", "sqlite:///./tasks.db")
             self.base_url = os.getenv("BASE_URL")
+            self.platform_llm_api_key = os.getenv("PLATFORM_LLM_API_KEY") or None
+            self.platform_llm_api_url = os.getenv("PLATFORM_LLM_API_URL") or None
+            self.platform_llm_model = os.getenv("PLATFORM_LLM_MODEL") or None
+            self.platform_llm_responses_api_url = os.getenv("PLATFORM_LLM_RESPONSES_API_URL") or None
+            self.platform_llm_allowed_hosts = os.getenv("PLATFORM_LLM_ALLOWED_HOSTS", "")
             self.glm_api_key = os.getenv("GLM_API_KEY")
             self.glm_api_url = os.getenv("GLM_API_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions")
             self.glm_model = os.getenv("GLM_MODEL", "qwen3-max-2026-01-23")

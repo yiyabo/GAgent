@@ -17,6 +17,13 @@ import httpx
 from .billing_keys import billing_key_for_purpose, normalize_billing_key
 from .interfaces import LLMProvider
 from .services.foundation.settings import get_settings
+from .services.foundation.llm_config import (
+    LLMConfigurationError,
+    assert_no_production_direct_endpoint,
+    dashscope_test_profile,
+    is_production,
+    platform_profile,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -638,17 +645,30 @@ class LLMClient(LLMProvider):
         settings = get_settings()
 
         requested_provider = (
-            provider or os.getenv("LLM_PROVIDER") or settings.llm_provider or "qwen"
+            provider or os.getenv("LLM_PROVIDER") or settings.llm_provider or "platform"
         )
         requested_provider = str(requested_provider).strip().lower()
         if requested_provider == "glm":
-            logger.warning("LLM provider 'glm' is deprecated; forcing provider='qwen'")
-            requested_provider = "qwen"
+            logger.warning("LLM provider 'glm' is deprecated; use the platform profile instead")
+            requested_provider = "platform"
         self.provider = requested_provider
 
         provider_name = self.provider.lower()
 
-        if provider_name == "perplexity":
+        if provider_name == "platform" or (provider_name == "qwen" and is_production()):
+            profile = platform_profile()
+            self.provider = profile.provider
+            self.api_key = api_key or profile.api_key
+            self.url = url or profile.api_url
+            self.model = model or profile.model
+            assert_no_production_direct_endpoint(self.url)
+        elif provider_name == "dashscope_test":
+            profile = dashscope_test_profile()
+            self.provider = profile.provider
+            self.api_key = api_key or profile.api_key
+            self.url = url or profile.api_url
+            self.model = model or profile.model
+        elif provider_name == "perplexity":
             env_api_key = os.getenv("PERPLEXITY_API_KEY")
             env_url = os.getenv("PERPLEXITY_API_URL")
             env_model = os.getenv("PERPLEXITY_MODEL")
@@ -656,21 +676,17 @@ class LLMClient(LLMProvider):
             self.url = url or env_url or settings.perplexity_api_url
             self.model = model or env_model or settings.perplexity_model
         elif provider_name == "qwen":
-            env_api_key = os.getenv("QWEN_API_KEY")
-            env_url = os.getenv("QWEN_API_URL")
-            env_model = os.getenv("QWEN_MODEL")
-            self.api_key = api_key or env_api_key or settings.qwen_api_key
-            self.url = url or env_url or settings.qwen_api_url or "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
-            selected_model = model or env_model or settings.qwen_model or "qwen3.7-max"
-            selected_model_str = str(selected_model).strip().lower()
-            if selected_model_str and not selected_model_str.startswith("qwen"):
-                logger.warning(
-                    "Model '%s' is not a Qwen-series model; forcing model='%s'",
-                    selected_model,
-                    settings.qwen_model or "qwen3.7-max",
+            # Keep constructor-supplied endpoints available for isolated unit tests;
+            # environment-based Qwen routing is intentionally not a production path.
+            if not (api_key and url):
+                raise LLMConfigurationError(
+                    "The qwen provider alias requires explicit api_key and url for tests. "
+                    "Use LLM_PROVIDER=platform for production or LLM_PROVIDER=dashscope_test for testing."
                 )
-                selected_model = settings.qwen_model or "qwen3.7-max"
-            self.model = selected_model
+            self.api_key = api_key
+            self.url = url
+            self.model = model or os.getenv("QWEN_MODEL") or "qwen-test"
+            assert_no_production_direct_endpoint(self.url)
         elif provider_name == "kimi":
             env_api_key = os.getenv("KIMI_API_KEY")
             env_url = os.getenv("KIMI_API_URL")
@@ -734,20 +750,11 @@ class LLMClient(LLMProvider):
             self.model = model or env_model or "gpt-4o-mini"
             self.openai_project = os.getenv("OPENAI_PROJECT")
             self.openai_org = os.getenv("OPENAI_ORG") or os.getenv("OPENAI_ORGANIZATION")
-        else:  # unknown provider -> fallback to qwen
-            logger.warning("Unknown provider '%s'; forcing provider='qwen'", provider_name)
-            self.provider = "qwen"
-            env_api_key = os.getenv("QWEN_API_KEY")
-            env_url = os.getenv("QWEN_API_URL")
-            env_model = os.getenv("QWEN_MODEL")
-            self.api_key = api_key or env_api_key or settings.qwen_api_key
-            self.url = (
-                url
-                or env_url
-                or settings.qwen_api_url
-                or "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+        else:
+            raise LLMConfigurationError(
+                f"Unsupported LLM_PROVIDER '{provider_name}'. "
+                "Configure LLM_PROVIDER=platform or an explicitly supported test provider."
             )
-            self.model = model or env_model or settings.qwen_model or "qwen3.7-max"
 
         settings_timeout = getattr(settings, "llm_request_timeout", None)
         if settings_timeout in (None, ""):

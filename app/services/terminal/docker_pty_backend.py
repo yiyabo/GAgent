@@ -54,11 +54,14 @@ def resolve_qwen_container_memory_limit(value: Optional[str] = None) -> Optional
 CONTAINER_MEMORY_LIMIT = resolve_qwen_container_memory_limit()
 CONTAINER_PIDS_LIMIT = int(os.getenv("QWEN_CODE_CONTAINER_PIDS", "2048"))
 CONTAINER_NPROC_LIMIT = int(os.getenv("QWEN_CODE_CONTAINER_NPROC", "4096"))
-CONTAINER_WORKDIR = "/workspace"
-CONTAINER_HOME = "/tmp/gagent_home"
-CONTAINER_USERNAME = "runner"
-CONTAINER_EXEC_PATH = "/opt/conda/bin:/opt/conda/condabin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-QWEN_EXECUTABLE = "/opt/conda/bin/qwen"
+CONTAINER_WORKDIR = os.getenv("QWEN_CODE_WORKDIR", "/workspace").strip() or "/workspace"
+CONTAINER_HOME = os.getenv("QWEN_CODE_HOME", "/tmp/gagent_home").strip() or "/tmp/gagent_home"
+CONTAINER_USERNAME = os.getenv("QWEN_CODE_USER", "runner").strip() or "runner"
+CONTAINER_EXEC_PATH = os.getenv(
+    "QWEN_CODE_EXEC_PATH",
+    "/opt/conda/bin:/opt/conda/condabin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+).strip()
+QWEN_EXECUTABLE = os.getenv("QWEN_CODE_EXECUTABLE", "/opt/conda/bin/qwen").strip()
 
 
 def _sanitise_qwen_session_id(raw: str) -> str:
@@ -425,12 +428,13 @@ class DockerPTYBackend:
         if qwen_key:
             env["OPENAI_API_KEY"] = qwen_key
 
-        base_url = (
-            os.getenv("QWEN_CODE_BASE_URL", "").strip()
-            or os.getenv("OPENAI_BASE_URL", "").strip()
-            or "https://dashscope.aliyuncs.com/compatible-mode/v1"
-        )
-        env["OPENAI_BASE_URL"] = base_url
+        from app.services.foundation.llm_config import dashscope_test_profile, is_production, platform_profile
+        if is_production() or os.getenv("LLM_PROVIDER", "platform").strip().lower() != "dashscope_test":
+            profile = platform_profile()
+        else:
+            profile = dashscope_test_profile()
+        env["OPENAI_BASE_URL"] = profile.api_url.rsplit("/chat/completions", 1)[0]
+        env["OPENAI_API_KEY"] = profile.api_key
 
         env["TERM"] = "xterm-256color"
         # Writable HOME for the arbitrary UID we pass via --user

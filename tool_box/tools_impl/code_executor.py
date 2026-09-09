@@ -1827,7 +1827,7 @@ _SUPPORTED_SETTING_SOURCES = {"user", "project", "local"}
 _SUPPORTED_AUTH_MODES = {"claude_login", "api_env"}
 _DEFAULT_API_BASE_URL = "https://dashscope.aliyuncs.com/apps/anthropic"
 _DEFAULT_API_MODEL = "qwen3.7-max"
-_DEFAULT_QC_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+_DEFAULT_QC_BASE_URL = "https://example.invalid/v1"
 _CLAUDE_ENV_KEYS_FOR_LOGIN_MODE: Sequence[str] = (
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_BASE_URL",
@@ -2052,13 +2052,27 @@ def _build_qwen_code_subprocess_env(model_provider: Optional[Dict] = None) -> Di
         env_map["OPENAI_API_KEY"] = mp_api_key
         env_map["OPENAI_BASE_URL"] = mp_base_url.rstrip("/") + "/v1"
     else:
-        qwen_key = str(os.getenv("QWEN_API_KEY", "")).strip()
-        if qwen_key:
-            env_map["OPENAI_API_KEY"] = qwen_key
-        env_map["OPENAI_BASE_URL"] = (
-            str(os.getenv("QWEN_CODE_BASE_URL", "")).strip()
-            or _DEFAULT_QC_BASE_URL
+        # Production code execution inherits the central platform profile.
+        # Direct DashScope access requires an explicit non-production test profile.
+        from app.services.foundation.llm_config import (
+            dashscope_test_profile,
+            is_production,
+            platform_profile,
         )
+        if is_production():
+            profile = platform_profile()
+        elif os.getenv("LLM_PROVIDER", "platform").strip().lower() == "dashscope_test":
+            profile = dashscope_test_profile()
+        elif os.getenv("PLATFORM_LLM_API_URL"):
+            profile = platform_profile()
+        else:
+            # Test-only fallback keeps mocked CLI watchdog tests offline.
+            profile = type("_TestProfile", (), {
+                "api_key": str(os.getenv("QWEN_API_KEY", "test-key")).strip(),
+                "api_url": str(os.getenv("QWEN_CODE_BASE_URL", _DEFAULT_QC_BASE_URL)).strip(),
+            })()
+        env_map["OPENAI_API_KEY"] = profile.api_key
+        env_map["OPENAI_BASE_URL"] = profile.api_url.rsplit("/chat/completions", 1)[0]
     for key in ("ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL",
                 "ANTHROPIC_SMALL_FAST_MODEL", "ANTHROPIC_AUTH_TOKEN", "CLAUDECODE"):
         env_map.pop(key, None)

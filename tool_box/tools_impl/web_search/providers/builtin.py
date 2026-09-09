@@ -190,23 +190,23 @@ async def search(
     settings: SearchSettings,
     **_: Any,
 ) -> WebSearchResult:
-    provider_name = (settings.builtin_provider or "qwen").lower()
-    if provider_name != "qwen":
+    provider_name = (settings.builtin_provider or "platform").lower()
+    if provider_name not in {"platform", "dashscope_test"}:
         raise WebSearchError(
             code="unsupported_builtin",
-            message="Web search uses DashScope Responses API (web_search tool) and requires BUILTIN_SEARCH_PROVIDER=qwen.",
+            message="Web search provider must be platform or the explicit non-production dashscope_test profile.",
             provider="builtin",
             meta={"requested": provider_name},
         )
 
-    api_key = settings.qwen_api_key
-    api_url = settings.qwen_responses_api_url
-    model = (settings.qwen_responses_model or settings.qwen_model or "qwen3.7-max").strip()
+    api_key = settings.platform_api_key or settings.qwen_api_key
+    api_url = settings.platform_responses_api_url or settings.qwen_responses_api_url
+    model = (settings.platform_responses_model or settings.qwen_responses_model or settings.platform_model or settings.qwen_model).strip()
 
     if not api_key:
         raise WebSearchError(
             code="missing_api_key",
-            message="QWEN_API_KEY is not configured",
+            message="PLATFORM_LLM_API_KEY is not configured",
             provider="builtin",
             meta={"provider": "qwen"},
         )
