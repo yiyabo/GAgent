@@ -33,7 +33,8 @@ def test_platform_profile_rejects_dashscope(monkeypatch):
 
 def test_platform_profile_derives_responses_url(monkeypatch):
     monkeypatch.setenv("APP_ENV", "production")
-    monkeypatch.setenv("PLATFORM_LLM_API_URL", "https://platform.example/v1/chat/completions")
+    monkeypatch.setenv("PLATFORM_LLM_ALLOWED_HOSTS", "example.com")
+    monkeypatch.setenv("PLATFORM_LLM_API_URL", "https://example.com/v1/chat/completions")
     monkeypatch.setenv("PLATFORM_LLM_API_KEY", "test")
     monkeypatch.setenv("PLATFORM_LLM_MODEL", "qwen/test")
     monkeypatch.delenv("PLATFORM_LLM_RESPONSES_API_URL", raising=False)
