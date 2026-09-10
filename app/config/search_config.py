@@ -10,23 +10,16 @@ from functools import lru_cache
 import os
 from typing import Optional
 
-from app.services.foundation.llm_config import (
-    LLMConfigurationError,
-    dashscope_test_profile,
-    is_production,
-    platform_profile,
-)
+from app.services.foundation.llm_config import is_production, platform_profile
 
 
 def _derive_responses_url_from_chat_url(chat_url: str) -> str:
-    """Map an OpenAI-compatible chat endpoint to its Responses endpoint."""
+    """Map .../chat/completions -> .../responses for DashScope compatible-mode."""
     u = (chat_url or "").rstrip("/")
     suffix = "chat/completions"
     if u.endswith(suffix):
         return u[: -len(suffix)] + "responses"
-    raise LLMConfigurationError(
-        "A Responses endpoint is required when the platform chat URL does not end in /chat/completions"
-    )
+    return "https://dashscope.aliyuncs.com/compatible-mode/v1/responses"
 
 
 @dataclass(slots=True)
@@ -34,18 +27,15 @@ class SearchSettings:
     """Web Search configuration"""
 
     default_provider: str = "builtin"
-    builtin_provider: str = "platform"  # platform | dashscope_test
+    builtin_provider: str = "qwen"  # qwen | glm | ...
 
     qwen_api_key: Optional[str] = None
-    qwen_api_url: str = ""
-    qwen_model: str = ""
-    platform_api_key: Optional[str] = None
-    platform_api_url: str = ""
-    platform_model: str = ""
-    platform_responses_api_url: str = ""
-    platform_responses_model: Optional[str] = None
-    qwen_responses_api_url: str = ""
-    qwen_responses_model: Optional[str] = None
+    qwen_api_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+    qwen_model: str = "qwen3.7-max"
+    # OpenAI-compatible Responses API (DashScope / Model Studio web_search tool), see:
+    # https://help.aliyun.com/zh/model-studio/web-search
+    qwen_responses_api_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1/responses"
+    qwen_responses_model: Optional[str] = None  # None -> use qwen_model
 
     glm_api_key: Optional[str] = None
     glm_api_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
@@ -84,33 +74,25 @@ def get_search_settings() -> SearchSettings:
     """read SearchSettings"""
 
     default_provider = _env("DEFAULT_WEB_SEARCH_PROVIDER", "builtin")
-    builtin_provider = _env("BUILTIN_SEARCH_PROVIDER", "platform")
+    builtin_provider = _env("BUILTIN_SEARCH_PROVIDER", "qwen")
+    profile = platform_profile() if is_production() else None
+    if profile:
+        if default_provider != "builtin" or builtin_provider not in {"platform", "qwen"}:
+            raise RuntimeError("Production web search must use the platform Responses gateway")
+        default_provider = "builtin"
+        builtin_provider = "platform"
 
-    if builtin_provider == "dashscope_test":
-        profile = dashscope_test_profile()
-    elif builtin_provider == "platform":
-        if is_production() or all(
-            _env(name)
-            for name in ("PLATFORM_LLM_API_URL", "PLATFORM_LLM_API_KEY", "PLATFORM_LLM_MODEL")
-        ):
-            profile = platform_profile()
-        else:
-            profile = None
-    else:
-        raise LLMConfigurationError(
-            "BUILTIN_SEARCH_PROVIDER must be platform or dashscope_test"
-        )
-    platform_api_key = profile.api_key if profile else _env("PLATFORM_LLM_API_KEY")
-    platform_api_url = profile.api_url if profile else _env("PLATFORM_LLM_API_URL")
-    platform_model = _env("PLATFORM_LLM_SEARCH_MODEL", profile.model if profile else "")
-    platform_responses_api_url = _env(
-        "PLATFORM_LLM_RESPONSES_API_URL", profile.responses_api_url if profile else ""
+    qwen_api_key = profile.api_key if profile else _env("QWEN_API_KEY")
+    qwen_api_url = profile.api_url if profile else _env(
+        "QWEN_API_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
     )
-    qwen_api_key = platform_api_key
-    qwen_api_url = platform_api_url
-    qwen_model = platform_model
-    qwen_responses_api_url = platform_responses_api_url
-    qwen_responses_model = _env("PLATFORM_LLM_SEARCH_MODEL", platform_model)
+    qwen_model = profile.model if profile else _env("QWEN_MODEL", "qwen3.7-max")
+    qwen_responses_api_url = profile.responses_api_url if profile else _env("QWEN_RESPONSES_API_URL")
+    if not qwen_responses_api_url:
+        qwen_responses_api_url = _derive_responses_url_from_chat_url(
+            qwen_api_url or "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+        )
+    qwen_responses_model = _env("QWEN_RESPONSES_MODEL")
 
     glm_api_key = _env("GLM_API_KEY")
     glm_api_url = _env("GLM_API_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions")

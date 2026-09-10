@@ -52,11 +52,14 @@ async def _collect_chunks(
 ) -> List[str]:
     """Consume an async generator with a timeout to prevent infinite hangs."""
     chunks: List[str] = []
+
+    async def _consume() -> None:
+        async for chunk in gen:
+            chunks.append(chunk)
+
     try:
-        async with asyncio.timeout(timeout):
-            async for chunk in gen:
-                chunks.append(chunk)
-    except TimeoutError:
+        await asyncio.wait_for(_consume(), timeout=timeout)
+    except asyncio.TimeoutError:
         raise AssertionError(
             f"Async generator did not terminate within {timeout}s — "
             f"collected {len(chunks)} chunks before timeout"

@@ -79,8 +79,6 @@ async def build_agent_for_chat_request(
             context["model_provider"] = {
                 "type": model_provider.get("type", "openai"),
                 "model": model_provider.get("model", ""),
-                "base_url": model_provider.get("base_url", ""),
-                "api_key": model_provider.get("api_key", ""),
                 "model_options": model_provider.get("model_options", []),
             }
         logger.info(

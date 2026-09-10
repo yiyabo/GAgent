@@ -1,5 +1,12 @@
 from __future__ import annotations
 
+import os
+
+# Tests always run with development configuration: a test process that
+# inherits the production APP_ENV must not activate the fail-closed
+# platform profile.
+os.environ.setdefault("APP_ENV", "development")
+
 import asyncio
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager

@@ -1,13 +1,15 @@
-"""Centralized production LLM provider configuration."""
+"""Validated production configuration for the platform LLM gateway."""
 from __future__ import annotations
 
+import ipaddress
 import os
+import socket
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
 
 class LLMConfigurationError(RuntimeError):
-    """Raised when an LLM provider profile is incomplete or unsafe."""
+    """Raised when an LLM gateway configuration is incomplete or unsafe."""
 
 
 def _env(name: str, default: str = "") -> str:
@@ -18,14 +20,55 @@ def is_production() -> bool:
     return _env("APP_ENV", "development").lower() in {"prod", "production"}
 
 
-def _require_url(name: str, value: str, *, production: bool) -> str:
-    value = value.rstrip("/")
-    parsed = urlparse(value)
-    if parsed.scheme not in {"https", "http"} or not parsed.netloc:
-        raise LLMConfigurationError(f"{name} must be an absolute HTTP(S) URL")
-    if production and parsed.scheme != "https" and _env("LLM_ALLOW_INSECURE_HTTP") not in {"1", "true", "yes"}:
+def _allowed_hosts() -> set[str]:
+    return {
+        item.strip().lower()
+        for item in _env("PLATFORM_LLM_ALLOWED_HOSTS").split(",")
+        if item.strip()
+    }
+
+
+def _is_public_address(address: str) -> bool:
+    try:
+        return ipaddress.ip_address(address).is_global
+    except ValueError:
+        return False
+
+
+def _validate_host(name: str, host: str, *, production: bool) -> None:
+    if not host:
+        raise LLMConfigurationError(f"{name} must include a host")
+    normalized = host.rstrip(".").lower()
+    if normalized in {"localhost", "localhost.localdomain"}:
+        raise LLMConfigurationError(f"{name} must not target localhost")
+    allowed = _allowed_hosts()
+    if production and not allowed:
+        raise LLMConfigurationError("PLATFORM_LLM_ALLOWED_HOSTS is required in production")
+    if allowed and normalized not in allowed:
+        raise LLMConfigurationError(
+            f"{name} host '{normalized}' is not in PLATFORM_LLM_ALLOWED_HOSTS"
+        )
+    try:
+        addresses = {item[4][0] for item in socket.getaddrinfo(normalized, None)}
+    except socket.gaierror as exc:
+        raise LLMConfigurationError(f"{name} host '{normalized}' could not be resolved") from exc
+    if not addresses or any(not _is_public_address(address) for address in addresses):
+        raise LLMConfigurationError(f"{name} host must resolve only to public addresses")
+
+
+def _require_url(
+    name: str, value: str, *, production: bool, allow_dashscope: bool = False
+) -> str:
+    candidate = value.rstrip("/")
+    parsed = urlparse(candidate)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
+        raise LLMConfigurationError(f"{name} must be an absolute HTTP(S) URL without userinfo")
+    if production and parsed.scheme != "https":
         raise LLMConfigurationError(f"{name} must use HTTPS in production")
-    return value
+    _validate_host(name, parsed.hostname, production=production)
+    if not allow_dashscope and "dashscope.aliyuncs.com" in parsed.hostname.lower():
+        raise LLMConfigurationError(f"{name} must not point to DashScope")
+    return candidate
 
 
 def _require_nonempty(name: str, value: str) -> str:
@@ -34,13 +77,13 @@ def _require_nonempty(name: str, value: str) -> str:
     return value
 
 
-def _validate_platform_host(url: str) -> None:
-    allowed = [x.lower() for x in _env("PLATFORM_LLM_ALLOWED_HOSTS").split(",") if x.strip()]
-    if not allowed:
-        return
-    host = (urlparse(url).hostname or "").lower()
-    if host not in allowed:
-        raise LLMConfigurationError(f"platform LLM URL host '{host}' is not in PLATFORM_LLM_ALLOWED_HOSTS")
+def _derived_endpoint(chat_url: str, endpoint: str) -> str:
+    suffix = "chat/completions"
+    if chat_url.endswith(suffix):
+        return chat_url[: -len(suffix)] + endpoint
+    raise LLMConfigurationError(
+        "PLATFORM_LLM_API_URL must end in /chat/completions when a derived endpoint is needed"
+    )
 
 
 @dataclass(frozen=True)
@@ -50,44 +93,64 @@ class LLMProfile:
     api_key: str
     model: str
     responses_api_url: str
+    embeddings_api_url: str
+    search_model: str
+    embedding_model: str
 
 
 def platform_profile() -> LLMProfile:
     production = is_production()
-    url = _require_url("PLATFORM_LLM_API_URL", _env("PLATFORM_LLM_API_URL"), production=production)
-    key = _require_nonempty("PLATFORM_LLM_API_KEY", _env("PLATFORM_LLM_API_KEY"))
+    api_url = _require_url(
+        "PLATFORM_LLM_API_URL", _env("PLATFORM_LLM_API_URL"), production=production
+    )
+    api_key = _require_nonempty("PLATFORM_LLM_API_KEY", _env("PLATFORM_LLM_API_KEY"))
     model = _require_nonempty("PLATFORM_LLM_MODEL", _env("PLATFORM_LLM_MODEL"))
-    _validate_platform_host(url)
-    if "dashscope.aliyuncs.com" in (urlparse(url).hostname or "").lower():
-        raise LLMConfigurationError("PLATFORM_LLM_API_URL must not point to DashScope")
-    responses = _env("PLATFORM_LLM_RESPONSES_API_URL")
-    if not responses and url.endswith("/chat/completions"):
-        responses = url[:-len("chat/completions")] + "responses"
-    responses = _require_url("PLATFORM_LLM_RESPONSES_API_URL", responses or url, production=production)
-    if "dashscope.aliyuncs.com" in (urlparse(responses).hostname or "").lower():
-        raise LLMConfigurationError("PLATFORM_LLM_RESPONSES_API_URL must not point to DashScope")
-    return LLMProfile("platform", url, key, model, responses)
+    responses_url = _env("PLATFORM_LLM_RESPONSES_API_URL") or _derived_endpoint(api_url, "responses")
+    embeddings_url = _env("PLATFORM_LLM_EMBEDDINGS_API_URL") or _derived_endpoint(api_url, "embeddings")
+    return LLMProfile(
+        provider="platform",
+        api_url=api_url,
+        api_key=api_key,
+        model=model,
+        responses_api_url=_require_url(
+            "PLATFORM_LLM_RESPONSES_API_URL", responses_url, production=production
+        ),
+        embeddings_api_url=_require_url(
+            "PLATFORM_LLM_EMBEDDINGS_API_URL", embeddings_url, production=production
+        ),
+        search_model=_env("PLATFORM_LLM_SEARCH_MODEL") or model,
+        embedding_model=_env("PLATFORM_LLM_EMBEDDING_MODEL") or "text-embedding-v4",
+    )
 
 
 def dashscope_test_profile() -> LLMProfile:
     if is_production():
         raise LLMConfigurationError("DashScope test profile is disabled in production")
-    url = _require_url("DASHSCOPE_TEST_API_URL", _env("DASHSCOPE_TEST_API_URL"), production=False)
-    key = _require_nonempty("DASHSCOPE_TEST_API_KEY", _env("DASHSCOPE_TEST_API_KEY"))
+    api_url = _require_url(
+        "DASHSCOPE_TEST_API_URL",
+        _env("DASHSCOPE_TEST_API_URL"),
+        production=False,
+        allow_dashscope=True,
+    )
+    api_key = _require_nonempty("DASHSCOPE_TEST_API_KEY", _env("DASHSCOPE_TEST_API_KEY"))
     model = _require_nonempty("DASHSCOPE_TEST_MODEL", _env("DASHSCOPE_TEST_MODEL"))
-    responses = _env("DASHSCOPE_TEST_RESPONSES_API_URL")
-    if not responses and url.endswith("/chat/completions"):
-        responses = url[:-len("chat/completions")] + "responses"
-    return LLMProfile("dashscope_test", url, key, model, _require_url("DASHSCOPE_TEST_RESPONSES_API_URL", responses or url, production=False))
-
-
-def assert_no_production_direct_endpoint(url: str) -> None:
-    if not is_production():
-        return
-    candidate = _require_url("LLM endpoint", url, production=True)
-    host = (urlparse(candidate).hostname or "").lower()
-    if "dashscope.aliyuncs.com" in host:
-        raise LLMConfigurationError("direct DashScope endpoint is disabled in production")
-    allowed = [x.lower() for x in _env("PLATFORM_LLM_ALLOWED_HOSTS").split(",") if x.strip()]
-    if allowed and host not in allowed:
-        raise LLMConfigurationError(f"LLM endpoint host '{host}' is not production-approved")
+    return LLMProfile(
+        provider="dashscope_test",
+        api_url=api_url,
+        api_key=api_key,
+        model=model,
+        responses_api_url=_require_url(
+            "DASHSCOPE_TEST_RESPONSES_API_URL",
+            _env("DASHSCOPE_TEST_RESPONSES_API_URL") or _derived_endpoint(api_url, "responses"),
+            production=False,
+            allow_dashscope=True,
+        ),
+        embeddings_api_url=_require_url(
+            "DASHSCOPE_TEST_EMBEDDINGS_API_URL",
+            _env("DASHSCOPE_TEST_EMBEDDINGS_API_URL") or _derived_endpoint(api_url, "embeddings"),
+            production=False,
+            allow_dashscope=True,
+        ),
+        search_model=_env("DASHSCOPE_TEST_SEARCH_MODEL") or model,
+        embedding_model=_env("DASHSCOPE_TEST_EMBEDDING_MODEL") or "text-embedding-v4",
+    )

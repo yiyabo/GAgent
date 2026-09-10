@@ -123,9 +123,12 @@ def test_execute_chat_run_uses_unified_stream_for_single_explicit_task(monkeypat
     )
     monkeypatch.setattr("app.services.chat_run_worker.mark_chat_run_started", lambda run_id: None)
     monkeypatch.setattr("app.services.chat_run_worker.mark_chat_run_finished", lambda run_id, status, error=None: None)
+    async def _fake_build_agent(req, save_user_message=False):
+        return (agent, req.message)
+
     monkeypatch.setattr(
         "app.services.chat_run_worker.build_agent_for_chat_request",
-        lambda req, save_user_message=False: (agent, req.message),
+        _fake_build_agent,
     )
     monkeypatch.setattr("app.services.chat_run_worker.ChatRunEmitter", lambda run_id: _FakeEmitter())
     monkeypatch.setattr("app.services.chat_run_worker.start_owner_lease", lambda *args, **kwargs: None)

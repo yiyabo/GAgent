@@ -28,6 +28,7 @@ from typing import Any, Dict, Optional
 import aiohttp
 
 from app.services.foundation.settings import get_settings
+from app.services.foundation.llm_config import is_production, platform_profile
 
 logger = logging.getLogger(__name__)
 
@@ -45,37 +46,28 @@ async def _call_qwen_vision_api(prompt: str, file_path: str) -> str:
     """
 
     settings = get_settings()
-
-    # Check API key from multiple sources
-    api_key_from_env = os.getenv("QWEN_VL_API_KEY") or os.getenv("QWEN_API_KEY")
-    api_key_from_settings = getattr(settings, "qwen_api_key", None)
-    
-    api_key = api_key_from_env or api_key_from_settings
-    
-    if not api_key:
-        env_keys = [k for k in os.environ.keys() if 'QWEN' in k.upper()]
-        raise RuntimeError(
-            f"Qwen vision API key is not configured. "
-            f"Expected: QWEN_VL_API_KEY or QWEN_API_KEY. "
-            f"Found QWEN-related env vars: {env_keys}. "
-            f"Settings qwen_api_key: {'set' if api_key_from_settings else 'not set'}"
+    if is_production():
+        profile = platform_profile()
+        api_key = profile.api_key
+        base_url = profile.api_url
+        model = os.getenv("PLATFORM_LLM_VISION_MODEL") or profile.model
+    else:
+        api_key_from_env = os.getenv("QWEN_VL_API_KEY") or os.getenv("QWEN_API_KEY")
+        api_key_from_settings = getattr(settings, "qwen_api_key", None)
+        api_key = api_key_from_env or api_key_from_settings
+        if not api_key:
+            raise RuntimeError("Qwen vision API key is not configured")
+        base_url = (
+            os.getenv("QWEN_VL_API_URL")
+            or os.getenv("QWEN_API_URL")
+            or "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
         )
-    
-    logger.debug(f"Using Qwen VL API key from: {'env' if api_key_from_env else 'settings'}")
-
-    # Use Qwen VL OpenAI-compatible endpoint
-    # Note: raw HTTP needs full path, OpenAI SDK would append /chat/completions automatically
-    base_url = (
-        os.getenv("QWEN_VL_API_URL")
-        or os.getenv("QWEN_API_URL")  # Fallback to general Qwen API URL
-        or "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
-    )
-    model = (
-        os.getenv("QWEN_VL_MODEL")
-        or os.getenv("QWEN_MODEL")
-        or settings.qwen_model
-        or "qwen3.6-plus"
-    )
+        model = (
+            os.getenv("QWEN_VL_MODEL")
+            or os.getenv("QWEN_MODEL")
+            or settings.qwen_model
+            or "qwen3.6-plus"
+        )
 
     abs_path = Path(file_path).resolve()
     if not abs_path.exists():
@@ -191,17 +183,21 @@ async def _read_pdf_with_qwen_long(
     
     settings = get_settings()
     
-    # Get API key
-    api_key = (
-        os.getenv("QWEN_VL_API_KEY")
-        or os.getenv("QWEN_API_KEY")
-        or getattr(settings, "qwen_api_key", None)
-    )
-    if not api_key:
-        return {"success": False, "error": "Qwen API key not configured"}
-    
-    # Get Qwen-Long model name
-    model = os.getenv("QWEN_LONG_MODEL") or "qwen-long"
+    if is_production():
+        profile = platform_profile()
+        api_key = profile.api_key
+        model = os.getenv("PLATFORM_LLM_LONG_MODEL") or profile.model
+        base_url = profile.api_url.rsplit("/chat/completions", 1)[0]
+    else:
+        api_key = (
+            os.getenv("QWEN_VL_API_KEY")
+            or os.getenv("QWEN_API_KEY")
+            or getattr(settings, "qwen_api_key", None)
+        )
+        if not api_key:
+            return {"success": False, "error": "Qwen API key not configured"}
+        model = os.getenv("QWEN_LONG_MODEL") or "qwen-long"
+        base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     
     abs_path = Path(pdf_path).resolve()
     if not abs_path.exists():
@@ -215,11 +211,7 @@ async def _read_pdf_with_qwen_long(
     logger.info(f"Using Qwen-Long for PDF: {abs_path.name}, size: {file_size/1024:.1f}KB")
     
     try:
-        # Create OpenAI client pointing to DashScope
-        client = OpenAI(
-            api_key=api_key,
-            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-        )
+        client = OpenAI(api_key=api_key, base_url=base_url)
         
         # Step 1: Upload file
         logger.info(f"Uploading PDF to Qwen-Long: {abs_path.name}")

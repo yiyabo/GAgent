@@ -85,7 +85,9 @@ async def _run_case(monkeypatch):
     monkeypatch.setattr(ssh_backend_module, "_get_asyncssh", lambda: fake_asyncssh)
 
     backend = SSHBackend()
-    cfg = SSHConfig(host="127.0.0.1", user="demo", port=22, password="secret")
+    # The fake asyncssh never performs host key verification; opt out
+    # explicitly so the test does not depend on a home known_hosts file.
+    cfg = SSHConfig(host="127.0.0.1", user="demo", port=22, password="secret", known_hosts_path="")
 
     await backend.connect(cfg)
 

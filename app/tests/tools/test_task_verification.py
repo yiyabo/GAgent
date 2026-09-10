@@ -949,6 +949,7 @@ def test_task_verifier_accepts_runtime_artifact_directory_for_stale_absolute_con
 
 def test_task_verifier_resolves_session_relative_task_artifacts_for_stale_contract(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("APP_RUNTIME_ROOT", str(tmp_path / "runtime"))
     runtime_task_dir = tmp_path / "runtime" / "session_test" / "raw_files" / "task_1" / "task_3" / "task_15"
     runtime_task_dir.mkdir(parents=True, exist_ok=True)
     validation_pdf = runtime_task_dir / "cell_type_annotation_validation.pdf"

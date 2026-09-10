@@ -21,6 +21,8 @@ import termios
 from typing import Dict, List, Optional, Sequence, Tuple
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
+from app.services.foundation.llm_config import is_production, platform_profile
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -54,14 +56,11 @@ def resolve_qwen_container_memory_limit(value: Optional[str] = None) -> Optional
 CONTAINER_MEMORY_LIMIT = resolve_qwen_container_memory_limit()
 CONTAINER_PIDS_LIMIT = int(os.getenv("QWEN_CODE_CONTAINER_PIDS", "2048"))
 CONTAINER_NPROC_LIMIT = int(os.getenv("QWEN_CODE_CONTAINER_NPROC", "4096"))
-CONTAINER_WORKDIR = os.getenv("QWEN_CODE_WORKDIR", "/workspace").strip() or "/workspace"
-CONTAINER_HOME = os.getenv("QWEN_CODE_HOME", "/tmp/gagent_home").strip() or "/tmp/gagent_home"
-CONTAINER_USERNAME = os.getenv("QWEN_CODE_USER", "runner").strip() or "runner"
-CONTAINER_EXEC_PATH = os.getenv(
-    "QWEN_CODE_EXEC_PATH",
-    "/opt/conda/bin:/opt/conda/condabin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-).strip()
-QWEN_EXECUTABLE = os.getenv("QWEN_CODE_EXECUTABLE", "/opt/conda/bin/qwen").strip()
+CONTAINER_WORKDIR = "/workspace"
+CONTAINER_HOME = "/tmp/gagent_home"
+CONTAINER_USERNAME = "runner"
+CONTAINER_EXEC_PATH = "/opt/conda/bin:/opt/conda/condabin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+QWEN_EXECUTABLE = "/opt/conda/bin/qwen"
 
 
 def _sanitise_qwen_session_id(raw: str) -> str:
@@ -424,17 +423,19 @@ class DockerPTYBackend:
         """Assemble the container env (Qwen API creds + extras)."""
         env: Dict[str, str] = {}
 
-        qwen_key = os.getenv("QWEN_API_KEY", "").strip()
-        if qwen_key:
-            env["OPENAI_API_KEY"] = qwen_key
-
-        from app.services.foundation.llm_config import dashscope_test_profile, is_production, platform_profile
-        if is_production() or os.getenv("LLM_PROVIDER", "platform").strip().lower() != "dashscope_test":
+        if is_production():
             profile = platform_profile()
+            env["OPENAI_API_KEY"] = profile.api_key
+            env["OPENAI_BASE_URL"] = profile.api_url.rsplit("/chat/completions", 1)[0]
         else:
-            profile = dashscope_test_profile()
-        env["OPENAI_BASE_URL"] = profile.api_url.rsplit("/chat/completions", 1)[0]
-        env["OPENAI_API_KEY"] = profile.api_key
+            qwen_key = os.getenv("QWEN_API_KEY", "").strip()
+            if qwen_key:
+                env["OPENAI_API_KEY"] = qwen_key
+            env["OPENAI_BASE_URL"] = (
+                os.getenv("QWEN_CODE_BASE_URL", "").strip()
+                or os.getenv("OPENAI_BASE_URL", "").strip()
+                or "https://dashscope.aliyuncs.com/compatible-mode/v1"
+            )
 
         env["TERM"] = "xterm-256color"
         # Writable HOME for the arbitrary UID we pass via --user
@@ -443,8 +444,10 @@ class DockerPTYBackend:
         env["LOGNAME"] = CONTAINER_USERNAME
 
         qwen_model = (
-            os.getenv("QWEN_CODE_MODEL", "").strip()
-            or os.getenv("QWEN_MODEL", "").strip()
+            platform_profile().model if is_production() else (
+                os.getenv("QWEN_CODE_MODEL", "").strip()
+                or os.getenv("QWEN_MODEL", "").strip()
+            )
         )
         if qwen_model:
             env["QWEN_CODE_MODEL"] = qwen_model

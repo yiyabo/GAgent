@@ -4039,7 +4039,9 @@ class TaskVerificationService:
         if roots:
             return roots
 
-        runtime_root = Path.cwd() / "runtime"
+        from app.services.session_paths import get_runtime_root
+
+        runtime_root = get_runtime_root()
         if runtime_root.exists() and runtime_root.is_dir():
             for session_dir in runtime_root.glob("session_*"):
                 _add(session_dir)

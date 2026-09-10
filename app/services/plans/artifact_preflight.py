@@ -88,6 +88,10 @@ class ArtifactPreflightService:
         publisher_map: Dict[str, List[int]] = {}
         consumer_map: Dict[str, List[int]] = {}
         selected_nodes = [tree.nodes[task_id] for task_id in selected_task_ids]
+        dependencies_by_task: Dict[int, Set[int]] = {
+            node.id: set(getattr(node, "dependencies", None) or [])
+            for node in selected_nodes
+        }
 
         for node in selected_nodes:
             snapshot, snapshot_issues = self._build_contract_snapshot(plan_id, node, session_id)
@@ -112,18 +116,51 @@ class ArtifactPreflightService:
             related_task_ids = sorted(set(publishers + consumers))
             # Ambiguous producers must block execution: downstream consumers
             # cannot deterministically resolve which task's output to use.
-            errors.append(
-                ArtifactPreflightIssue(
-                    code="ambiguous_producer",
-                    severity="error",
-                    alias=alias,
-                    related_task_ids=related_task_ids,
-                    message=(
-                        f"Artifact alias '{alias}' has multiple producer tasks {sorted(publishers)}; "
-                        "canonical authority requires a single producer."
-                    ),
+            # Exception: tasks that depend on another producer of the same
+            # alias are verifier/consumer duplicates (the decomposer LLM
+            # often copies the producer's alias into a downstream validation
+            # task's publishes). Keep the single canonical producer and
+            # downgrade the redundant publishers to a warning instead of
+            # blocking the whole plan.
+            canonical_publishers = sorted(publishers)
+            duplicate_publishers: Set[int] = set()
+            for pub_task_id in publishers:
+                upstream = dependencies_by_task.get(pub_task_id, set())
+                other_producers = {p for p in publishers if p != pub_task_id}
+                if other_producers & upstream:
+                    duplicate_publishers.add(pub_task_id)
+            if duplicate_publishers:
+                canonical_publishers = sorted(set(publishers) - duplicate_publishers)
+            if canonical_publishers == sorted(publishers):
+                errors.append(
+                    ArtifactPreflightIssue(
+                        code="ambiguous_producer",
+                        severity="error",
+                        alias=alias,
+                        related_task_ids=related_task_ids,
+                        message=(
+                            f"Artifact alias '{alias}' has multiple producer tasks {sorted(publishers)}; "
+                            "canonical authority requires a single producer."
+                        ),
+                    )
                 )
-            )
+            else:
+                warnings.append(
+                    ArtifactPreflightIssue(
+                        code="duplicate_publisher_downgraded",
+                        severity="warning",
+                        alias=alias,
+                        task_id=sorted(duplicate_publishers)[0],
+                        related_task_ids=related_task_ids,
+                        message=(
+                            f"Artifact alias '{alias}' has multiple publisher tasks {sorted(publishers)}; "
+                            f"task(s) {sorted(duplicate_publishers)} depend on producer "
+                            f"{canonical_publishers} and were treated as verifier/consumer "
+                            "duplicates. The canonical producer is "
+                            f"{canonical_publishers[0] if canonical_publishers else 'unresolved'}."
+                        ),
+                    )
+                )
 
         edges = self._build_producer_edges(consumer_map, publisher_map, manifest_resolved)
         for cycle in self._detect_cycles(edges):

@@ -15,6 +15,7 @@ import aiohttp
 import requests
 
 from app.services.foundation.config import GLMConfig
+from app.services.foundation.llm_config import is_production
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +77,8 @@ class QwenEmbeddingClient:
                 if attempt < self.max_retries - 1:
                     time.sleep(self.retry_delay * (attempt + 1))
 
+        if is_production():
+            raise RuntimeError("Platform embedding gateway exhausted; local fallback is disabled in production")
         logger.warning("Qwen API exhausted, falling back to local embedding model")
         self._fallback_to_local = True
         return self._get_local_embeddings(texts)
@@ -139,6 +142,8 @@ class QwenEmbeddingClient:
                 if attempt < self.max_retries - 1:
                     await self._async_sleep(self.retry_delay * (attempt + 1))
 
+        if is_production():
+            raise RuntimeError("Platform embedding gateway exhausted; local fallback is disabled in production")
         logger.warning("Qwen API async exhausted, falling back to local embedding model")
         self._fallback_to_local = True
         return self._get_local_embeddings(texts)

@@ -85,20 +85,12 @@ def _migrate_add_attribution_columns(conn: Any) -> None:
         ("tool_name", "TEXT"),
         ("call_status", "TEXT"),
         ("duration_ms", "REAL"),
-        ("billing_key", "TEXT"),
-        ("logical_call_id", "TEXT"),
-        ("attempt_no", "INTEGER"),
-        ("upstream_request_id", "TEXT"),
-        ("cache_read_tokens", "INTEGER NOT NULL DEFAULT 0"),
-        ("cache_creation_tokens", "INTEGER NOT NULL DEFAULT 0"),
     ])
     existing_columns = {row["name"] for row in conn.execute("PRAGMA table_info(llm_usage_log)").fetchall()}
     if "run_id" in existing_columns:
         try:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_llm_usage_run_id ON llm_usage_log(run_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_llm_usage_phase ON llm_usage_log(phase)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_llm_usage_billing_key ON llm_usage_log(billing_key)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_llm_usage_logical_call_id ON llm_usage_log(logical_call_id)")
         except Exception:
             pass
 
@@ -172,12 +164,6 @@ def log_llm_usage(
     tool_name: Optional[str] = None,
     call_status: Optional[str] = None,
     duration_ms: Optional[float] = None,
-    billing_key: Optional[str] = None,
-    logical_call_id: Optional[str] = None,
-    attempt_no: Optional[int] = None,
-    upstream_request_id: Optional[str] = None,
-    cache_read_tokens: int = 0,
-    cache_creation_tokens: int = 0,
     input_cost: Optional[float] = None,
     output_cost: Optional[float] = None,
     estimated_cost: Optional[float] = None,
@@ -202,11 +188,9 @@ def log_llm_usage(
                 provider, model, prompt_tokens, completion_tokens, total_tokens,
                 created_at, session_id, plan_id, task_id, call_purpose,
                 run_id, phase, tool_name, call_status, duration_ms,
-                billing_key, logical_call_id, attempt_no, upstream_request_id,
-                cache_read_tokens, cache_creation_tokens,
                 input_cost, output_cost, estimated_cost, cost_currency
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 provider,
@@ -224,12 +208,6 @@ def log_llm_usage(
                 tool_name,
                 call_status or "ok",
                 duration_ms,
-                billing_key,
-                logical_call_id,
-                attempt_no,
-                upstream_request_id,
-                max(0, int(cache_read_tokens or 0)),
-                max(0, int(cache_creation_tokens or 0)),
                 input_cost,
                 output_cost,
                 estimated_cost,
@@ -536,7 +514,6 @@ def get_usage_overview(
             "by_purpose": _breakdown("COALESCE(call_purpose, 'uncategorized')"),
             "by_model": _breakdown("provider || '/' || model"),
             "by_tool": _breakdown("COALESCE(tool_name, 'none')"),
-            "by_billing_key": _breakdown("COALESCE(billing_key, 'internal.uncategorized')"),
         }
 
 
@@ -657,9 +634,7 @@ def get_usage_calls(
             SELECT
                 created_at, provider, model, prompt_tokens, completion_tokens,
                 total_tokens, estimated_cost, cost_currency, session_id, plan_id,
-                task_id, run_id, phase, tool_name, call_purpose, call_status, duration_ms,
-                billing_key, logical_call_id, attempt_no, upstream_request_id,
-                cache_read_tokens, cache_creation_tokens
+                task_id, run_id, phase, tool_name, call_purpose, call_status, duration_ms
             FROM llm_usage_log
             {where_sql}
             ORDER BY created_at DESC

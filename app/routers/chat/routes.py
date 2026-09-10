@@ -18,6 +18,10 @@ from app.repository.plan_storage import append_action_log_entry
 from app.routers import register_router
 from app.services.llm.llm_service import get_llm_service
 from app.services.moderation import scan_user_input
+from app.services.moderation.refusal_matcher import (
+    REFUSAL_REPLY_TEMPLATE,
+    check_refusal_bank,
+)
 from app.services.plans.decomposition_jobs import plan_decomposition_jobs
 from app.services.plans.plan_session import PlanSession
 from app.services.platform_access import bind_chat_request_to_principal
@@ -147,6 +151,30 @@ async def chat_message(
     principal = get_request_principal(raw_request)
     # Log-only moderation audit of the raw user message (never blocks)
     scan_user_input(request.message, session_id=request.session_id, user_id=owner_id)
+    # Question-bank refusal: match known forbidden questions and short-circuit
+    # with a fixed template before any LLM call (deterministic for regression).
+    refusal = check_refusal_bank(request.message)
+    if refusal is not None:
+        logger.info(
+            "[CHAT][REFUSAL] session=%s bank_id=%s layer=%s score=%s category=%s",
+            request.session_id or "<new>",
+            refusal.get("bank_id"),
+            refusal.get("layer"),
+            refusal.get("score"),
+            refusal.get("category"),
+        )
+        return ChatResponse(
+            response=REFUSAL_REPLY_TEMPLATE,
+            suggestions=[],
+            actions=[],
+            metadata={
+                "status": "completed",
+                "refusal": True,
+                "refusal_bank_id": refusal.get("bank_id"),
+                "refusal_layer": refusal.get("layer"),
+                "refusal_category": refusal.get("category"),
+            },
+        )
     try:
         context = dict(request.context or {})
         incoming_plan_id = context.get("plan_id")
@@ -325,8 +353,6 @@ async def chat_message(
                 context["model_provider"] = {
                     "type": model_provider.get("type", "openai"),
                     "model": model_provider.get("model", ""),
-                    "base_url": model_provider.get("base_url", ""),
-                    "api_key": model_provider.get("api_key", ""),
                     "model_options": model_provider.get("model_options", []),
                 }
             logger.info(

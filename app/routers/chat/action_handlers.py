@@ -3420,7 +3420,10 @@ async def handle_plan_action(agent: Any, action: LLMAction) -> AgentStep:
             action=action, success=True, message=message, details=details
         )
 
-    if action.name == "execute_plan":
+    if action.name in ("execute_plan", "execute_all"):
+        # LLM output frequently emits name='execute_all' (the prompt catalog
+        # and tool_schemas document it as an operation value); route it to the
+        # same full-plan background execution as execute_plan.
         tree = agent._require_plan_bound()
         if agent.plan_executor is None:
             raise ValueError("Plan executor is not enabled in this environment.")

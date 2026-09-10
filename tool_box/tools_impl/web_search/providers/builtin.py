@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 import aiohttp
 
 from app.config import SearchSettings
+from app.services.foundation.llm_config import is_production
 
 from ..exceptions import WebSearchError
 from ..result import WebSearchResult
@@ -190,23 +191,24 @@ async def search(
     settings: SearchSettings,
     **_: Any,
 ) -> WebSearchResult:
-    provider_name = (settings.builtin_provider or "platform").lower()
-    if provider_name not in {"platform", "dashscope_test"}:
+    provider_name = (settings.builtin_provider or "qwen").lower()
+    allowed = {"platform"} if is_production() else {"qwen", "platform"}
+    if provider_name not in allowed:
         raise WebSearchError(
             code="unsupported_builtin",
-            message="Web search provider must be platform or the explicit non-production dashscope_test profile.",
+            message="Web search must use the configured platform Responses gateway.",
             provider="builtin",
             meta={"requested": provider_name},
         )
 
-    api_key = settings.platform_api_key or settings.qwen_api_key
-    api_url = settings.platform_responses_api_url or settings.qwen_responses_api_url
-    model = (settings.platform_responses_model or settings.qwen_responses_model or settings.platform_model or settings.qwen_model).strip()
+    api_key = settings.qwen_api_key
+    api_url = settings.qwen_responses_api_url
+    model = (settings.qwen_responses_model or settings.qwen_model or "qwen3.7-max").strip()
 
     if not api_key:
         raise WebSearchError(
             code="missing_api_key",
-            message="PLATFORM_LLM_API_KEY is not configured",
+            message="QWEN_API_KEY is not configured",
             provider="builtin",
             meta={"provider": "qwen"},
         )

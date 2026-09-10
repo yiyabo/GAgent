@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from app.services.foundation.settings import get_settings
+from app.services.foundation.llm_config import is_production, platform_profile
 
 
 @dataclass
@@ -50,6 +51,7 @@ class GLMConfig:
         s = get_settings()
 
         embedding_provider = getattr(s, "embedding_provider", "qwen")
+        profile = platform_profile() if is_production() else None
 
         def _derive_embeddings_url(chat_url: Optional[str]) -> str:
             default_url = "https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings"
@@ -60,15 +62,23 @@ class GLMConfig:
                 return cu.replace("chat/completions", "embeddings")
             return cu if "/embeddings" in cu else default_url
 
-        api_url = s.glm_embeddings_api_url or _derive_embeddings_url(s.glm_api_url)
+        api_url = profile.embeddings_api_url if profile else (
+            s.glm_embeddings_api_url or _derive_embeddings_url(s.glm_api_url)
+        )
 
-        use_local = embedding_provider == "local"
+        use_local = False if profile else embedding_provider == "local"
         local_model = getattr(s, "local_embedding_model", "sentence-transformers/all-mpnet-base-v2")
 
-        qwen_embedding_api_url = getattr(s, "qwen_embedding_api_url", "https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings")
-        qwen_embedding_model = getattr(s, "qwen_embedding_model", "text-embedding-v4")
+        qwen_embedding_api_url = profile.embeddings_api_url if profile else getattr(
+            s, "qwen_embedding_api_url", "https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings"
+        )
+        qwen_embedding_model = profile.embedding_model if profile else getattr(
+            s, "qwen_embedding_model", "text-embedding-v4"
+        )
         qwen_embedding_dimension = int(getattr(s, "qwen_embedding_dimension", 1536))
-        qwen_api_key = getattr(s, "qwen_api_key", None)
+        qwen_api_key = profile.api_key if profile else getattr(s, "qwen_api_key", None)
+        if profile:
+            embedding_provider = "qwen"
 
         if embedding_provider == "qwen":
             embedding_model = qwen_embedding_model

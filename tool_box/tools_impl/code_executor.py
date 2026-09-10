@@ -38,6 +38,7 @@ from app.config.executor_config import (
     resolve_code_execution_docker_image,
     resolve_code_execution_local_runtime,
 )
+from app.services.foundation.llm_config import is_production, platform_profile
 from app.services.interpreter.runtime_guardrails import (
     ENV_GUARD_BIN as _ENV_GUARD_BIN,
     inject_env_mutation_guard as _inject_env_mutation_guard,
@@ -1827,7 +1828,7 @@ _SUPPORTED_SETTING_SOURCES = {"user", "project", "local"}
 _SUPPORTED_AUTH_MODES = {"claude_login", "api_env"}
 _DEFAULT_API_BASE_URL = "https://dashscope.aliyuncs.com/apps/anthropic"
 _DEFAULT_API_MODEL = "qwen3.7-max"
-_DEFAULT_QC_BASE_URL = "https://example.invalid/v1"
+_DEFAULT_QC_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 _CLAUDE_ENV_KEYS_FOR_LOGIN_MODE: Sequence[str] = (
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_BASE_URL",
@@ -2045,34 +2046,26 @@ def _build_qwen_code_subprocess_env(model_provider: Optional[Dict] = None) -> Di
         if not current_path.startswith(conda_bin):
             env_map["PATH"] = conda_bin + os.pathsep + current_path
 
-    mp = model_provider or {}
-    mp_api_key = mp.get("api_key")
-    mp_base_url = mp.get("base_url")
-    if mp_api_key and mp_base_url:
-        env_map["OPENAI_API_KEY"] = mp_api_key
-        env_map["OPENAI_BASE_URL"] = mp_base_url.rstrip("/") + "/v1"
-    else:
-        # Production code execution inherits the central platform profile.
-        # Direct DashScope access requires an explicit non-production test profile.
-        from app.services.foundation.llm_config import (
-            dashscope_test_profile,
-            is_production,
-            platform_profile,
-        )
-        if is_production():
-            profile = platform_profile()
-        elif os.getenv("LLM_PROVIDER", "platform").strip().lower() == "dashscope_test":
-            profile = dashscope_test_profile()
-        elif os.getenv("PLATFORM_LLM_API_URL"):
-            profile = platform_profile()
-        else:
-            # Test-only fallback keeps mocked CLI watchdog tests offline.
-            profile = type("_TestProfile", (), {
-                "api_key": str(os.getenv("QWEN_API_KEY", "test-key")).strip(),
-                "api_url": str(os.getenv("QWEN_CODE_BASE_URL", _DEFAULT_QC_BASE_URL)).strip(),
-            })()
+    if is_production():
+        profile = platform_profile()
         env_map["OPENAI_API_KEY"] = profile.api_key
         env_map["OPENAI_BASE_URL"] = profile.api_url.rsplit("/chat/completions", 1)[0]
+        env_map["QWEN_CODE_MODEL"] = profile.model
+    else:
+        mp = model_provider or {}
+        mp_api_key = mp.get("api_key")
+        mp_base_url = mp.get("base_url")
+        if mp_api_key and mp_base_url:
+            env_map["OPENAI_API_KEY"] = mp_api_key
+            env_map["OPENAI_BASE_URL"] = mp_base_url.rstrip("/") + "/v1"
+        else:
+            qwen_key = str(os.getenv("QWEN_API_KEY", "")).strip()
+            if qwen_key:
+                env_map["OPENAI_API_KEY"] = qwen_key
+            env_map["OPENAI_BASE_URL"] = (
+                str(os.getenv("QWEN_CODE_BASE_URL", "")).strip()
+                or _DEFAULT_QC_BASE_URL
+            )
     for key in ("ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL",
                 "ANTHROPIC_SMALL_FAST_MODEL", "ANTHROPIC_AUTH_TOKEN", "CLAUDECODE"):
         env_map.pop(key, None)
@@ -4695,9 +4688,6 @@ def _record_external_cli_usage(
     plan_id: Optional[int],
     task_id: Optional[int],
     call_purpose: str,
-    run_id: Optional[str] = None,
-    duration_ms: Optional[float] = None,
-    call_status: str = "ok",
 ) -> Optional[Dict[str, Any]]:
     try:
         from app.repository.llm_usage import estimate_llm_cost, log_llm_usage
@@ -4719,14 +4709,6 @@ def _record_external_cli_usage(
             plan_id=plan_id,
             task_id=task_id,
             call_purpose=call_purpose,
-            run_id=run_id,
-            phase="tool",
-            tool_name="code_executor",
-            call_status=call_status,
-            duration_ms=duration_ms,
-            billing_key="coding_agent.qwen_code_cli",
-            logical_call_id=uuid4().hex,
-            attempt_no=1,
             input_cost=cost["input_cost"],
             output_cost=cost["output_cost"],
             estimated_cost=cost["estimated_cost"],
@@ -5998,8 +5980,6 @@ async def code_executor_handler(
                 plan_id=resolved_plan_id,
                 task_id=resolved_task_id,
                 call_purpose="qwen_code_cli_execution",
-                run_id=run_id,
-                call_status="ok" if return_code == 0 else "error",
             )
 
         # Build return result
