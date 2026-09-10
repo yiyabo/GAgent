@@ -185,6 +185,9 @@ class _FakePlanTree:
     def children_ids(self, parent_id: int) -> List[int]:
         return [nid for nid, n in self.nodes.items() if n.parent_id == parent_id]
 
+    def iter_nodes(self):
+        return list(self.nodes.values())
+
     def to_outline(self, **_) -> str:
         return "outline"
 
@@ -270,6 +273,14 @@ class TestSkippedRecoveryAndSummary:
         executor._execution_order = lambda tree: [task_node]
         executor._preselect_skills_for_plan = lambda *a, **kw: None
         executor._repo.get_plan_tree = MagicMock(return_value=tree)
+        # execute_plan derives order via build_full_plan_todo_list; pin it
+        # so only the dependent task is scheduled (dep runs via recovery).
+        import app.services.plans.todo_list as _tl
+        from types import SimpleNamespace as _NS
+        _orig_todo = _tl.build_full_plan_todo_list
+        _tl.build_full_plan_todo_list = (
+            lambda *_a, **_kw: _NS(execution_order=[2], phases=[])
+        )
 
         cfg = ExecutionConfig(
             auto_recovery=True,
@@ -277,7 +288,10 @@ class TestSkippedRecoveryAndSummary:
             dependency_throttle=True,
         )
 
-        summary = executor.execute_plan(1, config=cfg)
+        try:
+            summary = executor.execute_plan(1, config=cfg)
+        finally:
+            _tl.build_full_plan_todo_list = _orig_todo
 
         # The final result in summary should include both the recovered
         # dependency and the completed task.
@@ -528,6 +542,14 @@ class TestSkippedRecoveryAndSummary:
         executor._execution_order = lambda tree: [task_node]
         executor._preselect_skills_for_plan = lambda *a, **kw: None
         executor._repo.get_plan_tree = MagicMock(return_value=tree)
+        # execute_plan derives order via build_full_plan_todo_list; pin it
+        # so only the dependent task is scheduled (dep runs via recovery).
+        import app.services.plans.todo_list as _tl
+        from types import SimpleNamespace as _NS
+        _orig_todo = _tl.build_full_plan_todo_list
+        _tl.build_full_plan_todo_list = (
+            lambda *_a, **_kw: _NS(execution_order=[2], phases=[])
+        )
 
         summary = executor.execute_plan(
             1,

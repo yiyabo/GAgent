@@ -442,6 +442,76 @@ def test_native_execute_task_third_probe_cycle_stops_with_blocked_dependency() -
                     )
                 ],
             ),
+            NativeStreamResult(
+                content="Continuing observation tp6",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tp6",
+                        name="document_reader",
+                        arguments={'operation': 'read_text', 'file_path': '/tmp/task4/notes2.txt'},
+                    )
+                ],
+            ),
+            NativeStreamResult(
+                content="Continuing observation tp7",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tp7",
+                        name="file_operations",
+                        arguments={'operation': 'list', 'path': '/tmp/task4/data2'},
+                    )
+                ],
+            ),
+            NativeStreamResult(
+                content="Continuing observation tp8",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tp8",
+                        name="document_reader",
+                        arguments={'operation': 'read_text', 'file_path': '/tmp/task4/data2/readme.md'},
+                    )
+                ],
+            ),
+            NativeStreamResult(
+                content="Continuing observation tp9",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tp9",
+                        name="file_operations",
+                        arguments={'operation': 'exists', 'path': '/tmp/task4/data2/matrix.csv'},
+                    )
+                ],
+            ),
+            NativeStreamResult(
+                content="Continuing observation tp10",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tp10",
+                        name="file_operations",
+                        arguments={'operation': 'list', 'path': '/tmp/task4/data3'},
+                    )
+                ],
+            ),
+            NativeStreamResult(
+                content="Continuing observation tp11",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tp11",
+                        name="document_reader",
+                        arguments={'operation': 'read_text', 'file_path': '/tmp/task4/data3/summary.txt'},
+                    )
+                ],
+            ),
+            NativeStreamResult(
+                content="Continuing observation tp12",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tp12",
+                        name="file_operations",
+                        arguments={'operation': 'list', 'path': '/tmp/task4/data4'},
+                    )
+                ],
+            ),
         ]
     )
 
@@ -452,7 +522,7 @@ def test_native_execute_task_third_probe_cycle_stops_with_blocked_dependency() -
         llm_client=llm,
         available_tools=["file_operations", "document_reader", "vision_reader", "code_executor"],
         tool_executor=_tool_executor,
-        max_iterations=6,
+        max_iterations=14,
         request_profile={
             "request_tier": "execute",
             "intent_type": "execute_task",
@@ -473,7 +543,9 @@ def test_native_execute_task_third_probe_cycle_stops_with_blocked_dependency() -
 
     assert "BLOCKED_DEPENDENCY" in result.final_answer
     assert "上游交付物" in result.final_answer or "上游" in result.final_answer
-    assert len(llm.calls) == 5
+    # 12 probe-only cycles (tuned limit without real execution) each consume
+    # one LLM call before the hard stop fires.
+    assert len(llm.calls) >= 12
 
 
 def test_probe_only_with_available_upstream_outputs_forces_code_executor() -> None:
@@ -620,6 +692,46 @@ def test_probe_only_after_real_execution_tool_stops_with_neutral_summary() -> No
                     )
                 ],
             ),
+            NativeStreamResult(
+                content="Continuing observation tc5",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc5",
+                        name="document_reader",
+                        arguments={'operation': 'read_text', 'file_path': '/tmp/task17/results/summary.md'},
+                    )
+                ],
+            ),
+            NativeStreamResult(
+                content="Continuing observation tc6",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc6",
+                        name="file_operations",
+                        arguments={'operation': 'list', 'path': '/tmp/task17/results/plots'},
+                    )
+                ],
+            ),
+            NativeStreamResult(
+                content="Continuing observation tc7",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc7",
+                        name="document_reader",
+                        arguments={'operation': 'read_text', 'file_path': '/tmp/task17/results/tables.csv'},
+                    )
+                ],
+            ),
+            NativeStreamResult(
+                content="Continuing observation tc8",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc8",
+                        name="file_operations",
+                        arguments={'operation': 'list', 'path': '/tmp/task17/results/figures'},
+                    )
+                ],
+            ),
         ]
     )
 
@@ -630,7 +742,7 @@ def test_probe_only_after_real_execution_tool_stops_with_neutral_summary() -> No
         llm_client=llm,
         available_tools=["file_operations", "document_reader", "code_executor"],
         tool_executor=_tool_executor,
-        max_iterations=6,
+        max_iterations=10,
         request_profile={
             "request_tier": "execute",
             "intent_type": "execute_task",
@@ -2852,6 +2964,66 @@ def test_plan_operation_does_not_set_had_real_execution_tool() -> None:
                     )
                 ],
             ),
+            NativeStreamResult(
+                content="Continuing observation tc7",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc7",
+                        name="file_operations",
+                        arguments={'operation': 'list', 'path': '/tmp/task34/tables'},
+                    )
+                ],
+            ),
+            NativeStreamResult(
+                content="Continuing observation tc8",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc8",
+                        name="document_reader",
+                        arguments={'operation': 'read_text', 'file_path': '/tmp/task34/README.txt'},
+                    )
+                ],
+            ),
+            NativeStreamResult(
+                content="Continuing observation tc9",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc9",
+                        name="file_operations",
+                        arguments={'operation': 'exists', 'path': '/tmp/task34/tables/output.tsv'},
+                    )
+                ],
+            ),
+            NativeStreamResult(
+                content="Continuing observation tc10",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc10",
+                        name="file_operations",
+                        arguments={'operation': 'list', 'path': '/tmp/task34/metadata'},
+                    )
+                ],
+            ),
+            NativeStreamResult(
+                content="Continuing observation tc11",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc11",
+                        name="document_reader",
+                        arguments={'operation': 'read_text', 'file_path': '/tmp/task34/metadata/meta.json'},
+                    )
+                ],
+            ),
+            NativeStreamResult(
+                content="Continuing observation tc12",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc12",
+                        name="file_operations",
+                        arguments={'operation': 'list', 'path': '/tmp/task34/figures'},
+                    )
+                ],
+            ),
         ]
     )
 
@@ -2862,7 +3034,7 @@ def test_plan_operation_does_not_set_had_real_execution_tool() -> None:
         llm_client=llm,
         available_tools=["plan_operation", "file_operations", "code_executor"],
         tool_executor=_tool_executor,
-        max_iterations=7,
+        max_iterations=15,
         request_profile={
             "request_tier": "execute",
             "intent_type": "execute_task",
@@ -2935,6 +3107,36 @@ def test_code_executor_still_sets_had_real_execution_tool() -> None:
                     )
                 ],
             ),
+            NativeStreamResult(
+                content="Continuing observation tc5x",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc5x",
+                        name="document_reader",
+                        arguments={'operation': 'read_text', 'file_path': '/tmp/results/logs.txt'},
+                    )
+                ],
+            ),
+            NativeStreamResult(
+                content="Continuing observation tc6x",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc6x",
+                        name="file_operations",
+                        arguments={'operation': 'list', 'path': '/tmp/results/tables'},
+                    )
+                ],
+            ),
+            NativeStreamResult(
+                content="Continuing observation tc7x",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc7x",
+                        name="file_operations",
+                        arguments={'operation': 'exists', 'path': '/tmp/results/tables/out.csv'},
+                    )
+                ],
+            ),
         ]
     )
 
@@ -2947,7 +3149,7 @@ def test_code_executor_still_sets_had_real_execution_tool() -> None:
         llm_client=llm,
         available_tools=["file_operations", "document_reader", "code_executor"],
         tool_executor=_tool_executor,
-        max_iterations=5,
+        max_iterations=9,
         request_profile={
             "request_tier": "execute",
             "intent_type": "execute_task",
@@ -3035,6 +3237,86 @@ def test_unverified_terminal_session_does_not_set_real_execution_flag() -> None:
                     )
                 ],
             ),
+            NativeStreamResult(
+                content="Continuing observation ts5x",
+                tool_calls=[
+                    NativeToolCall(
+                        id="ts5x",
+                        name="document_reader",
+                        arguments={'operation': 'read_text', 'file_path': '/tmp/task2/notes.txt'},
+                    )
+                ],
+            ),
+            NativeStreamResult(
+                content="Continuing observation ts6x",
+                tool_calls=[
+                    NativeToolCall(
+                        id="ts6x",
+                        name="file_operations",
+                        arguments={'operation': 'list', 'path': '/tmp/task2/outputs'},
+                    )
+                ],
+            ),
+            NativeStreamResult(
+                content="Continuing observation ts7x",
+                tool_calls=[
+                    NativeToolCall(
+                        id="ts7x",
+                        name="file_operations",
+                        arguments={'operation': 'exists', 'path': '/tmp/task2/outputs/a.csv'},
+                    )
+                ],
+            ),
+            NativeStreamResult(
+                content="Continuing observation ts8x",
+                tool_calls=[
+                    NativeToolCall(
+                        id="ts8x",
+                        name="document_reader",
+                        arguments={'operation': 'read_text', 'file_path': '/tmp/task2/outputs/a.csv'},
+                    )
+                ],
+            ),
+            NativeStreamResult(
+                content="Continuing observation ts9x",
+                tool_calls=[
+                    NativeToolCall(
+                        id="ts9x",
+                        name="file_operations",
+                        arguments={'operation': 'list', 'path': '/tmp/task2/outputs/b'},
+                    )
+                ],
+            ),
+            NativeStreamResult(
+                content="Continuing observation ts10x",
+                tool_calls=[
+                    NativeToolCall(
+                        id="ts10x",
+                        name="file_operations",
+                        arguments={'operation': 'exists', 'path': '/tmp/task2/outputs/b/c.tsv'},
+                    )
+                ],
+            ),
+            NativeStreamResult(
+                content="Continuing observation ts11x",
+                tool_calls=[
+                    NativeToolCall(
+                        id="ts11x",
+                        name="document_reader",
+                        arguments={'operation': 'read_text', 'file_path': '/tmp/task2/outputs/b/c.tsv'},
+                    )
+                ],
+            ),
+            NativeStreamResult(
+                content="Continuing observation ts12x",
+                tool_calls=[
+                    NativeToolCall(
+                        id="ts12x",
+                        name="file_operations",
+                        arguments={'operation': 'list', 'path': '/tmp/task2/outputs/d'},
+                    )
+                ],
+            ),
         ]
     )
 
@@ -3054,7 +3336,7 @@ def test_unverified_terminal_session_does_not_set_real_execution_flag() -> None:
         llm_client=llm,
         available_tools=["terminal_session", "file_operations", "document_reader"],
         tool_executor=_tool_executor,
-        max_iterations=7,
+        max_iterations=16,
         request_profile={
             "request_tier": "execute",
             "intent_type": "execute_task",

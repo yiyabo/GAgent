@@ -125,6 +125,7 @@ _TOOL_METADATA: Dict[str, Dict[str, Any]] = {
         "search_hint": "review response rebuttal referee comment",
     },
     "plan_operation": {
+        "is_read_only": True,
         "search_hint": "plan create review optimize task decompose",
     },
     "deliverable_submit": {

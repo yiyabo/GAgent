@@ -1368,6 +1368,8 @@ def test_plan_executor_marks_task_failed_when_verification_fails(tmp_path, monke
     executor = PlanExecutor(repo=repo, llm_service=_LLMStub(response))
     # Bypass deep-think path which requires a full LLM client.
     monkeypatch.setattr(executor, "_should_use_deep_think", lambda _cfg: False)
+    # Pin the in-process stub path; the external-delegate route starts a real Docker LLM and hangs.
+    monkeypatch.setattr(executor, "_should_delegate_plan_task", lambda _cfg: False)
 
     result = executor.execute_task(1, 1, config=ExecutionConfig(enable_skills=False))
 

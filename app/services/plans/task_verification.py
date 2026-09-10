@@ -3753,6 +3753,11 @@ class TaskVerificationService:
                 path = candidate.expanduser()
             if not path.exists() or not path.is_dir():
                 return
+            # Filesystem-level roots (e.g. "/" or a mount point such as
+            # "/data") are never task-scoped output roots; scanning them
+            # would crawl unrelated system directories.
+            if len(path.parts) <= 2:
+                return
             key = str(path)
             if key in seen:
                 return

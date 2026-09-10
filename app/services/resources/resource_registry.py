@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+import pathlib
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 
@@ -48,6 +49,7 @@ _REGISTRY: Dict[str, ResourceSpec] = {
         id="phagescope.sequence_corpus",
         name="PhageScope sequence corpus",
         candidate_roots=(
+            str(pathlib.Path(__file__).resolve().parents[3] / "phagescope"),
             "/home/zczhao/Phage-Agent/phagescope",
             "/mnt/sdm/zczhao/Phage-Agent/phagescope",
         ),

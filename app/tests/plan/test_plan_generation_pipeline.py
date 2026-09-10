@@ -344,6 +344,12 @@ def test_structured_create_plan_auto_reviews_and_optimizes(monkeypatch) -> None:
         )
 
     monkeypatch.setattr("app.services.plans.plan_generation.collect_plan_generation_materials", _no_materials)
+    # handle_plan_action persists the session->plan binding; this unit test
+    # runs without the application database, so stub the binding helper.
+    monkeypatch.setattr(
+        "app.routers.chat.action_handlers._set_session_plan_id",
+        lambda *_args, **_kwargs: None,
+    )
     monkeypatch.setattr(
         "app.services.plans.plan_generation._auto_review_and_optimize_plan",
         _fake_auto_review_and_optimize_plan,

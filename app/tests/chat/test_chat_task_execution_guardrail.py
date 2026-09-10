@@ -309,7 +309,9 @@ def test_process_unified_stream_persists_deterministic_execute_response_for_refr
 
     monkeypatch.setattr("app.routers.chat.agent._persist_runtime_context", lambda _agent: None)
 
-    def _fake_save_chat_message(session_id, role, content, metadata=None, *, owner_id=None):
+    def _fake_save_chat_message(
+        session_id, role, content, metadata=None, *, owner_id=None, model_provider=None
+    ):
         saved_messages.append(
             {
                 "session_id": session_id,

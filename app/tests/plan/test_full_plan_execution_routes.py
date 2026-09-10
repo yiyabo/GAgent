@@ -1268,7 +1268,8 @@ def test_get_full_plan_todo_list_returns_dependency_phase_ordering(monkeypatch) 
 
     response = plan_routes.get_full_plan_todo_list(7, _build_request("alice"))
 
-    assert response.ordering_mode == "dependency_phase"
+    # Since 42fd12b the full-plan todo list defaults to structural ordering.
+    assert response.ordering_mode == "structure"
     first_phase_ids = {item.task_id for item in response.phases[0].items}
     assert 20 in first_phase_ids
     assert 30 in first_phase_ids

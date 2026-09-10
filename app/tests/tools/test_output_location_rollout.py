@@ -88,18 +88,22 @@ def test_manuscript_writer_promotes_workspace_output_into_task_output_location(
     monkeypatch.setattr(manuscript_writer_module, "_RUNTIME_DIR", runtime_root.resolve())
     monkeypatch.setattr(path_router_module, "_default_router", None)
 
-    context_file = repo_root / "context.md"
+    # Local draft assembly only accepts bucketed sources (result/method/
+    # supplementary); a bare repo-root file is rejected by design.
+    context_file = repo_root / "manuscript" / "results" / "key_result_summary.md"
+    context_file.parent.mkdir(parents=True, exist_ok=True)
     context_file.write_text("Key result: accepted evidence.", encoding="utf-8")
 
     router = get_path_router()
     task_dir = router.get_task_output_dir("demo", 12, [5], create=True)
-    workspace_output = runtime_root / "session_demo" / "workspace" / "report.md"
+    # Relative outputs are redirected into the session tmp dir (40546b7).
+    workspace_output = runtime_root / "session_demo" / "raw_files" / "tmp" / "workspace" / "report.md"
 
     result = asyncio.run(
         manuscript_writer_module.manuscript_writer_handler(
             task="Write a concise draft based on the accepted evidence.",
             output_path="workspace/report.md",
-            context_paths=["context.md"],
+            context_paths=["manuscript/results/key_result_summary.md"],
             draft_only=True,
             keep_workspace=True,
             session_id="demo",
@@ -112,7 +116,7 @@ def test_manuscript_writer_promotes_workspace_output_into_task_output_location(
     assert result["success"] is True
     assert workspace_output.exists()
     assert promoted_report.exists()
-    assert result["output_path"] == "runtime/session_demo/workspace/report.md"
+    assert result["output_path"] == "runtime/session_demo/raw_files/tmp/workspace/report.md"
     assert result["effective_output_path"] == "raw_files/task_5/task_12/report.md"
     assert any(path.endswith("raw_files/task_5/task_12/report.md") for path in result["output_location"]["files"])
 
