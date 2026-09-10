@@ -1,5 +1,6 @@
 import asyncio
 import contextvars
+import uuid
 import functools
 import json
 import logging
@@ -125,6 +126,8 @@ async def _read_stream_error_body(response: "httpx.Response") -> str:
             return ""
 
 
+from .billing_keys import billing_key_for_purpose, normalize_billing_key
+
 _usage_context: contextvars.ContextVar[Optional[Dict[str, Any]]] = contextvars.ContextVar(
     "llm_usage_context", default=None
 )
@@ -139,7 +142,11 @@ def set_usage_context(
     run_id: Optional[str] = None,
     phase: Optional[str] = None,
     tool_name: Optional[str] = None,
+    billing_key: Optional[str] = None,
 ) -> contextvars.Token:
+    resolved_billing_key = normalize_billing_key(
+        billing_key or billing_key_for_purpose(call_purpose, tool_name)
+    )
     ctx = {
         "session_id": session_id,
         "plan_id": plan_id,
@@ -148,6 +155,7 @@ def set_usage_context(
         "run_id": run_id,
         "phase": phase,
         "tool_name": tool_name,
+        "billing_key": resolved_billing_key,
     }
     return _usage_context.set(ctx)
 
@@ -162,9 +170,16 @@ def update_usage_context(**fields: Any) -> None:
     """
     ctx = _usage_context.get()
     ctx = dict(ctx) if isinstance(ctx, dict) else {}
+    attribution_changed = False
     for key, value in fields.items():
-        if key in {"session_id", "plan_id", "task_id", "call_purpose", "run_id", "phase", "tool_name"} and value is not None:
+        if key in {"session_id", "plan_id", "task_id", "call_purpose", "run_id", "phase", "tool_name", "billing_key"} and value is not None:
             ctx[key] = value
+            attribution_changed = attribution_changed or key in {"call_purpose", "tool_name", "billing_key"}
+    if attribution_changed:
+        ctx["billing_key"] = normalize_billing_key(
+            fields.get("billing_key")
+            or billing_key_for_purpose(ctx.get("call_purpose"), ctx.get("tool_name"))
+        )
     _usage_context.set(ctx)
 
 
@@ -461,6 +476,66 @@ def _normalize_timeout(timeout: Optional[float], fallback: Optional[float]) -> O
     return value
 
 
+def _new_logical_call_id() -> str:
+    return uuid.uuid4().hex
+
+
+def _record_attempt_context(
+    logical_call_id: str,
+    attempt_no: int,
+    upstream_request_id: Optional[str] = None,
+    usage: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Attach attempt-level ledger fields to the current usage context."""
+    try:
+        ctx = _usage_context.get()
+        ctx = dict(ctx) if isinstance(ctx, dict) else {}
+        ctx["logical_call_id"] = logical_call_id
+        ctx["attempt_no"] = attempt_no
+        ctx["upstream_request_id"] = upstream_request_id
+        usage_dict = usage if isinstance(usage, dict) else {}
+        ctx["cache_read_tokens"] = usage_dict.get("cache_read_tokens", 0) or 0
+        ctx["cache_creation_tokens"] = usage_dict.get("cache_creation_tokens", 0) or 0
+        _usage_context.set(ctx)
+    except Exception:
+        pass
+
+
+def _billing_request_headers(logical_call_id: str, attempt_no: int) -> Dict[str, str]:
+    """X-Agent-* attribution headers for one upstream attempt.
+
+    Header names are env-configurable so sub2api can align naming without a
+    redeploy; the whole set can be disabled via LLM_BILLING_HEADERS_ENABLED.
+    """
+    if os.getenv("LLM_BILLING_HEADERS_ENABLED", "true").strip().lower() in {"0", "false", "no"}:
+        return {}
+    ctx = _usage_context.get() or {}
+    billing_key = normalize_billing_key(
+        ctx.get("billing_key")
+        or billing_key_for_purpose(ctx.get("call_purpose"), ctx.get("tool_name"))
+    )
+    key_header = os.getenv("LLM_BILLING_KEY_HEADER", "X-Agent-Tool-Key").strip()
+    call_header = os.getenv("LLM_BILLING_CALL_ID_HEADER", "X-Agent-Call-ID").strip()
+    attempt_header = os.getenv("LLM_BILLING_ATTEMPT_HEADER", "X-Agent-Attempt").strip()
+    user_header = os.getenv("LLM_BILLING_USER_HEADER", "X-Agent-User").strip()
+    session_header = os.getenv("LLM_BILLING_SESSION_HEADER", "X-Agent-Session").strip()
+    plan_header = os.getenv("LLM_BILLING_PLAN_HEADER", "X-Agent-Plan").strip()
+    headers: Dict[str, str] = {}
+    if key_header:
+        headers[key_header] = billing_key
+    if call_header and logical_call_id:
+        headers[call_header] = logical_call_id
+    if attempt_header:
+        headers[attempt_header] = str(max(1, int(attempt_no or 1)))
+    if user_header and ctx.get("owner_id"):
+        headers[user_header] = str(ctx.get("owner_id"))
+    if session_header and ctx.get("session_id"):
+        headers[session_header] = str(ctx.get("session_id"))
+    if plan_header and ctx.get("plan_id"):
+        headers[plan_header] = str(ctx.get("plan_id"))
+    return headers
+
+
 def _log_usage(
     provider: str,
     model: str,
@@ -488,6 +563,15 @@ def _log_usage(
             tool_name=ctx.get("tool_name"),
             call_status=call_status or "ok",
             duration_ms=duration_ms,
+            billing_key=normalize_billing_key(
+                ctx.get("billing_key")
+                or billing_key_for_purpose(ctx.get("call_purpose"), ctx.get("tool_name"))
+            ),
+            logical_call_id=ctx.get("logical_call_id"),
+            attempt_no=ctx.get("attempt_no"),
+            upstream_request_id=ctx.get("upstream_request_id"),
+            cache_read_tokens=ctx.get("cache_read_tokens", 0) or 0,
+            cache_creation_tokens=ctx.get("cache_creation_tokens", 0) or 0,
         )
     except Exception as exc:
         logger.warning("[LLM] Failed to log usage: %s", exc)
@@ -778,12 +862,21 @@ class LLMClient(LLMProvider):
         client = _get_shared_sync_client()
         last_err: Optional[Exception] = None
         _t0 = time.perf_counter()
+        logical_call_id = _new_logical_call_id()
         for attempt in range(request_retries + 1):
             try:
                 _outbound_limiter.acquire()
+                attempt_headers = dict(headers)
+                attempt_headers.update(_billing_request_headers(logical_call_id, attempt + 1))
                 response = client.post(
-                    self.url, headers=headers, json=payload,
+                    self.url, headers=attempt_headers, json=payload,
                     timeout=timeout,
+                )
+                _record_attempt_context(
+                    logical_call_id,
+                    attempt + 1,
+                    upstream_request_id=response.headers.get("x-request-id")
+                    or response.headers.get("request-id"),
                 )
                 response.raise_for_status()
                 obj = response.json()
@@ -791,6 +884,13 @@ class LLMClient(LLMProvider):
                     content = obj["choices"][0]["message"]["content"]
                     usage = obj.get("usage")
                     if isinstance(usage, dict):
+                        _record_attempt_context(
+                            logical_call_id,
+                            attempt + 1,
+                            upstream_request_id=response.headers.get("x-request-id")
+                            or response.headers.get("request-id"),
+                            usage=usage,
+                        )
                         _log_usage(
                             provider=self.provider,
                             model=model or self.model,
@@ -880,12 +980,21 @@ class LLMClient(LLMProvider):
         client = _get_shared_async_client()
 
         _t0 = time.perf_counter()
+        logical_call_id = _new_logical_call_id()
         for attempt in range(request_retries + 1):
             try:
                 await _outbound_limiter.acquire_async()
+                attempt_headers = dict(headers)
+                attempt_headers.update(_billing_request_headers(logical_call_id, attempt + 1))
                 response = await client.post(
-                    self.url, headers=headers, json=payload,
+                    self.url, headers=attempt_headers, json=payload,
                     timeout=timeout,
+                )
+                _record_attempt_context(
+                    logical_call_id,
+                    attempt + 1,
+                    upstream_request_id=response.headers.get("x-request-id")
+                    or response.headers.get("request-id"),
                 )
                 response.raise_for_status()
                 obj = response.json()
@@ -893,6 +1002,13 @@ class LLMClient(LLMProvider):
                     content = obj["choices"][0]["message"]["content"]
                     usage = obj.get("usage")
                     if isinstance(usage, dict):
+                        _record_attempt_context(
+                            logical_call_id,
+                            attempt + 1,
+                            upstream_request_id=response.headers.get("x-request-id")
+                            or response.headers.get("request-id"),
+                            usage=usage,
+                        )
                         _log_usage(
                             provider=self.provider,
                             model=model or self.model,
@@ -987,6 +1103,8 @@ class LLMClient(LLMProvider):
             payload["thinking_budget"] = thinking_budget
 
         headers = self._build_headers()
+        logical_call_id = _new_logical_call_id()
+        headers.update(_billing_request_headers(logical_call_id, 1))
 
         timeout = _make_request_timeout(self.stream_timeout)
         client = _get_shared_async_client()
@@ -1001,6 +1119,7 @@ class LLMClient(LLMProvider):
                 "POST", self.url, headers=headers, json=payload,
                 timeout=timeout,
             ) as resp:
+                _record_attempt_context(logical_call_id, 1)
                 if resp.status_code >= 400:
                     body = await _read_stream_error_body(resp)
                     try:
@@ -1028,6 +1147,7 @@ class LLMClient(LLMProvider):
                     usage = obj.get("usage")
                     if isinstance(usage, dict):
                         _last_usage = usage
+                        _record_attempt_context(logical_call_id, 1, usage=usage)
                         _log_usage(
                             provider=self.provider,
                             model=model or self.model,
@@ -1196,6 +1316,8 @@ class LLMClient(LLMProvider):
             payload["thinking_budget"] = thinking_budget
 
         headers = self._build_headers()
+        logical_call_id = _new_logical_call_id()
+        headers.update(_billing_request_headers(logical_call_id, 1))
 
         result = NativeStreamResult()
         # Accumulator for streamed tool_calls keyed by index
@@ -1204,6 +1326,7 @@ class LLMClient(LLMProvider):
         timeout = _make_request_timeout(self.stream_timeout)
         client = _get_shared_async_client()
         await _outbound_limiter.acquire_async()
+        _record_attempt_context(logical_call_id, 1)
         async with client.stream("POST", self.url, headers=headers, json=payload,
                                  timeout=timeout) as resp:
             if resp.status_code >= 400:
@@ -1229,6 +1352,7 @@ class LLMClient(LLMProvider):
                 usage = obj.get("usage")
                 if isinstance(usage, dict):
                     result.usage = usage
+                    _record_attempt_context(logical_call_id, 1, usage=usage)
                     _log_usage(
                         provider=self.provider,
                         model=model or self.model,

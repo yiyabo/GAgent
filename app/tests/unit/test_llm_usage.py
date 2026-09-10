@@ -6,6 +6,16 @@ from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 
+from app.llm import _usage_context as _llm_usage_ctx
+
+
+@pytest.fixture(autouse=True)
+def _reset_usage_context():
+    """Isolate ContextVar attribution state between tests."""
+    _llm_usage_ctx.set(None)
+    yield
+    _llm_usage_ctx.set(None)
+
 from app.repository.llm_usage import init_llm_usage_table, log_llm_usage, get_usage_summary
 
 
@@ -63,8 +73,9 @@ def test_log_llm_usage_inserts_record(mock_db):
     assert params[7] is None  # plan_id
     assert params[8] is None  # task_id
     assert params[9] is None  # call_purpose
-    assert params[17] is not None  # estimated_cost
-    assert params[18] == "CNY"
+    assert params[15] == "internal.uncategorized"  # billing_key fallback
+    assert params[23] is not None  # estimated_cost
+    assert params[24] == "CNY"
     mock_conn.commit.assert_called_once()
 
 
@@ -167,6 +178,12 @@ def test_log_usage_function_calls_repository():
             tool_name=None,
             call_status="ok",
             duration_ms=None,
+            billing_key="internal.uncategorized",
+            logical_call_id=None,
+            attempt_no=None,
+            upstream_request_id=None,
+            cache_read_tokens=0,
+            cache_creation_tokens=0,
         )
 
 
@@ -202,6 +219,12 @@ def test_log_usage_propagates_context_from_contextvar():
                 tool_name=None,
                 call_status="ok",
                 duration_ms=None,
+                billing_key="deep_think.iteration",
+                logical_call_id=None,
+                attempt_no=None,
+                upstream_request_id=None,
+                cache_read_tokens=0,
+                cache_creation_tokens=0,
             )
     finally:
         clear_usage_context(token)
@@ -385,10 +408,11 @@ def test_log_llm_usage_accepts_explicit_cost(mock_db):
     assert params[8] == 14
     assert params[9] == "qwen_code_cli_execution"
     assert params[10] is None  # run_id
-    assert params[15] == 0.02
-    assert params[16] == 0.04
-    assert params[17] == 0.06
-    assert params[18] == "CNY"
+    assert params[15] == "coding_agent.qwen_code_cli"  # billing_key from purpose
+    assert params[21] == 0.02
+    assert params[22] == 0.04
+    assert params[23] == 0.06
+    assert params[24] == "CNY"
 
 
 def test_estimate_llm_cost_uses_default_qwen_code_rates():

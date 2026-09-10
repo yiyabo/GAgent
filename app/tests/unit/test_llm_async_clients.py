@@ -11,6 +11,8 @@ from app.llm import LLMClient
 
 
 class _LoopBoundResponse:
+    headers: dict[str, str] = {}
+
     def raise_for_status(self) -> None:
         return None
 
