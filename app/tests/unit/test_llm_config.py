@@ -9,6 +9,31 @@ from app.services.foundation.llm_config import (
 )
 
 
+_ISOLATED_ENV_KEYS = (
+    "PLATFORM_LLM_ALLOWED_HOSTS",
+    "PLATFORM_LLM_API_URL",
+    "PLATFORM_LLM_API_KEY",
+    "PLATFORM_LLM_MODEL",
+    "PLATFORM_LLM_RESPONSES_API_URL",
+    "PLATFORM_LLM_EMBEDDINGS_API_URL",
+    "PLATFORM_LLM_EMBEDDING_MODEL",
+    "PLATFORM_LLM_SEARCH_MODEL",
+    "DASHSCOPE_TEST_API_URL",
+    "DASHSCOPE_TEST_API_KEY",
+    "DASHSCOPE_TEST_MODEL",
+    "DASHSCOPE_TEST_RESPONSES_API_URL",
+    "DASHSCOPE_TEST_EMBEDDINGS_API_URL",
+)
+
+
+@pytest.fixture(autouse=True)
+def _clean_llm_env(monkeypatch):
+    """Strip platform/dashscope config inherited from the production .env."""
+    for key in _ISOLATED_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    yield
+
+
 def test_platform_profile_rejects_missing_values(monkeypatch):
     monkeypatch.setenv("APP_ENV", "production")
     for key in (
