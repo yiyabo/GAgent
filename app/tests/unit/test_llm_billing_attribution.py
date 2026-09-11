@@ -123,7 +123,7 @@ class TestUsageContextBilling:
             clear_usage_context(token)
 
     def test_explicit_billing_key_wins(self) -> None:
-        token = set_usage_context(call_purpose="chat_main", billing_key="tool.vision_reader")
+        token = set_usage_context(call_purpose="chat_main", billing_key="no.such.key")
         try:
             import app.llm as llm_mod
 

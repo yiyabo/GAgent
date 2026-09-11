@@ -29,6 +29,8 @@ PLAN_OPTIMIZE: Final = "plan.optimize"
 TOOL_EXECUTION: Final = "tool.execution"
 TOOL_CODE_EXECUTOR: Final = "tool.code_executor"
 TOOL_WEB_SEARCH: Final = "tool.web_search"
+TOOL_LITERATURE_PIPELINE: Final = "tool.literature_pipeline"
+TOOL_VISION_READER: Final = "tool.vision_reader"
 CODING_AGENT_QWEN_CODE_CLI: Final = "coding_agent.qwen_code_cli"
 INTERNAL_CONVERSATION_QUALITY_EVALUATION: Final = "internal.conversation_quality_evaluation"
 INTERNAL_MEMORY_EMBEDDING: Final = "internal.memory_embedding"
@@ -59,6 +61,8 @@ REGISTERED_BILLING_KEYS: Final[frozenset[str]] = frozenset(
         TOOL_EXECUTION,
         TOOL_CODE_EXECUTOR,
         TOOL_WEB_SEARCH,
+        TOOL_LITERATURE_PIPELINE,
+        TOOL_VISION_READER,
         CODING_AGENT_QWEN_CODE_CLI,
         INTERNAL_CONVERSATION_QUALITY_EVALUATION,
         INTERNAL_MEMORY_EMBEDDING,
@@ -113,6 +117,10 @@ def billing_key_for_purpose(
         return TOOL_CODE_EXECUTOR
     if tool == "web_search":
         return TOOL_WEB_SEARCH
+    if tool == "literature_pipeline" or purpose == "literature_pipeline":
+        return TOOL_LITERATURE_PIPELINE
+    if tool == "vision_reader" or purpose == "vision_reader":
+        return TOOL_VISION_READER
     if purpose in {"chat_main", "simple_chat", "chat"}:
         return CHAT_MAIN
     # Internal self-consumption
