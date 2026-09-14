@@ -6,6 +6,7 @@ import {
   SyncOutlined,
 } from '@ant-design/icons';
 import type { DecompositionJobStatus, JobLogEvent } from '@/types';
+import { parseServerTimestampMs } from '@/utils/serverTime';
 
 export const MAX_RENDER_LOGS = 200;
 export const FINAL_STATUSES = new Set(['succeeded', 'failed', 'completed']);
@@ -79,9 +80,8 @@ export const normalizeActionStatusKey = (raw: unknown): string => {
 };
 
 export const parseIsoToMs = (value?: string | null): number | null => {
-  if (!value) return null;
-  const ts = Date.parse(value);
-  return Number.isNaN(ts) ? null : ts;
+  // Zone-less backend timestamps are UTC; naive Date.parse skews by local offset.
+  return parseServerTimestampMs(value);
 };
 
 export const jobTypeMeta: Record<

@@ -14,6 +14,7 @@ import type {
   BackgroundTaskItem,
 } from '@/types';
 import { resolveChatSessionProcessingKey } from '@/utils/chatSessionKeys';
+import { parseServerTimeDayjs as parseServerTimeShared } from '@/utils/serverTime';
 import './ExecutorPanel.css';
 
 dayjs.extend(relativeTime);
@@ -23,14 +24,8 @@ const GROUP_ORDER: BackgroundTaskCategory[] = ['task_creation', 'phagescope', 'c
 const FINAL_STATUSES = new Set(['succeeded', 'completed', 'failed']);
 
 const parseServerTime = (time?: string | null) => {
-  if (!time) return null;
-  const raw = String(time).trim();
-  if (!raw) return null;
-  // Backend may emit SQLite-style timestamps without timezone; treat them as UTC to avoid local offset drift.
-  const hasZone = /[zZ]|[+\-]\d{2}:\d{2}$/.test(raw);
-  if (hasZone) return dayjs(raw);
-  if (raw.includes('T')) return dayjs(`${raw}Z`);
-  return dayjs(`${raw.replace(' ', 'T')}Z`);
+  // Shared helper treats zone-less backend timestamps as UTC (local-offset drift fix).
+  return parseServerTimeShared(time);
 };
 
 const EMPTY_BOARD = (): BackgroundTaskBoardResponse => ({

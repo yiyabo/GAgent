@@ -24,20 +24,16 @@ import {
     extractPlanIdFromActions,
     extractPlanTitleFromActions,
 } from '@utils/planSyncEvents';
+import { parseServerTimestampMs } from '@utils/serverTime';
 
 export const isActionStatus = (value: any): value is ChatActionStatus => {
     return value === 'pending' || value === 'running' || value === 'completed' || value === 'failed';
 };
 
 export const parseDate = (value?: string | null): Date | null => {
-    if (!value) {
-        return null;
-    }
-    const timestamp = Date.parse(value);
-    if (Number.isNaN(timestamp)) {
-        return null;
-    }
-    return new Date(timestamp);
+    // Zone-less backend timestamps are UTC; naive Date.parse skews by local offset.
+    const ms = parseServerTimestampMs(value);
+    return ms === null ? null : new Date(ms);
 };
 
 export const normalizeActionStatus = (status?: string | null): ChatActionStatus | null => {

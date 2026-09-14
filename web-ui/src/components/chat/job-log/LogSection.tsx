@@ -3,8 +3,15 @@ import { Space, Tag, Typography, Alert, Divider } from 'antd';
 import dayjs from 'dayjs';
 import type { ActionLogEntry, JobLogEvent } from '@/types';
 import { levelColorMap, statusMeta, normalizeActionStatusKey, parseIsoToMs } from './constants';
+import { parseServerTimeDayjs } from '@/utils/serverTime';
 
 const { Text } = Typography;
+
+/** Render a backend timestamp as local wall-clock time (zone-less values are UTC). */
+const formatLogTime = (value: string): string => {
+  const d = parseServerTimeDayjs(value);
+  return d && d.isValid() ? d.format('HH:mm:ss') : dayjs(value).format('HH:mm:ss');
+};
 
 export const LogMetadata: React.FC<{ metadata: Record<string, any> | undefined }> = ({ metadata }) => {
   if (!metadata || Object.keys(metadata).length === 0) return null;
@@ -129,7 +136,7 @@ export const ActionLogs: React.FC<{ actionLogs: ActionLogEntry[] }> = ({ actionL
               )}
               {timestamp && (
                 <div style={{ fontSize: 11, color: '#999', marginTop: 2 }}>
-                  {dayjs(timestamp).format('HH:mm:ss')}
+                  {formatLogTime(timestamp)}
                 </div>
               )}
               {entry.details && <LogMetadata metadata={entry.details as Record<string, any>} />}
@@ -172,7 +179,7 @@ export const LogList: React.FC<{ logs: JobLogEvent[]; missingJob: boolean }> = (
               <div>
                 <Text style={{ fontWeight: 500 }}>{log.message}</Text>
                 <div style={{ fontSize: 12, color: '#999' }}>
-                  {log.timestamp ? dayjs(log.timestamp).format('HH:mm:ss') : ''}
+                  {log.timestamp ? formatLogTime(log.timestamp) : ''}
                 </div>
                 <LogMetadata metadata={log.metadata as Record<string, any>} />
               </div>

@@ -18,6 +18,7 @@ import {
 } from '@ant-design/icons';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Button, Tooltip } from 'antd';
+import { parseServerTimestampMs } from '@utils/serverTime';
 import './ThinkingProcess.css';
 
 interface ThinkingProcessProps {
@@ -180,9 +181,9 @@ function stepHasToolError(step: ThinkingStep): boolean {
 }
 
 function _toMs(value?: string): number | null {
-  if (!value) return null;
-  const ms = Date.parse(value);
-  return Number.isNaN(ms) ? null : ms;
+  // Backend timestamps are naive UTC; Date.parse alone would read them as
+  // local time and skew elapsed timers by the local offset (UTC+8 → 480m).
+  return parseServerTimestampMs(value);
 }
 
 /** Sub-second: ms; otherwise seconds (one decimal) — avoids ambiguous `m` (minutes vs meters). */

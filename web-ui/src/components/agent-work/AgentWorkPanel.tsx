@@ -23,6 +23,7 @@ import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
 import { ENV } from '@/config/env';
 import { planTreeApi } from '@api/planTree';
+import { parseServerTimeDayjs } from '@utils/serverTime';
 import type { JobLogEvent, BackgroundTaskItem } from '@/types';
 
 dayjs.extend(relativeTime);
@@ -69,8 +70,8 @@ const nextId = () => `evt_${++_idCounter}_${Date.now()}`;
 
 const formatRelativeTime = (ts: string): string => {
   if (!ts) return '';
-  const d = dayjs(ts);
-  if (!d.isValid()) return '';
+  const d = parseServerTimeDayjs(ts);
+  if (!d || !d.isValid()) return '';
   const diffSec = Math.floor((Date.now() - d.valueOf()) / 1000);
   if (diffSec < 5) return 'just now';
   if (diffSec < 60) return `${diffSec}s ago`;
@@ -79,8 +80,10 @@ const formatRelativeTime = (ts: string): string => {
 
 const formatDuration = (startedAt?: string | null): string => {
   if (!startedAt) return '';
-  const start = dayjs(startedAt);
-  if (!start.isValid()) return '';
+  // Server timestamps are naive UTC; parse with the shared helper so the
+  // elapsed timer does not inherit the browser's UTC offset.
+  const start = parseServerTimeDayjs(startedAt);
+  if (!start || !start.isValid()) return '';
   const diffMs = Date.now() - start.valueOf();
   if (diffMs < 1000) return '<1s';
   if (diffMs < 60000) return `${Math.floor(diffMs / 1000)}s`;
