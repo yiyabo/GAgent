@@ -100,6 +100,64 @@ def _default_max_consecutive_llm_failures() -> int:
         return 5
 
 
+def _default_synthesis_timeout_seconds() -> int:
+    # Thinking models (e.g. qwen3.8-flash) routinely need >60s to synthesize a
+    # long evidence prompt; a 60s cap cancelled forced synthesis on long runs.
+    raw = os.getenv("DEEP_THINK_SYNTHESIS_TIMEOUT_SECONDS", "180")
+    try:
+        return max(30, int(raw))
+    except (TypeError, ValueError):
+        return 180
+
+
+def _default_synthesis_max_tokens() -> int:
+    raw = os.getenv("DEEP_THINK_SYNTHESIS_MAX_TOKENS", "6000")
+    try:
+        return max(1000, int(raw))
+    except (TypeError, ValueError):
+        return 6000
+
+
+_OUTPUT_FILE_RE = re.compile(r"[A-Za-z0-9_\-.]+\.(?:md|csv|xlsx|xls|json|png|html?|txt|fasta|pdf)")
+
+
+def _strip_cli_stream_noise(text: str) -> str:
+    """Drop qwen-code CLI protocol JSON blobs (system/init/result events) from evidence text.
+
+    When a delegated CLI run's stdout is summarized as tool output, its init JSON
+    can dominate the fallback summary while carrying no user-facing information.
+    """
+    if not text:
+        return text
+    kept: List[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if (
+            len(stripped) > 120
+            and stripped.startswith(('[{"type"', '{"type"'))
+            and (
+                '"subtype":"init"' in stripped
+                or '"type":"system"' in stripped
+                or '"type":"result"' in stripped
+            )
+        ):
+            continue
+        kept.append(line)
+    return "\n".join(kept)
+
+
+def _collect_output_file_names(evidence: str, limit: int = 6) -> List[str]:
+    """Best-effort extraction of generated output file names from evidence text."""
+    names: List[str] = []
+    for match in _OUTPUT_FILE_RE.finditer(evidence or ""):
+        name = match.group(0).rsplit("/", 1)[-1]
+        if len(name) > 8 and name not in names:
+            names.append(name)
+        if len(names) >= limit:
+            break
+    return names
+
+
 def _load_bio_tools_catalog() -> Dict[str, List[str]]:
     config_path = Path(__file__).resolve().parents[2] / "tool_box" / "bio_tools" / "tools_config.json"
     try:
@@ -7977,12 +8035,15 @@ When ready to answer:
             )
 
         # Collect any meaningful evidence to include in the fallback
-        evidence = self._collect_user_facing_evidence_snippets(
-            steps,
-            max_steps=12,
-            max_chars=4000,
-            per_snippet_max=1200,
+        evidence = _strip_cli_stream_noise(
+            self._collect_user_facing_evidence_snippets(
+                steps,
+                max_steps=12,
+                max_chars=4000,
+                per_snippet_max=1200,
+            )
         )
+        output_files = _collect_output_file_names(evidence)
         # Also collect useful thoughts
         useful_thoughts: List[str] = []
         for s in reversed(steps):
@@ -7998,17 +8059,29 @@ When ready to answer:
         if evidence.strip() and len(evidence.strip()) > 20:
             # Check if we have successful tool execution evidence
             has_success = "代码执行成功" in evidence or "已写入文件" in evidence or "产出文件" in evidence
+            artifact_hint = ""
+            if output_files:
+                if language == "zh":
+                    artifact_hint = (
+                        "\n\n本轮已生成以下交付文件（完整内容见右侧 Artifacts 面板）：\n"
+                        + "\n".join(f"- {name}" for name in output_files)
+                    )
+                else:
+                    artifact_hint = (
+                        "\n\nThe following output files were generated (see the Artifacts panel for full content):\n"
+                        + "\n".join(f"- {name}" for name in output_files)
+                    )
             if language == "zh":
                 if has_success:
                     header = "以下是本轮工具执行的结果摘要：\n\n"
-                    footer = ""
+                    footer = artifact_hint
                 else:
                     header = "以下是本轮执行中观察到的信息：\n\n"
                     footer = "\n\n如需更详细的分析，请指出具体要查看的内容。"
             else:
                 if has_success:
                     header = "Here is the summary of tool execution results:\n\n"
-                    footer = ""
+                    footer = artifact_hint
                 else:
                     header = "Here is what was observed during execution:\n\n"
                     footer = "\n\nFor a more detailed analysis, please specify what you'd like to examine."
@@ -8143,8 +8216,10 @@ When ready to answer:
             return ""
 
         try:
-            evidence = self._collect_evidence_snippets(
-                steps, max_steps=12, max_chars=6000, per_snippet_max=1500
+            evidence = _strip_cli_stream_noise(
+                self._collect_evidence_snippets(
+                    steps, max_steps=12, max_chars=6000, per_snippet_max=1500
+                )
             )
             uq = (user_query or "").strip()
             if not uq:
@@ -8252,9 +8327,16 @@ When ready to answer:
                 prompt += f"=== REASONING PROCESS ===\n{thoughts_text}\n\n"
             prompt += "Please provide your complete answer now:"
 
+            synthesis_timeout = _default_synthesis_timeout_seconds()
+            synthesis_max_tokens = _default_synthesis_max_tokens()
+            logger.info(
+                "[DEEP_THINK_NATIVE] Forced synthesis attempt (timeout=%ss max_tokens=%s)",
+                synthesis_timeout,
+                synthesis_max_tokens,
+            )
             raw = await asyncio.wait_for(
-                self.llm_client.chat_async(prompt=prompt, max_tokens=3000),
-                timeout=60,
+                self.llm_client.chat_async(prompt=prompt, max_tokens=synthesis_max_tokens),
+                timeout=synthesis_timeout,
             )
             cleaned = sanitize_professional_response_text(str(raw or "").strip())
             if len(cleaned) < 30 or is_process_only_answer(cleaned, user_query=user_query):
