@@ -195,7 +195,9 @@ _GUARD_DELIVERABLE_EXT_RE = re.compile(
 )
 # Scratch/probe locations never count as deliverables. Real outputs live under
 # deliverables/ or results/ (enforced again in _extract_guard_candidates).
-_GUARD_SCRATCH_RE = re.compile(r"(?:^|/)(?:tool_outputs|_scratch|uploads|raw_files|tmp|workspaces)/", re.IGNORECASE)
+# Absolute /tmp/ is excluded at the call site; a bare "tmp" path segment would
+# also nuke legitimate paths like /data/tmp_results/... or pytest sandboxes.
+_GUARD_SCRATCH_RE = re.compile(r"(?:^|/)(?:tool_outputs|_scratch|uploads|raw_files|workspaces)/", re.IGNORECASE)
 _GUARD_PRODUCTIVE_DIR_RE = re.compile(r"(?:^|/)(?:deliverables|results)/", re.IGNORECASE)
 _GUARD_PATH_NORMALIZE_RE = re.compile(r"/[^\s,;:'\")\]]+")
 _GUARD_DIGIT_RE = re.compile(r"\d+")
