@@ -93,7 +93,15 @@ export const resolveArtifactGalleryItemSrc = (
   }
   const sid = typeof sessionId === 'string' ? sessionId.trim() : '';
   if (sid && (item.origin ?? '').trim().toLowerCase() === 'deliverable') {
-    return buildDeliverableFileUrl(sid, item.path);
+    const normalized = item.path.replace(/^\/+/, '');
+    if (normalized.startsWith('deliverables/')) {
+      // Session-relative path that already contains the deliverables root
+      // (deliverables/latest/... or deliverables/history/<v>/...). The
+      // deliverables endpoint prepends its own root, so serve it through the
+      // session file endpoint which resolves session-relative paths as-is.
+      return buildArtifactFileUrl(sid, normalized);
+    }
+    return buildDeliverableFileUrl(sid, normalized);
   }
   return resolveArtifactImageSrc(item.path, sessionId);
 };

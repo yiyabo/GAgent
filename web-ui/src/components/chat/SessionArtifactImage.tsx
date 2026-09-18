@@ -132,7 +132,7 @@ export const SessionArtifactImage: React.FC<SessionArtifactImageProps> = ({
 
     const base = filePath.replace(/\.[^/.]+$/, '');
     const downloadPath = `${base}.${ext}`;
-    const downloadUrl = `/api/artifacts/sessions/${sessionId}/file?path=${encodeURIComponent(downloadPath)}`;
+    const downloadUrl = `/artifacts/sessions/${sessionId}/file?path=${encodeURIComponent(downloadPath)}`;
     const a = document.createElement('a');
     a.href = downloadUrl;
     a.download = downloadPath.split('/').pop() || `figure.${ext}`;
@@ -150,7 +150,7 @@ export const SessionArtifactImage: React.FC<SessionArtifactImageProps> = ({
           if (!sessionId || !filePath) return;
           const base = filePath.replace(/\.[^/.]+$/, '');
           const pdfPath = `${base}.pdf`;
-          const pdfUrl = `/api/artifacts/sessions/${sessionId}/file?path=${encodeURIComponent(pdfPath)}`;
+          const pdfUrl = `/artifacts/sessions/${sessionId}/file?path=${encodeURIComponent(pdfPath)}`;
           window.dispatchEvent(
             new CustomEvent('phage:open-pdf-viewer', {
               detail: {

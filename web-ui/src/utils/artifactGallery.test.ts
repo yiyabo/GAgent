@@ -80,4 +80,17 @@ describe('resolveArtifactGalleryItemSrc', () => {
       '/artifacts/sessions/session-demo/deliverables/file?path=paper%2Ffigure.png',
     );
   });
+
+  it('serves session-relative deliverables paths through the session file API', () => {
+    const resolved = resolveArtifactGalleryItemSrc(
+      { path: 'deliverables/latest/image_tabular/kg/overview.png', origin: 'deliverable' },
+      'session-demo',
+    );
+
+    // The deliverables endpoint would prepend its own root and 404; the
+    // session file endpoint resolves session-relative paths as-is.
+    expect(resolved).toContain('/artifacts/sessions/session-demo/file?path=');
+    expect(resolved).toContain('deliverables%2Flatest%2Fimage_tabular%2Fkg%2Foverview.png');
+    expect(resolved).not.toContain('/deliverables/file');
+  });
 });

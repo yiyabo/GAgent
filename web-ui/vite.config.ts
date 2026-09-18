@@ -127,6 +127,10 @@ export default defineConfig(({ mode }) => {
           target: apiBaseUrl,
           changeOrigin: true,
         },
+        '/artifacts': {
+          target: apiBaseUrl,
+          changeOrigin: true,
+        },
         '/ws': {
           target: wsBaseUrl,
           ws: true,

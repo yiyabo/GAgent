@@ -238,7 +238,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, cla
                         // Inline code
                         const textStr = String(children || '').trim();
                         if (sessionId && /\.pdf$/i.test(textStr)) {
-                            const pdfUrl = `/api/artifacts/sessions/${sessionId}/file?path=${encodeURIComponent(textStr)}`;
+                            const pdfUrl = `/artifacts/sessions/${sessionId}/file?path=${encodeURIComponent(textStr)}`;
                             const handleOpenPdf = (e: React.MouseEvent) => {
                                 e.preventDefault();
                                 window.dispatchEvent(

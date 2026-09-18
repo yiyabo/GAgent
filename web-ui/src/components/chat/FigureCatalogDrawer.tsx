@@ -44,7 +44,7 @@ export const FigureCatalogDrawer: React.FC<FigureCatalogDrawerProps> = ({
     if (!sessionId) return;
     try {
       setLoading(true);
-      const res = await axios.get(`/api/artifacts/sessions/${sessionId}?max_depth=4&limit=500`);
+      const res = await axios.get(`/artifacts/sessions/${sessionId}?max_depth=4&limit=500`);
       if (res.data && Array.isArray(res.data.items)) {
         setArtifacts(res.data.items);
       }
@@ -105,7 +105,7 @@ export const FigureCatalogDrawer: React.FC<FigureCatalogDrawerProps> = ({
 
   const handleDownloadFile = (path?: string) => {
     if (!path || !sessionId) return;
-    const url = `/api/artifacts/sessions/${sessionId}/file?path=${encodeURIComponent(path)}`;
+    const url = `/artifacts/sessions/${sessionId}/file?path=${encodeURIComponent(path)}`;
     const a = document.createElement('a');
     a.href = url;
     a.download = path.split('/').pop() || 'figure';
@@ -125,7 +125,7 @@ export const FigureCatalogDrawer: React.FC<FigureCatalogDrawerProps> = ({
     });
 
     if (allPaths.length === 0) return;
-    const url = `/api/artifacts/sessions/${sessionId}/batch-download?paths=${encodeURIComponent(allPaths.join(','))}`;
+    const url = `/artifacts/sessions/${sessionId}/batch-download?paths=${encodeURIComponent(allPaths.join(','))}`;
     window.open(url, '_blank');
     antMessage.info('已开始批量下载所有图表资产 (PNG/SVG/PDF)...');
   };
