@@ -103,11 +103,22 @@ def _default_max_consecutive_llm_failures() -> int:
 def _default_synthesis_timeout_seconds() -> int:
     # Thinking models (e.g. qwen3.8-flash) routinely need >60s to synthesize a
     # long evidence prompt; a 60s cap cancelled forced synthesis on long runs.
-    raw = os.getenv("DEEP_THINK_SYNTHESIS_TIMEOUT_SECONDS", "180")
+    # Non-streaming calls buffer the whole generation, so allow ample headroom.
+    raw = os.getenv("DEEP_THINK_SYNTHESIS_TIMEOUT_SECONDS", "300")
     try:
         return max(30, int(raw))
     except (TypeError, ValueError):
-        return 180
+        return 300
+
+
+def _default_fallback_timeout_seconds() -> int:
+    # The evidence fallback also runs non-streaming against a thinking model;
+    # the previous 45s default timed out on every attempt of real long runs.
+    raw = os.getenv("DEEP_THINK_FALLBACK_TIMEOUT_SECONDS", "150")
+    try:
+        return max(30, int(raw))
+    except (TypeError, ValueError):
+        return 150
 
 
 def _default_synthesis_max_tokens() -> int:
@@ -119,6 +130,49 @@ def _default_synthesis_max_tokens() -> int:
 
 
 _OUTPUT_FILE_RE = re.compile(r"[A-Za-z0-9_\-.]+\.(?:md|csv|xlsx|xls|json|png|html?|txt|fasta|pdf)")
+
+_BARE_READ_MARKER_RE = re.compile(r"^-\s*已读取文件：[^：\n]*$")
+
+_DELIVERABLE_FILE_RE = re.compile(r"[A-Za-z0-9_\-.]+\.(?:png|pdf|svg|md|csv|xlsx|xls|html?|fasta|fa)")
+
+
+def _collect_deliverable_file_names(evidence: str, limit: int = 6) -> List[str]:
+    """Extract likely deliverable file names from evidence text.
+
+    Deliberately excludes .txt/.json so scratch probes and status dumps are
+    not presented as deliverables.
+    """
+    names: List[str] = []
+    for match in _DELIVERABLE_FILE_RE.finditer(evidence or ""):
+        name = match.group(0).rsplit("/", 1)[-1]
+        if len(name) > 8 and name not in names:
+            names.append(name)
+        if len(names) >= limit:
+            break
+    return names
+
+
+def _drop_process_echo_bullets(text: str) -> str:
+    """Remove process-echo bullets from user-facing fallback evidence.
+
+    Raw terminal dumps, bare "file was read" markers, and internal guard
+    rejections (target_task_not_atomic) read as half-finished execution debris
+    to users; outcome bullets (writes, products, listings, content previews)
+    are kept.
+    """
+    if not text:
+        return ""
+    kept: List[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("- 终端输出："):
+            continue
+        if _BARE_READ_MARKER_RE.match(stripped):
+            continue
+        if "target_task_not_atomic" in stripped:
+            continue
+        kept.append(line)
+    return "\n".join(kept).strip()
 
 
 def _strip_cli_stream_noise(text: str) -> str:
@@ -8035,7 +8089,7 @@ When ready to answer:
             )
 
         # Collect any meaningful evidence to include in the fallback
-        evidence = _strip_cli_stream_noise(
+        raw_evidence = _strip_cli_stream_noise(
             self._collect_user_facing_evidence_snippets(
                 steps,
                 max_steps=12,
@@ -8043,7 +8097,9 @@ When ready to answer:
                 per_snippet_max=1200,
             )
         )
-        output_files = _collect_output_file_names(evidence)
+        output_files = _collect_output_file_names(raw_evidence)
+        deliverable_files = _collect_deliverable_file_names(raw_evidence)
+        evidence = _drop_process_echo_bullets(raw_evidence)
         # Also collect useful thoughts
         useful_thoughts: List[str] = []
         for s in reversed(steps):
@@ -8087,6 +8143,22 @@ When ready to answer:
                     footer = "\n\nFor a more detailed analysis, please specify what you'd like to examine."
             return header + evidence.strip() + footer
 
+        if deliverable_files:
+            # Evidence reduced to process echoes, but the run did produce files —
+            # report the deliverables cleanly instead of dumping debris.
+            names = "\n".join(f"- {name}" for name in deliverable_files)
+            if language == "zh":
+                return (
+                    "本轮执行已生成以下交付文件（完整内容见右侧 Artifacts 面板）：\n"
+                    f"{names}\n\n"
+                    "如需调整内容或导出其他格式，请告诉我。"
+                )
+            return (
+                "This run produced the following deliverable files (see the Artifacts panel for full content):\n"
+                f"{names}\n\n"
+                "Let me know if you want changes or a different export format."
+            )
+
         if useful_thoughts:
             combined = "\n\n".join(useful_thoughts)
             if language == "zh":
@@ -8112,11 +8184,13 @@ When ready to answer:
         task_context: Optional[TaskExecutionContext] = None,
         *,
         max_retries: int = 3,
-        timeout: float = 45,
+        timeout: Optional[float] = None,
         max_tokens: int = 2000,
     ) -> str:
         if not hasattr(self.llm_client, "chat_async"):
             raise DeepThinkProtocolError("LLM client does not support chat_async")
+        if timeout is None:
+            timeout = float(_default_fallback_timeout_seconds())
         n = len(steps)
         uq = (user_query or "").strip()
 
@@ -8188,10 +8262,10 @@ When ready to answer:
             except Exception as exc:
                 last_exc = exc
                 logger.warning(
-                    "DeepThink fallback synthesis attempt %d/%d failed: %s",
+                    "DeepThink fallback synthesis attempt %d/%d failed: %r",
                     attempt + 1,
                     max_retries,
-                    str(exc)[:200],
+                    exc,
                 )
                 if attempt < max_retries - 1:
                     await asyncio.sleep(1.0 * (attempt + 1))
@@ -8349,8 +8423,8 @@ When ready to answer:
                 )
             logger.info("[DEEP_THINK_NATIVE] Forced synthesis succeeded (%d chars)", len(cleaned))
             return cleaned
-        except Exception:
-            logger.warning("[DEEP_THINK_NATIVE] Forced synthesis failed", exc_info=True)
+        except Exception as exc:
+            logger.warning("[DEEP_THINK_NATIVE] Forced synthesis failed: %r", exc, exc_info=True)
             return ""
 
     async def _fallback_answer_from_steps(
