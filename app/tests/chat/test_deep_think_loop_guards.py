@@ -2,18 +2,36 @@
 
 The guards only fire on pathological patterns; a healthy run must see zero
 behaviour change (scenario C asserts exactly that).
+
+Deliverable fixtures live under ./runtime/ rather than pytest's tmp_path:
+production code deliberately ignores /tmp/ paths as scratch.
 """
 
 from __future__ import annotations
 
 import asyncio
-import os
+import shutil
+from pathlib import Path
+
+import pytest
 
 from app.llm import NativeStreamResult, NativeToolCall
 from app.services.deep_think_agent import DeepThinkAgent
 
 
 SYNTH_ANSWER = "综合当前已收集的证据，本轮任务的关键结论如下：交付文件已生成并验证，可以直接使用。"
+
+_SANDBOX = Path("runtime") / "test_loop_guards_sandbox"
+
+
+@pytest.fixture()
+def deliverable_file():
+    sandbox = _SANDBOX / "deliverables" / "latest" / "chart"
+    sandbox.mkdir(parents=True, exist_ok=True)
+    path = (sandbox / "overview.png").resolve()
+    path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 64)
+    yield path
+    shutil.rmtree(_SANDBOX, ignore_errors=True)
 
 
 class _LoopLLM:
@@ -56,12 +74,10 @@ def _all_message_text(llm: _LoopLLM) -> str:
     return "\n".join(parts)
 
 
-def test_no_progress_endgame_breaks_after_verified_deliverable(tmp_path) -> None:
+def test_no_progress_endgame_breaks_after_verified_deliverable(deliverable_file) -> None:
     """Deliverable verified at step 3, model never finishes -> nudge, then
     break far below max_iterations, then forced synthesis closes the run."""
-    deliverable = tmp_path / "deliverables" / "latest" / "chart" / "overview.png"
-    deliverable.parent.mkdir(parents=True)
-    deliverable.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 64)
+    deliverable = deliverable_file
 
     call_count = {"n": 0}
 
@@ -143,11 +159,9 @@ def test_failure_signature_trap_warns_at_three_and_breaks_at_five() -> None:
     )
 
 
-def test_healthy_run_sees_no_guard_nudges(tmp_path) -> None:
+def test_healthy_run_sees_no_guard_nudges(deliverable_file) -> None:
     """Deliverable produced then submit_final_answer: zero guard interference."""
-    deliverable = tmp_path / "deliverables" / "latest" / "chart" / "ok.png"
-    deliverable.parent.mkdir(parents=True)
-    deliverable.write_bytes(b"\x89PNG\r\n\x1a\n" + b"1" * 32)
+    deliverable = deliverable_file
 
     async def _executor(name: str, params: dict):
         return {"success": True, "artifact_paths": [str(deliverable)]}
