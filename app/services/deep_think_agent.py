@@ -121,6 +121,43 @@ def _default_fallback_timeout_seconds() -> int:
         return 150
 
 
+def _progress_free_nudge_streak() -> int:
+    # Execute-tier runs that stop producing new deliverables get a finalize
+    # nudge after this many consecutive progress-free iterations.
+    raw = os.getenv("DEEP_THINK_PROGRESS_FREE_NUDGE", "8")
+    try:
+        return max(3, int(raw))
+    except (TypeError, ValueError):
+        return 8
+
+
+def _progress_free_break_streak() -> int:
+    # Hard stop for progress-free execute-tier runs. Deliberately looser than
+    # the nudge so slow-but-legitimate pipelines (downloads, renders) are not
+    # killed while still working toward their first deliverable.
+    raw = os.getenv("DEEP_THINK_PROGRESS_FREE_BREAK", "14")
+    try:
+        return max(4, int(raw))
+    except (TypeError, ValueError):
+        return 14
+
+
+def _failure_signature_warn_count() -> int:
+    raw = os.getenv("DEEP_THINK_FAILURE_SIG_WARN", "3")
+    try:
+        return max(2, int(raw))
+    except (TypeError, ValueError):
+        return 3
+
+
+def _failure_signature_break_count() -> int:
+    raw = os.getenv("DEEP_THINK_FAILURE_SIG_BREAK", "5")
+    try:
+        return max(3, int(raw))
+    except (TypeError, ValueError):
+        return 5
+
+
 def _default_synthesis_max_tokens() -> int:
     raw = os.getenv("DEEP_THINK_SYNTHESIS_MAX_TOKENS", "6000")
     try:
@@ -150,6 +187,30 @@ def _collect_deliverable_file_names(evidence: str, limit: int = 6) -> List[str]:
         if len(names) >= limit:
             break
     return names
+
+
+_GUARD_DELIVERABLE_EXT_RE = re.compile(
+    r"\.(?:png|jpe?g|svg|pdf|md|markdown|csv|xlsx?|tsv|json|html?|txt|fasta|fa)$",
+    re.IGNORECASE,
+)
+# Scratch/probe locations never count as deliverables. Real outputs live under
+# deliverables/ or results/ (enforced again in _extract_guard_candidates).
+_GUARD_SCRATCH_RE = re.compile(r"(?:^|/)(?:tool_outputs|_scratch|uploads|raw_files|tmp|workspaces)/", re.IGNORECASE)
+_GUARD_PRODUCTIVE_DIR_RE = re.compile(r"(?:^|/)(?:deliverables|results)/", re.IGNORECASE)
+_GUARD_PATH_NORMALIZE_RE = re.compile(r"/[^\s,;:'\")\]]+")
+_GUARD_DIGIT_RE = re.compile(r"\d+")
+
+
+def _guard_json_payload(value: Any) -> Optional[Dict[str, Any]]:
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = json.loads(value)
+    except Exception:
+        return None
+    return parsed if isinstance(parsed, dict) else None
 
 
 def _drop_process_echo_bullets(text: str) -> str:
@@ -4330,6 +4391,13 @@ class DeepThinkAgent:
         consecutive_llm_failures = 0
         max_consecutive_llm_failures = _default_max_consecutive_llm_failures()
         llm_fatal_abort = False
+        loop_guard_state: Dict[str, Any] = {
+            "verified_deliverables": [],
+            "failure_sig_counts": {},
+            "failure_sig_warned": set(),
+            "last_progress_iteration": 0,
+            "no_progress_nudge_sent": False,
+        }
 
         logger.info("[DEEP_THINK_NATIVE] Starting for: %s", user_query[:50])
 
@@ -4539,6 +4607,21 @@ class DeepThinkAgent:
                         assistant_content=result.content or "",
                         current_step=current_step,
                     )
+
+                    loop_guard_break_reason = self._apply_loop_guards(
+                        messages=messages,
+                        tool_results=tool_results,
+                        iteration=iteration,
+                        guard_state=loop_guard_state,
+                    )
+                    if loop_guard_break_reason:
+                        current_step.self_correction = loop_guard_break_reason
+                        logger.warning(
+                            "[DEEP_THINK][loop-guard] break at iteration=%s: %s",
+                            iteration,
+                            loop_guard_break_reason,
+                        )
+                        break
 
                     if final_call is None:
                         created_plan = self._extract_successful_created_plan_from_tool_results(
@@ -6300,6 +6383,210 @@ Respond with ONLY a JSON object:
                     "iteration": iteration,
                 },
             )
+
+    def _extract_guard_candidates(self, tool_results: List[Dict[str, Any]]) -> List[str]:
+        """Harvest deliverable-looking output paths from a tool cycle.
+
+        Only paths under deliverables/ or results/ count — probe files in
+        /tmp, workspaces, tool_outputs etc. are scratch, not progress.
+        """
+        candidates: List[str] = []
+        list_keys = ("artifact_paths", "produced_files", "output_files", "session_artifact_paths", "artifacts")
+        str_keys = ("file_path", "image_path", "output_path", "saved_path")
+
+        def _push(value: Any) -> None:
+            if not isinstance(value, str):
+                return
+            p = value.strip()
+            if not p or ".." in p or "\\" in p:
+                return
+            if not _GUARD_DELIVERABLE_EXT_RE.search(p):
+                return
+            if _GUARD_SCRATCH_RE.search(p) or p.startswith("/tmp/"):
+                return
+            if not _GUARD_PRODUCTIVE_DIR_RE.search(p):
+                return
+            if p not in candidates:
+                candidates.append(p)
+
+        def _harvest(payload: Dict[str, Any]) -> None:
+            for key in list_keys:
+                values = payload.get(key)
+                if isinstance(values, (list, tuple)):
+                    for entry in values:
+                        if isinstance(entry, str):
+                            _push(entry)
+                        elif isinstance(entry, dict):
+                            _push(entry.get("path") or entry.get("file_path"))
+            for key in str_keys:
+                _push(payload.get(key))
+
+        for item in tool_results:
+            payload = item.get("tool_result")
+            if not isinstance(payload, dict):
+                payload = _guard_json_payload(item.get("tool_result_text"))
+            if not isinstance(payload, dict) or payload.get("success") is False:
+                continue
+            _harvest(payload)
+            inner = payload.get("result")
+            if isinstance(inner, dict):
+                _harvest(inner)
+        return candidates
+
+    def _verify_guard_path(self, candidate: str) -> Optional[str]:
+        """Return the on-disk path when the candidate exists and is non-empty."""
+        p = candidate.strip()
+        if not p:
+            return None
+        attempts: List[str] = []
+        if os.path.isabs(p):
+            attempts.append(p)
+        else:
+            runtime_root = str(os.getenv("APP_RUNTIME_ROOT") or "/app/runtime").strip()
+            session_id = str(self.request_profile.get("session_id") or "").strip()
+            if session_id:
+                attempts.append(os.path.join(runtime_root, session_id, p))
+            attempts.append(os.path.join(runtime_root, p))
+        for path in attempts:
+            try:
+                if os.path.isfile(path) and os.path.getsize(path) > 0:
+                    return path
+            except OSError:
+                continue
+        return None
+
+    def _failure_signature_for_result(self, item: Dict[str, Any]) -> Optional[str]:
+        """Stable signature for a failed tool result (tool + normalized error)."""
+        payload = item.get("tool_result")
+        if not isinstance(payload, dict):
+            payload = _guard_json_payload(item.get("tool_result_text"))
+        if not isinstance(payload, dict):
+            return None
+        if payload.get("success") is not False:
+            inner = payload.get("result")
+            if not (isinstance(inner, dict) and inner.get("success") is False):
+                return None
+            payload = inner
+        error = str(
+            payload.get("error") or payload.get("stderr") or payload.get("summary") or ""
+        ).strip()
+        if not error:
+            return None
+        error = _GUARD_PATH_NORMALIZE_RE.sub("<path>", error)
+        error = _GUARD_DIGIT_RE.sub("<n>", error)
+        tool_name = str(item.get("tool_name") or "unknown").strip().lower() or "unknown"
+        return f"{tool_name}:{error[:60]}"
+
+    def _loop_guard_endgame_armed(self) -> bool:
+        # The no-progress endgame only arms for execute-tier work, where a
+        # deliverable is expected. Research/standard tiers keep the existing
+        # iteration-position nudge ladder.
+        return self._request_tier() == "execute" or self._is_execute_task_request()
+
+    def _apply_loop_guards(
+        self,
+        *,
+        messages: List[Dict[str, Any]],
+        tool_results: List[Dict[str, Any]],
+        iteration: int,
+        guard_state: Dict[str, Any],
+    ) -> Optional[str]:
+        """Deliverable acceptance, failure-trap, and no-progress endgame.
+
+        Returns a break reason when the loop should stop early; otherwise None.
+        Healthy runs see no behaviour change — every mechanism only fires on
+        pathological patterns.
+        """
+        verified: List[str] = guard_state["verified_deliverables"]
+        failure_counts: Dict[str, int] = guard_state["failure_sig_counts"]
+        failure_warned: set = guard_state["failure_sig_warned"]
+
+        new_verified: List[str] = []
+        for candidate in self._extract_guard_candidates(tool_results):
+            if candidate in verified or candidate in new_verified:
+                continue
+            confirmed = self._verify_guard_path(candidate)
+            if confirmed and confirmed not in verified and confirmed not in new_verified:
+                new_verified.append(confirmed)
+        if new_verified:
+            verified.extend(new_verified)
+            guard_state["last_progress_iteration"] = iteration
+            logger.info(
+                "[DEEP_THINK][progress] iteration=%s new_deliverables=%s verified_total=%d",
+                iteration,
+                ",".join(os.path.basename(p) for p in new_verified[:4]),
+                len(verified),
+            )
+
+        for item in tool_results:
+            signature = self._failure_signature_for_result(item)
+            if not signature:
+                continue
+            failure_counts[signature] = failure_counts.get(signature, 0) + 1
+            count = failure_counts[signature]
+            if count == _failure_signature_warn_count() and signature not in failure_warned:
+                failure_warned.add(signature)
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        f"The same failure has now occurred {count} times: {signature}. "
+                        "Stop retrying this approach — change strategy, adjust parameters or tools, "
+                        "or wrap up with what has been achieved so far."
+                    ),
+                })
+                logger.warning(
+                    "[DEEP_THINK][trap] repeated failure signature x%d at iteration=%s: %s",
+                    count,
+                    iteration,
+                    signature,
+                )
+            if count >= _failure_signature_break_count():
+                return (
+                    f"Stopped after {count} repetitions of the same failure ({signature}); "
+                    f"wrapping up with {len(verified)} verified deliverable(s)."
+                )
+
+        if self._loop_guard_endgame_armed():
+            streak = iteration - int(guard_state["last_progress_iteration"])
+            if streak >= _progress_free_nudge_streak() and not guard_state["no_progress_nudge_sent"]:
+                guard_state["no_progress_nudge_sent"] = True
+                if verified:
+                    files_list = "\n".join(f"- {p}" for p in verified[:6])
+                    content = (
+                        f"No new deliverable has been produced in the last {streak} steps. "
+                        f"The following deliverables already exist and are verified on disk:\n{files_list}\n"
+                        "If these satisfy the user's request, call submit_final_answer NOW. "
+                        "Continue only for a concrete missing piece — do not re-probe or re-verify "
+                        "files that already exist."
+                    )
+                else:
+                    content = (
+                        f"You have run {streak} steps without producing any deliverable. "
+                        "Stop probing and change strategy: produce the requested output now, "
+                        "or call submit_final_answer describing the concrete blocker."
+                    )
+                messages.append({"role": "user", "content": content})
+                logger.warning(
+                    "[DEEP_THINK][endgame] no-progress nudge at iteration=%s streak=%s verified=%d",
+                    iteration,
+                    streak,
+                    len(verified),
+                )
+            if streak >= _progress_free_break_streak():
+                return (
+                    f"Stopped after {streak} steps without new deliverables; "
+                    f"wrapping up with {len(verified)} verified deliverable(s)."
+                )
+
+        logger.info(
+            "[DEEP_THINK][iter] iteration=%s tier=%s verified=%d failure_sigs=%d last_progress=%s",
+            iteration,
+            self._request_tier() or "-",
+            len(verified),
+            len(failure_counts),
+            guard_state["last_progress_iteration"],
+        )
+        return None
 
     async def _execute_native_tool_call(
         self,
