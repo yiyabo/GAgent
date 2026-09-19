@@ -189,6 +189,31 @@ def _collect_deliverable_file_names(evidence: str, limit: int = 6) -> List[str]:
     return names
 
 
+def _collect_deliverable_display_names(evidence: str, limit: int = 6) -> List[str]:
+    """Deliverable names shown to users in the fallback hint.
+
+    Strict extension list, and a match whose containing path segment lives
+    under uploads/ is the user's own input file — never a deliverable.
+    """
+    names: List[str] = []
+    text = evidence or ""
+    for match in _DELIVERABLE_FILE_RE.finditer(text):
+        name = match.group(0).rsplit("/", 1)[-1]
+        # walk back to the previous path/text separator; the segment between
+        # it and the match is the containing directory chain
+        seg_start = match.start()
+        while seg_start > 0 and text[seg_start - 1] not in " \t\r\n,;，；：（(）)\"'`":
+            seg_start -= 1
+        segment = text[seg_start:match.start()]
+        if "uploads/" in segment:
+            continue
+        if len(name) > 8 and name not in names:
+            names.append(name)
+        if len(names) >= limit:
+            break
+    return names
+
+
 _GUARD_DELIVERABLE_EXT_RE = re.compile(
     r"\.(?:png|jpe?g|svg|pdf|md|markdown|csv|xlsx?|tsv|json|html?|txt|fasta|fa)$",
     re.IGNORECASE,
@@ -238,6 +263,30 @@ def _drop_process_echo_bullets(text: str) -> str:
     return "\n".join(kept).strip()
 
 
+_CLI_PROTOCOL_MARKERS = ('"subtype":"init"', '"type":"system"', '"type":"result"')
+
+
+def _looks_like_cli_protocol_json(stripped: str) -> bool:
+    return (
+        len(stripped) > 120
+        and stripped.startswith(('[{"type"', '{"type"'))
+        and any(marker in stripped for marker in _CLI_PROTOCOL_MARKERS)
+    )
+
+
+def _strip_cli_noise_from_multiline(raw: str) -> str:
+    """Drop CLI protocol JSON lines from a stdout/stderr block before previewing.
+
+    The delegated CLI prints its init/result events as single huge lines; when
+    such a block is previewed inside a humanized bullet the whole protocol
+    dump rides along unless filtered here.
+    """
+    if not raw:
+        return raw
+    kept = [ln for ln in raw.splitlines() if not _looks_like_cli_protocol_json(ln.strip())]
+    return "\n".join(kept)
+
+
 def _strip_cli_stream_noise(text: str) -> str:
     """Drop qwen-code CLI protocol JSON blobs (system/init/result events) from evidence text.
 
@@ -249,15 +298,7 @@ def _strip_cli_stream_noise(text: str) -> str:
     kept: List[str] = []
     for line in text.splitlines():
         stripped = line.strip()
-        if (
-            len(stripped) > 120
-            and stripped.startswith(('[{"type"', '{"type"'))
-            and (
-                '"subtype":"init"' in stripped
-                or '"type":"system"' in stripped
-                or '"type":"result"' in stripped
-            )
-        ):
+        if _looks_like_cli_protocol_json(stripped):
             continue
         kept.append(line)
     return "\n".join(kept)
@@ -8106,7 +8147,9 @@ When ready to answer:
 
         # --- terminal_session: skip noise-only entries ---
         if tool == "terminal_session" or "terminal_id" in obj:
-            output = str(result.get("output") or obj.get("output") or "").strip()
+            output = _strip_cli_noise_from_multiline(
+                str(result.get("output") or obj.get("output") or "")
+            ).strip()
             vs = result.get("verification_summary") or obj.get("verification_summary")
             if vs:
                 return f"终端会话：{vs}"
@@ -8117,7 +8160,9 @@ When ready to answer:
         # --- code_executor ---
         if tool == "code_executor":
             if success is True or result.get("success") is True:
-                stdout = str(result.get("stdout") or "").strip()
+                stdout = _strip_cli_noise_from_multiline(
+                    str(result.get("stdout") or "")
+                ).strip()
                 artifacts = result.get("artifact_paths") or []
                 result_files = [
                     p for p in artifacts
@@ -8386,8 +8431,8 @@ When ready to answer:
                 per_snippet_max=1200,
             )
         )
-        output_files = _collect_output_file_names(raw_evidence)
-        deliverable_files = _collect_deliverable_file_names(raw_evidence)
+        output_files = _collect_deliverable_display_names(raw_evidence)
+        deliverable_files = output_files
         evidence = _drop_process_echo_bullets(raw_evidence)
         # Also collect useful thoughts
         useful_thoughts: List[str] = []
@@ -8465,6 +8510,22 @@ When ready to answer:
             "This request likely needs a narrower scope or a more specific fact to verify next."
         )
 
+    async def _chat_text_streaming(self, prompt: str, *, max_tokens: int) -> str:
+        """Collect a complete synthesis response via streaming.
+
+        Non-streaming calls against thinking models sit silent for minutes and
+        get cut by upstream gateways with 504s (observed 2026-09-19: forced
+        synthesis died with HTTPStatusError:504 after 4 attempts); streaming
+        keeps bytes flowing and survives multi-minute generations.
+        """
+        stream_fn = getattr(self.llm_client, "stream_chat_async", None)
+        if callable(stream_fn):
+            chunks: List[str] = []
+            async for chunk in stream_fn(prompt=prompt, max_tokens=max_tokens):
+                chunks.append(str(chunk))
+            return "".join(chunks)
+        return await self.llm_client.chat_async(prompt=prompt, max_tokens=max_tokens)
+
     async def _generate_fallback_from_evidence(
         self,
         user_query: str,
@@ -8541,7 +8602,7 @@ When ready to answer:
         for attempt in range(max_retries):
             try:
                 raw = await asyncio.wait_for(
-                    self.llm_client.chat_async(prompt=prompt, max_tokens=max_tokens),
+                    self._chat_text_streaming(prompt, max_tokens=max_tokens),
                     timeout=timeout,
                 )
                 cleaned = sanitize_professional_response_text(str(raw or "").strip())
@@ -8698,7 +8759,7 @@ When ready to answer:
                 synthesis_max_tokens,
             )
             raw = await asyncio.wait_for(
-                self.llm_client.chat_async(prompt=prompt, max_tokens=synthesis_max_tokens),
+                self._chat_text_streaming(prompt, max_tokens=synthesis_max_tokens),
                 timeout=synthesis_timeout,
             )
             cleaned = sanitize_professional_response_text(str(raw or "").strip())

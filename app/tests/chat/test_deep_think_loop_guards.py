@@ -24,6 +24,10 @@ SYNTH_ANSWER = "综合当前已收集的证据，本轮任务的关键结论如�
 _SANDBOX = Path("runtime") / "test_loop_guards_sandbox"
 
 
+async def _noop_tool_executor(_name: str, _params: dict):
+    return {"success": True}
+
+
 @pytest.fixture()
 def deliverable_file():
     sandbox = _SANDBOX / "deliverables" / "latest" / "chart"
@@ -41,6 +45,7 @@ class _LoopLLM:
         self._responses = responses
         self._index = 0
         self.calls: list[list[dict]] = []
+        self.chat_async_called = False
 
     async def stream_chat_with_tools_async(self, **kwargs):  # type: ignore[override]
         messages = kwargs.get("messages") or []
@@ -51,8 +56,14 @@ class _LoopLLM:
         self._index += 1
         return value
 
+    async def stream_chat_async(self, **kwargs):  # type: ignore[override]
+        # synthesis path must stream (non-streaming gets 504'd by upstream)
+        half = len(SYNTH_ANSWER) // 2
+        yield SYNTH_ANSWER[:half]
+        yield SYNTH_ANSWER[half:]
+
     async def chat_async(self, **kwargs):  # type: ignore[override]
-        _ = kwargs
+        self.chat_async_called = True
         return SYNTH_ANSWER
 
 
@@ -101,6 +112,8 @@ def test_no_progress_endgame_breaks_after_verified_deliverable(deliverable_file)
     result = asyncio.run(agent.think("create the overview figure"))
 
     assert result.final_answer == SYNTH_ANSWER
+    # synthesis must go through streaming — non-streaming gets 504'd upstream
+    assert not llm.chat_async_called
     # 3 producing steps + break streak (default 14) -> must stop << 40
     assert result.total_iterations <= 18
     text = _all_message_text(llm)
@@ -135,8 +148,8 @@ def test_failure_signature_trap_warns_at_three_and_breaks_at_five() -> None:
 
     result = asyncio.run(agent.think("run task 3"))
 
-    # the run must close with a usable answer — either the forced synthesis or
-    # the pre-existing blocked-tool answer that fires on terminal tool errors
+    # terminal tool errors route to the pre-existing blocked-tool answer,
+    # which fires before forced synthesis — accept either close
     assert result.final_answer.strip()
     assert result.final_answer == SYNTH_ANSWER or "target_task_not_atomic" in result.final_answer
     # break at the 5th identical failure, not at the 30-iteration cap
@@ -202,3 +215,35 @@ def test_healthy_run_sees_no_guard_nudges(deliverable_file) -> None:
     assert "same failure" not in text
     assert "without producing any deliverable" not in text
     assert "No new deliverable" not in text
+
+
+def test_deliverable_display_names_exclude_inputs_and_logs() -> None:
+    from app.services.deep_think_agent import _collect_deliverable_display_names
+
+    evidence = (
+        "- 文件读取 (数据体检.md)：数据源：uploads/37d08f2f56cd______.xlsx ，工作表 分析用数据\n"
+        "- 已写入文件：results/profile/data_audit_and_research_directions.md (9748 B)\n"
+        "- 终端输出：run_20260919_072353_960198_3718d9d9_replace_log.txt written\n"
+    )
+    names = _collect_deliverable_display_names(evidence)
+    assert names == ["data_audit_and_research_directions.md"]
+
+
+def test_humanizer_strips_embedded_cli_protocol_json() -> None:
+    agent = DeepThinkAgent(
+        llm_client=_LoopLLM([]),
+        available_tools=["code_executor"],
+        tool_executor=_noop_tool_executor,
+    )
+    noisy_stdout = (
+        '[{"type":"system","subtype":"init","uuid":"5f0d4824-cd69-568b-8706-799f58187604",'
+        '"session_id":"5f0d4824","cwd":"/app/runtime/session_x","tools":["computer_use_bring_to_front"]}]'
+        "\n"
+        "analysis finished, 30 distinct rows"
+    )
+    humanized = agent._humanize_single_tool_result(
+        "code_executor",
+        {"success": True, "stdout": noisy_stdout, "artifact_paths": ["/app/runtime/s/results/out.csv"]},
+    )
+    assert "subtype" not in humanized
+    assert "analysis finished" in humanized
