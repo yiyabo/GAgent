@@ -299,6 +299,19 @@ def extract_artifact_gallery_from_result(
                 origin="artifact",
             )
 
+    produced_files = result.get("produced_files")
+    if isinstance(produced_files, list):
+        for item in produced_files[:40]:
+            _append_candidate_item(
+                collected,
+                item,
+                session_id=session_id,
+                source_tool=source_tool,
+                tracking_id=tracking_id,
+                created_at=created_at,
+                origin="artifact",
+            )
+
     items = result.get("items")
     if isinstance(items, list):
         for row in items[:200]:
