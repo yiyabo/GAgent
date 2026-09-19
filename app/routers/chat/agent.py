@@ -4423,11 +4423,24 @@ class StructuredChatAgent:
                         origin=artifact_meta.get("origin"),
                     )
                     if gallery_item is not None:
-                        current_turn_artifact_gallery[:] = merge_artifact_gallery(
+                        from .artifact_gallery import filter_gallery_new_images_only
+
+                        merged = merge_artifact_gallery(
                             current_turn_artifact_gallery,
                             [gallery_item],
                         )
-                        update_recent_image_artifacts(self.extra_context, [gallery_item])
+                        # Render each image exactly once per session: skip
+                        # paths already shown by earlier replies, and paths
+                        # outside this session's runtime scope.
+                        filtered = filter_gallery_new_images_only(
+                            merged,
+                            session_id=self.session_id,
+                        )
+                        if len(filtered) == len(merged):
+                            current_turn_artifact_gallery[:] = merged
+                            update_recent_image_artifacts(self.extra_context, [gallery_item])
+                        else:
+                            artifact_meta["path"] = ""
                         artifact_meta = {
                             **artifact_meta,
                             "path": gallery_item["path"],
@@ -4436,7 +4449,8 @@ class StructuredChatAgent:
                             "origin": gallery_item["origin"],
                             "tracking_id": gallery_item["tracking_id"],
                         }
-                    await queue.put({"type": "artifact", **artifact_meta})
+                        if len(filtered) == len(merged):
+                            await queue.put({"type": "artifact", **artifact_meta})
 
                 async def on_reasoning_delta(iteration: int, delta: str) -> None:
                     if not thinking_visible:
