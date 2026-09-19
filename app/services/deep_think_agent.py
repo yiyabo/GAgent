@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import time
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -156,6 +157,25 @@ def _failure_signature_break_count() -> int:
         return max(3, int(raw))
     except (TypeError, ValueError):
         return 5
+
+
+def _time_budget_nudge_seconds() -> int:
+    # Iteration-based endgames cannot bound wall-clock time: one nested
+    # qwen-code CLI call takes 6-8 minutes, so 14 "iterations" can exceed an
+    # hour. Execute-tier runs get a hard wall-clock budget.
+    raw = os.getenv("DEEP_THINK_TIME_BUDGET_NUDGE", "600")
+    try:
+        return max(60, int(raw))
+    except (TypeError, ValueError):
+        return 600
+
+
+def _time_budget_break_seconds() -> int:
+    raw = os.getenv("DEEP_THINK_TIME_BUDGET_BREAK", "900")
+    try:
+        return max(120, int(raw))
+    except (TypeError, ValueError):
+        return 900
 
 
 def _default_synthesis_max_tokens() -> int:
@@ -4440,6 +4460,8 @@ class DeepThinkAgent:
             "failure_sig_warned": set(),
             "last_progress_iteration": 0,
             "no_progress_nudge_sent": False,
+            "time_nudge_sent": False,
+            "started_at": time.monotonic(),
         }
 
         logger.info("[DEEP_THINK_NATIVE] Starting for: %s", user_query[:50])
@@ -6590,6 +6612,35 @@ Respond with ONLY a JSON object:
                 )
 
         if self._loop_guard_endgame_armed():
+            elapsed = time.monotonic() - float(guard_state["started_at"])
+            if elapsed >= _time_budget_break_seconds():
+                return (
+                    f"Stopped after {int(elapsed)}s of wall-clock time "
+                    f"(budget {_time_budget_break_seconds()}s); wrapping up with "
+                    f"{len(verified)} verified deliverable(s)."
+                )
+            if elapsed >= _time_budget_nudge_seconds() and not guard_state["time_nudge_sent"]:
+                guard_state["time_nudge_sent"] = True
+                if verified:
+                    files_list = "\n".join(f"- {p}" for p in verified[:6])
+                    content = (
+                        f"The run has used {int(elapsed)}s of wall-clock time. "
+                        f"The following deliverables already exist and are verified on disk:\n{files_list}\n"
+                        "Wrap up NOW: call submit_final_answer with what has been achieved. "
+                        "Do NOT start another heavy tool run."
+                    )
+                else:
+                    content = (
+                        f"The run has used {int(elapsed)}s of wall-clock time. "
+                        "Wrap up NOW: call submit_final_answer with the best available evidence. "
+                        "Do NOT start another heavy tool run."
+                    )
+                messages.append({"role": "user", "content": content})
+                logger.warning(
+                    "[DEEP_THINK][endgame] time-budget nudge at iteration=%s elapsed=%ss",
+                    iteration,
+                    int(elapsed),
+                )
             streak = iteration - int(guard_state["last_progress_iteration"])
             if streak >= _progress_free_nudge_streak() and not guard_state["no_progress_nudge_sent"]:
                 guard_state["no_progress_nudge_sent"] = True
@@ -6622,12 +6673,13 @@ Respond with ONLY a JSON object:
                 )
 
         logger.info(
-            "[DEEP_THINK][iter] iteration=%s tier=%s verified=%d failure_sigs=%d last_progress=%s",
+            "[DEEP_THINK][iter] iteration=%s tier=%s verified=%d failure_sigs=%d last_progress=%s elapsed=%ss",
             iteration,
             self._request_tier() or "-",
             len(verified),
             len(failure_counts),
             guard_state["last_progress_iteration"],
+            int(time.monotonic() - float(guard_state["started_at"])),
         )
         return None
 

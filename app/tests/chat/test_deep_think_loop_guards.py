@@ -247,3 +247,41 @@ def test_humanizer_strips_embedded_cli_protocol_json() -> None:
     )
     assert "subtype" not in humanized
     assert "analysis finished" in humanized
+
+
+def test_time_budget_breaks_long_tool_runs(monkeypatch) -> None:
+    """Nested CLI tool calls take minutes each; the endgame must bound the run
+    by wall-clock time, not iteration count."""
+    # env floors (60s/120s) protect production; patch the helpers directly
+    import app.services.deep_think_agent as dta
+
+    monkeypatch.setattr(dta, "_time_budget_nudge_seconds", lambda: 1)
+    monkeypatch.setattr(dta, "_time_budget_break_seconds", lambda: 2)
+
+    async def _executor(name: str, params: dict):
+        await asyncio.sleep(0.5)
+        return {"success": True, "summary": "heavy nested cli run"}
+
+    llm = _LoopLLM(
+        _tool_call_responses("code_executor", {"task_id": 3, "code": "print(1)"}, 30)
+    )
+    agent = DeepThinkAgent(
+        llm_client=llm,
+        available_tools=["code_executor"],
+        tool_executor=_executor,
+        max_iterations=30,
+        request_profile={"request_tier": "execute", "intent_type": "execute_task"},
+    )
+
+    result = asyncio.run(agent.think("analyze the graph"))
+
+    assert result.final_answer == SYNTH_ANSWER
+    assert not llm.chat_async_called
+    # 0.5s per cycle against a 2s budget: must break within a handful of cycles
+    assert result.total_iterations <= 8
+    text = _all_message_text(llm)
+    assert "wall-clock time" in text
+    assert any(
+        step.self_correction and "wall-clock" in step.self_correction
+        for step in result.thinking_steps
+    )
