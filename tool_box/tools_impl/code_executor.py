@@ -2039,6 +2039,17 @@ def _build_qwen_code_subprocess_env(model_provider: Optional[Dict] = None) -> Di
     """
     env_map = dict(os.environ)
 
+    # pi shim: when the shim dir exists, `qwen` resolves to the pi translator
+    # (data/tools/pi-shim/qwen); PI_SHIM_DISABLED=1 inside the shim restores
+    # the real qwen binary. Proxy vars are stripped — the stale localhost
+    # proxy breaks pi's API connection and nothing else uses them.
+    pi_shim_dir = os.getenv("PI_SHIM_DIR", "/app/data/tools/pi-shim")
+    if os.path.isdir(pi_shim_dir):
+        env_map["PATH"] = pi_shim_dir + os.pathsep + env_map.get("PATH", "")
+    for _proxy_key in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy",
+                       "ALL_PROXY", "all_proxy"):
+        env_map.pop(_proxy_key, None)
+
     conda_prefix = os.environ.get("CONDA_PREFIX", "")
     if conda_prefix:
         conda_bin = os.path.join(conda_prefix, "bin")
