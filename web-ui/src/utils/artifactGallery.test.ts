@@ -93,4 +93,15 @@ describe('resolveArtifactGalleryItemSrc', () => {
     expect(resolved).toContain('deliverables%2Flatest%2Fimage_tabular%2Fkg%2Foverview.png');
     expect(resolved).not.toContain('/deliverables/file');
   });
+
+  it('serves results-prefixed deliverable paths through the session file API', () => {
+    const resolved = resolveArtifactGalleryItemSrc(
+      { path: 'results/kg_analysis/panels.png', origin: 'deliverable' },
+      'session-demo',
+    );
+
+    expect(resolved).toContain('/artifacts/sessions/session-demo/file?path=');
+    expect(resolved).toContain('results%2Fkg_analysis%2Fpanels.png');
+    expect(resolved).not.toContain('/deliverables/file');
+  });
 });
