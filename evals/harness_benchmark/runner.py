@@ -87,10 +87,11 @@ def with_dir_and_env(path: str, env_updates: dict):
 def parse_tokens(stdout: str) -> int | None:
     hits = re.findall(r'"total_tokens":\s*(\d+)', stdout)
     hits = hits or re.findall(r'"totalTokens":\s*(\d+)', stdout)
-    return sum(int(x) for x in hits) if hits else None
+    # usage fields repeat per event and are cumulative — the last one wins
+    return int(hits[-1]) if hits else None
 
 
-def run_task(harness: str, pi_home: Path | None, env: dict, ws: Path) -> dict:
+def run_task(harness: str, pi_home: Path | None, env: dict, task_dir: Path, ws: Path) -> dict:
     if harness == "pi":
         env_updates = {**env, "HOME": str(pi_home)}
     else:
@@ -118,6 +119,9 @@ def run_task(harness: str, pi_home: Path | None, env: dict, ws: Path) -> dict:
                 "error": f"timeout after {TIMEOUT_PER_TASK}s"}
     seconds = round(time.monotonic() - t0, 1)
 
+    # make the checker available only after the harness finished, so the
+    # agent under test never sees the grading logic
+    shutil.copy(task_dir / "check.py", ws / "check.py")
     try:
         chk = subprocess.run(["python3", "check.py"], capture_output=True,
                              text=True, timeout=60, shell=False)
@@ -162,7 +166,7 @@ def main() -> None:
             for fixture in sorted(fixtures.iterdir()):
                 shutil.copy(fixture, ws / fixture.name)
         print(f"[{args.harness}] {task_dir.name} running...", flush=True)
-        r = run_task(args.harness, pi_home, env, ws)
+        r = run_task(args.harness, pi_home, env, task_dir, ws)
         r["task"] = task_dir.name
         results.append(r)
         print(f"[{args.harness}] {task_dir.name} ok={r['ok']} {r['seconds']}s tokens={r['tokens']}", flush=True)
