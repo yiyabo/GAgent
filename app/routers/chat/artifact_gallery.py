@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 import re
 from datetime import datetime, timezone
@@ -10,6 +12,8 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from app.services.upload_storage import get_session_root_dir
 from .subject_identity import _workspace_root
+
+logger = logging.getLogger(__name__)
 
 _IMAGE_EXT_RE = re.compile(r"\.(png|jpe?g|gif|webp|svg)$", re.IGNORECASE)
 _DEFAULT_GALLERY_LIMIT = 12
@@ -501,4 +505,72 @@ def _normalize_session_relative_path_any(path: str, *, session_id: Optional[str]
             return None
         return str(relative).replace("\\", "/")
     return raw.lstrip("/")
+
+
+def _path_in_session_scope(path: str, session_id: Optional[str]) -> bool:
+    """Absolute paths must sit inside this session's runtime scope; relative
+    paths are session-relative by construction."""
+    if not path.startswith("/"):
+        return True
+    if not session_id:
+        return True
+    runtime_root = os.getenv("APP_RUNTIME_ROOT", "/app/runtime").rstrip("/")
+    session_dir = f"{runtime_root}/{session_id}"
+    workspace_dir = f"{runtime_root}/workspaces/{session_id}"
+    return path.startswith(session_dir + "/") or path.startswith(workspace_dir + "/")
+
+
+def filter_gallery_new_images_only(
+    gallery: Optional[Sequence[Dict[str, Any]]],
+    *,
+    session_id: Optional[str],
+) -> List[Dict[str, Any]]:
+    """Keep an image in the gallery of the message that FIRST produced it.
+
+    Two rules, per product decision: an image renders exactly once in a
+    session — on the reply that created it — and gallery entries must be
+    scoped to this session's own runtime directory (delegated runs often
+    re-verify files, and global results dirs of other sessions must never
+    leak into the chat).
+    """
+    if not gallery:
+        return []
+    shown: set = set()
+    if session_id:
+        try:
+            from app.database_pool import get_db
+
+            with get_db() as conn:
+                rows = conn.execute(
+                    "SELECT metadata FROM chat_messages "
+                    "WHERE session_id=? AND role='assistant' ORDER BY id DESC LIMIT 200",
+                    (session_id,),
+                ).fetchall()
+            for row in rows:
+                try:
+                    md = json.loads(row[0] or "{}")
+                except Exception:
+                    continue
+                if not isinstance(md, dict):
+                    continue
+                for item in md.get("artifact_gallery") or []:
+                    if isinstance(item, dict):
+                        path = str(item.get("path") or "").strip()
+                        if path:
+                            shown.add(path)
+        except Exception:
+            logger.warning("gallery history lookup failed; dedupe skipped", exc_info=True)
+
+    kept: List[Dict[str, Any]] = []
+    for item in gallery:
+        if not isinstance(item, dict):
+            continue
+        path = str(item.get("path") or "").strip()
+        if not path or path in shown:
+            continue
+        if not _path_in_session_scope(path, session_id):
+            continue
+        shown.add(path)
+        kept.append(item)
+    return kept
 

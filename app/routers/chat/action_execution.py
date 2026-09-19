@@ -2367,6 +2367,13 @@ async def _execute_action_run(run_id: str) -> None:
                 tracking_id=run_id,
             )
             if artifact_gallery_payload:
+                from .artifact_gallery import filter_gallery_new_images_only
+
+                artifact_gallery_payload = filter_gallery_new_images_only(
+                    artifact_gallery_payload,
+                    session_id=record.get("session_id"),
+                )
+            if artifact_gallery_payload:
                 result_dict["artifact_gallery"] = artifact_gallery_payload
             artifact_files_payload = _build_artifact_files_from_tool_results(
                 tool_results_payload,
