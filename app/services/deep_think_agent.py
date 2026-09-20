@@ -247,6 +247,105 @@ _GUARD_PRODUCTIVE_DIR_RE = re.compile(r"(?:^|/)(?:deliverables|results)/", re.IG
 _GUARD_PATH_NORMALIZE_RE = re.compile(r"/[^\s,;:'\")\]]+")
 _GUARD_DIGIT_RE = re.compile(r"\d+")
 
+_INLINE_IMAGE_EXT_RE = re.compile(r"\.(?:png|jpe?g|gif|webp|svg)$", re.IGNORECASE)
+_PRODUCTIVE_SEGMENT_RE = re.compile(r"(?:deliverables|results)/", re.IGNORECASE)
+
+
+def _ensure_inline_images(text: str, image_relpaths: List[str]) -> str:
+    """Guarantee produced images render inline in the final answer.
+
+    The frontend resolves a relative image path against the session artifact
+    endpoint, so `![caption](deliverables/x.png)` renders the actual figure.
+    For each produced image: keep an existing inline reference, upgrade a
+    plain markdown link, convert a bare filename line, or — only when no
+    anchor exists at all — append the image at the end.
+    """
+    out = text or ""
+    for rel in image_relpaths or []:
+        rel = str(rel or "").strip().lstrip("/")
+        if not rel or ".." in rel or "\\" in rel:
+            continue
+        name = rel.rsplit("/", 1)[-1]
+        if re.search(r"!\[[^\]\n]*\]\([^)\n]*" + re.escape(name) + r"[^)\n]*\)", out):
+            continue
+        link_match = re.search(r"\[([^\]\n]*)\]\(([^)\n]*" + re.escape(name) + r"[^)\n]*)\)", out)
+        if link_match:
+            caption = link_match.group(1) or name
+            out = out[: link_match.start()] + f"![{caption}]({rel})" + out[link_match.end() :]
+            continue
+        bare_match = re.search(
+            r"(?m)^(?P<prefix>\s*(?:[-*]\s+)?)`?" + re.escape(name) + r"`?\s*$",
+            out,
+        )
+        if bare_match:
+            out = (
+                out[: bare_match.start()]
+                + f"{bare_match.group('prefix')}![{name}]({rel})"
+                + out[bare_match.end() :]
+            )
+            continue
+        out = out.rstrip() + f"\n\n![{name}]({rel})\n"
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Declarative acceptance (v1): derive the deliverable types the user asked
+# for and let the loop guard judge completion, not just act as a fuse.
+# ---------------------------------------------------------------------------
+
+_EXPECT_IMAGE_RE = re.compile(
+    r"(饼图|柱状图|条形图|折线图|散点图|直方图|热力图|箱线图|流程图|示意图|曲线图|图表"
+    r"|plot|chart|figure|histogram|scatter|heatmap|bar\s?chart|pie\s?chart|line\s?chart|可视化|绘制|画图|画一)",
+    re.IGNORECASE,
+)
+_EXPECT_DATA_RE = re.compile(
+    r"(csv|tsv|excel|xlsx|xls|spreadsheet|表格文件|数据表)",
+    re.IGNORECASE,
+)
+_EXPECT_DOC_RE = re.compile(
+    r"(报告|文档|docx|pdf|markdown|word文档|总结报告|report)",
+    re.IGNORECASE,
+)
+_EXPECT_KIND_EXTS = {
+    "image": (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg"),
+    "data": (".csv", ".tsv", ".xlsx", ".xls"),
+    "document": (".md", ".markdown", ".pdf", ".docx", ".html", ".htm", ".txt"),
+}
+_EXPECT_KIND_LABEL = {
+    "image": {"zh": "图片", "en": "image/figure"},
+    "data": {"zh": "数据表（csv/excel）", "en": "data table (csv/excel)"},
+    "document": {"zh": "文档（md/pdf 等）", "en": "document (md/pdf etc.)"},
+}
+
+
+def _derive_expected_outputs(query: str) -> List[str]:
+    """Heuristically derive required deliverable types from the user request.
+
+    Conservative: no clear file-type intent -> no expectations, and the loop
+    guard keeps its current fuse-only behaviour.
+    """
+    q = str(query or "")
+    expected: List[str] = []
+    if _EXPECT_IMAGE_RE.search(q):
+        expected.append("image")
+    if _EXPECT_DATA_RE.search(q):
+        expected.append("data")
+    if _EXPECT_DOC_RE.search(q):
+        expected.append("document")
+    return expected
+
+
+def _missing_expectations(expected: List[str], verified_paths: List[str]) -> List[str]:
+    """Expected kinds with no verified on-disk deliverable of a matching type."""
+    missing: List[str] = []
+    for kind in expected or []:
+        exts = _EXPECT_KIND_EXTS.get(kind)
+        if not exts:
+            continue
+        if not any(str(p).lower().endswith(exts) for p in verified_paths or []):
+            missing.append(kind)
+    return missing
+
 
 def _guard_json_payload(value: Any) -> Optional[Dict[str, Any]]:
     if isinstance(value, dict):
@@ -4462,7 +4561,16 @@ class DeepThinkAgent:
             "no_progress_nudge_sent": False,
             "time_nudge_sent": False,
             "started_at": time.monotonic(),
+            "expected_outputs": _derive_expected_outputs(user_query),
         }
+        self._produced_deliverable_paths = []
+        self._acceptance_missing: List[str] = []
+        self._expected_outputs_current = list(loop_guard_state["expected_outputs"])
+        if loop_guard_state["expected_outputs"]:
+            logger.info(
+                "[DEEP_THINK][acceptance] expected deliverable types: %s",
+                ",".join(loop_guard_state["expected_outputs"]),
+            )
 
         logger.info("[DEEP_THINK_NATIVE] Starting for: %s", user_query[:50])
 
@@ -4747,6 +4855,17 @@ class DeepThinkAgent:
 
                     if identical_tool_cycle_count >= self.MAX_IDENTICAL_TOOL_CALL_CYCLES:
                         repeated_cycles = identical_tool_cycle_count + 1
+                        rep_missing = _missing_expectations(
+                            loop_guard_state.get("expected_outputs") or [],
+                            loop_guard_state.get("verified_deliverables") or [],
+                        )
+                        if rep_missing:
+                            loop_guard_state["missing_expectations"] = rep_missing
+                            self._acceptance_missing = list(rep_missing)
+                            logger.warning(
+                                "[DEEP_THINK][acceptance] identical-cycle stop with missing deliverable types: %s",
+                                ",".join(rep_missing),
+                            )
                         current_step.status = "done"
                         current_step.self_correction = (
                             "Stopped repeated identical tool polling to avoid an unproductive loop."
@@ -4757,6 +4876,12 @@ class DeepThinkAgent:
                             tool_results=tool_results,
                             repeated_cycles=repeated_cycles,
                         )
+                        if rep_missing:
+                            final_answer += (
+                                "\n\nNote: the requested deliverable type(s) are still missing: "
+                                + ", ".join(rep_missing)
+                                + "."
+                            )
                         confidence = max(
                             confidence,
                             0.75 if self._contains_tool(tool_results, "phagescope") else 0.5,
@@ -5999,6 +6124,16 @@ class DeepThinkAgent:
 
                     if identical_tool_cycle_count >= self.MAX_IDENTICAL_TOOL_CALL_CYCLES:
                         repeated_cycles = identical_tool_cycle_count + 1
+                        rep_missing = _missing_expectations(
+                            getattr(self, "_expected_outputs_current", None) or [],
+                            getattr(self, "_produced_deliverable_paths", None) or [],
+                        )
+                        if rep_missing:
+                            self._acceptance_missing = list(rep_missing)
+                            logger.warning(
+                                "[DEEP_THINK][acceptance] identical-cycle stop with missing deliverable types: %s",
+                                ",".join(rep_missing),
+                            )
                         current_step.status = "done"
                         current_step.self_correction = (
                             "Stopped repeated identical tool polling to avoid an unproductive loop."
@@ -6009,6 +6144,12 @@ class DeepThinkAgent:
                             tool_results=cycle_results,
                             repeated_cycles=repeated_cycles,
                         )
+                        if rep_missing:
+                            final_answer += (
+                                "\n\nNote: the requested deliverable type(s) are still missing: "
+                                + ", ".join(rep_missing)
+                                + "."
+                            )
                         confidence = max(
                             confidence,
                             0.75 if str(tool_name or "").strip().lower() == "phagescope" else 0.5,
@@ -6520,6 +6661,38 @@ Respond with ONLY a JSON object:
                 continue
         return None
 
+    def _collect_inline_image_relpaths(self, limit: int = 8) -> List[str]:
+        """Session-relative paths of image deliverables produced in this run.
+
+        Fed by the loop-guard mirror of verified deliverables; only images
+        that verify on disk under the session's runtime dir are returned, so
+        the frontend /file endpoint can actually serve them.
+        """
+        runtime_root = str(os.getenv("APP_RUNTIME_ROOT") or "/app/runtime").strip()
+        session_id = str(self.request_profile.get("session_id") or "").strip()
+        collected: List[str] = []
+        for candidate in getattr(self, "_produced_deliverable_paths", None) or []:
+            p = str(candidate or "").strip()
+            if not p or not _INLINE_IMAGE_EXT_RE.search(p):
+                continue
+            seg = _PRODUCTIVE_SEGMENT_RE.search(p)
+            if not seg:
+                continue
+            rel = p[seg.start() :].lstrip("/")
+            if not rel or rel in collected:
+                continue
+            if session_id:
+                on_disk = os.path.join(runtime_root, session_id, rel)
+                try:
+                    if not (os.path.isfile(on_disk) and os.path.getsize(on_disk) > 0):
+                        continue
+                except OSError:
+                    continue
+            collected.append(rel)
+            if len(collected) >= limit:
+                break
+        return collected
+
     def _failure_signature_for_result(self, item: Dict[str, Any]) -> Optional[str]:
         """Stable signature for a failed tool result (tool + normalized error)."""
         payload = item.get("tool_result")
@@ -6575,6 +6748,13 @@ Respond with ONLY a JSON object:
                 new_verified.append(confirmed)
         if new_verified:
             verified.extend(new_verified)
+            produced = getattr(self, "_produced_deliverable_paths", None)
+            if produced is None:
+                produced = []
+                self._produced_deliverable_paths = produced
+            for p in new_verified:
+                if p not in produced:
+                    produced.append(p)
             guard_state["last_progress_iteration"] = iteration
             logger.info(
                 "[DEEP_THINK][progress] iteration=%s new_deliverables=%s verified_total=%d",
@@ -6606,14 +6786,24 @@ Respond with ONLY a JSON object:
                     signature,
                 )
             if count >= _failure_signature_break_count():
+                trap_missing = _missing_expectations(
+                    guard_state.get("expected_outputs") or [], verified
+                )
+                if trap_missing:
+                    guard_state["missing_expectations"] = trap_missing
+                    self._acceptance_missing = list(trap_missing)
                 return (
                     f"Stopped after {count} repetitions of the same failure ({signature}); "
                     f"wrapping up with {len(verified)} verified deliverable(s)."
                 )
 
         if self._loop_guard_endgame_armed():
+            missing = _missing_expectations(guard_state.get("expected_outputs") or [], verified)
             elapsed = time.monotonic() - float(guard_state["started_at"])
             if elapsed >= _time_budget_break_seconds():
+                if missing:
+                    guard_state["missing_expectations"] = missing
+                    self._acceptance_missing = list(missing)
                 return (
                     f"Stopped after {int(elapsed)}s of wall-clock time "
                     f"(budget {_time_budget_break_seconds()}s); wrapping up with "
@@ -6667,6 +6857,38 @@ Respond with ONLY a JSON object:
                     len(verified),
                 )
             if streak >= _progress_free_break_streak():
+                if missing and not guard_state.get("acceptance_extend_used"):
+                    # Declarative acceptance: the run has not delivered what was
+                    # asked for — grant one short extension instead of breaking.
+                    guard_state["acceptance_extend_used"] = True
+                    guard_state["last_progress_iteration"] = iteration - (
+                        _progress_free_break_streak() - 4
+                    )
+                    labels = ", ".join(missing)
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            f"The run is NOT complete: required deliverable type(s) still missing: {labels}. "
+                            "Produce them NOW as real files under deliverables/ or results/ — "
+                            "do not re-probe, do not describe them in text only. "
+                            "If (and only if) producing them is genuinely impossible, call "
+                            "submit_final_answer and state explicitly which deliverable is missing and why."
+                        ),
+                    })
+                    logger.warning(
+                        "[DEEP_THINK][acceptance] iteration=%s missing=%s -> extension granted",
+                        iteration,
+                        labels,
+                    )
+                    return None
+                if missing:
+                    guard_state["missing_expectations"] = missing
+                    self._acceptance_missing = list(missing)
+                    logger.warning(
+                        "[DEEP_THINK][acceptance] iteration=%s missing=%s -> break with gaps",
+                        iteration,
+                        ",".join(missing),
+                    )
                 return (
                     f"Stopped after {streak} steps without new deliverables; "
                     f"wrapping up with {len(verified)} verified deliverable(s)."
@@ -8527,23 +8749,28 @@ When ready to answer:
                 else:
                     header = "Here is what was observed during execution:\n\n"
                     footer = "\n\nFor a more detailed analysis, please specify what you'd like to examine."
-            return header + evidence.strip() + footer
+            return _ensure_inline_images(
+                header + evidence.strip() + footer,
+                self._collect_inline_image_relpaths(),
+            )
 
         if deliverable_files:
             # Evidence reduced to process echoes, but the run did produce files —
             # report the deliverables cleanly instead of dumping debris.
             names = "\n".join(f"- {name}" for name in deliverable_files)
             if language == "zh":
-                return (
+                text = (
                     "本轮执行已生成以下交付文件（完整内容见右侧 Artifacts 面板）：\n"
                     f"{names}\n\n"
                     "如需调整内容或导出其他格式，请告诉我。"
                 )
-            return (
-                "This run produced the following deliverable files (see the Artifacts panel for full content):\n"
-                f"{names}\n\n"
-                "Let me know if you want changes or a different export format."
-            )
+            else:
+                text = (
+                    "This run produced the following deliverable files (see the Artifacts panel for full content):\n"
+                    f"{names}\n\n"
+                    "Let me know if you want changes or a different export format."
+                )
+            return _ensure_inline_images(text, self._collect_inline_image_relpaths())
 
         if useful_thoughts:
             combined = "\n\n".join(useful_thoughts)
@@ -8660,6 +8887,7 @@ When ready to answer:
                 cleaned = sanitize_professional_response_text(str(raw or "").strip())
                 if len(cleaned) < 20:
                     raise ValueError(f"fallback synthesis too short ({len(cleaned)} chars)")
+                cleaned = _ensure_inline_images(cleaned, self._collect_inline_image_relpaths())
                 return cleaned
             except Exception as exc:
                 last_exc = exc
@@ -8781,6 +9009,38 @@ When ready to answer:
                         "\n- Do not recap prior project milestones, older test rounds, progress summaries, or next-step menus unless the user explicitly asked."
                     )
 
+            produced_images = self._collect_inline_image_relpaths()
+            if produced_images:
+                listing = "\n".join(f"- {p}" for p in produced_images)
+                if language == "zh":
+                    instruction += (
+                        "\n- 本轮已产出的图片文件（相对路径）：\n" + listing +
+                        "\n  在答案相应位置用 `![描述](相对路径)` 把图片内联展示，不要只在文字里提文件名。"
+                    )
+                else:
+                    instruction += (
+                        "\n- Image files produced in this run (relative paths):\n" + listing +
+                        "\n  Embed each image inline at the relevant position with `![caption](relative-path)`; do not merely name the files."
+                    )
+            acceptance_missing = [m for m in (getattr(self, "_acceptance_missing", None) or []) if m]
+            if acceptance_missing:
+                if language == "zh":
+                    labels_zh = "、".join(
+                        _EXPECT_KIND_LABEL.get(m, {}).get("zh", m) for m in acceptance_missing
+                    )
+                    instruction += (
+                        f"\n- 本轮未能产出的交付物类型：{labels_zh}。"
+                        "必须在答案开头明确说明哪些没有完成以及原因，不得假装全部完成。"
+                    )
+                else:
+                    labels_en = ", ".join(
+                        _EXPECT_KIND_LABEL.get(m, {}).get("en", m) for m in acceptance_missing
+                    )
+                    instruction += (
+                        f"\n- Deliverable type(s) NOT produced this run: {labels_en}. "
+                        "State this explicitly at the top of the answer with the reason; do not pretend everything completed."
+                    )
+
             prompt = (
                 f"{instruction}\n\n"
                 f"User question: {uq[:2000]}\n\n"
@@ -8823,6 +9083,7 @@ When ready to answer:
                     outcome=structured_plan_outcome,
                     user_query=user_query,
                 )
+            cleaned = _ensure_inline_images(cleaned, self._collect_inline_image_relpaths())
             logger.info("[DEEP_THINK_NATIVE] Forced synthesis succeeded (%d chars)", len(cleaned))
             return cleaned
         except Exception as exc:

@@ -111,7 +111,9 @@ def test_no_progress_endgame_breaks_after_verified_deliverable(deliverable_file)
 
     result = asyncio.run(agent.think("create the overview figure"))
 
-    assert result.final_answer == SYNTH_ANSWER
+    # synthesis text is preserved and the produced image is inlined after it
+    assert result.final_answer.startswith(SYNTH_ANSWER)
+    assert "![overview.png](deliverables/latest/chart/overview.png)" in result.final_answer
     # synthesis must go through streaming — non-streaming gets 504'd upstream
     assert not llm.chat_async_called
     # 3 producing steps + break streak (default 14) -> must stop << 40
@@ -285,3 +287,163 @@ def test_time_budget_breaks_long_tool_runs(monkeypatch) -> None:
         step.self_correction and "wall-clock" in step.self_correction
         for step in result.thinking_steps
     )
+
+
+class TestInlineImages:
+    """_ensure_inline_images: produced images render inline in the reply."""
+
+    def test_existing_inline_reference_kept(self) -> None:
+        from app.services.deep_think_agent import _ensure_inline_images
+
+        text = "见图：\n\n![饼图](deliverables/score_pie.png)\n\n说明。"
+        out = _ensure_inline_images(text, ["deliverables/score_pie.png"])
+        assert out == text
+
+    def test_plain_link_upgraded(self) -> None:
+        from app.services.deep_think_agent import _ensure_inline_images
+
+        text = "结果见 [score_pie.png](deliverables/score_pie.png) 文件。"
+        out = _ensure_inline_images(text, ["deliverables/score_pie.png"])
+        assert "![score_pie.png](deliverables/score_pie.png)" in out
+
+    def test_bare_filename_line_converted_at_its_position(self) -> None:
+        from app.services.deep_think_agent import _ensure_inline_images
+
+        text = "本轮已生成以下交付文件：\n- score_pie.png\n- report.csv\n\n如需调整请告诉我。"
+        out = _ensure_inline_images(text, ["deliverables/score_pie.png"])
+        assert "- ![score_pie.png](deliverables/score_pie.png)" in out
+        # 图片出现在原来文件名的位置（report.csv 行之前），不是末尾
+        assert out.index("![score_pie.png]") < out.index("- report.csv")
+        assert out.rstrip().endswith("如需调整请告诉我。")
+
+    def test_no_anchor_appends_as_last_resort(self) -> None:
+        from app.services.deep_think_agent import _ensure_inline_images
+
+        text = "分析完成，结论如下。"
+        out = _ensure_inline_images(text, ["deliverables/score_pie.png"])
+        assert out.startswith(text)
+        assert "![score_pie.png](deliverables/score_pie.png)" in out
+
+    def test_unsafe_and_missing_values_skipped(self) -> None:
+        from app.services.deep_think_agent import _ensure_inline_images
+
+        text = "done"
+        out = _ensure_inline_images(text, ["", "../x.png", "a\\b.png", None])
+        assert out == text
+
+    def test_collect_relpaths_from_guard_mirror(self, monkeypatch) -> None:
+        sandbox = _SANDBOX.resolve()
+        session_dir = sandbox / "testsess" / "deliverables"
+        session_dir.mkdir(parents=True, exist_ok=True)
+        png = session_dir / "score_pie.png"
+        png.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 64)
+        csv = session_dir / "report.csv"
+        csv.write_text("a,b\n1,2\n")
+        monkeypatch.setenv("APP_RUNTIME_ROOT", str(sandbox))
+        try:
+            agent = DeepThinkAgent(
+                llm_client=_LoopLLM([]),
+                available_tools=[],
+                tool_executor=_noop_tool_executor,
+                max_iterations=1,
+                request_profile={"session_id": "testsess"},
+            )
+            agent._produced_deliverable_paths = [
+                str(png),
+                str(csv),
+                str(session_dir / "missing.png"),
+                "raw_files/tmp/run/scratch.png",
+            ]
+            assert agent._collect_inline_image_relpaths() == ["deliverables/score_pie.png"]
+        finally:
+            shutil.rmtree(_SANDBOX, ignore_errors=True)
+
+
+class TestDeclarativeAcceptance:
+    """expected_outputs: the guard judges completion, not just pathologies."""
+
+    def test_derive_expected_outputs(self) -> None:
+        from app.services.deep_think_agent import _derive_expected_outputs, _missing_expectations
+
+        assert _derive_expected_outputs("画一张得分饼图") == ["image"]
+        assert _derive_expected_outputs("把结果导出成 csv") == ["data"]
+        assert _derive_expected_outputs("写一份 markdown 报告") == ["document"]
+        assert _derive_expected_outputs("plot a chart and save the csv") == ["image", "data"]
+        assert _derive_expected_outputs("分析一下这些数据说明了什么") == []
+        assert _missing_expectations(["image", "data"], ["/x/a.png"]) == ["data"]
+        assert _missing_expectations(["image"], ["/x/a.png"]) == []
+        assert _missing_expectations([], []) == []
+
+    def test_extension_granted_then_break_with_gaps(self) -> None:
+        """Asked for a figure but only a csv gets produced: the guard must not
+        break at the normal streak — it extends once, then closes with the gap
+        recorded for the final answer."""
+        csv_dir = _SANDBOX / "deliverables" / "latest"
+        csv_dir.mkdir(parents=True, exist_ok=True)
+        csv_path = (csv_dir / "scores.csv").resolve()
+        csv_path.write_text("name,score\na,1\n")
+
+        async def _executor(name: str, params: dict):
+            return {"success": True, "artifact_paths": [str(csv_path)]}
+
+        # vary params per cycle so the identical-cycle breaker stays out of the
+        # way and the no-progress path exercises the acceptance extension
+        responses = [
+            NativeStreamResult(
+                content=f"step {i}",
+                tool_calls=[
+                    NativeToolCall(
+                        id=f"tc{i}",
+                        name="file_operations",
+                        arguments={"operation": "read", "path": f"/x/{i}"},
+                    )
+                ],
+            )
+            for i in range(40)
+        ]
+        llm = _LoopLLM(responses)
+        agent = DeepThinkAgent(
+            llm_client=llm,
+            available_tools=["file_operations"],
+            tool_executor=_executor,
+            max_iterations=40,
+            request_profile={"request_tier": "execute", "intent_type": "execute_task"},
+        )
+        try:
+            result = asyncio.run(agent.think("画一张得分饼图"))
+        finally:
+            shutil.rmtree(_SANDBOX, ignore_errors=True)
+
+        # extension: survived past the normal break streak, then closed shortly after
+        assert result.total_iterations >= 15
+        assert result.total_iterations <= 22
+        text = _all_message_text(llm)
+        assert "required deliverable type(s) still missing: image" in text
+        assert agent._acceptance_missing == ["image"]
+        assert any(
+            step.self_correction and "without new deliverables" in step.self_correction
+            for step in result.thinking_steps
+        )
+
+    def test_satisfied_expectations_see_no_extension(self, deliverable_file) -> None:
+        """Asked for a figure and it IS produced: normal break, zero gap."""
+
+        async def _executor(name: str, params: dict):
+            return {"success": True, "artifact_paths": [str(deliverable_file)]}
+
+        llm = _LoopLLM(
+            _tool_call_responses("file_operations", {"operation": "read", "path": "/x"}, 40)
+        )
+        agent = DeepThinkAgent(
+            llm_client=llm,
+            available_tools=["file_operations"],
+            tool_executor=_executor,
+            max_iterations=40,
+            request_profile={"request_tier": "execute", "intent_type": "execute_task"},
+        )
+        result = asyncio.run(agent.think("画一张得分饼图"))
+
+        assert result.total_iterations <= 16
+        assert agent._acceptance_missing == []
+        text = _all_message_text(llm)
+        assert "required deliverable type(s) still missing" not in text
