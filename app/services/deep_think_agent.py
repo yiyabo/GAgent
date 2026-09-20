@@ -284,6 +284,15 @@ def _ensure_inline_images(text: str, image_relpaths: List[str]) -> str:
                 + out[bare_match.end() :]
             )
             continue
+        # The filename is mentioned mid-line (backticked, inside a sentence or
+        # a composite bullet): keep the text and place the image right after
+        # the mentioning line so the figure appears where it is referenced.
+        out_lines = out.split("\n")
+        mention_idx = next((i for i, line in enumerate(out_lines) if name in line), None)
+        if mention_idx is not None:
+            out_lines[mention_idx + 1 : mention_idx + 1] = ["", f"![{name}]({rel})", ""]
+            out = "\n".join(out_lines)
+            continue
         out = out.rstrip() + f"\n\n![{name}]({rel})\n"
     return out
 
@@ -5725,6 +5734,7 @@ class DeepThinkAgent:
                 user_query=user_query,
             )
         final_answer = sanitize_professional_response_text(final_answer)
+        final_answer = _ensure_inline_images(final_answer, self._collect_inline_image_relpaths())
 
         try:
             summary = await self._generate_summary(thinking_steps, user_query)
@@ -6315,6 +6325,7 @@ Respond with ONLY a JSON object:
                 user_query=user_query,
             )
         final_answer = sanitize_professional_response_text(final_answer)
+        final_answer = _ensure_inline_images(final_answer, self._collect_inline_image_relpaths())
 
         try:
             summary = await self._generate_summary(thinking_steps, user_query)

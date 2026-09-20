@@ -211,7 +211,9 @@ def test_healthy_run_sees_no_guard_nudges(deliverable_file) -> None:
 
     result = asyncio.run(agent.think("create the figure"))
 
-    assert result.final_answer == "done"
+    # the submit path now inlines the produced image after the model's answer
+    assert result.final_answer.startswith("done")
+    assert "![overview.png](deliverables/latest/chart/overview.png)" in result.final_answer
     assert result.total_iterations <= 3
     text = _all_message_text(llm)
     assert "same failure" not in text
@@ -323,6 +325,25 @@ class TestInlineImages:
         out = _ensure_inline_images(text, ["deliverables/score_pie.png"])
         assert out.startswith(text)
         assert "![score_pie.png](deliverables/score_pie.png)" in out
+
+    def test_midline_mention_inserts_image_right_after_the_line(self) -> None:
+        """The 2026-09-20 screenshot case: filename backticked inside a
+        composite bullet — the image must appear right under that bullet, not
+        at the end of the reply."""
+        from app.services.deep_think_agent import _ensure_inline_images
+
+        text = (
+            "- 图表： `phage_trend_profile.png` / .pdf（6 面板，300 dpi）\n"
+            "- 数据表： results/phage_trend/ 下 17 个 CSV/JSONL\n"
+            "- 7 项主要产物已发布至 Deliverables"
+        )
+        out = _ensure_inline_images(text, ["deliverables/latest/image_tabular/phage_trend_profile.png"])
+        lines = out.split("\n")
+        mention_idx = next(i for i, line in enumerate(lines) if "图表" in line)
+        image_idx = next(i for i, line in enumerate(lines) if line.startswith("![phage_trend_profile.png]"))
+        table_idx = next(i for i, line in enumerate(lines) if "数据表" in line)
+        assert mention_idx < image_idx < table_idx
+        assert "![phage_trend_profile.png](deliverables/latest/image_tabular/phage_trend_profile.png)" in out
 
     def test_unsafe_and_missing_values_skipped(self) -> None:
         from app.services.deep_think_agent import _ensure_inline_images

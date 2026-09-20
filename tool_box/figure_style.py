@@ -78,6 +78,50 @@ PALETTES: Dict[str, List[str]] = {
 DEFAULT_PALETTE_NAME = "nature"
 DEFAULT_DPI = 300
 
+# Candidate CJK font files: the production images ship no system fonts at
+# all (fc-list is empty), so a font placed in the shared data dir is
+# registered with matplotlib at style time. Override with FIGURE_CJK_FONT_PATH.
+_CJK_FONT_CANDIDATES = (
+    "/app/data/fonts/NotoSansCJKsc-Regular.otf",
+    "/data/phage-agent/data/fonts/NotoSansCJKsc-Regular.otf",
+)
+_cjk_font_family_cache: Optional[str] = None
+_cjk_font_probe_done = False
+
+
+def _register_cjk_font() -> Optional[str]:
+    """Register the first available CJK font file with matplotlib.
+
+    Returns the family name to prepend to font.sans-serif, or None when no
+    CJK font file exists (labels keep the DejaVu fallback and CJK glyphs are
+    simply unsupported, as before).
+    """
+    global _cjk_font_family_cache, _cjk_font_probe_done
+    if _cjk_font_probe_done:
+        return _cjk_font_family_cache
+    _cjk_font_probe_done = True
+    candidates = []
+    env_path = str(os.getenv("FIGURE_CJK_FONT_PATH") or "").strip()
+    if env_path:
+        candidates.append(env_path)
+    candidates.extend(_CJK_FONT_CANDIDATES)
+    try:
+        from matplotlib import font_manager
+    except ImportError:
+        return None
+    for candidate in candidates:
+        try:
+            if not os.path.isfile(candidate):
+                continue
+            font_manager.fontManager.addfont(candidate)
+            family = font_manager.FontProperties(fname=candidate).get_name()
+            _cjk_font_family_cache = family
+            logger.info("Registered CJK figure font %s (%s)", family, candidate)
+            return family
+        except Exception:
+            logger.warning("Failed to register CJK figure font: %s", candidate, exc_info=True)
+    return None
+
 
 def get_palette(name: str = DEFAULT_PALETTE_NAME) -> List[str]:
     """Get color palette by name, fallback to nature."""
@@ -107,6 +151,25 @@ def apply_scientific_style(
         logger.warning("matplotlib not available; cannot apply scientific style rcParams")
         return {}
 
+    cjk_family = _register_cjk_font()
+    # The registered CJK family goes FIRST: matplotlib renders every glyph
+    # with the first family that claims it, and Latin fonts claim (but
+    # cannot draw) CJK codepoints, so trailing fallback entries never fire.
+    # Noto's Latin glyphs are clean, so text stays uniform.
+    sans_serif = ([cjk_family] if cjk_family else []) + [
+        "Arial",
+        "Helvetica",
+        "DejaVu Sans",
+        "Liberation Sans",
+        "Noto Sans CJK SC",
+        "Noto Sans CJK JP",
+        "WenQuanYi Micro Hei",
+        "PingFang SC",
+        "Microsoft YaHei",
+        "SimHei",
+        "sans-serif",
+    ]
+
     palette = get_palette(palette_name)
 
     style_dict = {
@@ -123,14 +186,7 @@ def apply_scientific_style(
 
         # Font hierarchy
         "font.family": font_family,
-        "font.sans-serif": [
-            "Arial",
-            "Helvetica",
-            "DejaVu Sans",
-            "Liberation Sans",
-            "SimHei",
-            "sans-serif",
-        ],
+        "font.sans-serif": sans_serif,
         "font.size": base_fontsize,
         "axes.titlesize": base_fontsize + 2,
         "axes.titleweight": "bold",

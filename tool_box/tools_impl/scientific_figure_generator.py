@@ -236,9 +236,34 @@ def _top_rows(rows: List[Dict[str, Any]], key: Optional[str], limit: int) -> Lis
     return sorted(rows, key=lambda row: _coerce_number(row.get(key)) or 0.0, reverse=True)[:limit]
 
 
-def _draw_bar(ax: Any, rows: List[Dict[str, Any]], panel: Dict[str, Any]) -> None:
+def _resolve_category_value_keys(rows: List[Dict[str, Any]], x_key: str, y_key: str) -> Tuple[str, str, bool]:
+    """Return (category_key, value_key, swapped) for bar/line panels.
+
+    Callers occasionally pass x=numeric column and y=category column, which
+    otherwise produces a figure with titles but zero bars — and the old QA
+    still passed it. Detect the swap from the data; when neither column is
+    numeric, fail loudly with the available columns so the caller can fix
+    the spec instead of shipping a blank panel.
+    """
+    sample = rows[:50]
+    numeric_y = sum(1 for row in sample if _coerce_number(row.get(y_key)) is not None)
+    if numeric_y > 0:
+        return x_key, y_key, False
+    numeric_x = sum(1 for row in sample if _coerce_number(row.get(x_key)) is not None)
+    if numeric_x > 0:
+        return y_key, x_key, True
+    available = _all_columns(rows)
+    raise ValueError(
+        f"Panel has no numeric values for y='{y_key}' (x='{x_key}'); "
+        f"available columns: {', '.join(available) or '<none>'}. "
+        "Pass the category column as x and the numeric column as y."
+    )
+
+
+def _draw_bar(ax: Any, rows: List[Dict[str, Any]], panel: Dict[str, Any]) -> Dict[str, Any]:
     x_key = str(panel.get("x") or "label")
     y_key = str(panel.get("y") or panel.get("value") or "value")
+    x_key, y_key, swapped = _resolve_category_value_keys(rows, x_key, y_key)
     rows = _top_rows(rows, y_key, int(panel.get("top_n") or 20))
     labels = [str(row.get(x_key, ""))[:36] for row in rows]
     values = [_coerce_number(row.get(y_key)) or 0.0 for row in rows]
@@ -248,11 +273,13 @@ def _draw_bar(ax: Any, rows: List[Dict[str, Any]], panel: Dict[str, Any]) -> Non
     ax.invert_yaxis()
     ax.set_xlabel(str(panel.get("x_label") or y_key))
     ax.set_ylabel(str(panel.get("y_label") or x_key))
+    return {"nonzero": sum(1 for v in values if v), "swapped": swapped}
 
 
-def _draw_line(ax: Any, rows: List[Dict[str, Any]], panel: Dict[str, Any]) -> None:
+def _draw_line(ax: Any, rows: List[Dict[str, Any]], panel: Dict[str, Any]) -> Dict[str, Any]:
     x_key = str(panel.get("x") or "x")
     y_key = str(panel.get("y") or panel.get("value") or "value")
+    x_key, y_key, swapped = _resolve_category_value_keys(rows, x_key, y_key)
     x_values = [str(row.get(x_key, "")) for row in rows]
     y_values = [_coerce_number(row.get(y_key)) or 0.0 for row in rows]
     ax.plot(range(len(rows)), y_values, marker="o", color=COLORS[1], linewidth=2)
@@ -260,9 +287,10 @@ def _draw_line(ax: Any, rows: List[Dict[str, Any]], panel: Dict[str, Any]) -> No
     ax.set_xticklabels(x_values, rotation=45, ha="right", fontsize=8)
     ax.set_xlabel(str(panel.get("x_label") or x_key))
     ax.set_ylabel(str(panel.get("y_label") or y_key))
+    return {"nonzero": sum(1 for v in y_values if v), "swapped": swapped}
 
 
-def _draw_scatter(ax: Any, rows: List[Dict[str, Any]], panel: Dict[str, Any]) -> None:
+def _draw_scatter(ax: Any, rows: List[Dict[str, Any]], panel: Dict[str, Any]) -> Dict[str, Any]:
     x_key = str(panel.get("x") or "x")
     y_key = str(panel.get("y") or "y")
     points = [(_coerce_number(row.get(x_key)), _coerce_number(row.get(y_key))) for row in rows]
@@ -272,6 +300,7 @@ def _draw_scatter(ax: Any, rows: List[Dict[str, Any]], panel: Dict[str, Any]) ->
     ax.scatter([x for x, _ in points], [y for _, y in points], s=35, color=COLORS[1], edgecolor="#333333", alpha=0.85)
     ax.set_xlabel(str(panel.get("x_label") or x_key))
     ax.set_ylabel(str(panel.get("y_label") or y_key))
+    return {"nonzero": sum(1 for _, y in points if y), "swapped": False}
 
 
 def _draw_heatmap(ax: Any, rows: List[Dict[str, Any]], panel: Dict[str, Any]) -> None:
@@ -296,9 +325,10 @@ def _draw_heatmap(ax: Any, rows: List[Dict[str, Any]], panel: Dict[str, Any]) ->
     ax.set_yticks(range(len(row_labels)))
     ax.set_yticklabels(row_labels, fontsize=7)
     ax.figure.colorbar(image, ax=ax, fraction=0.046, pad=0.04, label=value_key)
+    return {"nonzero": int((matrix != 0).sum()), "swapped": False}
 
 
-def _draw_table(ax: Any, rows: List[Dict[str, Any]], panel: Dict[str, Any]) -> None:
+def _draw_table(ax: Any, rows: List[Dict[str, Any]], panel: Dict[str, Any]) -> Dict[str, Any]:
     ax.axis("off")
     columns = _all_columns(rows)[:6]
     display_rows = rows[: int(panel.get("top_n") or 8)]
@@ -307,6 +337,7 @@ def _draw_table(ax: Any, rows: List[Dict[str, Any]], panel: Dict[str, Any]) -> N
     table.auto_set_font_size(False)
     table.set_fontsize(7)
     table.scale(1, 1.4)
+    return {"nonzero": len(display_rows), "swapped": False}
 
 
 def _draw_panel(ax: Any, dataset: LoadedDataset, panel: Dict[str, Any], panel_label: str) -> Dict[str, Any]:
@@ -323,16 +354,17 @@ def _draw_panel(ax: Any, dataset: LoadedDataset, panel: Dict[str, Any], panel_la
             kind = "bar"
         else:
             kind = "table"
+    stats: Dict[str, Any]
     if kind == "bar":
-        _draw_bar(ax, dataset.rows, panel)
+        stats = _draw_bar(ax, dataset.rows, panel)
     elif kind == "line":
-        _draw_line(ax, dataset.rows, panel)
+        stats = _draw_line(ax, dataset.rows, panel)
     elif kind == "scatter":
-        _draw_scatter(ax, dataset.rows, panel)
+        stats = _draw_scatter(ax, dataset.rows, panel)
     elif kind == "heatmap":
-        _draw_heatmap(ax, dataset.rows, panel)
+        stats = _draw_heatmap(ax, dataset.rows, panel)
     elif kind == "table":
-        _draw_table(ax, dataset.rows, panel)
+        stats = _draw_table(ax, dataset.rows, panel)
     else:
         raise ValueError(f"Unsupported panel type: {kind}")
     title = str(panel.get("title") or dataset.name).strip()
@@ -344,6 +376,7 @@ def _draw_panel(ax: Any, dataset: LoadedDataset, panel: Dict[str, Any], panel_la
         "type": kind,
         "dataset": dataset.name,
         "row_count": len(dataset.rows),
+        "stats": stats,
     }
 
 
@@ -421,7 +454,7 @@ def _write_provenance(path: Path, rendered_panels: List[Dict[str, Any]], dataset
             writer.writerow([panel["label"], panel["title"], panel["type"], panel["dataset"], panel["row_count"], dataset.source])
 
 
-def _qa_image(png_path: Path, pdf_path: Optional[Path], legend_path: Path, provenance_path: Path, svg_path: Optional[Path] = None) -> Dict[str, Any]:
+def _qa_image(png_path: Path, pdf_path: Optional[Path], legend_path: Path, provenance_path: Path, svg_path: Optional[Path] = None, panel_stats: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
     checks: List[Dict[str, Any]] = []
 
     def add(name: str, passed: bool, details: Dict[str, Any]) -> None:
@@ -434,6 +467,28 @@ def _qa_image(png_path: Path, pdf_path: Optional[Path], legend_path: Path, prove
         add("pdf_exists", pdf_path.is_file() and pdf_path.stat().st_size > 0, {"path": str(pdf_path), "bytes": pdf_path.stat().st_size if pdf_path.exists() else 0})
     add("legend_exists", legend_path.is_file() and legend_path.stat().st_size > 0, {"path": str(legend_path), "bytes": legend_path.stat().st_size if legend_path.exists() else 0})
     add("provenance_exists", provenance_path.is_file() and provenance_path.stat().st_size > 0, {"path": str(provenance_path), "bytes": provenance_path.stat().st_size if provenance_path.exists() else 0})
+    if panel_stats is not None:
+        zero_panels = [
+            str(p.get("label") or "?")
+            for p in panel_stats
+            if int((p.get("stats") or {}).get("nonzero", 0)) == 0
+        ]
+        add(
+            "panels_have_plotted_values",
+            not zero_panels,
+            {"zero_value_panels": zero_panels},
+        )
+        swapped_panels = [
+            str(p.get("label") or "?")
+            for p in panel_stats
+            if (p.get("stats") or {}).get("swapped")
+        ]
+        if swapped_panels:
+            add(
+                "axes_auto_swapped",
+                True,
+                {"panels": swapped_panels, "note": "panel spec had x/y swapped; corrected from the data"},
+            )
 
     try:
         from PIL import Image, ImageStat
@@ -496,9 +551,19 @@ async def scientific_figure_generator_handler(
             svg_path=svg_path,
             dpi=max(150, int(dpi or 300)),
         )
+        zero_value_panels = [
+            str(p.get("label") or "?")
+            for p in rendered_panels
+            if int((p.get("stats") or {}).get("nonzero", 0)) == 0
+        ]
+        if zero_value_panels and len(zero_value_panels) == len(rendered_panels):
+            raise ValueError(
+                "Every panel rendered zero numeric values — the figure would be blank. "
+                "Check that y keys point at numeric columns (axis auto-swap was already attempted)."
+            )
         _write_legend(legend_path, title, rendered_panels, loaded)
         _write_provenance(provenance_path, rendered_panels, loaded)
-        qa = _qa_image(png_path, pdf_path, legend_path, provenance_path, svg_path=svg_path)
+        qa = _qa_image(png_path, pdf_path, legend_path, provenance_path, svg_path=svg_path, panel_stats=rendered_panels)
         qa_path.write_text(json.dumps(qa, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
         artifacts = [

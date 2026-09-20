@@ -407,3 +407,80 @@ def test_scientific_figure_generator_action_result_is_json_safe(
 
     serialized = json.dumps(safe_payload, ensure_ascii=False)
     assert serialized
+
+
+def test_bar_panel_auto_swaps_swapped_axes(tmp_path: Path) -> None:
+    """The 2026-09-20 production bug: caller passed x=count, y=category and got
+    a 6-panel figure with zero bars that QA still passed. The generator must
+    now correct the swap from the data and record it in QA."""
+    raw_result: object = asyncio.run(
+        scientific_figure_generator_handler(
+            title="Swapped Axes",
+            datasets=[
+                {
+                    "name": "study_type",
+                    "rows": [
+                        {"study_type": "in silico", "count": 325},
+                        {"study_type": "in vitro", "count": 273},
+                        {"study_type": "clinical", "count": 216},
+                    ],
+                }
+            ],
+            panels=[{"dataset": "study_type", "type": "bar", "x": "count", "y": "study_type", "title": "A"}],
+            output_dir=str(tmp_path),
+            output_basename="swap",
+            tool_context=ToolContext(work_dir=str(tmp_path)),
+        )
+    )
+    result = _mapping(raw_result)
+    assert result["success"] is True
+    qa = _mapping(_json_mapping(tmp_path / "swap_qa.json"))
+    checks = {str(c["name"]): c for c in _object_list(qa["checks"]) if isinstance(c, dict)}
+    assert "axes_auto_swapped" in checks
+    assert checks["panels_have_plotted_values"]["passed"] is True
+
+
+def test_bar_panel_without_numeric_column_fails_loudly(tmp_path: Path) -> None:
+    """No numeric column on either axis: fail with the available columns so the
+    caller can fix the spec instead of shipping a blank panel."""
+    raw_result: object = asyncio.run(
+        scientific_figure_generator_handler(
+            title="No Numeric",
+            datasets=[{"name": "d", "rows": [{"a": "x", "b": "y"}]}],
+            panels=[{"dataset": "d", "type": "bar", "x": "a", "y": "b"}],
+            output_dir=str(tmp_path),
+            output_basename="nn",
+            tool_context=ToolContext(work_dir=str(tmp_path)),
+        )
+    )
+    result = _mapping(raw_result)
+    assert result["success"] is False
+    assert "available columns" in str(result["error"])
+
+
+def test_qa_fails_when_panel_has_zero_plotted_values(tmp_path: Path) -> None:
+    """A panel whose plotted values are all zero must fail QA — qa_passed=true
+    on a broken chart is exactly what the user complained about."""
+    raw_result: object = asyncio.run(
+        scientific_figure_generator_handler(
+            title="Zero Panel",
+            datasets=[
+                {"name": "good", "rows": [{"k": "a", "v": 3}, {"k": "b", "v": 5}]},
+                {"name": "zeros", "rows": [{"k": "a", "v": 0}, {"k": "b", "v": 0}]},
+            ],
+            panels=[
+                {"dataset": "good", "type": "bar", "x": "k", "y": "v", "title": "ok"},
+                {"dataset": "zeros", "type": "bar", "x": "k", "y": "v", "title": "empty"},
+            ],
+            output_dir=str(tmp_path),
+            output_basename="zero",
+            tool_context=ToolContext(work_dir=str(tmp_path)),
+        )
+    )
+    result = _mapping(raw_result)
+    assert result["success"] is False
+    qa = _mapping(_json_mapping(tmp_path / "zero_qa.json"))
+    checks = {str(c["name"]): c for c in _object_list(qa["checks"]) if isinstance(c, dict)}
+    assert checks["panels_have_plotted_values"]["passed"] is False
+    details = _mapping(checks["panels_have_plotted_values"]["details"])
+    assert details["zero_value_panels"] == ["B"]
