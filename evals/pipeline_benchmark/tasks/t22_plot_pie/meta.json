@@ -1,0 +1,5 @@
+{
+ "category": "plotting",
+ "tier": "execute",
+ "timeout_seconds": 900
+}

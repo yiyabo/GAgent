@@ -1,0 +1,5 @@
+{
+ "category": "read_file",
+ "tier": "standard",
+ "timeout_seconds": 600
+}

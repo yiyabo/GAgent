@@ -1,0 +1,200 @@
+2025-11-03 08:00:00 INFO handled /api/v1/query in 113ms
+2025-11-03 08:02:17 INFO handled /api/v1/query in 128ms
+2025-11-03 08:04:34 INFO handled /api/v1/query in 15ms
+2025-11-03 08:06:51 INFO handled /api/v1/query in 20ms
+2025-11-03 08:09:08 INFO handled /api/v1/query in 65ms
+2025-11-03 08:11:25 INFO handled /api/v1/query in 72ms
+2025-11-03 08:13:42 ERROR [TimeoutError] request failed after 3 retries
+2025-11-03 08:15:59 INFO handled /api/v1/query in 43ms
+2025-11-03 08:18:16 INFO handled /api/v1/query in 143ms
+2025-11-03 08:20:33 INFO handled /api/v1/query in 177ms
+2025-11-03 08:22:50 INFO handled /api/v1/query in 99ms
+2025-11-03 08:25:07 INFO handled /api/v1/query in 221ms
+2025-11-03 08:27:24 ERROR [TimeoutError] request failed after 3 retries
+2025-11-03 08:29:41 INFO handled /api/v1/query in 144ms
+2025-11-03 08:31:58 INFO handled /api/v1/query in 32ms
+2025-11-03 08:34:15 ERROR [AuthError] request failed after 3 retries
+2025-11-03 08:36:32 INFO handled /api/v1/query in 75ms
+2025-11-03 08:38:49 INFO handled /api/v1/query in 141ms
+2025-11-03 08:41:06 INFO handled /api/v1/query in 187ms
+2025-11-03 08:43:23 INFO handled /api/v1/query in 191ms
+2025-11-03 08:45:40 INFO handled /api/v1/query in 289ms
+2025-11-03 08:47:57 WARNING latency above 800ms on shard-1
+2025-11-03 08:50:14 ERROR [AuthError] request failed after 3 retries
+2025-11-03 08:52:31 INFO handled /api/v1/query in 292ms
+2025-11-03 08:54:48 INFO handled /api/v1/query in 79ms
+2025-11-03 08:57:05 INFO handled /api/v1/query in 88ms
+2025-11-03 08:59:22 WARNING latency above 800ms on shard-2
+2025-11-03 09:01:39 ERROR [TimeoutError] request failed after 3 retries
+2025-11-03 09:03:56 ERROR [TimeoutError] request failed after 3 retries
+2025-11-03 09:06:13 WARNING latency above 800ms on shard-4
+2025-11-03 09:08:30 ERROR [DatabaseError] request failed after 3 retries
+2025-11-03 09:10:47 ERROR [DatabaseError] request failed after 3 retries
+2025-11-03 09:13:04 INFO handled /api/v1/query in 136ms
+2025-11-03 09:15:21 WARNING latency above 800ms on shard-4
+2025-11-03 09:17:38 INFO handled /api/v1/query in 225ms
+2025-11-03 09:19:55 INFO handled /api/v1/query in 292ms
+2025-11-03 09:22:12 INFO handled /api/v1/query in 108ms
+2025-11-03 09:24:29 INFO handled /api/v1/query in 170ms
+2025-11-03 09:26:46 ERROR [AuthError] request failed after 3 retries
+2025-11-03 09:29:03 ERROR [AuthError] request failed after 3 retries
+2025-11-03 09:31:20 INFO handled /api/v1/query in 277ms
+2025-11-03 09:33:37 INFO handled /api/v1/query in 21ms
+2025-11-03 09:35:54 INFO handled /api/v1/query in 26ms
+2025-11-03 09:38:11 WARNING latency above 800ms on shard-1
+2025-11-03 09:40:28 WARNING latency above 800ms on shard-4
+2025-11-03 09:42:45 INFO handled /api/v1/query in 75ms
+2025-11-03 09:45:02 ERROR [AuthError] request failed after 3 retries
+2025-11-03 09:47:19 WARNING latency above 800ms on shard-1
+2025-11-03 09:49:36 INFO handled /api/v1/query in 168ms
+2025-11-03 09:51:53 ERROR [DatabaseError] request failed after 3 retries
+2025-11-03 09:54:10 INFO handled /api/v1/query in 17ms
+2025-11-03 09:56:27 INFO handled /api/v1/query in 120ms
+2025-11-03 09:58:44 INFO handled /api/v1/query in 211ms
+2025-11-03 10:01:01 INFO handled /api/v1/query in 103ms
+2025-11-03 10:03:18 WARNING latency above 800ms on shard-2
+2025-11-03 10:05:35 WARNING latency above 800ms on shard-2
+2025-11-03 10:07:52 INFO handled /api/v1/query in 54ms
+2025-11-03 10:10:09 INFO handled /api/v1/query in 39ms
+2025-11-03 10:12:26 INFO handled /api/v1/query in 129ms
+2025-11-03 10:14:43 INFO handled /api/v1/query in 133ms
+2025-11-03 10:17:00 INFO handled /api/v1/query in 261ms
+2025-11-03 10:19:17 ERROR [TimeoutError] request failed after 3 retries
+2025-11-03 10:21:34 INFO handled /api/v1/query in 214ms
+2025-11-03 10:23:51 WARNING latency above 800ms on shard-1
+2025-11-03 10:26:08 INFO handled /api/v1/query in 265ms
+2025-11-03 10:28:25 ERROR [DatabaseError] request failed after 3 retries
+2025-11-03 10:30:42 INFO handled /api/v1/query in 238ms
+2025-11-03 10:32:59 WARNING latency above 800ms on shard-2
+2025-11-03 10:35:16 INFO handled /api/v1/query in 32ms
+2025-11-03 10:37:33 INFO handled /api/v1/query in 92ms
+2025-11-03 10:39:50 INFO handled /api/v1/query in 17ms
+2025-11-03 10:42:07 WARNING latency above 800ms on shard-3
+2025-11-03 10:44:24 INFO handled /api/v1/query in 27ms
+2025-11-03 10:46:41 WARNING latency above 800ms on shard-4
+2025-11-03 10:48:58 ERROR [DatabaseError] request failed after 3 retries
+2025-11-03 10:51:15 WARNING latency above 800ms on shard-4
+2025-11-03 10:53:32 INFO handled /api/v1/query in 169ms
+2025-11-03 10:55:49 INFO handled /api/v1/query in 43ms
+2025-11-03 10:58:06 INFO handled /api/v1/query in 18ms
+2025-11-03 11:00:23 ERROR [TimeoutError] request failed after 3 retries
+2025-11-03 11:02:40 WARNING latency above 800ms on shard-4
+2025-11-03 11:04:57 ERROR [DatabaseError] request failed after 3 retries
+2025-11-03 11:07:14 INFO handled /api/v1/query in 46ms
+2025-11-03 11:09:31 WARNING latency above 800ms on shard-3
+2025-11-03 11:11:48 INFO handled /api/v1/query in 253ms
+2025-11-03 11:14:05 INFO handled /api/v1/query in 230ms
+2025-11-03 11:16:22 INFO handled /api/v1/query in 268ms
+2025-11-03 11:18:39 INFO handled /api/v1/query in 118ms
+2025-11-03 11:20:56 INFO handled /api/v1/query in 131ms
+2025-11-03 11:23:13 WARNING latency above 800ms on shard-3
+2025-11-03 11:25:30 WARNING latency above 800ms on shard-3
+2025-11-03 11:27:47 WARNING latency above 800ms on shard-4
+2025-11-03 11:30:04 INFO handled /api/v1/query in 124ms
+2025-11-03 11:32:21 INFO handled /api/v1/query in 138ms
+2025-11-03 11:34:38 INFO handled /api/v1/query in 63ms
+2025-11-03 11:36:55 INFO handled /api/v1/query in 197ms
+2025-11-03 11:39:12 INFO handled /api/v1/query in 86ms
+2025-11-03 11:41:29 WARNING latency above 800ms on shard-1
+2025-11-03 11:43:46 INFO handled /api/v1/query in 181ms
+2025-11-03 11:46:03 WARNING latency above 800ms on shard-1
+2025-11-03 11:48:20 INFO handled /api/v1/query in 249ms
+2025-11-03 11:50:37 WARNING latency above 800ms on shard-1
+2025-11-03 11:52:54 INFO handled /api/v1/query in 158ms
+2025-11-03 11:55:11 WARNING latency above 800ms on shard-3
+2025-11-03 11:57:28 INFO handled /api/v1/query in 291ms
+2025-11-03 11:59:45 INFO handled /api/v1/query in 86ms
+2025-11-03 12:02:02 INFO handled /api/v1/query in 290ms
+2025-11-03 12:04:19 WARNING latency above 800ms on shard-4
+2025-11-03 12:06:36 INFO handled /api/v1/query in 137ms
+2025-11-03 12:08:53 INFO handled /api/v1/query in 94ms
+2025-11-03 12:11:10 INFO handled /api/v1/query in 72ms
+2025-11-03 12:13:27 INFO handled /api/v1/query in 177ms
+2025-11-03 12:15:44 INFO handled /api/v1/query in 252ms
+2025-11-03 12:18:01 WARNING latency above 800ms on shard-3
+2025-11-03 12:20:18 INFO handled /api/v1/query in 41ms
+2025-11-03 12:22:35 INFO handled /api/v1/query in 150ms
+2025-11-03 12:24:52 INFO handled /api/v1/query in 36ms
+2025-11-03 12:27:09 INFO handled /api/v1/query in 269ms
+2025-11-03 12:29:26 INFO handled /api/v1/query in 96ms
+2025-11-03 12:31:43 INFO handled /api/v1/query in 180ms
+2025-11-03 12:34:00 INFO handled /api/v1/query in 290ms
+2025-11-03 12:36:17 INFO handled /api/v1/query in 79ms
+2025-11-03 12:38:34 INFO handled /api/v1/query in 168ms
+2025-11-03 12:40:51 ERROR [DatabaseError] request failed after 3 retries
+2025-11-03 12:43:08 INFO handled /api/v1/query in 111ms
+2025-11-03 12:45:25 INFO handled /api/v1/query in 72ms
+2025-11-03 12:47:42 INFO handled /api/v1/query in 31ms
+2025-11-03 12:49:59 WARNING latency above 800ms on shard-4
+2025-11-03 12:52:16 ERROR [DatabaseError] request failed after 3 retries
+2025-11-03 12:54:33 INFO handled /api/v1/query in 223ms
+2025-11-03 12:56:50 INFO handled /api/v1/query in 116ms
+2025-11-03 12:59:07 INFO handled /api/v1/query in 26ms
+2025-11-03 13:01:24 INFO handled /api/v1/query in 196ms
+2025-11-03 13:03:41 INFO handled /api/v1/query in 135ms
+2025-11-03 13:05:58 WARNING latency above 800ms on shard-1
+2025-11-03 13:08:15 ERROR [DatabaseError] request failed after 3 retries
+2025-11-03 13:10:32 INFO handled /api/v1/query in 58ms
+2025-11-03 13:12:49 INFO handled /api/v1/query in 271ms
+2025-11-03 13:15:06 INFO handled /api/v1/query in 32ms
+2025-11-03 13:17:23 ERROR [DatabaseError] request failed after 3 retries
+2025-11-03 13:19:40 INFO handled /api/v1/query in 50ms
+2025-11-03 13:21:57 WARNING latency above 800ms on shard-3
+2025-11-03 13:24:14 INFO handled /api/v1/query in 74ms
+2025-11-03 13:26:31 WARNING latency above 800ms on shard-1
+2025-11-03 13:28:48 WARNING latency above 800ms on shard-2
+2025-11-03 13:31:05 INFO handled /api/v1/query in 293ms
+2025-11-03 13:33:22 INFO handled /api/v1/query in 131ms
+2025-11-03 13:35:39 INFO handled /api/v1/query in 72ms
+2025-11-03 13:37:56 INFO handled /api/v1/query in 132ms
+2025-11-03 13:40:13 ERROR [AuthError] request failed after 3 retries
+2025-11-03 13:42:30 INFO handled /api/v1/query in 264ms
+2025-11-03 13:44:47 INFO handled /api/v1/query in 52ms
+2025-11-03 13:47:04 ERROR [AuthError] request failed after 3 retries
+2025-11-03 13:49:21 INFO handled /api/v1/query in 275ms
+2025-11-03 13:51:38 INFO handled /api/v1/query in 105ms
+2025-11-03 13:53:55 INFO handled /api/v1/query in 295ms
+2025-11-03 13:56:12 INFO handled /api/v1/query in 33ms
+2025-11-03 13:58:29 INFO handled /api/v1/query in 127ms
+2025-11-03 14:00:46 INFO handled /api/v1/query in 89ms
+2025-11-03 14:03:03 INFO handled /api/v1/query in 113ms
+2025-11-03 14:05:20 INFO handled /api/v1/query in 189ms
+2025-11-03 14:07:37 WARNING latency above 800ms on shard-1
+2025-11-03 14:09:54 INFO handled /api/v1/query in 132ms
+2025-11-03 14:12:11 INFO handled /api/v1/query in 228ms
+2025-11-03 14:14:28 INFO handled /api/v1/query in 266ms
+2025-11-03 14:16:45 INFO handled /api/v1/query in 211ms
+2025-11-03 14:19:02 INFO handled /api/v1/query in 278ms
+2025-11-03 14:21:19 INFO handled /api/v1/query in 239ms
+2025-11-03 14:23:36 ERROR [DatabaseError] request failed after 3 retries
+2025-11-03 14:25:53 ERROR [TimeoutError] request failed after 3 retries
+2025-11-03 14:28:10 INFO handled /api/v1/query in 170ms
+2025-11-03 14:30:27 INFO handled /api/v1/query in 107ms
+2025-11-03 14:32:44 INFO handled /api/v1/query in 266ms
+2025-11-03 14:35:01 WARNING latency above 800ms on shard-3
+2025-11-03 14:37:18 ERROR [AuthError] request failed after 3 retries
+2025-11-03 14:39:35 INFO handled /api/v1/query in 77ms
+2025-11-03 14:41:52 INFO handled /api/v1/query in 75ms
+2025-11-03 14:44:09 INFO handled /api/v1/query in 183ms
+2025-11-03 14:46:26 ERROR [DatabaseError] request failed after 3 retries
+2025-11-03 14:48:43 INFO handled /api/v1/query in 196ms
+2025-11-03 14:51:00 INFO handled /api/v1/query in 71ms
+2025-11-03 14:53:17 INFO handled /api/v1/query in 291ms
+2025-11-03 14:55:34 INFO handled /api/v1/query in 261ms
+2025-11-03 14:57:51 INFO handled /api/v1/query in 153ms
+2025-11-03 15:00:08 INFO handled /api/v1/query in 248ms
+2025-11-03 15:02:25 WARNING latency above 800ms on shard-2
+2025-11-03 15:04:42 INFO handled /api/v1/query in 82ms
+2025-11-03 15:06:59 ERROR [TimeoutError] request failed after 3 retries
+2025-11-03 15:09:16 INFO handled /api/v1/query in 288ms
+2025-11-03 15:11:33 INFO handled /api/v1/query in 210ms
+2025-11-03 15:13:50 INFO handled /api/v1/query in 188ms
+2025-11-03 15:16:07 ERROR [DatabaseError] request failed after 3 retries
+2025-11-03 15:18:24 ERROR [AuthError] request failed after 3 retries
+2025-11-03 15:20:41 INFO handled /api/v1/query in 133ms
+2025-11-03 15:22:58 INFO handled /api/v1/query in 142ms
+2025-11-03 15:25:15 INFO handled /api/v1/query in 298ms
+2025-11-03 15:27:32 INFO handled /api/v1/query in 17ms
+2025-11-03 15:29:49 INFO handled /api/v1/query in 166ms
+2025-11-03 15:32:06 INFO handled /api/v1/query in 44ms
+2025-11-03 15:34:23 WARNING latency above 800ms on shard-4

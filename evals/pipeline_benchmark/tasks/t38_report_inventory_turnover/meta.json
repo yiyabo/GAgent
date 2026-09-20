@@ -1,0 +1,5 @@
+{
+ "category": "long_report",
+ "tier": "execute",
+ "timeout_seconds": 1500
+}
