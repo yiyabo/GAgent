@@ -9,12 +9,20 @@ Separated from GLMEmbeddingsService following Single Responsibility Principle.
 
 import json
 import logging
+import os
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 
+from app.llm import get_project_llm_credentials
+
 logger = logging.getLogger(__name__)
+
+
+def _embedding_project_billing_enabled() -> bool:
+    """Opt-in switch: route embedding traffic through per-project sub2api credentials."""
+    return os.getenv("EMBEDDING_PROJECT_BILLING", "").strip().lower() in {"1", "true", "yes"}
 
 
 class GLMApiClient:
@@ -71,19 +79,41 @@ class GLMApiClient:
 
     def _make_api_request(self, texts: List[str]) -> List[List[float]]:
         """Execute actual API request"""
-        headers = self._build_request_headers()
+        api_key, api_url = self._effective_credentials()
+        headers = self._build_request_headers(api_key)
         payload = self._build_request_payload(texts)
 
-        response = self.session.post(self.api_url, headers=headers, json=payload, timeout=self.request_timeout)
+        response = self.session.post(api_url, headers=headers, json=payload, timeout=self.request_timeout)
 
         if response.status_code != 200:
             raise Exception(f"API request failed with status {response.status_code}: {response.text}")
 
         return self._parse_api_response(response)
 
-    def _build_request_headers(self) -> Dict[str, str]:
+    def _effective_credentials(self) -> Tuple[str, str]:
+        """Resolve (api_key, api_url) per request: project sub2api credential when the
+        EMBEDDING_PROJECT_BILLING opt-in is on, otherwise the configured admin channel.
+
+        Fail-open: missing credentials or an unexpected chat_url shape fall back to the
+        admin credential with a warning.
+        """
+        if not _embedding_project_billing_enabled():
+            return self.api_key, self.api_url
+        creds = get_project_llm_credentials()
+        chat_url = str(creds.get("chat_url") or "") if isinstance(creds, dict) else ""
+        if creds and creds.get("api_key") and "/chat/completions" in chat_url:
+            return str(creds["api_key"]), chat_url.replace("/chat/completions", "/embeddings")
+        reason = "no project credential" if not creds else f"unexpected chat_url {chat_url!r}"
+        logger.warning(
+            "[BILLING] EMBEDDING_PROJECT_BILLING enabled but %s; falling back to admin embedding credential key=%s...",
+            reason,
+            str(self.api_key or "")[:10],
+        )
+        return self.api_key, self.api_url
+
+    def _build_request_headers(self, api_key: Optional[str]) -> Dict[str, str]:
         """Build request headers"""
-        return {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+        return {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
 
     def _build_request_payload(self, texts: List[str]) -> Dict[str, Any]:
         """Build request payload"""

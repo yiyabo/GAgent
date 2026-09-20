@@ -8,16 +8,23 @@ support OpenAI  API , model fallback.
 
 import asyncio
 import logging
+import os
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import aiohttp
 import requests
 
+from app.llm import get_project_llm_credentials
 from app.services.foundation.config import GLMConfig
 from app.services.foundation.llm_config import is_production
 
 logger = logging.getLogger(__name__)
+
+
+def _embedding_project_billing_enabled() -> bool:
+    """Opt-in switch: route embedding traffic through per-project sub2api credentials."""
+    return os.getenv("EMBEDDING_PROJECT_BILLING", "").strip().lower() in {"1", "true", "yes"}
 
 
 class QwenEmbeddingClient:
@@ -53,6 +60,27 @@ class QwenEmbeddingClient:
             logger.info("Local embedding client initialized for fallback")
         return self._local_client
 
+    def _effective_credentials(self) -> Tuple[str, str]:
+        """Resolve (api_key, api_url) per request: project sub2api credential when the
+        EMBEDDING_PROJECT_BILLING opt-in is on, otherwise the configured admin channel.
+
+        Fail-open: missing credentials or an unexpected chat_url shape fall back to the
+        admin credential with a warning.
+        """
+        if not _embedding_project_billing_enabled():
+            return self.api_key, self.api_url
+        creds = get_project_llm_credentials()
+        chat_url = str(creds.get("chat_url") or "") if isinstance(creds, dict) else ""
+        if creds and creds.get("api_key") and "/chat/completions" in chat_url:
+            return str(creds["api_key"]), chat_url.replace("/chat/completions", "/embeddings")
+        reason = "no project credential" if not creds else f"unexpected chat_url {chat_url!r}"
+        logger.warning(
+            "[BILLING] EMBEDDING_PROJECT_BILLING enabled but %s; falling back to admin embedding credential key=%s...",
+            reason,
+            str(self.api_key or "")[:10],
+        )
+        return self.api_key, self.api_url
+
     def get_embeddings(self, texts: List[str]) -> List[List[float]]:
         """
         get
@@ -85,11 +113,12 @@ class QwenEmbeddingClient:
 
     def _call_qwen_api(self, texts: List[str]) -> List[List[float]]:
         """ Qwen Embedding API"""
-        if not self.api_key:
+        api_key, api_url = self._effective_credentials()
+        if not api_key:
             raise ValueError("QWEN_API_KEY not configured")
 
         headers = {
-            "Authorization": f"Bearer {self.api_key}",
+            "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         }
 
@@ -100,7 +129,7 @@ class QwenEmbeddingClient:
         }
 
         response = self._sync_session.post(
-            self.api_url,
+            api_url,
             headers=headers,
             json=payload,
             timeout=self.timeout,
@@ -165,11 +194,12 @@ class QwenEmbeddingClient:
 
     async def _call_qwen_api_async(self, texts: List[str]) -> List[List[float]]:
         """ Qwen Embedding API"""
-        if not self.api_key:
+        api_key, api_url = self._effective_credentials()
+        if not api_key:
             raise ValueError("QWEN_API_KEY not configured")
 
         headers = {
-            "Authorization": f"Bearer {self.api_key}",
+            "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         }
 
@@ -180,7 +210,7 @@ class QwenEmbeddingClient:
         }
 
         session = self._get_async_session()
-        async with session.post(self.api_url, headers=headers, json=payload) as response:
+        async with session.post(api_url, headers=headers, json=payload) as response:
             if response.status != 200:
                 text = await response.text()
                 raise RuntimeError(f"Qwen API error {response.status}: {text}")
