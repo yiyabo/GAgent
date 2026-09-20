@@ -3157,6 +3157,24 @@ def _iter_promotable_run_files(
     return results
 
 
+def _collapse_rooted_rel_path(*, rel: Path, output_dir: Path, session_dir: Path) -> Path:
+    """Strip the destination prefix when ``rel`` already carries it.
+
+    Delegated agents sometimes mirror the session layout inside their scratch
+    cwd (e.g. write ``raw_files/tmp/<run>/x.png`` relative to the run dir).
+    Joining such a ``rel`` onto ``output_dir`` would double-root the path, so
+    collapse it back onto the canonical single-prefix destination.
+    """
+    try:
+        prefix = output_dir.resolve().relative_to(session_dir.resolve())
+    except (ValueError, OSError):
+        return rel
+    try:
+        return rel.relative_to(prefix)
+    except ValueError:
+        return rel
+
+
 def _promote_results_to_unified_dir(
     *,
     scratch_dir: Path,
@@ -3183,7 +3201,9 @@ def _promote_results_to_unified_dir(
                 "Unified promotion stopped after %s files (cap=%s)", count, max_files
             )
             break
-        dest = output_dir / rel
+        dest = output_dir / _collapse_rooted_rel_path(
+            rel=rel, output_dir=output_dir, session_dir=session_dir
+        )
         dest.parent.mkdir(parents=True, exist_ok=True)
         try:
             shutil.copy2(path, dest)
@@ -3217,7 +3237,9 @@ def _promote_results_to_unified_dir(
                     rel = path.relative_to(session_results)
                 except ValueError:
                     continue
-                dest = output_dir / rel
+                dest = output_dir / _collapse_rooted_rel_path(
+                    rel=rel, output_dir=output_dir, session_dir=session_dir
+                )
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 try:
                     shutil.copy2(path, dest)
@@ -4514,6 +4536,21 @@ async def _execute_task_locally(
     return result
 
 
+def _resolve_promoted_output_files(
+    promoted: Sequence[str],
+    *,
+    session_dir: Path,
+) -> List[str]:
+    """Resolve session-relative promoted entries to absolute on-disk paths.
+
+    ``_promote_results_to_unified_dir`` returns paths relative to the session
+    root (e.g. ``raw_files/tmp/<run>/x.png``); they must be rooted at
+    ``session_dir``, not at the unified output dir, or the prefix appears
+    twice. Entries that are already absolute pass through unchanged.
+    """
+    return [str((session_dir / rel).resolve()) for rel in promoted]
+
+
 def _build_local_backend_result_payload(
     *,
     task: str,
@@ -4592,10 +4629,9 @@ def _build_local_backend_result_payload(
         "artifact_paths": list(verification_artifact_paths),
         "contract_artifacts": list(contract_artifacts),
         "session_artifact_paths": list(session_artifact_paths),
-        "output_files": [
-            str((unified_output_dir / rel).resolve()) if unified_output_dir else rel
-            for rel in unified_promoted_files
-        ],
+        "output_files": _resolve_promoted_output_files(
+            unified_promoted_files, session_dir=session_dir
+        ),
         "output_location": {
             "type": "task" if resolved_task_id is not None else "tmp",
             "session_id": effective_session_id,
@@ -6041,10 +6077,9 @@ async def code_executor_handler(
             "artifact_paths": verification_artifact_paths,
             "contract_artifacts": contract_artifacts,
             "session_artifact_paths": session_artifact_paths,
-            "output_files": [
-                str((unified_output_dir / rel).resolve()) if unified_output_dir else rel
-                for rel in unified_promoted_files_qwen
-            ],
+            "output_files": _resolve_promoted_output_files(
+                unified_promoted_files_qwen, session_dir=session_dir
+            ),
             # Unified output path (new)
             "output_location": {
                 "type": "task" if resolved_task_id is not None else "tmp",
