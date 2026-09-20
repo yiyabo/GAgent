@@ -16,7 +16,11 @@ import httpx
 
 from .interfaces import LLMProvider
 from .services.foundation.settings import get_settings
-from .services.foundation.llm_config import is_production, platform_profile
+from .services.foundation.llm_config import (
+    is_production,
+    platform_profile,
+    validate_project_gateway_base_url,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +135,93 @@ from .billing_keys import billing_key_for_purpose, normalize_billing_key
 _usage_context: contextvars.ContextVar[Optional[Dict[str, Any]]] = contextvars.ContextVar(
     "llm_usage_context", default=None
 )
+
+# ---------------------------------------------------------------------------
+# Per-project LLM credentials (billing split step 4)
+#
+# The main platform delivers a project-scoped sub2api credential in the
+# project-context response (model_provider.api_key / base_url).  When present,
+# every LLM call of that run must use it instead of the deployment-wide
+# platform profile key so upstream usage is billed to the project, not admin.
+#
+# Propagation: a ContextVar covers everything running in the request task
+# (main chat, deep-think loop, inline tool LLM calls); a session-keyed
+# in-memory registry bridges plan-executor worker threads, which rebuild their
+# own usage context from the session id.  Credentials are never persisted and
+# never logged beyond an identifying prefix.
+# ---------------------------------------------------------------------------
+
+_project_llm_creds: contextvars.ContextVar[Optional[Dict[str, Any]]] = contextvars.ContextVar(
+    "llm_project_credentials", default=None
+)
+_SESSION_LLM_CRED_REGISTRY: Dict[str, Dict[str, Any]] = {}
+_PROJECT_CRED_REGISTRY_LIMIT = 512
+_PROJECT_CRED_TTL_SECONDS = 12 * 3600
+
+
+def register_project_llm_credentials(
+    *,
+    session_id: Optional[str],
+    api_key: Optional[str],
+    base_url: Optional[str],
+) -> bool:
+    """Validate and activate a platform-delivered project LLM credential.
+
+    Fail-open: returns False (callers keep the platform profile credential)
+    when the values are missing or the base URL is not an allowed gateway.
+    """
+    key = str(api_key or "").strip()
+    chat_url = validate_project_gateway_base_url(str(base_url or ""))
+    if not key or not chat_url:
+        if key or str(base_url or "").strip():
+            logger.warning(
+                "[BILLING] Project LLM credential rejected (missing key or disallowed base_url); falling back to platform profile"
+            )
+        return False
+    creds = {
+        "api_key": key,
+        "chat_url": chat_url,
+        "responses_url": chat_url[: -len("chat/completions")] + "responses",
+        "embeddings_url": chat_url[: -len("chat/completions")] + "embeddings",
+        "ts": time.time(),
+    }
+    _project_llm_creds.set(creds)
+    sid = str(session_id or "").strip()
+    if sid:
+        now = time.time()
+        expired = [
+            k for k, v in _SESSION_LLM_CRED_REGISTRY.items()
+            if now - float(v.get("ts", 0.0)) > _PROJECT_CRED_TTL_SECONDS
+        ]
+        for k in expired:
+            _SESSION_LLM_CRED_REGISTRY.pop(k, None)
+        _SESSION_LLM_CRED_REGISTRY[sid] = creds
+        _SESSION_LLM_CRED_REGISTRY[sid] = _SESSION_LLM_CRED_REGISTRY.pop(sid)
+        while len(_SESSION_LLM_CRED_REGISTRY) > _PROJECT_CRED_REGISTRY_LIMIT:
+            _SESSION_LLM_CRED_REGISTRY.pop(next(iter(_SESSION_LLM_CRED_REGISTRY)))
+    logger.info(
+        "[BILLING] Project LLM credential active: session=%s key=%s... host=%s",
+        sid or "-",
+        key[:10],
+        chat_url.split("/", 3)[2] if chat_url.count("/") >= 3 else chat_url,
+    )
+    return True
+
+
+def get_project_llm_credentials() -> Optional[Dict[str, Any]]:
+    """Resolve the active project credential: request task first, then the session registry."""
+    creds = _project_llm_creds.get()
+    if isinstance(creds, dict) and creds.get("api_key"):
+        return creds
+    ctx = _usage_context.get()
+    sid = str(ctx.get("session_id") or "").strip() if isinstance(ctx, dict) else ""
+    if not sid:
+        return None
+    entry = _SESSION_LLM_CRED_REGISTRY.get(sid)
+    if not entry or time.time() - float(entry.get("ts", 0.0)) > _PROJECT_CRED_TTL_SECONDS:
+        return None
+    _project_llm_creds.set(entry)
+    return entry
 
 
 def set_usage_context(
@@ -869,7 +960,7 @@ class LLMClient(LLMProvider):
                 attempt_headers = dict(headers)
                 attempt_headers.update(_billing_request_headers(logical_call_id, attempt + 1))
                 response = client.post(
-                    self.url, headers=attempt_headers, json=payload,
+                    self._effective_url(), headers=attempt_headers, json=payload,
                     timeout=timeout,
                 )
                 _record_attempt_context(
@@ -987,7 +1078,7 @@ class LLMClient(LLMProvider):
                 attempt_headers = dict(headers)
                 attempt_headers.update(_billing_request_headers(logical_call_id, attempt + 1))
                 response = await client.post(
-                    self.url, headers=attempt_headers, json=payload,
+                    self._effective_url(), headers=attempt_headers, json=payload,
                     timeout=timeout,
                 )
                 _record_attempt_context(
@@ -1116,7 +1207,7 @@ class LLMClient(LLMProvider):
         try:
             await _outbound_limiter.acquire_async()
             async with client.stream(
-                "POST", self.url, headers=headers, json=payload,
+                "POST", self._effective_url(), headers=headers, json=payload,
                 timeout=timeout,
             ) as resp:
                 _record_attempt_context(logical_call_id, 1)
@@ -1327,7 +1418,7 @@ class LLMClient(LLMProvider):
         client = _get_shared_async_client()
         await _outbound_limiter.acquire_async()
         _record_attempt_context(logical_call_id, 1)
-        async with client.stream("POST", self.url, headers=headers, json=payload,
+        async with client.stream("POST", self._effective_url(), headers=headers, json=payload,
                                  timeout=timeout) as resp:
             if resp.status_code >= 400:
                 body = await _read_stream_error_body(resp)
@@ -1455,10 +1546,22 @@ class LLMClient(LLMProvider):
             return data
         return None
 
+    def _effective_api_key(self) -> str:
+        creds = get_project_llm_credentials()
+        if creds and creds.get("api_key"):
+            return str(creds["api_key"])
+        return self.api_key
+
+    def _effective_url(self) -> str:
+        creds = get_project_llm_credentials()
+        if creds and creds.get("chat_url"):
+            return str(creds["chat_url"])
+        return self.url
+
     def _build_headers(self) -> Dict[str, str]:
         headers = {
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}",
+            "Authorization": f"Bearer {self._effective_api_key()}",
         }
         if self.provider.lower() == "openai":
             project = getattr(self, "openai_project", None)

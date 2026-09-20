@@ -2059,8 +2059,18 @@ def _build_qwen_code_subprocess_env(model_provider: Optional[Dict] = None) -> Di
 
     if is_production():
         profile = platform_profile()
-        env_map["OPENAI_API_KEY"] = profile.api_key
-        env_map["OPENAI_BASE_URL"] = profile.api_url.rsplit("/chat/completions", 1)[0]
+        api_key = profile.api_key
+        base_url = profile.api_url.rsplit("/chat/completions", 1)[0]
+        try:
+            from app.llm import get_project_llm_credentials
+            creds = get_project_llm_credentials()
+        except Exception:
+            creds = None
+        if creds:
+            api_key = str(creds["api_key"])
+            base_url = str(creds["chat_url"]).rsplit("/chat/completions", 1)[0]
+        env_map["OPENAI_API_KEY"] = api_key
+        env_map["OPENAI_BASE_URL"] = base_url
         env_map["QWEN_CODE_MODEL"] = profile.model
     else:
         mp = model_provider or {}
@@ -4048,9 +4058,9 @@ Examples:
 
 Directory name:"""
         
-        # Run LLM call in executor to avoid blocking
-        loop = asyncio.get_event_loop()
-        llm_response = await loop.run_in_executor(None, client.chat, prompt)
+        # Run LLM call in a thread without blocking the loop; asyncio.to_thread
+        # propagates contextvars (usage context + project LLM credentials).
+        llm_response = await asyncio.to_thread(client.chat, prompt)
         
         # Clean and validate LLM response.
         dir_name = llm_response.strip().lower()

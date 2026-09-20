@@ -355,6 +355,18 @@ async def chat_message(
                     "model": model_provider.get("model", ""),
                     "model_options": model_provider.get("model_options", []),
                 }
+                try:
+                    from app.llm import register_project_llm_credentials
+                    register_project_llm_credentials(
+                        session_id=request.session_id,
+                        api_key=model_provider.get("api_key"),
+                        base_url=model_provider.get("base_url"),
+                    )
+                except Exception:
+                    logger.warning(
+                        "[CHAT][PROJECT] Project LLM credential registration failed",
+                        exc_info=True,
+                    )
             logger.info(
                 "[CHAT][PROJECT] Loaded trusted platform context: project_id=%s, data_roots=%d",
                 principal.platform_project_id,

@@ -51,6 +51,14 @@ async def _call_qwen_vision_api(prompt: str, file_path: str) -> str:
         api_key = profile.api_key
         base_url = profile.api_url
         model = os.getenv("PLATFORM_LLM_VISION_MODEL") or profile.model
+        try:
+            from app.llm import get_project_llm_credentials
+            creds = get_project_llm_credentials()
+        except Exception:
+            creds = None
+        if creds:
+            api_key = str(creds["api_key"])
+            base_url = str(creds["chat_url"])
     else:
         api_key_from_env = os.getenv("QWEN_VL_API_KEY") or os.getenv("QWEN_API_KEY")
         api_key_from_settings = getattr(settings, "qwen_api_key", None)
@@ -188,6 +196,14 @@ async def _read_pdf_with_qwen_long(
         api_key = profile.api_key
         model = os.getenv("PLATFORM_LLM_LONG_MODEL") or profile.model
         base_url = profile.api_url.rsplit("/chat/completions", 1)[0]
+        try:
+            from app.llm import get_project_llm_credentials
+            creds = get_project_llm_credentials()
+        except Exception:
+            creds = None
+        if creds:
+            api_key = str(creds["api_key"])
+            base_url = str(creds["chat_url"]).rsplit("/chat/completions", 1)[0]
     else:
         api_key = (
             os.getenv("QWEN_VL_API_KEY")

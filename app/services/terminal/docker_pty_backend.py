@@ -425,8 +425,18 @@ class DockerPTYBackend:
 
         if is_production():
             profile = platform_profile()
-            env["OPENAI_API_KEY"] = profile.api_key
-            env["OPENAI_BASE_URL"] = profile.api_url.rsplit("/chat/completions", 1)[0]
+            api_key = profile.api_key
+            base_url = profile.api_url.rsplit("/chat/completions", 1)[0]
+            try:
+                from app.llm import get_project_llm_credentials
+                creds = get_project_llm_credentials()
+            except Exception:
+                creds = None
+            if creds:
+                api_key = str(creds["api_key"])
+                base_url = str(creds["chat_url"]).rsplit("/chat/completions", 1)[0]
+            env["OPENAI_API_KEY"] = api_key
+            env["OPENAI_BASE_URL"] = base_url
         else:
             qwen_key = os.getenv("QWEN_API_KEY", "").strip()
             if qwen_key:

@@ -5,6 +5,7 @@ import ipaddress
 import os
 import socket
 from dataclasses import dataclass
+from functools import lru_cache
 from urllib.parse import urlparse
 
 
@@ -121,6 +122,31 @@ def platform_profile() -> LLMProfile:
         search_model=_env("PLATFORM_LLM_SEARCH_MODEL") or model,
         embedding_model=_env("PLATFORM_LLM_EMBEDDING_MODEL") or "text-embedding-v4",
     )
+
+
+@lru_cache(maxsize=32)
+def validate_project_gateway_base_url(base_url: str) -> Optional[str]:
+    """Normalize a platform-delivered project gateway base URL to a chat-completions URL.
+
+    Returns None when the value is empty or fails the same safety checks as the
+    platform profile (scheme, allowlist, public DNS, no DashScope), so callers
+    can fall back to the platform profile instead of failing the run.
+    """
+    candidate = str(base_url or "").strip().rstrip("/")
+    if not candidate:
+        return None
+    if candidate.endswith("/chat/completions"):
+        url = candidate
+    elif candidate.endswith("/v1"):
+        url = candidate + "/chat/completions"
+    else:
+        url = candidate + "/v1/chat/completions"
+    try:
+        return _require_url(
+            "PLATFORM_PROJECT_LLM_BASE_URL", url, production=is_production()
+        )
+    except LLMConfigurationError:
+        return None
 
 
 def dashscope_test_profile() -> LLMProfile:

@@ -205,6 +205,16 @@ async def search(
     api_url = settings.qwen_responses_api_url
     model = (settings.qwen_responses_model or settings.qwen_model or "qwen3.7-max").strip()
 
+    if is_production():
+        try:
+            from app.llm import get_project_llm_credentials
+            creds = get_project_llm_credentials()
+        except Exception:
+            creds = None
+        if creds:
+            api_key = str(creds["api_key"])
+            api_url = str(creds["responses_url"])
+
     if not api_key:
         raise WebSearchError(
             code="missing_api_key",
