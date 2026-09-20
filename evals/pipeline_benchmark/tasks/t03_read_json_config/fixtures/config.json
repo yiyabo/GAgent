@@ -1,0 +1,22 @@
+{
+  "experiment": {
+    "name": "baseline-v3",
+    "batch_size": 64,
+    "epochs": 12,
+    "optimizer": {
+      "type": "adam",
+      "lr": 0.0003
+    }
+  },
+  "datasets": [
+    "train_a",
+    "train_b",
+    "val",
+    "test_a",
+    "test_b"
+  ],
+  "logging": {
+    "level": "DEBUG",
+    "dir": "logs/"
+  }
+}

@@ -1,0 +1,5 @@
+{
+ "category": "data_analysis",
+ "tier": "execute",
+ "timeout_seconds": 900
+}
