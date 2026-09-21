@@ -10,8 +10,8 @@ Usage (inside the phage-agent container, repo mounted at /app):
 
 The driver reproduces the production construction from
 app/routers/chat/agent.py: DeepThinkAgent(llm_client=get_llm_service(),
-available_tools=get_all_tools(), tool_executor=<async wrapper around
-tool_box.execute_tool with an explicit ToolContext>, max_iterations,
+available_tools=get_all_tools(), tool_executor=<async wrapper forwarding
+tool_box.execute_tool with the loop-injected ToolContext>, max_iterations,
 tool_timeout=120, request_profile={session_id, request_tier, intent_type}).
 
 Usage attribution mirrors the app startup: init_db() points the connection
@@ -75,11 +75,15 @@ async def _run_agent(query: str, meta: dict, sid: str, session_dir: Path):
     set_usage_context(session_id=sid, phase="chat", call_purpose="chat_main")
 
     async def _exec(name, params):
-        return await execute_tool(
-            name,
-            tool_context=ToolContext(session_id=sid, work_dir=str(session_dir)),
-            **(params or {}),
-        )
+        # The deep-think loop already injects a ToolContext into params
+        # (session_id comes from request_profile); forward it verbatim.
+        # Injecting our own alongside it makes execute_tool raise
+        # "got multiple values for keyword argument 'tool_context'".
+        # Only fall back to our own context when the caller supplied none.
+        params = dict(params or {})
+        if "tool_context" not in params:
+            params["tool_context"] = ToolContext(session_id=sid, work_dir=str(session_dir))
+        return await execute_tool(name, **params)
 
     tier = str(meta.get("tier") or "standard")
     tools = meta.get("tools") or get_all_tools()
