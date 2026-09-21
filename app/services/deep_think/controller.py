@@ -24,7 +24,7 @@ from datetime import datetime
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from app.llm import update_usage_context
+from app.llm import stream_chat_collect_async, update_usage_context
 from app.services.deep_think.models import (
     DeepThinkProtocolError,
     DeepThinkResult,
@@ -124,7 +124,7 @@ async def _think_native(
 
     async def _summarize_for_compaction(text: str) -> str:
         prompt = build_summarization_prompt(text)
-        result = await agent.llm_client.chat_async(prompt)
+        result = await stream_chat_collect_async(agent.llm_client, prompt)
         return str(result or "").strip()
 
     iteration = 0

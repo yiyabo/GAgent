@@ -11,7 +11,7 @@ import json
 import logging
 import re
 import time
-from typing import Any, AsyncIterator, Dict, List, Optional, Tuple, Union
+from typing import Any, AsyncIterator, Dict, Iterator, List, Optional, Tuple, Union
 
 from ...llm import get_default_client, LLMClient
 from ...interfaces import LLMProvider
@@ -233,6 +233,26 @@ class LLMService:
         
         # This should never be reached
         raise RuntimeError("Unexpected error in async LLM chat")
+
+    def stream_chat(self, prompt: str, **kwargs) -> Iterator[str]:
+        """Synchronous streaming chat: pass-through to the client's ``stream_chat``.
+
+        Use this instead of :meth:`chat` for long generations — buffered
+        non-streaming calls get cut by the upstream gateway with 504s (§7).
+        """
+        chunks: List[str] = []
+        try:
+            stream_fn = getattr(self.client, "stream_chat", None)
+            if callable(stream_fn):
+                for chunk in stream_fn(prompt, **kwargs):
+                    if chunk:
+                        chunks.append(chunk)
+                        yield chunk
+                return
+            raise RuntimeError("LLM client does not support streaming")
+        finally:
+            if chunks:
+                self._moderation_scan("".join(chunks))
 
     async def stream_chat_async(self, prompt: str, **kwargs) -> AsyncIterator[str]:
         chunks: List[str] = []

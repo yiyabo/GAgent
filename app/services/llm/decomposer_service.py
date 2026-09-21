@@ -179,11 +179,16 @@ class PlanDecomposerLLMService:
             self._llm = LLMService(client)
 
     def generate(self, prompt: str) -> DecompositionResponse:
-        """Send prompt to LLM and parse the structured decomposition response."""
-        response = self._llm.chat(
+        """Send prompt to LLM and parse the structured decomposition response.
+
+        Streams the generation (sync SSE): plan decompositions are long
+        structured outputs and buffered calls get 504'd by the upstream
+        gateway (LOCAL_INFRA §7; journey 2026-09-21 T3 reproduction).
+        """
+        response = "".join(self._llm.stream_chat(
             prompt,
             model=self._settings.model,
-        )
+        ))
         cleaned = strip_code_fences(response)
         try:
             return DecompositionResponse.model_validate_json(cleaned)
@@ -193,7 +198,7 @@ class PlanDecomposerLLMService:
 
     def decide_search(self, prompt: str) -> str:
         """Ask the LLM whether plan generation needs external material collection."""
-        return self._llm.chat(
+        return "".join(self._llm.stream_chat(
             prompt,
             model=self._settings.model,
-        )
+        ))

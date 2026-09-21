@@ -12,7 +12,7 @@ import logging
 import re
 from typing import Any, Dict, List, Optional
 
-from app.llm import get_default_client
+from app.llm import get_default_client, stream_chat_collect_async
 
 from .plan_models import PlanTree
 from .todo_list import build_full_plan_todo_list
@@ -72,8 +72,8 @@ async def generate_phase_titles(tree: PlanTree) -> Dict[int, str]:
     expected_ids = set(phase_tasks)
 
     try:
-        raw = await get_default_client().chat_async(
-            _build_prompt(phase_tasks), max_tokens=300
+        raw = await stream_chat_collect_async(
+            get_default_client(), _build_prompt(phase_tasks), max_tokens=300
         )
     except Exception as exc:
         logger.warning("Layer3 phase narration LLM call failed: %s", exc)

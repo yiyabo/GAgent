@@ -10,7 +10,7 @@ import time
 import threading
 import weakref
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Callable, Dict, List, Optional
+from typing import Any, AsyncIterator, Callable, Dict, Iterator, List, Optional
 
 import httpx
 
@@ -1036,6 +1036,171 @@ class LLMClient(LLMProvider):
                 )
                 raise RuntimeError(f"LLM request failed: {e}")
 
+    def stream_chat(
+        self,
+        prompt: str,
+        force_real: bool = False,
+        model: Optional[str] = None,
+        messages: Optional[list] = None,
+        **kwargs: Any,
+    ) -> Iterator[str]:
+        """Synchronous streaming variant of :meth:`chat`: yields content deltas.
+
+        Long generations must travel over SSE — non-streaming calls against
+        thinking models get cut by the upstream gateway with 504s (observed
+        2026-09-19/21: four consecutive 504s on buffered calls while streamed
+        200s+ generations pass). Retry semantics mirror :meth:`chat`: failures
+        known *before* any content byte (HTTP status errors such as 504) retry
+        with the same backoff; once deltas have been emitted the call raises
+        instead of duplicating content.
+        """
+        if self.mock and not force_real:
+            yield "This is a mock completion."
+            return
+
+        if not self.api_key:
+            raise RuntimeError(f"{self.provider.upper()}_API_KEY is not set in environment")
+
+        # Support full messages list for multi-turn conversations
+        if messages:
+            payload_messages = messages
+        else:
+            payload_messages = [{"role": "user", "content": prompt}]
+
+        try:
+            max_tokens = int(kwargs.pop("max_tokens"))
+        except (KeyError, TypeError, ValueError):
+            max_tokens = 16384
+        timeout_override = _normalize_timeout(kwargs.pop("timeout", None), self.stream_timeout)
+        try:
+            request_retries = max(0, int(kwargs.pop("retries")))
+        except (KeyError, TypeError, ValueError):
+            request_retries = self.retries
+        payload = {
+            "model": model or self.model,
+            "messages": payload_messages,
+            "max_tokens": max_tokens,
+            "stream": True,
+        }
+        headers = self._build_headers()
+        timeout = _make_request_timeout(timeout_override)
+
+        client = _get_shared_sync_client()
+        last_err: Optional[Exception] = None
+        _t0 = time.perf_counter()
+        logical_call_id = _new_logical_call_id()
+        _last_usage: Optional[Dict[str, Any]] = None
+        _attempts = 0
+        for attempt in range(request_retries + 1):
+            _attempts = attempt + 1
+            emitted_any = False
+            try:
+                _outbound_limiter.acquire()
+                attempt_headers = dict(headers)
+                attempt_headers.update(_billing_request_headers(logical_call_id, attempt + 1))
+                with client.stream(
+                    "POST", self._effective_url(), headers=attempt_headers, json=payload,
+                    timeout=timeout,
+                ) as resp:
+                    _record_attempt_context(
+                        logical_call_id,
+                        attempt + 1,
+                        upstream_request_id=resp.headers.get("x-request-id")
+                        or resp.headers.get("request-id"),
+                    )
+                    if resp.status_code >= 400:
+                        # httpx streams must be read before .text is available;
+                        # read() also caches the body for the error handler below.
+                        resp.read()
+                        resp.raise_for_status()
+                    for line in resp.iter_lines():
+                        if not line:
+                            continue
+                        if not line.startswith("data:"):
+                            continue
+                        data = line[len("data:"):].strip()
+                        if not data:
+                            continue
+                        if data == "[DONE]":
+                            break
+                        try:
+                            obj = json.loads(data)
+                        except json.JSONDecodeError:
+                            continue
+
+                        usage = obj.get("usage")
+                        if isinstance(usage, dict):
+                            _last_usage = usage
+                            _record_attempt_context(
+                                logical_call_id,
+                                attempt + 1,
+                                upstream_request_id=resp.headers.get("x-request-id")
+                                or resp.headers.get("request-id"),
+                                usage=usage,
+                            )
+                            _log_usage(
+                                provider=self.provider,
+                                model=model or self.model,
+                                prompt_tokens=usage.get("prompt_tokens", 0),
+                                completion_tokens=usage.get("completion_tokens", 0),
+                                total_tokens=usage.get("total_tokens", 0),
+                                call_status="ok",
+                                duration_ms=(time.perf_counter() - _t0) * 1000,
+                            )
+
+                        content_delta = self._extract_stream_delta(obj)
+                        if content_delta:
+                            emitted_any = True
+                            yield content_delta
+                    _log_call_metrics(
+                        method="stream_chat", provider=self.provider, model=model or self.model,
+                        status="ok", latency_ms=(time.perf_counter() - _t0) * 1000,
+                        attempts=attempt + 1, usage=_last_usage,
+                    )
+                    return
+            except httpx.HTTPStatusError as e:
+                status_code = e.response.status_code if e.response is not None else None
+                if (
+                    not emitted_any
+                    and isinstance(status_code, int) and 500 <= status_code < 600
+                    and attempt < request_retries
+                ):
+                    delay = max(0.0, self.backoff_base * (2**attempt) + random.uniform(0, self.backoff_base / 4.0))
+                    time.sleep(delay)
+                    last_err = e
+                    continue
+                body = ""
+                try:
+                    body = e.response.text if e.response is not None else ""
+                except Exception:
+                    body = ""
+                try:
+                    _ra = e.response.headers.get("retry-after") if e.response is not None else None
+                except Exception:
+                    _ra = None
+                _ra_suffix = f" (retry_after={_ra})" if _ra else ""
+                _log_call_metrics(
+                    method="stream_chat", provider=self.provider, model=model or self.model,
+                    status="error", latency_ms=(time.perf_counter() - _t0) * 1000,
+                    attempts=attempt + 1, error=f"HTTPStatusError:{status_code}",
+                )
+                raise RuntimeError(_format_http_error(e, body=body) + _ra_suffix) from e
+            except Exception as e:
+                # Treat as transient (network) and retry only before any content
+                if not emitted_any and attempt < request_retries:
+                    delay = max(0.0, self.backoff_base * (2**attempt) + random.uniform(0, self.backoff_base / 4.0))
+                    time.sleep(delay)
+                    last_err = e
+                    continue
+                _log_call_metrics(
+                    method="stream_chat", provider=self.provider, model=model or self.model,
+                    status="error", latency_ms=(time.perf_counter() - _t0) * 1000,
+                    attempts=attempt + 1, error=type(e).__name__,
+                )
+                raise RuntimeError(f"LLM request failed: {e}")
+        if last_err is not None:
+            raise RuntimeError(f"LLM request failed: {last_err}")
+
     @_track_inflight
     async def chat_async(
         self,
@@ -1591,6 +1756,28 @@ class LLMClient(LLMProvider):
 
 
 _default_client: Optional[LLMClient] = None
+
+
+async def stream_chat_collect_async(client: Any, prompt: str, **kwargs: Any) -> str:
+    """Collect a complete chat response through the client's streaming API.
+
+    Long generations must travel over SSE: non-streaming thinking-model calls
+    get cut by the upstream gateway with 504s (LOCAL_INFRA §7). Falls back to
+    ``chat_async`` (and finally sync ``chat`` in an executor) for clients that
+    do not expose ``stream_chat_async``.
+    """
+    stream_fn = getattr(client, "stream_chat_async", None)
+    if callable(stream_fn):
+        chunks: List[str] = []
+        async for chunk in stream_fn(prompt, **kwargs):
+            if chunk:
+                chunks.append(str(chunk))
+        return "".join(chunks)
+    chat_async_fn = getattr(client, "chat_async", None)
+    if callable(chat_async_fn):
+        return await chat_async_fn(prompt, **kwargs)
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, lambda: client.chat(prompt, **kwargs))
 
 
 def get_default_client() -> LLMClient:

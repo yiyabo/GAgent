@@ -6,7 +6,7 @@ import json
 import re
 from typing import Any, Dict, Optional, Tuple
 
-from app.llm import LLMClient, clear_usage_context, set_usage_context
+from app.llm import LLMClient, clear_usage_context, set_usage_context, stream_chat_collect_async
 from app.services.foundation.settings import get_settings
 
 from .models import ConversationQualityResult
@@ -60,10 +60,10 @@ class ConversationQualityEvaluator:
             phase="audit",
         )
         try:
-            raw = await self.client.chat_async(
+            raw = await stream_chat_collect_async(
+                self.client,
                 prompt,
                 max_tokens=1800,
-                retries=1,
             )
         finally:
             clear_usage_context(token)
