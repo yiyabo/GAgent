@@ -1,0 +1,97 @@
+[project]
+name = "bioagent"
+version = "0.1.0"
+description = "AI-Driven Task Orchestration System - biomedical research agent backend"
+# 代码中已使用 3.10+ 的 `X | None` 注解语法（如
+# app/services/plans/task_delegate_executor.py:22），这些注解在 dataclass 定义时
+# 会被求值，因此 3.9 无法运行。原 start_backend.sh 声明的 >=3.9 是过时的。
+requires-python = ">=3.10"
+
+# 依赖清单从 requirements.txt 原样迁移，版本约束未做任何改动。
+# 收紧上界或拆分可选依赖是后续独立事项，避免与本次迁移混在一起。
+dependencies = [
+    # --- Web 框架与 ASGI ---
+    "fastapi>=0.111.0",
+    "starlette>=0.37.2",
+    "uvicorn[standard]>=0.30.0",
+    "python-multipart>=0.0.9", # 文件上传接口依赖
+    # --- 配置与校验 ---
+    # email extra 提供 email-validator：app/routers/auth_routes.py:68 的注册/登录
+    # 模型使用 pydantic.EmailStr，缺失时 app.main 导入即失败。
+    # 原 requirements.txt 遗漏此项，靠 conda 环境里的间接依赖偶然满足。
+    "pydantic[email]>=2.8.0",
+    "pydantic-settings>=2.0.0", # app/services/foundation/settings.py 的 Settings 基类
+    "python-dotenv>=1.0.0",
+    "PyYAML>=6.0.0", # skills 的 SKILL.md frontmatter、bio_tools 配置
+    # --- HTTP 客户端 ---
+    "httpx>=0.23.0", # app/llm.py 的连接池基于此
+    "socksio>=1.0.0", # httpx 走 socks 代理时必需
+    "requests>=2.31.0",
+    "aiohttp>=3.8.0",
+    # --- 数据处理 ---
+    "numpy>=1.26.0",
+    "pandas>=2.0.0",
+    "scipy>=1.10.0",
+    "networkx>=3.0.0", # 计划 DAG 的图算法
+    # HDF5 读写。artifact_contracts.py 有 5 处 .h5 产物契约
+    # （phage_ml / phage_phi 的特征矩阵），artifact_validation.py:584 的
+    # _validate_hdf5_table 缺 h5py 会直接抛 ValueError，导致这些产物校验
+    # 必然失败、计划执行卡住。原 requirements.txt 遗漏。
+    "h5py>=3.10.0",
+    # --- 运行时与基础设施 ---
+    "docker>=6.0.0", # 代码沙箱、bio_tools 容器编排
+    "psutil>=5.9.0",
+    "asyncssh>=2.14.2", # 终端 SSH 后端、bio_tools 远程执行
+    "redis>=5.0.0", # 仅多 worker 部署的实时总线需要
+    "argon2-cffi>=23.1.0", # 本地账号密码哈希
+    # 敏感词扫描（app/services/moderation/engine.py:47 惰性导入，缺失时整个
+    # moderation 功能静默降级为 no-op，聊天内容不再经过敏感词过滤）。
+    # main 分支的 requirements.txt 里有，迁移时不能丢。
+    "pyahocorasick>=2.0.0",
+    # --- 文档解析与产出 ---
+    "pypdf>=3.0.0",
+    "Pillow>=10.0.0",
+    "reportlab>=4.0.0", # 交付物 PDF 排版
+    "markdown>=3.5.0",
+    "mammoth>=1.6.0", # DOCX 解析
+    # pandas 读写 .xlsx 的底层引擎（pandas 不会自动带上）。缺失时
+    # app/services/context/sample_adequacy.py:283,307 与
+    # app/services/interpreter/metadata.py:327 的 pd.read_excel 会抛
+    # ImportError，导致 Excel 临床表格的样本量审计和数据画像失效。
+    # 注意 watermark.py:159 的 _watermark_xlsx 虽然也 import openpyxl，但那是
+    # 死函数（.xlsx 不在 _HANDLERS 表里，实际走 _copy_fallback 纯拷贝）。
+    # 原 requirements.txt 遗漏。
+    "openpyxl>=3.1.0",
+    # --- 图表产出 ---
+    # tool_box/tools_impl/scientific_figure_generator.py:368 裸 import 且无
+    # fallback，缺失会让 scientific_figure_generator 这个注册工具完全不可用。
+    # 原 requirements.txt 遗漏。
+    "matplotlib>=3.8.0",
+    # --- Token 计数 ---
+    # app/services/context/context_manager.py:28 惰性导入，供 DeepThink 主循环
+    # 判断何时压缩上下文。缺失时退化为 CJK 字符估算，压缩时机会不准。
+    # 原 requirements.txt 遗漏。
+    "tiktoken>=0.7.0",
+    # --- 本地嵌入（EMBEDDING_PROVIDER=local 时才会加载）---
+    # sentence-transformers / torch 在
+    # app/services/embeddings/local_embedding_client.py:52 惰性导入，
+    # 默认 provider 为 qwen，实际用不到。约 2.5GB，容器化时应拆为可选依赖。
+    "sentence-transformers>=2.7.0",
+    "torch>=2.0.0",
+    # --- 测试（原 requirements.txt 混在主依赖里，此处保持原样）---
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "black>=26.5.1",
+]
+
+# 后端以 `uvicorn app.main:app` 方式从仓库根直接运行，不需要把 bioagent
+# 自身构建成可安装包，因此声明为非 package 项目（仅管理依赖与虚拟环境）。
+[tool.uv]
+package = false
+
+# 默认包源换成清华 TUNA 镜像：国内直连 pypi.org 下载大包（如 torch）经常
+# 超时或极慢，镜像站内容与官方同源同 hash，锁文件校验不受影响。
+# 写在项目里而不是用户全局配置，是为了换机器 clone 后不用再手工配源。
+[[tool.uv.index]]
+url = "https://pypi.tuna.tsinghua.edu.cn/simple"
+default = true
