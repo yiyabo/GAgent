@@ -25,6 +25,7 @@ app/
 | LLM client | `llm.py` | Multi-provider client and shared pools. |
 | Principal/session context | `services/request_principal.py`, `services/session_context.py` | Owner/session propagation. |
 | Content moderation audit | `services/moderation/` | Log-only sensitive-keyword scanning (TC260 library) on chat input and LLM output; audit JSONL in `logs/moderation.log`; toggle via `MODERATION_ENABLED`. |
+| DeepThink orchestration | `services/deep_think_agent.py` + `services/deep_think/` | Facade agent class + split modules: `models` (dataclasses), `text_utils` (pure fns/env knobs), `guards` (loop guards), `synthesis` (fallback/synthesis), `protocol` (strict JSON parse), `prompts` (prompt builders), `dispatch` (tool exec/result shaping), `gating` (execute gates/truth barriers), `controller` (think loops). Methods stay as thin wrappers on `DeepThinkAgent`; env-knob/display helpers resolve via late-bound deep_think_agent namespace. |
 | Database | `repository/`, `database_pool.py` | Raw SQL; row factory returns dict-like rows. |
 
 ## CONVENTIONS
