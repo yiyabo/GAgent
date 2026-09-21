@@ -169,7 +169,7 @@ def test_evaluate_plan_rubric_prefers_async_client_path() -> None:
     assert result.overall_score > 0
 
 
-def test_evaluate_plan_rubric_uses_sync_path_for_builtin_client_inside_running_loop(
+def test_evaluate_plan_rubric_uses_sync_streaming_for_builtin_client_inside_running_loop(
     monkeypatch,
 ) -> None:
     tree = _build_review_tree()
@@ -205,29 +205,34 @@ def test_evaluate_plan_rubric_uses_sync_path_for_builtin_client_inside_running_l
     )
     calls = {"sync": 0, "async": 0, "stream": 0}
 
-    def _fake_chat(*_args, **_kwargs):
+    def _fake_stream(*_args, **_kwargs):
+        calls["stream"] += 1
+        yield payload
+
+    def _forbid_chat(*_args, **_kwargs):
         calls["sync"] += 1
-        return payload
+        raise AssertionError("buffered chat() must not run for built-in LLMClient")
 
     async def _forbid_async(*_args, **_kwargs):
         calls["async"] += 1
         raise AssertionError("async evaluator path should not run for built-in LLMClient")
 
-    async def _forbid_stream(*_args, **_kwargs):
+    async def _forbid_async_stream(*_args, **_kwargs):
         calls["stream"] += 1
-        raise AssertionError("stream evaluator path should not run for built-in LLMClient")
+        raise AssertionError("async stream evaluator path should not run for built-in LLMClient")
 
-    monkeypatch.setattr(client, "chat", _fake_chat)
+    monkeypatch.setattr(client, "stream_chat", _fake_stream)
+    monkeypatch.setattr(client, "chat", _forbid_chat)
     monkeypatch.setattr(client, "chat_async", _forbid_async)
-    monkeypatch.setattr(client, "stream_chat_async", _forbid_stream)
+    monkeypatch.setattr(client, "stream_chat_async", _forbid_async_stream)
 
     async def _call_in_running_loop():
         return evaluate_plan_rubric(tree, evaluator_client=client)
 
     result = asyncio.run(_call_in_running_loop())
 
-    assert calls["sync"] == 1
+    assert calls["sync"] == 0
     assert calls["async"] == 0
-    assert calls["stream"] == 0
+    assert calls["stream"] == 1
     assert result.feedback.get("status") != "evaluation_unavailable"
     assert result.overall_score > 0

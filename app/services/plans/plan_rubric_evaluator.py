@@ -645,10 +645,13 @@ def _invoke_evaluator_client(
     # causes "bound to a different event loop" failures during rubric review.
     #
     # Rubric evaluation is a synchronous API, so prefer the sync HTTP path for the
-    # concrete built-in client. Keep the async fallback for custom evaluator stubs
-    # used in tests or alternative integrations that only expose async methods.
+    # concrete built-in client. The sync path now STREAMS (LLMClient.stream_chat):
+    # long rubric generations over buffered calls get cut by the upstream gateway
+    # with 504s (LOCAL_INFRA §7; journey 2026-09-22 review_plan reproduction).
+    # Keep the async fallback for custom evaluator stubs used in tests or
+    # alternative integrations that only expose async methods.
     if isinstance(client, LLMClient):
-        return client.chat("", messages=messages, model=evaluator_model)
+        return "".join(client.stream_chat("", messages=messages, model=evaluator_model))
 
     async def _runner() -> str:
         stream_chat_async = getattr(client, "stream_chat_async", None)

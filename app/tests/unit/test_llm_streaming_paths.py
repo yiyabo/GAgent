@@ -263,6 +263,33 @@ class TestEvaluatorStreaming:
         assert calls["kwargs"].get("max_tokens") == 1800
 
 
+class TestRubricEvaluatorStreaming:
+    def test_builtin_client_uses_stream_chat(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from app.services.plans.plan_rubric_evaluator import _invoke_evaluator_client
+
+        calls = {"stream": 0, "chat": 0}
+        client = LLMClient(
+            provider="platform",
+            api_key="sk-test",
+            url="https://example.invalid/v1/chat/completions",
+            model="m",
+        )
+
+        def _stream(prompt: str, **kwargs: Any) -> Iterator[str]:
+            calls["stream"] += 1
+            yield "ok"
+
+        def _chat(prompt: str, **kwargs: Any) -> str:
+            calls["chat"] += 1
+            raise AssertionError("buffered chat() must not be used for rubric evaluation")
+
+        monkeypatch.setattr(client, "stream_chat", _stream)
+        monkeypatch.setattr(client, "chat", _chat)
+
+        assert _invoke_evaluator_client(client, prompt="p", evaluator_model="m") == "ok"
+        assert calls == {"stream": 1, "chat": 0}
+
+
 class TestPhaseNarratorStreaming:
     async def test_narrator_uses_streaming_collector(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import app.services.plans.phase_narrator as pn
