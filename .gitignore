@@ -104,3 +104,4 @@ logs/
 tools/pkgs/
 web-ui/test-results/
 lightrag.log
+evals/user_journey/runs/
