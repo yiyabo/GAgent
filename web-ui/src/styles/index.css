@@ -367,13 +367,6 @@ body,
   opacity: 1;
 }
 
-/* ---- Dark mode for drop overlay ---- */
-@media (prefers-color-scheme: dark) {
-  .chat-drop-overlay {
-    background: rgba(30, 30, 30, 0.92);
-  }
-}
-
 .chat-header {
   padding: 16px;
   border-bottom: 1px solid var(--border-color);
