@@ -113,6 +113,7 @@ export interface BackgroundTaskItem {
   blocked_by_dependencies?: boolean | null;
   incomplete_dependencies?: number[] | null;
   is_active_execution?: boolean | null;
+  execution_paused?: boolean | null;
   counts?: {
     done: number;
     total: number;

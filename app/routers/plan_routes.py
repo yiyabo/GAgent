@@ -2788,6 +2788,26 @@ def _run_full_plan_job(
             )
             _publish_progress(current_step=idx, current_task_id=task_id)
 
+            if plan_decomposition_jobs.is_execution_paused(job_id):
+                log_job_event(
+                    "info",
+                    "Plan execution paused; waiting before dispatching next task.",
+                    {"plan_id": plan_id, "step": idx, "total_steps": total_steps, "task_id": task_id},
+                )
+                if not plan_decomposition_jobs.wait_while_paused(job_id):
+                    log_job_event(
+                        "error",
+                        "Plan execution job state lost while paused; aborting remaining tasks.",
+                        {"plan_id": plan_id, "step": idx, "task_id": task_id},
+                    )
+                    skipped.extend(task_order[idx - 1:])
+                    break
+                log_job_event(
+                    "info",
+                    "Plan execution resumed; continuing dispatch.",
+                    {"plan_id": plan_id, "step": idx, "total_steps": total_steps, "task_id": task_id},
+                )
+
             # Re-check task status at execution time so background runs do not
             # re-execute work that finished after the queue was created.
             try:

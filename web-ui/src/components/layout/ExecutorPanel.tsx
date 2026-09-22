@@ -1,8 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
-import { Button, Progress, Space, Tag, Tooltip, Typography } from 'antd';
-import { ReloadOutlined, SearchOutlined, DownOutlined, UpOutlined } from '@ant-design/icons';
+import { Button, Progress, Space, Tag, Tooltip, Typography, message } from 'antd';
+import { ReloadOutlined, SearchOutlined, DownOutlined, UpOutlined, PauseOutlined, CaretRightOutlined } from '@ant-design/icons';
 import { useChatStore } from '@store/chat';
 import { planTreeApi } from '@api/planTree';
 import { ENV } from '@/config/env';
@@ -242,15 +242,17 @@ interface TaskRowProps {
   isExpanded: boolean;
   canExpand: boolean;
   isProcessing: boolean;
+  controlBusy: boolean;
   onToggle: (jobId: string) => void;
   onSendMessage: (msg: string, meta?: any) => void;
+  onControlJob: (jobId: string, action: 'pause' | 'resume') => void;
 }
 
 const _itemFingerprint = (item: BackgroundTaskItem): string =>
-  `${item.job_id}|${item.status}|${item.progress_percent ?? ''}|${item.progress_text ?? ''}|${item.done_steps ?? ''}|${item.total_steps ?? ''}|${item.current_step ?? ''}|${item.current_task_id ?? ''}|${item.error ?? ''}`;
+  `${item.job_id}|${item.status}|${item.progress_percent ?? ''}|${item.progress_text ?? ''}|${item.done_steps ?? ''}|${item.total_steps ?? ''}|${item.current_step ?? ''}|${item.current_task_id ?? ''}|${item.error ?? ''}|${item.execution_paused ? '1' : ''}`;
 
 const TaskRow = React.memo<TaskRowProps>(
-  ({ item, currentPlanId, isExpanded, canExpand, isProcessing, onToggle, onSendMessage }) => {
+  ({ item, currentPlanId, isExpanded, canExpand, isProcessing, controlBusy, onToggle, onSendMessage, onControlJob }) => {
     const effective = item.effective_status || null;
     const displayStatus = effective === 'blocked' ? 'queued' : item.status;
     const normalized = effective === 'blocked' ? 'queued' : normalizeJobStatus(item.status);
@@ -307,6 +309,30 @@ const TaskRow = React.memo<TaskRowProps>(
             <span className="task-status-text">{effective === 'blocked' ? 'blocked' : getStatusLabel(displayStatus)}</span>
             {duration ? <span className="task-status-meta">{duration}</span> : null}
             <span className="task-status-meta">{formatRelativeTime(item.created_at)}</span>
+            {item.job_type === 'plan_execute' && (normalized === 'running' || normalized === 'queued') && (
+              <>
+                {item.execution_paused ? (
+                  <Tag color="gold" style={{ marginInlineStart: 4, fontSize: 10, lineHeight: '14px', padding: '0 4px' }}>
+                    Paused
+                  </Tag>
+                ) : null}
+                <Tooltip title={item.execution_paused ? 'Resume plan execution' : 'Pause plan execution'}>
+                  <Button
+                    type="link"
+                    size="small"
+                    icon={item.execution_paused ? <CaretRightOutlined /> : <PauseOutlined />}
+                    loading={controlBusy}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onControlJob(item.job_id, item.execution_paused ? 'resume' : 'pause');
+                    }}
+                    style={{ padding: '0 4px', fontSize: 11, height: 'auto', lineHeight: 1 }}
+                  >
+                    {item.execution_paused ? 'Resume' : 'Pause'}
+                  </Button>
+                </Tooltip>
+              </>
+            )}
             {normalized === 'completed' && (
               <Tooltip title="Ask Agent to analyze task results">
                 <Button
@@ -360,6 +386,7 @@ const TaskRow = React.memo<TaskRowProps>(
     prev.isExpanded === next.isExpanded &&
     prev.canExpand === next.canExpand &&
     prev.isProcessing === next.isProcessing &&
+    prev.controlBusy === next.controlBusy &&
     prev.currentPlanId === next.currentPlanId &&
     _itemFingerprint(prev.item) === _itemFingerprint(next.item)
 );
@@ -441,6 +468,26 @@ const ExecutorPanel: React.FC = () => {
   }
   },
   [currentPlanId, currentSessionId, applySnapshot]
+  );
+
+  const [controlBusyJobId, setControlBusyJobId] = useState<string | null>(null);
+
+  const handleControlJob = useCallback(
+  async (jobId: string, action: 'pause' | 'resume') => {
+  setControlBusyJobId(jobId);
+  try {
+  const resp = await planTreeApi.controlJob(jobId, { action });
+  if (!resp.success) {
+  message.warning(resp.message || `Failed to ${action} execution`);
+  }
+  } catch (err: any) {
+  message.error(err?.message || `Failed to ${action} execution`);
+  } finally {
+  setControlBusyJobId(null);
+  void fetchBoard(true);
+  }
+  },
+  [fetchBoard]
   );
 
   // ── SSE connection (with polling fallback) ────────────────────────────────
@@ -677,8 +724,10 @@ const ExecutorPanel: React.FC = () => {
    isExpanded={expandedJobIds.has(item.job_id)}
    canExpand={canExpand}
    isProcessing={isProcessing}
+   controlBusy={controlBusyJobId === item.job_id}
    onToggle={toggleJobExpand}
    onSendMessage={sendMessage}
+   onControlJob={handleControlJob}
    />
    );
    })}

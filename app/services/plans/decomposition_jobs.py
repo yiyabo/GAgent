@@ -639,6 +639,7 @@ class PlanDecompositionJobManager:
     def __init__(self, *, ttl_seconds: int = DEFAULT_TTL_SECONDS) -> None:
         self._jobs: Dict[str, PlanDecompositionJob] = {}
         self._controllers: Dict[str, JobRuntimeController] = {}
+        self._execution_pause: Dict[str, threading.Event] = {}
         self._lock = threading.Lock()
         self._ttl_seconds = ttl_seconds
 
@@ -681,6 +682,9 @@ class PlanDecompositionJobManager:
             if job_id in self._jobs:
                 raise ValueError(f"Job {job_id} already exists.")
             self._jobs[job_id] = job
+            pause_event = threading.Event()
+            pause_event.set()
+            self._execution_pause[job_id] = pause_event
         try:
             if plan_id is not None:
                 register_decomposition_job_index(
@@ -1029,6 +1033,58 @@ class PlanDecompositionJobManager:
         )
         return True
 
+    def set_execution_paused(self, job_id: str, paused: bool) -> bool:
+        paused = bool(paused)
+        with self._lock:
+            job = self._jobs.get(job_id)
+            event = self._execution_pause.get(job_id)
+            if job is None or event is None:
+                return False
+            if job.status not in {"queued", "running"}:
+                return False
+            if (not event.is_set()) == paused:
+                job.metadata["execution_paused"] = paused
+                return True
+            if paused:
+                event.clear()
+            else:
+                event.set()
+            job.metadata["execution_paused"] = paused
+            job.last_activity_at = _utc_now()
+        self.append_log(
+            job_id,
+            "info",
+            "Plan execution paused." if paused else "Plan execution resumed.",
+            {
+                "sub_type": "runtime_control",
+                "action": "pause" if paused else "resume",
+                "scope": "plan",
+            },
+        )
+        return True
+
+    def is_execution_paused(self, job_id: str) -> bool:
+        with self._lock:
+            event = self._execution_pause.get(job_id)
+            if event is None:
+                return False
+            return not event.is_set()
+
+    def wait_while_paused(self, job_id: str, poll_seconds: float = 1.0) -> bool:
+        """Block the calling worker thread while the job is plan-level paused.
+
+        Returns False when the job (or its pause flag) no longer exists,
+        signalling the caller to abort the execution loop.
+        """
+        while True:
+            with self._lock:
+                job = self._jobs.get(job_id)
+                event = self._execution_pause.get(job_id)
+                if job is None or event is None:
+                    return False
+            if event.wait(timeout=poll_seconds):
+                return True
+
     def attach_plan(self, job_id: str, plan_id: int) -> None:
         with self._lock:
             job = self._jobs.get(job_id)
@@ -1111,6 +1167,7 @@ class PlanDecompositionJobManager:
         for job_id in expired:
             self._jobs.pop(job_id, None)
             self._controllers.pop(job_id, None)
+            self._execution_pause.pop(job_id, None)
             stop_owner_lease("job", job_id)
 
     def _load_persisted_job(self, job_id: str) -> Optional[Dict[str, Any]]:

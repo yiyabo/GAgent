@@ -97,6 +97,7 @@ class BackgroundTaskItem(BaseModel):
     blocked_by_dependencies: bool = False
     incomplete_dependencies: List[int] = Field(default_factory=list)
     is_active_execution: bool = False
+    execution_paused: bool = False
     error: Optional[str] = None
 
 
@@ -718,6 +719,7 @@ def _build_plan_execute_board_item(
         created_at=job_payload.get("created_at"),
         started_at=job_payload.get("started_at"),
         finished_at=job_payload.get("finished_at"),
+        execution_paused=metadata.get("execution_paused") is True,
         **progress_fields,
         error=job_payload.get("error"),
     )
@@ -1235,6 +1237,15 @@ async def control_job_runtime(
         raise HTTPException(status_code=404, detail="Job not found.")
     ensure_owner_access(request, payload.get("owner_id"), detail="job owner mismatch")
 
+    flag_set = False
+    if control.action in {"pause", "resume"}:
+        try:
+            flag_set = plan_decomposition_jobs.set_execution_paused(
+                job_id, control.action == "pause"
+            )
+        except Exception:  # pragma: no cover - defensive
+            flag_set = False
+
     accepted = await route_control_message(
         "job",
         job_id,
@@ -1242,7 +1253,7 @@ async def control_job_runtime(
     )
     if not accepted:
         accepted = plan_decomposition_jobs.control_runtime(job_id, control.action)
-    if not accepted:
+    if not accepted and not flag_set:
         return JobControlResponse(
             success=False,
             job_id=job_id,

@@ -70,6 +70,12 @@ class _JobStoreStub:
         payload["error"] = error
         self.failure_calls.append(payload)
 
+    def is_execution_paused(self, _job_id: str) -> bool:
+        return False
+
+    def wait_while_paused(self, _job_id: str, poll_seconds: float = 1.0) -> bool:
+        return True
+
 
 def test_execute_full_plan_rejects_duplicate_run_before_creating_job(monkeypatch) -> None:
     tree = _tree()
