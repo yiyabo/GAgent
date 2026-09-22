@@ -220,3 +220,101 @@ def test_fuzzy_match_prefers_higher_similarity() -> None:
 
     assert 41 in consumer.dependencies
     assert 40 not in consumer.dependencies
+
+
+def test_fuzzy_match_does_not_collapse_plain_filenames() -> None:
+    producer = PlanNode(
+        id=25,
+        plan_id=700,
+        name="Render Final Report",
+        status="pending",
+        metadata={"artifact_contract": {"publishes": ["deliverables_manifest.md"]}},
+    )
+    consumer = PlanNode(
+        id=21,
+        plan_id=700,
+        name="Run PSM Sensitivity",
+        status="pending",
+        metadata={"artifact_contract": {"requires": ["psm_skipped_note.md"]}},
+    )
+    tree = _tree(700, producer, consumer)
+
+    result = enrich_plan_dependencies(tree)
+
+    assert 25 not in consumer.dependencies
+    assert "psm_skipped_note.md" not in producer.metadata["artifact_contract"]["publishes"]
+    assert not result.added_edges
+
+
+def test_artifact_edge_inverting_branch_order_is_rejected() -> None:
+    root = PlanNode(id=1, plan_id=701, name="Root", status="pending")
+    comp_data = PlanNode(id=2, plan_id=701, name="T2 Data", status="pending", parent_id=1, position=1, depth=1)
+    comp_report = PlanNode(
+        id=5, plan_id=701, name="T5 Report", status="pending",
+        parent_id=1, position=2, depth=1, dependencies=[2],
+    )
+    early = PlanNode(
+        id=7, plan_id=701, name="T2.1 Read CSV", status="pending", parent_id=2, position=0, depth=2,
+        metadata={"artifact_contract": {"requires": ["deliverables_manifest.md"]}},
+    )
+    late = PlanNode(
+        id=25, plan_id=701, name="T5.3 Render", status="pending", parent_id=5, position=2, depth=2,
+        metadata={"artifact_contract": {"publishes": ["deliverables_manifest.md"]}},
+    )
+    tree = _tree(701, root, comp_data, comp_report, early, late)
+
+    result = enrich_plan_dependencies(tree)
+
+    assert 25 not in early.dependencies
+    assert any(
+        e.consumer_task_id == 7 and e.producer_task_id == 25
+        for e in result.skipped_inversion_edges
+    )
+
+
+def test_artifact_edge_respecting_branch_order_is_injected() -> None:
+    root = PlanNode(id=1, plan_id=702, name="Root", status="pending")
+    comp_stats = PlanNode(id=3, plan_id=702, name="T3 Stats", status="pending", parent_id=1, position=1, depth=1)
+    comp_report = PlanNode(
+        id=5, plan_id=702, name="T5 Report", status="pending",
+        parent_id=1, position=2, depth=1, dependencies=[3],
+    )
+    producer = PlanNode(
+        id=14, plan_id=702, name="T3.4 Finalize Stats", status="pending", parent_id=3, position=3, depth=2,
+        metadata={"artifact_contract": {"publishes": ["stats_summary.csv"]}},
+    )
+    consumer = PlanNode(
+        id=24, plan_id=702, name="T5.2 Embed Numbers", status="pending", parent_id=5, position=1, depth=2,
+        metadata={"artifact_contract": {"requires": ["stats_summary.csv"]}},
+    )
+    tree = _tree(702, root, comp_stats, comp_report, producer, consumer)
+
+    result = enrich_plan_dependencies(tree)
+
+    assert 14 in consumer.dependencies
+    assert any(
+        e.consumer_task_id == 24 and e.producer_task_id == 14
+        for e in result.added_edges
+    )
+
+
+def test_same_composite_later_producer_rejected_earlier_allowed() -> None:
+    parent = PlanNode(id=2, plan_id=703, name="T2 Composite", status="pending")
+    first = PlanNode(
+        id=7, plan_id=703, name="T2.1 Pair Data", status="pending", parent_id=2, position=0, depth=2,
+        metadata={"artifact_contract": {"publishes": ["paired_dataset.csv"], "requires": ["qc_flags.json"]}},
+    )
+    second = PlanNode(
+        id=8, plan_id=703, name="T2.2 QC Checks", status="pending", parent_id=2, position=1, depth=2,
+        metadata={"artifact_contract": {"publishes": ["qc_flags.json"], "requires": ["paired_dataset.csv"]}},
+    )
+    tree = _tree(703, parent, first, second)
+
+    result = enrich_plan_dependencies(tree)
+
+    assert 8 not in first.dependencies
+    assert 7 in second.dependencies
+    assert any(
+        e.consumer_task_id == 7 and e.producer_task_id == 8
+        for e in result.skipped_inversion_edges
+    )

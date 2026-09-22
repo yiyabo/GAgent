@@ -35,6 +35,7 @@ class EnrichmentResult:
     added_edges: List[EnrichmentEdge] = field(default_factory=list)
     skipped_ambiguous_aliases: List[str] = field(default_factory=list)
     skipped_cycle_edges: List[EnrichmentEdge] = field(default_factory=list)
+    skipped_inversion_edges: List[EnrichmentEdge] = field(default_factory=list)
     error: Optional[str] = None
 
 
@@ -189,10 +190,82 @@ def _would_create_cycle(tree: PlanTree, producer_id: int, consumer_id: int) -> b
     return False
 
 
+# Dotted file extensions that must keep the full filename as the alias key.
+# Stripping "name.md" to "md" collapsed every same-extension alias into an
+# exact match and wired consumers to arbitrary producers (plan-173 incident).
+_NAMESPACE_GUARD_FILE_EXTS = {
+    ".md", ".json", ".csv", ".tsv", ".txt", ".tex", ".yaml", ".yml", ".bib", ".pdf",
+}
+
+
 def _strip_namespace(alias: str) -> str:
     if '.' in alias:
-        return alias.split('.', 1)[1]
+        tail = alias.split('.', 1)[1]
+        if ('.' + tail.lower()) not in _NAMESPACE_GUARD_FILE_EXTS:
+            return tail
     return alias
+
+
+def _top_ancestor_id(tree: PlanTree, node_id: int) -> int:
+    """Highest ancestor directly below a depth-0 plan root (the node's branch)."""
+    root_ids = set(tree.root_node_ids())
+    seen: Set[int] = set()
+    current = node_id
+    while current not in seen:
+        seen.add(current)
+        node = tree.nodes.get(current)
+        if node is None or node.parent_id is None or node.parent_id in root_ids:
+            return current
+        current = node.parent_id
+    return current
+
+
+def _has_dep_path(tree: PlanTree, src: int, dst: int) -> bool:
+    """True when *dst* is reachable from *src* following dependency edges."""
+    visited: Set[int] = set()
+    stack = [src]
+    while stack:
+        current = stack.pop()
+        if current == dst:
+            return True
+        if current in visited:
+            continue
+        visited.add(current)
+        node = tree.nodes.get(current)
+        if node is not None:
+            stack.extend(dep for dep in (node.dependencies or []) if dep not in visited)
+    return False
+
+
+def _inverts_branch_order(tree: PlanTree, producer_id: int, consumer_id: int) -> bool:
+    """True when a producer→consumer artifact edge contradicts the plan's run order.
+
+    Provable inversions only: a later-position sibling feeding an earlier one
+    deadlocks it; a producer whose branch is declared downstream of the
+    consumer's branch finishes strictly later. Unrelated branches fall back to
+    composite position as the order proxy.
+    """
+    producer = tree.nodes.get(producer_id)
+    consumer = tree.nodes.get(consumer_id)
+    if producer is None or consumer is None:
+        return False
+    if (
+        producer.parent_id is not None
+        and producer.parent_id == consumer.parent_id
+        and (producer.position or 0) > (consumer.position or 0)
+    ):
+        return True
+    producer_root = _top_ancestor_id(tree, producer_id)
+    consumer_root = _top_ancestor_id(tree, consumer_id)
+    if producer_root == consumer_root:
+        return False
+    if _has_dep_path(tree, producer_root, consumer_root):
+        return True
+    if _has_dep_path(tree, consumer_root, producer_root):
+        return False
+    producer_pos = (tree.nodes.get(producer_root).position or 0)
+    consumer_pos = (tree.nodes.get(consumer_root).position or 0)
+    return producer_pos > consumer_pos
 
 
 def _normalize_base_name(name: str) -> str:
@@ -424,6 +497,18 @@ def _enrich_impl(tree: PlanTree) -> EnrichmentResult:
                 result.skipped_cycle_edges.append(edge)
                 logger.info(
                     "Skipped cycle-creating edge: task %s -> task %s via '%s'",
+                    consumer_id,
+                    producer_id,
+                    alias,
+                )
+                continue
+
+            # Order check: producer must not land downstream of the consumer
+            if _inverts_branch_order(tree, producer_id, consumer_id):
+                edge = EnrichmentEdge(consumer_id, producer_id, alias)
+                result.skipped_inversion_edges.append(edge)
+                logger.info(
+                    "Skipped order-inverting edge: task %s -> task %s via '%s'",
                     consumer_id,
                     producer_id,
                     alias,
