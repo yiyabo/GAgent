@@ -1,7 +1,9 @@
 import React from 'react';
 import {
   Alert,
+  App as AntdApp,
   Button,
+  Card,
   Collapse,
   Descriptions,
   Space,
@@ -9,7 +11,10 @@ import {
   Tag,
   Typography,
 } from 'antd';
+import { CopyOutlined, FileOutlined } from '@ant-design/icons';
 import ToolResultCard from '@components/chat/ToolResultCard';
+import { buildDeliverableFileUrl } from '@api/artifacts';
+import { useChatStore } from '@store/chat';
 import type { DependencyPlanResponse, PlanResultItem, PlanTaskNode, ToolResultPayload } from '@/types';
 import type { TaskTokenUsageItem } from '@/api/stats';
 import { statusColorMap, statusLabelMap } from './constants';
@@ -101,6 +106,138 @@ export function resolveTaskStatus(
   return fromPlan || 'pending';
 }
 
+const FAILURE_KIND_LABELS: Record<string, string> = {
+  contract_mismatch: 'Deliverable contract mismatch',
+  execution_failed: 'Execution failed',
+  blocked_dependency: 'Blocked by dependency',
+  verification_config_error: 'Verification configuration error',
+};
+
+export function humanizeFailureKind(kind: string): string {
+  const normalized = kind.trim().toLowerCase();
+  if (!normalized) {
+    return '';
+  }
+  if (FAILURE_KIND_LABELS[normalized]) {
+    return FAILURE_KIND_LABELS[normalized];
+  }
+  return normalized
+    .split(/[_\s]+/)
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+}
+
+const REPAIR_NOTE_KEYS = ['repair_message', 'fix_message', 'repair_note', 'message'];
+
+export function resolveRepairNote(metadata: Record<string, any> | null | undefined): string | null {
+  if (!metadata || typeof metadata !== 'object') {
+    return null;
+  }
+  for (const key of REPAIR_NOTE_KEYS) {
+    const value = metadata[key];
+    if (typeof value === 'string' && value.trim().length > 0) {
+      return value.trim();
+    }
+  }
+  return null;
+}
+
+interface ResultTechnicalView {
+  producedFiles: string[];
+  expectedFiles: string[];
+  verificationRaw: Record<string, any> | null;
+  resultMetadata: Record<string, any> | null;
+}
+
+export function getResultTechnicalView(result: PlanResultItem | null | undefined): ResultTechnicalView {
+  const metadata =
+    result?.metadata && typeof result.metadata === 'object' ? result.metadata : null;
+  const artifactVerification =
+    metadata && typeof metadata.artifact_verification === 'object'
+      ? (metadata.artifact_verification as Record<string, any>)
+      : null;
+  const producedFiles = Array.isArray(artifactVerification?.actual_outputs)
+    ? (artifactVerification?.actual_outputs as unknown[])
+        .map((item) => String(item ?? '').trim())
+        .filter((item) => item.length > 0)
+    : [];
+  const expectedFiles = Array.isArray(artifactVerification?.expected_deliverables)
+    ? (artifactVerification?.expected_deliverables as unknown[])
+        .map((item) => String(item ?? '').trim())
+        .filter((item) => item.length > 0)
+    : [];
+  const verificationRaw =
+    metadata && typeof metadata.verification === 'object'
+      ? (metadata.verification as Record<string, any>)
+      : null;
+  return {
+    producedFiles,
+    expectedFiles,
+    verificationRaw,
+    resultMetadata: metadata && Object.keys(metadata).length > 0 ? metadata : null,
+  };
+}
+
+interface PublishedArtifactEntry {
+  key: string;
+  alias: string;
+  fileName: string;
+  pathTail: string;
+  href: string | null;
+}
+
+export function collectPublishedArtifacts(
+  result: PlanResultItem | null | undefined,
+  sessionId: string | null | undefined,
+): PublishedArtifactEntry[] {
+  const metadata = result?.metadata;
+  const published =
+    metadata && typeof metadata.published_artifacts === 'object'
+      ? (metadata.published_artifacts as Record<string, unknown>)
+      : null;
+  if (!published) {
+    return [];
+  }
+  const sid = typeof sessionId === 'string' ? sessionId.trim() : '';
+  const entries: PublishedArtifactEntry[] = [];
+  const seen = new Set<string>();
+  for (const [key, value] of Object.entries(published)) {
+    if (!value || typeof value !== 'object') {
+      continue;
+    }
+    const item = value as Record<string, unknown>;
+    const contractPath = key.startsWith('contract:') ? key.slice('contract:'.length).trim() : '';
+    const alias = String(item.alias ?? '').trim() || (contractPath ? '' : key.trim());
+    const rawPath = String(item.deliverable_path ?? item.path ?? item.source_path ?? '').trim();
+    const segments = rawPath.split('/').filter(Boolean);
+    const contractSegments = contractPath.split('/').filter(Boolean);
+    const fileName =
+      segments[segments.length - 1] ?? contractSegments[contractSegments.length - 1] ?? alias ?? 'artifact';
+    const pathTail =
+      segments.length > 1 ? segments.slice(-2).join('/') : rawPath || contractPath;
+    const relativePath =
+      String(item.deliverable_path ?? '').trim() ||
+      contractPath ||
+      (segments[segments.length - 1] ?? '');
+    const version =
+      typeof item.version === 'string' && item.version.trim().length > 0
+        ? item.version.trim()
+        : undefined;
+    const href =
+      sid && relativePath
+        ? buildDeliverableFileUrl(sid, relativePath, version ? { version } : undefined)
+        : null;
+    const dedupeKey = href ?? `${key}::${rawPath}`;
+    if (seen.has(dedupeKey)) {
+      continue;
+    }
+    seen.add(dedupeKey);
+    entries.push({ key, alias, fileName, pathTail, href });
+  }
+  return entries;
+}
+
 interface DependenciesProps {
   dependencies: number[] | undefined;
   onDependencyClick: (depId: number) => void;
@@ -166,6 +303,55 @@ export const ContextSections: React.FC<ContextSectionsProps> = ({ sections }) =>
   return <Collapse size="small" bordered={false} items={items} />;
 };
 
+interface PublishedArtifactsSectionProps {
+  result: PlanResultItem | undefined;
+}
+
+export const PublishedArtifactsSection: React.FC<PublishedArtifactsSectionProps> = ({ result }) => {
+  const sessionId = useChatStore(
+    (state) => state.currentSession?.session_id ?? state.currentSession?.id ?? null
+  );
+  const entries = React.useMemo(
+    () => collectPublishedArtifacts(result, sessionId),
+    [result, sessionId]
+  );
+  if (entries.length === 0) {
+    return null;
+  }
+  return (
+    <section>
+      <Title level={5}>Published Artifacts ({entries.length})</Title>
+      <Space direction="vertical" size={8} style={{ width: '100%' }}>
+        {entries.map((entry) => {
+          const card = (
+            <Card size="small" hoverable={Boolean(entry.href)}>
+              <Space direction="vertical" size={2} style={{ width: '100%' }}>
+                <Space size={6} wrap>
+                  <FileOutlined />
+                  <Text strong>{entry.fileName}</Text>
+                  {entry.alias && entry.alias !== entry.fileName && <Tag>{entry.alias}</Tag>}
+                </Space>
+                {entry.pathTail && entry.pathTail !== entry.fileName && (
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    {entry.pathTail}
+                  </Text>
+                )}
+              </Space>
+            </Card>
+          );
+          return entry.href ? (
+            <a key={entry.key} href={entry.href} target="_blank" rel="noreferrer">
+              {card}
+            </a>
+          ) : (
+            <React.Fragment key={entry.key}>{card}</React.Fragment>
+          );
+        })}
+      </Space>
+    </section>
+  );
+};
+
 interface ExecutionResultProps {
   resultLoading: boolean;
   taskResult: PlanResultItem | undefined;
@@ -211,9 +397,23 @@ export const TaskDrawerContent: React.FC<TaskDrawerContentProps> = ({
   taskMap,
   taskTokenUsage,
 }) => {
+  const { message } = AntdApp.useApp();
   const effectiveStatus = activeTask.effective_status ?? activeTask.status ?? 'pending';
   const isBlocked = effectiveStatus === 'blocked';
   const hasTimestamps = Boolean(activeTask.created_at) || Boolean(activeTask.updated_at);
+  const effectiveResult = taskResult ?? cachedResult;
+  const resultTechnical = React.useMemo(
+    () => getResultTechnicalView(effectiveResult),
+    [effectiveResult]
+  );
+
+  const handleCopyDetails = () => {
+    void copyJsonToClipboard(
+      { task: activeTask, result: effectiveResult ?? null },
+      'Task details copied',
+      message
+    );
+  };
 
   return (
     <Space direction="vertical" size="large" style={{ width: '100%' }}>
@@ -282,123 +482,18 @@ export const TaskDrawerContent: React.FC<TaskDrawerContentProps> = ({
       </section>
 
       <section>
-        <Title level={5}>Token Consumption</Title>
-        <Space direction="vertical" size="small" style={{ width: '100%' }}>
-          <Descriptions column={1} size="small" bordered>
-            <Descriptions.Item label="Total Tokens">
-              <Text strong>
-                {taskTokenUsage ? taskTokenUsage.total_tokens.toLocaleString() : '0'}
-              </Text>
-            </Descriptions.Item>
-          </Descriptions>
-        </Space>
-      </section>
-
-      <section>
         <Title level={5}>Task Content</Title>
-        <Space direction="vertical" size="small" style={{ width: '100%' }}>
-          <div>
-            <Text type="secondary">Instruction</Text>
-            <Paragraph
-              style={{ whiteSpace: 'pre-wrap' }}
-              copyable
-              ellipsis={{ rows: 6, expandable: true, symbol: 'Expand' }}
-            >
-              {activeTask.instruction || 'No description available'}
-            </Paragraph>
-          </div>
-          <div>
-            <Text type="secondary">Dependencies</Text>
-            <Dependencies
-              dependencies={activeTask.dependencies}
-              onDependencyClick={handleDependencyClick}
-              taskMap={taskMap}
-            />
-          </div>
-        </Space>
+        <div>
+          <Text type="secondary">Instruction</Text>
+          <Paragraph
+            style={{ whiteSpace: 'pre-wrap' }}
+            copyable
+            ellipsis={{ rows: 6, expandable: true, symbol: 'Expand' }}
+          >
+            {activeTask.instruction || 'No description available'}
+          </Paragraph>
+        </div>
       </section>
-
-      <section>
-        <Title level={5}>Context</Title>
-        <Space direction="vertical" size="small" style={{ width: '100%' }}>
-          {activeTask.context_combined ? (
-            <Paragraph
-              style={{ whiteSpace: 'pre-wrap' }}
-              copyable
-              ellipsis={{ rows: 6, expandable: true, symbol: 'Expand' }}
-            >
-              {activeTask.context_combined}
-            </Paragraph>
-          ) : (
-            <Text type="secondary">No context summary available</Text>
-          )}
-          <ContextSections sections={activeTask.context_sections} />
-          {activeTask.context_meta && Object.keys(activeTask.context_meta).length > 0 && (
-            <Paragraph
-              code
-              copyable
-              style={{ maxHeight: 200, overflow: 'auto' }}
-            >
-              {JSON.stringify(activeTask.context_meta, null, 2)}
-            </Paragraph>
-          )}
-        </Space>
-      </section>
-
-      {recentToolResults.length > 0 && (
-        <section>
-          <Title level={5}>Recent Tool Summaries</Title>
-          <Space direction="vertical" size="small" style={{ width: '100%' }}>
-            {recentToolResults.map((result, index) => (
-              <ToolResultCard
-                key={`${result.name ?? 'tool'}_${index}`}
-                payload={result}
-                defaultOpen={index === 0}
-              />
-            ))}
-          </Space>
-        </section>
-      )}
-
-      <Collapse
-        size="small"
-        bordered={false}
-        items={[
-          ...(activeTask.metadata && Object.keys(activeTask.metadata).length > 0
-            ? [{
-                key: 'metadata',
-                label: 'Metadata',
-                children: (
-                  <Paragraph
-                    code
-                    copyable
-                    style={{ maxHeight: 200, overflow: 'auto' }}
-                  >
-                    {JSON.stringify(activeTask.metadata, null, 2)}
-                  </Paragraph>
-                ),
-              }]
-            : []),
-          ...(hasTimestamps
-            ? [{
-                key: 'timestamps',
-                label: 'Details',
-                children: (
-                  <Descriptions column={1} size="small">
-                    <Descriptions.Item label="Type">{activeTask.task_type ?? 'Unknown'}</Descriptions.Item>
-                    <Descriptions.Item label="Depth">{activeTask.depth ?? 0}</Descriptions.Item>
-                    {activeTask.created_at && (
-                      <Descriptions.Item label="Created">{new Date(activeTask.created_at).toLocaleString()}</Descriptions.Item>
-                    )}
-                    {activeTask.updated_at && (
-                      <Descriptions.Item label="Updated">{new Date(activeTask.updated_at).toLocaleString()}</Descriptions.Item>
-                    )}
-                  </Descriptions>
-                ),
-              }]
-            : []),
-        ]}
-      />
 
       <section>
         <Title level={5}>Execution Result</Title>
@@ -414,6 +509,165 @@ export const TaskDrawerContent: React.FC<TaskDrawerContentProps> = ({
           canManualAccept={canManualAccept}
         />
       </section>
+
+      <PublishedArtifactsSection result={effectiveResult} />
+
+      <Collapse
+        size="small"
+        bordered={false}
+        items={[
+          {
+            key: 'technical-details',
+            label: 'Technical Details',
+            children: (
+              <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+                <div>
+                  <Button size="small" icon={<CopyOutlined />} onClick={handleCopyDetails}>
+                    Copy task JSON
+                  </Button>
+                </div>
+                <div>
+                  <Text type="secondary">Token Consumption</Text>
+                  <Descriptions column={1} size="small" bordered style={{ marginTop: 4 }}>
+                    <Descriptions.Item label="Total Tokens">
+                      <Text strong>
+                        {taskTokenUsage ? taskTokenUsage.total_tokens.toLocaleString() : '0'}
+                      </Text>
+                    </Descriptions.Item>
+                  </Descriptions>
+                </div>
+                <div>
+                  <Text type="secondary">Dependencies</Text>
+                  <div style={{ marginTop: 4 }}>
+                    <Dependencies
+                      dependencies={activeTask.dependencies}
+                      onDependencyClick={handleDependencyClick}
+                      taskMap={taskMap}
+                    />
+                  </div>
+                </div>
+                <div>
+                  <Text type="secondary">Context</Text>
+                  <Space direction="vertical" size="small" style={{ width: '100%', marginTop: 4 }}>
+                    {activeTask.context_combined ? (
+                      <Paragraph
+                        style={{ whiteSpace: 'pre-wrap' }}
+                        copyable
+                        ellipsis={{ rows: 6, expandable: true, symbol: 'Expand' }}
+                      >
+                        {activeTask.context_combined}
+                      </Paragraph>
+                    ) : (
+                      <Text type="secondary">No context summary available</Text>
+                    )}
+                    <ContextSections sections={activeTask.context_sections} />
+                    {activeTask.context_meta && Object.keys(activeTask.context_meta).length > 0 && (
+                      <Paragraph
+                        code
+                        copyable
+                        style={{ maxHeight: 200, overflow: 'auto' }}
+                      >
+                        {JSON.stringify(activeTask.context_meta, null, 2)}
+                      </Paragraph>
+                    )}
+                  </Space>
+                </div>
+                {hasTimestamps && (
+                  <div>
+                    <Text type="secondary">Details</Text>
+                    <Descriptions column={1} size="small" style={{ marginTop: 4 }}>
+                      <Descriptions.Item label="Type">{activeTask.task_type ?? 'Unknown'}</Descriptions.Item>
+                      <Descriptions.Item label="Depth">{activeTask.depth ?? 0}</Descriptions.Item>
+                      {activeTask.created_at && (
+                        <Descriptions.Item label="Created">{new Date(activeTask.created_at).toLocaleString()}</Descriptions.Item>
+                      )}
+                      {activeTask.updated_at && (
+                        <Descriptions.Item label="Updated">{new Date(activeTask.updated_at).toLocaleString()}</Descriptions.Item>
+                      )}
+                    </Descriptions>
+                  </div>
+                )}
+                {activeTask.metadata && Object.keys(activeTask.metadata).length > 0 && (
+                  <div>
+                    <Text type="secondary">Metadata</Text>
+                    <Paragraph
+                      code
+                      copyable
+                      style={{ maxHeight: 200, overflow: 'auto', marginTop: 4 }}
+                    >
+                      {JSON.stringify(activeTask.metadata, null, 2)}
+                    </Paragraph>
+                  </div>
+                )}
+                {recentToolResults.length > 0 && (
+                  <div>
+                    <Text type="secondary">
+                      Recent Tool Summaries (session-level, not specific to this task)
+                    </Text>
+                    <Space direction="vertical" size="small" style={{ width: '100%', marginTop: 4 }}>
+                      {recentToolResults.map((result, index) => (
+                        <ToolResultCard
+                          key={`${result.name ?? 'tool'}_${index}`}
+                          payload={result}
+                          defaultOpen={index === 0}
+                        />
+                      ))}
+                    </Space>
+                  </div>
+                )}
+                {resultTechnical.producedFiles.length > 0 && (
+                  <div>
+                    <Text type="secondary">Produced files ({resultTechnical.producedFiles.length})</Text>
+                    <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
+                      {resultTechnical.producedFiles.map((item) => (
+                        <li key={item}>
+                          <Text copyable style={{ whiteSpace: 'pre-wrap' }}>{item}</Text>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {resultTechnical.expectedFiles.length > 0 && (
+                  <div>
+                    <Text type="secondary">Expected deliverables ({resultTechnical.expectedFiles.length})</Text>
+                    <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
+                      {resultTechnical.expectedFiles.map((item) => (
+                        <li key={item}>
+                          <Text copyable style={{ whiteSpace: 'pre-wrap' }}>{item}</Text>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {resultTechnical.verificationRaw && (
+                  <div>
+                    <Text type="secondary">Verification raw data</Text>
+                    <Paragraph
+                      code
+                      copyable
+                      style={{ maxHeight: 200, overflow: 'auto', marginTop: 4 }}
+                    >
+                      {JSON.stringify(resultTechnical.verificationRaw, null, 2)}
+                    </Paragraph>
+                  </div>
+                )}
+                {resultTechnical.resultMetadata && (
+                  <div>
+                    <Text type="secondary">Result metadata</Text>
+                    <Paragraph
+                      code
+                      copyable
+                      style={{ maxHeight: 200, overflow: 'auto', marginTop: 4 }}
+                    >
+                      {JSON.stringify(resultTechnical.resultMetadata, null, 2)}
+                    </Paragraph>
+                  </div>
+                )}
+              </Space>
+            ),
+          },
+        ]}
+      />
     </Space>
   );
 };
@@ -451,10 +705,10 @@ export const ExecutionResult: React.FC<ExecutionResultProps> = ({
     .trim()
     .toLowerCase();
   const executionCompleted = executionStatus === 'completed' || executionStatus === 'done' || executionStatus === 'success';
-  const artifactVerification =
-    result.metadata && typeof result.metadata.artifact_verification === 'object'
-      ? (result.metadata.artifact_verification as Record<string, any>)
-      : null;
+  const executionFailed = executionStatus === 'failed' || executionStatus === 'error';
+  const showFailureSummary =
+    executionFailed || failureKind.length > 0 || verification.status === 'failed';
+  const repairNote = resolveRepairNote(result.metadata);
   const artifactAuthority =
     result.metadata && typeof result.metadata.artifact_authority === 'object'
       ? (result.metadata.artifact_authority as Record<string, any>)
@@ -464,16 +718,6 @@ export const ExecutionResult: React.FC<ExecutionResultProps> = ({
       ? Object.values(result.metadata.published_artifacts as Record<string, unknown>)
           .filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null)
       : [];
-  const producedFiles = Array.isArray(artifactVerification?.actual_outputs)
-    ? (artifactVerification?.actual_outputs as unknown[])
-        .map((item) => String(item ?? '').trim())
-        .filter((item) => item.length > 0)
-    : [];
-  const expectedFiles = Array.isArray(artifactVerification?.expected_deliverables)
-    ? (artifactVerification?.expected_deliverables as unknown[])
-        .map((item) => String(item ?? '').trim())
-        .filter((item) => item.length > 0)
-    : [];
   const expectedPublishAliases = Array.isArray(artifactAuthority?.expected_publish_aliases)
     ? (artifactAuthority?.expected_publish_aliases as unknown[])
         .map((item) => String(item ?? '').trim())
@@ -499,6 +743,57 @@ export const ExecutionResult: React.FC<ExecutionResultProps> = ({
 
   return (
     <Space direction="vertical" size="small" style={{ width: '100%' }}>
+      {(showFailureSummary || Boolean(result.content)) && (
+        <div>
+          <Text type="secondary">Result summary</Text>
+          {showFailureSummary && (
+            <Space direction="vertical" size={6} style={{ width: '100%', marginTop: 4 }}>
+              {failureKind && (
+                <div>
+                  <Tag color="red">{humanizeFailureKind(failureKind)}</Tag>
+                </div>
+              )}
+              {verification.failures.length > 0 && (
+                <ul style={{ margin: 0, paddingLeft: 18 }}>
+                  {verification.failures.map((failure, idx) => (
+                    <li key={idx} style={{ marginBottom: 4 }}>
+                      <Space size={6} wrap>
+                        <Tag>
+                          {typeof failure.type === 'string' && failure.type ? failure.type : 'check'}
+                        </Tag>
+                        {typeof failure.path === 'string' && failure.path && (
+                          <Text code>{failure.path}</Text>
+                        )}
+                      </Space>
+                      {typeof failure.message === 'string' && failure.message && (
+                        <div>
+                          <Text type="secondary" style={{ whiteSpace: 'pre-wrap' }}>
+                            {failure.message}
+                          </Text>
+                        </div>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {repairNote && (
+                <Text type="secondary" style={{ whiteSpace: 'pre-wrap' }}>
+                  {repairNote}
+                </Text>
+              )}
+            </Space>
+          )}
+          {result.content && (
+            <Paragraph
+              style={{ whiteSpace: 'pre-wrap', marginTop: 4, marginBottom: 0 }}
+              copyable
+              ellipsis={{ rows: 6, expandable: true, symbol: 'Expand' }}
+            >
+              {result.content}
+            </Paragraph>
+          )}
+        </div>
+      )}
       <Space wrap>
         {result.status && (
           <Tag color={statusColorMap[result.status] ?? 'default'}>
@@ -507,6 +802,11 @@ export const ExecutionResult: React.FC<ExecutionResultProps> = ({
         )}
         {verification.status && verification.label && (
           <Tag color={verification.color}>{verification.label}</Tag>
+        )}
+        {verification.status && verification.checksTotal > 0 && (
+          <Tag color={verification.color}>
+            {`${verification.checksPassed}/${verification.checksTotal} checks passed${verification.blocking ? ' · blocking' : ''}`}
+          </Tag>
         )}
         {manualAccepted && <Tag color="blue">Manually accepted</Tag>}
         {executionCompleted && publishedArtifactLabels.length > 0 && (
@@ -526,19 +826,6 @@ export const ExecutionResult: React.FC<ExecutionResultProps> = ({
           </Button>
         )}
       </Space>
-      {verification.status && (
-        <Descriptions column={1} bordered size="small">
-          <Descriptions.Item label="Verification checks">
-            {verification.checksPassed}/{verification.checksTotal}
-          </Descriptions.Item>
-          <Descriptions.Item label="Blocking">
-            {verification.blocking ? 'yes' : 'no'}
-          </Descriptions.Item>
-          <Descriptions.Item label="Generated checks">
-            {verification.generated ? 'yes' : 'no'}
-          </Descriptions.Item>
-        </Descriptions>
-      )}
       {executionCompleted && verification.status === 'failed' && (
         <Alert
           type="warning"
@@ -567,146 +854,17 @@ export const ExecutionResult: React.FC<ExecutionResultProps> = ({
           }
         />
       )}
-      {result.content && (
-        <Paragraph style={{ whiteSpace: 'pre-wrap' }} copyable>
-          {result.content}
-        </Paragraph>
-      )}
-      {publishedArtifactLabels.length > 0 && (
-        <Collapse
-          size="small"
-          items={[
-            {
-              key: 'published-artifacts',
-              label: `Published artifacts (${publishedArtifactLabels.length})`,
-              children: (
-                <Space direction="vertical" style={{ width: '100%' }}>
-                  {publishedArtifactLabels.map((item) => (
-                    <Paragraph key={item} copyable style={{ whiteSpace: 'pre-wrap', marginBottom: 8 }}>
-                      {item}
-                    </Paragraph>
-                  ))}
-                </Space>
-              ),
-            },
-          ]}
-        />
-      )}
-      {producedFiles.length > 0 && (
-        <Collapse
-          size="small"
-          items={[
-            {
-              key: 'produced-files',
-              label: `Produced files (${producedFiles.length})`,
-              children: (
-                <Space direction="vertical" style={{ width: '100%' }}>
-                  {producedFiles.map((item) => (
-                    <Paragraph key={item} copyable style={{ whiteSpace: 'pre-wrap', marginBottom: 8 }}>
-                      {item}
-                    </Paragraph>
-                  ))}
-                </Space>
-              ),
-            },
-          ]}
-        />
-      )}
-      {expectedFiles.length > 0 && verification.status === 'failed' && (
-        <Collapse
-          size="small"
-          items={[
-            {
-              key: 'expected-files',
-              label: `Expected deliverables (${expectedFiles.length})`,
-              children: (
-                <Space direction="vertical" style={{ width: '100%' }}>
-                  {expectedFiles.map((item) => (
-                    <Paragraph key={item} copyable style={{ whiteSpace: 'pre-wrap', marginBottom: 8 }}>
-                      {item}
-                    </Paragraph>
-                  ))}
-                </Space>
-              ),
-            },
-          ]}
-        />
-      )}
-      {verification.failures.length > 0 && (
-        <Collapse
-          size="small"
-          items={[
-            {
-              key: 'verification-failures',
-              label: `Verification failures (${verification.failures.length})`,
-              children: (
-                <Space direction="vertical" style={{ width: '100%' }}>
-                  {verification.failures.map((failure, idx) => {
-                    const parts = [
-                      typeof failure.type === 'string' ? failure.type : 'check',
-                      typeof failure.path === 'string' ? failure.path : null,
-                      typeof failure.message === 'string' ? failure.message : null,
-                    ].filter(Boolean);
-                    return (
-                      <Paragraph key={idx} style={{ whiteSpace: 'pre-wrap', marginBottom: 8 }}>
-                        {parts.join(' | ')}
-                      </Paragraph>
-                    );
-                  })}
-                </Space>
-              ),
-            },
-          ]}
-        />
-      )}
-      {verification.artifactPaths.length > 0 && (
-        <Collapse
-          size="small"
-          items={[
-            {
-              key: 'verification-evidence',
-              label: `Verification evidence (${verification.artifactPaths.length})`,
-              children: (
-                <Space direction="vertical" style={{ width: '100%' }}>
-                  {verification.artifactPaths.map((item) => (
-                    <Paragraph key={item} copyable style={{ whiteSpace: 'pre-wrap', marginBottom: 8 }}>
-                      {item}
-                    </Paragraph>
-                  ))}
-                </Space>
-              ),
-            },
-          ]}
-        />
-      )}
       {Array.isArray(result.notes) && result.notes.length > 0 && (
-        <Collapse
-          size="small"
-          items={[
-            {
-              key: 'notes',
-              label: `Notes (${result.notes.length})`,
-              children: (
-                <Space direction="vertical">
-                  {result.notes.map((note, idx) => (
-                    <Paragraph key={idx} style={{ whiteSpace: 'pre-wrap', marginBottom: 8 }}>
-                      {note}
-                    </Paragraph>
-                  ))}
-                </Space>
-              ),
-            },
-          ]}
-        />
-      )}
-      {result.metadata && Object.keys(result.metadata).length > 0 && (
-        <Paragraph
-          code
-          copyable
-          style={{ maxHeight: 200, overflow: 'auto' }}
-        >
-          {JSON.stringify(result.metadata, null, 2)}
-        </Paragraph>
+        <div>
+          <Text type="secondary">Notes</Text>
+          <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
+            {result.notes.map((note, idx) => (
+              <li key={idx}>
+                <Text style={{ whiteSpace: 'pre-wrap' }}>{note}</Text>
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
     </Space>
   );

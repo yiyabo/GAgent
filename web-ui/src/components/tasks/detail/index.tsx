@@ -11,7 +11,7 @@ import {
   Tooltip,
   Typography,
 } from 'antd';
-import { ReloadOutlined, CopyOutlined, PlayCircleOutlined } from '@ant-design/icons';
+import { ReloadOutlined, PlayCircleOutlined } from '@ant-design/icons';
 import { useQuery } from '@tanstack/react-query';
 import { planTreeApi } from '@api/planTree';
 import { statsApi } from '@api/stats';
@@ -28,7 +28,7 @@ import type {
 } from '@/types';
 import { dispatchPlanSyncEvent, shouldHandlePlanSyncEvent } from '@utils/planSyncEvents';
 import JobLogPanel from '@components/chat/JobLogPanel';
-import { TaskDrawerContent, copyJsonToClipboard } from './TaskDetailSections';
+import { TaskDrawerContent } from './TaskDetailSections';
 import TaskExecuteModal from './TaskExecuteModal';
 
 const { Text, Title } = Typography;
@@ -267,15 +267,6 @@ const TaskDetailDrawer: React.FC = () => {
     void refetchTaskResult();
   }, [currentPlanId, selectedTaskId, refetchPlanTasks, refetchTaskResult]);
 
-  const handleCopyTask = useCallback(() => {
-    if (!activeTask) return;
-    void copyJsonToClipboard(
-      { task: activeTask, result: taskResult ?? cachedResult ?? null },
-      'Task details copied',
-      message
-    );
-  }, [activeTask, taskResult, cachedResult, message]);
-
   const handleDependencyClick = useCallback(
     (dependencyId: number) => {
       if (dependencyId <= 0) {
@@ -431,13 +422,6 @@ const TaskDetailDrawer: React.FC = () => {
               onClick={handleRefresh}
               disabled={!currentPlanId || !selectedTaskId}
               loading={tasksLoading || resultLoading}
-            />
-          </Tooltip>
-          <Tooltip title="Copy">
-            <Button
-              icon={<CopyOutlined />}
-              onClick={handleCopyTask}
-              disabled={!activeTask}
             />
           </Tooltip>
         </Space>
