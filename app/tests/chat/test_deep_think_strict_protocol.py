@@ -2250,6 +2250,23 @@ def test_process_only_answer_detection_flags_collection_preface() -> None:
     assert not is_process_only_answer("综合近期文献，更值得优先投入的方向是宿主范围预测与鸡尾酒优化。")
 
 
+def test_process_only_answer_detection_passes_substantive_answer_with_preface() -> None:
+    substantive = (
+        "我先说结论：可以分析。120 例（两组各 60）配基线与随访的 eGFR、肌酐、HbA1c，"
+        "足以支撑两组肾功能变化对比：先做数据体检（缺失/异常/单位），再做组间统计比较，"
+        "最后出图与报告。开工前请确认分组字段名与随访时间点，以及各指标的测量单位。"
+    )
+    assert len(substantive) > 120
+    assert not is_process_only_answer(substantive, user_query="这个能分析吗？")
+    long_en = (
+        "Let me first give the conclusion: yes, this dataset can answer the question. "
+        "With 120 patients in two balanced groups and baseline plus follow-up eGFR values, "
+        "a group comparison of renal function change is statistically well supported."
+    )
+    assert len(long_en) > 120
+    assert not is_process_only_answer(long_en)
+
+
 def test_research_fallback_prefers_evidence_synthesis_over_process_sentence() -> None:
     agent = DeepThinkAgent(
         llm_client=_DummyLLM([]),

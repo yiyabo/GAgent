@@ -305,7 +305,10 @@ def is_process_only_answer(text: str, *, user_query: str = "") -> bool:
     if not raw:
         return True
     lowered = raw.lower()
-    if any(pattern in lowered for pattern in _PROCESS_ONLY_PATTERNS):
+    # Process patterns only mark an answer as process-only in short replies; in
+    # a developed answer the same words ("我先说结论…") introduce substance, and
+    # substring-matching the whole text would reject good final answers.
+    if len(raw) <= 120 and any(pattern in lowered for pattern in _PROCESS_ONLY_PATTERNS):
         return True
     if len(raw) <= 80 and any(
         token in lowered

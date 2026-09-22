@@ -128,6 +128,33 @@ def test_no_progress_endgame_breaks_after_verified_deliverable(deliverable_file)
     )
 
 
+def test_chat_turn_early_stops_on_substantive_answer_with_process_preface() -> None:
+    """T1 scenario: single chat iteration, no tool calls; the content is a full
+    substantive answer that happens to contain a process-sounding phrase
+    ("我先…") mid-text. It must be served directly instead of being rejected as
+    process-only and replaced by the minimal structured fallback."""
+    content = (
+        "可以分析。120 例（两组各 60）配基线与随访的 eGFR、肌酐、HbA1c，足以支撑两组肾功能变化对比。"
+        "我建议分三步安排：数据体检（缺失/异常/单位判定）、组间统计比较、图表与研究报告。"
+        "我先说明开工前需要你补充的两点：一是分组字段名与随访时间点，二是各指标单位。"
+    )
+    assert len(content) > 120
+    llm = _LoopLLM([NativeStreamResult(content=content, tool_calls=[])])
+    agent = DeepThinkAgent(
+        llm_client=llm,
+        available_tools=["file_operations"],
+        tool_executor=_noop_tool_executor,
+        max_iterations=5,
+        request_profile={"request_tier": "standard", "intent_type": "chat"},
+    )
+
+    result = asyncio.run(agent.think("这个能分析吗？"))
+
+    assert result.final_answer == content
+    assert result.total_iterations == 1
+    assert not result.fallback_used
+
+
 def test_failure_signature_trap_warns_at_three_and_breaks_at_five() -> None:
     """Same failure five times -> one warning message, then an early break."""
     async def _executor(name: str, params: dict):
