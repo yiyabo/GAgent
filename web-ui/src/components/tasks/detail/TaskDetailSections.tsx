@@ -190,6 +190,7 @@ interface PublishedArtifactEntry {
   extension: string;
   version?: string;
   href: string | null;
+  rawPath: string | null;
 }
 
 export function collectPublishedArtifacts(
@@ -214,17 +215,32 @@ export function collectPublishedArtifacts(
     const item = value as Record<string, unknown>;
     const contractPath = key.startsWith('contract:') ? key.slice('contract:'.length).trim() : '';
     const alias = String(item.alias ?? '').trim() || (contractPath ? '' : key.trim());
-    const rawPath = String(item.deliverable_path ?? item.path ?? item.source_path ?? '').trim();
-    const segments = rawPath.split('/').filter(Boolean);
+    const displayPath = String(item.deliverable_path ?? item.path ?? item.source_path ?? '').trim();
+    const segments = displayPath.split('/').filter(Boolean);
     const contractSegments = contractPath.split('/').filter(Boolean);
     const fileName =
       segments[segments.length - 1] ?? contractSegments[contractSegments.length - 1] ?? alias ?? 'artifact';
     const pathTail =
-      segments.length > 1 ? segments.slice(-2).join('/') : rawPath || contractPath;
+      segments.length > 1 ? segments.slice(-2).join('/') : displayPath || contractPath;
     const relativePath =
       String(item.deliverable_path ?? '').trim() ||
       contractPath ||
       (segments[segments.length - 1] ?? '');
+    // Task-level published paths are absolute container paths under the session
+    // dir (e.g. /app/runtime/<sid>/_scratch/...). Derive the session-relative
+    // path so the preview can fall back to the raw artifacts endpoints.
+    const absolutePath = String(item.path ?? '').trim();
+    let rawPath: string | null = null;
+    if (sid && absolutePath) {
+      const marker = `/${sid}/`;
+      const markerIndex = absolutePath.indexOf(marker);
+      if (markerIndex >= 0) {
+        const sessionRelative = absolutePath.slice(markerIndex + marker.length).trim();
+        if (sessionRelative.length > 0) {
+          rawPath = sessionRelative;
+        }
+      }
+    }
     const version =
       typeof item.version === 'string' && item.version.trim().length > 0
         ? item.version.trim()
@@ -235,12 +251,12 @@ export function collectPublishedArtifacts(
         : null;
     const dotIndex = fileName.lastIndexOf('.');
     const extension = dotIndex > 0 ? fileName.slice(dotIndex + 1).toLowerCase() : '';
-    const dedupeKey = href ?? `${key}::${rawPath}`;
+    const dedupeKey = href ?? `${key}::${displayPath}`;
     if (seen.has(dedupeKey)) {
       continue;
     }
     seen.add(dedupeKey);
-    entries.push({ key, alias, fileName, pathTail, relativePath, extension, version, href });
+    entries.push({ key, alias, fileName, pathTail, relativePath, extension, version, href, rawPath });
   }
   return entries;
 }
@@ -376,6 +392,7 @@ export const PublishedArtifactsSection: React.FC<PublishedArtifactsSectionProps>
           sourceType="deliverables"
           extension={previewEntry.extension}
           version={previewEntry.version}
+          rawPath={previewEntry.rawPath}
         />
       )}
     </section>

@@ -157,7 +157,7 @@ describe('TaskDrawerContent', () => {
     },
   };
 
-  const renderDrawer = () => {
+  const renderDrawer = (resultOverride: PlanResultItem = taskResult) => {
     const queryClient = new QueryClient({
       defaultOptions: {
         queries: {
@@ -174,7 +174,7 @@ describe('TaskDrawerContent', () => {
             handleDependencyClick={vi.fn()}
             recentToolResults={[]}
             resultLoading={false}
-            taskResult={taskResult}
+            taskResult={resultOverride}
             cachedResult={undefined}
           />
         </AntdApp>
@@ -285,6 +285,84 @@ describe('TaskDrawerContent', () => {
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     });
     expect(screen.getByText('Published Artifacts (1)')).toBeInTheDocument();
+  });
+
+  it('falls back to the raw artifacts endpoint when deliverables text 404s', async () => {
+    const csvResult: PlanResultItem = {
+      task_id: 7,
+      status: 'completed',
+      content: 'produced cleaned_wide.csv',
+      metadata: {
+        execution_status: 'completed',
+        published_artifacts: {
+          'data.cleaned_wide_csv': {
+            alias: 'data.cleaned_wide_csv',
+            path: '/app/runtime/sess-1/_scratch/plan173_task7/run_20260922_115243/runtime/output/data/cleaned_wide.csv',
+          },
+        },
+      },
+    };
+    mockedArtifactsApi.getSessionDeliverableText.mockRejectedValue(
+      new Error('Requested resource not found')
+    );
+    mockedArtifactsApi.getSessionArtifactText.mockResolvedValue({
+      path: '_scratch/plan173_task7/run_20260922_115243/runtime/output/data/cleaned_wide.csv',
+      content: 'gene,score\nSEC,0.98',
+      truncated: false,
+    });
+
+    renderDrawer(csvResult);
+
+    fireEvent.click(screen.getByText('cleaned_wide.csv'));
+
+    const dialog = await screen.findByRole('dialog');
+    // Primary deliverables request 404s, then the raw fallback takes over.
+    await waitFor(() => {
+      expect(mockedArtifactsApi.getSessionDeliverableText).toHaveBeenCalledWith(
+        'sess-1',
+        'cleaned_wide.csv',
+        expect.objectContaining({ maxBytes: 200000 })
+      );
+    });
+    await waitFor(() => {
+      expect(mockedArtifactsApi.getSessionArtifactText).toHaveBeenCalledWith(
+        'sess-1',
+        '_scratch/plan173_task7/run_20260922_115243/runtime/output/data/cleaned_wide.csv',
+        { maxBytes: 200000 }
+      );
+    });
+    expect(await within(dialog).findByText('1 rows x 2 columns')).toBeInTheDocument();
+    expect(within(dialog).getByText('SEC')).toBeInTheDocument();
+    expect(within(dialog).queryByText(/Failed to load/)).not.toBeInTheDocument();
+  });
+
+  it('keeps the error state when no raw fallback path is available', async () => {
+    const csvResult: PlanResultItem = {
+      task_id: 7,
+      status: 'completed',
+      content: 'produced table.csv',
+      metadata: {
+        execution_status: 'completed',
+        published_artifacts: {
+          'data.table_csv': {
+            alias: 'data.table_csv',
+            path: '/tmp/run/table.csv',
+            deliverable_path: 'docs/table.csv',
+          },
+        },
+      },
+    };
+    mockedArtifactsApi.getSessionDeliverableText.mockRejectedValue(
+      new Error('Requested resource not found')
+    );
+
+    renderDrawer(csvResult);
+
+    fireEvent.click(screen.getByText('table.csv'));
+
+    const dialog = await screen.findByRole('dialog');
+    expect(await within(dialog).findByText(/Failed to load/)).toBeInTheDocument();
+    expect(mockedArtifactsApi.getSessionArtifactText).not.toHaveBeenCalled();
   });
 
   it('moves technical details into a single collapsed panel', async () => {

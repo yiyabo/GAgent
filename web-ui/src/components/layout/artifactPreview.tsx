@@ -23,6 +23,7 @@ import {
   buildDeliverableFileUrl,
   buildRenderedFileUrl,
 } from '@api/artifacts';
+import type { ArtifactRenderResponse, ArtifactTextResponse } from '@/types';
 import { MarkdownRenderer } from '@components/chat/MarkdownRenderer';
 
 const { Text } = Typography;
@@ -109,6 +110,9 @@ export interface ArtifactPreviewModalProps {
   sourceType: 'deliverables' | 'raw';
   extension?: string | null;
   version?: string;
+  /** Session-relative fallback path served by the raw artifacts endpoints when
+   * the deliverables endpoints do not know the file (task-level outputs). */
+  rawPath?: string | null;
 }
 
 const monoBlockStyle: React.CSSProperties = {
@@ -124,6 +128,15 @@ const monoBlockStyle: React.CSSProperties = {
   overflow: 'auto',
 };
 
+const isNotFoundError = (error: unknown): boolean => {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  const status = (error as any)?.status;
+  const message = error.message.toLowerCase();
+  return status === 404 || message.includes('404') || message.includes('not found');
+};
+
 export const ArtifactPreviewModal: React.FC<ArtifactPreviewModalProps> = ({
   open,
   onClose,
@@ -134,13 +147,16 @@ export const ArtifactPreviewModal: React.FC<ArtifactPreviewModalProps> = ({
   sourceType,
   extension,
   version,
+  rawPath,
 }) => {
   const [showSource, setShowSource] = React.useState(false);
+  const [imgRawFallback, setImgRawFallback] = React.useState(false);
   React.useEffect(() => {
     if (open) {
       setShowSource(false);
+      setImgRawFallback(false);
     }
-  }, [open, path, sourcePath]);
+  }, [open, path, sourcePath, rawPath]);
 
   const ext = String(extension ?? name.split('.').pop() ?? '').trim().toLowerCase();
   const isImage = IMAGE_EXTS.has(ext);
@@ -150,46 +166,87 @@ export const ArtifactPreviewModal: React.FC<ArtifactPreviewModalProps> = ({
   const isRenderable = RENDERABLE_EXTS.has(ext);
 
   const sid = typeof sessionId === 'string' && sessionId.trim().length > 0 ? sessionId.trim() : null;
-  const rawPath = sourcePath ?? path;
-  const fileUrl = sid
-    ? sourceType === 'deliverables'
-      ? buildDeliverableFileUrl(sid, path, version ? { version } : undefined)
-      : buildArtifactFileUrl(sid, rawPath)
-    : null;
+  const rawApiPath = sourcePath ?? path;
+  const fallbackRawPath =
+    typeof rawPath === 'string' && rawPath.trim().length > 0 ? rawPath.trim() : null;
+  const canFallback = sourceType === 'deliverables' && Boolean(fallbackRawPath);
 
-  // Text preview for non-renderable text files (and as fallback / source view)
+  // Text preview for non-renderable text files (and as fallback / source view).
+  // When the deliverables endpoint does not know the file (404), transparently
+  // retry through the raw artifacts endpoint with the session-relative path.
   const {
-    data: textPreview,
+    data: textData,
     isLoading: textLoading,
     error: textError,
   } = useQuery({
-    queryKey: ['artifacts', 'preview-text', sid, sourceType, rawPath, version ?? null],
-    queryFn: () => {
-      if (sourceType === 'deliverables') {
-        return artifactsApi.getSessionDeliverableText(sid ?? '', path, {
-          maxBytes: 200000,
-          version,
-        });
+    queryKey: ['artifacts', 'preview-text', sid, sourceType, rawApiPath, version ?? null, fallbackRawPath ?? null],
+    queryFn: async (): Promise<{ response: ArtifactTextResponse; usedRaw: boolean }> => {
+      try {
+        const response =
+          sourceType === 'deliverables'
+            ? await artifactsApi.getSessionDeliverableText(sid ?? '', path, {
+                maxBytes: 200000,
+                version,
+              })
+            : await artifactsApi.getSessionArtifactText(sid ?? '', rawApiPath, {
+                maxBytes: 200000,
+              });
+        return { response, usedRaw: false };
+      } catch (error) {
+        if (canFallback && fallbackRawPath && isNotFoundError(error)) {
+          const response = await artifactsApi.getSessionArtifactText(sid ?? '', fallbackRawPath, {
+            maxBytes: 200000,
+          });
+          return { response, usedRaw: true };
+        }
+        throw error;
       }
-      return artifactsApi.getSessionArtifactText(sid ?? '', rawPath, { maxBytes: 200000 });
     },
     enabled: Boolean(open && sid && path && isText),
   });
+  const textPreview = textData?.response;
 
-  // Rendered preview for LaTeX and Markdown
+  // Rendered preview for LaTeX and Markdown (same raw fallback as text)
   const {
-    data: renderedPreview,
+    data: renderData,
     isLoading: renderLoading,
     error: renderError,
   } = useQuery({
-    queryKey: ['artifacts', 'preview-render', sid, sourceType, rawPath, version ?? null],
-    queryFn: () =>
-      artifactsApi.renderArtifact(sid ?? '', sourceType === 'raw' ? rawPath : path, {
-        sourceType,
-      }),
+    queryKey: ['artifacts', 'preview-render', sid, sourceType, rawApiPath, version ?? null, fallbackRawPath ?? null],
+    queryFn: async (): Promise<{ response: ArtifactRenderResponse; usedRaw: boolean }> => {
+      try {
+        const response = await artifactsApi.renderArtifact(
+          sid ?? '',
+          sourceType === 'raw' ? rawApiPath : path,
+          { sourceType }
+        );
+        return { response, usedRaw: false };
+      } catch (error) {
+        if (canFallback && fallbackRawPath && isNotFoundError(error)) {
+          const response = await artifactsApi.renderArtifact(sid ?? '', fallbackRawPath, {
+            sourceType: 'raw',
+          });
+          return { response, usedRaw: true };
+        }
+        throw error;
+      }
+    },
     enabled: Boolean(open && sid && path && isRenderable),
     retry: 1,
   });
+  const renderedPreview = renderData?.response;
+
+  const rawFallbackActive = Boolean(
+    canFallback &&
+      (textData?.usedRaw === true || renderData?.usedRaw === true || imgRawFallback)
+  );
+  const fileUrl = sid
+    ? rawFallbackActive && fallbackRawPath
+      ? buildArtifactFileUrl(sid, fallbackRawPath)
+      : sourceType === 'deliverables'
+      ? buildDeliverableFileUrl(sid, path, version ? { version } : undefined)
+      : buildArtifactFileUrl(sid, rawApiPath)
+    : null;
 
   const handleDownload = () => {
     if (!fileUrl) {
@@ -259,6 +316,11 @@ export const ArtifactPreviewModal: React.FC<ArtifactPreviewModalProps> = ({
           <img
             src={fileUrl}
             alt={name}
+            onError={() => {
+              if (canFallback && !rawFallbackActive) {
+                setImgRawFallback(true);
+              }
+            }}
             style={{
               width: '100%',
               maxWidth: '100%',
