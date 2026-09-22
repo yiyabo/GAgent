@@ -45,6 +45,34 @@ def _build_deep_think_agent(request_profile: dict[str, Any] | None = None) -> De
     )
 
 
+def test_deep_think_research_tier_requires_reading_fetched_literature_artifacts() -> None:
+    agent = _build_deep_think_agent({"request_tier": "research"})
+    native_prompt = agent._build_native_system_prompt()
+    legacy_prompt = agent._build_system_prompt()
+    next_step = agent._get_next_step_prompt(1)
+
+    for prompt in (native_prompt, legacy_prompt, next_step):
+        assert "study_cards.jsonl" in prompt
+        assert "library.jsonl" in prompt
+        assert "file_operations" in prompt
+        assert "before claiming insufficient or unconfirmed evidence" in prompt or "before saying the evidence is insufficient" in prompt
+
+    assert "not evidence that is absent" in native_prompt
+    assert "Do not treat a filename, count, or tool summary as a substitute" in native_prompt
+    assert "never invent findings to fill a gap" in native_prompt
+
+
+def test_deep_think_non_research_tiers_do_not_get_literature_reading_rule() -> None:
+    standard_agent = _build_deep_think_agent({"request_tier": "standard"})
+    execute_agent = _build_deep_think_agent({"request_tier": "execute", "intent_type": "execute_task"})
+
+    for agent in (standard_agent, execute_agent):
+        native_prompt = agent._build_native_system_prompt()
+        next_step = agent._get_next_step_prompt(1)
+        assert "study_cards.jsonl" not in native_prompt
+        assert "study_cards.jsonl" not in next_step
+
+
 def test_structured_action_catalog_includes_bio_tools() -> None:
     prompts = prompt_manager.get_category("structured_agent")
     base_actions = prompts["action_catalog"]["base_actions"]

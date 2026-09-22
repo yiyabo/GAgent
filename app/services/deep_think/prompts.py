@@ -282,6 +282,9 @@ def _build_request_tier_block(agent: "DeepThinkAgent") -> str:
             "- Cite verifiable sources for time-sensitive or factual claims.\n"
             "- Keep the writing professional and restrained; avoid decorative emojis in headings or labels.\n"
             "- Keep research focused on the exact user question; avoid unrelated survey padding.\n"
+            "- When a successful `literature_pipeline` result provides `study_cards.jsonl`, `library.jsonl`, `evidence.md`, `study_matrix.md`, or a coverage report, those paths are evidence waiting to be read, not evidence that is absent.\n"
+            "- Read the relevant portions of those existing artifacts with `file_operations` before saying the evidence is insufficient or that the findings cannot be confirmed. Do not treat a filename, count, or tool summary as a substitute for reading the records.\n"
+            "- After reading, state precisely what the records support and what fields or full text remain unavailable; never invent findings to fill a gap.\n"
         )
     if tier == "execute":
         execute_focus_note = ""
@@ -1157,6 +1160,13 @@ def _get_next_step_prompt(agent: "DeepThinkAgent", iteration: int) -> str:
         return (
             'Prefer answering now. If you still need file or tool evidence, call the tool now; '
             'otherwise call submit_final_answer. Do not output transitional narration as a standalone response.'
+        )
+    if tier == "research":
+        return (
+            'Before concluding research, check whether a successful literature_pipeline already produced '
+            'study_cards.jsonl, library.jsonl, evidence.md, study_matrix.md, or a coverage report. '
+            'If so, read the relevant records with file_operations before claiming insufficient or unconfirmed evidence; '
+            'then call submit_final_answer with only what those records support.'
         )
     if iteration >= agent.max_iterations - 1:
         return (
