@@ -11,6 +11,7 @@ from app.routers.chat.action_execution import build_phagescope_deep_profile_anal
 from app.routers.chat.guardrails import extract_task_ids_from_text
 from app.routers.chat.request_routing import (
     build_request_tier_profile,
+    requests_existing_image_display,
     resolve_intent_type,
     resolve_request_routing,
 )
@@ -979,6 +980,30 @@ def test_start_task_followup_routes_to_execute() -> None:
     assert decision.intent_type == "chat"
     assert decision.request_route_mode == "auto_deepthink"
     assert decision.request_tier == "execute"
+
+
+def test_compound_report_and_image_edit_does_not_take_image_display_shortcut() -> None:
+    context = {
+        "recent_image_artifacts": [
+            {
+                "path": "deliverables/latest/image_tabular/egfr_group_comparison.png",
+                "display_name": "egfr_group_comparison.png",
+            }
+        ]
+    }
+    message = (
+        "图我看过了，把标题和坐标轴字体调大一些并覆盖原图；"
+        "报告结果部分补充两组 HbA1c 变化，结论里加临床提示。"
+    )
+    assert requests_existing_image_display(message, context) is False
+    decision = resolve_request_routing(message=message, context=context)
+    assert decision.request_tier == "execute"
+
+
+def test_english_compound_report_and_image_edit_does_not_take_image_display_shortcut() -> None:
+    context = {"recent_image_artifacts": [{"path": "deliverables/latest/figure.png"}]}
+    message = "Show me the figure after editing its labels, overwrite it, and update the report results."
+    assert requests_existing_image_display(message, context) is False
 
 
 def test_existing_image_display_routes_to_local_read_when_recent_images_exist() -> None:

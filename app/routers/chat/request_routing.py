@@ -813,6 +813,15 @@ _IMAGE_REFERENCE_PHRASES = (
     "最后那张",
 )
 
+# A message that mentions an image while also requesting a mutation or a
+# second content artifact must remain on the normal execution path. Otherwise
+# the deterministic image-display shortcut can swallow compound requests.
+_IMAGE_COMPOUND_ACTION_PHRASES = (
+    "修改", "改图", "调图", "微调", "覆盖", "重画", "重新生成", "换个风格",
+    "写报告", "撰写报告", "补充报告", "生成报告", "更新报告", "报告中",
+    "modify", "edit", "adjust", "overwrite", "update the report", "write a report",
+)
+
 _IMAGE_REGENERATE_PHRASES = (
     "regenerate",
     "generate another",
@@ -1357,6 +1366,12 @@ def classify_request_tier(
         reasons.append("time_sensitive_cue")
 
     has_execute_keyword = _contains_any(lowered, _EXECUTE_PHRASES)
+    has_recent_images = _has_recent_image_artifacts(context_dict)
+    has_compound_image_action = has_recent_images and _contains_any(
+        lowered, _IMAGE_COMPOUND_ACTION_PHRASES
+    )
+    if has_compound_image_action:
+        reasons.append("compound_image_action")
     has_depth_cue = _contains_any(lowered, _DEPTH_CUES)
     if has_depth_cue:
         reasons.append("depth_cue")
@@ -1401,7 +1416,7 @@ def classify_request_tier(
             reasons.append("plan_optimize")
         return "execute", reasons, is_direct_followup, 0.9
 
-    if has_execute_keyword or followthrough_implies_execute:
+    if has_execute_keyword or followthrough_implies_execute or has_compound_image_action:
         reasons.append("execution_keyword")
         return "execute", reasons, is_direct_followup, 0.9
 
@@ -1956,6 +1971,8 @@ def requests_existing_image_display(
     if not lowered:
         return False
     if requests_image_regeneration(lowered):
+        return False
+    if _contains_any(lowered, _IMAGE_COMPOUND_ACTION_PHRASES):
         return False
     if context is not None and not _has_recent_image_artifacts(context):
         return False
