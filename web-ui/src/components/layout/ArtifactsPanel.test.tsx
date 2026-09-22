@@ -216,7 +216,7 @@ describe('ArtifactsPanel', () => {
 
       await screen.findByText('report.md');
 
-      const btn = screen.getByRole('button', { name: /download selected/i });
+      const btn = screen.getByRole('button', { name: /download\s*selected/i });
       expect(btn).toBeDisabled();
     });
 
@@ -230,7 +230,7 @@ describe('ArtifactsPanel', () => {
       fireEvent.click(checkboxes[checkboxes.length - 1]);
 
       await waitFor(() => {
-        expect(screen.getByRole('button', { name: /download selected/i })).not.toBeDisabled();
+        expect(screen.getByRole('button', { name: /download\s*selected/i })).not.toBeDisabled();
       });
     });
 
@@ -240,7 +240,7 @@ describe('ArtifactsPanel', () => {
 
       await screen.findByText('report.md');
 
-      const btn = screen.getByRole('button', { name: /download all/i });
+      const btn = screen.getByRole('button', { name: /download\s*all/i });
       fireEvent.click(btn);
 
       await waitFor(() => {
@@ -261,7 +261,7 @@ describe('ArtifactsPanel', () => {
 
       await screen.findByText('coverage_report.json');
 
-      const btn = screen.getByRole('button', { name: /download all/i });
+      const btn = screen.getByRole('button', { name: /download\s*all/i });
       fireEvent.click(btn);
 
       await waitFor(() => {
@@ -287,10 +287,10 @@ describe('ArtifactsPanel', () => {
       fireEvent.click(checkboxes[checkboxes.length - 1]);
 
       await waitFor(() => {
-        expect(screen.getByRole('button', { name: /download selected/i })).not.toBeDisabled();
+        expect(screen.getByRole('button', { name: /download\s*selected/i })).not.toBeDisabled();
       });
 
-      fireEvent.click(screen.getByRole('button', { name: /download selected/i }));
+      fireEvent.click(screen.getByRole('button', { name: /download\s*selected/i }));
 
       await waitFor(() => {
         expect(mockedDownloadSessionBatch).toHaveBeenCalledWith(
@@ -311,7 +311,7 @@ describe('ArtifactsPanel', () => {
         () => new Promise((resolve) => { resolveDownload = resolve; })
       );
 
-      const btn = screen.getByRole('button', { name: /download all/i });
+      const btn = screen.getByRole('button', { name: /download\s*all/i });
       fireEvent.click(btn);
 
       await waitFor(() => expect(mockedDownloadSessionBatch).toHaveBeenCalled());
@@ -329,7 +329,7 @@ describe('ArtifactsPanel', () => {
         expect(screen.getByText('No files')).toBeInTheDocument();
       });
 
-      expect(screen.getByRole('button', { name: /download all/i })).toBeDisabled();
+      expect(screen.getByRole('button', { name: /download\s*all/i })).toBeDisabled();
     });
   });
 });

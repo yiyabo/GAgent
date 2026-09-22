@@ -1,11 +1,30 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { App as AntdApp } from 'antd';
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { artifactsApi } from '@api/artifacts';
 import { useChatStore } from '@store/chat';
 import type { PlanResultItem, PlanTaskNode } from '@/types';
 import { ExecutionResult, TaskDrawerContent } from './TaskDetailSections';
+
+vi.mock('@api/artifacts', async () => {
+  const actual = await vi.importActual<typeof import('@api/artifacts')>('@api/artifacts');
+  return {
+    ...actual,
+    artifactsApi: {
+      listSessionArtifacts: vi.fn(),
+      listSessionDeliverables: vi.fn(),
+      getSessionArtifactText: vi.fn(),
+      getSessionDeliverableText: vi.fn(),
+      renderArtifact: vi.fn(),
+    },
+    downloadSessionBatch: vi.fn(),
+  };
+});
+
+const mockedArtifactsApi = vi.mocked(artifactsApi);
 
 describe('ExecutionResult', () => {
   it('renders a readable failure summary with humanized failure kind', () => {
@@ -138,23 +157,46 @@ describe('TaskDrawerContent', () => {
     },
   };
 
-  const renderDrawer = () =>
-    render(
-      <AntdApp>
-        <TaskDrawerContent
-          activeTask={activeTask}
-          handleDependencyClick={vi.fn()}
-          recentToolResults={[]}
-          resultLoading={false}
-          taskResult={taskResult}
-          cachedResult={undefined}
-        />
-      </AntdApp>
+  const renderDrawer = () => {
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: {
+          retry: false,
+          gcTime: 0,
+        },
+      },
+    });
+    return render(
+      <QueryClientProvider client={queryClient}>
+        <AntdApp>
+          <TaskDrawerContent
+            activeTask={activeTask}
+            handleDependencyClick={vi.fn()}
+            recentToolResults={[]}
+            resultLoading={false}
+            taskResult={taskResult}
+            cachedResult={undefined}
+          />
+        </AntdApp>
+      </QueryClientProvider>
     );
+  };
 
   beforeEach(() => {
+    vi.clearAllMocks();
     useChatStore.setState({
       currentSession: { session_id: 'sess-1' },
+    } as any);
+    mockedArtifactsApi.getSessionDeliverableText.mockResolvedValue({
+      path: 'docs/evidence_report.md',
+      content: '# Evidence Report\n\nCollected findings.',
+      truncated: false,
+    });
+    mockedArtifactsApi.renderArtifact.mockResolvedValue({
+      path: 'docs/evidence_report.md',
+      format: 'html',
+      content: '<p>rendered</p>',
+      rendered_at: new Date().toISOString(),
     } as any);
   });
 
@@ -162,11 +204,10 @@ describe('TaskDrawerContent', () => {
     useChatStore.setState({ currentSession: null } as any);
   });
 
-  it('shows a readable default view without bare JSON', () => {
+  it('shows a clean readable default view without bare JSON', () => {
     const { container } = renderDrawer();
 
     expect(screen.getByText('Status')).toBeInTheDocument();
-    expect(screen.getByText('Task Content')).toBeInTheDocument();
     expect(screen.getByText('Result summary')).toBeInTheDocument();
     expect(
       screen.getByText('Findings summary for the collected evidence.')
@@ -177,11 +218,17 @@ describe('TaskDrawerContent', () => {
     expect(screen.getByText('Published Artifacts (1)')).toBeInTheDocument();
     expect(screen.getByText('evidence_report.md')).toBeInTheDocument();
     expect(screen.getByText('report.evidence_md')).toBeInTheDocument();
-    const link = screen.getByRole('link');
+    const link = screen.getByRole('link', { name: 'Open evidence_report.md in new tab' });
     expect(link.getAttribute('href')).toContain(
       '/artifacts/sessions/sess-1/deliverables/file?path=docs%2Fevidence_report.md'
     );
     expect(link.getAttribute('target')).toBe('_blank');
+
+    // Instruction collapsed by default.
+    expect(screen.getByText('Task instruction')).toBeInTheDocument();
+    expect(
+      screen.queryByText('Collect review evidence for the target protein.')
+    ).not.toBeInTheDocument();
 
     // Bare JSON stays out of the default (collapsed) view.
     expect(container.textContent).not.toContain('context_meta');
@@ -191,6 +238,53 @@ describe('TaskDrawerContent', () => {
     expect(container.textContent).not.toContain('"checks_total"');
     expect(screen.queryByText('Token Consumption')).not.toBeInTheDocument();
     expect(screen.queryByText('Copy task JSON')).not.toBeInTheDocument();
+  });
+
+  it('expands the task instruction on demand', async () => {
+    renderDrawer();
+
+    expect(
+      screen.queryByText('Collect review evidence for the target protein.')
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByText('Task instruction'));
+
+    expect(
+      await screen.findByText('Collect review evidence for the target protein.')
+    ).toBeInTheDocument();
+  });
+
+  it('opens an in-drawer preview modal when clicking an artifact card', async () => {
+    renderDrawer();
+
+    fireEvent.click(screen.getByText('evidence_report.md'));
+
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText('evidence_report.md')).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: /download/i })).toBeInTheDocument();
+
+    // The modal previews the deliverable through the shared artifacts API.
+    await waitFor(() => {
+      expect(mockedArtifactsApi.renderArtifact).toHaveBeenCalledWith(
+        'sess-1',
+        'docs/evidence_report.md',
+        { sourceType: 'deliverables' }
+      );
+    });
+    await waitFor(() => {
+      expect(mockedArtifactsApi.getSessionDeliverableText).toHaveBeenCalledWith(
+        'sess-1',
+        'docs/evidence_report.md',
+        expect.objectContaining({ maxBytes: 200000 })
+      );
+    });
+
+    // Closing the modal returns to the drawer without navigation.
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }));
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    });
+    expect(screen.getByText('Published Artifacts (1)')).toBeInTheDocument();
   });
 
   it('moves technical details into a single collapsed panel', async () => {

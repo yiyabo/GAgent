@@ -9,10 +9,12 @@ import {
   Space,
   Spin,
   Tag,
+  Tooltip,
   Typography,
 } from 'antd';
-import { CopyOutlined, FileOutlined } from '@ant-design/icons';
+import { CopyOutlined, FileOutlined, LinkOutlined } from '@ant-design/icons';
 import ToolResultCard from '@components/chat/ToolResultCard';
+import { ArtifactPreviewModal } from '@components/layout/artifactPreview';
 import { buildDeliverableFileUrl } from '@api/artifacts';
 import { useChatStore } from '@store/chat';
 import type { DependencyPlanResponse, PlanResultItem, PlanTaskNode, ToolResultPayload } from '@/types';
@@ -184,6 +186,9 @@ interface PublishedArtifactEntry {
   alias: string;
   fileName: string;
   pathTail: string;
+  relativePath: string;
+  extension: string;
+  version?: string;
   href: string | null;
 }
 
@@ -228,12 +233,14 @@ export function collectPublishedArtifacts(
       sid && relativePath
         ? buildDeliverableFileUrl(sid, relativePath, version ? { version } : undefined)
         : null;
+    const dotIndex = fileName.lastIndexOf('.');
+    const extension = dotIndex > 0 ? fileName.slice(dotIndex + 1).toLowerCase() : '';
     const dedupeKey = href ?? `${key}::${rawPath}`;
     if (seen.has(dedupeKey)) {
       continue;
     }
     seen.add(dedupeKey);
-    entries.push({ key, alias, fileName, pathTail, href });
+    entries.push({ key, alias, fileName, pathTail, relativePath, extension, version, href });
   }
   return entries;
 }
@@ -315,6 +322,7 @@ export const PublishedArtifactsSection: React.FC<PublishedArtifactsSectionProps>
     () => collectPublishedArtifacts(result, sessionId),
     [result, sessionId]
   );
+  const [previewEntry, setPreviewEntry] = React.useState<PublishedArtifactEntry | null>(null);
   if (entries.length === 0) {
     return null;
   }
@@ -322,32 +330,54 @@ export const PublishedArtifactsSection: React.FC<PublishedArtifactsSectionProps>
     <section>
       <Title level={5}>Published Artifacts ({entries.length})</Title>
       <Space direction="vertical" size={8} style={{ width: '100%' }}>
-        {entries.map((entry) => {
-          const card = (
-            <Card size="small" hoverable={Boolean(entry.href)}>
-              <Space direction="vertical" size={2} style={{ width: '100%' }}>
-                <Space size={6} wrap>
-                  <FileOutlined />
-                  <Text strong>{entry.fileName}</Text>
-                  {entry.alias && entry.alias !== entry.fileName && <Tag>{entry.alias}</Tag>}
-                </Space>
-                {entry.pathTail && entry.pathTail !== entry.fileName && (
-                  <Text type="secondary" style={{ fontSize: 12 }}>
-                    {entry.pathTail}
-                  </Text>
+        {entries.map((entry) => (
+          <Card
+            key={entry.key}
+            size="small"
+            hoverable={Boolean(entry.href)}
+            onClick={entry.href ? () => setPreviewEntry(entry) : undefined}
+            style={{ cursor: entry.href ? 'pointer' : 'default' }}
+          >
+            <Space direction="vertical" size={2} style={{ width: '100%' }}>
+              <Space size={6} wrap>
+                <FileOutlined />
+                <Text strong>{entry.fileName}</Text>
+                {entry.alias && entry.alias !== entry.fileName && <Tag>{entry.alias}</Tag>}
+                {entry.href && (
+                  <Tooltip title="Open in new tab">
+                    <a
+                      href={entry.href}
+                      target="_blank"
+                      rel="noreferrer"
+                      aria-label={`Open ${entry.fileName} in new tab`}
+                      onClick={(event) => event.stopPropagation()}
+                    >
+                      <LinkOutlined />
+                    </a>
+                  </Tooltip>
                 )}
               </Space>
-            </Card>
-          );
-          return entry.href ? (
-            <a key={entry.key} href={entry.href} target="_blank" rel="noreferrer">
-              {card}
-            </a>
-          ) : (
-            <React.Fragment key={entry.key}>{card}</React.Fragment>
-          );
-        })}
+              {entry.pathTail && entry.pathTail !== entry.fileName && (
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  {entry.pathTail}
+                </Text>
+              )}
+            </Space>
+          </Card>
+        ))}
       </Space>
+      {previewEntry && (
+        <ArtifactPreviewModal
+          open
+          onClose={() => setPreviewEntry(null)}
+          sessionId={sessionId ?? null}
+          name={previewEntry.fileName}
+          path={previewEntry.relativePath}
+          sourceType="deliverables"
+          extension={previewEntry.extension}
+          version={previewEntry.version}
+        />
+      )}
     </section>
   );
 };
@@ -481,19 +511,21 @@ export const TaskDrawerContent: React.FC<TaskDrawerContentProps> = ({
         </Space>
       </section>
 
-      <section>
-        <Title level={5}>Task Content</Title>
-        <div>
-          <Text type="secondary">Instruction</Text>
-          <Paragraph
-            style={{ whiteSpace: 'pre-wrap' }}
-            copyable
-            ellipsis={{ rows: 6, expandable: true, symbol: 'Expand' }}
-          >
-            {activeTask.instruction || 'No description available'}
-          </Paragraph>
-        </div>
-      </section>
+      <Collapse
+        size="small"
+        bordered={false}
+        items={[
+          {
+            key: 'task-instruction',
+            label: 'Task instruction',
+            children: (
+              <Paragraph style={{ whiteSpace: 'pre-wrap', marginBottom: 0 }} copyable>
+                {activeTask.instruction || 'No description available'}
+              </Paragraph>
+            ),
+          },
+        ]}
+      />
 
       <section>
         <Title level={5}>Execution Result</Title>

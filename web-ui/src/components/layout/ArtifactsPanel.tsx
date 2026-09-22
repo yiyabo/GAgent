@@ -8,7 +8,6 @@ import {
   Segmented,
   Space,
   Switch,
-  Table,
   Tag,
   Tooltip,
   Tree,
@@ -42,19 +41,20 @@ import {
 import type { BatchDownloadEntry } from '@api/artifacts';
 import type { ArtifactItem, DeliverableItem } from '@/types';
 import type { DataNode } from 'antd/es/tree';
-import type { ColumnsType } from 'antd/es/table';
 import { useLayoutStore } from '@store/layout';
 import { useTasksStore } from '@store/tasks';
 import { MarkdownRenderer } from '@components/chat/MarkdownRenderer';
+import {
+  CSVTablePreview,
+  CSV_EXTS,
+  formatSize,
+  IMAGE_EXTS,
+  PDF_EXTS,
+  RENDERABLE_EXTS,
+  TEXT_EXTS,
+} from './artifactPreview';
 
 const { Text } = Typography;
-
-const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg']);
-const CSV_EXTS = new Set(['csv', 'tsv']);
-const PDF_EXTS = new Set(['pdf']);
-const TEXT_EXTS = new Set(['md', 'txt', 'csv', 'tsv', 'json', 'log', 'py', 'r', 'html', 'tex', 'bib']);
-// Files that need rendering (LaTeX -> PDF, Markdown -> HTML)
-const RENDERABLE_EXTS = new Set(['tex', 'md', 'docx']);
 
 function getReleaseStatePresentation(releaseState?: string): {
   color: string;
@@ -74,69 +74,6 @@ function getReleaseStatePresentation(releaseState?: string): {
   }
   return { color: 'blue', label: normalized.replace(/_/g, ' '), icon: <FileOutlined /> };
 }
-
-/* ---- CSV / TSV parsing ---- */
-
-interface ParsedTable {
-  columns: string[];
-  rows: string[][];
-}
-
-function parseDelimited(content: string, delimiter: string): ParsedTable {
-  const lines = content.trim().split('\n').filter((l) => l.trim());
-  if (!lines.length) return { columns: [], rows: [] };
-  const parse = (line: string) =>
-    line.split(delimiter).map((c) => c.trim().replace(/^"|"$/g, ''));
-  return { columns: parse(lines[0]), rows: lines.slice(1).map(parse) };
-}
-
-const CSVTablePreview: React.FC<{ content: string; extension: string }> = ({ content, extension }) => {
-  const delimiter = extension === 'tsv' ? '\t' : ',';
-  const { columns, rows } = React.useMemo(() => parseDelimited(content, delimiter), [content, delimiter]);
-
-  const antColumns: ColumnsType<Record<string, string>> = columns.map((col, i) => ({
-    title: col,
-    dataIndex: `col_${i}`,
-    key: `col_${i}`,
-    ellipsis: true,
-    sorter: (a: Record<string, string>, b: Record<string, string>) =>
-      (a[`col_${i}`] ?? '').localeCompare(b[`col_${i}`] ?? ''),
-  }));
-
-  const dataSource = rows.map((row, ri) => {
-    const record: Record<string, string> = { key: String(ri) };
-    columns.forEach((_, ci) => { record[`col_${ci}`] = row[ci] ?? ''; });
-    return record;
-  });
-
-  if (!columns.length) return <Empty description="No tabular data detected" />;
-
-  return (
-    <div style={{ overflow: 'auto' }}>
-      <div style={{ marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
-        <TableOutlined style={{ color: 'var(--primary-color)' }} />
-        <Text type="secondary" style={{ fontSize: 12 }}>
-          {rows.length} rows x {columns.length} columns
-        </Text>
-      </div>
-      <Table
-        columns={antColumns}
-        dataSource={dataSource}
-        size="small"
-        pagination={rows.length > 100 ? { pageSize: 100, showSizeChanger: true } : false}
-        scroll={{ x: 'max-content' }}
-        bordered
-        style={{ fontSize: 12 }}
-      />
-    </div>
-  );
-};
-
-const formatSize = (size = 0) => {
-  if (size >= 1024 * 1024) return `${(size / (1024 * 1024)).toFixed(1)} MB`;
-  if (size >= 1024) return `${(size / 1024).toFixed(1)} KB`;
-  return `${size} B`;
-};
 
 const formatModuleName = (module?: string) => {
   if (!module) return '';
