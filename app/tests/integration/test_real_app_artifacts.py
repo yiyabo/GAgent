@@ -208,3 +208,79 @@ def test_real_app_missing_deliverables_for_existing_session_returns_empty_payloa
         assert payload["items"] == []
         assert payload["modules"] == {}
         assert payload["root_path"] == ""
+
+
+@pytest.mark.integration
+def test_real_app_deliverable_file_resolves_scratch_source_path(
+    app_client_factory,
+    isolated_app_env,
+) -> None:
+    session_id = "artifactsrc001"
+    session_dir = isolated_app_env["runtime_root"] / f"session_{session_id}"
+    latest_root = session_dir / "deliverables" / "latest"
+
+    published_png = latest_root / "image_tabular" / "egfr_group_comparison.png"
+    published_doc = latest_root / "docs" / "report.md"
+    published_png.parent.mkdir(parents=True, exist_ok=True)
+    published_doc.parent.mkdir(parents=True, exist_ok=True)
+    published_png.write_bytes(b"\x89PNG\r\n\x1a\n" + b"published-bytes")
+    published_doc.write_text("published report\n", encoding="utf-8")
+
+    scratch_rel = (
+        "_scratch/lit_review_citation_filter_584f28/"
+        "run_20260921_153517_896909_eea06e29/deliverables/egfr_group_comparison.png"
+    )
+    scratch_doc_rel = (
+        "_scratch/lit_review_citation_filter_584f28/"
+        "run_20260921_153517_896909_eea06e29/deliverables/metformin_egfr_cohort_report.md"
+    )
+    _write_json(
+        session_dir / "deliverables" / "manifest_latest.json",
+        {
+            "version_id": "v-src",
+            "items": [
+                {
+                    "module": "image_tabular",
+                    "path": "image_tabular/egfr_group_comparison.png",
+                    "status": "final",
+                    "source_path": f"runtime/session_{session_id}/{scratch_rel}",
+                },
+                {
+                    "module": "docs",
+                    "path": "docs/report.md",
+                    "status": "final",
+                    "source_path": f"runtime/session_{session_id}/{scratch_doc_rel}",
+                },
+            ],
+        },
+    )
+
+    with app_client_factory() as client:
+        _ensure_session(client, session_id)
+
+        file_response = client.get(
+            f"/artifacts/sessions/{session_id}/deliverables/file",
+            params={"path": scratch_rel},
+        )
+        assert file_response.status_code == 200
+        assert file_response.content == published_png.read_bytes()
+
+        text_response = client.get(
+            f"/artifacts/sessions/{session_id}/deliverables/text",
+            params={"path": scratch_doc_rel},
+        )
+        assert text_response.status_code == 200
+        assert text_response.json()["content"] == "published report\n"
+
+        exact_response = client.get(
+            f"/artifacts/sessions/{session_id}/deliverables/file",
+            params={"path": "image_tabular/egfr_group_comparison.png"},
+        )
+        assert exact_response.status_code == 200
+        assert exact_response.content == published_png.read_bytes()
+
+        unmatched_response = client.get(
+            f"/artifacts/sessions/{session_id}/deliverables/file",
+            params={"path": "_scratch/other_task/run_x/deliverables/absent.png"},
+        )
+        assert unmatched_response.status_code == 404

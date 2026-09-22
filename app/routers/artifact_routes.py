@@ -1032,14 +1032,28 @@ def _resolve_reference_deliverable(*, session_dir: Path, rel_path: str) -> Optio
     Reference rows are not copied into deliverables/latest (big-file policy);
     the file is served from its source location, which must live inside the
     session directory.
+
+    Gallery items emitted by the publish pipeline may reference the artifact's
+    *source* path (e.g. ``_scratch/<task>/run_<ts>/deliverables/x.png``) rather
+    than the published path under ``deliverables/latest``.  When no exact
+    reference row matches, fall back to the manifest row whose ``source_path``
+    ends with the requested session-relative path and serve its published copy.
     """
     manifest = _safe_json_load(_deliverables_root(session_dir) / "manifest_latest.json")
     normalized = rel_path.replace("\\", "/").strip("/")
-    for item in manifest.get("items") or []:
+    items = manifest.get("items") or []
+    resolved = _resolve_reference_row(session_dir=session_dir, items=items, rel_path=normalized)
+    if resolved is not None:
+        return resolved
+    return _resolve_source_path_row(session_dir=session_dir, items=items, rel_path=normalized)
+
+
+def _resolve_reference_row(*, session_dir: Path, items: Any, rel_path: str) -> Optional[Path]:
+    for item in items:
         if not isinstance(item, dict):
             continue
         item_path = str(item.get("path") or "").replace("\\", "/").strip("/")
-        if item_path != normalized:
+        if item_path != rel_path:
             continue
         if str(item.get("storage") or "") != "reference":
             continue
@@ -1064,6 +1078,32 @@ def _resolve_reference_deliverable(*, session_dir: Path, rel_path: str) -> Optio
         except Exception:
             return None
         return resolved
+    return None
+
+
+def _resolve_source_path_row(*, session_dir: Path, items: Any, rel_path: str) -> Optional[Path]:
+    if not rel_path or ".." in rel_path.split("/"):
+        return None
+    latest_root = _deliverables_latest_dir(session_dir)
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        source_rel = str(item.get("source_path") or "").replace("\\", "/").strip().strip("/")
+        if not source_rel:
+            continue
+        if source_rel != rel_path and not source_rel.endswith("/" + rel_path):
+            continue
+        item_path = str(item.get("path") or "").replace("\\", "/").strip("/")
+        if not item_path or ".." in item_path.split("/"):
+            continue
+        candidate = (latest_root / item_path).resolve()
+        try:
+            candidate.relative_to(latest_root.resolve())
+        except ValueError:
+            continue
+        if not candidate.is_file():
+            continue
+        return candidate
     return None
 
 

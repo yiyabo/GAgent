@@ -58,9 +58,9 @@ export function resolveArtifactImageSrc(
   }
 
   const pathForApi = sourceType === 'deliverables'
-    ? `deliverables/latest/${normalized}`
+    ? (normalized.startsWith('deliverables/') ? normalized : `deliverables/latest/${normalized}`)
     : sourceType === 'raw'
-    ? `raw_files/${normalized}`
+    ? (normalized.startsWith('raw_files/') ? normalized : `raw_files/${normalized}`)
     : normalized;
   return buildArtifactFileUrl(sid, pathForApi);
 }

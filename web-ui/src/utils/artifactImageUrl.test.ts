@@ -56,6 +56,36 @@ describe('resolveArtifactImageSrc', () => {
     expect(resolveArtifactImageSrc('', 's')).toBe('');
     expect(resolveArtifactImageSrc(undefined, 's')).toBe('');
   });
+
+  it('does not double-prefix deliverables/latest paths', () => {
+    expect(
+      resolveArtifactImageSrc('deliverables/latest/image_tabular/a.png', 'sess_1', 'deliverables'),
+    ).toBe(
+      'http://api.test/artifacts/sessions/sess_1/file?path=' +
+        encodeURIComponent('deliverables/latest/image_tabular/a.png'),
+    );
+    expect(
+      resolveArtifactImageSrc('deliverables/metformin_egfr_cohort_report.png', 'sess_1', 'deliverables'),
+    ).toBe(
+      'http://api.test/artifacts/sessions/sess_1/file?path=' +
+        encodeURIComponent('deliverables/metformin_egfr_cohort_report.png'),
+    );
+  });
+
+  it('still prefixes bare paths for typed sources', () => {
+    expect(resolveArtifactImageSrc('image_tabular/a.png', 'sess_1', 'deliverables')).toBe(
+      'http://api.test/artifacts/sessions/sess_1/file?path=' +
+        encodeURIComponent('deliverables/latest/image_tabular/a.png'),
+    );
+    expect(resolveArtifactImageSrc('plots/a.png', 'sess_1', 'raw')).toBe(
+      'http://api.test/artifacts/sessions/sess_1/file?path=' +
+        encodeURIComponent('raw_files/plots/a.png'),
+    );
+    expect(resolveArtifactImageSrc('raw_files/plots/a.png', 'sess_1', 'raw')).toBe(
+      'http://api.test/artifacts/sessions/sess_1/file?path=' +
+        encodeURIComponent('raw_files/plots/a.png'),
+    );
+  });
 });
 
 describe('collectArtifactImagePathsFromResult', () => {
