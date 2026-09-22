@@ -39,6 +39,7 @@ from .routers import get_all_routers
 from .repository.chat_runs import fix_stale_chat_runs_on_startup
 from .repository.plan_repository import fix_stale_plan_task_statuses_on_startup
 from .repository.plan_storage import fix_stale_jobs_on_startup
+from .consul_registration import start_consul_registration, stop_consul_registration
 from .services.foundation.logging_config import setup_logging
 from .services.foundation.settings import get_settings
 from .services.foundation.llm_config import is_production, platform_profile
@@ -238,9 +239,16 @@ async def lifespan(_fastapi_app: FastAPI):
     except Exception as e:
         logging.getLogger("app.main").warning("Failed to start conversation quality runner: %s", e)
 
+    # Consul 服务注册放在 lifespan 末尾：健康端点所属的 app 此时即将就绪，
+    # 注册过早会造成「Consul 已能查到但服务还没起完」的窗口。
+    # 默认关闭、失败不阻塞启动，详见 app/consul_registration.py
+    start_consul_registration()
+
     try:
         yield
     finally:
+        # 先摘除 Consul 注册再关下游资源，避免关闭窗口内网关把请求路由到半死实例
+        stop_consul_registration()
         if quality_runner is not None:
             await quality_runner.stop()
 
