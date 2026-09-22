@@ -89,6 +89,11 @@ dependencies = [
 [tool.uv]
 package = false
 
+# 代码库大量既有行超过 black 默认的 88 列，按 120 列格式化，
+# 避免格式化工具对存量代码产生大面积无关重排
+[tool.black]
+line-length = 120
+
 # 默认包源换成清华 TUNA 镜像：国内直连 pypi.org 下载大包（如 torch）经常
 # 超时或极慢，镜像站内容与官方同源同 hash，锁文件校验不受影响。
 # 写在项目里而不是用户全局配置，是为了换机器 clone 后不用再手工配源。
