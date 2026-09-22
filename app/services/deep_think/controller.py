@@ -35,6 +35,7 @@ from app.services.deep_think.text_utils import (
     _derive_expected_outputs,
     _ensure_inline_images,
     _missing_expectations,
+    _missing_expectations_detailed,
 )
 from app.services.execution.tool_executor import UnifiedToolExecutor
 from app.services.foundation.settings import get_settings
@@ -105,7 +106,17 @@ async def _think_native(
     tools_used: List[str] = []
     tool_schemas = build_tool_schemas(agent.available_tools)
 
+    expected_outputs = _derive_expected_outputs(user_query)
+    acceptance_spec = None
+    if expected_outputs:
+        from app.services.deep_think.acceptance import extract_acceptance_spec
+
+        acceptance_spec = await extract_acceptance_spec(agent, user_query)
     system_prompt = agent._build_native_system_prompt(context, task_context)
+    if acceptance_spec is not None:
+        from app.services.deep_think.acceptance import build_acceptance_spec_prompt_block
+
+        system_prompt += build_acceptance_spec_prompt_block(acceptance_spec)
     messages: List[Dict[str, Any]] = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_query},
@@ -158,10 +169,12 @@ async def _think_native(
         "no_progress_nudge_sent": False,
         "time_nudge_sent": False,
         "started_at": time.monotonic(),
-        "expected_outputs": _derive_expected_outputs(user_query),
+        "expected_outputs": expected_outputs,
+        "acceptance_spec": acceptance_spec,
     }
     agent._produced_deliverable_paths = []
     agent._acceptance_missing: List[str] = []
+    agent._acceptance_spec = acceptance_spec
     agent._expected_outputs_current = list(loop_guard_state["expected_outputs"])
     if loop_guard_state["expected_outputs"]:
         logger.info(
@@ -452,9 +465,13 @@ async def _think_native(
 
                 if identical_tool_cycle_count >= agent.MAX_IDENTICAL_TOOL_CALL_CYCLES:
                     repeated_cycles = identical_tool_cycle_count + 1
-                    rep_missing = _missing_expectations(
+                    from app.services.deep_think.acceptance import (
+                        spec_to_kind_requirements as _spec_requirements,
+                    )
+                    rep_missing = _missing_expectations_detailed(
                         loop_guard_state.get("expected_outputs") or [],
                         loop_guard_state.get("verified_deliverables") or [],
+                        _spec_requirements(loop_guard_state.get("acceptance_spec")),
                     )
                     if rep_missing:
                         loop_guard_state["missing_expectations"] = rep_missing

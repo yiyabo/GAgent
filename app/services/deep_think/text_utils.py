@@ -47,6 +47,28 @@ def _default_fallback_timeout_seconds() -> int:
         return 150
 
 
+def _acceptance_v2_enabled() -> bool:
+    # Declarative acceptance v2 (LLM spec extraction) is opt-in; default off
+    # keeps every run on the v1 type heuristic with zero behaviour change.
+    return os.getenv("DEEP_THINK_ACCEPTANCE_V2_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _acceptance_v2_timeout_seconds() -> int:
+    raw = os.getenv("DEEP_THINK_ACCEPTANCE_V2_TIMEOUT_SECONDS", "60")
+    try:
+        return max(10, int(raw))
+    except (TypeError, ValueError):
+        return 60
+
+
+def _acceptance_v2_max_tokens() -> int:
+    raw = os.getenv("DEEP_THINK_ACCEPTANCE_V2_MAX_TOKENS", "800")
+    try:
+        return max(128, int(raw))
+    except (TypeError, ValueError):
+        return 800
+
+
 def _progress_free_nudge_streak() -> int:
     # Execute-tier runs that stop producing new deliverables get a finalize
     # nudge after this many consecutive progress-free iterations.
@@ -277,6 +299,34 @@ def _missing_expectations(expected: List[str], verified_paths: List[str]) -> Lis
         if not exts:
             continue
         if not any(str(p).lower().endswith(exts) for p in verified_paths or []):
+            missing.append(kind)
+    return missing
+
+
+def _missing_expectations_detailed(
+    expected: List[str],
+    verified_paths: List[str],
+    kind_requirements: Optional[Dict[str, int]] = None,
+) -> List[str]:
+    """Count-aware variant of _missing_expectations (acceptance v2).
+
+    With no requirements this is byte-identical to the v1 check. Requirements
+    map kind -> minimum count; a shortfall renders as ``<kind>x<n>`` so the
+    guard/final answer can state how many deliverables are still missing.
+    """
+    if not kind_requirements:
+        return _missing_expectations(expected, verified_paths)
+    missing: List[str] = []
+    for kind, needed in kind_requirements.items():
+        exts = _EXPECT_KIND_EXTS.get(kind)
+        if not exts or needed <= 0:
+            continue
+        have = sum(1 for p in verified_paths or [] if str(p).lower().endswith(exts))
+        if have < needed:
+            shortfall = needed - have
+            missing.append(f"{kind}x{shortfall}" if needed > 1 else kind)
+    for kind in _missing_expectations(expected, verified_paths):
+        if kind not in kind_requirements:
             missing.append(kind)
     return missing
 

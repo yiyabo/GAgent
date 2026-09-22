@@ -27,6 +27,7 @@ from app.services.deep_think.text_utils import (
     _PRODUCTIVE_SEGMENT_RE,
     _guard_json_payload,
     _missing_expectations,
+    _missing_expectations_detailed,
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -178,6 +179,16 @@ def _loop_guard_endgame_armed(agent: "DeepThinkAgent") -> bool:
     return agent._request_tier() == "execute" or agent._is_execute_task_request()
 
 
+def _spec_kind_requirements(guard_state: Dict[str, Any]) -> Optional[Dict[str, int]]:
+    """Count requirements from an acceptance-v2 spec, None when absent (v1)."""
+    spec = guard_state.get("acceptance_spec")
+    if spec is None:
+        return None
+    from app.services.deep_think.acceptance import spec_to_kind_requirements
+
+    return spec_to_kind_requirements(spec)
+
+
 def _apply_loop_guards(
     agent: "DeepThinkAgent",
     *,
@@ -243,8 +254,10 @@ def _apply_loop_guards(
                 signature,
             )
         if count >= _dta()._failure_signature_break_count():
-            trap_missing = _missing_expectations(
-                guard_state.get("expected_outputs") or [], verified
+            trap_missing = _missing_expectations_detailed(
+                guard_state.get("expected_outputs") or [],
+                verified,
+                _spec_kind_requirements(guard_state),
             )
             if trap_missing:
                 guard_state["missing_expectations"] = trap_missing
@@ -255,7 +268,11 @@ def _apply_loop_guards(
             )
 
     if agent._loop_guard_endgame_armed():
-        missing = _missing_expectations(guard_state.get("expected_outputs") or [], verified)
+        missing = _missing_expectations_detailed(
+            guard_state.get("expected_outputs") or [],
+            verified,
+            _spec_kind_requirements(guard_state),
+        )
         elapsed = time.monotonic() - float(guard_state["started_at"])
         if elapsed >= _dta()._time_budget_break_seconds():
             if missing:

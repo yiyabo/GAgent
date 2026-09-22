@@ -17,6 +17,15 @@ import pytest
 
 from app.llm import NativeStreamResult, NativeToolCall
 from app.services.deep_think_agent import DeepThinkAgent
+from app.services.deep_think.acceptance import (
+    extract_acceptance_spec,
+    parse_acceptance_spec,
+    spec_to_kind_requirements,
+)
+from app.services.deep_think.text_utils import (
+    _missing_expectations,
+    _missing_expectations_detailed,
+)
 
 
 SYNTH_ANSWER = "综合当前已收集的证据，本轮任务的关键结论如下：交付文件已生成并验证，可以直接使用。"
@@ -495,3 +504,213 @@ class TestDeclarativeAcceptance:
         assert agent._acceptance_missing == []
         text = _all_message_text(llm)
         assert "required deliverable type(s) still missing" not in text
+
+
+# ---------------------------------------------------------------------------
+# Declarative acceptance v2: LLM spec extraction (opt-in) + count-aware guard
+# ---------------------------------------------------------------------------
+
+_SPEC_JSON = (
+    '{"required_outputs": ['
+    '{"kind": "image", "min_count": 2, "extensions": [".png"], '
+    '"constraints": "CJK axis labels", "in_place": false},'
+    '{"kind": "document", "min_count": 1, "extensions": [".md"], '
+    '"target_path": "deliverables/report.md"}'
+    ']}'
+)
+
+
+class _SpecExtractLLM:
+    """Fake client for the v2 extraction call (stream_chat_async)."""
+
+    def __init__(self, chunks=None, exc: Exception | None = None) -> None:
+        self.calls = 0
+        self._chunks = list(chunks or [])
+        self._exc = exc
+
+    async def stream_chat_async(self, prompt: str = "", **kwargs):  # type: ignore[override]
+        self.calls += 1
+        if self._exc is not None:
+            raise self._exc
+        for chunk in self._chunks:
+            yield chunk
+
+
+def _spec_agent(llm, tier: str = "execute"):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(llm_client=llm, _request_tier=lambda: tier)
+
+
+class TestAcceptanceV2Parser:
+    def test_full_spec_parsed(self) -> None:
+        spec = parse_acceptance_spec(f"```json\n{_SPEC_JSON}\n```")
+        assert spec is not None
+        image, document = spec.required_outputs
+        assert image.kind == "image"
+        assert image.min_count == 2
+        assert image.extensions == [".png"]
+        assert image.constraints == "CJK axis labels"
+        assert document.kind == "document"
+        assert document.target_path == "deliverables/report.md"
+        assert spec_to_kind_requirements(spec) == {"image": 2, "document": 1}
+
+    def test_invalid_json_returns_none(self) -> None:
+        assert parse_acceptance_spec("not json at all") is None
+        assert parse_acceptance_spec('{"required_outputs": "nope"}') is None
+        assert parse_acceptance_spec("") is None
+
+    def test_normalization_rules(self) -> None:
+        spec = parse_acceptance_spec(
+            '{"required_outputs": ['
+            '{"kind": "figure", "min_count": 99, "extensions": ["png", ".exe", ".md"],'
+            ' "target_path": "../escape.md"},'
+            '{"kind": "hologram", "min_count": 1}'
+            ']}'
+        )
+        assert spec is not None
+        image, other = spec.required_outputs
+        assert image.kind == "image"  # alias normalized
+        assert image.min_count == 10  # clamped
+        assert image.extensions == [".png", ".md"]  # dotted, filtered
+        assert image.target_path is None  # traversal rejected
+        assert other.kind == "other"
+        # "other" kinds never drive deterministic blocking checks
+        assert spec_to_kind_requirements(spec) == {"image": 10}
+
+
+class TestAcceptanceV2Extraction:
+    def test_disabled_env_skips_llm(self, monkeypatch) -> None:
+        monkeypatch.delenv("DEEP_THINK_ACCEPTANCE_V2_ENABLED", raising=False)
+        llm = _SpecExtractLLM(chunks=[_SPEC_JSON])
+        spec = asyncio.run(extract_acceptance_spec(_spec_agent(llm), "画两张图并写报告"))
+        assert spec is None
+        assert llm.calls == 0
+
+    def test_non_allowed_tier_skips_llm(self, monkeypatch) -> None:
+        monkeypatch.setenv("DEEP_THINK_ACCEPTANCE_V2_ENABLED", "1")
+        llm = _SpecExtractLLM(chunks=[_SPEC_JSON])
+        spec = asyncio.run(extract_acceptance_spec(_spec_agent(llm, tier="standard"), "画两张图并写报告"))
+        assert spec is None
+        assert llm.calls == 0
+
+    def test_execute_tier_extracts_spec(self, monkeypatch) -> None:
+        monkeypatch.setenv("DEEP_THINK_ACCEPTANCE_V2_ENABLED", "1")
+        llm = _SpecExtractLLM(chunks=[_SPEC_JSON[:60], _SPEC_JSON[60:]])
+        spec = asyncio.run(extract_acceptance_spec(_spec_agent(llm), "画两张图并写报告"))
+        assert spec is not None
+        assert llm.calls == 1
+        assert spec_to_kind_requirements(spec) == {"image": 2, "document": 1}
+
+    def test_garbage_and_error_fall_back_silently(self, monkeypatch) -> None:
+        monkeypatch.setenv("DEEP_THINK_ACCEPTANCE_V2_ENABLED", "1")
+        garbage = _SpecExtractLLM(chunks=["sorry, cannot help"])
+        assert asyncio.run(extract_acceptance_spec(_spec_agent(garbage), "画两张图")) is None
+        failing = _SpecExtractLLM(exc=RuntimeError("upstream 504"))
+        assert asyncio.run(extract_acceptance_spec(_spec_agent(failing), "画两张图")) is None
+
+
+class TestAcceptanceV2MissingCounts:
+    def test_no_requirements_matches_v1(self) -> None:
+        expected = ["image", "document"]
+        paths = ["deliverables/latest/chart/a.png"]
+        assert _missing_expectations_detailed(expected, paths, None) == _missing_expectations(expected, paths)
+
+    def test_count_shortfall_rendered(self) -> None:
+        paths = ["deliverables/latest/chart/a.png"]
+        missing = _missing_expectations_detailed([], paths, {"image": 2, "document": 1})
+        assert missing == ["imagex1", "document"]
+        assert _missing_expectations_detailed([], paths + ["b.png", "r.md"], {"image": 2, "document": 1}) == []
+
+    def test_v1_kinds_outside_spec_still_reported(self) -> None:
+        missing = _missing_expectations_detailed(["image", "data"], ["a.png"], {"image": 1})
+        assert missing == ["data"]
+
+
+class _SpecLoopLLM(_LoopLLM):
+    """Loop LLM that also answers the v2 extraction call with valid spec JSON."""
+
+    def __init__(self, responses, spec_chunks) -> None:
+        super().__init__(responses)
+        self.spec_calls = 0
+        self._spec_chunks = list(spec_chunks)
+
+    async def stream_chat_async(self, prompt: str = "", **kwargs):  # type: ignore[override]
+        self.spec_calls += 1
+        for chunk in self._spec_chunks:
+            yield chunk
+
+
+def _submit_final_responses() -> list[NativeStreamResult]:
+    return [
+        NativeStreamResult(
+            content="done",
+            tool_calls=[
+                NativeToolCall(
+                    id="tc0",
+                    name="submit_final_answer",
+                    arguments={"answer": "完成：两张图与报告均已产出。", "confidence": 0.9},
+                )
+            ],
+        )
+    ]
+
+
+def test_acceptance_v2_loop_extracts_spec_and_injects_prompt(monkeypatch) -> None:
+    monkeypatch.setenv("DEEP_THINK_ACCEPTANCE_V2_ENABLED", "1")
+    llm = _SpecLoopLLM(_submit_final_responses(), [_SPEC_JSON])
+    agent = DeepThinkAgent(
+        llm_client=llm,
+        available_tools=["file_operations"],
+        tool_executor=_noop_tool_executor,
+        max_iterations=5,
+        request_profile={"request_tier": "execute", "intent_type": "execute_task"},
+    )
+
+    result = asyncio.run(agent.think("画两张柱状图并写一份研究报告"))
+
+    assert result.final_answer.startswith("完成")
+    assert llm.spec_calls == 1
+    assert agent._acceptance_spec is not None
+    assert spec_to_kind_requirements(agent._acceptance_spec) == {"image": 2, "document": 1}
+    system_prompt = llm.calls[0][0]["content"]
+    assert "DELIVERABLE SPEC (acceptance v2)" in system_prompt
+    assert "image x2" in system_prompt
+    assert "CJK axis labels" in system_prompt
+
+
+def test_acceptance_v2_disabled_loop_keeps_v1_only(monkeypatch) -> None:
+    monkeypatch.delenv("DEEP_THINK_ACCEPTANCE_V2_ENABLED", raising=False)
+    llm = _SpecLoopLLM(_submit_final_responses(), [_SPEC_JSON])
+    agent = DeepThinkAgent(
+        llm_client=llm,
+        available_tools=["file_operations"],
+        tool_executor=_noop_tool_executor,
+        max_iterations=5,
+        request_profile={"request_tier": "execute", "intent_type": "execute_task"},
+    )
+
+    result = asyncio.run(agent.think("画两张柱状图并写一份研究报告"))
+
+    assert result.final_answer.startswith("完成")
+    assert llm.spec_calls == 0
+    assert agent._acceptance_spec is None
+    assert "DELIVERABLE SPEC" not in llm.calls[0][0]["content"]
+
+
+def test_acceptance_v2_invalid_spec_loop_falls_back_to_v1(monkeypatch) -> None:
+    monkeypatch.setenv("DEEP_THINK_ACCEPTANCE_V2_ENABLED", "1")
+    llm = _SpecLoopLLM(_submit_final_responses(), ["no json here"])
+    agent = DeepThinkAgent(
+        llm_client=llm,
+        available_tools=["file_operations"],
+        tool_executor=_noop_tool_executor,
+        max_iterations=5,
+        request_profile={"request_tier": "execute", "intent_type": "execute_task"},
+    )
+
+    result = asyncio.run(agent.think("画两张柱状图并写一份研究报告"))
+
+    assert result.final_answer.startswith("完成")
+    assert agent._acceptance_spec is None
+    assert "DELIVERABLE SPEC" not in llm.calls[0][0]["content"]
