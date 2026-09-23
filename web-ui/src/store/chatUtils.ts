@@ -173,6 +173,7 @@ export async function* streamRunEvents(
                     `${ENV.API_BASE_URL}/chat/runs/${encodeURIComponent(runId)}/events?${qs.toString()}`,
                     {
                         method: 'GET',
+                        credentials: 'include',
                         headers: { Accept: 'text/event-stream' },
                     }
                 );
@@ -263,76 +264,57 @@ export async function* streamRunEvents(
 
 export const streamChatEvents = async function* (
     request: Record<string, any>,
-    maxRetries: number = 3
 ): AsyncGenerator<ChatStreamEvent> {
-    let attempts = 0;
+    // Single attempt by design: this POST starts a full agent turn server-side
+    // (legacy no-session path), so retrying it would re-run the agent and
+    // duplicate tool side effects. Failures must surface to the caller's
+    // recovery flow instead of being retried here.
+    let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+    const response = await fetch(`${ENV.API_BASE_URL}/chat/stream`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+    });
 
-    while (attempts < maxRetries) {
-        let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
-        try {
-            const response = await fetch(`${ENV.API_BASE_URL}/chat/stream`, {
-                method: 'POST',
-                credentials: 'include',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(request),
-            });
+    if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+    }
+    if (!response.body) {
+        throw new Error('Empty stream body');
+    }
 
-            if (!response.ok) {
-                if (response.status >= 500 && attempts < maxRetries - 1) {
-                    throw new Error(`Server Error ${response.status}`);
+    reader = response.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let buffer = '';
+
+    try {
+        while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            let boundary = buffer.indexOf('\n\n');
+            while (boundary !== -1) {
+                const rawEvent = buffer.slice(0, boundary);
+                buffer = buffer.slice(boundary + 2);
+                const event = parseChatStreamEvent(rawEvent);
+                if (event) {
+                    yield event;
                 }
-                throw new Error(`HTTP ${response.status}`);
+                boundary = buffer.indexOf('\n\n');
             }
-            if (!response.body) {
-                throw new Error('Empty stream body');
-            }
-
-            reader = response.body.getReader();
-            const decoder = new TextDecoder('utf-8');
-            let buffer = '';
-
-            try {
-                while (true) {
-                    const { value, done } = await reader.read();
-                    if (done) break;
-                    buffer += decoder.decode(value, { stream: true });
-                    let boundary = buffer.indexOf('\n\n');
-                    while (boundary !== -1) {
-                        const rawEvent = buffer.slice(0, boundary);
-                        buffer = buffer.slice(boundary + 2);
-                        const event = parseChatStreamEvent(rawEvent);
-                        if (event) {
-                            yield event;
-                        }
-                        boundary = buffer.indexOf('\n\n');
-                    }
-                }
-
-                if (buffer.trim().length > 0) {
-                    const event = parseChatStreamEvent(buffer);
-                    if (event) {
-                        yield event;
-                    }
-                }
-            } finally {
-                // Ensure the reader is properly cancelled when the consumer
-                // breaks out of the for-await loop (e.g. background dispatch).
-                reader.cancel().catch(() => {});
-            }
-
-            // If we reached here, the stream finished successfully
-            return;
-        } catch (error) {
-            attempts++;
-            if (attempts >= maxRetries) {
-                throw error;
-            }
-            const baseDelay = Math.min(Math.pow(2, attempts) * 1000, 16000);
-            const jitter = Math.random() * baseDelay * 0.25;
-            const delay = baseDelay + jitter;
-            console.warn(`Stream failed, retrying in ${Math.round(delay)}ms (attempt ${attempts}):`, error);
-            await new Promise(r => setTimeout(r, delay));
         }
+
+        if (buffer.trim().length > 0) {
+            const event = parseChatStreamEvent(buffer);
+            if (event) {
+                yield event;
+            }
+        }
+    } finally {
+        // Ensure the reader is properly cancelled when the consumer
+        // breaks out of the for-await loop (e.g. background dispatch).
+        reader.cancel().catch(() => {});
     }
 };
 

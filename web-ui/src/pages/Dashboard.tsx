@@ -320,7 +320,7 @@ const Dashboard: React.FC = () => {
                       return;
                     }
                     try {
-                      const response = await fetch(`${ENV.API_BASE_URL}/plans/${currentPlanId}/tree`);
+                      const response = await fetch(`${ENV.API_BASE_URL}/plans/${currentPlanId}/tree`, { credentials: 'include' });
                       if (!response.ok) {
                         throw new Error(`PlanTree request failed: ${response.status}`);
                       }

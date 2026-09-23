@@ -26,7 +26,8 @@ export function useMessages(sessionId: string | null | undefined) {
             }
 
             const response = await fetch(
-                `${ENV.API_BASE_URL}/chat/history/${sessionId}?${query.toString()}`
+                `${ENV.API_BASE_URL}/chat/history/${sessionId}?${query.toString()}`,
+                { credentials: 'include' }
             );
 
             if (!response.ok) {
