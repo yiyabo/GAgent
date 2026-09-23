@@ -1,107 +1,59 @@
 import { describe, expect, it } from 'vitest';
+
 import {
-  collectArtifactGallery,
-  mergeArtifactGalleries,
-  normalizeArtifactGalleryItem,
-  resolveArtifactGalleryItemSrc,
+  collectInlineImageKeys,
+  filterInlinedGalleryItems,
+  type ArtifactGalleryItem,
 } from './artifactGallery';
 
-describe('normalizeArtifactGalleryItem', () => {
-  it('normalizes safe image payloads', () => {
-    expect(
-      normalizeArtifactGalleryItem({
-        path: '/tool_outputs/run_1/figure.png',
-        display_name: 'figure.png',
-        source_tool: 'code_executor',
-      }),
-    ).toMatchObject({
-      path: 'tool_outputs/run_1/figure.png',
-      display_name: 'figure.png',
-      source_tool: 'code_executor',
-      mime_family: 'image',
-    });
+const item = (path: string, display_name?: string): ArtifactGalleryItem => ({
+  path,
+  display_name,
+  mime_family: 'image',
+});
+
+describe('collectInlineImageKeys', () => {
+  it('collects basenames and stems from inline image refs', () => {
+    const keys = collectInlineImageKeys(
+      '前文\n![柱状图](deliverables/latest/image_tabular/group_bar.png)\n后文',
+    );
+    expect(keys.has('group_bar.png')).toBe(true);
+    expect(keys.has('group_bar')).toBe(true);
   });
 
-  it('preserves workspace absolute image paths', () => {
-    expect(
-      normalizeArtifactGalleryItem({
-        path: '/Users/apple/LLM/agent/phagescope/results/figure.png',
-        display_name: 'figure.png',
-        origin: 'workspace',
-      }),
-    ).toMatchObject({
-      path: '/Users/apple/LLM/agent/phagescope/results/figure.png',
-      origin: 'workspace',
-      mime_family: 'image',
-    });
-  });
-
-  it('rejects unsafe or non-image payloads', () => {
-    expect(normalizeArtifactGalleryItem({ path: '../etc/passwd' })).toBeNull();
-    expect(normalizeArtifactGalleryItem({ path: 'notes.txt' })).toBeNull();
+  it('returns an empty set for text without images', () => {
+    expect(collectInlineImageKeys('纯文字回复').size).toBe(0);
+    expect(collectInlineImageKeys(null).size).toBe(0);
   });
 });
 
-describe('mergeArtifactGalleries', () => {
-  it('dedupes by origin and path while preferring new items first', () => {
-    const merged = mergeArtifactGalleries(
-      [{ path: 'older.png', origin: 'artifact' }],
-      [
-        { path: 'newer.png', origin: 'artifact' },
-        { path: 'older.png', origin: 'artifact' },
-      ],
-    );
+describe('filterInlinedGalleryItems', () => {
+  const markdown =
+    '分析如下：\n\n![组间比较](deliverables/latest/image_tabular/egfr_group_comparison.png)\n\n如上图所示……';
 
-    expect(merged).toHaveLength(2);
-    expect(merged[0]).toMatchObject({ path: 'newer.png', origin: 'artifact', mime_family: 'image' });
-    expect(merged[1]).toMatchObject({ path: 'older.png', origin: 'artifact', mime_family: 'image' });
+  it('drops gallery items already inlined in the reply', () => {
+    const items = [
+      item('deliverables/latest/image_tabular/egfr_group_comparison.png'),
+      item('_scratch/run_1/deliverables/egfr_group_comparison.png'),
+      item('results/run_2/figures/sensitivity_forest.png'),
+    ];
+    const filtered = filterInlinedGalleryItems(items, markdown);
+    expect(filtered.map((i) => i.path)).toEqual(['results/run_2/figures/sensitivity_forest.png']);
   });
 
-  it('collects lists and filters invalid entries', () => {
-    const collected = collectArtifactGallery([
-      { path: 'gallery/a.png', origin: 'artifact' },
-      { path: 'gallery/a.png', origin: 'artifact' },
-      { path: 'bad.txt', origin: 'artifact' },
-    ]);
-
-    expect(collected).toHaveLength(1);
-    expect(collected[0]).toMatchObject({ path: 'gallery/a.png', origin: 'artifact', mime_family: 'image' });
-  });
-});
-
-describe('resolveArtifactGalleryItemSrc', () => {
-  it('routes deliverable images through the deliverables file API', () => {
-    const resolved = resolveArtifactGalleryItemSrc(
-      { path: 'paper/figure.png', origin: 'deliverable' },
-      'session-demo',
-    );
-
-    expect(resolved).toContain(
-      '/artifacts/sessions/session-demo/deliverables/file?path=paper%2Ffigure.png',
-    );
+  it('dedupes cross-format variants sharing a stem (inline png hides gallery svg)', () => {
+    const items = [item('deliverables/latest/image_tabular/egfr_group_comparison.svg')];
+    expect(filterInlinedGalleryItems(items, markdown)).toEqual([]);
   });
 
-  it('serves session-relative deliverables paths through the session file API', () => {
-    const resolved = resolveArtifactGalleryItemSrc(
-      { path: 'deliverables/latest/image_tabular/kg/overview.png', origin: 'deliverable' },
-      'session-demo',
-    );
-
-    // The deliverables endpoint would prepend its own root and 404; the
-    // session file endpoint resolves session-relative paths as-is.
-    expect(resolved).toContain('/artifacts/sessions/session-demo/file?path=');
-    expect(resolved).toContain('deliverables%2Flatest%2Fimage_tabular%2Fkg%2Foverview.png');
-    expect(resolved).not.toContain('/deliverables/file');
+  it('matches by display_name when present', () => {
+    const items = [item('results/_scratch/run_9/x_9f2ab.png', 'egfr_group_comparison')];
+    expect(filterInlinedGalleryItems(items, markdown)).toEqual([]);
   });
 
-  it('serves results-prefixed deliverable paths through the session file API', () => {
-    const resolved = resolveArtifactGalleryItemSrc(
-      { path: 'results/kg_analysis/panels.png', origin: 'deliverable' },
-      'session-demo',
-    );
-
-    expect(resolved).toContain('/artifacts/sessions/session-demo/file?path=');
-    expect(resolved).toContain('results%2Fkg_analysis%2Fpanels.png');
-    expect(resolved).not.toContain('/deliverables/file');
+  it('keeps everything when nothing is inlined', () => {
+    const items = [item('results/run_2/figures/sensitivity_forest.png')];
+    expect(filterInlinedGalleryItems(items, '没有图片的回复')).toEqual(items);
+    expect(filterInlinedGalleryItems(items, null)).toEqual(items);
   });
 });

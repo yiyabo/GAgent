@@ -55,6 +55,66 @@ export const collectArtifactGallery = (value: any): ArtifactGalleryItem[] => {
   return collected;
 };
 
+// ---------------------------------------------------------------------------
+// Inline-vs-gallery dedupe: a figure that already renders inline inside the
+// reply markdown must not reappear in the gallery block below the message.
+// ---------------------------------------------------------------------------
+
+const INLINE_IMAGE_REF_RE = /!\[[^\]\n]*\]\(([^)\n]+)\)/g;
+
+const _baseName = (p: string) => p.split('/').pop() || p;
+const _stemOf = (name: string) => name.replace(/\.[^.]+$/, '');
+
+/** Basenames and extension-less stems of images inlined via `![...](...)` in the text. */
+export const collectInlineImageKeys = (markdown: string | null | undefined): Set<string> => {
+  const keys = new Set<string>();
+  if (!markdown) {
+    return keys;
+  }
+  for (const match of markdown.matchAll(INLINE_IMAGE_REF_RE)) {
+    const target = (match[1] || '').trim();
+    if (!target) {
+      continue;
+    }
+    const base = _baseName(target);
+    if (!base) {
+      continue;
+    }
+    keys.add(base);
+    const stem = _stemOf(base);
+    if (stem && stem !== base) {
+      keys.add(stem);
+    }
+  }
+  return keys;
+};
+
+/** Drop gallery items whose image is already inlined in the reply markdown. */
+export const filterInlinedGalleryItems = (
+  items: ArtifactGalleryItem[],
+  markdown: string | null | undefined,
+): ArtifactGalleryItem[] => {
+  const keys = collectInlineImageKeys(markdown);
+  if (keys.size === 0 || items.length === 0) {
+    return items;
+  }
+  return items.filter((item) => {
+    const base = _baseName(item.path);
+    if (keys.has(base)) {
+      return false;
+    }
+    const stem = _stemOf(base);
+    if (stem && keys.has(stem)) {
+      return false;
+    }
+    const display = (item.display_name || '').trim();
+    if (display && (keys.has(display) || keys.has(_stemOf(display)))) {
+      return false;
+    }
+    return true;
+  });
+};
+
 const WORKSPACE_ABS_FILE_RE = /^\/(home|Users|tmp|data|mnt|var|opt)\//i;
 
 export const resolveArtifactFileItemSrc = (

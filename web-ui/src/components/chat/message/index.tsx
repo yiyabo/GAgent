@@ -29,7 +29,7 @@ import ToolProgressCard, { BackgroundDispatchCard } from './ToolProgressCard';
 import MessageActions from './MessageActions';
 import ToolResultDrawer, { ToolStatusBar } from './ToolResultDrawer';
 import { extractLlmReplyMessage } from '@/utils/llmReplyDisplay';
-import { collectArtifactGallery, collectArtifactFiles } from '@/utils/artifactGallery';
+import { collectArtifactGallery, collectArtifactFiles, filterInlinedGalleryItems } from '@/utils/artifactGallery';
 import { resolveThinkingDisplayMode } from '@store/slices/message/thinkingPresentation';
 
 const { Text } = Typography;
@@ -91,15 +91,6 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
         : [],
     [metadata?.tool_results],
   );
-  const artifactGallery = useMemo(
-    () => collectArtifactGallery((metadata as any)?.artifact_gallery),
-    [metadata],
-  );
-  const showInlineArtifactGallery = artifactGallery.length > 0;
-  const artifactFiles = useMemo(
-    () => collectArtifactFiles((metadata as any)?.artifact_files),
-    [metadata],
-  );
   const normalizedAssistantContent = useMemo(
     () => (type === 'assistant' ? extractLlmReplyMessage(content) : content),
     [type, content],
@@ -121,6 +112,19 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
     type === 'assistant' && typeof displayText === 'string'
       ? extractLlmReplyMessage(displayText)
       : displayText;
+  const artifactGallery = useMemo(
+    () =>
+      filterInlinedGalleryItems(
+        collectArtifactGallery((metadata as any)?.artifact_gallery),
+        displayTextForUi,
+      ),
+    [metadata, displayTextForUi],
+  );
+  const showInlineArtifactGallery = artifactGallery.length > 0;
+  const artifactFiles = useMemo(
+    () => collectArtifactFiles((metadata as any)?.artifact_files),
+    [metadata],
+  );
   const processSummary =
     finalSummary &&
       displayText &&
