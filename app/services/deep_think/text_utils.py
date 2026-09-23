@@ -202,11 +202,13 @@ _PRODUCTIVE_SEGMENT_RE = re.compile(r"(?:deliverables|results)/", re.IGNORECASE)
 # Used ONLY by the inline-image collection path; deliverable progress
 # semantics (_GUARD_PRODUCTIVE_DIR_RE / _PRODUCTIVE_SEGMENT_RE) stay unchanged.
 _INLINE_IMAGE_PRODUCTIVE_RE = re.compile(
-    r"(?:^|/)(?:deliverables|results|figures|image_tabular|raw_files/tmp)/",
+    r"(?:^|/)(?:deliverables|results|figures|image_tabular|raw_files/tmp|raw_files/chat_tools)/",
     re.IGNORECASE,
 )
-# raw_files/tmp/ is scratch for deliverable progress but productive for images.
-_INLINE_IMAGE_RAW_TMP_RE = re.compile(r"(?:^|/)raw_files/tmp/", re.IGNORECASE)
+# raw_files/tmp/ (delegated run workspaces) and raw_files/chat_tools/
+# (chat-scoped tool outputs, e.g. scientific_figure_generator) are scratch for
+# deliverable progress but productive for images.
+_INLINE_IMAGE_RAW_TMP_RE = re.compile(r"(?:^|/)raw_files/(?:tmp|chat_tools)/", re.IGNORECASE)
 
 
 def _ensure_inline_images(text: str, image_relpaths: List[str]) -> str:

@@ -522,6 +522,35 @@ class TestStripRuntimeAbsolutePaths:
         finally:
             shutil.rmtree(_SANDBOX, ignore_errors=True)
 
+    def test_image_collection_covers_chat_tools_outputs(self, monkeypatch) -> None:
+        """scientific_figure_generator writes under raw_files/chat_tools/ —
+        those images inline too, while progress semantics stay narrow."""
+        from app.services.deep_think.guards import _apply_loop_guards
+
+        sandbox = _SANDBOX.resolve()
+        ct_dir = sandbox / "testsess" / "raw_files" / "chat_tools" / "scientific_figure_generator"
+        ct_dir.mkdir(parents=True, exist_ok=True)
+        ct_png = ct_dir / "group_bar.png"
+        ct_png.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 64)
+        monkeypatch.setenv("APP_RUNTIME_ROOT", str(sandbox))
+        try:
+            agent = self._image_agent()
+            state = self._guard_state()
+            tool_results = [
+                {"tool_result": {"success": True, "artifact_paths": [str(ct_png)]}}
+            ]
+            _apply_loop_guards(
+                agent,
+                messages=[],
+                tool_results=tool_results,
+                iteration=1,
+                guard_state=state,
+            )
+            assert str(ct_png) in (getattr(agent, "_produced_image_paths", None) or [])
+            assert state["verified_deliverables"] == []
+        finally:
+            shutil.rmtree(_SANDBOX, ignore_errors=True)
+
     def test_collect_relpaths_from_image_mirror_widened_segments(self, monkeypatch) -> None:
         sandbox = _SANDBOX.resolve()
         fig_dir = sandbox / "testsess" / "figures"

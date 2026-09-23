@@ -85,16 +85,49 @@ _TASK_PATH_TOKEN_RE = r"[^\s'\"`<>\(\)\[\]\{\},;:，。；：！？、（）【�
 _DEFAULT_EXTERNAL_READ_ROOTS: Sequence[Path] = (Path("/mnt/sdm/zczhao"),)
 
 
-def _get_available_skills() -> List[str]:
-    """ skills """
+_SKILL_GUIDANCE_MAX_CHARS = 2000
+_SKILL_GUIDANCE_MAX_SKILLS = 2
+
+
+def _get_skill_guidance(task: str) -> str:
+    """Budgeted skill guidance for the delegation prompt.
+
+    Deterministic selection only (no LLM call, no added latency), capped at
+    two skills / _SKILL_GUIDANCE_MAX_CHARS chars so the delegation prompt
+    stays lean. Every call goes through get_skills_loader, so this is also
+    the hot-reload checkpoint for the chat (non-plan) execution path.
+    """
     try:
         from app.services.skills import get_skills_loader
+
         loader = get_skills_loader(auto_sync=False)
-        skills = loader.list_skills()
-        return [s.get("name", "") for s in skills if s.get("name")]
-    except Exception as e:
-        logger.debug(f"Failed to load skills list: {e}")
-        return []
+        eligible = loader._eligible_skills("task")
+        if not eligible:
+            return ""
+        selected = loader._deterministic_candidates(
+            eligible=eligible,
+            task_title=str(task or "")[:200],
+            task_description=str(task or "")[:2000],
+            dependency_paths=None,
+            tool_hints=None,
+            preferred_skills=None,
+        )[: _SKILL_GUIDANCE_MAX_SKILLS]
+        if not selected:
+            return ""
+        content = str(
+            getattr(
+                loader.build_skill_context(selected, max_chars=_SKILL_GUIDANCE_MAX_CHARS),
+                "content",
+                "",
+            )
+            or ""
+        ).strip()
+        if not content:
+            return ""
+        return f"Skill guidance (apply when relevant to the task):\n{content}\n\n"
+    except Exception as exc:
+        logger.debug("Skill guidance unavailable: %s", exc)
+        return ""
 
 
 def _normalize_csv_values(value: Any) -> List[str]:
@@ -2509,6 +2542,7 @@ def _build_claude_code_prompt(
         f"{_final_response_contract_prompt()}"
         f"{allowed_dirs_info}"
         f"{_figure_style_prompt(cli_task)}"
+        f"{_get_skill_guidance(cli_task)}"
     )
 
 
