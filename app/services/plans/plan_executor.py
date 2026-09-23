@@ -2175,7 +2175,22 @@ class PlanExecutor:
             config.session_context = {}
 
         if "plan_skill_candidates" in config.session_context:
-            return
+            try:
+                loader = get_skills_loader(auto_sync=True)
+                cached_generation = config.session_context.get(
+                    "plan_skill_candidates_generation"
+                )
+                if cached_generation is None or cached_generation == getattr(
+                    loader, "generation", None
+                ):
+                    return
+                logger.info(
+                    "Skills generation changed (%s -> %s); re-selecting plan skill candidates",
+                    cached_generation,
+                    loader.generation,
+                )
+            except Exception:
+                return
 
         try:
             loader = get_skills_loader(auto_sync=True)
@@ -2183,6 +2198,9 @@ class PlanExecutor:
             if not available:
                 logger.info("No skills available; skipping plan-level skill selection")
                 config.session_context["plan_skill_candidates"] = []
+                config.session_context["plan_skill_candidates_generation"] = getattr(
+                    loader, "generation", None
+                )
                 return
 
             root = None
@@ -2210,6 +2228,9 @@ class PlanExecutor:
             )
             config.session_context["plan_skill_candidates"] = (
                 selection.selected_skill_ids
+            )
+            config.session_context["plan_skill_candidates_generation"] = getattr(
+                loader, "generation", None
             )
             _log_job(
                 "info",

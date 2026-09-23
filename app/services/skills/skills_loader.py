@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import shutil
 import time
 from dataclasses import asdict, dataclass, field
@@ -17,6 +18,9 @@ logger = logging.getLogger(__name__)
 VALID_CATEGORIES = {"router", "policy", "template", "writer", "analysis", "generic"}
 VALID_SCOPES = {"plan", "task", "both"}
 VALID_INJECTION_MODES = {"full", "summary", "summary_with_references"}
+
+_SKILL_RELOAD_TTL_ENV = "SKILL_RELOAD_TTL_SECONDS"
+_DEFAULT_RELOAD_TTL_SECONDS = 5.0
 
 
 @dataclass(frozen=True)
@@ -34,9 +38,15 @@ class SkillInjectionConfig:
 
 @dataclass(frozen=True)
 class SkillSpec:
+    """Skill metadata (progressive disclosure L1: body is NOT stored here).
+
+    The full SKILL.md body is read lazily through
+    :meth:`SkillsLoader.get_skill_body`, which keeps a small mtime-validated
+    loader-level cache instead of holding every skill body in memory.
+    """
+
     name: str
     description: str
-    content: str
     directory: str
     category: str = "generic"
     scope: str = "both"
@@ -91,18 +101,30 @@ class SkillsLoader:
         self._loaded_skills: Set[str] = set()
         self._available_skills: Dict[str, SkillSpec] = {}
         self._validation_errors: Dict[str, List[str]] = {}
+        self._disabled_skills: List[str] = []
+        # L1 lazy body cache: skill name -> (SKILL.md mtime, body)
+        self._body_cache: Dict[str, Tuple[float, str]] = {}
+        # L2 change detection: "<root>:<dir name>" -> fingerprint
+        self._dir_fingerprints: Dict[str, float] = {}
+        self.generation = 0
+        self._last_reload_check = time.monotonic()
 
         logger.info("SkillsLoader initialized:")
         logger.info("  Project skills dir: %s", self.project_skills_dir)
         logger.info("  Runtime skills dir: %s", self.skills_dir)
 
-        if auto_sync:
-            self.sync_from_project()
-
+        # auto_sync is retained for signature compatibility only: destructive
+        # sync_from_project is no longer run at init — the dual-root scan below
+        # reads the project directory directly as the source of truth.
         self._scan_skills()
 
     def sync_from_project(self) -> bool:
-        """Sync project skills into the runtime skills directory."""
+        """Sync project skills into the runtime skills directory.
+
+        DEPRECATED: kept for external callers (scripts/sync_skills.sh) only.
+        The loader scans the project skills dir directly (dual-root), so this
+        destructive rmtree+copytree sync is no longer needed or invoked here.
+        """
         if not self.project_skills_dir.exists():
             logger.warning(
                 "Project skills directory not found: %s", self.project_skills_dir
@@ -133,85 +155,190 @@ class SkillsLoader:
             logger.error("Failed to sync skills: %s", exc)
             return False
 
+    def _scan_roots(self) -> List[Tuple[str, Path]]:
+        """Effective scan roots with same-directory dedupe (project first)."""
+        roots: List[Tuple[str, Path]] = [("project", self.project_skills_dir)]
+        try:
+            same = self.skills_dir.resolve() == self.project_skills_dir.resolve()
+        except OSError:
+            same = False
+        if not same:
+            roots.append(("runtime", self.skills_dir))
+        return roots
+
     def _scan_skills(self) -> None:
+        self.generation += 1
         self._available_skills.clear()
         self._validation_errors.clear()
+        self._disabled_skills.clear()
 
-        if not self.skills_dir.exists():
-            logger.warning("Skills directory not found: %s", self.skills_dir)
-            return
-
-        discovered_names: Set[str] = set()
-        for item in self.skills_dir.iterdir():
-            if not item.is_dir():
+        # Dual-root scan: the project directory is the source of truth and is
+        # scanned first; the runtime directory acts as an overlay. Same-name
+        # conflicts are resolved deterministically — the project root wins;
+        # within one root, directory-name order decides. Shadowed skills are
+        # skipped with an info log instead of a hard validation error.
+        discovered: Dict[str, str] = {}
+        for root_tag, root in self._scan_roots():
+            if not root.exists() or not root.is_dir():
+                if root_tag == "runtime":
+                    logger.warning("Skills directory not found: %s", root)
                 continue
 
-            skill_file = item / "SKILL.md"
-            if not skill_file.exists():
-                continue
+            for item in sorted((p for p in root.iterdir() if p.is_dir()), key=lambda p: p.name):
+                skill_file = item / "SKILL.md"
+                if not skill_file.exists():
+                    continue
 
-            try:
-                content = skill_file.read_text(encoding="utf-8")
-            except Exception as exc:
-                self._validation_errors[item.name] = [f"Failed to read SKILL.md: {exc}"]
-                logger.warning("Failed to read skill %s: %s", item.name, exc)
-                continue
-
-            metadata = self._extract_frontmatter(content)
-            skill_name = str(metadata.get("name") or item.name).strip() or item.name
-            description = self._extract_description(content, metadata)
-
-            errors: List[str] = []
-            if skill_name in discovered_names:
-                errors.append(f"Duplicate skill name: {skill_name}")
-
-            config_path = item / "config.json"
-            config_payload: Dict[str, Any] = {}
-            has_config = config_path.exists()
-            if has_config:
                 try:
-                    raw_payload = json.loads(config_path.read_text(encoding="utf-8"))
-                    if not isinstance(raw_payload, dict):
-                        errors.append("config.json must contain a JSON object")
-                    else:
-                        config_payload = raw_payload
+                    content = skill_file.read_text(encoding="utf-8")
                 except Exception as exc:
-                    errors.append(f"Failed to parse config.json: {exc}")
+                    self._validation_errors[item.name] = [
+                        f"Failed to read SKILL.md: {exc}"
+                    ]
+                    logger.warning("Failed to read skill %s: %s", item, exc)
+                    continue
 
-            references_dir = item / "references"
-            has_references_dir = references_dir.exists() and references_dir.is_dir()
-            spec, config_errors = self._build_skill_spec(
-                skill_name=skill_name,
-                description=description,
-                content=content,
-                skill_dir=item,
-                config_payload=config_payload,
-                has_config=has_config,
-                has_references_dir=has_references_dir,
-            )
-            errors.extend(config_errors)
+                metadata = self._extract_frontmatter(content)
+                skill_name = str(metadata.get("name") or item.name).strip() or item.name
+                description = self._extract_description(content, metadata)
 
-            if errors:
-                self._validation_errors[item.name] = errors
-                logger.warning("Skipping invalid skill %s: %s", item.name, "; ".join(errors))
-                continue
+                if skill_name in discovered:
+                    logger.info(
+                        "Skill %s from %s root shadowed (%s root wins)",
+                        skill_name,
+                        root_tag,
+                        discovered[skill_name],
+                    )
+                    continue
 
-            self._available_skills[spec.name] = spec
-            discovered_names.add(spec.name)
+                config_path = item / "config.json"
+                config_payload: Dict[str, Any] = {}
+                has_config = config_path.exists()
+                config_errors: List[str] = []
+                if has_config:
+                    try:
+                        raw_payload = json.loads(config_path.read_text(encoding="utf-8"))
+                        if not isinstance(raw_payload, dict):
+                            config_errors.append("config.json must contain a JSON object")
+                        else:
+                            config_payload = raw_payload
+                    except Exception as exc:
+                        config_errors.append(f"Failed to parse config.json: {exc}")
+
+                if config_errors:
+                    self._validation_errors[item.name] = config_errors
+                    logger.warning(
+                        "Skipping invalid skill %s: %s", item.name, "; ".join(config_errors)
+                    )
+                    continue
+
+                enabled_raw = config_payload.get("enabled", True)
+                enabled = enabled_raw if isinstance(enabled_raw, bool) else bool(enabled_raw)
+                if not enabled:
+                    # A disabled project entry still wins the name so a runtime
+                    # same-name skill stays shadowed (project root wins).
+                    discovered[skill_name] = root_tag
+                    self._disabled_skills.append(skill_name)
+                    logger.info("Skill %s disabled via config.json", skill_name)
+                    continue
+
+                references_dir = item / "references"
+                has_references_dir = references_dir.exists() and references_dir.is_dir()
+                spec, spec_errors = self._build_skill_spec(
+                    skill_name=skill_name,
+                    description=description,
+                    skill_dir=item,
+                    config_payload=config_payload,
+                    has_config=has_config,
+                    has_references_dir=has_references_dir,
+                )
+
+                if spec_errors:
+                    self._validation_errors[item.name] = spec_errors
+                    logger.warning(
+                        "Skipping invalid skill %s: %s", item.name, "; ".join(spec_errors)
+                    )
+                    continue
+
+                self._available_skills[spec.name] = spec
+                discovered[spec.name] = root_tag
+
+        self._dir_fingerprints = self._compute_fingerprint_map()
 
         if self._validation_errors:
             logger.warning(
                 "Skills validation completed with %d invalid skill(s)",
                 len(self._validation_errors),
             )
-        logger.info("Total skills available: %d", len(self._available_skills))
+        logger.info(
+            "Total skills available: %d (disabled: %d, generation: %d)",
+            len(self._available_skills),
+            len(self._disabled_skills),
+            self.generation,
+        )
+
+    def _skill_dir_fingerprint(self, skill_dir: Path) -> float:
+        """Latest mtime among SKILL.md, config.json and references/* files."""
+        latest = 0.0
+        for candidate in (skill_dir / "SKILL.md", skill_dir / "config.json"):
+            try:
+                latest = max(latest, candidate.stat().st_mtime)
+            except OSError:
+                continue
+        references_dir = skill_dir / "references"
+        if references_dir.is_dir():
+            for ref in references_dir.rglob("*"):
+                if not ref.is_file():
+                    continue
+                try:
+                    latest = max(latest, ref.stat().st_mtime)
+                except OSError:
+                    continue
+        return latest
+
+    def _compute_fingerprint_map(self) -> Dict[str, float]:
+        """Fingerprint every skill dir (containing SKILL.md) in both roots."""
+        fingerprints: Dict[str, float] = {}
+        for root_tag, root in self._scan_roots():
+            if not root.exists() or not root.is_dir():
+                continue
+            for item in sorted((p for p in root.iterdir() if p.is_dir()), key=lambda p: p.name):
+                if not (item / "SKILL.md").exists():
+                    continue
+                fingerprints[f"{root_tag}:{item.name}"] = self._skill_dir_fingerprint(item)
+        return fingerprints
+
+    def reload_if_changed(self) -> bool:
+        """Re-scan only when a skill dir fingerprint changed (L2 hot reload)."""
+        current = self._compute_fingerprint_map()
+        if current == self._dir_fingerprints:
+            return False
+        self._scan_skills()
+        return True
+
+    def get_skill_body(self, spec: SkillSpec) -> str:
+        """Lazily read the SKILL.md body with an mtime-validated cache (L1)."""
+        skill_file = Path(spec.directory) / "SKILL.md"
+        try:
+            mtime = skill_file.stat().st_mtime
+        except OSError:
+            return ""
+        cached = self._body_cache.get(spec.name)
+        if cached is not None and cached[0] == mtime:
+            return cached[1]
+        try:
+            body = skill_file.read_text(encoding="utf-8")
+        except Exception as exc:
+            logger.warning("Failed to read body for skill %s: %s", spec.name, exc)
+            return ""
+        self._body_cache[spec.name] = (mtime, body)
+        return body
 
     def _build_skill_spec(
         self,
         *,
         skill_name: str,
         description: str,
-        content: str,
         skill_dir: Path,
         config_payload: Dict[str, Any],
         has_config: bool,
@@ -302,7 +429,6 @@ class SkillsLoader:
         spec = SkillSpec(
             name=skill_name,
             description=description,
-            content=content,
             directory=str(skill_dir),
             category=category,
             scope=scope,
@@ -479,7 +605,7 @@ class SkillsLoader:
         skill = self._available_skills.get(skill_name)
         if skill is None:
             return None
-        return skill.content
+        return self.get_skill_body(skill)
 
     def build_skill_context(
         self,
@@ -590,7 +716,7 @@ class SkillsLoader:
             lines.append(f"Scripts: {', '.join(skill.scripts)}")
         lines.append(f"Base directory: {skill.directory}")
         lines.append("")
-        lines.append(skill.content)
+        lines.append(self.get_skill_body(skill))
         return "\n".join(lines)
 
     def _format_summary_skill(self, skill: SkillSpec) -> str:
@@ -598,7 +724,7 @@ class SkillsLoader:
             f"[Skill: {skill.name}]",
             f"Summary: {skill.description}",
         ]
-        constraints = self._extract_key_constraints(skill.content, limit=3)
+        constraints = self._extract_key_constraints(self.get_skill_body(skill), limit=3)
         if constraints:
             lines.append("Key constraints:")
             lines.extend(f"- {item}" for item in constraints)
@@ -923,6 +1049,16 @@ Tool hints: {tool_summary}
 _global_skills_loader: Optional[SkillsLoader] = None
 
 
+def _reload_ttl_seconds() -> float:
+    raw = os.getenv(_SKILL_RELOAD_TTL_ENV)
+    if raw is None:
+        return _DEFAULT_RELOAD_TTL_SECONDS
+    try:
+        return max(0.0, float(raw))
+    except (TypeError, ValueError):
+        return _DEFAULT_RELOAD_TTL_SECONDS
+
+
 def get_skills_loader(
     skills_dir: Optional[str] = None,
     project_skills_dir: Optional[str] = None,
@@ -935,7 +1071,21 @@ def get_skills_loader(
             project_skills_dir=project_skills_dir,
             auto_sync=auto_sync,
         )
-    return _global_skills_loader
+    loader = _global_skills_loader
+    ttl = _reload_ttl_seconds()
+    if ttl > 0:
+        now = time.monotonic()
+        if now - loader._last_reload_check >= ttl:
+            try:
+                if loader.reload_if_changed():
+                    logger.info(
+                        "Skills changed on disk; loader reloaded (generation=%d)",
+                        loader.generation,
+                    )
+            except Exception as exc:
+                logger.warning("Skills hot-reload check failed: %s", exc)
+            loader._last_reload_check = now
+    return loader
 
 
 def validate_skills(
