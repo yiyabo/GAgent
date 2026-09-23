@@ -1044,6 +1044,237 @@ async def _native_final_call_cycle(
     return "break", final_answer
 
 
+async def _native_no_tool_call_cycle(
+    agent: "DeepThinkAgent",
+    *,
+    result: Any,
+    iteration: int,
+    current_step: ThinkingStep,
+    thinking_steps: List[ThinkingStep],
+    tools_used: List[str],
+    messages: List[Dict[str, Any]],
+    task_context: Optional[TaskExecutionContext],
+    user_query: str,
+    cycle: _NativeCycleState,
+) -> tuple[str, str]:
+    """No-tool-calls branch (pure thinking text): structured-JSON action
+    compatibility fallback, forced handoff followthrough, the light/standard
+    tier early stop, and the next-step prompt.
+
+    Returns ``(flow, new_final_answer)`` — ``"continue"`` (forced handoff
+    followthrough ran), ``"break"`` (early stop; ``new_final_answer`` is the
+    direct-text answer), or ``"ok"`` (fall through to the loop tail).
+    Extracted verbatim from ``_think_native``.
+    """
+    # No tool calls – pure thinking text.
+    # Try to parse structured JSON actions from content as compatibility fallback.
+    parsed_actions = agent._try_parse_structured_actions(result.content or "")
+    if parsed_actions:
+        logger.info(
+            "[DEEP_THINK_NATIVE] Parsed %d structured actions from text fallback",
+            len(parsed_actions),
+        )
+        for pa in parsed_actions:
+            pa_name = pa.get("name", "")
+            pa_params = pa.get("parameters") or {}
+            if pa_name and pa_name in agent.available_tools:
+                if pa_name not in tools_used:
+                    tools_used.append(pa_name)
+                current_step.action = json.dumps(
+                    {"tool": pa_name, "params": pa_params}, ensure_ascii=False
+                )
+                current_step.status = "calling_tool"
+                if agent.on_thinking:
+                    await agent._safe_callback(current_step)
+                try:
+                    from app.services.execution.tool_executor import UnifiedToolExecutor
+                    timeout = UnifiedToolExecutor.TOOL_TIMEOUTS.get(pa_name, agent.tool_timeout)
+                    tool_result = await asyncio.wait_for(
+                        agent.tool_executor(pa_name, pa_params),
+                        timeout=timeout,
+                    )
+                    try:
+                        action_result_text = json.dumps(tool_result, ensure_ascii=False, default=str)
+                    except Exception:
+                        action_result_text = str(tool_result)
+                    current_step.action_result = action_result_text
+                    messages.append({"role": "assistant", "content": result.content or ""})
+                    messages.append({"role": "user", "content": f"Tool Output: {action_result_text}"})
+                except Exception as exc:
+                    current_step.action_result = f"Error: {exc}"
+                    messages.append({"role": "assistant", "content": result.content or ""})
+                    messages.append({"role": "user", "content": f"Tool Error: {exc}"})
+        current_step.status = "analyzing"
+        current_step.finished_at = datetime.now()
+        thinking_steps.append(current_step)
+        if agent.on_thinking:
+            await agent._safe_callback(current_step)
+    else:
+        if (
+            cycle.pending_handoff_task_id is not None
+            and cycle.pending_handoff_previous_task_id is not None
+            and cycle.forced_handoff_followthrough_attempts < 1
+            and agent._can_force_handoff_followthrough_execution(
+                task_context,
+                next_task_id=cycle.pending_handoff_task_id,
+            )
+        ):
+            cycle.forced_handoff_followthrough_attempts += 1
+            prior_handoff_task_id = cycle.pending_handoff_task_id
+            forced_result = await agent._execute_forced_handoff_followthrough(
+                task_context=task_context,
+                user_query=user_query,
+                iteration=iteration,
+                previous_task_id=cycle.pending_handoff_previous_task_id,
+                next_task_id=prior_handoff_task_id,
+                reason="no_tool_after_handoff",
+            )
+            forced_tool_name = str(forced_result.get("tool_name") or "")
+            if forced_tool_name and forced_tool_name not in tools_used:
+                tools_used.append(forced_tool_name)
+            current_step.action = json.dumps(
+                {
+                    "tools": [
+                        {
+                            "tool": "code_executor",
+                            "params": {"task": "[forced handoff followthrough]"},
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+            )
+            current_step.action_result = forced_result.get("tool_result_text")
+            agent._append_tool_cycle_messages(
+                messages=messages,
+                tool_results=[forced_result],
+                assistant_content=result.content or "",
+                current_step=current_step,
+            )
+            cycle.last_tool_cycle_signature = agent._build_tool_cycle_signature([forced_result])
+            cycle.identical_tool_cycle_count = 0
+            cycle.probe_only_execution_cycles = 0
+            bound_task_after_forced = agent._current_bound_task_id(task_context)
+            if agent._tool_counts_as_real_execution(forced_result):
+                cycle.had_real_execution_tool = True
+                cycle.last_real_execution_tool_results = [forced_result]
+            if (
+                bound_task_after_forced is not None
+                and bound_task_after_forced != prior_handoff_task_id
+            ):
+                cycle.pending_handoff_previous_task_id = prior_handoff_task_id
+                cycle.pending_handoff_task_id = bound_task_after_forced
+                cycle.forced_handoff_followthrough_attempts = 0
+                cycle.had_real_execution_tool = False
+                cycle.last_real_execution_tool_results = []
+                cycle.partial_completion_retry_count = 0
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": agent._build_task_handoff_execution_nudge(
+                            task_context=task_context,
+                            user_query=user_query,
+                            previous_task_id=prior_handoff_task_id,
+                            next_task_id=bound_task_after_forced,
+                        ),
+                    }
+                )
+                new_limit, cycle.handoff_reserve_used = _consume_handoff_iteration_reserve(
+                    iteration=iteration,
+                    base_limit=cycle.base_iteration_limit,
+                    limit=cycle.runtime_iteration_limit,
+                    reserve_used=cycle.handoff_reserve_used,
+                    reserve_max=cycle.handoff_reserve_max,
+                )
+                if new_limit != cycle.runtime_iteration_limit:
+                    cycle.runtime_iteration_limit = new_limit
+                    logger.info(
+                        "[DEEP_THINK_NATIVE] Consumed handoff iteration reserve (forced followthrough) previous=%s next=%s new_limit=%s reserve_used=%d/%d",
+                        prior_handoff_task_id,
+                        bound_task_after_forced,
+                        cycle.runtime_iteration_limit,
+                        cycle.handoff_reserve_used,
+                        cycle.handoff_reserve_max,
+                    )
+                current_step.self_correction = (
+                    f"Detected a no-tool response after handoff to Task {prior_handoff_task_id}; "
+                    f"forced code_executor execution and advanced again to Task {bound_task_after_forced}."
+                )
+            else:
+                cycle.pending_handoff_task_id = None
+                cycle.pending_handoff_previous_task_id = None
+                current_step.self_correction = (
+                    f"Detected a no-tool response immediately after handoff to Task {prior_handoff_task_id}; "
+                    "forced code_executor execution instead of allowing generic fallback."
+                )
+                if agent._should_force_verified_execution_finalization(
+                    task_context=task_context,
+                    tool_results=[forced_result],
+                    had_real_execution_tool=cycle.had_real_execution_tool,
+                ):
+                    cycle.force_verified_execution_finalization = True
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": agent._build_verified_execution_finalize_nudge(
+                                task_context=task_context,
+                                user_query=user_query,
+                            ),
+                        }
+                    )
+                    logger.info(
+                        "[DEEP_THINK_NATIVE] Entered verified-execution finalization mode after forced handoff followthrough at iteration=%s",
+                        iteration,
+                    )
+            current_step.status = "analyzing"
+            current_step.finished_at = datetime.now()
+            thinking_steps.append(current_step)
+            if agent.on_thinking:
+                await agent._safe_callback(current_step)
+            return "continue", ""
+
+        # --- Early stop for light / standard tiers ---
+        # When the LLM produces a substantive text answer without
+        # any tool calls on a low-effort request, treat the content
+        # as the final answer immediately instead of forcing
+        # additional (empty) iterations + synthesis.
+        _tier_for_early_stop = agent._request_tier()
+        _content_for_early_stop = (result.content or "").strip()
+        if (
+            _tier_for_early_stop == "standard"
+            and _content_for_early_stop
+            and len(_content_for_early_stop) >= 20
+            and not agent._is_execute_task_request()
+            and not agent._PROCESS_NARRATION_RE.match(_content_for_early_stop)
+            and not agent._collect_tool_failures_from_steps(thinking_steps)
+        ):
+            final_answer = _content_for_early_stop
+            cycle.confidence = max(cycle.confidence, 0.85)
+            current_step.status = "done"
+            current_step.finished_at = datetime.now()
+            thinking_steps.append(current_step)
+            if agent.on_thinking:
+                await agent._safe_callback(current_step)
+            logger.info(
+                "[DEEP_THINK_NATIVE] Early stop: tier=%s iteration=%s content_len=%d — "
+                "treating direct text as final answer",
+                _tier_for_early_stop,
+                iteration,
+                len(_content_for_early_stop),
+            )
+            if agent.on_final_delta:
+                await agent._stream_final_answer(final_answer)
+            return "break", final_answer
+
+        current_step.finished_at = datetime.now()
+        thinking_steps.append(current_step)
+        if agent.on_thinking:
+            await agent._safe_callback(current_step)
+        messages.append({"role": "assistant", "content": result.content or ""})
+        messages.append({"role": "user", "content": agent._get_next_step_prompt(iteration)})
+
+    return "ok", ""
+
+
 async def _think_native(
     agent: "DeepThinkAgent",
     user_query: str,
@@ -1215,211 +1446,23 @@ async def _think_native(
                 final_answer = new_final_answer
                 break
         else:
-            # No tool calls – pure thinking text.
-            # Try to parse structured JSON actions from content as compatibility fallback.
-            parsed_actions = agent._try_parse_structured_actions(result.content or "")
-            if parsed_actions:
-                logger.info(
-                    "[DEEP_THINK_NATIVE] Parsed %d structured actions from text fallback",
-                    len(parsed_actions),
-                )
-                for pa in parsed_actions:
-                    pa_name = pa.get("name", "")
-                    pa_params = pa.get("parameters") or {}
-                    if pa_name and pa_name in agent.available_tools:
-                        if pa_name not in tools_used:
-                            tools_used.append(pa_name)
-                        current_step.action = json.dumps(
-                            {"tool": pa_name, "params": pa_params}, ensure_ascii=False
-                        )
-                        current_step.status = "calling_tool"
-                        if agent.on_thinking:
-                            await agent._safe_callback(current_step)
-                        try:
-                            from app.services.execution.tool_executor import UnifiedToolExecutor
-                            timeout = UnifiedToolExecutor.TOOL_TIMEOUTS.get(pa_name, agent.tool_timeout)
-                            tool_result = await asyncio.wait_for(
-                                agent.tool_executor(pa_name, pa_params),
-                                timeout=timeout,
-                            )
-                            try:
-                                action_result_text = json.dumps(tool_result, ensure_ascii=False, default=str)
-                            except Exception:
-                                action_result_text = str(tool_result)
-                            current_step.action_result = action_result_text
-                            messages.append({"role": "assistant", "content": result.content or ""})
-                            messages.append({"role": "user", "content": f"Tool Output: {action_result_text}"})
-                        except Exception as exc:
-                            current_step.action_result = f"Error: {exc}"
-                            messages.append({"role": "assistant", "content": result.content or ""})
-                            messages.append({"role": "user", "content": f"Tool Error: {exc}"})
-                current_step.status = "analyzing"
-                current_step.finished_at = datetime.now()
-                thinking_steps.append(current_step)
-                if agent.on_thinking:
-                    await agent._safe_callback(current_step)
-            else:
-                if (
-                    cycle.pending_handoff_task_id is not None
-                    and cycle.pending_handoff_previous_task_id is not None
-                    and cycle.forced_handoff_followthrough_attempts < 1
-                    and agent._can_force_handoff_followthrough_execution(
-                        task_context,
-                        next_task_id=cycle.pending_handoff_task_id,
-                    )
-                ):
-                    cycle.forced_handoff_followthrough_attempts += 1
-                    prior_handoff_task_id = cycle.pending_handoff_task_id
-                    forced_result = await agent._execute_forced_handoff_followthrough(
-                        task_context=task_context,
-                        user_query=user_query,
-                        iteration=iteration,
-                        previous_task_id=cycle.pending_handoff_previous_task_id,
-                        next_task_id=prior_handoff_task_id,
-                        reason="no_tool_after_handoff",
-                    )
-                    forced_tool_name = str(forced_result.get("tool_name") or "")
-                    if forced_tool_name and forced_tool_name not in tools_used:
-                        tools_used.append(forced_tool_name)
-                    current_step.action = json.dumps(
-                        {
-                            "tools": [
-                                {
-                                    "tool": "code_executor",
-                                    "params": {"task": "[forced handoff followthrough]"},
-                                }
-                            ]
-                        },
-                        ensure_ascii=False,
-                    )
-                    current_step.action_result = forced_result.get("tool_result_text")
-                    agent._append_tool_cycle_messages(
-                        messages=messages,
-                        tool_results=[forced_result],
-                        assistant_content=result.content or "",
-                        current_step=current_step,
-                    )
-                    cycle.last_tool_cycle_signature = agent._build_tool_cycle_signature([forced_result])
-                    cycle.identical_tool_cycle_count = 0
-                    cycle.probe_only_execution_cycles = 0
-                    bound_task_after_forced = agent._current_bound_task_id(task_context)
-                    if agent._tool_counts_as_real_execution(forced_result):
-                        cycle.had_real_execution_tool = True
-                        cycle.last_real_execution_tool_results = [forced_result]
-                    if (
-                        bound_task_after_forced is not None
-                        and bound_task_after_forced != prior_handoff_task_id
-                    ):
-                        cycle.pending_handoff_previous_task_id = prior_handoff_task_id
-                        cycle.pending_handoff_task_id = bound_task_after_forced
-                        cycle.forced_handoff_followthrough_attempts = 0
-                        cycle.had_real_execution_tool = False
-                        cycle.last_real_execution_tool_results = []
-                        cycle.partial_completion_retry_count = 0
-                        messages.append(
-                            {
-                                "role": "user",
-                                "content": agent._build_task_handoff_execution_nudge(
-                                    task_context=task_context,
-                                    user_query=user_query,
-                                    previous_task_id=prior_handoff_task_id,
-                                    next_task_id=bound_task_after_forced,
-                                ),
-                            }
-                        )
-                        new_limit, cycle.handoff_reserve_used = _consume_handoff_iteration_reserve(
-                            iteration=iteration,
-                            base_limit=cycle.base_iteration_limit,
-                            limit=cycle.runtime_iteration_limit,
-                            reserve_used=cycle.handoff_reserve_used,
-                            reserve_max=cycle.handoff_reserve_max,
-                        )
-                        if new_limit != cycle.runtime_iteration_limit:
-                            cycle.runtime_iteration_limit = new_limit
-                            logger.info(
-                                "[DEEP_THINK_NATIVE] Consumed handoff iteration reserve (forced followthrough) previous=%s next=%s new_limit=%s reserve_used=%d/%d",
-                                prior_handoff_task_id,
-                                bound_task_after_forced,
-                                cycle.runtime_iteration_limit,
-                                cycle.handoff_reserve_used,
-                                cycle.handoff_reserve_max,
-                            )
-                        current_step.self_correction = (
-                            f"Detected a no-tool response after handoff to Task {prior_handoff_task_id}; "
-                            f"forced code_executor execution and advanced again to Task {bound_task_after_forced}."
-                        )
-                    else:
-                        cycle.pending_handoff_task_id = None
-                        cycle.pending_handoff_previous_task_id = None
-                        current_step.self_correction = (
-                            f"Detected a no-tool response immediately after handoff to Task {prior_handoff_task_id}; "
-                            "forced code_executor execution instead of allowing generic fallback."
-                        )
-                        if agent._should_force_verified_execution_finalization(
-                            task_context=task_context,
-                            tool_results=[forced_result],
-                            had_real_execution_tool=cycle.had_real_execution_tool,
-                        ):
-                            cycle.force_verified_execution_finalization = True
-                            messages.append(
-                                {
-                                    "role": "user",
-                                    "content": agent._build_verified_execution_finalize_nudge(
-                                        task_context=task_context,
-                                        user_query=user_query,
-                                    ),
-                                }
-                            )
-                            logger.info(
-                                "[DEEP_THINK_NATIVE] Entered verified-execution finalization mode after forced handoff followthrough at iteration=%s",
-                                iteration,
-                            )
-                    current_step.status = "analyzing"
-                    current_step.finished_at = datetime.now()
-                    thinking_steps.append(current_step)
-                    if agent.on_thinking:
-                        await agent._safe_callback(current_step)
-                    continue
-
-                # --- Early stop for light / standard tiers ---
-                # When the LLM produces a substantive text answer without
-                # any tool calls on a low-effort request, treat the content
-                # as the final answer immediately instead of forcing
-                # additional (empty) iterations + synthesis.
-                _tier_for_early_stop = agent._request_tier()
-                _content_for_early_stop = (result.content or "").strip()
-                if (
-                    _tier_for_early_stop == "standard"
-                    and _content_for_early_stop
-                    and len(_content_for_early_stop) >= 20
-                    and not agent._is_execute_task_request()
-                    and not agent._PROCESS_NARRATION_RE.match(_content_for_early_stop)
-                    and not agent._collect_tool_failures_from_steps(thinking_steps)
-                ):
-                    final_answer = _content_for_early_stop
-                    cycle.confidence = max(cycle.confidence, 0.85)
-                    current_step.status = "done"
-                    current_step.finished_at = datetime.now()
-                    thinking_steps.append(current_step)
-                    if agent.on_thinking:
-                        await agent._safe_callback(current_step)
-                    logger.info(
-                        "[DEEP_THINK_NATIVE] Early stop: tier=%s iteration=%s content_len=%d — "
-                        "treating direct text as final answer",
-                        _tier_for_early_stop,
-                        iteration,
-                        len(_content_for_early_stop),
-                    )
-                    if agent.on_final_delta:
-                        await agent._stream_final_answer(final_answer)
-                    break
-
-                current_step.finished_at = datetime.now()
-                thinking_steps.append(current_step)
-                if agent.on_thinking:
-                    await agent._safe_callback(current_step)
-                messages.append({"role": "assistant", "content": result.content or ""})
-                messages.append({"role": "user", "content": agent._get_next_step_prompt(iteration)})
+            flow, new_final_answer = await _native_no_tool_call_cycle(
+                agent,
+                result=result,
+                iteration=iteration,
+                current_step=current_step,
+                thinking_steps=thinking_steps,
+                tools_used=tools_used,
+                messages=messages,
+                task_context=task_context,
+                user_query=user_query,
+                cycle=cycle,
+            )
+            if flow == "continue":
+                continue
+            if flow == "break":
+                final_answer = new_final_answer
+                break
 
         if agent._skip_current_step:
             agent._skip_current_step = False
