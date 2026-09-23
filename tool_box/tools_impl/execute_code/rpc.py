@@ -67,7 +67,9 @@ class KernelRPCServer:
         self._loop = loop
         try:
             self._server = loop.run_until_complete(
-                asyncio.start_server(self._handle_connection, "127.0.0.1", 0)
+                asyncio.start_server(
+                    self._handle_connection, "127.0.0.1", 0, limit=_MAX_LINE_BYTES
+                )
             )
             self._port = int(self._server.sockets[0].getsockname()[1])
             ready.set()
