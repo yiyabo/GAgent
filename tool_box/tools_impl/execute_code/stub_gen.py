@@ -38,7 +38,7 @@ import socket
 import threading
 import time
 
-_RPC_ENDPOINT = os.environ["GAGENT_RPC_ENDPOINT"]  # "tcp://127.0.0.1:<port>"
+_RPC_ENDPOINT = os.environ.get("GAGENT_RPC_ENDPOINT", "")  # "tcp://127.0.0.1:<port>"
 _RPC_TOKEN = os.environ.get("GAGENT_RPC_TOKEN", "")
 _sock = None
 _call_lock = threading.Lock()
@@ -68,6 +68,8 @@ def retry(fn, max_attempts=3, delay=2):
 def _connect():
     global _sock
     if _sock is None:
+        if not _RPC_ENDPOINT:
+            raise RuntimeError("GAGENT_RPC_ENDPOINT is not set — stubs must run inside a code-mode kernel")
         host, _, port = _RPC_ENDPOINT[len("tcp://"):].rpartition(":")
         _sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         _sock.connect((host or "127.0.0.1", int(port)))

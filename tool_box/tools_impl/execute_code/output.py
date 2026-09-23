@@ -141,7 +141,7 @@ _FAILURE_HINT_RULES = (
         ),
     ),
     (
-        r"the JSON object must be str.*not 'dict'|string indices must be integers"
+        r"the JSON object must be str.*not '?dict'?|string indices must be integers"
         r"|'dict' object has no attribute 'loads'",
         lambda match, _: (
             "gagent_tools functions return DICTS (already parsed) — do not "
