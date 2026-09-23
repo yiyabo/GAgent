@@ -491,6 +491,187 @@ async def _native_tool_cycle(
     return "ok", [], final_call, ""
 
 
+async def _native_probe_only_cycle(
+    agent: "DeepThinkAgent",
+    *,
+    tool_results: List[Dict[str, Any]],
+    iteration: int,
+    current_step: ThinkingStep,
+    thinking_steps: List[ThinkingStep],
+    tools_used: List[str],
+    messages: List[Dict[str, Any]],
+    task_context: Optional[TaskExecutionContext],
+    user_query: str,
+    cycle: _NativeCycleState,
+    final_answer: str,
+) -> tuple[str, str]:
+    """Probe-only handling for one executed tool cycle: forced probe
+    followthrough, the observation-loop hard stop, and followthrough/summary
+    nudges. Returns ``(flow, new_final_answer)`` — ``"break"`` (hard stop;
+    ``new_final_answer`` is set), ``"continue"`` (nudge injected; skip the
+    real-execution tracker), or ``"ok"`` (not a probe-only cycle; run the
+    real-execution tracker). Extracted verbatim from ``_think_native``.
+    """
+    is_probe_only_cycle = agent._is_probe_only_execution_cycle(
+        tool_results,
+        task_context=task_context,
+    )
+    if is_probe_only_cycle:
+        cycle.probe_only_execution_cycles += 1
+        probe_limit = 6 if cycle.had_real_execution_tool else 12
+        if (
+            not cycle.had_real_execution_tool
+            and cycle.probe_only_execution_cycles >= 2
+            and cycle.forced_probe_followthrough_attempts < 1
+            and agent._can_force_probe_followthrough_execution(task_context)
+        ):
+            cycle.forced_probe_followthrough_attempts += 1
+            forced_result = await agent._execute_forced_probe_followthrough(
+                task_context=task_context,
+                user_query=user_query,
+                iteration=iteration,
+                probe_only_execution_cycles=cycle.probe_only_execution_cycles,
+            )
+            forced_tool_name = str(forced_result.get("tool_name") or "")
+            if forced_tool_name and forced_tool_name not in tools_used:
+                tools_used.append(forced_tool_name)
+            agent._append_tool_cycle_messages(
+                messages=messages,
+                tool_results=[forced_result],
+                assistant_content="",
+                current_step=current_step,
+            )
+            tool_results = [forced_result]
+            cycle.last_tool_cycle_signature = agent._build_tool_cycle_signature(tool_results)
+            cycle.identical_tool_cycle_count = 0
+            is_probe_only_cycle = agent._is_probe_only_execution_cycle(
+                tool_results,
+                task_context=task_context,
+            )
+            if not is_probe_only_cycle:
+                cycle.probe_only_execution_cycles = 0
+                current_step.self_correction = (
+                    "Detected repeated observation-only probing despite available upstream artifacts; "
+                    "forced code_executor execution."
+                )
+    if is_probe_only_cycle:
+        if cycle.probe_only_execution_cycles >= probe_limit:
+            # Hard stop for infinite observation loops — always active regardless of
+            # cycle.had_real_execution_tool. Without this, a post-execution AI that keeps
+            # reading non-existent files would silently burn through max_iterations.
+            current_step.status = "done"
+            if cycle.had_real_execution_tool:
+                # Task was executed; post-execution probing exceeded limit.
+                # Do NOT return BLOCKED_DEPENDENCY — we know the task ran.
+                # The AI never submitted submit_final_answer, so final_answer
+                # is likely empty here.  Return a neutral completion notice.
+                current_step.self_correction = (
+                    "Stopped repeated post-execution observation-only probing."
+                )
+                if not final_answer:
+                    raw_fallback = agent._build_post_execution_probe_stop_answer(
+                        task_context=task_context,
+                        user_query=user_query,
+                        steps=[*thinking_steps, current_step],
+                        tool_results=cycle.last_real_execution_tool_results,
+                    )
+                    # Try to synthesize a clean answer via LLM instead of
+                    # dumping raw evidence snippets to the user.
+                    try:
+                        synthesized = await agent._generate_fallback_from_evidence(
+                            user_query=user_query,
+                            evidence_snippets=raw_fallback,
+                            steps=[*thinking_steps, current_step],
+                            task_context=task_context,
+                            max_retries=2,
+                            timeout=120,
+                            max_tokens=4000,
+                        )
+                        if len(synthesized) >= 100 or len(synthesized) >= len(raw_fallback) // 2:
+                            final_answer = synthesized
+                        else:
+                            final_answer = raw_fallback
+                    except Exception as synth_exc:
+                        logger.warning(
+                            "Post-execution probe-stop LLM synthesis failed, using raw fallback: %s",
+                            str(synth_exc)[:200],
+                        )
+                        final_answer = raw_fallback
+            else:
+                if agent._explicit_task_override_active(task_context):
+                    # For explicit task override, do NOT return BLOCKED_DEPENDENCY.
+                    # The user explicitly requested this task — give a neutral
+                    # status instead of demanding manual prerequisite work.
+                    current_step.self_correction = (
+                        "Stopped observation-only probing for explicit task override; "
+                        "returning execution status instead of blocked-dependency."
+                    )
+                    task_label = ""
+                    if task_context and task_context.task_id is not None:
+                        task_label = f"Task {task_context.task_id}"
+                        if task_context.task_name:
+                            task_label = f"{task_label} ({task_context.task_name})"
+                    final_answer = (
+                        f"{task_label or 'The bound task'} 的执行尝试未能产生预期输出。"
+                        "已尝试自动执行但未成功完成，请检查任务指令和上游数据是否就绪，然后重试。"
+                    )
+                else:
+                    current_step.self_correction = (
+                        "Stopped repeated observation-only probing and returned a blocked-dependency conclusion."
+                    )
+                    final_answer = agent._build_blocked_dependency_answer(
+                        task_context=task_context,
+                        user_query=user_query,
+                        tool_results=tool_results,
+                    )
+            cycle.confidence = max(cycle.confidence, 0.8)
+            logger.warning(
+                "[DEEP_THINK_NATIVE] Stopped after %s consecutive probe-only execution cycles at iteration=%s had_real_execution_tool=%s",
+                cycle.probe_only_execution_cycles,
+                iteration,
+                cycle.had_real_execution_tool,
+            )
+            if agent.on_thinking:
+                await agent._safe_callback(current_step)
+            if agent.on_final_delta and final_answer:
+                await agent._stream_final_answer(final_answer)
+            return "break", final_answer
+
+        if not cycle.had_real_execution_tool:
+            nudge = agent._build_probe_only_followthrough_nudge(
+                task_context=task_context,
+                user_query=user_query,
+                stage=cycle.probe_only_execution_cycles,
+            )
+            messages.append({"role": "user", "content": nudge})
+            logger.info(
+                "[DEEP_THINK_NATIVE] Injected execute followthrough nudge after probe-only cycle=%s at iteration=%s",
+                cycle.probe_only_execution_cycles,
+                iteration,
+            )
+            current_step.self_correction = (
+                "Detected observation-only exploration during a bound execute_task request; injected a followthrough nudge."
+            )
+        else:
+            nudge = agent._build_post_execution_summary_nudge(
+                task_context=task_context,
+                user_query=user_query,
+                stage=cycle.probe_only_execution_cycles,
+            )
+            messages.append({"role": "user", "content": nudge})
+            logger.info(
+                "[DEEP_THINK_NATIVE] Injected post-execution summary nudge after probe-only cycle=%s at iteration=%s",
+                cycle.probe_only_execution_cycles,
+                iteration,
+            )
+            current_step.self_correction = (
+                "Detected post-execution observation-only probing; injected a summary nudge."
+            )
+        return "continue", ""
+
+    return "ok", ""
+
+
 async def _think_native(
     agent: "DeepThinkAgent",
     user_query: str,
@@ -609,162 +790,23 @@ async def _think_native(
                 final_answer = new_final_answer
                 break
             if tool_results:
-                is_probe_only_cycle = agent._is_probe_only_execution_cycle(
-                    tool_results,
+                flow, new_final_answer = await _native_probe_only_cycle(
+                    agent,
+                    tool_results=tool_results,
+                    iteration=iteration,
+                    current_step=current_step,
+                    thinking_steps=thinking_steps,
+                    tools_used=tools_used,
+                    messages=messages,
                     task_context=task_context,
+                    user_query=user_query,
+                    cycle=cycle,
+                    final_answer=final_answer,
                 )
-                if is_probe_only_cycle:
-                    cycle.probe_only_execution_cycles += 1
-                    probe_limit = 6 if cycle.had_real_execution_tool else 12
-                    if (
-                        not cycle.had_real_execution_tool
-                        and cycle.probe_only_execution_cycles >= 2
-                        and cycle.forced_probe_followthrough_attempts < 1
-                        and agent._can_force_probe_followthrough_execution(task_context)
-                    ):
-                        cycle.forced_probe_followthrough_attempts += 1
-                        forced_result = await agent._execute_forced_probe_followthrough(
-                            task_context=task_context,
-                            user_query=user_query,
-                            iteration=iteration,
-                            probe_only_execution_cycles=cycle.probe_only_execution_cycles,
-                        )
-                        forced_tool_name = str(forced_result.get("tool_name") or "")
-                        if forced_tool_name and forced_tool_name not in tools_used:
-                            tools_used.append(forced_tool_name)
-                        agent._append_tool_cycle_messages(
-                            messages=messages,
-                            tool_results=[forced_result],
-                            assistant_content="",
-                            current_step=current_step,
-                        )
-                        tool_results = [forced_result]
-                        cycle.last_tool_cycle_signature = agent._build_tool_cycle_signature(tool_results)
-                        cycle.identical_tool_cycle_count = 0
-                        is_probe_only_cycle = agent._is_probe_only_execution_cycle(
-                            tool_results,
-                            task_context=task_context,
-                        )
-                        if not is_probe_only_cycle:
-                            cycle.probe_only_execution_cycles = 0
-                            current_step.self_correction = (
-                                "Detected repeated observation-only probing despite available upstream artifacts; "
-                                "forced code_executor execution."
-                            )
-                if is_probe_only_cycle:
-                    if cycle.probe_only_execution_cycles >= probe_limit:
-                        # Hard stop for infinite observation loops — always active regardless of
-                        # cycle.had_real_execution_tool. Without this, a post-execution AI that keeps
-                        # reading non-existent files would silently burn through max_iterations.
-                        current_step.status = "done"
-                        if cycle.had_real_execution_tool:
-                            # Task was executed; post-execution probing exceeded limit.
-                            # Do NOT return BLOCKED_DEPENDENCY — we know the task ran.
-                            # The AI never submitted submit_final_answer, so final_answer
-                            # is likely empty here.  Return a neutral completion notice.
-                            current_step.self_correction = (
-                                "Stopped repeated post-execution observation-only probing."
-                            )
-                            if not final_answer:
-                                raw_fallback = agent._build_post_execution_probe_stop_answer(
-                                    task_context=task_context,
-                                    user_query=user_query,
-                                    steps=[*thinking_steps, current_step],
-                                    tool_results=cycle.last_real_execution_tool_results,
-                                )
-                                # Try to synthesize a clean answer via LLM instead of
-                                # dumping raw evidence snippets to the user.
-                                try:
-                                    synthesized = await agent._generate_fallback_from_evidence(
-                                        user_query=user_query,
-                                        evidence_snippets=raw_fallback,
-                                        steps=[*thinking_steps, current_step],
-                                        task_context=task_context,
-                                        max_retries=2,
-                                        timeout=120,
-                                        max_tokens=4000,
-                                    )
-                                    if len(synthesized) >= 100 or len(synthesized) >= len(raw_fallback) // 2:
-                                        final_answer = synthesized
-                                    else:
-                                        final_answer = raw_fallback
-                                except Exception as synth_exc:
-                                    logger.warning(
-                                        "Post-execution probe-stop LLM synthesis failed, using raw fallback: %s",
-                                        str(synth_exc)[:200],
-                                    )
-                                    final_answer = raw_fallback
-                        else:
-                            if agent._explicit_task_override_active(task_context):
-                                # For explicit task override, do NOT return BLOCKED_DEPENDENCY.
-                                # The user explicitly requested this task — give a neutral
-                                # status instead of demanding manual prerequisite work.
-                                current_step.self_correction = (
-                                    "Stopped observation-only probing for explicit task override; "
-                                    "returning execution status instead of blocked-dependency."
-                                )
-                                task_label = ""
-                                if task_context and task_context.task_id is not None:
-                                    task_label = f"Task {task_context.task_id}"
-                                    if task_context.task_name:
-                                        task_label = f"{task_label} ({task_context.task_name})"
-                                final_answer = (
-                                    f"{task_label or 'The bound task'} 的执行尝试未能产生预期输出。"
-                                    "已尝试自动执行但未成功完成，请检查任务指令和上游数据是否就绪，然后重试。"
-                                )
-                            else:
-                                current_step.self_correction = (
-                                    "Stopped repeated observation-only probing and returned a blocked-dependency conclusion."
-                                )
-                                final_answer = agent._build_blocked_dependency_answer(
-                                    task_context=task_context,
-                                    user_query=user_query,
-                                    tool_results=tool_results,
-                                )
-                        cycle.confidence = max(cycle.confidence, 0.8)
-                        logger.warning(
-                            "[DEEP_THINK_NATIVE] Stopped after %s consecutive probe-only execution cycles at iteration=%s had_real_execution_tool=%s",
-                            cycle.probe_only_execution_cycles,
-                            iteration,
-                            cycle.had_real_execution_tool,
-                        )
-                        if agent.on_thinking:
-                            await agent._safe_callback(current_step)
-                        if agent.on_final_delta and final_answer:
-                            await agent._stream_final_answer(final_answer)
-                        break
-
-                    if not cycle.had_real_execution_tool:
-                        nudge = agent._build_probe_only_followthrough_nudge(
-                            task_context=task_context,
-                            user_query=user_query,
-                            stage=cycle.probe_only_execution_cycles,
-                        )
-                        messages.append({"role": "user", "content": nudge})
-                        logger.info(
-                            "[DEEP_THINK_NATIVE] Injected execute followthrough nudge after probe-only cycle=%s at iteration=%s",
-                            cycle.probe_only_execution_cycles,
-                            iteration,
-                        )
-                        current_step.self_correction = (
-                            "Detected observation-only exploration during a bound execute_task request; injected a followthrough nudge."
-                        )
-                    else:
-                        nudge = agent._build_post_execution_summary_nudge(
-                            task_context=task_context,
-                            user_query=user_query,
-                            stage=cycle.probe_only_execution_cycles,
-                        )
-                        messages.append({"role": "user", "content": nudge})
-                        logger.info(
-                            "[DEEP_THINK_NATIVE] Injected post-execution summary nudge after probe-only cycle=%s at iteration=%s",
-                            cycle.probe_only_execution_cycles,
-                            iteration,
-                        )
-                        current_step.self_correction = (
-                            "Detected post-execution observation-only probing; injected a summary nudge."
-                        )
-                else:
+                if flow == "break":
+                    final_answer = new_final_answer
+                    break
+                if flow == "ok":
                     cycle.probe_only_execution_cycles = 0
                     # Only mark cycle.had_real_execution_tool when a code-running
                     # tool actually executed.  Coordination tools like
