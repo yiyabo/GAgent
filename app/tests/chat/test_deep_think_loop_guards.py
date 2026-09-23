@@ -403,6 +403,36 @@ class TestInlineImages:
         out = _ensure_inline_images(text, ["", "../x.png", "a\\b.png", None])
         assert out == text
 
+
+class TestStripRuntimeAbsolutePaths:
+    """_strip_runtime_absolute_paths: container-absolute prefixes leave the final answer."""
+
+    def test_strips_default_runtime_root(self) -> None:
+        from app.services.deep_think.text_utils import _strip_runtime_absolute_paths
+
+        text = "- PNG：/app/runtime/session_x/raw_files/fig/a.png\n- 相对路径 raw_files/b.csv 不动"
+        out = _strip_runtime_absolute_paths(text)
+        assert "/app/runtime" not in out
+        assert "raw_files/fig/a.png" in out
+        assert "raw_files/b.csv 不动" in out
+
+    def test_respects_env_runtime_root(self, monkeypatch) -> None:
+        from app.services.deep_think.text_utils import _strip_runtime_absolute_paths
+
+        monkeypatch.setenv("APP_RUNTIME_ROOT", "/data/runtime/")
+        text = "见 /data/runtime/sess_1/results/x.csv 详情"
+        out = _strip_runtime_absolute_paths(text)
+        assert out == "见 results/x.csv 详情"
+
+    def test_empty_and_clean_text_unchanged(self) -> None:
+        from app.services.deep_think.text_utils import _strip_runtime_absolute_paths
+
+        assert _strip_runtime_absolute_paths("") == ""
+        assert _strip_runtime_absolute_paths(None) == ""
+        clean = "deliverables/latest/image_tabular/x.png 已发布"
+        assert _strip_runtime_absolute_paths(clean) == clean
+
+
     def test_collect_relpaths_from_guard_mirror(self, monkeypatch) -> None:
         sandbox = _SANDBOX.resolve()
         session_dir = sandbox / "testsess" / "deliverables"

@@ -34,6 +34,7 @@ from app.services.deep_think.models import (
 from app.services.deep_think.text_utils import (
     _derive_expected_outputs,
     _ensure_inline_images,
+    _strip_runtime_absolute_paths,
     _missing_expectations,
     _missing_expectations_detailed,
 )
@@ -1340,7 +1341,9 @@ async def _think_native(
             user_query=user_query,
         )
     final_answer = sanitize_professional_response_text(final_answer)
-    final_answer = _ensure_inline_images(final_answer, agent._collect_inline_image_relpaths())
+    final_answer = _strip_runtime_absolute_paths(
+        _ensure_inline_images(final_answer, agent._collect_inline_image_relpaths())
+    )
 
     try:
         summary = await agent._generate_summary(thinking_steps, user_query)
@@ -1836,7 +1839,9 @@ Respond with ONLY a JSON object:
             user_query=user_query,
         )
     final_answer = sanitize_professional_response_text(final_answer)
-    final_answer = _ensure_inline_images(final_answer, agent._collect_inline_image_relpaths())
+    final_answer = _strip_runtime_absolute_paths(
+        _ensure_inline_images(final_answer, agent._collect_inline_image_relpaths())
+    )
 
     try:
         summary = await agent._generate_summary(thinking_steps, user_query)

@@ -29,6 +29,7 @@ from app.services.deep_think.text_utils import (
     _collect_deliverable_display_names,
     _drop_process_echo_bullets,
     _ensure_inline_images,
+    _strip_runtime_absolute_paths,
     _strip_cli_noise_from_multiline,
     _strip_cli_stream_noise,
 )
@@ -601,9 +602,11 @@ def _build_structured_fallback(agent: "DeepThinkAgent", steps: List[ThinkingStep
             else:
                 header = "Here is what was observed during execution:\n\n"
                 footer = "\n\nFor a more detailed analysis, please specify what you'd like to examine."
-        return _ensure_inline_images(
-            header + evidence.strip() + footer,
-            agent._collect_inline_image_relpaths(),
+        return _strip_runtime_absolute_paths(
+            _ensure_inline_images(
+                header + evidence.strip() + footer,
+                agent._collect_inline_image_relpaths(),
+            )
         )
 
     if deliverable_files:
@@ -622,7 +625,9 @@ def _build_structured_fallback(agent: "DeepThinkAgent", steps: List[ThinkingStep
                 f"{names}\n\n"
                 "Let me know if you want changes or a different export format."
             )
-        return _ensure_inline_images(text, agent._collect_inline_image_relpaths())
+        return _strip_runtime_absolute_paths(
+            _ensure_inline_images(text, agent._collect_inline_image_relpaths())
+        )
 
     if useful_thoughts:
         combined = "\n\n".join(useful_thoughts)
@@ -741,7 +746,9 @@ async def _generate_fallback_from_evidence(
             cleaned = sanitize_professional_response_text(str(raw or "").strip())
             if len(cleaned) < 20:
                 raise ValueError(f"fallback synthesis too short ({len(cleaned)} chars)")
-            cleaned = _ensure_inline_images(cleaned, agent._collect_inline_image_relpaths())
+            cleaned = _strip_runtime_absolute_paths(
+                _ensure_inline_images(cleaned, agent._collect_inline_image_relpaths())
+            )
             return cleaned
         except Exception as exc:
             last_exc = exc
@@ -865,6 +872,17 @@ async def _forced_synthesis_from_steps(
                 )
 
         produced_images = agent._collect_inline_image_relpaths()
+        if language == "zh":
+            instruction += (
+                "\n- 答案中引用任何产出文件（清单、正文、图片路径）一律使用会话相对路径"
+                "（如 raw_files/...、deliverables/...），禁止输出以 /app/runtime/ 开头的绝对路径。"
+            )
+        else:
+            instruction += (
+                "\n- Reference every produced file (manifest lists, prose, image paths) with its "
+                "session-relative path (e.g. raw_files/..., deliverables/...); never emit "
+                "absolute paths starting with /app/runtime/."
+            )
         if produced_images:
             listing = "\n".join(f"- {p}" for p in produced_images)
             if language == "zh":
@@ -938,7 +956,9 @@ async def _forced_synthesis_from_steps(
                 outcome=structured_plan_outcome,
                 user_query=user_query,
             )
-        cleaned = _ensure_inline_images(cleaned, agent._collect_inline_image_relpaths())
+        cleaned = _strip_runtime_absolute_paths(
+            _ensure_inline_images(cleaned, agent._collect_inline_image_relpaths())
+        )
         logger.info("[DEEP_THINK_NATIVE] Forced synthesis succeeded (%d chars)", len(cleaned))
         return cleaned
     except Exception as exc:

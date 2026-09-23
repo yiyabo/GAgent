@@ -265,6 +265,22 @@ def _ensure_inline_images(text: str, image_relpaths: List[str]) -> str:
     return out
 
 
+def _strip_runtime_absolute_paths(text: str) -> str:
+    """Rewrite ``/app/runtime/<session>/x`` to session-relative ``x`` in final answers.
+
+    Models often paste the tool result's container-absolute path into prose
+    and manifest lists; those paths are meaningless to the frontend and the
+    user. Strip the runtime root ($APP_RUNTIME_ROOT, default /app/runtime)
+    plus the session segment wherever it prefixes a path.
+    """
+    if not text:
+        return text or ""
+    runtime_root = str(os.getenv("APP_RUNTIME_ROOT") or "/app/runtime").strip().rstrip("/")
+    if not runtime_root:
+        return text
+    return re.sub(re.escape(runtime_root) + r"/[^/\s`'\)\]]+/", "", text)
+
+
 # ---------------------------------------------------------------------------
 # Declarative acceptance (v1): derive the deliverable types the user asked
 # for and let the loop guard judge completion, not just act as a fuse.
