@@ -497,6 +497,20 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   }
   },
 
+  // Single-source pagination: fetch the next older page into the same store
+  // list (replaces the removed React Query useMessages side channel).
+  loadMoreHistory: async () => {
+  const { currentSession, historyBeforeId, historyHasMore, historyLoading } = get();
+  if (!historyHasMore || historyLoading || historyBeforeId === null || historyBeforeId === undefined) {
+  return;
+  }
+  const sessionId = currentSession?.session_id ?? currentSession?.id;
+  if (!sessionId) {
+  return;
+  }
+  await get().loadChatHistory(sessionId, { beforeId: historyBeforeId, append: true });
+  },
+
   sendMessage: async (content, metadata) => {
   const {
   currentPlanTitle,

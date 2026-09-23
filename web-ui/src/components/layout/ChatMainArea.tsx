@@ -28,7 +28,6 @@ import { useChatStore } from '@store/chat';
 import { chatApi } from '@api/chat';
 import { useTasksStore } from '@store/tasks';
 import { resolveChatSessionProcessingKey } from '@/utils/chatSessionKeys';
-import { useMessages } from '@/hooks/useMessages';
 import ChatMessage from '@components/chat/ChatMessage';
 import FileUploadButton from '@components/chat/FileUploadButton';
 import UploadedFilesList from '@components/chat/UploadedFilesList';
@@ -37,7 +36,6 @@ import { shouldRenderWelcomeState } from './chatMainAreaState';
 import { shallow } from 'zustand/shallow';
 import type { ChatMessage as ChatMessageType, Memory } from '@/types';
 import VirtualList, { ListRef } from 'rc-virtual-list';
-import { isLikelyPersistedDuplicateMessage } from '@/utils/chatMessageUtils';
 import { isAllowedUploadFile } from '@/constants/uploadFileTypes';
 
 /** FastAPI/axios errors often put the reason in `response.data.detail`; BaseApi may not surface it on `Error.message`. */
@@ -271,9 +269,9 @@ const ChatMainArea: React.FC = () => {
     startNewSession,
     loadSessions,
     loadChatHistory,
+    loadMoreHistory,
     toggleMemory,
     historyHasMore,
-    historyBeforeId,
     historyLoading,
     uploadFile,
   } = useChatStore(
@@ -291,9 +289,9 @@ const ChatMainArea: React.FC = () => {
       startNewSession: state.startNewSession,
       loadSessions: state.loadSessions,
       loadChatHistory: state.loadChatHistory,
+      loadMoreHistory: state.loadMoreHistory,
       toggleMemory: state.toggleMemory,
       historyHasMore: state.historyHasMore,
-      historyBeforeId: state.historyBeforeId,
       historyLoading: state.historyLoading,
       uploadFile: state.uploadFile,
     }),
@@ -315,39 +313,9 @@ const ChatMainArea: React.FC = () => {
     !(currentSession.titleSource === 'local' && currentSession.messages.length === 0)
   );
 
-  const {
-    data: historyData,
-    fetchNextPage,
-    hasNextPage,
-    isFetchingNextPage,
-    isInitialLoading: isHistoryLoadingData,
-  } = useMessages(
-    canQuerySessionHistory
-      ? (currentSession?.session_id ?? currentSession?.id)
-      : null
-  );
-
-  const allHistoryMessages = useMemo(() => {
-    if (!historyData) return [];
-    return [...historyData.pages].reverse().flatMap((page) => page.messages);
-  }, [historyData]);
-
-  const combinedMessages = useMemo(() => {
-    const historyIds = new Set(allHistoryMessages.map((m) => m.id));
-    const activeOnly = messages.filter((message) => {
-      if (historyIds.has(message.id)) {
-        return false;
-      }
-      return !allHistoryMessages.some((historyMessage) =>
-        isLikelyPersistedDuplicateMessage(message, historyMessage)
-      );
-    });
-    return [...allHistoryMessages, ...activeOnly];
-  }, [allHistoryMessages, messages]);
-
   const showWelcomeState = shouldRenderWelcomeState(
-    combinedMessages.length,
-    canQuerySessionHistory && (historyLoading || isHistoryLoadingData)
+    messages.length,
+    canQuerySessionHistory && historyLoading
   );
 
   // ---- Prevent browser from opening dropped files globally ----
@@ -642,13 +610,13 @@ const ChatMainArea: React.FC = () => {
           />
         ) : (
           <ChatMessageList
-            messages={combinedMessages}
+            messages={messages}
             relevantMemories={relevantMemories}
             isProcessing={isProcessing}
             listHeight={messageAreaHeight - 40}
-            onReachTop={fetchNextPage}
-            canLoadMore={!!hasNextPage}
-            isHistoryLoading={isFetchingNextPage || isHistoryLoadingData}
+            onReachTop={loadMoreHistory}
+            canLoadMore={historyHasMore}
+            isHistoryLoading={historyLoading}
             sessionId={currentSession?.session_id ?? currentSession?.id ?? null}
           />
         )}
