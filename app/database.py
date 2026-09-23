@@ -266,6 +266,11 @@ def init_db() -> None:
             "ON chat_runs(owner_id, created_at DESC)"
         )
         conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_runs_idempotency "
+            "ON chat_runs(session_id, idempotency_key) "
+            "WHERE idempotency_key IS NOT NULL"
+        )
+        conn.execute(
             """
             CREATE TABLE IF NOT EXISTS chat_run_events (
                 run_id TEXT NOT NULL,

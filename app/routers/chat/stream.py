@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import AsyncIterator
 
@@ -13,60 +12,12 @@ from app.services.moderation import scan_user_input
 from app.services.platform_access import bind_chat_request_to_principal
 from app.services.request_principal import get_request_owner_id, get_request_principal
 
-from .background import _sse_message
+from .background import _sse_message, _sse_with_keepalive
 from .models import ChatRequest
 from .run_routes import iterate_chat_run_sse, start_background_chat_run
 from .stream_context import build_agent_for_chat_request
 
 logger = logging.getLogger(__name__)
-
-
-async def _sse_with_keepalive(
-    source: AsyncIterator[str], idle_seconds: float = 5.0
-) -> AsyncIterator[str]:
-    """Yield SSE comment lines while the source is idle.
-
-    Pre-stream work (routing, title generation, uploads) can be slow; without
-    traffic, intermediate gateways cut idle connections before the first real
-    event, which surfaced as disconnect-and-sync messages in the UI.
-    """
-    queue: asyncio.Queue = asyncio.Queue()
-    done_sentinel: object = object()
-
-    async def _pump() -> None:
-        try:
-            async for item in source:
-                await queue.put(item)
-        except Exception as exc:
-            await queue.put(exc)
-        finally:
-            await queue.put(done_sentinel)
-
-    pump_task = asyncio.create_task(_pump())
-    try:
-        while True:
-            getter = asyncio.create_task(queue.get())
-            sleeper = asyncio.create_task(asyncio.sleep(idle_seconds))
-            done, _ = await asyncio.wait(
-                {getter, sleeper}, return_when=asyncio.FIRST_COMPLETED
-            )
-            sleeper.cancel()
-            if getter in done:
-                item = getter.result()
-                if item is done_sentinel:
-                    break
-                if isinstance(item, BaseException):
-                    raise item
-                yield item
-            else:
-                getter.cancel()
-                yield ": keepalive\n\n"
-    finally:
-        pump_task.cancel()
-        try:
-            await pump_task
-        except BaseException:  # pragma: no cover - best-effort cleanup
-            pass
 
 
 async def chat_stream(

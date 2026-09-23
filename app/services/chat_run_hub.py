@@ -33,6 +33,11 @@ def register_worker_task(run_id: str, task: asyncio.Task[None]) -> None:
     _tasks[run_id] = task
 
 
+def has_live_worker_task(run_id: str) -> bool:
+    task = _tasks.get(run_id)
+    return task is not None and not task.done()
+
+
 def forget_worker_task(run_id: str) -> None:
     _tasks.pop(run_id, None)
 

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
-from typing import Any, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional
 
 # ---------------------------------------------------------------------------
 # Background task classification
@@ -61,3 +62,51 @@ def _classify_background_category(
 
 def _sse_message(payload: Dict[str, Any]) -> str:
     return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+async def _sse_with_keepalive(
+    source: AsyncIterator[str], idle_seconds: float = 5.0
+) -> AsyncIterator[str]:
+    """Yield SSE comment lines while the source is idle.
+
+    Pre-stream work (routing, title generation, uploads) and long tool calls
+    can be slow; without traffic, intermediate gateways cut idle connections,
+    which surfaced as disconnect-and-sync messages in the UI.
+    """
+    queue: asyncio.Queue = asyncio.Queue()
+    done_sentinel: object = object()
+
+    async def _pump() -> None:
+        try:
+            async for item in source:
+                await queue.put(item)
+        except Exception as exc:
+            await queue.put(exc)
+        finally:
+            await queue.put(done_sentinel)
+
+    pump_task = asyncio.create_task(_pump())
+    try:
+        while True:
+            getter = asyncio.create_task(queue.get())
+            sleeper = asyncio.create_task(asyncio.sleep(idle_seconds))
+            done, _ = await asyncio.wait(
+                {getter, sleeper}, return_when=asyncio.FIRST_COMPLETED
+            )
+            sleeper.cancel()
+            if getter in done:
+                item = getter.result()
+                if item is done_sentinel:
+                    break
+                if isinstance(item, BaseException):
+                    raise item
+                yield item
+            else:
+                getter.cancel()
+                yield ": keepalive\n\n"
+    finally:
+        pump_task.cancel()
+        try:
+            await pump_task
+        except BaseException:  # pragma: no cover - best-effort cleanup
+            pass

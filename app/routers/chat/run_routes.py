@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sqlite3
 from typing import Any, AsyncIterator, Dict, Optional
 from uuid import uuid4
 
@@ -15,10 +16,11 @@ from app.repository.chat_runs import (
     fetch_events_after,
     set_chat_run_user_message_id,
     get_chat_run,
+    get_chat_run_by_idempotency_key,
     list_session_runs,
 )
 from app.database import get_db
-from app.routers.chat.background import _sse_message
+from app.routers.chat.background import _sse_message, _sse_with_keepalive
 from app.routers.chat.models import ChatRequest
 from app.routers.chat.session_helpers import _ensure_session_exists, _save_chat_message
 from app.services.chat_run_worker import execute_chat_run
@@ -66,23 +68,13 @@ def _plan_id_from_request(request: ChatRequest) -> Optional[int]:
         return None
 
 
-def start_background_chat_run(
+def _save_run_user_message(
     request: ChatRequest,
     *,
+    run_id: str,
     session_id: str,
     owner_id: str,
-) -> str:
-    """Create DB row, save user message, spawn worker."""
-    # chat_runs.session_id FK references chat_sessions; frontend-only sessions must be materialized first.
-    plan_id = _plan_id_from_request(request)
-    with get_db() as conn:
-        _ensure_session_exists(session_id, conn, plan_id, owner_id=owner_id, project_id=request.project_id)
-
-    run_id = new_chat_run_id()
-    request_json = request.model_dump_json()
-    create_chat_run(run_id, session_id, request_json, owner_id=owner_id)
-    hub.ensure_cancel_event(run_id)
-    hub.ensure_steer_queue(run_id)
+) -> None:
     user_message_metadata = (
         {"client_message_id": request.client_message_id}
         if request.client_message_id
@@ -102,9 +94,98 @@ def start_background_chat_run(
             owner_id=owner_id,
             feedback_message_id=user_message_id,
         )
+
+
+def _spawn_chat_run_worker(run_id: str) -> None:
+    hub.ensure_cancel_event(run_id)
+    hub.ensure_steer_queue(run_id)
     loop = asyncio.get_running_loop()
     task = loop.create_task(execute_chat_run(run_id))
     hub.register_worker_task(run_id, task)
+
+
+def _resume_idempotent_run(
+    request: ChatRequest,
+    existing: Dict[str, Any],
+    *,
+    session_id: str,
+    owner_id: str,
+) -> str:
+    """Return the existing run for a retried logical message, healing crash windows."""
+    existing_run_id = existing["run_id"]
+    if existing.get("user_message_id") is None:
+        # Crashed between INSERT and message save: persist it now (deduped by
+        # client_message_id inside _save_chat_message).
+        _save_run_user_message(
+            request, run_id=existing_run_id, session_id=session_id, owner_id=owner_id
+        )
+    if existing.get("status") == "queued":
+        if hub.has_live_worker_task(existing_run_id):
+            # Rapid duplicate POST while the first dispatch is still starting up.
+            logger.info("[CHAT][RUN] idempotent hit, worker live run=%s", existing_run_id)
+        else:
+            # Row exists but the worker never started (crash between INSERT and
+            # create_task): dispatch it now. 'running'/terminal runs are left as-is
+            # and the client replays their event log.
+            logger.info("[CHAT][RUN] idempotent re-dispatch queued run=%s", existing_run_id)
+            _spawn_chat_run_worker(existing_run_id)
+    else:
+        logger.info(
+            "[CHAT][RUN] idempotent hit run=%s status=%s",
+            existing_run_id,
+            existing.get("status"),
+        )
+    return existing_run_id
+
+
+def start_background_chat_run(
+    request: ChatRequest,
+    *,
+    session_id: str,
+    owner_id: str,
+) -> str:
+    """Create DB row, save user message, spawn worker.
+
+    Idempotent on ``request.client_message_id``: retrying the same logical
+    message returns the existing run instead of re-running the agent.
+    """
+    # chat_runs.session_id FK references chat_sessions; frontend-only sessions must be materialized first.
+    plan_id = _plan_id_from_request(request)
+    with get_db() as conn:
+        _ensure_session_exists(session_id, conn, plan_id, owner_id=owner_id, project_id=request.project_id)
+
+    idempotency_key = (request.client_message_id or "").strip() or None
+    if idempotency_key:
+        existing = get_chat_run_by_idempotency_key(session_id, idempotency_key)
+        if existing is not None:
+            return _resume_idempotent_run(
+                request, existing, session_id=session_id, owner_id=owner_id
+            )
+
+    run_id = new_chat_run_id()
+    request_json = request.model_dump_json()
+    try:
+        create_chat_run(
+            run_id,
+            session_id,
+            request_json,
+            owner_id=owner_id,
+            idempotency_key=idempotency_key,
+        )
+    except sqlite3.IntegrityError:
+        if not idempotency_key:
+            raise
+        # Concurrent duplicate POST raced past the lookup above and hit the
+        # unique index; the other request's row is now visible.
+        existing = get_chat_run_by_idempotency_key(session_id, idempotency_key)
+        if existing is None:
+            raise
+        return _resume_idempotent_run(
+            request, existing, session_id=session_id, owner_id=owner_id
+        )
+
+    _save_run_user_message(request, run_id=run_id, session_id=session_id, owner_id=owner_id)
+    _spawn_chat_run_worker(run_id)
     return run_id
 
 
@@ -221,7 +302,12 @@ async def stream_run_events(
         after_seq = max(after_seq, int(last_event_header.strip()))
 
     async def gen() -> AsyncIterator[str]:
-        async for line in iterate_chat_run_sse(request, run_id, after_seq=after_seq):
+        # Long tool calls can leave the stream silent for minutes; emit SSE
+        # comments while idle so proxies do not cut the connection.
+        async for line in _sse_with_keepalive(
+            iterate_chat_run_sse(request, run_id, after_seq=after_seq),
+            idle_seconds=5.0,
+        ):
             yield line
 
     headers = {

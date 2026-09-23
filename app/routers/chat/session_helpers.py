@@ -1045,6 +1045,29 @@ def _save_chat_message(
         with get_db() as conn:
             _ensure_session_exists(session_id, conn, owner_id=owner_id)
             cursor = conn.cursor()
+            client_message_id = None
+            if metadata:
+                raw_cmid = metadata.get("client_message_id")
+                if isinstance(raw_cmid, str) and raw_cmid.strip():
+                    client_message_id = raw_cmid.strip()
+            if client_message_id:
+                existing_row = cursor.execute(
+                    """
+                    SELECT id FROM chat_messages
+                    WHERE session_id = ?
+                      AND json_extract(metadata, '$.client_message_id') = ?
+                    LIMIT 1
+                    """,
+                    (session_id, client_message_id),
+                ).fetchone()
+                if existing_row is not None:
+                    logger.info(
+                        "[CHAT][SAVE] dedupe session=%s client_message_id=%s -> message %s",
+                        session_id,
+                        client_message_id,
+                        existing_row[0],
+                    )
+                    return int(existing_row[0])
             metadata_json = (
                 json.dumps(metadata, ensure_ascii=False) if metadata else None
             )

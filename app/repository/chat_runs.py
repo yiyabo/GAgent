@@ -112,6 +112,25 @@ def get_chat_run(run_id: str) -> Optional[Dict[str, Any]]:
     return dict(row)
 
 
+def get_chat_run_by_idempotency_key(
+    session_id: str, idempotency_key: str
+) -> Optional[Dict[str, Any]]:
+    with get_db() as conn:
+        row = conn.execute(
+            """
+            SELECT run_id, session_id, owner_id, status, user_message_id, assistant_message_id,
+                   idempotency_key, error, request_json, created_at, started_at,
+                   finished_at, last_event_seq
+            FROM chat_runs
+            WHERE session_id = ? AND idempotency_key = ?
+            """,
+            (session_id, idempotency_key),
+        ).fetchone()
+    if row is None:
+        return None
+    return dict(row)
+
+
 def list_session_runs(
     session_id: str,
     *,
