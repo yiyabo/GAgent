@@ -7,6 +7,7 @@ configuration, lifecycle management, and route registration.
 import logging
 import os
 import time
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Request
@@ -62,6 +63,13 @@ async def lifespan(_fastapi_app: FastAPI):
     """
     # Initialize Structured Logging with Global Configuration
     setup_logging()
+    # Optional OpenTelemetry (no-op unless OTEL_ENABLED=1 and SDK installed)
+    try:
+        from .services.foundation.otel import init_otel
+
+        init_otel()
+    except Exception:
+        pass
     _ = get_settings()  # Trigger loading to make it easy to see in the logs if the configuration took effect or not
     if is_production():
         profile = platform_profile()
@@ -135,6 +143,13 @@ async def lifespan(_fastapi_app: FastAPI):
             )
     except Exception as e:
         logging.getLogger("app.main").warning("Failed to fix stale chat runs: %s", e)
+
+    # Periodic lease sweep: reap runs whose worker died without releasing its
+    # lease (multi-instance safe; see design/2026-09-24-run-signals-lease-state-machine.md).
+    from .services.chat_run_signals import run_lease_sweeper
+
+    chat_run_sweeper_stop = asyncio.Event()
+    chat_run_sweeper_task = asyncio.create_task(run_lease_sweeper(chat_run_sweeper_stop))
 
     try:
         task_fixed = fix_stale_plan_task_statuses_on_startup()
@@ -249,6 +264,12 @@ async def lifespan(_fastapi_app: FastAPI):
     finally:
         # 先摘除 Consul 注册再关下游资源，避免关闭窗口内网关把请求路由到半死实例
         stop_consul_registration()
+        chat_run_sweeper_stop.set()
+        chat_run_sweeper_task.cancel()
+        try:
+            await chat_run_sweeper_task
+        except (asyncio.CancelledError, Exception):
+            pass
         if quality_runner is not None:
             await quality_runner.stop()
 

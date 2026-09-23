@@ -274,18 +274,146 @@ def get_last_event_seq(run_id: str) -> int:
 
 _STALE_RUN_ERROR = "server restarted; run interrupted"
 
+DEFAULT_LEASE_TTL_SECONDS = 30
 
-def fix_stale_chat_runs_on_startup() -> int:
-    """Mark queued/running runs as failed after process restart.
 
-    In-memory workers and steer queues are gone; leaving rows as ``running`` makes
-    ``GET .../runs?status=running`` lie, and SSE replay never reaches ``final``/``error``
-    so clients hang. We append a terminal ``error`` event then mark the run finished.
-    """
+def insert_chat_run_signal(run_id: str, kind: str, payload: Optional[Dict[str, Any]] = None) -> int:
+    """Persist a runtime control signal (durable fallback for cross-worker delivery)."""
+    payload_json = json.dumps(payload or {}, ensure_ascii=False)
+    with get_db() as conn:
+        cursor = conn.execute(
+            "INSERT INTO chat_run_signals (run_id, kind, payload_json) VALUES (?, ?, ?)",
+            (run_id, kind, payload_json),
+        )
+        conn.commit()
+        return int(cursor.lastrowid)
 
+
+def fetch_unconsumed_chat_run_signals(run_id: str) -> List[Dict[str, Any]]:
     with get_db() as conn:
         rows = conn.execute(
-            "SELECT run_id FROM chat_runs WHERE status IN ('queued', 'running')"
+            """
+            SELECT id, kind, payload_json, created_at
+            FROM chat_run_signals
+            WHERE run_id = ? AND consumed_at IS NULL
+            ORDER BY id ASC
+            """,
+            (run_id,),
+        ).fetchall()
+    out: List[Dict[str, Any]] = []
+    for row in rows:
+        try:
+            payload = json.loads(row["payload_json"])
+            if not isinstance(payload, dict):
+                payload = {}
+        except json.JSONDecodeError:
+            payload = {}
+        out.append(
+            {
+                "id": int(row["id"]),
+                "kind": str(row["kind"]),
+                "payload": payload,
+                "created_at": row["created_at"],
+            }
+        )
+    return out
+
+
+def mark_chat_run_signals_consumed(signal_ids: List[int]) -> None:
+    if not signal_ids:
+        return
+    placeholders = ",".join("?" for _ in signal_ids)
+    with get_db() as conn:
+        conn.execute(
+            f"UPDATE chat_run_signals SET consumed_at = CURRENT_TIMESTAMP WHERE id IN ({placeholders})",
+            tuple(signal_ids),
+        )
+        conn.commit()
+
+
+def claim_chat_run_lease(run_id: str, worker_id: str, *, ttl_seconds: int = DEFAULT_LEASE_TTL_SECONDS) -> None:
+    """Record which worker executes this run and how long the claim is valid."""
+    ttl = max(5, int(ttl_seconds))
+    with get_db() as conn:
+        conn.execute(
+            f"""
+            UPDATE chat_runs
+            SET worker_id = ?,
+                heartbeat_at = CURRENT_TIMESTAMP,
+                lease_expires_at = datetime('now', '+{ttl} seconds')
+            WHERE run_id = ?
+            """,
+            (worker_id, run_id),
+        )
+        conn.commit()
+
+
+def heartbeat_chat_run_lease(run_id: str, worker_id: str, *, ttl_seconds: int = DEFAULT_LEASE_TTL_SECONDS) -> bool:
+    """Renew the lease; returns False when the run is no longer claimed by us."""
+    ttl = max(5, int(ttl_seconds))
+    with get_db() as conn:
+        cursor = conn.execute(
+            f"""
+            UPDATE chat_runs
+            SET heartbeat_at = CURRENT_TIMESTAMP,
+                lease_expires_at = datetime('now', '+{ttl} seconds')
+            WHERE run_id = ? AND worker_id = ?
+            """,
+            (run_id, worker_id),
+        )
+        conn.commit()
+        return cursor.rowcount == 1
+
+
+def release_chat_run_lease(run_id: str, worker_id: str) -> None:
+    """Drop the lease validity (worker_id stays for forensics)."""
+    with get_db() as conn:
+        conn.execute(
+            """
+            UPDATE chat_runs
+            SET lease_expires_at = NULL
+            WHERE run_id = ? AND worker_id = ?
+            """,
+            (run_id, worker_id),
+        )
+        conn.commit()
+
+
+def is_chat_run_lease_live(run_id: str) -> bool:
+    """True when some worker holds an unexpired lease on this run."""
+    with get_db() as conn:
+        row = conn.execute(
+            """
+            SELECT 1 AS live
+            FROM chat_runs
+            WHERE run_id = ?
+              AND lease_expires_at IS NOT NULL
+              AND lease_expires_at > datetime('now')
+            """,
+            (run_id,),
+        ).fetchone()
+    return row is not None
+
+
+def reap_expired_chat_runs(*, ttl_seconds: int = DEFAULT_LEASE_TTL_SECONDS) -> int:
+    """Fail runs whose worker lease expired (multi-instance-safe stale sweep).
+
+    A row is reaped when its lease expired, or when it never got a lease and
+    is older than the TTL grace window (crash between INSERT and claim, or
+    pre-lease legacy rows). Fresh NULL-lease rows are left alone. Terminal
+    runs' leftover signals are marked consumed as housekeeping.
+    """
+    ttl = max(5, int(ttl_seconds))
+    with get_db() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT run_id FROM chat_runs
+            WHERE status IN ('queued', 'running')
+              AND (
+                    (lease_expires_at IS NOT NULL AND lease_expires_at < datetime('now'))
+                 OR (lease_expires_at IS NULL AND created_at < datetime('now', '-{ttl} seconds'))
+              )
+            """
         ).fetchall()
     n = 0
     for row in rows:
@@ -303,4 +431,18 @@ def fix_stale_chat_runs_on_startup() -> int:
             n += 1
         except Exception:
             continue
+    with get_db() as conn:
+        conn.execute(
+            """
+            UPDATE chat_run_signals SET consumed_at = CURRENT_TIMESTAMP
+            WHERE consumed_at IS NULL
+              AND run_id IN (SELECT run_id FROM chat_runs WHERE status IN ('succeeded', 'failed', 'cancelled'))
+            """
+        )
+        conn.commit()
     return n
+
+
+def fix_stale_chat_runs_on_startup() -> int:
+    """Startup wrapper around the lease-aware reaper (kept for main.py compat)."""
+    return reap_expired_chat_runs()

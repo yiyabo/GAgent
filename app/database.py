@@ -284,6 +284,22 @@ def init_db() -> None:
             """
         )
         conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS chat_run_signals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                consumed_at TIMESTAMP
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_chat_run_signals_run_pending "
+            "ON chat_run_signals(run_id, consumed_at)"
+        )
+        conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_chat_run_events_run_seq "
             "ON chat_run_events(run_id, seq)"
         )
@@ -432,6 +448,11 @@ def _ensure_chat_run_columns(conn) -> None:
         conn.execute(
             "ALTER TABLE chat_runs ADD COLUMN owner_id TEXT NOT NULL DEFAULT 'legacy-local'"
         )
+    if "worker_id" not in existing:
+        conn.execute("ALTER TABLE chat_runs ADD COLUMN worker_id TEXT")
+    for column in ("heartbeat_at", "lease_expires_at"):
+        if column not in existing:
+            conn.execute(f"ALTER TABLE chat_runs ADD COLUMN {column} TIMESTAMP")
 
 
 def _ensure_sso_user_columns(conn) -> None:

@@ -59,7 +59,10 @@ CREATE TABLE chat_runs (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     started_at TIMESTAMP,
     finished_at TIMESTAMP,
-    last_event_seq INTEGER NOT NULL DEFAULT -1
+    last_event_seq INTEGER NOT NULL DEFAULT -1,
+    worker_id TEXT,
+    heartbeat_at TIMESTAMP,
+    lease_expires_at TIMESTAMP
 );
 CREATE UNIQUE INDEX idx_chat_runs_idempotency
 ON chat_runs(session_id, idempotency_key)

@@ -14,6 +14,8 @@ from fastapi.responses import StreamingResponse
 from app.repository.chat_runs import (
     create_chat_run,
     fetch_events_after,
+    insert_chat_run_signal,
+    is_chat_run_lease_live,
     set_chat_run_user_message_id,
     get_chat_run,
     get_chat_run_by_idempotency_key,
@@ -123,6 +125,12 @@ def _resume_idempotent_run(
         if hub.has_live_worker_task(existing_run_id):
             # Rapid duplicate POST while the first dispatch is still starting up.
             logger.info("[CHAT][RUN] idempotent hit, worker live run=%s", existing_run_id)
+        elif is_chat_run_lease_live(existing_run_id):
+            # Another worker holds an unexpired lease: do not double-dispatch.
+            logger.info(
+                "[CHAT][RUN] idempotent hit, lease held by live worker run=%s",
+                existing_run_id,
+            )
         else:
             # Row exists but the worker never started (crash between INSERT and
             # create_task): dispatch it now. 'running'/terminal runs are left as-is
@@ -274,6 +282,9 @@ async def cancel_run(run_id: str, request: Request) -> Dict[str, str]:
     if not row:
         raise HTTPException(status_code=404, detail="run not found")
     ensure_owner_access(request, row.get("owner_id"), detail="run owner mismatch")
+    # Durable first: even if every fast path fails (bus degraded, owner lease
+    # lagging), the worker's signal pump applies the row within the poll window.
+    insert_chat_run_signal(run_id, "cancel")
     # Always set the in-process cancel event; routed control can fail cross-worker or if owner lease lags.
     hub.request_cancel(run_id)
     await route_control_message(
@@ -361,6 +372,9 @@ async def steer_run(run_id: str, request: Request, body: Dict[str, Any] = Body(.
     message = (body.get("message") or "").strip()
     if not message:
         raise HTTPException(status_code=400, detail="message is required")
+    # Durable first: the worker's signal pump drains the row even when both
+    # fast paths miss (cross-worker bus degraded or in-process queue absent).
+    insert_chat_run_signal(run_id, "steer", {"message": message})
     accepted = await route_control_message(
         "run",
         run_id,
@@ -369,5 +383,9 @@ async def steer_run(run_id: str, request: Request, body: Dict[str, Any] = Body(.
     if not accepted:
         accepted = hub.push_steer_message(run_id, message)
     if not accepted:
-        raise HTTPException(status_code=409, detail="run has no steer queue (may have ended)")
+        logger.info(
+            "[CHAT][RUN] steer fast paths missed run=%s; durable row queued for pump",
+            run_id,
+        )
+    return {"run_id": run_id, "status": "steer_queued"}
     return {"run_id": run_id, "status": "accepted"}

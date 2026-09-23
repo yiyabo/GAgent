@@ -7,13 +7,23 @@ import json
 import logging
 from typing import Optional
 
-from app.repository.chat_runs import get_chat_run, mark_chat_run_finished, mark_chat_run_started
+from app.repository.chat_runs import (
+    claim_chat_run_lease,
+    get_chat_run,
+    heartbeat_chat_run_lease,
+    mark_chat_run_finished,
+    mark_chat_run_started,
+    release_chat_run_lease,
+)
 from app.routers.chat.models import ChatRequest
 from app.routers.chat.stream_context import build_agent_for_chat_request
 from app.routers.chat.session_helpers import _save_chat_message
 from app.services.chat_run_emitter import ChatRunEmitter
 from app.services import chat_run_hub as hub
-from app.services.realtime_bus import start_owner_lease, stop_owner_lease
+from app.services.chat_run_signals import lease_ttl_seconds, run_signal_pump
+from app.services.foundation.logging_context import bind_log_context, clear_log_context
+from app.services.foundation.otel import otel_span
+from app.services.realtime_bus import get_worker_id, start_owner_lease, stop_owner_lease
 
 logger = logging.getLogger(__name__)
 
@@ -345,16 +355,65 @@ async def _run_cascade(
     )
 
 
+async def _run_lease_heartbeat(
+    run_id: str, worker_id: str, stop_event: asyncio.Event
+) -> None:
+    """Renew the run's worker lease until stopped; never raises."""
+    interval = max(2.0, lease_ttl_seconds() / 3.0)
+    while not stop_event.is_set():
+        try:
+            ok = await asyncio.to_thread(
+                heartbeat_chat_run_lease,
+                run_id,
+                worker_id,
+                ttl_seconds=lease_ttl_seconds(),
+            )
+            if not ok:
+                logger.warning(
+                    "chat_run lease heartbeat lost run=%s (claimed elsewhere?)", run_id
+                )
+        except Exception as exc:  # pragma: no cover - heartbeat must not kill a run
+            logger.warning(
+                "chat_run lease heartbeat failed run=%s error=%s",
+                run_id,
+                type(exc).__name__,
+            )
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=interval)
+        except asyncio.TimeoutError:
+            continue
+
+
 async def execute_chat_run(run_id: str) -> None:
     cancel_ev = hub.ensure_cancel_event(run_id)
     hub.ensure_steer_queue(run_id)
     emitter = ChatRunEmitter(run_id)
     start_owner_lease("run", run_id)
+    worker_id = get_worker_id()
+    try:
+        claim_chat_run_lease(run_id, worker_id, ttl_seconds=lease_ttl_seconds())
+    except Exception as exc:  # pragma: no cover - lease must not block execution
+        logger.warning(
+            "chat_run lease claim failed run=%s error=%s", run_id, type(exc).__name__
+        )
+    pump_stop = asyncio.Event()
+    heartbeat_stop = asyncio.Event()
+    pump_task = asyncio.create_task(run_signal_pump(run_id, pump_stop))
+    heartbeat_task = asyncio.create_task(
+        _run_lease_heartbeat(run_id, worker_id, heartbeat_stop)
+    )
+    from contextlib import ExitStack
+
+    _scope = ExitStack()
     try:
         row = get_chat_run(run_id)
         if not row:
             logger.warning("chat_run missing run_id=%s", run_id)
             return
+        bind_log_context(run_id=run_id, session_id=str(row.get("session_id") or ""))
+        _scope.enter_context(
+            otel_span("chat_run", run_id=run_id, session_id=str(row.get("session_id") or ""))
+        )
         raw = row.get("request_json")
         if not raw:
             mark_chat_run_finished(run_id, "failed", error="missing request_json")
@@ -431,6 +490,24 @@ async def execute_chat_run(run_id: str) -> None:
         mark_chat_run_finished(run_id, "failed", error=str(exc))
         _capture_quality_snapshot(run_id)
     finally:
+        pump_stop.set()
+        heartbeat_stop.set()
+        for task in (pump_task, heartbeat_task):
+            task.cancel()
+        for task in (pump_task, heartbeat_task):
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+        try:
+            _scope.close()
+        except Exception:  # pragma: no cover
+            pass
+        clear_log_context()
+        try:
+            release_chat_run_lease(run_id, worker_id)
+        except Exception:  # pragma: no cover
+            pass
         stop_owner_lease("run", run_id)
         hub.forget_worker_task(run_id)
         hub.cleanup_run_signals(run_id)

@@ -32,6 +32,9 @@ CREATE TABLE chat_runs (
     started_at TIMESTAMP,
     finished_at TIMESTAMP,
     last_event_seq INTEGER NOT NULL DEFAULT -1,
+    worker_id TEXT,
+    heartbeat_at TIMESTAMP,
+    lease_expires_at TIMESTAMP,
     FOREIGN KEY (session_id) REFERENCES chat_sessions (id) ON DELETE CASCADE
 );
 CREATE TABLE chat_run_events (
@@ -42,6 +45,14 @@ CREATE TABLE chat_run_events (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (run_id, seq),
     FOREIGN KEY (run_id) REFERENCES chat_runs (run_id) ON DELETE CASCADE
+);
+CREATE TABLE chat_run_signals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    consumed_at TIMESTAMP
 );
 INSERT INTO chat_sessions (id, owner_id) VALUES ('sess_unit', 'legacy-local');
 """
@@ -127,6 +138,13 @@ def test_fix_stale_chat_runs_on_startup(memory_chat_run_db: sqlite3.Connection) 
     cr.create_chat_run("run_stale", "sess_unit", "{}")
     cr.mark_chat_run_started("run_stale")
     assert cr.get_chat_run("run_stale")["status"] == "running"
+    # Lease-aware reaper: simulate a worker that died holding an expired lease.
+    cr.claim_chat_run_lease("run_stale", "worker-dead", ttl_seconds=5)
+    memory_chat_run_db.execute(
+        "UPDATE chat_runs SET lease_expires_at = datetime('now', '-1 seconds') "
+        "WHERE run_id = 'run_stale'"
+    )
+    memory_chat_run_db.commit()
     n = cr.fix_stale_chat_runs_on_startup()
     assert n == 1
     row = cr.get_chat_run("run_stale")
