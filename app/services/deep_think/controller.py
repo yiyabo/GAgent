@@ -173,6 +173,7 @@ async def _think_native(
         "acceptance_spec": acceptance_spec,
     }
     agent._produced_deliverable_paths = []
+    agent._produced_image_paths = []
     agent._acceptance_missing: List[str] = []
     agent._acceptance_spec = acceptance_spec
     agent._expected_outputs_current = list(loop_guard_state["expected_outputs"])

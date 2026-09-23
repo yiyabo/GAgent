@@ -24,7 +24,8 @@ from app.services.deep_think.text_utils import (
     _GUARD_PRODUCTIVE_DIR_RE,
     _GUARD_SCRATCH_RE,
     _INLINE_IMAGE_EXT_RE,
-    _PRODUCTIVE_SEGMENT_RE,
+    _INLINE_IMAGE_PRODUCTIVE_RE,
+    _INLINE_IMAGE_RAW_TMP_RE,
     _guard_json_payload,
     _missing_expectations,
     _missing_expectations_detailed,
@@ -93,6 +94,62 @@ def _extract_guard_candidates(agent: "DeepThinkAgent", tool_results: List[Dict[s
     return candidates
 
 
+def _extract_inline_image_candidates(agent: "DeepThinkAgent", tool_results: List[Dict[str, Any]]) -> List[str]:
+    """Harvest produced image paths for inline rendering (guard-independent).
+
+    Same key set and traversal as ``_extract_guard_candidates``, but widened
+    to where pi/code_executor figures actually land (``figures/``,
+    ``raw_files/tmp/<run>/``, ``deliverables/latest/image_tabular/``).
+    ``raw_files/tmp/`` counts as productive for images even though
+    ``raw_files`` is scratch for deliverable progress. This feeds only the
+    inline-image mirror; it never touches deliverable progress state.
+    """
+    candidates: List[str] = []
+    list_keys = ("artifact_paths", "produced_files", "output_files", "session_artifact_paths", "artifacts")
+    str_keys = ("file_path", "image_path", "output_path", "saved_path")
+
+    def _push(value: Any) -> None:
+        if not isinstance(value, str):
+            return
+        p = value.strip()
+        if not p or ".." in p or "\\" in p:
+            return
+        if not _INLINE_IMAGE_EXT_RE.search(p):
+            return
+        if p.startswith("/tmp/"):
+            return
+        if _GUARD_SCRATCH_RE.search(p) and not _INLINE_IMAGE_RAW_TMP_RE.search(p):
+            return
+        if not _INLINE_IMAGE_PRODUCTIVE_RE.search(p):
+            return
+        if p not in candidates:
+            candidates.append(p)
+
+    def _harvest(payload: Dict[str, Any]) -> None:
+        for key in list_keys:
+            values = payload.get(key)
+            if isinstance(values, (list, tuple)):
+                for entry in values:
+                    if isinstance(entry, str):
+                        _push(entry)
+                    elif isinstance(entry, dict):
+                        _push(entry.get("path") or entry.get("file_path"))
+        for key in str_keys:
+            _push(payload.get(key))
+
+    for item in tool_results:
+        payload = item.get("tool_result")
+        if not isinstance(payload, dict):
+            payload = _guard_json_payload(item.get("tool_result_text"))
+        if not isinstance(payload, dict) or payload.get("success") is False:
+            continue
+        _harvest(payload)
+        inner = payload.get("result")
+        if isinstance(inner, dict):
+            _harvest(inner)
+    return candidates
+
+
 def _verify_guard_path(agent: "DeepThinkAgent", candidate: str) -> Optional[str]:
     """Return the on-disk path when the candidate exists and is non-empty."""
     p = candidate.strip()
@@ -126,11 +183,16 @@ def _collect_inline_image_relpaths(agent: "DeepThinkAgent", limit: int = 8) -> L
     runtime_root = str(os.getenv("APP_RUNTIME_ROOT") or "/app/runtime").strip()
     session_id = str(agent.request_profile.get("session_id") or "").strip()
     collected: List[str] = []
-    for candidate in getattr(agent, "_produced_deliverable_paths", None) or []:
+    sources = (
+        getattr(agent, "_produced_image_paths", None)
+        or getattr(agent, "_produced_deliverable_paths", None)
+        or []
+    )
+    for candidate in sources:
         p = str(candidate or "").strip()
         if not p or not _INLINE_IMAGE_EXT_RE.search(p):
             continue
-        seg = _PRODUCTIVE_SEGMENT_RE.search(p)
+        seg = _INLINE_IMAGE_PRODUCTIVE_RE.search(p)
         if not seg:
             continue
         rel = p[seg.start() :].lstrip("/")
@@ -229,6 +291,28 @@ def _apply_loop_guards(
             iteration,
             ",".join(os.path.basename(p) for p in new_verified[:4]),
             len(verified),
+        )
+
+    # Image-only mirror for inline rendering: widened, disk-verified collection
+    # that runs alongside (never inside) the deliverable-progress logic above.
+    new_images: List[str] = []
+    for candidate in _extract_inline_image_candidates(agent, tool_results):
+        confirmed = agent._verify_guard_path(candidate)
+        if confirmed and confirmed not in new_images:
+            new_images.append(confirmed)
+    if new_images:
+        produced_images = getattr(agent, "_produced_image_paths", None)
+        if produced_images is None:
+            produced_images = []
+            agent._produced_image_paths = produced_images
+        for p in new_images:
+            if p not in produced_images:
+                produced_images.append(p)
+        logger.debug(
+            "[DEEP_THINK][inline-images] iteration=%s new_images=%s total=%d",
+            iteration,
+            ",".join(os.path.basename(p) for p in new_images[:4]),
+            len(produced_images),
         )
 
     for item in tool_results:

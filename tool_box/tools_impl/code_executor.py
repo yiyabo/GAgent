@@ -3164,15 +3164,63 @@ def _collapse_rooted_rel_path(*, rel: Path, output_dir: Path, session_dir: Path)
     cwd (e.g. write ``raw_files/tmp/<run>/x.png`` relative to the run dir).
     Joining such a ``rel`` onto ``output_dir`` would double-root the path, so
     collapse it back onto the canonical single-prefix destination.
+
+    Branch 1 (exact) collapses ``rel`` when it starts with the full prefix.
+    Branch 2 (mirror) handles partial mirrors: the delegated agent often
+    recreates only a leading sub-sequence of the prefix (``raw_files/tmp/``
+    without the run segment, or nested mirrors like
+    ``raw_files/tmp/a/raw_files/tmp/b/x.png``). Repeatedly strip the longest
+    matching head block — bounded by the prefix length — so the destination
+    stays single-rooted (e.g. ``raw_files/tmp/a/raw_files/tmp/b/x.png``
+    collapses to ``b/x.png``; the preserved trailing segment is fine because
+    we copy the file ourselves, and a single-rooted destination never 404s).
     """
     try:
         prefix = output_dir.resolve().relative_to(session_dir.resolve())
     except (ValueError, OSError):
         return rel
+    # Branch 1: exact full-prefix collapse.
     try:
         return rel.relative_to(prefix)
     except ValueError:
+        pass
+    # Branch 2: partial-mirror collapse.
+    prefix_parts = prefix.parts
+    parts = list(rel.parts)
+    changed = False
+    for _ in range(len(prefix_parts)):
+        head = 0
+        limit = min(len(prefix_parts), len(parts))
+        while head < limit and parts[head] == prefix_parts[head]:
+            head += 1
+        if head:
+            parts = parts[head:]
+            changed = True
+            if not parts:
+                return rel
+            continue
+        dropped = False
+        max_block = min(len(prefix_parts), len(parts))
+        for size in range(max_block, 0, -1):
+            block = prefix_parts[:size]
+            idx: Optional[int] = None
+            for start in range(0, len(parts) - size + 1):
+                if tuple(parts[start : start + size]) == block:
+                    idx = start
+                    break
+            if idx is None:
+                continue
+            parts = parts[idx + size :]
+            changed = True
+            dropped = True
+            if not parts:
+                return rel
+            break
+        if not dropped:
+            break
+    if not changed or not parts:
         return rel
+    return Path(*parts)
 
 
 def _promote_results_to_unified_dir(
@@ -4540,6 +4588,7 @@ def _resolve_promoted_output_files(
     promoted: Sequence[str],
     *,
     session_dir: Path,
+    output_dir: Optional[Path] = None,
 ) -> List[str]:
     """Resolve session-relative promoted entries to absolute on-disk paths.
 
@@ -4547,8 +4596,48 @@ def _resolve_promoted_output_files(
     root (e.g. ``raw_files/tmp/<run>/x.png``); they must be rooted at
     ``session_dir``, not at the unified output dir, or the prefix appears
     twice. Entries that are already absolute pass through unchanged.
+
+    When ``output_dir`` is given, entries are first normalised with
+    ``_collapse_rooted_rel_path`` so residual double-rooted or partial-mirror
+    entries from delegated agents collapse back onto the canonical
+    single-prefix location:
+
+    - already-correct ``<prefix>/x.png`` entries pass through unchanged;
+    - double-rooted ``<prefix>/<mirror>/x.png`` collapse to ``<prefix>/x.png``;
+    - partial mirrors (``raw_files/tmp/x.png``) remap onto ``<prefix>/x.png``;
+    - unrelated paths are left untouched.
     """
-    return [str((session_dir / rel).resolve()) for rel in promoted]
+    prefix: Optional[Path] = None
+    if output_dir is not None:
+        try:
+            prefix = output_dir.resolve().relative_to(session_dir.resolve())
+        except (ValueError, OSError):
+            prefix = None
+
+    resolved: List[str] = []
+    for rel in promoted:
+        rel_path = Path(str(rel))
+        if rel_path.is_absolute():
+            resolved.append(str(rel_path))
+            continue
+        if prefix is not None and output_dir is not None:
+            try:
+                remainder: Optional[Path] = rel_path.relative_to(prefix)
+            except ValueError:
+                remainder = None
+            if remainder is not None:
+                collapsed_rem = _collapse_rooted_rel_path(
+                    rel=remainder, output_dir=output_dir, session_dir=session_dir
+                )
+                rel_path = prefix / collapsed_rem
+            else:
+                collapsed = _collapse_rooted_rel_path(
+                    rel=rel_path, output_dir=output_dir, session_dir=session_dir
+                )
+                if collapsed != rel_path:
+                    rel_path = prefix / collapsed
+        resolved.append(str((session_dir / rel_path).resolve()))
+    return resolved
 
 
 def _build_local_backend_result_payload(
@@ -4630,7 +4719,7 @@ def _build_local_backend_result_payload(
         "contract_artifacts": list(contract_artifacts),
         "session_artifact_paths": list(session_artifact_paths),
         "output_files": _resolve_promoted_output_files(
-            unified_promoted_files, session_dir=session_dir
+            unified_promoted_files, session_dir=session_dir, output_dir=unified_output_dir
         ),
         "output_location": {
             "type": "task" if resolved_task_id is not None else "tmp",
@@ -6078,7 +6167,7 @@ async def code_executor_handler(
             "contract_artifacts": contract_artifacts,
             "session_artifact_paths": session_artifact_paths,
             "output_files": _resolve_promoted_output_files(
-                unified_promoted_files_qwen, session_dir=session_dir
+                unified_promoted_files_qwen, session_dir=session_dir, output_dir=unified_output_dir
             ),
             # Unified output path (new)
             "output_location": {

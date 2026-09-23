@@ -390,3 +390,131 @@ def test_local_backend_payload_output_files_not_double_rooted(
     ]
     assert output_files[0].count("raw_files/tmp") == 1
     assert payload["output_location"]["files"] == [session_rel]
+
+
+# --- Partial-mirror collapse: delegated agents that recreate only a leading
+# sub-sequence of the session prefix (or nested mirrors) must still end up
+# single-rooted.
+
+
+def test_collapse_partial_mirror_strips_head_block(
+    tmp_run_layout: SimpleNamespace,
+) -> None:
+    from tool_box.tools_impl.code_executor import _collapse_rooted_rel_path
+
+    collapsed = _collapse_rooted_rel_path(
+        rel=Path("raw_files/tmp/x.png"),
+        output_dir=tmp_run_layout.output_dir,
+        session_dir=tmp_run_layout.session_dir,
+    )
+    assert collapsed == Path("x.png")
+
+
+def test_collapse_nested_mirror_strips_twice(
+    tmp_run_layout: SimpleNamespace,
+) -> None:
+    from tool_box.tools_impl.code_executor import _collapse_rooted_rel_path
+
+    collapsed = _collapse_rooted_rel_path(
+        rel=Path("raw_files/tmp/a/raw_files/tmp/b/x.png"),
+        output_dir=tmp_run_layout.output_dir,
+        session_dir=tmp_run_layout.session_dir,
+    )
+    assert collapsed == Path("b/x.png")
+
+
+def test_collapse_unrelated_path_returned_unchanged(
+    tmp_run_layout: SimpleNamespace,
+) -> None:
+    from tool_box.tools_impl.code_executor import _collapse_rooted_rel_path
+
+    collapsed = _collapse_rooted_rel_path(
+        rel=Path("results/fig/x.png"),
+        output_dir=tmp_run_layout.output_dir,
+        session_dir=tmp_run_layout.session_dir,
+    )
+    assert collapsed == Path("results/fig/x.png")
+
+
+def test_promote_results_partial_mirror_without_run_segment(
+    tmp_run_layout: SimpleNamespace,
+) -> None:
+    # Delegated agent mirrored only raw_files/tmp/ (no run segment) inside its
+    # scratch cwd: <scratch>/raw_files/tmp/chart.png
+    mirrored = tmp_run_layout.scratch_dir / "raw_files" / "tmp"
+    mirrored.mkdir(parents=True)
+    (mirrored / "chart.png").write_bytes(b"\x89PNG")
+
+    promoted = _promote_results_to_unified_dir(
+        scratch_dir=tmp_run_layout.scratch_dir,
+        output_dir=tmp_run_layout.output_dir,
+        subdirs=["results", "code", "data", "docs"],
+        session_dir=tmp_run_layout.session_dir,
+    )
+
+    expected_rel = f"raw_files/tmp/{tmp_run_layout.run_id}/chart.png"
+    assert promoted == [expected_rel]
+    assert (tmp_run_layout.output_dir / "chart.png").exists()
+    assert not (tmp_run_layout.output_dir / "raw_files").exists()
+
+
+def test_resolve_promoted_output_files_collapses_partial_mirror(
+    tmp_run_layout: SimpleNamespace,
+) -> None:
+    session_dir = tmp_run_layout.session_dir
+
+    resolved = _resolve_promoted_output_files(
+        ["raw_files/tmp/chart.png"],
+        session_dir=session_dir,
+        output_dir=tmp_run_layout.output_dir,
+    )
+
+    expected = f"raw_files/tmp/{tmp_run_layout.run_id}/chart.png"
+    assert resolved == [str((session_dir / expected).resolve())]
+    assert resolved[0].count("raw_files/tmp") == 1
+
+
+def test_resolve_promoted_output_files_collapses_double_prefix(
+    tmp_run_layout: SimpleNamespace,
+) -> None:
+    session_dir = tmp_run_layout.session_dir
+    prefix = f"raw_files/tmp/{tmp_run_layout.run_id}"
+
+    resolved = _resolve_promoted_output_files(
+        [f"{prefix}/raw_files/tmp/chart.png"],
+        session_dir=session_dir,
+        output_dir=tmp_run_layout.output_dir,
+    )
+
+    assert resolved == [str((session_dir / f"{prefix}/chart.png").resolve())]
+    assert resolved[0].count("raw_files/tmp") == 1
+
+
+def test_resolve_promoted_output_files_keeps_correct_and_unrelated_entries(
+    tmp_run_layout: SimpleNamespace,
+) -> None:
+    session_dir = tmp_run_layout.session_dir
+    prefix = f"raw_files/tmp/{tmp_run_layout.run_id}"
+    entries = [f"{prefix}/chart.png", "results/fig/x.png"]
+
+    resolved = _resolve_promoted_output_files(
+        entries,
+        session_dir=session_dir,
+        output_dir=tmp_run_layout.output_dir,
+    )
+
+    assert resolved == [str((session_dir / e).resolve()) for e in entries]
+
+
+def test_resolve_promoted_output_files_without_output_dir_keeps_legacy_rooting(
+    tmp_run_layout: SimpleNamespace,
+) -> None:
+    session_dir = tmp_run_layout.session_dir
+
+    resolved = _resolve_promoted_output_files(
+        ["raw_files/tmp/chart.png"], session_dir=session_dir
+    )
+
+    assert resolved == [
+        str((session_dir / "raw_files" / "tmp" / "chart.png").resolve())
+    ]

@@ -185,12 +185,13 @@ export const SessionArtifactImage: React.FC<SessionArtifactImageProps> = ({
   }
 
   if (broken) {
+    const fileName = url.split('/').pop() ?? url;
     return (
       <span
         style={{ fontSize: 12, color: 'var(--text-secondary)', display: 'block', margin: '8px 0' }}
         title={url}
       >
-        [Image failed to load] {alt || url}
+        图片加载失败：{alt || fileName}
       </span>
     );
   }

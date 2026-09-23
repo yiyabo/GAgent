@@ -197,6 +197,17 @@ _GUARD_DIGIT_RE = re.compile(r"\d+")
 _INLINE_IMAGE_EXT_RE = re.compile(r"\.(?:png|jpe?g|gif|webp|svg)$", re.IGNORECASE)
 _PRODUCTIVE_SEGMENT_RE = re.compile(r"(?:deliverables|results)/", re.IGNORECASE)
 
+# Image-only widened productive locations (pi/code_executor figures land in
+# figures/, raw_files/tmp/<run>/, deliverables/latest/image_tabular/ as well).
+# Used ONLY by the inline-image collection path; deliverable progress
+# semantics (_GUARD_PRODUCTIVE_DIR_RE / _PRODUCTIVE_SEGMENT_RE) stay unchanged.
+_INLINE_IMAGE_PRODUCTIVE_RE = re.compile(
+    r"(?:^|/)(?:deliverables|results|figures|image_tabular|raw_files/tmp)/",
+    re.IGNORECASE,
+)
+# raw_files/tmp/ is scratch for deliverable progress but productive for images.
+_INLINE_IMAGE_RAW_TMP_RE = re.compile(r"(?:^|/)raw_files/tmp/", re.IGNORECASE)
+
 
 def _ensure_inline_images(text: str, image_relpaths: List[str]) -> str:
     """Guarantee produced images render inline in the final answer.

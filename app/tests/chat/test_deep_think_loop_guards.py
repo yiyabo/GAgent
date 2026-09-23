@@ -415,6 +415,120 @@ class TestInlineImages:
         finally:
             shutil.rmtree(_SANDBOX, ignore_errors=True)
 
+    def _guard_state(self) -> dict:
+        import time
+
+        return {
+            "verified_deliverables": [],
+            "failure_sig_counts": {},
+            "failure_sig_warned": set(),
+            "last_progress_iteration": 0,
+            "no_progress_nudge_sent": False,
+            "time_nudge_sent": False,
+            "started_at": time.monotonic(),
+            "expected_outputs": [],
+            "acceptance_spec": None,
+        }
+
+    def _image_agent(self) -> DeepThinkAgent:
+        return DeepThinkAgent(
+            llm_client=_LoopLLM([]),
+            available_tools=[],
+            tool_executor=_noop_tool_executor,
+            max_iterations=1,
+            request_profile={"session_id": "testsess"},
+        )
+
+    def test_image_collection_widens_without_touching_progress(self, monkeypatch) -> None:
+        """raw_files/tmp images join the inline mirror; verified_deliverables
+        (loop-guard progress) stays exactly as the un-widened guard sees it."""
+        from app.services.deep_think.guards import _apply_loop_guards
+
+        sandbox = _SANDBOX.resolve()
+        tmp_img = sandbox / "testsess" / "raw_files" / "tmp" / "run1"
+        tmp_img.mkdir(parents=True, exist_ok=True)
+        raw_png = tmp_img / "fig.png"
+        raw_png.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 64)
+        deliv_dir = sandbox / "testsess" / "deliverables"
+        deliv_dir.mkdir(parents=True, exist_ok=True)
+        deliv_png = deliv_dir / "chart.png"
+        deliv_png.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 64)
+        monkeypatch.setenv("APP_RUNTIME_ROOT", str(sandbox))
+        try:
+            agent = self._image_agent()
+            state = self._guard_state()
+            tool_results = [
+                {"tool_result": {"success": True, "artifact_paths": [str(raw_png), str(deliv_png)]}}
+            ]
+            _apply_loop_guards(
+                agent,
+                messages=[],
+                tool_results=tool_results,
+                iteration=1,
+                guard_state=state,
+            )
+            produced_images = getattr(agent, "_produced_image_paths", None) or []
+            assert str(raw_png) in produced_images
+            assert str(deliv_png) in produced_images
+            # deliverable progress semantics unchanged: only the deliverables/
+            # image counts as progress; the raw_files one stays out
+            assert state["verified_deliverables"] == [str(deliv_png)]
+            assert (getattr(agent, "_produced_deliverable_paths", None) or []) == [str(deliv_png)]
+        finally:
+            shutil.rmtree(_SANDBOX, ignore_errors=True)
+
+    def test_collect_relpaths_from_image_mirror_widened_segments(self, monkeypatch) -> None:
+        sandbox = _SANDBOX.resolve()
+        fig_dir = sandbox / "testsess" / "figures"
+        fig_dir.mkdir(parents=True, exist_ok=True)
+        fig_png = fig_dir / "plot.png"
+        fig_png.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 64)
+        tmp_dir = sandbox / "testsess" / "raw_files" / "tmp" / "run1"
+        tmp_dir.mkdir(parents=True, exist_ok=True)
+        tmp_png = tmp_dir / "fig.png"
+        tmp_png.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 64)
+        monkeypatch.setenv("APP_RUNTIME_ROOT", str(sandbox))
+        try:
+            agent = self._image_agent()
+            agent._produced_image_paths = [str(fig_png), str(tmp_png)]
+            assert agent._collect_inline_image_relpaths() == [
+                "figures/plot.png",
+                "raw_files/tmp/run1/fig.png",
+            ]
+        finally:
+            shutil.rmtree(_SANDBOX, ignore_errors=True)
+
+    def test_image_collection_still_excludes_scratch(self, monkeypatch) -> None:
+        from app.services.deep_think.guards import _apply_loop_guards
+
+        sandbox = _SANDBOX.resolve()
+        probe_dir = sandbox / "testsess" / "tool_outputs"
+        probe_dir.mkdir(parents=True, exist_ok=True)
+        probe_png = probe_dir / "probe.png"
+        probe_png.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 64)
+        up_dir = sandbox / "testsess" / "uploads"
+        up_dir.mkdir(parents=True, exist_ok=True)
+        up_png = up_dir / "up.png"
+        up_png.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 64)
+        monkeypatch.setenv("APP_RUNTIME_ROOT", str(sandbox))
+        try:
+            agent = self._image_agent()
+            state = self._guard_state()
+            tool_results = [
+                {"tool_result": {"success": True, "artifact_paths": [str(probe_png), str(up_png)]}}
+            ]
+            _apply_loop_guards(
+                agent,
+                messages=[],
+                tool_results=tool_results,
+                iteration=1,
+                guard_state=state,
+            )
+            assert (getattr(agent, "_produced_image_paths", None) or []) == []
+            assert state["verified_deliverables"] == []
+        finally:
+            shutil.rmtree(_SANDBOX, ignore_errors=True)
+
 
 class TestDeclarativeAcceptance:
     """expected_outputs: the guard judges completion, not just pathologies."""
