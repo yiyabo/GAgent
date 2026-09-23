@@ -102,7 +102,7 @@ function extractSemanticLabel(
   } catch {
     return { icon: <ToolOutlined />, label: localize(language, '调用工具', 'Using a tool'), toolName: 'unknown' };
   }
-  if (Array.isArray(parsed?.tools) && parsed.tools.length > 0) {
+  if (Array.isArray(parsed?.tools) && parsed.tools.length > 1) {
     const toolNames = parsed.tools
       .map((item: any) => (typeof item?.tool === 'string' ? item.tool : null))
       .filter((name: string | null): name is string => !!name);
@@ -117,6 +117,10 @@ function extractSemanticLabel(
       ),
       toolName: toolNames[0] || 'multi_tool',
     };
+  }
+  // Single-entry `tools` array: unwrap and render as a normal single-tool call.
+  if (Array.isArray(parsed?.tools) && parsed.tools.length === 1 && parsed.tools[0] && typeof parsed.tools[0] === 'object') {
+    parsed = parsed.tools[0];
   }
 
   const toolName: string = parsed?.tool || 'unknown';
@@ -213,7 +217,7 @@ function isGenericText(text: string | null | undefined, language: 'zh' | 'en'): 
   if (!n) return false;
   const generics = language === 'zh'
     ? ['分析当前问题，准备下一步', '准备下一步', '准备整理回复', '分析中', '分析当前步骤', '处理当前步骤', '思考过程']
-    : ['Analyzing the request and preparing the next step', 'Preparing the next step', 'Preparing the response', 'Analyzing', 'Working through the current step', 'Thought process'];
+    : ['Analyzing the request and preparing the next step', 'Preparing the next step', 'Preparing the response', 'Analyzing', 'Working through the current step', 'Processing the current step', 'Thought process'];
   return generics.includes(n);
 }
 
@@ -289,13 +293,17 @@ const ThinkingActivityItem: React.FC<{
 
   const paramsDetail = useMemo(() => {
     if (!actionDetails) return null;
-    if (Array.isArray(actionDetails.tools) && actionDetails.tools.length > 0) {
-      return JSON.stringify(actionDetails.tools, null, 2);
+    const effective =
+      Array.isArray(actionDetails.tools) && actionDetails.tools.length === 1 && actionDetails.tools[0] && typeof actionDetails.tools[0] === 'object'
+        ? actionDetails.tools[0]
+        : actionDetails;
+    if (Array.isArray(effective.tools) && effective.tools.length > 0) {
+      return JSON.stringify(effective.tools, null, 2);
     }
-    if (actionDetails.params && Object.keys(actionDetails.params).length > 0) {
-      return typeof actionDetails.params === 'object'
-        ? JSON.stringify(actionDetails.params, null, 2)
-        : String(actionDetails.params);
+    if (effective.params && Object.keys(effective.params).length > 0) {
+      return typeof effective.params === 'object'
+        ? JSON.stringify(effective.params, null, 2)
+        : String(effective.params);
     }
     return null;
   }, [actionDetails]);
@@ -578,8 +586,14 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
 
   const backendSummary = useMemo(() => {
     const s = typeof process.summary === 'string' ? process.summary.trim() : '';
-    return s.length > 0 ? s : null;
-  }, [process.summary]);
+    if (!s) return null;
+    // Historical summaries are joins of per-step display labels ("a → b → c").
+    // When every segment is a generic label ("处理当前步骤"…), the summary
+    // carries no information — fall back to the stats line instead.
+    const segments = s.split('→').map((x) => x.trim()).filter(Boolean);
+    const meaningful = segments.some((seg) => seg.length > 1 && !isGenericText(seg, language));
+    return meaningful ? s : null;
+  }, [process.summary, language]);
 
   // Auto-expand when active, auto-collapse when done
   useEffect(() => {

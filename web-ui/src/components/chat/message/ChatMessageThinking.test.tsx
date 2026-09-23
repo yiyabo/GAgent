@@ -136,4 +136,46 @@ describe('ChatMessage thinking rendering', () => {
 
     expect(screen.getByText('2 steps · 1 tool call')).toBeInTheDocument();
   });
+
+  it('falls back to stats when the persisted backend summary is only generic labels', () => {
+    renderMessage({
+      status: 'completed',
+      summary: 'Processing the current step → Analyzing the request and preparing the next step',
+      total_iterations: 1,
+      steps: [
+        {
+          iteration: 1,
+          thought: '',
+          action: JSON.stringify({ tool: 'plan_operation', params: { operation: 'create' } }),
+          action_result: 'plan created',
+          status: 'completed',
+        },
+      ],
+    });
+
+    expect(screen.getByText('1 step · 1 tool call')).toBeInTheDocument();
+    expect(screen.queryByText(/Processing the current step →/)).not.toBeInTheDocument();
+  });
+
+  it('unwraps a single-entry tools array into the single-tool semantic label', () => {
+    const { container } = renderMessage({
+      status: 'completed',
+      total_iterations: 1,
+      steps: [
+        {
+          iteration: 1,
+          thought: '',
+          action: JSON.stringify({ tools: [{ tool: 'plan_operation', params: { operation: 'create' } }] }),
+          action_result: 'plan created',
+          status: 'completed',
+        },
+      ],
+    });
+
+    fireEvent.click(screen.getByText('Thought process'));
+    expect(screen.getByText('Managing the plan')).toBeInTheDocument();
+    expect(screen.queryByText(/Running 1 tools/)).not.toBeInTheDocument();
+    const itemRow = container.querySelector('.tp-item-row');
+    expect(itemRow).not.toBeNull();
+  });
 });
