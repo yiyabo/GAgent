@@ -2424,6 +2424,48 @@ def _build_qwen_container_mounts(
     return [(str(path), str(path)) for path in ordered]
 
 
+_FIGURE_INTENT_RE = re.compile(
+    r"(饼图|柱状图|条形图|折线图|散点图|直方图|热力图|箱线图|流程图|示意图|曲线图|森林图|火山图|轨迹图|图表|画图|绘制|可视化"
+    r"|plot|chart|figure|histogram|scatter|heatmap|bar\s?chart|pie\s?chart|line\s?chart|forest\s?plot|volcano|visualiz)",
+    re.IGNORECASE,
+)
+
+_FIGURE_STYLE_PROMPT = (
+    "Figure style (MANDATORY when the task produces any plot/chart/figure):\n"
+    "- Copy this setup verbatim before plotting:\n"
+    "  import matplotlib.pyplot as plt\n"
+    "  PALETTE = ['#E64B35','#4DBBD5','#00A087','#3C5488','#F39B7F','#8491B4','#91D1C2']\n"
+    "  plt.rcParams.update({\n"
+    "      'savefig.dpi': 300, 'savefig.bbox': 'tight',\n"
+    "      'font.size': 10, 'axes.titlesize': 12, 'axes.labelsize': 10.5,\n"
+    "      'axes.spines.top': False, 'axes.spines.right': False,\n"
+    "      'axes.grid': True, 'grid.alpha': 0.28, 'grid.linestyle': '--', 'axes.axisbelow': True,\n"
+    "      'axes.prop_cycle': plt.cycler(color=PALETTE),\n"
+    "      'legend.frameon': False, 'figure.facecolor': 'white',\n"
+    "  })\n"
+    "- Cycle PALETTE for multi-series; a single series uses '#3C5488' "
+    "(never a lone bright-red bar/point cloud).\n"
+    "- ALL text in English; every axis labeled with units; descriptive title; "
+    "legend whenever more than one series.\n"
+    "- Bars: width <= 0.7, thin or no edgecolor; prefer horizontal bars when "
+    "category labels are long.\n\n"
+)
+
+
+def _figure_style_prompt(task: str) -> str:
+    """Style rules appended to the delegation prompt for figure-producing tasks.
+
+    The delegated CLI agent writes matplotlib code from its own defaults when
+    the prompt says nothing about style — that is why figures came out with
+    stock colors and cramped typography. Injecting a copy-pasteable setup
+    block keeps every delegated figure on the publication palette without the
+    agent needing to import anything.
+    """
+    if _FIGURE_INTENT_RE.search(task or ""):
+        return _FIGURE_STYLE_PROMPT
+    return ""
+
+
 def _build_claude_code_prompt(
     *,
     task: str,
@@ -2466,6 +2508,7 @@ def _build_claude_code_prompt(
         f"{_rerun_update_mode_prompt()}\n"
         f"{_final_response_contract_prompt()}"
         f"{allowed_dirs_info}"
+        f"{_figure_style_prompt(cli_task)}"
     )
 
 

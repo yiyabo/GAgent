@@ -24,26 +24,27 @@ plt.close()  # ALWAYS close after save
 plt.title('Genome Size Distribution')  # ✅
 # plt.title('')  # ❌ NEVER
 
-# 4. Use the preferred color palette
-COLORS = ['#ABD1BC', '#BED0F9', '#CCCC99', '#DBE4FB', 
-          '#E3BBED', '#EDC3A5', '#F1F1F1', '#FCB6A5', '#FDEBAA']
+# 4. Use the preferred color palette (Nature 系，与 tool_box/figure_style.py 一致)
+COLORS = ['#E64B35', '#4DBBD5', '#00A087', '#3C5488', '#F39B7F',
+          '#8491B4', '#91D1C2', '#DC0000', '#7E6148', '#B09C85']
 ```
 
 ## Preferred Color Palette
 
-Use these colors consistently across all figures:
+Use these colors consistently across all figures (Nature 系，single source of truth = `tool_box/figure_style.py` PALETTES["nature"]):
 
 | Color | Hex | Use Case |
 |-------|-----|----------|
-| Sage Green | #ABD1BC | Primary data |
-| Soft Blue | #BED0F9 | Secondary data |
-| Olive | #CCCC99 | Tertiary data |
-| Light Periwinkle | #DBE4FB | Background/light |
-| Lavender | #E3BBED | Categorical 5 |
-| Peach | #EDC3A5 | Categorical 6 |
-| Light Gray | #F1F1F1 | Neutral/grid |
-| Coral | #FCB6A5 | Highlight/warning |
-| Cream | #FDEBAA | Accent |
+| Coral Red | #E64B35 | Primary / highlight |
+| Teal Blue | #4DBBD5 | Secondary data |
+| Sea Green | #00A087 | Tertiary data |
+| Navy Slate | #3C5488 | Single-series default |
+| Soft Salmon | #F39B7F | Categorical 5 |
+| Periwinkle | #8491B4 | Categorical 6 / neutral |
+| Mint | #91D1C2 | Categorical 7 |
+| Strong Red | #DC0000 | Warning/emphasis only |
+| Earth Brown | #7E6148 | Categorical 9 |
+| Warm Grey | #B09C85 | Neutral/grid |
 
 ## Supported Chart Types
 
@@ -81,9 +82,9 @@ os.makedirs('results', exist_ok=True)
 sns.set_style("whitegrid")
 plt.rcParams.update({'savefig.dpi': 300, 'font.size': 10})
 
-# Color palette
-COLORS = ['#ABD1BC', '#BED0F9', '#CCCC99', '#DBE4FB', 
-          '#E3BBED', '#EDC3A5', '#F1F1F1', '#FCB6A5', '#FDEBAA']
+# Color palette (Nature 系，与 tool_box/figure_style.py 一致)
+COLORS = ['#E64B35', '#4DBBD5', '#00A087', '#3C5488', '#F39B7F',
+          '#8491B4', '#91D1C2', '#DC0000', '#7E6148', '#B09C85']
 ```
 
 ### Distribution Plots
@@ -138,11 +139,11 @@ colors = []
 for _, row in df.iterrows():
     if row['padj'] < pval_thresh and abs(row['log2FC']) > fc_thresh:
         if row['log2FC'] > 0:
-            colors.append('#FCB6A5')  # Coral - upregulated
+            colors.append('#E64B35')  # Coral red - upregulated
         else:
-            colors.append('#BED0F9')  # Blue - downregulated
+            colors.append('#4DBBD5')  # Teal blue - downregulated
     else:
-        colors.append('#F1F1F1')  # Gray - not significant
+        colors.append('#8491B4')  # Periwinkle - not significant
 
 ax.scatter(df['log2FC'], -np.log10(df['padj']), c=colors, alpha=0.7, s=20)
 ax.axhline(-np.log10(pval_thresh), color='gray', linestyle='--', linewidth=1)
