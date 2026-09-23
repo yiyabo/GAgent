@@ -17,10 +17,37 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+
+def code_mode_enabled() -> bool:
+    """Whether programmatic tool calling (``execute_code``) is offered to the LLM.
+
+    Mirrors ``CODE_MODE_ENABLED`` in ``tool_box/tools_impl/execute_code/config.py``;
+    read directly from env here because this module must never import tool_box
+    at module import time (circular import guard, see ``_build_registry``).
+    """
+    return os.environ.get("CODE_MODE_ENABLED", "").strip() == "1"
+
+
+def _build_execute_code_description(content: Dict[str, Any]) -> str:
+    """Static base + the dynamic per-allowlist signature list (teaching surface)."""
+    base = str(content["description"])
+    try:
+        from tool_box.tools_impl.execute_code.config import allowed_tools
+        from tool_box.tools_impl.execute_code.stub_gen import signature_lines
+
+        lines = signature_lines(allowed_tools())
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("execute_code signature list unavailable: %s", exc)
+        lines = []
+    if not lines:
+        return base + " (none resolved — check CODE_MODE_ALLOWED_TOOLS)"
+    return base + "\n" + "\n".join(f"  {line}" for line in lines)
 
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -138,7 +165,17 @@ def _build_registry() -> Dict[str, Dict[str, Any]]:
 
     registry: Dict[str, Dict[str, Any]] = {}
     for name, content in NATIVE_TOOL_CONTENT.items():
-        if name == "bio_tools":
+        if name == "execute_code":
+            # Code mode is env-gated: unless CODE_MODE_ENABLED=1 the entry is
+            # invisible to every offer path and the golden master stays exact.
+            if not code_mode_enabled():
+                continue
+            registry[name] = _function_schema(
+                name,
+                _build_execute_code_description(content),
+                content["parameters"],
+            )
+        elif name == "bio_tools":
             registry[name] = _function_schema(
                 name,
                 _build_bio_tools_schema_description(),
@@ -258,8 +295,14 @@ EXECUTOR_AVAILABLE_TOOLS: List[str] = [
 def build_tool_schemas(available_tools: List[str]) -> List[Dict[str, Any]]:
     """Build the tools payload for native tool calling from available tool names."""
     registry = _get_tool_registry()
+    names = list(available_tools)
+    if code_mode_enabled() and "execute_code" not in names and "execute_code" in registry:
+        # Code-mode offer gate (on): the schema is offered even when the
+        # caller's static tool pool predates the flag. Off: registry has no
+        # execute_code entry at all, so nothing can leak through.
+        names.append("execute_code")
     schemas = []
-    for name in available_tools:
+    for name in names:
         schema = registry.get(name)
         if schema is not None:
             schemas.append(schema)
@@ -276,8 +319,18 @@ def build_executor_tool_schemas(available_tools: Optional[List[str]] = None) -> 
     """
     registry = _get_tool_registry()
     tools = available_tools if available_tools is not None else EXECUTOR_AVAILABLE_TOOLS
+    names = list(tools)
+    if (
+        available_tools is None
+        and code_mode_enabled()
+        and "execute_code" not in names
+        and "execute_code" in registry
+    ):
+        # PlanExecutor's default offer pool gains execute_code only under the
+        # flag; EXECUTOR_AVAILABLE_TOOLS itself stays static (golden master).
+        names.append("execute_code")
     schemas = []
-    for name in tools:
+    for name in names:
         schema = registry.get(name)
         if schema is not None:
             schemas.append(schema)

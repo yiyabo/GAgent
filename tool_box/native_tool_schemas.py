@@ -925,6 +925,56 @@ NATIVE_TOOL_CONTENT: Dict[str, Dict[str, Any]] = {
             "required": ["operation"],
         },
     },
+    "execute_code": {
+        # 2026-09-24 code mode：env 门控（CODE_MODE_ENABLED=1）——未开启时
+        # app/services/tool_schemas.py 在注册表构建期跳过本条目，golden-master 零变更；
+        # 开启时生成器在 description 尾部追加按 allowlist 动态生成的签名列表。
+        # 基础文案镜像 tool_box/tools_impl/execute_code/tool.py 的 BASE_DESCRIPTION（有意保持同步）。
+        "description": (
+            "Run Python that calls GAgent tools programmatically in a PERSISTENT kernel. "
+            "Use when you need 3+ tool calls with logic between them: loops over "
+            "pages/files/accessions, filtering or reducing large tool outputs BEFORE "
+            "they enter your context, branching, or retries. Use a normal tool call "
+            "for a single call or results you must reason over in full. "
+            "Division of labor: code_executor DELEGATES an agentic coding task to the "
+            "pi coding harness (it writes and debugs the code); execute_code is YOU "
+            "writing Python directly that calls tools as functions — prefer it for "
+            "programmatic fan-out over tool results, not for general software tasks. "
+            "The kernel keeps variables, imports, and loaded data across execute_code "
+            "calls (pass reset=true to start fresh); a timed-out or interrupted call "
+            "kills the kernel and LOSES that state — the result's kernel metadata "
+            "(reused, execution_count, state_reset) always tells the truth about it. "
+            "Tools are importable Python functions, e.g. "
+            "`from gagent_tools import web_search`; each returns an ALREADY-PARSED "
+            "dict — never json.loads() it. "
+            "Limits: 5-minute cell timeout, max 50 tool calls per cell, stdout shown "
+            "up to 50KB (head/tail; the full text is auto-saved to a file whose path "
+            "rides in the result). The kernel cannot see host env secrets by design. "
+            "Available functions (from gagent_tools import ...):"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string",
+                    "description": (
+                        "Python source for one cell. Tool calls are plain function calls: "
+                        "`from gagent_tools import web_search` then `web_search(query=...)`; "
+                        "results are already-parsed dicts. Variables survive across cells."
+                    ),
+                },
+                "reset": {
+                    "type": "boolean",
+                    "description": (
+                        "If true, discard the current kernel (all in-memory state) and "
+                        "start a fresh one before running this cell."
+                    ),
+                    "default": False,
+                },
+            },
+            "required": ["code"],
+        },
+    },
     "terminal_session": {
         # native 有意收窄：impl 另有 ssh_config/cols/rows/approval_id/approved/limit 外的多项（start_ts/end_ts/event_type）—— 有意调优（参数面收窄）
         "description": (

@@ -1090,7 +1090,14 @@ class RequestTierProfile:
 
 def get_all_tools() -> List[str]:
     """Return the flat tool pool — all tools always available."""
-    return list(ALL_TOOLS)
+    tools = list(ALL_TOOLS)
+    # Code mode (execute_code) joins the pool only when explicitly enabled;
+    # the schema-offer gate lives in app/services/tool_schemas.py.
+    from app.services.tool_schemas import code_mode_enabled
+
+    if code_mode_enabled():
+        tools.append("execute_code")
+    return tools
 
 
 def manual_deep_think_requested(

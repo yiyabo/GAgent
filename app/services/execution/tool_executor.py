@@ -45,6 +45,7 @@ class UnifiedToolExecutor:
     DEFAULT_TIMEOUT_SECONDS = 60
     TOOL_TIMEOUTS = {
         "code_executor": 7200,
+        "execute_code": 420,
         "web_search": 180,
         "sequence_fetch": 120,
         "url_fetch": 180,

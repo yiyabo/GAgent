@@ -32,6 +32,7 @@ from .tools_impl import (
     sequence_fetch_tool,
     url_fetch_tool,
     terminal_session_tool,
+    execute_code_tool,
     vision_reader_tool,
     web_search_tool,
 )
@@ -109,6 +110,9 @@ _TOOL_METADATA: Dict[str, Dict[str, Any]] = {
     "code_executor": {
         "search_hint": "python code execute run script data analysis plot",
     },
+    "execute_code": {
+        "search_hint": "python programmatic tool calling loop batch kernel code mode",
+    },
     "terminal_session": {
         "is_destructive": True,
         "search_hint": "ssh terminal shell remote command server",
@@ -167,6 +171,7 @@ _STANDARD_TOOLS: List[Dict[str, Any]] = [
     scientific_figure_generator_tool,
     plan_operation_tool,
     deliverable_submit_tool,
+    execute_code_tool,
 ]
 
 # Tools that need special field mapping
