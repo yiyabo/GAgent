@@ -20,6 +20,7 @@ import json
 import logging
 import os
 import time
+from dataclasses import dataclass, field
 from datetime import datetime
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
@@ -108,6 +109,39 @@ def _consume_handoff_iteration_reserve(
     return limit + 1, reserve_used + 1
 
 
+@dataclass
+class _NativeCycleState:
+    """Mutable per-run counters shared by the native-loop stage helpers.
+
+    Pure container — no behaviour. Field names mirror the loop-local
+    variables of the pre-split ``_think_native`` one-to-one (incl. the
+    static budget caps: the iteration limit starts at max_iterations and can
+    only grow via ``_consume_handoff_iteration_reserve`` when a task handoff
+    lands on the final base-budget iteration, so the worst case is
+    max_iterations + handoff_reserve_max — never an open-ended mutation).
+    """
+
+    confidence: float = 0.0
+    last_tool_cycle_signature: Optional[str] = None
+    identical_tool_cycle_count: int = 0
+    probe_only_execution_cycles: int = 0
+    forced_probe_followthrough_attempts: int = 0
+    forced_handoff_followthrough_attempts: int = 0
+    had_real_execution_tool: bool = False
+    partial_completion_retry_count: int = 0
+    max_partial_retries: int = 3
+    handoff_reserve_max: int = 4
+    base_iteration_limit: int = 0
+    last_real_execution_tool_results: List[Dict[str, Any]] = field(default_factory=list)
+    force_verified_execution_finalization: bool = False
+    pending_handoff_task_id: Optional[int] = None
+    pending_handoff_previous_task_id: Optional[int] = None
+    structured_plan_finalize_nudge_plan_id: Optional[int] = None
+    bound_task_before_cycle: Optional[int] = None
+    runtime_iteration_limit: int = 0
+    handoff_reserve_used: int = 0
+
+
 async def _native_run_setup(
     agent: "DeepThinkAgent",
     *,
@@ -187,18 +221,282 @@ async def _native_run_setup(
     )
 
 
-async def _think_native(
+async def _native_tool_cycle(
     agent: "DeepThinkAgent",
+    *,
+    result: Any,
+    iteration: int,
+    current_step: ThinkingStep,
+    thinking_steps: List[ThinkingStep],
+    tools_used: List[str],
+    messages: List[Dict[str, Any]],
+    task_context: Optional[TaskExecutionContext],
     user_query: str,
-    context: Optional[Dict[str, Any]] = None,
-    task_context: Optional[TaskExecutionContext] = None,
-) -> DeepThinkResult:
+    cycle: _NativeCycleState,
+    loop_guard_state: Dict[str, Any],
+) -> tuple[str, List[Dict[str, Any]], Any, str]:
+    """Executable-tool branch of one native iteration: verification-only
+    replacement, forced-finalization filtering, concurrent batch execution,
+    created-plan nudge, and the identical-cycle stop.
+
+    Returns ``(flow, tool_results, final_call, new_final_answer)`` where
+    ``flow == "ok"`` falls through (``tool_results`` is non-empty only when
+    executable tools actually ran), ``"continue"`` skips to the next
+    iteration, and ``"break"`` stops the loop (loop-guard break, or the
+    identical-cycle stop which also sets ``new_final_answer``). Extracted
+    verbatim from ``_think_native``; the function-local async_tool_executor
+    import moved here together with the only code that uses it.
+    """
     from app.services.execution.async_tool_executor import (
         PendingToolCall,
         classify_tool_concurrency,
         execute_with_concurrency,
     )
 
+    tool_calls = list(result.tool_calls)
+    final_call = next((tc for tc in tool_calls if tc.name == "submit_final_answer"), None)
+    executable_calls = [tc for tc in tool_calls if tc.name != "submit_final_answer"]
+    replacement_task_id = agent._verification_only_cycle_replacement_task_id(
+        executable_calls,
+        task_context=task_context,
+        had_real_execution_tool=cycle.had_real_execution_tool,
+    )
+    if replacement_task_id is not None:
+        template_call = executable_calls[0]
+        executable_calls = [
+            type(template_call)(
+                id=str(getattr(template_call, "id", "") or f"native_{iteration}_rerun_task"),
+                name="rerun_task",
+                arguments={"task_id": replacement_task_id},
+            )
+        ]
+        logger.info(
+            "[DEEP_THINK_NATIVE] Replaced verify_task-only cycle with rerun_task for task_id=%s at iteration=%s",
+            replacement_task_id,
+            iteration,
+        )
+        current_step.self_correction = (
+            f"Rejected verification-only follow-up for bound Task {replacement_task_id} and replaced it with rerun_task."
+        )
+    if cycle.force_verified_execution_finalization and executable_calls:
+        allowed_summary_calls = [
+            tc
+            for tc in executable_calls
+            if str(getattr(tc, "name", "") or "").strip().lower() == "result_interpreter"
+        ]
+        skipped_names = [
+            str(getattr(tc, "name", "") or "").strip() or "<unknown>"
+            for tc in executable_calls
+            if tc not in allowed_summary_calls
+        ]
+        if skipped_names:
+            logger.info(
+                "[DEEP_THINK_NATIVE] Skipping post-success exploratory tool calls: %s",
+                ",".join(skipped_names),
+            )
+            current_step.self_correction = (
+                "Skipped non-summary tool calls after verified task completion and forced finalization mode."
+            )
+            executable_calls = allowed_summary_calls
+            if not executable_calls and final_call is None:
+                current_step.status = "analyzing"
+                current_step.finished_at = datetime.now()
+                thinking_steps.append(current_step)
+                if agent.on_thinking:
+                    await agent._safe_callback(current_step)
+                messages.append({"role": "assistant", "content": result.content or ""})
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": agent._build_verified_execution_finalize_nudge(
+                            task_context=task_context,
+                            user_query=user_query,
+                        ),
+                    }
+                )
+                return "continue", [], final_call, ""
+
+    if executable_calls:
+        cycle.bound_task_before_cycle = agent._current_bound_task_id(task_context)
+        action_payload = {
+            "tools": [
+                {
+                    "tool": tc.name,
+                    "params": tc.arguments,
+                    "tool_call_id": tc.id or f"native_{iteration}_{idx}",
+                }
+                for idx, tc in enumerate(executable_calls)
+            ]
+        }
+        current_step.action = json.dumps(action_payload, ensure_ascii=False)
+        current_step.status = "calling_tool"
+        thinking_steps.append(current_step)
+        if agent.on_thinking:
+            await agent._safe_callback(current_step)
+
+        pending = []
+        for idx, tc in enumerate(executable_calls):
+            name = str(getattr(tc, "name", "") or "")
+            pending.append(PendingToolCall(
+                index=idx,
+                tool_name=name,
+                coroutine_factory=lambda _tc=tc, _idx=idx: agent._execute_native_tool_call(
+                    tc=_tc, iteration=iteration, index=_idx,
+                ),
+                is_concurrent_safe=classify_tool_concurrency(name),
+            ))
+        tool_results = await execute_with_concurrency(pending)
+
+        for item in tool_results:
+            tool_name = str(item.get("tool_name") or "")
+            if tool_name and tool_name not in tools_used:
+                tools_used.append(tool_name)
+
+        agent._append_tool_cycle_messages(
+            messages=messages,
+            tool_results=tool_results,
+            assistant_content=result.content or "",
+            current_step=current_step,
+        )
+
+        loop_guard_break_reason = agent._apply_loop_guards(
+            messages=messages,
+            tool_results=tool_results,
+            iteration=iteration,
+            guard_state=loop_guard_state,
+        )
+        if loop_guard_break_reason:
+            current_step.self_correction = loop_guard_break_reason
+            logger.warning(
+                "[DEEP_THINK][loop-guard] break at iteration=%s: %s",
+                iteration,
+                loop_guard_break_reason,
+            )
+            return "break", [], final_call, ""
+
+        if final_call is None:
+            created_plan = agent._extract_successful_created_plan_from_tool_results(
+                tool_results
+            )
+            created_plan_id = (
+                int(created_plan["plan_id"])
+                if isinstance(created_plan, dict)
+                and created_plan.get("plan_id") is not None
+                else None
+            )
+            if (
+                created_plan_id is not None
+                and cycle.structured_plan_finalize_nudge_plan_id != created_plan_id
+            ):
+                plan_title = (
+                    created_plan.get("plan_title")
+                    if isinstance(created_plan, dict)
+                    else None
+                )
+                if agent._plan_contract_flags()["execute_after_create_required"]:
+                    nudge = agent._build_created_plan_execute_nudge(
+                        user_query=user_query,
+                        plan_id=created_plan_id,
+                        plan_title=plan_title,
+                    )
+                else:
+                    nudge = agent._build_created_plan_finalize_nudge(
+                        user_query=user_query,
+                        plan_id=created_plan_id,
+                        plan_title=plan_title,
+                    )
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": nudge,
+                    }
+                )
+                cycle.structured_plan_finalize_nudge_plan_id = created_plan_id
+                logger.info(
+                    "[DEEP_THINK_NATIVE] Injected finalize nudge after successful plan creation: plan_id=%s",
+                    created_plan_id,
+                )
+
+        tool_cycle_signature = agent._build_tool_cycle_signature(tool_results)
+        if tool_cycle_signature and tool_cycle_signature == cycle.last_tool_cycle_signature:
+            cycle.identical_tool_cycle_count += 1
+            if cycle.identical_tool_cycle_count == 1:
+                correction_nudge = agent._build_tool_failure_correction_nudge(tool_results)
+                if correction_nudge:
+                    messages.append({"role": "user", "content": correction_nudge})
+                    logger.info(
+                        "[DEEP_THINK_NATIVE] Injected correction nudge after repeated tool failure"
+                    )
+        else:
+            cycle.last_tool_cycle_signature = tool_cycle_signature
+            cycle.identical_tool_cycle_count = 0
+
+        if cycle.identical_tool_cycle_count >= agent.MAX_IDENTICAL_TOOL_CALL_CYCLES:
+            repeated_cycles = cycle.identical_tool_cycle_count + 1
+            from app.services.deep_think.acceptance import (
+                spec_to_kind_requirements as _spec_requirements,
+            )
+            rep_missing = _missing_expectations_detailed(
+                loop_guard_state.get("expected_outputs") or [],
+                loop_guard_state.get("verified_deliverables") or [],
+                _spec_requirements(loop_guard_state.get("acceptance_spec")),
+            )
+            if rep_missing:
+                loop_guard_state["missing_expectations"] = rep_missing
+                agent._acceptance_missing = list(rep_missing)
+                logger.warning(
+                    "[DEEP_THINK][acceptance] identical-cycle stop with missing deliverable types: %s",
+                    ",".join(rep_missing),
+                )
+            current_step.status = "done"
+            current_step.self_correction = (
+                "Stopped repeated identical tool polling to avoid an unproductive loop."
+            )
+            if agent.on_thinking:
+                await agent._safe_callback(current_step)
+            final_answer = agent._build_repetition_stop_answer(
+                tool_results=tool_results,
+                repeated_cycles=repeated_cycles,
+            )
+            if rep_missing:
+                final_answer += (
+                    "\n\nNote: the requested deliverable type(s) are still missing: "
+                    + ", ".join(rep_missing)
+                    + "."
+                )
+            cycle.confidence = max(
+                cycle.confidence,
+                0.75 if agent._contains_tool(tool_results, "phagescope") else 0.5,
+            )
+            logger.warning(
+                "[DEEP_THINK_NATIVE] Stopped repeated tool loop at iteration=%s repeated_cycles=%s tools=%s",
+                iteration,
+                repeated_cycles,
+                ",".join(
+                    sorted(
+                        {
+                            str(item.get("tool_name") or "")
+                            for item in tool_results
+                            if item.get("tool_name")
+                        }
+                    )
+                ),
+            )
+            if agent.on_final_delta and final_answer:
+                await agent._stream_final_answer(final_answer)
+            return "break", [], final_call, final_answer
+
+        return "ok", tool_results, final_call, ""
+
+    return "ok", [], final_call, ""
+
+
+async def _think_native(
+    agent: "DeepThinkAgent",
+    user_query: str,
+    context: Optional[Dict[str, Any]] = None,
+    task_context: Optional[TaskExecutionContext] = None,
+) -> DeepThinkResult:
     from app.services.context.context_manager import build_summarization_prompt
 
     setup = await _native_run_setup(
@@ -220,36 +518,18 @@ async def _think_native(
         result = await stream_chat_collect_async(agent.llm_client, prompt)
         return str(result or "").strip()
 
+    cycle = _NativeCycleState(
+        runtime_iteration_limit=agent.max_iterations,
+        base_iteration_limit=agent.max_iterations,
+    )
     iteration = 0
     final_answer = ""
     fallback_used = False
-    confidence = 0.0
-    last_tool_cycle_signature: Optional[str] = None
-    identical_tool_cycle_count = 0
-    probe_only_execution_cycles = 0
-    forced_probe_followthrough_attempts = 0
-    forced_handoff_followthrough_attempts = 0
-    had_real_execution_tool = False
-    partial_completion_retry_count = 0
-    _MAX_PARTIAL_RETRIES = 3
-    # Iteration budget is static: the limit below starts at max_iterations
-    # and can only grow via _consume_handoff_iteration_reserve (task handoffs
-    # landing on the final base-budget iteration), so the worst case is
-    # max_iterations + _HANDOFF_RESERVE_MAX — never an open-ended mutation.
-    _HANDOFF_RESERVE_MAX = 4
-    _base_iteration_limit = agent.max_iterations
-    last_real_execution_tool_results: List[Dict[str, Any]] = []
-    force_verified_execution_finalization = False
-    pending_handoff_task_id: Optional[int] = None
-    pending_handoff_previous_task_id: Optional[int] = None
-    structured_plan_finalize_nudge_plan_id: Optional[int] = None
-    runtime_iteration_limit = agent.max_iterations
-    handoff_reserve_used = 0
     consecutive_llm_failures = 0
     max_consecutive_llm_failures = _dta()._default_max_consecutive_llm_failures()
     llm_fatal_abort = False
 
-    while iteration < runtime_iteration_limit:
+    while iteration < cycle.runtime_iteration_limit:
         await agent._get_pause_event().wait()
         if agent.cancel_event and agent.cancel_event.is_set():
             logger.info("[DEEP_THINK_NATIVE] Cancelled by user")
@@ -310,258 +590,44 @@ async def _think_native(
         current_step.thought = result.content or ""
 
         if result.tool_calls:
-            tool_calls = list(result.tool_calls)
-            final_call = next((tc for tc in tool_calls if tc.name == "submit_final_answer"), None)
-            executable_calls = [tc for tc in tool_calls if tc.name != "submit_final_answer"]
-            replacement_task_id = agent._verification_only_cycle_replacement_task_id(
-                executable_calls,
+            flow, tool_results, final_call, new_final_answer = await _native_tool_cycle(
+                agent,
+                result=result,
+                iteration=iteration,
+                current_step=current_step,
+                thinking_steps=thinking_steps,
+                tools_used=tools_used,
+                messages=messages,
                 task_context=task_context,
-                had_real_execution_tool=had_real_execution_tool,
+                user_query=user_query,
+                cycle=cycle,
+                loop_guard_state=loop_guard_state,
             )
-            if replacement_task_id is not None:
-                template_call = executable_calls[0]
-                executable_calls = [
-                    type(template_call)(
-                        id=str(getattr(template_call, "id", "") or f"native_{iteration}_rerun_task"),
-                        name="rerun_task",
-                        arguments={"task_id": replacement_task_id},
-                    )
-                ]
-                logger.info(
-                    "[DEEP_THINK_NATIVE] Replaced verify_task-only cycle with rerun_task for task_id=%s at iteration=%s",
-                    replacement_task_id,
-                    iteration,
-                )
-                current_step.self_correction = (
-                    f"Rejected verification-only follow-up for bound Task {replacement_task_id} and replaced it with rerun_task."
-                )
-            if force_verified_execution_finalization and executable_calls:
-                allowed_summary_calls = [
-                    tc
-                    for tc in executable_calls
-                    if str(getattr(tc, "name", "") or "").strip().lower() == "result_interpreter"
-                ]
-                skipped_names = [
-                    str(getattr(tc, "name", "") or "").strip() or "<unknown>"
-                    for tc in executable_calls
-                    if tc not in allowed_summary_calls
-                ]
-                if skipped_names:
-                    logger.info(
-                        "[DEEP_THINK_NATIVE] Skipping post-success exploratory tool calls: %s",
-                        ",".join(skipped_names),
-                    )
-                    current_step.self_correction = (
-                        "Skipped non-summary tool calls after verified task completion and forced finalization mode."
-                    )
-                    executable_calls = allowed_summary_calls
-                    if not executable_calls and final_call is None:
-                        current_step.status = "analyzing"
-                        current_step.finished_at = datetime.now()
-                        thinking_steps.append(current_step)
-                        if agent.on_thinking:
-                            await agent._safe_callback(current_step)
-                        messages.append({"role": "assistant", "content": result.content or ""})
-                        messages.append(
-                            {
-                                "role": "user",
-                                "content": agent._build_verified_execution_finalize_nudge(
-                                    task_context=task_context,
-                                    user_query=user_query,
-                                ),
-                            }
-                        )
-                        continue
-
-            if executable_calls:
-                bound_task_before_cycle = agent._current_bound_task_id(task_context)
-                action_payload = {
-                    "tools": [
-                        {
-                            "tool": tc.name,
-                            "params": tc.arguments,
-                            "tool_call_id": tc.id or f"native_{iteration}_{idx}",
-                        }
-                        for idx, tc in enumerate(executable_calls)
-                    ]
-                }
-                current_step.action = json.dumps(action_payload, ensure_ascii=False)
-                current_step.status = "calling_tool"
-                thinking_steps.append(current_step)
-                if agent.on_thinking:
-                    await agent._safe_callback(current_step)
-
-                pending = []
-                for idx, tc in enumerate(executable_calls):
-                    name = str(getattr(tc, "name", "") or "")
-                    pending.append(PendingToolCall(
-                        index=idx,
-                        tool_name=name,
-                        coroutine_factory=lambda _tc=tc, _idx=idx: agent._execute_native_tool_call(
-                            tc=_tc, iteration=iteration, index=_idx,
-                        ),
-                        is_concurrent_safe=classify_tool_concurrency(name),
-                    ))
-                tool_results = await execute_with_concurrency(pending)
-
-                for item in tool_results:
-                    tool_name = str(item.get("tool_name") or "")
-                    if tool_name and tool_name not in tools_used:
-                        tools_used.append(tool_name)
-
-                agent._append_tool_cycle_messages(
-                    messages=messages,
-                    tool_results=tool_results,
-                    assistant_content=result.content or "",
-                    current_step=current_step,
-                )
-
-                loop_guard_break_reason = agent._apply_loop_guards(
-                    messages=messages,
-                    tool_results=tool_results,
-                    iteration=iteration,
-                    guard_state=loop_guard_state,
-                )
-                if loop_guard_break_reason:
-                    current_step.self_correction = loop_guard_break_reason
-                    logger.warning(
-                        "[DEEP_THINK][loop-guard] break at iteration=%s: %s",
-                        iteration,
-                        loop_guard_break_reason,
-                    )
-                    break
-
-                if final_call is None:
-                    created_plan = agent._extract_successful_created_plan_from_tool_results(
-                        tool_results
-                    )
-                    created_plan_id = (
-                        int(created_plan["plan_id"])
-                        if isinstance(created_plan, dict)
-                        and created_plan.get("plan_id") is not None
-                        else None
-                    )
-                    if (
-                        created_plan_id is not None
-                        and structured_plan_finalize_nudge_plan_id != created_plan_id
-                    ):
-                        plan_title = (
-                            created_plan.get("plan_title")
-                            if isinstance(created_plan, dict)
-                            else None
-                        )
-                        if agent._plan_contract_flags()["execute_after_create_required"]:
-                            nudge = agent._build_created_plan_execute_nudge(
-                                user_query=user_query,
-                                plan_id=created_plan_id,
-                                plan_title=plan_title,
-                            )
-                        else:
-                            nudge = agent._build_created_plan_finalize_nudge(
-                                user_query=user_query,
-                                plan_id=created_plan_id,
-                                plan_title=plan_title,
-                            )
-                        messages.append(
-                            {
-                                "role": "user",
-                                "content": nudge,
-                            }
-                        )
-                        structured_plan_finalize_nudge_plan_id = created_plan_id
-                        logger.info(
-                            "[DEEP_THINK_NATIVE] Injected finalize nudge after successful plan creation: plan_id=%s",
-                            created_plan_id,
-                        )
-
-                tool_cycle_signature = agent._build_tool_cycle_signature(tool_results)
-                if tool_cycle_signature and tool_cycle_signature == last_tool_cycle_signature:
-                    identical_tool_cycle_count += 1
-                    if identical_tool_cycle_count == 1:
-                        correction_nudge = agent._build_tool_failure_correction_nudge(tool_results)
-                        if correction_nudge:
-                            messages.append({"role": "user", "content": correction_nudge})
-                            logger.info(
-                                "[DEEP_THINK_NATIVE] Injected correction nudge after repeated tool failure"
-                            )
-                else:
-                    last_tool_cycle_signature = tool_cycle_signature
-                    identical_tool_cycle_count = 0
-
-                if identical_tool_cycle_count >= agent.MAX_IDENTICAL_TOOL_CALL_CYCLES:
-                    repeated_cycles = identical_tool_cycle_count + 1
-                    from app.services.deep_think.acceptance import (
-                        spec_to_kind_requirements as _spec_requirements,
-                    )
-                    rep_missing = _missing_expectations_detailed(
-                        loop_guard_state.get("expected_outputs") or [],
-                        loop_guard_state.get("verified_deliverables") or [],
-                        _spec_requirements(loop_guard_state.get("acceptance_spec")),
-                    )
-                    if rep_missing:
-                        loop_guard_state["missing_expectations"] = rep_missing
-                        agent._acceptance_missing = list(rep_missing)
-                        logger.warning(
-                            "[DEEP_THINK][acceptance] identical-cycle stop with missing deliverable types: %s",
-                            ",".join(rep_missing),
-                        )
-                    current_step.status = "done"
-                    current_step.self_correction = (
-                        "Stopped repeated identical tool polling to avoid an unproductive loop."
-                    )
-                    if agent.on_thinking:
-                        await agent._safe_callback(current_step)
-                    final_answer = agent._build_repetition_stop_answer(
-                        tool_results=tool_results,
-                        repeated_cycles=repeated_cycles,
-                    )
-                    if rep_missing:
-                        final_answer += (
-                            "\n\nNote: the requested deliverable type(s) are still missing: "
-                            + ", ".join(rep_missing)
-                            + "."
-                        )
-                    confidence = max(
-                        confidence,
-                        0.75 if agent._contains_tool(tool_results, "phagescope") else 0.5,
-                    )
-                    logger.warning(
-                        "[DEEP_THINK_NATIVE] Stopped repeated tool loop at iteration=%s repeated_cycles=%s tools=%s",
-                        iteration,
-                        repeated_cycles,
-                        ",".join(
-                            sorted(
-                                {
-                                    str(item.get("tool_name") or "")
-                                    for item in tool_results
-                                    if item.get("tool_name")
-                                }
-                            )
-                        ),
-                    )
-                    if agent.on_final_delta and final_answer:
-                        await agent._stream_final_answer(final_answer)
-                    break
-
+            if flow == "continue":
+                continue
+            if flow == "break":
+                final_answer = new_final_answer
+                break
+            if tool_results:
                 is_probe_only_cycle = agent._is_probe_only_execution_cycle(
                     tool_results,
                     task_context=task_context,
                 )
                 if is_probe_only_cycle:
-                    probe_only_execution_cycles += 1
-                    probe_limit = 6 if had_real_execution_tool else 12
+                    cycle.probe_only_execution_cycles += 1
+                    probe_limit = 6 if cycle.had_real_execution_tool else 12
                     if (
-                        not had_real_execution_tool
-                        and probe_only_execution_cycles >= 2
-                        and forced_probe_followthrough_attempts < 1
+                        not cycle.had_real_execution_tool
+                        and cycle.probe_only_execution_cycles >= 2
+                        and cycle.forced_probe_followthrough_attempts < 1
                         and agent._can_force_probe_followthrough_execution(task_context)
                     ):
-                        forced_probe_followthrough_attempts += 1
+                        cycle.forced_probe_followthrough_attempts += 1
                         forced_result = await agent._execute_forced_probe_followthrough(
                             task_context=task_context,
                             user_query=user_query,
                             iteration=iteration,
-                            probe_only_execution_cycles=probe_only_execution_cycles,
+                            probe_only_execution_cycles=cycle.probe_only_execution_cycles,
                         )
                         forced_tool_name = str(forced_result.get("tool_name") or "")
                         if forced_tool_name and forced_tool_name not in tools_used:
@@ -573,25 +639,25 @@ async def _think_native(
                             current_step=current_step,
                         )
                         tool_results = [forced_result]
-                        last_tool_cycle_signature = agent._build_tool_cycle_signature(tool_results)
-                        identical_tool_cycle_count = 0
+                        cycle.last_tool_cycle_signature = agent._build_tool_cycle_signature(tool_results)
+                        cycle.identical_tool_cycle_count = 0
                         is_probe_only_cycle = agent._is_probe_only_execution_cycle(
                             tool_results,
                             task_context=task_context,
                         )
                         if not is_probe_only_cycle:
-                            probe_only_execution_cycles = 0
+                            cycle.probe_only_execution_cycles = 0
                             current_step.self_correction = (
                                 "Detected repeated observation-only probing despite available upstream artifacts; "
                                 "forced code_executor execution."
                             )
                 if is_probe_only_cycle:
-                    if probe_only_execution_cycles >= probe_limit:
+                    if cycle.probe_only_execution_cycles >= probe_limit:
                         # Hard stop for infinite observation loops — always active regardless of
-                        # had_real_execution_tool. Without this, a post-execution AI that keeps
+                        # cycle.had_real_execution_tool. Without this, a post-execution AI that keeps
                         # reading non-existent files would silently burn through max_iterations.
                         current_step.status = "done"
-                        if had_real_execution_tool:
+                        if cycle.had_real_execution_tool:
                             # Task was executed; post-execution probing exceeded limit.
                             # Do NOT return BLOCKED_DEPENDENCY — we know the task ran.
                             # The AI never submitted submit_final_answer, so final_answer
@@ -604,7 +670,7 @@ async def _think_native(
                                     task_context=task_context,
                                     user_query=user_query,
                                     steps=[*thinking_steps, current_step],
-                                    tool_results=last_real_execution_tool_results,
+                                    tool_results=cycle.last_real_execution_tool_results,
                                 )
                                 # Try to synthesize a clean answer via LLM instead of
                                 # dumping raw evidence snippets to the user.
@@ -655,12 +721,12 @@ async def _think_native(
                                     user_query=user_query,
                                     tool_results=tool_results,
                                 )
-                        confidence = max(confidence, 0.8)
+                        cycle.confidence = max(cycle.confidence, 0.8)
                         logger.warning(
                             "[DEEP_THINK_NATIVE] Stopped after %s consecutive probe-only execution cycles at iteration=%s had_real_execution_tool=%s",
-                            probe_only_execution_cycles,
+                            cycle.probe_only_execution_cycles,
                             iteration,
-                            had_real_execution_tool,
+                            cycle.had_real_execution_tool,
                         )
                         if agent.on_thinking:
                             await agent._safe_callback(current_step)
@@ -668,16 +734,16 @@ async def _think_native(
                             await agent._stream_final_answer(final_answer)
                         break
 
-                    if not had_real_execution_tool:
+                    if not cycle.had_real_execution_tool:
                         nudge = agent._build_probe_only_followthrough_nudge(
                             task_context=task_context,
                             user_query=user_query,
-                            stage=probe_only_execution_cycles,
+                            stage=cycle.probe_only_execution_cycles,
                         )
                         messages.append({"role": "user", "content": nudge})
                         logger.info(
                             "[DEEP_THINK_NATIVE] Injected execute followthrough nudge after probe-only cycle=%s at iteration=%s",
-                            probe_only_execution_cycles,
+                            cycle.probe_only_execution_cycles,
                             iteration,
                         )
                         current_step.self_correction = (
@@ -687,20 +753,20 @@ async def _think_native(
                         nudge = agent._build_post_execution_summary_nudge(
                             task_context=task_context,
                             user_query=user_query,
-                            stage=probe_only_execution_cycles,
+                            stage=cycle.probe_only_execution_cycles,
                         )
                         messages.append({"role": "user", "content": nudge})
                         logger.info(
                             "[DEEP_THINK_NATIVE] Injected post-execution summary nudge after probe-only cycle=%s at iteration=%s",
-                            probe_only_execution_cycles,
+                            cycle.probe_only_execution_cycles,
                             iteration,
                         )
                         current_step.self_correction = (
                             "Detected post-execution observation-only probing; injected a summary nudge."
                         )
                 else:
-                    probe_only_execution_cycles = 0
-                    # Only mark had_real_execution_tool when a code-running
+                    cycle.probe_only_execution_cycles = 0
+                    # Only mark cycle.had_real_execution_tool when a code-running
                     # tool actually executed.  Coordination tools like
                     # plan_operation still reset the probe counter (they ARE
                     # a deliberate action, not passive observation) but must
@@ -708,63 +774,63 @@ async def _think_native(
                     # misleading "task code executed" message when no code
                     # was ever run.
                     if any(agent._tool_counts_as_real_execution(item) for item in tool_results):
-                        had_real_execution_tool = True
-                        last_real_execution_tool_results = [
+                        cycle.had_real_execution_tool = True
+                        cycle.last_real_execution_tool_results = [
                             item for item in tool_results if agent._tool_counts_as_real_execution(item)
                         ]
                         executed_pending_handoff = (
-                            pending_handoff_task_id is not None
-                            and bound_task_before_cycle == pending_handoff_task_id
+                            cycle.pending_handoff_task_id is not None
+                            and cycle.bound_task_before_cycle == cycle.pending_handoff_task_id
                         )
                         bound_task_after_cycle = agent._current_bound_task_id(task_context)
                         if (
-                            bound_task_before_cycle is not None
+                            cycle.bound_task_before_cycle is not None
                             and bound_task_after_cycle is not None
-                            and bound_task_after_cycle != bound_task_before_cycle
+                            and bound_task_after_cycle != cycle.bound_task_before_cycle
                         ):
-                            pending_handoff_previous_task_id = bound_task_before_cycle
-                            pending_handoff_task_id = bound_task_after_cycle
-                            forced_handoff_followthrough_attempts = 0
-                            had_real_execution_tool = False
-                            last_real_execution_tool_results = []
-                            probe_only_execution_cycles = 0
-                            partial_completion_retry_count = 0
+                            cycle.pending_handoff_previous_task_id = cycle.bound_task_before_cycle
+                            cycle.pending_handoff_task_id = bound_task_after_cycle
+                            cycle.forced_handoff_followthrough_attempts = 0
+                            cycle.had_real_execution_tool = False
+                            cycle.last_real_execution_tool_results = []
+                            cycle.probe_only_execution_cycles = 0
+                            cycle.partial_completion_retry_count = 0
                             messages.append(
                                 {
                                     "role": "user",
                                     "content": agent._build_task_handoff_execution_nudge(
                                         task_context=task_context,
                                         user_query=user_query,
-                                        previous_task_id=bound_task_before_cycle,
+                                        previous_task_id=cycle.bound_task_before_cycle,
                                         next_task_id=bound_task_after_cycle,
                                     ),
                                 }
                             )
-                            new_limit, handoff_reserve_used = _consume_handoff_iteration_reserve(
+                            new_limit, cycle.handoff_reserve_used = _consume_handoff_iteration_reserve(
                                 iteration=iteration,
-                                base_limit=_base_iteration_limit,
-                                limit=runtime_iteration_limit,
-                                reserve_used=handoff_reserve_used,
-                                reserve_max=_HANDOFF_RESERVE_MAX,
+                                base_limit=cycle.base_iteration_limit,
+                                limit=cycle.runtime_iteration_limit,
+                                reserve_used=cycle.handoff_reserve_used,
+                                reserve_max=cycle.handoff_reserve_max,
                             )
-                            if new_limit != runtime_iteration_limit:
-                                runtime_iteration_limit = new_limit
+                            if new_limit != cycle.runtime_iteration_limit:
+                                cycle.runtime_iteration_limit = new_limit
                                 logger.info(
                                     "[DEEP_THINK_NATIVE] Consumed handoff iteration reserve previous=%s next=%s new_limit=%s reserve_used=%d/%d",
-                                    bound_task_before_cycle,
+                                    cycle.bound_task_before_cycle,
                                     bound_task_after_cycle,
-                                    runtime_iteration_limit,
-                                    handoff_reserve_used,
-                                    _HANDOFF_RESERVE_MAX,
+                                    cycle.runtime_iteration_limit,
+                                    cycle.handoff_reserve_used,
+                                    cycle.handoff_reserve_max,
                                 )
                             logger.info(
                                 "[DEEP_THINK_NATIVE] Detected task handoff from %s to %s at iteration=%s; injected execute-next-task nudge",
-                                bound_task_before_cycle,
+                                cycle.bound_task_before_cycle,
                                 bound_task_after_cycle,
                                 iteration,
                             )
                             current_step.self_correction = (
-                                f"Detected task handoff from {bound_task_before_cycle} to "
+                                f"Detected task handoff from {cycle.bound_task_before_cycle} to "
                                 f"{bound_task_after_cycle}; injected an execute-next-task nudge."
                             )
                             # Skip partial-completion / finalization checks this
@@ -775,41 +841,41 @@ async def _think_native(
                                 await agent._safe_callback(current_step)
                             continue
                         elif executed_pending_handoff:
-                            pending_handoff_task_id = None
-                            pending_handoff_previous_task_id = None
-                            forced_handoff_followthrough_attempts = 0
+                            cycle.pending_handoff_task_id = None
+                            cycle.pending_handoff_previous_task_id = None
+                            cycle.forced_handoff_followthrough_attempts = 0
 
                     # --- Partial completion retry ---
                     partial_info = agent._detect_partial_completion_in_tool_results(tool_results)
                     if (
                         partial_info
-                        and partial_completion_retry_count < _MAX_PARTIAL_RETRIES
-                        and agent._current_bound_task_id(task_context) == bound_task_before_cycle
+                        and cycle.partial_completion_retry_count < cycle.max_partial_retries
+                        and agent._current_bound_task_id(task_context) == cycle.bound_task_before_cycle
                     ):
-                        partial_completion_retry_count += 1
+                        cycle.partial_completion_retry_count += 1
                         nudge = agent._build_partial_completion_retry_nudge(
                             partial_info,
                             task_context=task_context,
                             user_query=user_query,
-                            retry_count=partial_completion_retry_count,
+                            retry_count=cycle.partial_completion_retry_count,
                         )
                         messages.append({"role": "user", "content": nudge})
                         logger.info(
                             "[DEEP_THINK_NATIVE] Partial completion retry nudge: ratio=%s retry=%d iter=%d",
                             partial_info.get("partial_ratio"),
-                            partial_completion_retry_count,
+                            cycle.partial_completion_retry_count,
                             iteration,
                         )
                         current_step.self_correction = (
                             f"Detected partial completion ({partial_info.get('partial_ratio', '?/?')}); "
-                            f"injected retry nudge #{partial_completion_retry_count}."
+                            f"injected retry nudge #{cycle.partial_completion_retry_count}."
                         )
                     elif agent._should_force_verified_execution_finalization(
                         task_context=task_context,
                         tool_results=tool_results,
-                        had_real_execution_tool=had_real_execution_tool,
+                        had_real_execution_tool=cycle.had_real_execution_tool,
                     ):
-                        force_verified_execution_finalization = True
+                        cycle.force_verified_execution_finalization = True
                         messages.append(
                             {
                                 "role": "user",
@@ -837,14 +903,14 @@ async def _think_native(
                 candidate_answer = str(final_call.arguments.get("answer", "") or "")
                 raw_conf = final_call.arguments.get("confidence", 0.8)
                 try:
-                    confidence = max(0.0, min(1.0, float(raw_conf)))
+                    cycle.confidence = max(0.0, min(1.0, float(raw_conf)))
                 except (TypeError, ValueError):
-                    confidence = 0.8
+                    cycle.confidence = 0.8
                 current_step.status = "done"
                 current_step.finished_at = datetime.now()
                 if (
-                    probe_only_execution_cycles >= 2
-                    and not had_real_execution_tool
+                    cycle.probe_only_execution_cycles >= 2
+                    and not cycle.had_real_execution_tool
                     and agent._is_execute_task_request()
                     and agent._has_bound_task_context(task_context)
                     and not agent._looks_like_blocked_dependency_answer(candidate_answer)
@@ -1072,21 +1138,21 @@ async def _think_native(
                     await agent._safe_callback(current_step)
             else:
                 if (
-                    pending_handoff_task_id is not None
-                    and pending_handoff_previous_task_id is not None
-                    and forced_handoff_followthrough_attempts < 1
+                    cycle.pending_handoff_task_id is not None
+                    and cycle.pending_handoff_previous_task_id is not None
+                    and cycle.forced_handoff_followthrough_attempts < 1
                     and agent._can_force_handoff_followthrough_execution(
                         task_context,
-                        next_task_id=pending_handoff_task_id,
+                        next_task_id=cycle.pending_handoff_task_id,
                     )
                 ):
-                    forced_handoff_followthrough_attempts += 1
-                    prior_handoff_task_id = pending_handoff_task_id
+                    cycle.forced_handoff_followthrough_attempts += 1
+                    prior_handoff_task_id = cycle.pending_handoff_task_id
                     forced_result = await agent._execute_forced_handoff_followthrough(
                         task_context=task_context,
                         user_query=user_query,
                         iteration=iteration,
-                        previous_task_id=pending_handoff_previous_task_id,
+                        previous_task_id=cycle.pending_handoff_previous_task_id,
                         next_task_id=prior_handoff_task_id,
                         reason="no_tool_after_handoff",
                     )
@@ -1111,23 +1177,23 @@ async def _think_native(
                         assistant_content=result.content or "",
                         current_step=current_step,
                     )
-                    last_tool_cycle_signature = agent._build_tool_cycle_signature([forced_result])
-                    identical_tool_cycle_count = 0
-                    probe_only_execution_cycles = 0
+                    cycle.last_tool_cycle_signature = agent._build_tool_cycle_signature([forced_result])
+                    cycle.identical_tool_cycle_count = 0
+                    cycle.probe_only_execution_cycles = 0
                     bound_task_after_forced = agent._current_bound_task_id(task_context)
                     if agent._tool_counts_as_real_execution(forced_result):
-                        had_real_execution_tool = True
-                        last_real_execution_tool_results = [forced_result]
+                        cycle.had_real_execution_tool = True
+                        cycle.last_real_execution_tool_results = [forced_result]
                     if (
                         bound_task_after_forced is not None
                         and bound_task_after_forced != prior_handoff_task_id
                     ):
-                        pending_handoff_previous_task_id = prior_handoff_task_id
-                        pending_handoff_task_id = bound_task_after_forced
-                        forced_handoff_followthrough_attempts = 0
-                        had_real_execution_tool = False
-                        last_real_execution_tool_results = []
-                        partial_completion_retry_count = 0
+                        cycle.pending_handoff_previous_task_id = prior_handoff_task_id
+                        cycle.pending_handoff_task_id = bound_task_after_forced
+                        cycle.forced_handoff_followthrough_attempts = 0
+                        cycle.had_real_execution_tool = False
+                        cycle.last_real_execution_tool_results = []
+                        cycle.partial_completion_retry_count = 0
                         messages.append(
                             {
                                 "role": "user",
@@ -1139,30 +1205,30 @@ async def _think_native(
                                 ),
                             }
                         )
-                        new_limit, handoff_reserve_used = _consume_handoff_iteration_reserve(
+                        new_limit, cycle.handoff_reserve_used = _consume_handoff_iteration_reserve(
                             iteration=iteration,
-                            base_limit=_base_iteration_limit,
-                            limit=runtime_iteration_limit,
-                            reserve_used=handoff_reserve_used,
-                            reserve_max=_HANDOFF_RESERVE_MAX,
+                            base_limit=cycle.base_iteration_limit,
+                            limit=cycle.runtime_iteration_limit,
+                            reserve_used=cycle.handoff_reserve_used,
+                            reserve_max=cycle.handoff_reserve_max,
                         )
-                        if new_limit != runtime_iteration_limit:
-                            runtime_iteration_limit = new_limit
+                        if new_limit != cycle.runtime_iteration_limit:
+                            cycle.runtime_iteration_limit = new_limit
                             logger.info(
                                 "[DEEP_THINK_NATIVE] Consumed handoff iteration reserve (forced followthrough) previous=%s next=%s new_limit=%s reserve_used=%d/%d",
                                 prior_handoff_task_id,
                                 bound_task_after_forced,
-                                runtime_iteration_limit,
-                                handoff_reserve_used,
-                                _HANDOFF_RESERVE_MAX,
+                                cycle.runtime_iteration_limit,
+                                cycle.handoff_reserve_used,
+                                cycle.handoff_reserve_max,
                             )
                         current_step.self_correction = (
                             f"Detected a no-tool response after handoff to Task {prior_handoff_task_id}; "
                             f"forced code_executor execution and advanced again to Task {bound_task_after_forced}."
                         )
                     else:
-                        pending_handoff_task_id = None
-                        pending_handoff_previous_task_id = None
+                        cycle.pending_handoff_task_id = None
+                        cycle.pending_handoff_previous_task_id = None
                         current_step.self_correction = (
                             f"Detected a no-tool response immediately after handoff to Task {prior_handoff_task_id}; "
                             "forced code_executor execution instead of allowing generic fallback."
@@ -1170,9 +1236,9 @@ async def _think_native(
                         if agent._should_force_verified_execution_finalization(
                             task_context=task_context,
                             tool_results=[forced_result],
-                            had_real_execution_tool=had_real_execution_tool,
+                            had_real_execution_tool=cycle.had_real_execution_tool,
                         ):
-                            force_verified_execution_finalization = True
+                            cycle.force_verified_execution_finalization = True
                             messages.append(
                                 {
                                     "role": "user",
@@ -1209,7 +1275,7 @@ async def _think_native(
                     and not agent._collect_tool_failures_from_steps(thinking_steps)
                 ):
                     final_answer = _content_for_early_stop
-                    confidence = max(confidence, 0.85)
+                    cycle.confidence = max(cycle.confidence, 0.85)
                     current_step.status = "done"
                     current_step.finished_at = datetime.now()
                     thinking_steps.append(current_step)
@@ -1238,7 +1304,7 @@ async def _think_native(
             messages.append({"role": "user", "content": "Skip current branch and continue with the next reasoning step."})
 
         # Inject a strong nudge when nearing the iteration limit
-        if not final_answer and iteration >= runtime_iteration_limit - 1:
+        if not final_answer and iteration >= cycle.runtime_iteration_limit - 1:
             messages.append({
                 "role": "user",
                 "content": (
@@ -1256,7 +1322,7 @@ async def _think_native(
         iteration=iteration,
         final_answer=final_answer,
         fallback_used=fallback_used,
-        confidence=confidence,
+        confidence=cycle.confidence,
         thinking_steps=thinking_steps,
         tools_used=tools_used,
         messages=messages,
