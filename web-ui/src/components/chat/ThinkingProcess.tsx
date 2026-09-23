@@ -221,19 +221,39 @@ function isGenericText(text: string | null | undefined, language: 'zh' | 'en'): 
   return generics.includes(n);
 }
 
+/** Base row-worthiness: active steps, tool steps, and reasoning steps that
+ *  already carry thought text. */
+function _passesStepFilter(step: ThinkingStep): boolean {
+  if (step.status === 'thinking' || step.status === 'calling_tool' || step.status === 'analyzing') return true;
+  if (step.action) return true;
+  return typeof step.thought === 'string' && step.thought.trim().length > 0;
+}
+
 /**
- * Steps worth a row in the activity stream. Reasoning steps without any
- * persisted thought carry no information once labels are uniform, so they are
- * dropped — unless filtering would empty the list (legacy runs), in which case
- * everything is shown.
+ * Steps worth a row in the activity stream, in chronological (iteration)
+ * order — the store appends steps in arrival order, which interleaves
+ * parallel tool calls ahead of the reasoning step that prompted them.
+ *
+ * While the run is active, visibility is sticky: a step that once qualified
+ * stays visible even if a transient update (e.g. a done-event arriving
+ * before its streamed thought) would filter it out. Once finished, only the
+ * base filter applies, so cleared-thought steps drop out cleanly at the end.
+ * If filtering would empty the list (legacy runs), everything is shown.
  */
-function getVisibleSteps(steps: ThinkingStep[]): ThinkingStep[] {
-  const visible = steps.filter((step) => {
-    if (step.status === 'thinking' || step.status === 'calling_tool' || step.status === 'analyzing') return true;
-    if (step.action) return true;
-    return typeof step.thought === 'string' && step.thought.trim().length > 0;
+function getVisibleSteps(
+  steps: ThinkingStep[],
+  isFinished: boolean,
+  stickyIterations: ReadonlySet<number>,
+): ThinkingStep[] {
+  const sorted = [...steps].sort(
+    (a, b) => (Number(a.iteration) || 0) - (Number(b.iteration) || 0),
+  );
+  const visible = sorted.filter((step) => {
+    if (_passesStepFilter(step)) return true;
+    if (!isFinished && stickyIterations.has(step.iteration)) return true;
+    return false;
   });
-  return visible.length > 0 ? visible : steps;
+  return visible.length > 0 ? visible : sorted;
 }
 
 /** Truncate thought for live display — show last N lines for long content */
@@ -526,10 +546,33 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
 }) => {
   const [isExpanded, setIsExpanded] = useState(!isFinished && process.status === 'active');
   const language = useMemo(() => detectLanguage(process), [process]);
-  const visibleSteps = useMemo(() => getVisibleSteps(process.steps), [process.steps]);
+  const isActive = process.status === 'active' && !isFinished;
+
+  // Sticky visibility: once a step qualifies for a row during a live run,
+  // keep its row even through transient updates that would filter it (e.g. a
+  // done-event arriving before its streamed thought). Prevents rows from
+  // flickering out and back in.
+  const [stickyIterations, setStickyIterations] = useState<ReadonlySet<number>>(new Set());
+  useEffect(() => {
+    if (isFinished) return;
+    setStickyIterations((prev) => {
+      let next: Set<number> | null = null;
+      for (const step of process.steps) {
+        if (_passesStepFilter(step) && !prev.has(step.iteration)) {
+          if (!next) next = new Set(prev);
+          next.add(step.iteration);
+        }
+      }
+      return next ?? prev;
+    });
+  }, [process.steps, isFinished]);
+
+  const visibleSteps = useMemo(
+    () => getVisibleSteps(process.steps, Boolean(isFinished), stickyIterations),
+    [process.steps, isFinished, stickyIterations],
+  );
   const stepCount = visibleSteps.length;
   const toolCallCount = useMemo(() => visibleSteps.filter((s) => !!s.action).length, [visibleSteps]);
-  const isActive = process.status === 'active' && !isFinished;
   const stepsEndRef = useRef<HTMLDivElement>(null);
   const liveNow = useLiveNow(isActive);
 
@@ -701,7 +744,7 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
             >
               {visibleSteps.map((step, idx) => (
                 <ThinkingActivityItem
-                  key={`it-${step.iteration}-${idx}`}
+                  key={`it-${step.iteration}`}
                   step={step}
                   isFinished={isFinished}
                   isProcessActive={isActive}

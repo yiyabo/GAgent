@@ -178,4 +178,33 @@ describe('ChatMessage thinking rendering', () => {
     const itemRow = container.querySelector('.tp-item-row');
     expect(itemRow).not.toBeNull();
   });
+
+  it('renders rows in iteration order even when steps arrived out of order', () => {
+    const { container } = renderMessage({
+      status: 'completed',
+      total_iterations: 2,
+      steps: [
+        // Tool step arrived first (parallel dispatch), reasoning step second —
+        // the reasoning row must still render above the tool row.
+        {
+          iteration: 2,
+          thought: '',
+          action: JSON.stringify({ tool: 'web_search', params: { query: 'egfr metformin' } }),
+          action_result: '5 papers',
+          status: 'completed',
+        },
+        {
+          iteration: 1,
+          thought: 'decide the search query',
+          status: 'completed',
+        },
+      ],
+    });
+
+    fireEvent.click(screen.getByText('Thought process'));
+    const labels = Array.from(container.querySelectorAll('.tp-item-label')).map(
+      (el) => el.textContent,
+    );
+    expect(labels).toEqual(['Thought process', 'Searching for: egfr metformin']);
+  });
 });
