@@ -60,16 +60,10 @@ def set_chat_run_user_message_id(run_id: str, user_message_id: int) -> None:
 
 
 def mark_chat_run_started(run_id: str) -> None:
+    from app.services.chat_run_state import transition_chat_run_status
+
     with get_db() as conn:
-        conn.execute(
-            """
-            UPDATE chat_runs
-            SET status = 'running',
-                started_at = COALESCE(started_at, CURRENT_TIMESTAMP)
-            WHERE run_id = ?
-            """,
-            (run_id,),
-        )
+        transition_chat_run_status(conn, run_id, "running", started=True)
         conn.commit()
 
 
@@ -80,17 +74,15 @@ def mark_chat_run_finished(
     error: Optional[str] = None,
     assistant_message_id: Optional[int] = None,
 ) -> None:
+    from app.services.chat_run_state import transition_chat_run_status
+
     with get_db() as conn:
-        conn.execute(
-            """
-            UPDATE chat_runs
-            SET status = ?,
-                error = ?,
-                assistant_message_id = COALESCE(?, assistant_message_id),
-                finished_at = CURRENT_TIMESTAMP
-            WHERE run_id = ?
-            """,
-            (status, error, assistant_message_id, run_id),
+        transition_chat_run_status(
+            conn,
+            run_id,
+            status,
+            error=error,
+            assistant_message_id=assistant_message_id,
         )
         conn.commit()
 

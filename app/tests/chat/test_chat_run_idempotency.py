@@ -205,6 +205,7 @@ async def test_reentry_terminal_run_not_respawned(
     idem_db: sqlite3.Connection, worker_gate: List[str]
 ) -> None:
     cr.create_chat_run("run_done", "sess_unit", "{}", idempotency_key="ck_done")
+    cr.mark_chat_run_started("run_done")
     cr.mark_chat_run_finished("run_done", "succeeded")
     run_id = run_routes.start_background_chat_run(
         _req(cmid="ck_done"), session_id="sess_unit", owner_id="u1"
