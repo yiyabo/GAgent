@@ -17,6 +17,7 @@ from app.routers.chat.prompt_builder import (
 )
 from app.services.foundation.settings import CHAT_HISTORY_ABS_MAX
 from app.services.response_style import sanitize_professional_response_text
+from app.services.deep_think.prompts import _extract_history_messages
 from app.services.deep_think_agent import DeepThinkAgent, ThinkingStep
 from app.services import tool_schemas
 from app.routers.chat.agent import _build_brief_execute_continuation_summary
@@ -423,22 +424,28 @@ def test_brief_execute_followup_prompt_skips_recent_chat_history() -> None:
     native_prompt = agent._build_native_system_prompt(context=context)
     legacy_prompt = agent._build_system_prompt(context=context)
 
+    # Prompt-cache contract: chat history never enters the system prompt; it is
+    # delivered as role messages (asserted below via _extract_history_messages).
     for prompt in (native_prompt, legacy_prompt):
         assert "=== RECENT CONVERSATION ===" not in prompt
+        assert "=== RECENT CONTINUATION CONTEXT ===" not in prompt
         assert "=== EXECUTION CONTINUATION SUMMARY ===" in prompt
-        assert "=== RECENT CONTINUATION CONTEXT ===" in prompt
         assert "Focus on the current execution result or current task outcome." in prompt
         assert "Known path anchor: /Users/apple/LLM/agent/phagescope/gvd_phage_meta_data.tsv" in prompt
         assert "Known filename anchors: gvd_phage_meta_data.tsv" in prompt
         assert "Recent image artifacts: figure.png (code_executor)" in prompt
         assert "当前筛选已产出 10071 条结果" in prompt
         assert "旧的批量上传测试完成" not in prompt
-        assert "上一轮失败的是 result_interpreter 和 code_executor" in prompt
-        assert "上一次已经确认 code_executor 400 修好了" in prompt
+        assert "上一轮失败的是 result_interpreter 和 code_executor" not in prompt
         assert "更早的旧请求 A" not in prompt
-        assert "更早的旧总结 B" not in prompt
-        assert "再往后的旧请求 E" in prompt
-        assert "再往后的旧总结 F" in prompt
+
+    history_messages = _extract_history_messages(context)
+    # Brief execute followup: empty entries dropped, then the last 6 survive.
+    assert [m["role"] for m in history_messages] == ["user", "assistant"] * 3
+    contents = [m["content"] for m in history_messages]
+    assert any("上一轮失败的是 result_interpreter" in c for c in contents)
+    assert any("中间的旧请求 C" in c for c in contents)
+    assert not any("更早的旧请求 A" in c for c in contents)
 
 
 def test_execute_tier_prompt_warns_against_progress_recaps_for_brief_followups() -> None:

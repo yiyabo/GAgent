@@ -17,6 +17,13 @@ Two sanctioned deviations from a purely verbatim move:
   bypassed subclass overrides); it now calls the module-local
   `_is_brief_execute_followup_context(context)`, which is semantically
   identical.
+
+Prompt-cache contract (2026-09): the system prompt builders no longer embed
+chat history. History enters the LLM call as role messages via
+`_extract_history_messages`, inserted by the controllers between the system
+message and the live user turn, so the system prompt keeps a byte-stable
+prefix across turns of a session. `_append_recent_chat_history` remains as
+the legacy text form for facade/tests compatibility.
 """
 
 from __future__ import annotations
@@ -562,12 +569,21 @@ def _is_brief_execute_followup_context(context: Optional[Dict[str, Any]]) -> boo
     return tier == "execute" and brevity_hint
 
 
-def _append_recent_chat_history(prompt: str, context: Optional[Dict[str, Any]]) -> str:
+def _select_recent_history(
+    context: Optional[Dict[str, Any]],
+) -> tuple[List[Dict[str, Any]], bool]:
+    """Shared history selection/clip policy.
+
+    Returns ``(selected, brief_execute_followup)`` where each selected item is
+    ``{"role": ..., "content": ...}`` with content already clipped. Single
+    source for both the legacy text form (``_append_recent_chat_history``)
+    and the message form (``_extract_history_messages``).
+    """
     if not context:
-        return prompt
+        return [], False
     history = context.get("chat_history", [])
     if not history:
-        return prompt
+        return [], False
     brief_execute_followup = _is_brief_execute_followup_context(context)
     raw_lim = context.get("chat_history_max_messages")
     if isinstance(raw_lim, int) and raw_lim > 0:
@@ -593,16 +609,55 @@ def _append_recent_chat_history(prompt: str, context: Optional[Dict[str, Any]]) 
             filtered_history.append(msg)
         history = filtered_history
     recent = history[-limit:] if len(history) > limit else history
-    lines = []
+    clip_limit = 240 if brief_execute_followup else 500
+    selected: List[Dict[str, Any]] = []
     for msg in recent:
-        role = msg.get("role", "unknown")
         content = msg.get("content", "")
-        clip_limit = 240 if brief_execute_followup else 500
         if len(content) > clip_limit:
             content = content[:clip_limit] + "..."
-        lines.append(f"[{role}]: {content}")
+        selected.append({"role": msg.get("role", "unknown"), "content": content})
+    return selected, brief_execute_followup
+
+
+def _append_recent_chat_history(prompt: str, context: Optional[Dict[str, Any]]) -> str:
+    """Legacy text form. No longer used by the prompt builders (history now
+    enters the LLM call as role messages via `_extract_history_messages` so
+    the system prompt stays byte-stable for provider prompt caching); kept
+    for facade/tests compatibility."""
+    selected, brief_execute_followup = _select_recent_history(context)
+    if not selected:
+        return prompt
+    lines = [f"[{msg['role']}]: {msg['content']}" for msg in selected]
     header = "=== RECENT CONTINUATION CONTEXT ===" if brief_execute_followup else "=== RECENT CONVERSATION ==="
     return prompt + f"\n{header}\n" + "\n".join(lines)
+
+
+def _extract_history_messages(
+    context: Optional[Dict[str, Any]],
+    *,
+    current_user_query: Optional[str] = None,
+) -> List[Dict[str, str]]:
+    """Chat history as OpenAI-style role messages for the LLM call.
+
+    Only user/assistant roles pass through; consecutive same-role items are
+    merged (alternation-friendly). A trailing user item identical to the
+    current query is dropped to avoid duplicating the live user turn.
+    """
+    selected, _brief = _select_recent_history(context)
+    messages: List[Dict[str, str]] = []
+    for msg in selected:
+        role = str(msg.get("role") or "").strip().lower()
+        if role not in ("user", "assistant"):
+            continue
+        content = msg["content"]
+        if messages and messages[-1]["role"] == role:
+            messages[-1]["content"] = f"{messages[-1]['content']}\n{content}"
+        else:
+            messages.append({"role": role, "content": content})
+    if current_user_query and messages and messages[-1]["role"] == "user":
+        if messages[-1]["content"].strip() == str(current_user_query).strip():
+            messages.pop()
+    return messages
 
 
 def _clip_reference_text(value: Any, *, limit: int = 800) -> str:
@@ -728,7 +783,10 @@ def _append_reference_context(
 
     if blocks:
         prompt = prompt + "\n" + "\n".join(blocks)
-    return cls._append_recent_chat_history(prompt, context)
+    # Chat history deliberately stays OUT of the system prompt: the builders'
+    # callers inject it as role messages (see `_extract_history_messages`) so
+    # this prompt keeps a byte-stable prefix for provider prompt caching.
+    return prompt
 
 
 def _build_native_system_prompt(

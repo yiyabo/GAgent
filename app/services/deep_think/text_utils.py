@@ -26,6 +26,54 @@ def _default_max_consecutive_llm_failures() -> int:
         return 5
 
 
+# Model context-window table (prefix-matched; only confirmed values, extend
+# conservatively). Used to size the compaction budget relative to the model's
+# real window instead of the historical fixed 32k.
+_MODEL_CONTEXT_WINDOWS = (
+    ("qwen3.7-max", 1_000_000),
+    ("qwen-max", 262_144),
+    ("qwen-plus", 131_072),
+    ("gpt-4o", 128_000),
+    ("kimi-k2", 262_144),
+)
+_DEFAULT_CONTEXT_WINDOW = 128_000
+_CONTEXT_BUDGET_FLOOR = 32_000
+
+
+def _resolve_context_budget_tokens(model: str) -> int:
+    """Resolve the DeepThink compaction budget (native path) for ``model``.
+
+    Priority: explicit ``DEEP_THINK_CONTEXT_BUDGET_TOKENS`` override (legacy
+    semantics, including 0 = disabled) > model window x
+    ``DEEP_THINK_CONTEXT_BUDGET_RATIO`` (default 0.5), clamped to
+    [32k floor, ``DEEP_THINK_CONTEXT_BUDGET_MAX`` (default 131072)]. The floor
+    preserves the historical 32k behaviour for small-window models.
+    """
+    raw_override = os.getenv("DEEP_THINK_CONTEXT_BUDGET_TOKENS", "").strip()
+    if raw_override:
+        try:
+            return max(0, int(raw_override))
+        except ValueError:
+            pass  # fall through to model-aware resolution
+    window = _DEFAULT_CONTEXT_WINDOW
+    normalized = (model or "").strip().lower()
+    for prefix, tokens in _MODEL_CONTEXT_WINDOWS:
+        if normalized.startswith(prefix):
+            window = tokens
+            break
+    try:
+        ratio = float(os.getenv("DEEP_THINK_CONTEXT_BUDGET_RATIO", "0.5") or "0.5")
+    except (TypeError, ValueError):
+        ratio = 0.5
+    ratio = min(max(ratio, 0.05), 0.9)
+    try:
+        cap = int(os.getenv("DEEP_THINK_CONTEXT_BUDGET_MAX", "131072") or "131072")
+    except (TypeError, ValueError):
+        cap = 131_072
+    budget = int(window * ratio)
+    return max(_CONTEXT_BUDGET_FLOOR, min(cap, budget))
+
+
 def _default_synthesis_timeout_seconds() -> int:
     # Thinking models (e.g. qwen3.8-flash) routinely need >60s to synthesize a
     # long evidence prompt; a 60s cap cancelled forced synthesis on long runs.

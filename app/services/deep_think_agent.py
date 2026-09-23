@@ -44,6 +44,7 @@ from app.services.deep_think.text_utils import (
     _collect_output_file_names,
     _default_fallback_timeout_seconds,
     _default_max_consecutive_llm_failures,
+    _resolve_context_budget_tokens,
     _default_synthesis_max_tokens,
     _default_synthesis_timeout_seconds,
     _acceptance_v2_enabled,

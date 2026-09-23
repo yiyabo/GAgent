@@ -31,12 +31,14 @@ from app.services.deep_think.models import (
     TaskExecutionContext,
     ThinkingStep,
 )
+from app.services.deep_think.prompts import _extract_history_messages
 from app.services.deep_think.text_utils import (
     _derive_expected_outputs,
     _ensure_inline_images,
     _strip_runtime_absolute_paths,
     _missing_expectations,
     _missing_expectations_detailed,
+    _resolve_context_budget_tokens,
 )
 from app.services.execution.tool_executor import UnifiedToolExecutor
 from app.services.foundation.settings import get_settings
@@ -120,6 +122,7 @@ async def _think_native(
         system_prompt += build_acceptance_spec_prompt_block(acceptance_spec)
     messages: List[Dict[str, Any]] = [
         {"role": "system", "content": system_prompt},
+        *_extract_history_messages(context, current_user_query=user_query),
         {"role": "user", "content": user_query},
     ]
 
@@ -128,10 +131,7 @@ async def _think_native(
         or getattr(getattr(agent.llm_client, "client", None), "model", "")
         or ""
     )
-    try:
-        _ctx_budget = int(os.getenv("DEEP_THINK_CONTEXT_BUDGET_TOKENS", "32000") or "32000")
-    except (TypeError, ValueError):
-        _ctx_budget = 32000
+    _ctx_budget = _resolve_context_budget_tokens(llm_model)
     ctx_mgr = ContextWindowManager(model=llm_model, budget_tokens=max(0, _ctx_budget) or None)
 
     async def _summarize_for_compaction(text: str) -> str:
@@ -1384,6 +1384,7 @@ async def _think_prompt_based(
 
     messages = [
         {"role": "system", "content": system_prompt},
+        *_extract_history_messages(context, current_user_query=user_query),
         {"role": "user", "content": f"User Query: {user_query}"}
     ]
 
