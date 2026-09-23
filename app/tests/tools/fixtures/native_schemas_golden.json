@@ -1,0 +1,2107 @@
+{
+  "build_executor_tool_schemas": [
+    {
+      "function": {
+        "description": "Broad web search via Alibaba DashScope Responses API (built-in web_search tool). Use for web-based queries only, NOT for local files.",
+        "name": "web_search",
+        "parameters": {
+          "properties": {
+            "queries": {
+              "description": "Optional focused subqueries for parallel search on broad comparison tasks.",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 6,
+              "minItems": 2,
+              "type": "array"
+            },
+            "query": {
+              "description": "The search query.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "query"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Deterministic accession-to-FASTA downloader with strict domain allowlist. Use this when the user asks to download FASTA by accession IDs.",
+        "name": "sequence_fetch",
+        "parameters": {
+          "anyOf": [
+            {
+              "required": [
+                "accession"
+              ]
+            },
+            {
+              "required": [
+                "accessions"
+              ]
+            }
+          ],
+          "properties": {
+            "accession": {
+              "description": "Single accession ID (mutually exclusive with accessions).",
+              "type": "string"
+            },
+            "accessions": {
+              "description": "Multiple accession IDs (mutually exclusive with accession).",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "database": {
+              "description": "NCBI database type.",
+              "enum": [
+                "nuccore",
+                "protein"
+              ],
+              "type": "string"
+            },
+            "format": {
+              "description": "Output format (FASTA only).",
+              "enum": [
+                "fasta"
+              ],
+              "type": "string"
+            },
+            "max_bytes": {
+              "description": "Maximum response payload size in bytes.",
+              "type": "integer"
+            },
+            "output_name": {
+              "description": "Optional output filename.",
+              "type": "string"
+            },
+            "session_id": {
+              "description": "Optional session id for session-scoped output storage.",
+              "type": "string"
+            },
+            "timeout_sec": {
+              "description": "Network timeout in seconds.",
+              "type": "number"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Download a file from a public http/https URL into the current task/session output directory. Use this for direct public link downloads instead of code_executor.",
+        "name": "url_fetch",
+        "parameters": {
+          "properties": {
+            "allowed_content_types": {
+              "description": "Optional allowed MIME types (for example application/pdf or text/*).",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "max_bytes": {
+              "description": "Maximum response size in bytes.",
+              "type": "integer"
+            },
+            "output_name": {
+              "description": "Optional output filename.",
+              "type": "string"
+            },
+            "session_id": {
+              "description": "Optional session id for session-scoped output storage.",
+              "type": "string"
+            },
+            "sha256": {
+              "description": "Optional expected sha256 hex digest.",
+              "type": "string"
+            },
+            "timeout_sec": {
+              "description": "Network timeout in seconds.",
+              "type": "number"
+            },
+            "url": {
+              "description": "Public http/https URL to download.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "url"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "PREFERRED for bioinformatics: Docker-based tools for FASTA/FASTQ/sequence analysis. Tool list is synced from tools_config.json. Available tools: bakta, blast, bowtie2, bwa, checkm, checkv, concoct, das_tool, dorado, fastani, flye, genomad, gtdbtk, hmmer, iphop, maxbin2, megahit, metabat2, minimap2, mmseqs2, nanoplot, nextflow, ngmlr, prodigal, samtools, seqkit, seqtk, snakemake, sniffles2, trim_galore, vibrant, virsorter2. Use operation='help' first to inspect exact operations and parameters. If the user provides inline sequence text instead of a file, pass it via sequence_text and let bio_tools convert it to FASTA safely. For heavy runs, set background=true to submit asynchronously and query later with operation='job_status' and job_id. Do not use background mode for quick checks that must return immediately.",
+        "name": "bio_tools",
+        "parameters": {
+          "properties": {
+            "background": {
+              "description": "If true, submit bio_tools execution as a background job and return immediately with job_id. Recommended only for long-running operations that do not need immediate in-turn output.",
+              "type": "boolean"
+            },
+            "input_file": {
+              "description": "Absolute path to the input file.",
+              "type": "string"
+            },
+            "job_id": {
+              "description": "Background job id used with operation='job_status'.",
+              "type": "string"
+            },
+            "operation": {
+              "description": "Operation to perform (e.g., stats, grep, predict, help). Use 'job_status' to query a submitted background job.",
+              "type": "string"
+            },
+            "output_file": {
+              "description": "Output filename or directory fragment.",
+              "type": "string"
+            },
+            "params": {
+              "description": "Additional tool-specific parameters.",
+              "type": "object"
+            },
+            "sequence_text": {
+              "description": "Inline FASTA or raw sequence text. Use this when no input file is available. Mutually exclusive with input_file.",
+              "type": "string"
+            },
+            "timeout": {
+              "description": "Execution timeout in seconds. <=0 disables execution timeout (for long-running tools).",
+              "type": "integer"
+            },
+            "tool_name": {
+              "description": "The bioinformatics tool to run.",
+              "enum": [
+                "bakta",
+                "blast",
+                "bowtie2",
+                "bwa",
+                "checkm",
+                "checkv",
+                "concoct",
+                "das_tool",
+                "dorado",
+                "fastani",
+                "flye",
+                "genomad",
+                "gtdbtk",
+                "hmmer",
+                "iphop",
+                "maxbin2",
+                "megahit",
+                "metabat2",
+                "minimap2",
+                "mmseqs2",
+                "nanoplot",
+                "nextflow",
+                "ngmlr",
+                "prodigal",
+                "samtools",
+                "seqkit",
+                "seqtk",
+                "snakemake",
+                "sniffles2",
+                "trim_galore",
+                "vibrant",
+                "virsorter2"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "tool_name",
+            "operation"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Preferred tool for scientific composite figures and publication-style plots. Use this when the user asks for a figure, plot, chart, visualization, PNG/PDF output, English legend/summary, provenance TSV, QA JSON, or Deliverables publication. It accepts inline tabular rows or CSV/TSV/JSON/JSONL paths and generates PNG, optional PDF, summary.md, provenance TSV, QA JSON, and deliverable_submit artifacts. Prefer this over code_executor for standard scientific figure generation.",
+        "name": "scientific_figure_generator",
+        "parameters": {
+          "properties": {
+            "datasets": {
+              "description": "Datasets as inline rows or file paths.",
+              "items": {
+                "properties": {
+                  "format": {
+                    "description": "Optional format override: csv, tsv, json, jsonl.",
+                    "type": "string"
+                  },
+                  "name": {
+                    "description": "Dataset name referenced by panels.",
+                    "type": "string"
+                  },
+                  "path": {
+                    "description": "CSV/TSV/JSON/JSONL file path.",
+                    "type": "string"
+                  },
+                  "rows": {
+                    "description": "Inline tabular rows.",
+                    "items": {
+                      "type": "object"
+                    },
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "dpi": {
+              "description": "PNG DPI, default 300.",
+              "type": "integer"
+            },
+            "formats": {
+              "description": "Output formats. PNG is always written; include pdf for PDF.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "output_basename": {
+              "description": "Base filename for PNG/PDF/QA/provenance artifacts.",
+              "type": "string"
+            },
+            "output_dir": {
+              "description": "Output directory. Defaults to the task/session work directory.",
+              "type": "string"
+            },
+            "panels": {
+              "description": "Panel specs. Supported type values: auto, bar, line, scatter, heatmap, table. Common fields: dataset, type, title, x, y, value, row, column, top_n.",
+              "items": {
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "publish": {
+              "default": true,
+              "description": "Whether to publish generated artifacts to session Deliverables.",
+              "type": "boolean"
+            },
+            "title": {
+              "description": "English figure title.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "datasets"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Execute Python code for data analysis, visualization, or computation. Errors are returned transparently with fix guidance — you can inspect the generated code and error, then retry with a revised task description. For standard bioinformatics tasks, prefer bio_tools first.",
+        "name": "code_executor",
+        "parameters": {
+          "properties": {
+            "task": {
+              "description": "Description of the code task to execute.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "task"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Query a knowledge graph for structured information retrieval.",
+        "name": "graph_rag",
+        "parameters": {
+          "properties": {
+            "mode": {
+              "description": "Search mode. Default: hybrid.",
+              "enum": [
+                "global",
+                "local",
+                "hybrid"
+              ],
+              "type": "string"
+            },
+            "query": {
+              "description": "The knowledge query.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "query"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Read local documents with format-aware parsing (.docx, .pdf, .txt, .md). For .csv and .tsv, returns an automatic preview (first ~150 lines) as text; for full table stats, filtering, or plots use code_executor. Do not use for .xlsx/.json/.parquet (use code_executor).",
+        "name": "document_reader",
+        "parameters": {
+          "properties": {
+            "file_path": {
+              "description": "Absolute path to the document file.",
+              "type": "string"
+            },
+            "operation": {
+              "description": "Reading operation type.",
+              "enum": [
+                "read_any",
+                "read_pdf",
+                "read_text"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "operation",
+            "file_path"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Read PDFs and images using a vision model. For visual OCR, figures, and equations only.",
+        "name": "vision_reader",
+        "parameters": {
+          "properties": {
+            "file_path": {
+              "description": "Absolute path to the image or PDF file.",
+              "type": "string"
+            },
+            "operation": {
+              "description": "Vision operation type.",
+              "enum": [
+                "read_pdf",
+                "read_image",
+                "ocr_page"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "operation",
+            "file_path"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "PhageScope cloud platform for phage genome analysis. ASYNC service. Use for reachability and remote workflow questions: call action=ping first (HTTP check); do not infer connectivity from local file listing. Documented flows center on userid; do not ask users for a generic 'API Token' unless they or platform docs explicitly require Bearer auth. Workflow: submit -> task_list/task_detail -> result. After submit, report the taskid and tell the user to check status later. IMPORTANT: result/quality/task_detail/download return API/JSON (or one file), not a full local folder tree; for a complete on-disk bundle (metadata/, annotation/, raw_api_responses/, summary.json), use action=save_all with the numeric taskid after the remote task succeeds. Batch: action=batch_submit submits multiple phage ids (default strategy multi_one_task = one remote taskid) and writes a manifest JSON under the session work directory; batch_reconcile diffs requested ids vs result/phage rows; batch_retry re-submits missing ids one strain per task. Prefer these over memorizing taskids in chat.",
+        "name": "phagescope",
+        "parameters": {
+          "properties": {
+            "action": {
+              "description": "PhageScope action. Use ping for connectivity/API checks (no other params required). Use task_list with userid to verify account-scoped access when ping succeeds. Use batch_submit/batch_reconcile/batch_retry for multi-strain workflows with manifest persistence. Use bulk_download to download public datasets from the PhageScope download page; pass data type names via modulelist (valid: phage_meta_data, annotated_protein, transcription_terminator, trna_tmrna, anticrispr_protein, crispr_array, antimicrobial_resistance_gene, virulent_factor, transmembrane_protein, phage_fasta, protein_fasta, gff3) and datasource names via phage_ids (valid: refseq, genbank, embl, ddbj, phagesdb, gvd, gpd, mgv, temphd, chvd, igvd, img_vr, gov2, stv). Omit both for all.",
+              "enum": [
+                "ping",
+                "input_check",
+                "submit",
+                "cluster_submit",
+                "task_list",
+                "task_detail",
+                "task_log",
+                "result",
+                "quality",
+                "download",
+                "query",
+                "save_all",
+                "batch_submit",
+                "batch_reconcile",
+                "batch_retry",
+                "bulk_download"
+              ],
+              "type": "string"
+            },
+            "base_url": {
+              "description": "Optional API base URL override (defaults from server configuration).",
+              "type": "string"
+            },
+            "batch_id": {
+              "description": "Batch manifest id (batch_reconcile, batch_retry; optional on batch_submit to fix the id).",
+              "type": "string"
+            },
+            "manifest_path": {
+              "description": "Optional explicit manifest JSON path.",
+              "type": "string"
+            },
+            "modulelist": {
+              "description": "Comma-separated module names. For submit/batch_submit (Annotation Pipeline), use submit modules only: quality, annotation, host, lifestyle, terminator, taxonomic, trna, anticrispr, crispr, arvf, transmembrane. Do not use result/output names such as proteins, phage_detail, phagefasta, or tree in submit modulelist. For action=batch_submit, if omitted the backend defaults to [quality]. For action=bulk_download, use dataset data-type names instead: phage_meta_data, annotated_protein, transcription_terminator, trna_tmrna, anticrispr_protein, crispr_array, antimicrobial_resistance_gene, virulent_factor, transmembrane_protein, phage_fasta, protein_fasta, gff3. Omit for all data types.",
+              "type": "string"
+            },
+            "phage_ids": {
+              "description": "For batch_submit: array of phage accessions or a single string with semicolons/newlines. For bulk_download: datasource names to download (e.g. 'refseq', 'genbank;embl'). Valid datasources: refseq, genbank, embl, ddbj, phagesdb, gvd, gpd, mgv, temphd, chvd, igvd, img_vr, gov2, stv. Omit for all datasources."
+            },
+            "phage_ids_file": {
+              "description": "batch_submit: optional path to newline-separated phage ids.",
+              "type": "string"
+            },
+            "phageid": {
+              "description": "Single phage ID or accession.",
+              "type": "string"
+            },
+            "phageids": {
+              "description": "Comma-separated phage IDs.",
+              "type": "string"
+            },
+            "result_kind": {
+              "description": "Type of result to retrieve.",
+              "enum": [
+                "quality",
+                "proteins",
+                "phage_detail",
+                "modules",
+                "tree",
+                "phagefasta"
+              ],
+              "type": "string"
+            },
+            "retry_phage_ids": {
+              "description": "batch_retry: explicit list of ids; if omitted, uses last reconcile missing list."
+            },
+            "strategy": {
+              "description": "batch_submit: multi_one_task (default) or per_strain.",
+              "type": "string"
+            },
+            "taskid": {
+              "description": "Numeric PhageScope remote task ID for status/result queries (e.g., 37468), not local job ids like act_xxx. Use this field name; if you emit task_id instead, the server maps it to taskid.",
+              "type": "string"
+            },
+            "token": {
+              "description": "Rarely needed. Optional Bearer token only if the platform/account explicitly requires it; omit by default (phageapi-style flows use userid, not a mandatory token).",
+              "type": "string"
+            },
+            "userid": {
+              "description": "User ID for the PhageScope platform.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "action"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Prepare and audit the local PhageScope public dataset for host taxon prediction research. Use this before code_executor for PhageScope ML tasks.",
+        "name": "phagescope_research",
+        "parameters": {
+          "properties": {
+            "action": {
+              "default": "audit",
+              "description": "Operation to perform.",
+              "enum": [
+                "audit",
+                "research_plan",
+                "prepare_metadata_table"
+              ],
+              "type": "string"
+            },
+            "completeness": {
+              "description": "Allowed Completeness values. Defaults to High-quality and Medium-quality."
+            },
+            "data_dir": {
+              "description": "Local PhageScope data directory. Defaults to PHAGESCOPE_DATA_DIR or <repo>/phagescope.",
+              "type": "string"
+            },
+            "label_level": {
+              "default": "genus",
+              "description": "How to standardize Host labels for model targets.",
+              "enum": [
+                "raw",
+                "genus",
+                "species_like"
+              ],
+              "type": "string"
+            },
+            "min_label_count": {
+              "default": 20,
+              "description": "Minimum class count retained in prepared metadata table.",
+              "type": "integer"
+            },
+            "output_dir": {
+              "description": "Directory for prepared TSV/JSON outputs.",
+              "type": "string"
+            },
+            "session_id": {
+              "description": "Optional chat session id for session-scoped outputs.",
+              "type": "string"
+            },
+            "split_group": {
+              "default": "subcluster",
+              "description": "Grouping key for deterministic leakage-aware train/val/test split.",
+              "enum": [
+                "subcluster",
+                "cluster",
+                "phage_id"
+              ],
+              "type": "string"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Collect a literature evidence pack from PubMed/PMC. Produces evidence.md, references.bib, and library.jsonl for downstream drafting.",
+        "name": "literature_pipeline",
+        "parameters": {
+          "properties": {
+            "download_pdfs": {
+              "description": "Whether to try downloading PMC PDFs.",
+              "type": "boolean"
+            },
+            "max_pdfs": {
+              "description": "Maximum number of PDFs to download when download_pdfs=true.",
+              "type": "integer"
+            },
+            "max_results": {
+              "description": "Maximum number of PubMed records to collect.",
+              "type": "integer"
+            },
+            "out_dir": {
+              "description": "Optional project-relative output directory.",
+              "type": "string"
+            },
+            "proxy": {
+              "description": "Optional HTTP proxy URL.",
+              "type": "string"
+            },
+            "query": {
+              "description": "PubMed search query.",
+              "type": "string"
+            },
+            "session_id": {
+              "description": "Optional session id for session-scoped output storage.",
+              "type": "string"
+            },
+            "user_agent": {
+              "description": "Optional HTTP user-agent override.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "query"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Generate a literature-backed review draft by first collecting evidence with literature_pipeline and then drafting with manuscript_writer.",
+        "name": "review_pack_writer",
+        "parameters": {
+          "properties": {
+            "download_pdfs": {
+              "description": "Whether to try downloading PMC PDFs.",
+              "type": "boolean"
+            },
+            "evaluation_threshold": {
+              "description": "Section evaluation pass threshold from 0 to 1.",
+              "type": "number"
+            },
+            "keep_workspace": {
+              "description": "Whether to keep intermediate drafting workspace artifacts.",
+              "type": "boolean"
+            },
+            "max_pdfs": {
+              "description": "Maximum number of PDFs to download when download_pdfs=true.",
+              "type": "integer"
+            },
+            "max_results": {
+              "description": "Maximum number of PubMed records to collect.",
+              "type": "integer"
+            },
+            "max_revisions": {
+              "description": "Maximum revision rounds per section.",
+              "type": "integer"
+            },
+            "output_path": {
+              "description": "Optional project-relative output path for the review draft.",
+              "type": "string"
+            },
+            "query": {
+              "description": "Optional explicit PubMed query override.",
+              "type": "string"
+            },
+            "sections": {
+              "description": "Optional subset of manuscript sections to draft.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "session_id": {
+              "description": "Optional session id for session-scoped output storage.",
+              "type": "string"
+            },
+            "task": {
+              "description": "Optional direct manuscript task override.",
+              "type": "string"
+            },
+            "topic": {
+              "description": "High-level review topic.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "topic"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Write a research manuscript, evidence-based report, structured summary, or section with citation-aware drafting, evaluation, and merge support. Use this when the user asks to generate/save a research report or Markdown summary from evidence files. Author manuscript content as Markdown first; use .md outputs as the source of truth and render PDF only in a later conversion step.",
+        "name": "manuscript_writer",
+        "parameters": {
+          "properties": {
+            "analysis_path": {
+              "description": "Optional project-relative analysis memo path.",
+              "type": "string"
+            },
+            "context_paths": {
+              "description": "Optional supporting context files such as evidence.md, manifest files, CSV/TSV/JSON result tables, or references.bib.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "draft_only": {
+              "description": "Assemble a lightweight local draft without the full staged evaluation and polish pipeline.",
+              "type": "boolean"
+            },
+            "evaluation_threshold": {
+              "description": "Section evaluation pass threshold from 0 to 1.",
+              "type": "number"
+            },
+            "keep_workspace": {
+              "description": "Whether to keep intermediate drafting workspace artifacts.",
+              "type": "boolean"
+            },
+            "max_context_bytes": {
+              "description": "Maximum context size loaded from supporting files.",
+              "type": "integer"
+            },
+            "max_revisions": {
+              "description": "Maximum revision rounds per section.",
+              "type": "integer"
+            },
+            "output_path": {
+              "description": "Project-relative output file path. Prefer .md for manuscripts; do not use .pdf for draft_only outputs.",
+              "type": "string"
+            },
+            "sections": {
+              "description": "Optional subset of manuscript sections to draft.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "session_id": {
+              "description": "Optional session id for session-scoped output storage.",
+              "type": "string"
+            },
+            "task": {
+              "description": "Writing task or manuscript instruction.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "task",
+            "output_path"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Promote specific files into the session Deliverables tree for paper, report, summary, figure, table, or submission use. Use after files already exist and the user wants them published into Deliverables or made visible as final outputs.",
+        "name": "deliverable_submit",
+        "parameters": {
+          "properties": {
+            "artifacts": {
+              "description": "Artifacts to copy into deliverables/latest/<module>/.",
+              "items": {
+                "properties": {
+                  "module": {
+                    "description": "Target Deliverables module.",
+                    "enum": [
+                      "code",
+                      "image_tabular",
+                      "paper",
+                      "refs",
+                      "docs"
+                    ],
+                    "type": "string"
+                  },
+                  "path": {
+                    "description": "Absolute or project-relative source file path.",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "description": "Optional audit note for why this artifact is being published.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "path",
+                  "module"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "publish": {
+              "description": "If false, do not copy files in this call.",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "artifacts"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "File system operations: list directories, read/write files, profile/census directories, copy/move/delete. Use profile/census for compact directory-wide evidence before making all/every/completed claims. Use write when the user asks to save, export, create, or update a Markdown/text/JSON/CSV artifact instead of pasting content in chat. In task execution, prefer relative output paths so writes land in the current task output directory.",
+        "name": "file_operations",
+        "parameters": {
+          "properties": {
+            "content": {
+              "description": "Content to write (only for write operation). Required when creating requested saved reports, summaries, or text artifacts.",
+              "type": "string"
+            },
+            "destination": {
+              "description": "Destination path (only for copy/move operations). Prefer task-relative destinations for final outputs.",
+              "type": "string"
+            },
+            "operation": {
+              "description": "The file operation to perform. profile/census are read-only directory evidence operations.",
+              "enum": [
+                "list",
+                "read",
+                "write",
+                "copy",
+                "move",
+                "delete",
+                "exists",
+                "info",
+                "profile",
+                "census"
+              ],
+              "type": "string"
+            },
+            "path": {
+              "description": "Target file or directory path. Prefer relative paths or bare filenames for task outputs; avoid absolute session workspace paths for final deliverables.",
+              "type": "string"
+            },
+            "pattern": {
+              "description": "Optional file matching pattern for list/profile/census operations.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "operation",
+            "path"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Manage interactive terminal sessions (sandbox PTY or remote SSH). Use 'create' or 'ensure' to get a terminal tied to the current chat session or execution context, 'write' to send commands (plain text or base64), 'list' to see active sessions, 'close' to terminate a session, 'replay' / 'audit' for history. Prefer sandbox mode for local scripts/debugging; use ssh mode to reach remote servers (e.g. bio-tools GPU node). For 'write', terminal_id is auto-resolved if omitted — no need to call 'ensure' first.",
+        "name": "terminal_session",
+        "parameters": {
+          "properties": {
+            "data": {
+              "description": "Command text to send (for write operation).",
+              "type": "string"
+            },
+            "encoding": {
+              "description": "Encoding of the data field (default utf-8).",
+              "enum": [
+                "utf-8",
+                "base64"
+              ],
+              "type": "string"
+            },
+            "limit": {
+              "description": "Max rows to return for audit/replay (default 500).",
+              "type": "integer"
+            },
+            "mode": {
+              "description": "Terminal backend: 'sandbox' for local PTY, 'ssh' for remote.",
+              "enum": [
+                "sandbox",
+                "ssh"
+              ],
+              "type": "string"
+            },
+            "operation": {
+              "description": "Operation to perform on the terminal session.",
+              "enum": [
+                "create",
+                "ensure",
+                "list",
+                "close",
+                "write",
+                "resize",
+                "approve",
+                "reject",
+                "pending_approvals",
+                "replay",
+                "audit"
+              ],
+              "type": "string"
+            },
+            "session_id": {
+              "description": "Chat session ID to associate the terminal with.",
+              "type": "string"
+            },
+            "terminal_id": {
+              "description": "Terminal instance UUID (required for write/close/replay/audit).",
+              "type": "string"
+            }
+          },
+          "required": [
+            "operation"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Data analysis and result interpretation tool. Supports lightweight metadata/profile inspection plus code-backed analysis for CSV, TSV, MAT, NPY, H5AD, and TXT helper files. Use profile/metadata to inspect existing plan or task outputs before synthesizing reports from large tables.",
+        "name": "result_interpreter",
+        "parameters": {
+          "properties": {
+            "code": {
+              "description": "Python code (for execute operation).",
+              "type": "string"
+            },
+            "file_path": {
+              "description": "Single file path (for metadata/profile operations).",
+              "type": "string"
+            },
+            "file_paths": {
+              "description": "Absolute paths to data files.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "operation": {
+              "description": "Analysis operation. 'profile' is the deterministic dataset-overview path; 'analyze' is the full pipeline; 'metadata' is a schema peek; 'plan_analyze' is for plan-linked workflows.",
+              "enum": [
+                "metadata",
+                "profile",
+                "generate",
+                "execute",
+                "analyze",
+                "plan_analyze"
+              ],
+              "type": "string"
+            },
+            "output_dir": {
+              "description": "Optional output directory (plan_analyze).",
+              "type": "string"
+            },
+            "task_description": {
+              "description": "What to compute or interpret. Required for quality results; if omitted, a generic default is used.",
+              "type": "string"
+            },
+            "task_title": {
+              "description": "Short title for analyze/generate/plan_analyze. If omitted, the server uses a sensible default.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "operation"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    }
+  ],
+  "build_tool_schemas_all20": [
+    {
+      "function": {
+        "description": "PREFERRED for bioinformatics: Docker-based tools for FASTA/FASTQ/sequence analysis. Tool list is synced from tools_config.json. Available tools: bakta, blast, bowtie2, bwa, checkm, checkv, concoct, das_tool, dorado, fastani, flye, genomad, gtdbtk, hmmer, iphop, maxbin2, megahit, metabat2, minimap2, mmseqs2, nanoplot, nextflow, ngmlr, prodigal, samtools, seqkit, seqtk, snakemake, sniffles2, trim_galore, vibrant, virsorter2. Use operation='help' first to inspect exact operations and parameters. If the user provides inline sequence text instead of a file, pass it via sequence_text and let bio_tools convert it to FASTA safely. For heavy runs, set background=true to submit asynchronously and query later with operation='job_status' and job_id. Do not use background mode for quick checks that must return immediately.",
+        "name": "bio_tools",
+        "parameters": {
+          "properties": {
+            "background": {
+              "description": "If true, submit bio_tools execution as a background job and return immediately with job_id. Recommended only for long-running operations that do not need immediate in-turn output.",
+              "type": "boolean"
+            },
+            "input_file": {
+              "description": "Absolute path to the input file.",
+              "type": "string"
+            },
+            "job_id": {
+              "description": "Background job id used with operation='job_status'.",
+              "type": "string"
+            },
+            "operation": {
+              "description": "Operation to perform (e.g., stats, grep, predict, help). Use 'job_status' to query a submitted background job.",
+              "type": "string"
+            },
+            "output_file": {
+              "description": "Output filename or directory fragment.",
+              "type": "string"
+            },
+            "params": {
+              "description": "Additional tool-specific parameters.",
+              "type": "object"
+            },
+            "sequence_text": {
+              "description": "Inline FASTA or raw sequence text. Use this when no input file is available. Mutually exclusive with input_file.",
+              "type": "string"
+            },
+            "timeout": {
+              "description": "Execution timeout in seconds. <=0 disables execution timeout (for long-running tools).",
+              "type": "integer"
+            },
+            "tool_name": {
+              "description": "The bioinformatics tool to run.",
+              "enum": [
+                "bakta",
+                "blast",
+                "bowtie2",
+                "bwa",
+                "checkm",
+                "checkv",
+                "concoct",
+                "das_tool",
+                "dorado",
+                "fastani",
+                "flye",
+                "genomad",
+                "gtdbtk",
+                "hmmer",
+                "iphop",
+                "maxbin2",
+                "megahit",
+                "metabat2",
+                "minimap2",
+                "mmseqs2",
+                "nanoplot",
+                "nextflow",
+                "ngmlr",
+                "prodigal",
+                "samtools",
+                "seqkit",
+                "seqtk",
+                "snakemake",
+                "sniffles2",
+                "trim_galore",
+                "vibrant",
+                "virsorter2"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "tool_name",
+            "operation"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Execute Python code for data analysis, visualization, or computation. Errors are returned transparently with fix guidance — you can inspect the generated code and error, then retry with a revised task description. For standard bioinformatics tasks, prefer bio_tools first.",
+        "name": "code_executor",
+        "parameters": {
+          "properties": {
+            "task": {
+              "description": "Description of the code task to execute.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "task"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Promote specific files into the session Deliverables tree for paper, report, summary, figure, table, or submission use. Use after files already exist and the user wants them published into Deliverables or made visible as final outputs.",
+        "name": "deliverable_submit",
+        "parameters": {
+          "properties": {
+            "artifacts": {
+              "description": "Artifacts to copy into deliverables/latest/<module>/.",
+              "items": {
+                "properties": {
+                  "module": {
+                    "description": "Target Deliverables module.",
+                    "enum": [
+                      "code",
+                      "image_tabular",
+                      "paper",
+                      "refs",
+                      "docs"
+                    ],
+                    "type": "string"
+                  },
+                  "path": {
+                    "description": "Absolute or project-relative source file path.",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "description": "Optional audit note for why this artifact is being published.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "path",
+                  "module"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "publish": {
+              "description": "If false, do not copy files in this call.",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "artifacts"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Read local documents with format-aware parsing (.docx, .pdf, .txt, .md). For .csv and .tsv, returns an automatic preview (first ~150 lines) as text; for full table stats, filtering, or plots use code_executor. Do not use for .xlsx/.json/.parquet (use code_executor).",
+        "name": "document_reader",
+        "parameters": {
+          "properties": {
+            "file_path": {
+              "description": "Absolute path to the document file.",
+              "type": "string"
+            },
+            "operation": {
+              "description": "Reading operation type.",
+              "enum": [
+                "read_any",
+                "read_pdf",
+                "read_text"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "operation",
+            "file_path"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "File system operations: list directories, read/write files, profile/census directories, copy/move/delete. Use profile/census for compact directory-wide evidence before making all/every/completed claims. Use write when the user asks to save, export, create, or update a Markdown/text/JSON/CSV artifact instead of pasting content in chat. In task execution, prefer relative output paths so writes land in the current task output directory.",
+        "name": "file_operations",
+        "parameters": {
+          "properties": {
+            "content": {
+              "description": "Content to write (only for write operation). Required when creating requested saved reports, summaries, or text artifacts.",
+              "type": "string"
+            },
+            "destination": {
+              "description": "Destination path (only for copy/move operations). Prefer task-relative destinations for final outputs.",
+              "type": "string"
+            },
+            "operation": {
+              "description": "The file operation to perform. profile/census are read-only directory evidence operations.",
+              "enum": [
+                "list",
+                "read",
+                "write",
+                "copy",
+                "move",
+                "delete",
+                "exists",
+                "info",
+                "profile",
+                "census"
+              ],
+              "type": "string"
+            },
+            "path": {
+              "description": "Target file or directory path. Prefer relative paths or bare filenames for task outputs; avoid absolute session workspace paths for final deliverables.",
+              "type": "string"
+            },
+            "pattern": {
+              "description": "Optional file matching pattern for list/profile/census operations.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "operation",
+            "path"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Query a knowledge graph for structured information retrieval.",
+        "name": "graph_rag",
+        "parameters": {
+          "properties": {
+            "mode": {
+              "description": "Search mode. Default: hybrid.",
+              "enum": [
+                "global",
+                "local",
+                "hybrid"
+              ],
+              "type": "string"
+            },
+            "query": {
+              "description": "The knowledge query.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "query"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Collect a literature evidence pack from PubMed/PMC. Produces evidence.md, references.bib, and library.jsonl for downstream drafting.",
+        "name": "literature_pipeline",
+        "parameters": {
+          "properties": {
+            "download_pdfs": {
+              "description": "Whether to try downloading PMC PDFs.",
+              "type": "boolean"
+            },
+            "max_pdfs": {
+              "description": "Maximum number of PDFs to download when download_pdfs=true.",
+              "type": "integer"
+            },
+            "max_results": {
+              "description": "Maximum number of PubMed records to collect.",
+              "type": "integer"
+            },
+            "out_dir": {
+              "description": "Optional project-relative output directory.",
+              "type": "string"
+            },
+            "proxy": {
+              "description": "Optional HTTP proxy URL.",
+              "type": "string"
+            },
+            "query": {
+              "description": "PubMed search query.",
+              "type": "string"
+            },
+            "session_id": {
+              "description": "Optional session id for session-scoped output storage.",
+              "type": "string"
+            },
+            "user_agent": {
+              "description": "Optional HTTP user-agent override.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "query"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Write a research manuscript, evidence-based report, structured summary, or section with citation-aware drafting, evaluation, and merge support. Use this when the user asks to generate/save a research report or Markdown summary from evidence files. Author manuscript content as Markdown first; use .md outputs as the source of truth and render PDF only in a later conversion step.",
+        "name": "manuscript_writer",
+        "parameters": {
+          "properties": {
+            "analysis_path": {
+              "description": "Optional project-relative analysis memo path.",
+              "type": "string"
+            },
+            "context_paths": {
+              "description": "Optional supporting context files such as evidence.md, manifest files, CSV/TSV/JSON result tables, or references.bib.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "draft_only": {
+              "description": "Assemble a lightweight local draft without the full staged evaluation and polish pipeline.",
+              "type": "boolean"
+            },
+            "evaluation_threshold": {
+              "description": "Section evaluation pass threshold from 0 to 1.",
+              "type": "number"
+            },
+            "keep_workspace": {
+              "description": "Whether to keep intermediate drafting workspace artifacts.",
+              "type": "boolean"
+            },
+            "max_context_bytes": {
+              "description": "Maximum context size loaded from supporting files.",
+              "type": "integer"
+            },
+            "max_revisions": {
+              "description": "Maximum revision rounds per section.",
+              "type": "integer"
+            },
+            "output_path": {
+              "description": "Project-relative output file path. Prefer .md for manuscripts; do not use .pdf for draft_only outputs.",
+              "type": "string"
+            },
+            "sections": {
+              "description": "Optional subset of manuscript sections to draft.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "session_id": {
+              "description": "Optional session id for session-scoped output storage.",
+              "type": "string"
+            },
+            "task": {
+              "description": "Writing task or manuscript instruction.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "task",
+            "output_path"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "PhageScope cloud platform for phage genome analysis. ASYNC service. Use for reachability and remote workflow questions: call action=ping first (HTTP check); do not infer connectivity from local file listing. Documented flows center on userid; do not ask users for a generic 'API Token' unless they or platform docs explicitly require Bearer auth. Workflow: submit -> task_list/task_detail -> result. After submit, report the taskid and tell the user to check status later. IMPORTANT: result/quality/task_detail/download return API/JSON (or one file), not a full local folder tree; for a complete on-disk bundle (metadata/, annotation/, raw_api_responses/, summary.json), use action=save_all with the numeric taskid after the remote task succeeds. Batch: action=batch_submit submits multiple phage ids (default strategy multi_one_task = one remote taskid) and writes a manifest JSON under the session work directory; batch_reconcile diffs requested ids vs result/phage rows; batch_retry re-submits missing ids one strain per task. Prefer these over memorizing taskids in chat.",
+        "name": "phagescope",
+        "parameters": {
+          "properties": {
+            "action": {
+              "description": "PhageScope action. Use ping for connectivity/API checks (no other params required). Use task_list with userid to verify account-scoped access when ping succeeds. Use batch_submit/batch_reconcile/batch_retry for multi-strain workflows with manifest persistence. Use bulk_download to download public datasets from the PhageScope download page; pass data type names via modulelist (valid: phage_meta_data, annotated_protein, transcription_terminator, trna_tmrna, anticrispr_protein, crispr_array, antimicrobial_resistance_gene, virulent_factor, transmembrane_protein, phage_fasta, protein_fasta, gff3) and datasource names via phage_ids (valid: refseq, genbank, embl, ddbj, phagesdb, gvd, gpd, mgv, temphd, chvd, igvd, img_vr, gov2, stv). Omit both for all.",
+              "enum": [
+                "ping",
+                "input_check",
+                "submit",
+                "cluster_submit",
+                "task_list",
+                "task_detail",
+                "task_log",
+                "result",
+                "quality",
+                "download",
+                "query",
+                "save_all",
+                "batch_submit",
+                "batch_reconcile",
+                "batch_retry",
+                "bulk_download"
+              ],
+              "type": "string"
+            },
+            "base_url": {
+              "description": "Optional API base URL override (defaults from server configuration).",
+              "type": "string"
+            },
+            "batch_id": {
+              "description": "Batch manifest id (batch_reconcile, batch_retry; optional on batch_submit to fix the id).",
+              "type": "string"
+            },
+            "manifest_path": {
+              "description": "Optional explicit manifest JSON path.",
+              "type": "string"
+            },
+            "modulelist": {
+              "description": "Comma-separated module names. For submit/batch_submit (Annotation Pipeline), use submit modules only: quality, annotation, host, lifestyle, terminator, taxonomic, trna, anticrispr, crispr, arvf, transmembrane. Do not use result/output names such as proteins, phage_detail, phagefasta, or tree in submit modulelist. For action=batch_submit, if omitted the backend defaults to [quality]. For action=bulk_download, use dataset data-type names instead: phage_meta_data, annotated_protein, transcription_terminator, trna_tmrna, anticrispr_protein, crispr_array, antimicrobial_resistance_gene, virulent_factor, transmembrane_protein, phage_fasta, protein_fasta, gff3. Omit for all data types.",
+              "type": "string"
+            },
+            "phage_ids": {
+              "description": "For batch_submit: array of phage accessions or a single string with semicolons/newlines. For bulk_download: datasource names to download (e.g. 'refseq', 'genbank;embl'). Valid datasources: refseq, genbank, embl, ddbj, phagesdb, gvd, gpd, mgv, temphd, chvd, igvd, img_vr, gov2, stv. Omit for all datasources."
+            },
+            "phage_ids_file": {
+              "description": "batch_submit: optional path to newline-separated phage ids.",
+              "type": "string"
+            },
+            "phageid": {
+              "description": "Single phage ID or accession.",
+              "type": "string"
+            },
+            "phageids": {
+              "description": "Comma-separated phage IDs.",
+              "type": "string"
+            },
+            "result_kind": {
+              "description": "Type of result to retrieve.",
+              "enum": [
+                "quality",
+                "proteins",
+                "phage_detail",
+                "modules",
+                "tree",
+                "phagefasta"
+              ],
+              "type": "string"
+            },
+            "retry_phage_ids": {
+              "description": "batch_retry: explicit list of ids; if omitted, uses last reconcile missing list."
+            },
+            "strategy": {
+              "description": "batch_submit: multi_one_task (default) or per_strain.",
+              "type": "string"
+            },
+            "taskid": {
+              "description": "Numeric PhageScope remote task ID for status/result queries (e.g., 37468), not local job ids like act_xxx. Use this field name; if you emit task_id instead, the server maps it to taskid.",
+              "type": "string"
+            },
+            "token": {
+              "description": "Rarely needed. Optional Bearer token only if the platform/account explicitly requires it; omit by default (phageapi-style flows use userid, not a mandatory token).",
+              "type": "string"
+            },
+            "userid": {
+              "description": "User ID for the PhageScope platform.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "action"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Prepare and audit the local PhageScope public dataset for host taxon prediction research. Use this before code_executor for PhageScope ML tasks.",
+        "name": "phagescope_research",
+        "parameters": {
+          "properties": {
+            "action": {
+              "default": "audit",
+              "description": "Operation to perform.",
+              "enum": [
+                "audit",
+                "research_plan",
+                "prepare_metadata_table"
+              ],
+              "type": "string"
+            },
+            "completeness": {
+              "description": "Allowed Completeness values. Defaults to High-quality and Medium-quality."
+            },
+            "data_dir": {
+              "description": "Local PhageScope data directory. Defaults to PHAGESCOPE_DATA_DIR or <repo>/phagescope.",
+              "type": "string"
+            },
+            "label_level": {
+              "default": "genus",
+              "description": "How to standardize Host labels for model targets.",
+              "enum": [
+                "raw",
+                "genus",
+                "species_like"
+              ],
+              "type": "string"
+            },
+            "min_label_count": {
+              "default": 20,
+              "description": "Minimum class count retained in prepared metadata table.",
+              "type": "integer"
+            },
+            "output_dir": {
+              "description": "Directory for prepared TSV/JSON outputs.",
+              "type": "string"
+            },
+            "session_id": {
+              "description": "Optional chat session id for session-scoped outputs.",
+              "type": "string"
+            },
+            "split_group": {
+              "default": "subcluster",
+              "description": "Grouping key for deterministic leakage-aware train/val/test split.",
+              "enum": [
+                "subcluster",
+                "cluster",
+                "phage_id"
+              ],
+              "type": "string"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Plan creation, optimization, and execution tool. Operations: create, bind, review, optimize, get, execute_all, todo_list. CRITICAL: When the user wants to execute the entire plan or all tasks, you MUST use operation='execute_all'. Do NOT execute tasks one by one. execute_all launches a background job that handles all tasks automatically. Use create for new structured plans, then prefer review to persist rubric metadata. Use bind to switch the current session to a different plan (e.g. '切换到 plan X', '绑定 plan X'). Use get/review/optimize for bound plans. Research with web_search first only when latest external evidence materially affects the plan. For optimize, use concrete change objects such as add_task, update_task, update_description, delete_task, or reorder_task; keep update_task fields at the top level. If changes are omitted, optimize may auto-generate them from the latest rubric review. Do not use this tool to mark the currently executing task completed or failed; current-task status is auto-synced from tool execution.",
+        "name": "plan_operation",
+        "parameters": {
+          "properties": {
+            "changes": {
+              "description": "Optimization changes (for optimize).",
+              "items": {
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "description": {
+              "description": "Plan goal description (for create).",
+              "type": "string"
+            },
+            "operation": {
+              "description": "Plan operation to perform. Use execute_all to run all pending tasks in background. Use bind to switch to a different plan.",
+              "enum": [
+                "create",
+                "bind",
+                "review",
+                "optimize",
+                "get",
+                "execute_all",
+                "todo_list",
+                "update_task"
+              ],
+              "type": "string"
+            },
+            "plan_id": {
+              "description": "Plan ID (for review/optimize/get).",
+              "type": "integer"
+            },
+            "tasks": {
+              "description": "Task list (for create).",
+              "items": {
+                "properties": {
+                  "dependencies": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "instruction": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "instruction"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "title": {
+              "description": "Plan title (for create).",
+              "type": "string"
+            }
+          },
+          "required": [
+            "operation"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Data analysis and result interpretation tool. Supports lightweight metadata/profile inspection plus code-backed analysis for CSV, TSV, MAT, NPY, H5AD, and TXT helper files. Use profile/metadata to inspect existing plan or task outputs before synthesizing reports from large tables.",
+        "name": "result_interpreter",
+        "parameters": {
+          "properties": {
+            "code": {
+              "description": "Python code (for execute operation).",
+              "type": "string"
+            },
+            "file_path": {
+              "description": "Single file path (for metadata/profile operations).",
+              "type": "string"
+            },
+            "file_paths": {
+              "description": "Absolute paths to data files.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "operation": {
+              "description": "Analysis operation. 'profile' is the deterministic dataset-overview path; 'analyze' is the full pipeline; 'metadata' is a schema peek; 'plan_analyze' is for plan-linked workflows.",
+              "enum": [
+                "metadata",
+                "profile",
+                "generate",
+                "execute",
+                "analyze",
+                "plan_analyze"
+              ],
+              "type": "string"
+            },
+            "output_dir": {
+              "description": "Optional output directory (plan_analyze).",
+              "type": "string"
+            },
+            "task_description": {
+              "description": "What to compute or interpret. Required for quality results; if omitted, a generic default is used.",
+              "type": "string"
+            },
+            "task_title": {
+              "description": "Short title for analyze/generate/plan_analyze. If omitted, the server uses a sensible default.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "operation"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Generate a literature-backed review draft by first collecting evidence with literature_pipeline and then drafting with manuscript_writer.",
+        "name": "review_pack_writer",
+        "parameters": {
+          "properties": {
+            "download_pdfs": {
+              "description": "Whether to try downloading PMC PDFs.",
+              "type": "boolean"
+            },
+            "evaluation_threshold": {
+              "description": "Section evaluation pass threshold from 0 to 1.",
+              "type": "number"
+            },
+            "keep_workspace": {
+              "description": "Whether to keep intermediate drafting workspace artifacts.",
+              "type": "boolean"
+            },
+            "max_pdfs": {
+              "description": "Maximum number of PDFs to download when download_pdfs=true.",
+              "type": "integer"
+            },
+            "max_results": {
+              "description": "Maximum number of PubMed records to collect.",
+              "type": "integer"
+            },
+            "max_revisions": {
+              "description": "Maximum revision rounds per section.",
+              "type": "integer"
+            },
+            "output_path": {
+              "description": "Optional project-relative output path for the review draft.",
+              "type": "string"
+            },
+            "query": {
+              "description": "Optional explicit PubMed query override.",
+              "type": "string"
+            },
+            "sections": {
+              "description": "Optional subset of manuscript sections to draft.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "session_id": {
+              "description": "Optional session id for session-scoped output storage.",
+              "type": "string"
+            },
+            "task": {
+              "description": "Optional direct manuscript task override.",
+              "type": "string"
+            },
+            "topic": {
+              "description": "High-level review topic.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "topic"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Preferred tool for scientific composite figures and publication-style plots. Use this when the user asks for a figure, plot, chart, visualization, PNG/PDF output, English legend/summary, provenance TSV, QA JSON, or Deliverables publication. It accepts inline tabular rows or CSV/TSV/JSON/JSONL paths and generates PNG, optional PDF, summary.md, provenance TSV, QA JSON, and deliverable_submit artifacts. Prefer this over code_executor for standard scientific figure generation.",
+        "name": "scientific_figure_generator",
+        "parameters": {
+          "properties": {
+            "datasets": {
+              "description": "Datasets as inline rows or file paths.",
+              "items": {
+                "properties": {
+                  "format": {
+                    "description": "Optional format override: csv, tsv, json, jsonl.",
+                    "type": "string"
+                  },
+                  "name": {
+                    "description": "Dataset name referenced by panels.",
+                    "type": "string"
+                  },
+                  "path": {
+                    "description": "CSV/TSV/JSON/JSONL file path.",
+                    "type": "string"
+                  },
+                  "rows": {
+                    "description": "Inline tabular rows.",
+                    "items": {
+                      "type": "object"
+                    },
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "dpi": {
+              "description": "PNG DPI, default 300.",
+              "type": "integer"
+            },
+            "formats": {
+              "description": "Output formats. PNG is always written; include pdf for PDF.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "output_basename": {
+              "description": "Base filename for PNG/PDF/QA/provenance artifacts.",
+              "type": "string"
+            },
+            "output_dir": {
+              "description": "Output directory. Defaults to the task/session work directory.",
+              "type": "string"
+            },
+            "panels": {
+              "description": "Panel specs. Supported type values: auto, bar, line, scatter, heatmap, table. Common fields: dataset, type, title, x, y, value, row, column, top_n.",
+              "items": {
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "publish": {
+              "default": true,
+              "description": "Whether to publish generated artifacts to session Deliverables.",
+              "type": "boolean"
+            },
+            "title": {
+              "description": "English figure title.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "datasets"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Deterministic accession-to-FASTA downloader with strict domain allowlist. Use this when the user asks to download FASTA by accession IDs.",
+        "name": "sequence_fetch",
+        "parameters": {
+          "anyOf": [
+            {
+              "required": [
+                "accession"
+              ]
+            },
+            {
+              "required": [
+                "accessions"
+              ]
+            }
+          ],
+          "properties": {
+            "accession": {
+              "description": "Single accession ID (mutually exclusive with accessions).",
+              "type": "string"
+            },
+            "accessions": {
+              "description": "Multiple accession IDs (mutually exclusive with accession).",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "database": {
+              "description": "NCBI database type.",
+              "enum": [
+                "nuccore",
+                "protein"
+              ],
+              "type": "string"
+            },
+            "format": {
+              "description": "Output format (FASTA only).",
+              "enum": [
+                "fasta"
+              ],
+              "type": "string"
+            },
+            "max_bytes": {
+              "description": "Maximum response payload size in bytes.",
+              "type": "integer"
+            },
+            "output_name": {
+              "description": "Optional output filename.",
+              "type": "string"
+            },
+            "session_id": {
+              "description": "Optional session id for session-scoped output storage.",
+              "type": "string"
+            },
+            "timeout_sec": {
+              "description": "Network timeout in seconds.",
+              "type": "number"
+            }
+          },
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Manage interactive terminal sessions (sandbox PTY or remote SSH). Use 'create' or 'ensure' to get a terminal tied to the current chat session or execution context, 'write' to send commands (plain text or base64), 'list' to see active sessions, 'close' to terminate a session, 'replay' / 'audit' for history. Prefer sandbox mode for local scripts/debugging; use ssh mode to reach remote servers (e.g. bio-tools GPU node). For 'write', terminal_id is auto-resolved if omitted — no need to call 'ensure' first.",
+        "name": "terminal_session",
+        "parameters": {
+          "properties": {
+            "data": {
+              "description": "Command text to send (for write operation).",
+              "type": "string"
+            },
+            "encoding": {
+              "description": "Encoding of the data field (default utf-8).",
+              "enum": [
+                "utf-8",
+                "base64"
+              ],
+              "type": "string"
+            },
+            "limit": {
+              "description": "Max rows to return for audit/replay (default 500).",
+              "type": "integer"
+            },
+            "mode": {
+              "description": "Terminal backend: 'sandbox' for local PTY, 'ssh' for remote.",
+              "enum": [
+                "sandbox",
+                "ssh"
+              ],
+              "type": "string"
+            },
+            "operation": {
+              "description": "Operation to perform on the terminal session.",
+              "enum": [
+                "create",
+                "ensure",
+                "list",
+                "close",
+                "write",
+                "resize",
+                "approve",
+                "reject",
+                "pending_approvals",
+                "replay",
+                "audit"
+              ],
+              "type": "string"
+            },
+            "session_id": {
+              "description": "Chat session ID to associate the terminal with.",
+              "type": "string"
+            },
+            "terminal_id": {
+              "description": "Terminal instance UUID (required for write/close/replay/audit).",
+              "type": "string"
+            }
+          },
+          "required": [
+            "operation"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Download a file from a public http/https URL into the current task/session output directory. Use this for direct public link downloads instead of code_executor.",
+        "name": "url_fetch",
+        "parameters": {
+          "properties": {
+            "allowed_content_types": {
+              "description": "Optional allowed MIME types (for example application/pdf or text/*).",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "max_bytes": {
+              "description": "Maximum response size in bytes.",
+              "type": "integer"
+            },
+            "output_name": {
+              "description": "Optional output filename.",
+              "type": "string"
+            },
+            "session_id": {
+              "description": "Optional session id for session-scoped output storage.",
+              "type": "string"
+            },
+            "sha256": {
+              "description": "Optional expected sha256 hex digest.",
+              "type": "string"
+            },
+            "timeout_sec": {
+              "description": "Network timeout in seconds.",
+              "type": "number"
+            },
+            "url": {
+              "description": "Public http/https URL to download.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "url"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Verify whether a completed task actually produced correct outputs. Runs deterministic file/data checks (file_exists, file_nonempty, glob_count_at_least, text_contains, json_field_equals, json_field_at_least, pdb_residue_present). IMPORTANT: You MUST pass verification_criteria with concrete check strings — without them the verifier will skip and return no useful result. Example criteria: ['file_exists:/data/output.csv', 'file_nonempty:/data/output.csv', 'glob_count_at_least:/results/*.png:3'].",
+        "name": "verify_task",
+        "parameters": {
+          "properties": {
+            "task_id": {
+              "description": "The task ID to verify within the current plan.",
+              "type": "integer"
+            },
+            "verification_criteria": {
+              "description": "List of shorthand check strings. Formats: 'file_exists:<path>', 'file_nonempty:<path>', 'glob_count_at_least:<glob>:<min_count>', 'text_contains:<path>:<pattern>', 'json_field_equals:<path>:<key_path>:<expected>', 'json_field_at_least:<path>:<key_path>:<min_value>', 'pdb_residue_present:<path>:<residue>'. Without these, verification will be skipped.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "task_id"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Read PDFs and images using a vision model. For visual OCR, figures, and equations only.",
+        "name": "vision_reader",
+        "parameters": {
+          "properties": {
+            "file_path": {
+              "description": "Absolute path to the image or PDF file.",
+              "type": "string"
+            },
+            "operation": {
+              "description": "Vision operation type.",
+              "enum": [
+                "read_pdf",
+                "read_image",
+                "ocr_page"
+              ],
+              "type": "string"
+            }
+          },
+          "required": [
+            "operation",
+            "file_path"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Broad web search via Alibaba DashScope Responses API (built-in web_search tool). Use for web-based queries only, NOT for local files.",
+        "name": "web_search",
+        "parameters": {
+          "properties": {
+            "queries": {
+              "description": "Optional focused subqueries for parallel search on broad comparison tasks.",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 6,
+              "minItems": 2,
+              "type": "array"
+            },
+            "query": {
+              "description": "The search query.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "query"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Call this tool ONLY when you have gathered enough information and are ready to provide the final comprehensive answer to the user. Do NOT call this prematurely - use other tools first to gather information.",
+        "name": "submit_final_answer",
+        "parameters": {
+          "properties": {
+            "answer": {
+              "description": "The comprehensive final answer, in Markdown format.",
+              "type": "string"
+            },
+            "confidence": {
+              "description": "Confidence score from 0.0 to 1.0.",
+              "type": "number"
+            },
+            "deliverables": {
+              "description": "Optional files or artifacts actually produced or saved during this turn. Include this when the user asked for a saved file, report, figure, or Deliverables output.",
+              "items": {
+                "properties": {
+                  "description": {
+                    "description": "Short description of the generated artifact.",
+                    "type": "string"
+                  },
+                  "path": {
+                    "description": "Path to the generated artifact.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "path"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            },
+            "evidence_sources": {
+              "description": "Optional files, URLs, manifests, or tool outputs that materially support the answer. Use this for evidence-backed synthesis over plan/task outputs.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "answer"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    }
+  ],
+  "executor_available_tools": [
+    "web_search",
+    "sequence_fetch",
+    "url_fetch",
+    "bio_tools",
+    "scientific_figure_generator",
+    "code_executor",
+    "graph_rag",
+    "document_reader",
+    "vision_reader",
+    "phagescope",
+    "phagescope_research",
+    "literature_pipeline",
+    "review_pack_writer",
+    "manuscript_writer",
+    "deliverable_submit",
+    "file_operations",
+    "terminal_session",
+    "result_interpreter"
+  ]
+}
