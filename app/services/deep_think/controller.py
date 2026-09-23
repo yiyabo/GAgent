@@ -87,6 +87,27 @@ async def think(
     return await agent._think_prompt_based(user_query.strip(), context, task_context)
 
 
+def _consume_handoff_iteration_reserve(
+    *,
+    iteration: int,
+    base_limit: int,
+    limit: int,
+    reserve_used: int,
+    reserve_max: int = 4,
+) -> tuple[int, int]:
+    """Consume one handoff iteration reserve cycle, if eligible.
+
+    Static budget semantics: the loop limit may grow beyond ``base_limit``
+    only when a task handoff lands on the final base-budget iteration (the
+    newly bound task would otherwise get zero cycles), and never by more
+    than ``reserve_max`` cycles in total. Returns ``(new_limit, new_used)``;
+    the worst-case limit is always ``base_limit + reserve_max``.
+    """
+    if reserve_used >= reserve_max or iteration < base_limit - 1:
+        return limit, reserve_used
+    return limit + 1, reserve_used + 1
+
+
 async def _think_native(
     agent: "DeepThinkAgent",
     user_query: str,
@@ -151,14 +172,19 @@ async def _think_native(
     had_real_execution_tool = False
     partial_completion_retry_count = 0
     _MAX_PARTIAL_RETRIES = 3
-    _MAX_HANDOFF_ITERATION_EXTENSIONS = 4
+    # Iteration budget is static: the limit below starts at max_iterations
+    # and can only grow via _consume_handoff_iteration_reserve (task handoffs
+    # landing on the final base-budget iteration), so the worst case is
+    # max_iterations + _HANDOFF_RESERVE_MAX — never an open-ended mutation.
+    _HANDOFF_RESERVE_MAX = 4
+    _base_iteration_limit = agent.max_iterations
     last_real_execution_tool_results: List[Dict[str, Any]] = []
     force_verified_execution_finalization = False
     pending_handoff_task_id: Optional[int] = None
     pending_handoff_previous_task_id: Optional[int] = None
     structured_plan_finalize_nudge_plan_id: Optional[int] = None
     runtime_iteration_limit = agent.max_iterations
-    handoff_iteration_extensions = 0
+    handoff_reserve_used = 0
     consecutive_llm_failures = 0
     max_consecutive_llm_failures = _dta()._default_max_consecutive_llm_failures()
     llm_fatal_abort = False
@@ -717,18 +743,22 @@ async def _think_native(
                                     ),
                                 }
                             )
-                            if (
-                                handoff_iteration_extensions < _MAX_HANDOFF_ITERATION_EXTENSIONS
-                                and iteration >= runtime_iteration_limit - 1
-                            ):
-                                runtime_iteration_limit += 1
-                                handoff_iteration_extensions += 1
+                            new_limit, handoff_reserve_used = _consume_handoff_iteration_reserve(
+                                iteration=iteration,
+                                base_limit=_base_iteration_limit,
+                                limit=runtime_iteration_limit,
+                                reserve_used=handoff_reserve_used,
+                                reserve_max=_HANDOFF_RESERVE_MAX,
+                            )
+                            if new_limit != runtime_iteration_limit:
+                                runtime_iteration_limit = new_limit
                                 logger.info(
-                                    "[DEEP_THINK_NATIVE] Extended iteration budget after task handoff previous=%s next=%s new_limit=%s extension=%s",
+                                    "[DEEP_THINK_NATIVE] Consumed handoff iteration reserve previous=%s next=%s new_limit=%s reserve_used=%d/%d",
                                     bound_task_before_cycle,
                                     bound_task_after_cycle,
                                     runtime_iteration_limit,
-                                    handoff_iteration_extensions,
+                                    handoff_reserve_used,
+                                    _HANDOFF_RESERVE_MAX,
                                 )
                             logger.info(
                                 "[DEEP_THINK_NATIVE] Detected task handoff from %s to %s at iteration=%s; injected execute-next-task nudge",
@@ -1112,18 +1142,22 @@ async def _think_native(
                                 ),
                             }
                         )
-                        if (
-                            handoff_iteration_extensions < _MAX_HANDOFF_ITERATION_EXTENSIONS
-                            and iteration >= runtime_iteration_limit - 1
-                        ):
-                            runtime_iteration_limit += 1
-                            handoff_iteration_extensions += 1
+                        new_limit, handoff_reserve_used = _consume_handoff_iteration_reserve(
+                            iteration=iteration,
+                            base_limit=_base_iteration_limit,
+                            limit=runtime_iteration_limit,
+                            reserve_used=handoff_reserve_used,
+                            reserve_max=_HANDOFF_RESERVE_MAX,
+                        )
+                        if new_limit != runtime_iteration_limit:
+                            runtime_iteration_limit = new_limit
                             logger.info(
-                                "[DEEP_THINK_NATIVE] Extended iteration budget after forced handoff followthrough previous=%s next=%s new_limit=%s extension=%s",
+                                "[DEEP_THINK_NATIVE] Consumed handoff iteration reserve (forced followthrough) previous=%s next=%s new_limit=%s reserve_used=%d/%d",
                                 prior_handoff_task_id,
                                 bound_task_after_forced,
                                 runtime_iteration_limit,
-                                handoff_iteration_extensions,
+                                handoff_reserve_used,
+                                _HANDOFF_RESERVE_MAX,
                             )
                         current_step.self_correction = (
                             f"Detected a no-tool response after handoff to Task {prior_handoff_task_id}; "
