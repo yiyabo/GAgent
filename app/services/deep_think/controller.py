@@ -672,6 +672,159 @@ async def _native_probe_only_cycle(
     return "ok", ""
 
 
+async def _native_real_execution_cycle(
+    agent: "DeepThinkAgent",
+    *,
+    tool_results: List[Dict[str, Any]],
+    iteration: int,
+    current_step: ThinkingStep,
+    messages: List[Dict[str, Any]],
+    task_context: Optional[TaskExecutionContext],
+    user_query: str,
+    cycle: _NativeCycleState,
+) -> str:
+    """Real-execution tracker for one non-probe tool cycle: marks real
+    execution, detects task handoff (injecting the handoff nudge and
+    consuming the static iteration reserve), runs the partial-completion
+    retry, and enters verified-execution finalization mode.
+
+    Returns ``"continue"`` when a handoff short-circuits the iteration
+    (partial-completion/finalization checks are skipped so finalization
+    cannot prematurely end the run), otherwise ``"ok"``. Extracted verbatim
+    from ``_think_native``.
+    """
+    cycle.probe_only_execution_cycles = 0
+    # Only mark cycle.had_real_execution_tool when a code-running
+    # tool actually executed.  Coordination tools like
+    # plan_operation still reset the probe counter (they ARE
+    # a deliberate action, not passive observation) but must
+    # NOT set the flag — otherwise the hard-stop emits a
+    # misleading "task code executed" message when no code
+    # was ever run.
+    if any(agent._tool_counts_as_real_execution(item) for item in tool_results):
+        cycle.had_real_execution_tool = True
+        cycle.last_real_execution_tool_results = [
+            item for item in tool_results if agent._tool_counts_as_real_execution(item)
+        ]
+        executed_pending_handoff = (
+            cycle.pending_handoff_task_id is not None
+            and cycle.bound_task_before_cycle == cycle.pending_handoff_task_id
+        )
+        bound_task_after_cycle = agent._current_bound_task_id(task_context)
+        if (
+            cycle.bound_task_before_cycle is not None
+            and bound_task_after_cycle is not None
+            and bound_task_after_cycle != cycle.bound_task_before_cycle
+        ):
+            cycle.pending_handoff_previous_task_id = cycle.bound_task_before_cycle
+            cycle.pending_handoff_task_id = bound_task_after_cycle
+            cycle.forced_handoff_followthrough_attempts = 0
+            cycle.had_real_execution_tool = False
+            cycle.last_real_execution_tool_results = []
+            cycle.probe_only_execution_cycles = 0
+            cycle.partial_completion_retry_count = 0
+            messages.append(
+                {
+                    "role": "user",
+                    "content": agent._build_task_handoff_execution_nudge(
+                        task_context=task_context,
+                        user_query=user_query,
+                        previous_task_id=cycle.bound_task_before_cycle,
+                        next_task_id=bound_task_after_cycle,
+                    ),
+                }
+            )
+            new_limit, cycle.handoff_reserve_used = _consume_handoff_iteration_reserve(
+                iteration=iteration,
+                base_limit=cycle.base_iteration_limit,
+                limit=cycle.runtime_iteration_limit,
+                reserve_used=cycle.handoff_reserve_used,
+                reserve_max=cycle.handoff_reserve_max,
+            )
+            if new_limit != cycle.runtime_iteration_limit:
+                cycle.runtime_iteration_limit = new_limit
+                logger.info(
+                    "[DEEP_THINK_NATIVE] Consumed handoff iteration reserve previous=%s next=%s new_limit=%s reserve_used=%d/%d",
+                    cycle.bound_task_before_cycle,
+                    bound_task_after_cycle,
+                    cycle.runtime_iteration_limit,
+                    cycle.handoff_reserve_used,
+                    cycle.handoff_reserve_max,
+                )
+            logger.info(
+                "[DEEP_THINK_NATIVE] Detected task handoff from %s to %s at iteration=%s; injected execute-next-task nudge",
+                cycle.bound_task_before_cycle,
+                bound_task_after_cycle,
+                iteration,
+            )
+            current_step.self_correction = (
+                f"Detected task handoff from {cycle.bound_task_before_cycle} to "
+                f"{bound_task_after_cycle}; injected an execute-next-task nudge."
+            )
+            # Skip partial-completion / finalization checks this
+            # iteration — the handoff target hasn't been executed
+            # yet and finalization would prematurely end the run.
+            current_step.status = "analyzing"
+            if agent.on_thinking:
+                await agent._safe_callback(current_step)
+            return "continue"
+        elif executed_pending_handoff:
+            cycle.pending_handoff_task_id = None
+            cycle.pending_handoff_previous_task_id = None
+            cycle.forced_handoff_followthrough_attempts = 0
+
+    # --- Partial completion retry ---
+    partial_info = agent._detect_partial_completion_in_tool_results(tool_results)
+    if (
+        partial_info
+        and cycle.partial_completion_retry_count < cycle.max_partial_retries
+        and agent._current_bound_task_id(task_context) == cycle.bound_task_before_cycle
+    ):
+        cycle.partial_completion_retry_count += 1
+        nudge = agent._build_partial_completion_retry_nudge(
+            partial_info,
+            task_context=task_context,
+            user_query=user_query,
+            retry_count=cycle.partial_completion_retry_count,
+        )
+        messages.append({"role": "user", "content": nudge})
+        logger.info(
+            "[DEEP_THINK_NATIVE] Partial completion retry nudge: ratio=%s retry=%d iter=%d",
+            partial_info.get("partial_ratio"),
+            cycle.partial_completion_retry_count,
+            iteration,
+        )
+        current_step.self_correction = (
+            f"Detected partial completion ({partial_info.get('partial_ratio', '?/?')}); "
+            f"injected retry nudge #{cycle.partial_completion_retry_count}."
+        )
+    elif agent._should_force_verified_execution_finalization(
+        task_context=task_context,
+        tool_results=tool_results,
+        had_real_execution_tool=cycle.had_real_execution_tool,
+    ):
+        cycle.force_verified_execution_finalization = True
+        messages.append(
+            {
+                "role": "user",
+                "content": agent._build_verified_execution_finalize_nudge(
+                    task_context=task_context,
+                    user_query=user_query,
+                ),
+            }
+        )
+        logger.info(
+            "[DEEP_THINK_NATIVE] Entered verified-execution finalization mode at iteration=%s",
+            iteration,
+        )
+        current_step.self_correction = (
+            "Detected verified task completion with no remaining pending tasks; "
+            "injected a finalization-only nudge."
+        )
+
+    return "ok"
+
+
 async def _think_native(
     agent: "DeepThinkAgent",
     user_query: str,
@@ -807,135 +960,18 @@ async def _think_native(
                     final_answer = new_final_answer
                     break
                 if flow == "ok":
-                    cycle.probe_only_execution_cycles = 0
-                    # Only mark cycle.had_real_execution_tool when a code-running
-                    # tool actually executed.  Coordination tools like
-                    # plan_operation still reset the probe counter (they ARE
-                    # a deliberate action, not passive observation) but must
-                    # NOT set the flag — otherwise the hard-stop emits a
-                    # misleading "task code executed" message when no code
-                    # was ever run.
-                    if any(agent._tool_counts_as_real_execution(item) for item in tool_results):
-                        cycle.had_real_execution_tool = True
-                        cycle.last_real_execution_tool_results = [
-                            item for item in tool_results if agent._tool_counts_as_real_execution(item)
-                        ]
-                        executed_pending_handoff = (
-                            cycle.pending_handoff_task_id is not None
-                            and cycle.bound_task_before_cycle == cycle.pending_handoff_task_id
-                        )
-                        bound_task_after_cycle = agent._current_bound_task_id(task_context)
-                        if (
-                            cycle.bound_task_before_cycle is not None
-                            and bound_task_after_cycle is not None
-                            and bound_task_after_cycle != cycle.bound_task_before_cycle
-                        ):
-                            cycle.pending_handoff_previous_task_id = cycle.bound_task_before_cycle
-                            cycle.pending_handoff_task_id = bound_task_after_cycle
-                            cycle.forced_handoff_followthrough_attempts = 0
-                            cycle.had_real_execution_tool = False
-                            cycle.last_real_execution_tool_results = []
-                            cycle.probe_only_execution_cycles = 0
-                            cycle.partial_completion_retry_count = 0
-                            messages.append(
-                                {
-                                    "role": "user",
-                                    "content": agent._build_task_handoff_execution_nudge(
-                                        task_context=task_context,
-                                        user_query=user_query,
-                                        previous_task_id=cycle.bound_task_before_cycle,
-                                        next_task_id=bound_task_after_cycle,
-                                    ),
-                                }
-                            )
-                            new_limit, cycle.handoff_reserve_used = _consume_handoff_iteration_reserve(
-                                iteration=iteration,
-                                base_limit=cycle.base_iteration_limit,
-                                limit=cycle.runtime_iteration_limit,
-                                reserve_used=cycle.handoff_reserve_used,
-                                reserve_max=cycle.handoff_reserve_max,
-                            )
-                            if new_limit != cycle.runtime_iteration_limit:
-                                cycle.runtime_iteration_limit = new_limit
-                                logger.info(
-                                    "[DEEP_THINK_NATIVE] Consumed handoff iteration reserve previous=%s next=%s new_limit=%s reserve_used=%d/%d",
-                                    cycle.bound_task_before_cycle,
-                                    bound_task_after_cycle,
-                                    cycle.runtime_iteration_limit,
-                                    cycle.handoff_reserve_used,
-                                    cycle.handoff_reserve_max,
-                                )
-                            logger.info(
-                                "[DEEP_THINK_NATIVE] Detected task handoff from %s to %s at iteration=%s; injected execute-next-task nudge",
-                                cycle.bound_task_before_cycle,
-                                bound_task_after_cycle,
-                                iteration,
-                            )
-                            current_step.self_correction = (
-                                f"Detected task handoff from {cycle.bound_task_before_cycle} to "
-                                f"{bound_task_after_cycle}; injected an execute-next-task nudge."
-                            )
-                            # Skip partial-completion / finalization checks this
-                            # iteration — the handoff target hasn't been executed
-                            # yet and finalization would prematurely end the run.
-                            current_step.status = "analyzing"
-                            if agent.on_thinking:
-                                await agent._safe_callback(current_step)
-                            continue
-                        elif executed_pending_handoff:
-                            cycle.pending_handoff_task_id = None
-                            cycle.pending_handoff_previous_task_id = None
-                            cycle.forced_handoff_followthrough_attempts = 0
-
-                    # --- Partial completion retry ---
-                    partial_info = agent._detect_partial_completion_in_tool_results(tool_results)
-                    if (
-                        partial_info
-                        and cycle.partial_completion_retry_count < cycle.max_partial_retries
-                        and agent._current_bound_task_id(task_context) == cycle.bound_task_before_cycle
-                    ):
-                        cycle.partial_completion_retry_count += 1
-                        nudge = agent._build_partial_completion_retry_nudge(
-                            partial_info,
-                            task_context=task_context,
-                            user_query=user_query,
-                            retry_count=cycle.partial_completion_retry_count,
-                        )
-                        messages.append({"role": "user", "content": nudge})
-                        logger.info(
-                            "[DEEP_THINK_NATIVE] Partial completion retry nudge: ratio=%s retry=%d iter=%d",
-                            partial_info.get("partial_ratio"),
-                            cycle.partial_completion_retry_count,
-                            iteration,
-                        )
-                        current_step.self_correction = (
-                            f"Detected partial completion ({partial_info.get('partial_ratio', '?/?')}); "
-                            f"injected retry nudge #{cycle.partial_completion_retry_count}."
-                        )
-                    elif agent._should_force_verified_execution_finalization(
-                        task_context=task_context,
+                    flow = await _native_real_execution_cycle(
+                        agent,
                         tool_results=tool_results,
-                        had_real_execution_tool=cycle.had_real_execution_tool,
-                    ):
-                        cycle.force_verified_execution_finalization = True
-                        messages.append(
-                            {
-                                "role": "user",
-                                "content": agent._build_verified_execution_finalize_nudge(
-                                    task_context=task_context,
-                                    user_query=user_query,
-                                ),
-                            }
-                        )
-                        logger.info(
-                            "[DEEP_THINK_NATIVE] Entered verified-execution finalization mode at iteration=%s",
-                            iteration,
-                        )
-                        current_step.self_correction = (
-                            "Detected verified task completion with no remaining pending tasks; "
-                            "injected a finalization-only nudge."
-                        )
-
+                        iteration=iteration,
+                        current_step=current_step,
+                        messages=messages,
+                        task_context=task_context,
+                        user_query=user_query,
+                        cycle=cycle,
+                    )
+                    if flow == "continue":
+                        continue
                 current_step.status = "analyzing"
                 if agent.on_thinking:
                     await agent._safe_callback(current_step)
