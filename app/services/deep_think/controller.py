@@ -1251,6 +1251,43 @@ async def _think_native(
                 ),
             })
 
+    return await _native_finalize(
+        agent,
+        user_query=user_query,
+        context=context,
+        task_context=task_context,
+        iteration=iteration,
+        final_answer=final_answer,
+        fallback_used=fallback_used,
+        confidence=confidence,
+        thinking_steps=thinking_steps,
+        tools_used=tools_used,
+        messages=messages,
+        llm_fatal_abort=llm_fatal_abort,
+    )
+
+
+async def _native_finalize(
+    agent: "DeepThinkAgent",
+    *,
+    user_query: str,
+    context: Optional[Dict[str, Any]],
+    task_context: Optional[TaskExecutionContext],
+    iteration: int,
+    final_answer: str,
+    fallback_used: bool,
+    confidence: float,
+    thinking_steps: List[ThinkingStep],
+    tools_used: List[str],
+    messages: List[Dict[str, Any]],
+    llm_fatal_abort: bool,
+) -> DeepThinkResult:
+    """Post-loop answer finalization: fallback synthesis chain, truth
+    barriers, structured-plan contract, sanitizing and result assembly.
+
+    Extracted verbatim from the tail of ``_think_native`` (same behaviour;
+    only the enclosing function boundary is new).
+    """
     if final_answer and not llm_fatal_abort and not agent._is_valid_final_answer(final_answer, user_query=user_query):
         logger.info("[DEEP_THINK_NATIVE] Rejected process-only final answer; switching to fallback synthesis")
         final_answer = ""
