@@ -34,6 +34,27 @@ tool_box/
 - Bio tools expose one registry entry that dispatches configured operations from `bio_tools/tools_config.json`.
 - Bio tools validate paths/control characters/types, support FASTA text or file inputs, and can run local/remote/background jobs.
 
+## TOOL RETIREMENT CHECKLIST
+Removing a tool is a multi-surface operation; a registry-only removal leaves
+live residue (the 2026-09 `deeppl` half-removal is the cautionary tale). Work
+through every item and verify with `grep -rn "<tool_name>" app tool_box web-ui/src`:
+1. `tool_registry.py`: remove the definition and its `_TOOL_METADATA` entry.
+2. `tool_box/tools_impl/<tool>.py`: delete the handler module.
+3. `app/services/tool_schemas.py`: remove the hand-written native-call schema.
+4. Prompt surfaces: tool catalogs/descriptions in `app/services/deep_think/prompts.py`,
+   delegation allowlists (plan executor / code_executor prompts), skills references.
+5. Result/summary branches: `app/routers/chat/tool_results.py` and any
+   tool-specific post-processing in `app/routers/chat/action_execution.py`
+   (signals, consensus, galleries) — including consumers of that metadata.
+6. Frontend: tool-name literals in `web-ui/src` (labels, icons, render branches).
+7. Tests: delete/rework tool-specific tests; keep absence-guard assertions
+   (e.g. "tool_operation: <tool> not in base actions") where they exist.
+8. Scripts: `grep -rn "tools_impl.<tool>" scripts/` — offline pipelines that
+   import the handler must be migrated, deleted, or explicitly flagged to the
+   user before removal.
+9. Run `pytest app/tests/chat app/tests/unit app/tests/tools -q` and compare
+   against the pre-change failure baseline.
+
 ## TESTS
 ```bash
 pytest app/tests/tools/test_bio_tools_schema_and_skills.py -v

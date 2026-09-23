@@ -1078,26 +1078,6 @@ def summarize_tool_result(tool_name: str, result: Dict[str, Any]) -> str:
 
         return f"code_executor{file_info} succeeded.{path_info}"
 
-    if tool_name == "deeppl":
-        action = result.get("action") or "deeppl"
-        if result.get("success") is False:
-            error = result.get("error") or "Execution failed"
-            return f"DeepPL {action} failed: {error}"
-        action_text = str(action).strip().lower()
-        if action_text == "predict":
-            label = result.get("predicted_label") or "unknown"
-            lifestyle = result.get("predicted_lifestyle") or "unknown"
-            fraction = result.get("positive_window_fraction")
-            if isinstance(fraction, (int, float)):
-                return (
-                    f"DeepPL predict succeeded: label={label}, "
-                    f"lifestyle={lifestyle}, positive_window_fraction={fraction:.4f}."
-                )
-            return f"DeepPL predict succeeded: label={label}, lifestyle={lifestyle}."
-        if action_text == "job_status":
-            return f"DeepPL job_status: {result.get('status') or 'unknown'}."
-        return f"DeepPL {action} succeeded."
-
     if tool_name == "scientific_figure_generator":
         if result.get("success") is False:
             error = result.get("error") or "Figure generation failed"
