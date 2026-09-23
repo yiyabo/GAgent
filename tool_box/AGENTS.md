@@ -21,6 +21,7 @@ tool_box/
 | Metadata | `_TOOL_METADATA` in `tool_registry.py` | Read-only/concurrent/destructive/search hints drive orchestration. |
 | Runtime registry | `tools.py` | `ToolDefinition`, categories, search. |
 | Code execution | `tools_impl/code_executor.py` | Docker-backed execution and guardrails. |
+| Code mode | `tools_impl/execute_code/` | Env-gated (`CODE_MODE_ENABLED=1`) programmatic tool calling: persistent Python kernel + loopback RPC into the registry. |
 | PhageScope | `tools_impl/phagescope.py` | API payload quirks and tracking. |
 | Bio tools | `bio_tools/` | Remote bioinformatics execution wrapper. |
 | Deliverables | `tools_impl/deliverable_submit.py` | Explicit artifact publication surface. |
