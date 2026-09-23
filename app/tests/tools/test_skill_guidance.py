@@ -77,13 +77,13 @@ def test_delegation_prompt_carries_guidance(sandbox_loader) -> None:
 
 
 def test_guidance_failure_is_silent(monkeypatch) -> None:
-    monkeypatch.setattr(skills_loader_module, "_global_skills_loader", None)
-
     class _Broken:
         def _eligible_skills(self, scope):
             raise RuntimeError("boom")
 
+    # _get_skill_guidance imports get_skills_loader from the package namespace
+    # (app.services.skills), so patch it there, not on the submodule.
     monkeypatch.setattr(
-        skills_loader_module, "get_skills_loader", lambda **kwargs: _Broken()
+        "app.services.skills.get_skills_loader", lambda **kwargs: _Broken()
     )
     assert _get_skill_guidance("画一张柱状图") == ""
