@@ -6,6 +6,7 @@ See: https://help.aliyun.com/zh/model-studio/web-search
 
 import json
 import logging
+import os
 import re
 import time
 from typing import Any, Dict, List, Tuple
@@ -222,6 +223,10 @@ async def search(
             provider="builtin",
             meta={"provider": "qwen"},
         )
+
+    local_url = (os.getenv("QWEN_RESPONSES_LOCAL_URL") or "").strip()
+    if local_url:
+        api_url = local_url
 
     headers = {
         "Authorization": f"Bearer {api_key}",

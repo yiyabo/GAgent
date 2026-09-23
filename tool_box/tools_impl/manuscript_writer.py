@@ -380,6 +380,27 @@ async def _chat(
         kwargs["model"] = model
     if max_tokens is not None:
         kwargs["max_tokens"] = max_tokens
+    # Stream first: long-form section generation exceeds the upstream gateway's
+    # idle-window on non-streaming calls, which produced silent 504 cut-offs and
+    # looked like a hang. Streaming keeps bytes flowing; fall back to the
+    # retrying non-streaming path only when streaming is unavailable or fails.
+    stream_fn = getattr(llm, "stream_chat_async", None)
+    if callable(stream_fn):
+        try:
+            chunks: List[str] = []
+            async for delta in stream_fn(prompt, **kwargs):
+                if isinstance(delta, str):
+                    chunks.append(delta)
+                else:
+                    text = getattr(delta, "text", None) or getattr(delta, "content", None)
+                    if text:
+                        chunks.append(str(text))
+            joined = "".join(chunks)
+            if joined.strip():
+                return joined
+            logger.warning("manuscript_writer streaming returned empty content; falling back to chat_async")
+        except Exception as exc:
+            logger.warning("manuscript_writer streaming failed (%s); falling back to chat_async", exc)
     return await llm.chat_async(prompt, **kwargs)
 
 

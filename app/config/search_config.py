@@ -114,9 +114,9 @@ def get_search_settings() -> SearchSettings:
     tavily_auto_parameters = _env("TAVILY_AUTO_PARAMETERS", "false")
 
     try:
-        builtin_timeout = float(_env("WEB_SEARCH_BUILTIN_TIMEOUT", "90.0"))
+        builtin_timeout = float(_env("WEB_SEARCH_BUILTIN_TIMEOUT", "300.0"))
     except Exception:
-        builtin_timeout = 90.0
+        builtin_timeout = 300.0
 
     try:
         perplexity_timeout = float(_env("WEB_SEARCH_PERPLEXITY_TIMEOUT", "30.0"))
