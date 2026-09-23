@@ -79,16 +79,39 @@ class GLMApiClient:
 
     def _make_api_request(self, texts: List[str]) -> List[List[float]]:
         """Execute actual API request"""
+        from app.services.embeddings.usage_recorder import record_embedding_usage
+
         api_key, api_url = self._effective_credentials()
         headers = self._build_request_headers(api_key)
         payload = self._build_request_payload(texts)
 
+        started = time.time()
         response = self.session.post(api_url, headers=headers, json=payload, timeout=self.request_timeout)
+        duration_ms = (time.time() - started) * 1000
 
         if response.status_code != 200:
+            record_embedding_usage(
+                provider="glm_embedding",
+                model=self.model,
+                texts=texts,
+                duration_ms=duration_ms,
+                call_status=f"http_{response.status_code}",
+            )
             raise Exception(f"API request failed with status {response.status_code}: {response.text}")
 
-        return self._parse_api_response(response)
+        try:
+            usage = response.json().get("usage")
+        except Exception:
+            usage = None
+        embeddings = self._parse_api_response(response)
+        record_embedding_usage(
+            provider="glm_embedding",
+            model=self.model,
+            texts=texts,
+            response_usage=usage,
+            duration_ms=duration_ms,
+        )
+        return embeddings
 
     def _effective_credentials(self) -> Tuple[str, str]:
         """Resolve (api_key, api_url) per request: project sub2api credential when the

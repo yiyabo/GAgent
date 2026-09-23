@@ -113,6 +113,8 @@ class QwenEmbeddingClient:
 
     def _call_qwen_api(self, texts: List[str]) -> List[List[float]]:
         """ Qwen Embedding API"""
+        from app.services.embeddings.usage_recorder import record_embedding_usage
+
         api_key, api_url = self._effective_credentials()
         if not api_key:
             raise ValueError("QWEN_API_KEY not configured")
@@ -128,14 +130,23 @@ class QwenEmbeddingClient:
             "dimensions": self.dimension,
         }
 
+        started = time.time()
         response = self._sync_session.post(
             api_url,
             headers=headers,
             json=payload,
             timeout=self.timeout,
         )
+        duration_ms = (time.time() - started) * 1000
 
         if response.status_code != 200:
+            record_embedding_usage(
+                provider="qwen_embedding",
+                model=self.model,
+                texts=texts,
+                duration_ms=duration_ms,
+                call_status=f"http_{response.status_code}",
+            )
             raise RuntimeError(f"Qwen API error {response.status_code}: {response.text}")
 
         result = response.json()
@@ -145,6 +156,13 @@ class QwenEmbeddingClient:
         for item in sorted(result.get("data", []), key=lambda x: x.get("index", 0)):
             embeddings.append(item.get("embedding", []))
 
+        record_embedding_usage(
+            provider="qwen_embedding",
+            model=self.model,
+            texts=texts,
+            response_usage=result.get("usage"),
+            duration_ms=duration_ms,
+        )
         return embeddings
 
     async def get_embeddings_async(self, texts: List[str]) -> List[List[float]]:

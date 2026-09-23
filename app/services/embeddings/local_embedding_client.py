@@ -103,15 +103,23 @@ class LocalEmbeddingClient:
             
             # Convert to list format
             embeddings_list = embeddings.tolist()
-            
+
             elapsed = time.time() - start_time
             logger.debug(
                 f"Generated {len(embeddings_list)} embeddings in {elapsed:.2f}s "
                 f"({len(texts)/elapsed:.1f} texts/sec)"
             )
-            
+
+            from app.services.embeddings.usage_recorder import record_embedding_usage
+
+            record_embedding_usage(
+                provider="local_embedding",
+                model=self.model_name,
+                texts=texts,
+                duration_ms=elapsed * 1000,
+            )
             return embeddings_list
-            
+
         except Exception as e:
             logger.error(f"Local embedding generation failed: {e}")
             raise
