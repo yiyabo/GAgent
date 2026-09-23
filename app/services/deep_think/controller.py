@@ -108,22 +108,19 @@ def _consume_handoff_iteration_reserve(
     return limit + 1, reserve_used + 1
 
 
-async def _think_native(
+async def _native_run_setup(
     agent: "DeepThinkAgent",
+    *,
     user_query: str,
-    context: Optional[Dict[str, Any]] = None,
-    task_context: Optional[TaskExecutionContext] = None,
-) -> DeepThinkResult:
-    from app.services.execution.async_tool_executor import (
-        PendingToolCall,
-        classify_tool_concurrency,
-        execute_with_concurrency,
-    )
-
-    from app.services.context.context_manager import (
-        ContextWindowManager,
-        build_summarization_prompt,
-    )
+    context: Optional[Dict[str, Any]],
+    task_context: Optional[TaskExecutionContext],
+) -> SimpleNamespace:
+    """Build everything the native loop needs before its first iteration:
+    tool schemas, acceptance spec, system prompt + seed messages, the
+    context-window manager, and the loop-guard state (plus the agent-side
+    mirrors of it). Extracted verbatim from the head of ``_think_native``.
+    """
+    from app.services.context.context_manager import ContextWindowManager
 
     context = dict(context or {})
     thinking_steps: List[ThinkingStep] = []
@@ -154,6 +151,69 @@ async def _think_native(
     )
     _ctx_budget = _resolve_context_budget_tokens(llm_model)
     ctx_mgr = ContextWindowManager(model=llm_model, budget_tokens=max(0, _ctx_budget) or None)
+
+    loop_guard_state: Dict[str, Any] = {
+        "verified_deliverables": [],
+        "failure_sig_counts": {},
+        "failure_sig_warned": set(),
+        "last_progress_iteration": 0,
+        "no_progress_nudge_sent": False,
+        "time_nudge_sent": False,
+        "started_at": time.monotonic(),
+        "expected_outputs": expected_outputs,
+        "acceptance_spec": acceptance_spec,
+    }
+    agent._produced_deliverable_paths = []
+    agent._produced_image_paths = []
+    agent._acceptance_missing: List[str] = []
+    agent._acceptance_spec = acceptance_spec
+    agent._expected_outputs_current = list(loop_guard_state["expected_outputs"])
+    if loop_guard_state["expected_outputs"]:
+        logger.info(
+            "[DEEP_THINK][acceptance] expected deliverable types: %s",
+            ",".join(loop_guard_state["expected_outputs"]),
+        )
+
+    logger.info("[DEEP_THINK_NATIVE] Starting for: %s", user_query[:50])
+
+    return SimpleNamespace(
+        context=context,
+        thinking_steps=thinking_steps,
+        tools_used=tools_used,
+        tool_schemas=tool_schemas,
+        messages=messages,
+        ctx_mgr=ctx_mgr,
+        loop_guard_state=loop_guard_state,
+    )
+
+
+async def _think_native(
+    agent: "DeepThinkAgent",
+    user_query: str,
+    context: Optional[Dict[str, Any]] = None,
+    task_context: Optional[TaskExecutionContext] = None,
+) -> DeepThinkResult:
+    from app.services.execution.async_tool_executor import (
+        PendingToolCall,
+        classify_tool_concurrency,
+        execute_with_concurrency,
+    )
+
+    from app.services.context.context_manager import build_summarization_prompt
+
+    setup = await _native_run_setup(
+        agent,
+        user_query=user_query,
+        context=context,
+        task_context=task_context,
+    )
+    context = setup.context
+    thinking_steps = setup.thinking_steps
+    tools_used = setup.tools_used
+    tool_schemas = setup.tool_schemas
+    messages = setup.messages
+    ctx_mgr = setup.ctx_mgr
+    loop_guard_state = setup.loop_guard_state
 
     async def _summarize_for_compaction(text: str) -> str:
         prompt = build_summarization_prompt(text)
@@ -188,29 +248,6 @@ async def _think_native(
     consecutive_llm_failures = 0
     max_consecutive_llm_failures = _dta()._default_max_consecutive_llm_failures()
     llm_fatal_abort = False
-    loop_guard_state: Dict[str, Any] = {
-        "verified_deliverables": [],
-        "failure_sig_counts": {},
-        "failure_sig_warned": set(),
-        "last_progress_iteration": 0,
-        "no_progress_nudge_sent": False,
-        "time_nudge_sent": False,
-        "started_at": time.monotonic(),
-        "expected_outputs": expected_outputs,
-        "acceptance_spec": acceptance_spec,
-    }
-    agent._produced_deliverable_paths = []
-    agent._produced_image_paths = []
-    agent._acceptance_missing: List[str] = []
-    agent._acceptance_spec = acceptance_spec
-    agent._expected_outputs_current = list(loop_guard_state["expected_outputs"])
-    if loop_guard_state["expected_outputs"]:
-        logger.info(
-            "[DEEP_THINK][acceptance] expected deliverable types: %s",
-            ",".join(loop_guard_state["expected_outputs"]),
-        )
-
-    logger.info("[DEEP_THINK_NATIVE] Starting for: %s", user_query[:50])
 
     while iteration < runtime_iteration_limit:
         await agent._get_pause_event().wait()
