@@ -2,12 +2,28 @@
   "build_executor_tool_schemas": [
     {
       "function": {
-        "description": "Broad web search via Alibaba DashScope Responses API (built-in web_search tool). Use for web-based queries only, NOT for local files.",
+        "description": "Broad web search via Alibaba DashScope Responses API using the built-in `web_search` tool (see Model Studio web-search docs). Default provider is `builtin` only. For broad comparison tasks, you can pass `queries` with 2-4 focused subqueries; they will run in parallel.",
         "name": "web_search",
         "parameters": {
           "properties": {
+            "max_results": {
+              "default": 5,
+              "description": "Maximum number of results (some providers may ignore this option)",
+              "maximum": 20,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "provider": {
+              "description": "Optional override: `builtin` (DashScope web_search), `perplexity`, or `tavily`",
+              "enum": [
+                "builtin",
+                "perplexity",
+                "tavily"
+              ],
+              "type": "string"
+            },
             "queries": {
-              "description": "Optional focused subqueries for parallel search on broad comparison tasks.",
+              "description": "Optional focused subqueries for parallel search on broad comparison tasks",
               "items": {
                 "type": "string"
               },
@@ -16,7 +32,7 @@
               "type": "array"
             },
             "query": {
-              "description": "The search query.",
+              "description": "Query string to search for",
               "type": "string"
             }
           },
@@ -30,7 +46,7 @@
     },
     {
       "function": {
-        "description": "Deterministic accession-to-FASTA downloader with strict domain allowlist. Use this when the user asks to download FASTA by accession IDs.",
+        "description": "Deterministic accession-to-FASTA downloader with strict allowlist. Use this when users ask to download sequence FASTA by accession IDs.",
         "name": "sequence_fetch",
         "parameters": {
           "anyOf": [
@@ -58,6 +74,7 @@
               "type": "array"
             },
             "database": {
+              "default": "nuccore",
               "description": "NCBI database type.",
               "enum": [
                 "nuccore",
@@ -66,25 +83,28 @@
               "type": "string"
             },
             "format": {
-              "description": "Output format (FASTA only).",
+              "default": "fasta",
+              "description": "Sequence output format.",
               "enum": [
                 "fasta"
               ],
               "type": "string"
             },
             "max_bytes": {
-              "description": "Maximum response payload size in bytes.",
+              "default": 10485760,
+              "description": "Maximum allowed response bytes.",
               "type": "integer"
             },
             "output_name": {
-              "description": "Optional output filename.",
+              "description": "Optional output filename ('.fasta' appended if missing).",
               "type": "string"
             },
             "session_id": {
-              "description": "Optional session id for session-scoped output storage.",
+              "description": "Optional chat session id for session-scoped output storage.",
               "type": "string"
             },
             "timeout_sec": {
+              "default": 30.0,
               "description": "Network timeout in seconds.",
               "type": "number"
             }
@@ -96,23 +116,24 @@
     },
     {
       "function": {
-        "description": "Download a file from a public http/https URL into the current task/session output directory. Use this for direct public link downloads instead of code_executor.",
+        "description": "Download a file from a public http/https URL into the current task/session output directory. Supports optional content-type and sha256 validation. Use this for direct public link downloads instead of code_executor.",
         "name": "url_fetch",
         "parameters": {
           "properties": {
             "allowed_content_types": {
-              "description": "Optional allowed MIME types (for example application/pdf or text/*).",
+              "description": "Optional allowed MIME types (exact match or major-type wildcard like text/*).",
               "items": {
                 "type": "string"
               },
               "type": "array"
             },
             "max_bytes": {
-              "description": "Maximum response size in bytes.",
+              "default": 52428800,
+              "description": "Maximum number of bytes to download.",
               "type": "integer"
             },
             "output_name": {
-              "description": "Optional output filename.",
+              "description": "Optional output file name. Must be a file name, not a path.",
               "type": "string"
             },
             "session_id": {
@@ -120,10 +141,11 @@
               "type": "string"
             },
             "sha256": {
-              "description": "Optional expected sha256 hex digest.",
+              "description": "Optional expected sha256 hex digest for integrity verification.",
               "type": "string"
             },
             "timeout_sec": {
+              "default": 60.0,
               "description": "Network timeout in seconds.",
               "type": "number"
             },
@@ -306,7 +328,7 @@
     },
     {
       "function": {
-        "description": "Execute Python code for data analysis, visualization, or computation. Errors are returned transparently with fix guidance — you can inspect the generated code and error, then retry with a revised task description. For standard bioinformatics tasks, prefer bio_tools first.",
+        "description": "Execute Python code for data analysis, visualization, or computation. Errors are returned transparently with fix guidance — you can inspect the generated code and error, then retry with a revised task description.",
         "name": "code_executor",
         "parameters": {
           "properties": {
@@ -325,22 +347,39 @@
     },
     {
       "function": {
-        "description": "Query a knowledge graph for structured information retrieval.",
+        "description": "LEGACY small local triples graph (limited coverage). Prefer `lightrag_query` for literature/knowledge-graph questions. Use only if LightRAG is unavailable or the user explicitly requests the small local graph.",
         "name": "graph_rag",
         "parameters": {
           "properties": {
-            "mode": {
-              "description": "Search mode. Default: hybrid.",
-              "enum": [
-                "global",
-                "local",
-                "hybrid"
-              ],
-              "type": "string"
+            "focus_entities": {
+              "description": "List of entity names to prioritize, can be used to reorder results.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "hops": {
+              "default": 1,
+              "description": "Number of hops to expand subgraph.",
+              "maximum": 4,
+              "minimum": 0,
+              "type": "integer"
             },
             "query": {
-              "description": "The knowledge query.",
+              "description": "Query statement, e.g., 'How do phages infect bacteria?'",
               "type": "string"
+            },
+            "return_subgraph": {
+              "default": true,
+              "description": "Whether to return k-hop subgraph JSON.",
+              "type": "boolean"
+            },
+            "top_k": {
+              "default": 12,
+              "description": "Number of most relevant triples to return (limited by system cap).",
+              "maximum": 50,
+              "minimum": 1,
+              "type": "integer"
             }
           },
           "required": [
@@ -510,7 +549,7 @@
     },
     {
       "function": {
-        "description": "Prepare and audit the local PhageScope public dataset for host taxon prediction research. Use this before code_executor for PhageScope ML tasks.",
+        "description": "Prepare, audit, and deep-profile the local PhageScope public dataset for host taxon prediction research. Use deep_profile before code_executor or final synthesis for PhageScope ML/data exploration tasks.",
         "name": "phagescope_research",
         "parameters": {
           "properties": {
@@ -519,6 +558,7 @@
               "description": "Operation to perform.",
               "enum": [
                 "audit",
+                "deep_profile",
                 "research_plan",
                 "prepare_metadata_table"
               ],
@@ -542,7 +582,7 @@
               "type": "string"
             },
             "min_label_count": {
-              "default": 20,
+              "default": 100,
               "description": "Minimum class count retained in prepared metadata table.",
               "type": "integer"
             },
@@ -693,6 +733,16 @@
               "description": "Optional project-relative analysis memo path.",
               "type": "string"
             },
+            "article_mode": {
+              "default": "auto",
+              "description": "Optional article mode override. Use review to force review/synthesis behavior, research to force original-study behavior, or auto to infer from the task.",
+              "enum": [
+                "auto",
+                "review",
+                "research"
+              ],
+              "type": "string"
+            },
             "context_paths": {
               "description": "Optional supporting context files such as evidence.md, manifest files, CSV/TSV/JSON result tables, or references.bib.",
               "items": {
@@ -701,22 +751,27 @@
               "type": "array"
             },
             "draft_only": {
+              "default": false,
               "description": "Assemble a lightweight local draft without the full staged evaluation and polish pipeline.",
               "type": "boolean"
             },
             "evaluation_threshold": {
+              "default": 0.8,
               "description": "Section evaluation pass threshold from 0 to 1.",
               "type": "number"
             },
             "keep_workspace": {
+              "default": false,
               "description": "Whether to keep intermediate drafting workspace artifacts.",
               "type": "boolean"
             },
             "max_context_bytes": {
+              "default": 200000,
               "description": "Maximum context size loaded from supporting files.",
               "type": "integer"
             },
             "max_revisions": {
+              "default": 5,
               "description": "Maximum revision rounds per section.",
               "type": "integer"
             },
@@ -751,7 +806,7 @@
     },
     {
       "function": {
-        "description": "Promote specific files into the session Deliverables tree for paper, report, summary, figure, table, or submission use. Use after files already exist and the user wants them published into Deliverables or made visible as final outputs.",
+        "description": "Submit FINAL output files to the session Deliverables panel. Use this ONLY for publication-ready artifacts:\n- Visualization plots (PNG/SVG/PDF charts, figures)\n- Summary tables (final analysis results, NOT raw data)\n- Manuscripts and reports (LaTeX, Markdown)\n- Finished code scripts that produced the above\nDo NOT submit: raw input data, intermediate CSVs, downloaded references, logs.\nEach artifact requires a path and target module (code, image_tabular, paper, refs, docs).",
         "name": "deliverable_submit",
         "parameters": {
           "properties": {
@@ -788,7 +843,8 @@
               "type": "array"
             },
             "publish": {
-              "description": "If false, do not copy files in this call.",
+              "default": true,
+              "description": "If false, no files are copied in this call.",
               "type": "boolean"
             }
           },
@@ -1056,7 +1112,7 @@
     },
     {
       "function": {
-        "description": "Execute Python code for data analysis, visualization, or computation. Errors are returned transparently with fix guidance — you can inspect the generated code and error, then retry with a revised task description. For standard bioinformatics tasks, prefer bio_tools first.",
+        "description": "Execute Python code for data analysis, visualization, or computation. Errors are returned transparently with fix guidance — you can inspect the generated code and error, then retry with a revised task description.",
         "name": "code_executor",
         "parameters": {
           "properties": {
@@ -1075,7 +1131,7 @@
     },
     {
       "function": {
-        "description": "Promote specific files into the session Deliverables tree for paper, report, summary, figure, table, or submission use. Use after files already exist and the user wants them published into Deliverables or made visible as final outputs.",
+        "description": "Submit FINAL output files to the session Deliverables panel. Use this ONLY for publication-ready artifacts:\n- Visualization plots (PNG/SVG/PDF charts, figures)\n- Summary tables (final analysis results, NOT raw data)\n- Manuscripts and reports (LaTeX, Markdown)\n- Finished code scripts that produced the above\nDo NOT submit: raw input data, intermediate CSVs, downloaded references, logs.\nEach artifact requires a path and target module (code, image_tabular, paper, refs, docs).",
         "name": "deliverable_submit",
         "parameters": {
           "properties": {
@@ -1112,7 +1168,8 @@
               "type": "array"
             },
             "publish": {
-              "description": "If false, do not copy files in this call.",
+              "default": true,
+              "description": "If false, no files are copied in this call.",
               "type": "boolean"
             }
           },
@@ -1203,22 +1260,39 @@
     },
     {
       "function": {
-        "description": "Query a knowledge graph for structured information retrieval.",
+        "description": "LEGACY small local triples graph (limited coverage). Prefer `lightrag_query` for literature/knowledge-graph questions. Use only if LightRAG is unavailable or the user explicitly requests the small local graph.",
         "name": "graph_rag",
         "parameters": {
           "properties": {
-            "mode": {
-              "description": "Search mode. Default: hybrid.",
-              "enum": [
-                "global",
-                "local",
-                "hybrid"
-              ],
-              "type": "string"
+            "focus_entities": {
+              "description": "List of entity names to prioritize, can be used to reorder results.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "hops": {
+              "default": 1,
+              "description": "Number of hops to expand subgraph.",
+              "maximum": 4,
+              "minimum": 0,
+              "type": "integer"
             },
             "query": {
-              "description": "The knowledge query.",
+              "description": "Query statement, e.g., 'How do phages infect bacteria?'",
               "type": "string"
+            },
+            "return_subgraph": {
+              "default": true,
+              "description": "Whether to return k-hop subgraph JSON.",
+              "type": "boolean"
+            },
+            "top_k": {
+              "default": 12,
+              "description": "Number of most relevant triples to return (limited by system cap).",
+              "maximum": 50,
+              "minimum": 1,
+              "type": "integer"
             }
           },
           "required": [
@@ -1286,6 +1360,16 @@
               "description": "Optional project-relative analysis memo path.",
               "type": "string"
             },
+            "article_mode": {
+              "default": "auto",
+              "description": "Optional article mode override. Use review to force review/synthesis behavior, research to force original-study behavior, or auto to infer from the task.",
+              "enum": [
+                "auto",
+                "review",
+                "research"
+              ],
+              "type": "string"
+            },
             "context_paths": {
               "description": "Optional supporting context files such as evidence.md, manifest files, CSV/TSV/JSON result tables, or references.bib.",
               "items": {
@@ -1294,22 +1378,27 @@
               "type": "array"
             },
             "draft_only": {
+              "default": false,
               "description": "Assemble a lightweight local draft without the full staged evaluation and polish pipeline.",
               "type": "boolean"
             },
             "evaluation_threshold": {
+              "default": 0.8,
               "description": "Section evaluation pass threshold from 0 to 1.",
               "type": "number"
             },
             "keep_workspace": {
+              "default": false,
               "description": "Whether to keep intermediate drafting workspace artifacts.",
               "type": "boolean"
             },
             "max_context_bytes": {
+              "default": 200000,
               "description": "Maximum context size loaded from supporting files.",
               "type": "integer"
             },
             "max_revisions": {
+              "default": 5,
               "description": "Maximum revision rounds per section.",
               "type": "integer"
             },
@@ -1443,7 +1532,7 @@
     },
     {
       "function": {
-        "description": "Prepare and audit the local PhageScope public dataset for host taxon prediction research. Use this before code_executor for PhageScope ML tasks.",
+        "description": "Prepare, audit, and deep-profile the local PhageScope public dataset for host taxon prediction research. Use deep_profile before code_executor or final synthesis for PhageScope ML/data exploration tasks.",
         "name": "phagescope_research",
         "parameters": {
           "properties": {
@@ -1452,6 +1541,7 @@
               "description": "Operation to perform.",
               "enum": [
                 "audit",
+                "deep_profile",
                 "research_plan",
                 "prepare_metadata_table"
               ],
@@ -1475,7 +1565,7 @@
               "type": "string"
             },
             "min_label_count": {
-              "default": 20,
+              "default": 100,
               "description": "Minimum class count retained in prepared metadata table.",
               "type": "integer"
             },
@@ -1776,7 +1866,7 @@
     },
     {
       "function": {
-        "description": "Deterministic accession-to-FASTA downloader with strict domain allowlist. Use this when the user asks to download FASTA by accession IDs.",
+        "description": "Deterministic accession-to-FASTA downloader with strict allowlist. Use this when users ask to download sequence FASTA by accession IDs.",
         "name": "sequence_fetch",
         "parameters": {
           "anyOf": [
@@ -1804,6 +1894,7 @@
               "type": "array"
             },
             "database": {
+              "default": "nuccore",
               "description": "NCBI database type.",
               "enum": [
                 "nuccore",
@@ -1812,25 +1903,28 @@
               "type": "string"
             },
             "format": {
-              "description": "Output format (FASTA only).",
+              "default": "fasta",
+              "description": "Sequence output format.",
               "enum": [
                 "fasta"
               ],
               "type": "string"
             },
             "max_bytes": {
-              "description": "Maximum response payload size in bytes.",
+              "default": 10485760,
+              "description": "Maximum allowed response bytes.",
               "type": "integer"
             },
             "output_name": {
-              "description": "Optional output filename.",
+              "description": "Optional output filename ('.fasta' appended if missing).",
               "type": "string"
             },
             "session_id": {
-              "description": "Optional session id for session-scoped output storage.",
+              "description": "Optional chat session id for session-scoped output storage.",
               "type": "string"
             },
             "timeout_sec": {
+              "default": 30.0,
               "description": "Network timeout in seconds.",
               "type": "number"
             }
@@ -1906,23 +2000,24 @@
     },
     {
       "function": {
-        "description": "Download a file from a public http/https URL into the current task/session output directory. Use this for direct public link downloads instead of code_executor.",
+        "description": "Download a file from a public http/https URL into the current task/session output directory. Supports optional content-type and sha256 validation. Use this for direct public link downloads instead of code_executor.",
         "name": "url_fetch",
         "parameters": {
           "properties": {
             "allowed_content_types": {
-              "description": "Optional allowed MIME types (for example application/pdf or text/*).",
+              "description": "Optional allowed MIME types (exact match or major-type wildcard like text/*).",
               "items": {
                 "type": "string"
               },
               "type": "array"
             },
             "max_bytes": {
-              "description": "Maximum response size in bytes.",
+              "default": 52428800,
+              "description": "Maximum number of bytes to download.",
               "type": "integer"
             },
             "output_name": {
-              "description": "Optional output filename.",
+              "description": "Optional output file name. Must be a file name, not a path.",
               "type": "string"
             },
             "session_id": {
@@ -1930,10 +2025,11 @@
               "type": "string"
             },
             "sha256": {
-              "description": "Optional expected sha256 hex digest.",
+              "description": "Optional expected sha256 hex digest for integrity verification.",
               "type": "string"
             },
             "timeout_sec": {
+              "default": 60.0,
               "description": "Network timeout in seconds.",
               "type": "number"
             },
@@ -2007,12 +2103,28 @@
     },
     {
       "function": {
-        "description": "Broad web search via Alibaba DashScope Responses API (built-in web_search tool). Use for web-based queries only, NOT for local files.",
+        "description": "Broad web search via Alibaba DashScope Responses API using the built-in `web_search` tool (see Model Studio web-search docs). Default provider is `builtin` only. For broad comparison tasks, you can pass `queries` with 2-4 focused subqueries; they will run in parallel.",
         "name": "web_search",
         "parameters": {
           "properties": {
+            "max_results": {
+              "default": 5,
+              "description": "Maximum number of results (some providers may ignore this option)",
+              "maximum": 20,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "provider": {
+              "description": "Optional override: `builtin` (DashScope web_search), `perplexity`, or `tavily`",
+              "enum": [
+                "builtin",
+                "perplexity",
+                "tavily"
+              ],
+              "type": "string"
+            },
             "queries": {
-              "description": "Optional focused subqueries for parallel search on broad comparison tasks.",
+              "description": "Optional focused subqueries for parallel search on broad comparison tasks",
               "items": {
                 "type": "string"
               },
@@ -2021,7 +2133,7 @@
               "type": "array"
             },
             "query": {
-              "description": "The search query.",
+              "description": "Query string to search for",
               "type": "string"
             }
           },

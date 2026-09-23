@@ -131,3 +131,83 @@ def test_new_tool_gets_generated_envelope_without_handwritten_shell(_fresh_regis
         assert built_native[-1] is tool_schemas.SUBMIT_FINAL_ANSWER_SCHEMA
     finally:
         del native_tool_schemas.NATIVE_TOOL_CONTENT[fake_name]
+
+
+def test_drift_merged_entries_track_impl_truth() -> None:
+    """Drift-merge lock (2026-09-24): entries merged to impl truth must not regress.
+
+    Fully merged tools must expose exactly the impl parameter key set; partially
+    merged tools keep only the documented intentional narrowings. Defaults stated
+    in native content must equal the defaults the handler actually applies.
+    """
+    from tool_box import native_tool_schemas
+    from tool_box.tools_impl import (
+        graph_rag_tool,
+        manuscript_writer_tool,
+        phagescope_research_tool,
+        sequence_fetch_tool,
+        url_fetch_tool,
+        web_search_tool,
+    )
+
+    content = native_tool_schemas.NATIVE_TOOL_CONTENT
+
+    def impl_props(tool: Dict[str, Any]) -> Dict[str, Any]:
+        schema = tool.get("parameters_schema") or tool.get("parameters") or {}
+        return schema.get("properties", {})
+
+    def native_props(name: str) -> Dict[str, Any]:
+        return content[name]["parameters"]["properties"]
+
+    # Fully merged: parameter key sets identical to impl.
+    for name, tool in [
+        ("web_search", web_search_tool),
+        ("sequence_fetch", sequence_fetch_tool),
+        ("url_fetch", url_fetch_tool),
+        ("graph_rag", graph_rag_tool),
+    ]:
+        assert set(native_props(name)) == set(impl_props(tool)), name
+        for param, spec in impl_props(tool).items():
+            if "default" in spec:
+                assert native_props(name)[param].get("default") == spec["default"], (name, param)
+
+    # graph_rag: the phantom `mode` param (silently dropped by the handler) stays gone.
+    assert "mode" not in native_props("graph_rag")
+
+    # Partially merged: only the documented intentional narrowings may diverge.
+    intentional_gaps = {
+        "phagescope_research": ({"max_rows", "top_n"}, set()),
+        "manuscript_writer": (
+            {
+                "generation_model",
+                "evaluation_model",
+                "merge_model",
+                "generation_provider",
+                "evaluation_provider",
+                "merge_provider",
+            },
+            {"session_id"},
+        ),
+    }
+    for name, tool in [
+        ("phagescope_research", phagescope_research_tool),
+        ("manuscript_writer", manuscript_writer_tool),
+    ]:
+        missing, extra = intentional_gaps[name]
+        impl_keys = set(impl_props(tool))
+        native_keys = set(native_props(name))
+        assert impl_keys - native_keys == missing, name
+        assert native_keys - impl_keys == extra, name
+        for param in impl_keys & native_keys:
+            impl_spec = impl_props(tool)[param]
+            native_spec = native_props(name)[param]
+            if "enum" in impl_spec:
+                assert set(impl_spec["enum"]) <= set(native_spec.get("enum", [])), (name, param)
+            if "default" in impl_spec:
+                assert native_spec.get("default") == impl_spec["default"], (name, param)
+
+    # phagescope_research: impl's primary action stays reachable from the native path.
+    assert "deep_profile" in native_props("phagescope_research")["action"]["enum"]
+
+    # code_executor: no guidance pointing at bio_tools (never available on this platform).
+    assert "bio_tools" not in content["code_executor"]["description"]

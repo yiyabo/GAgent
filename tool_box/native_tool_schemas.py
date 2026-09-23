@@ -19,34 +19,47 @@ from typing import Any, Dict
 
 NATIVE_TOOL_CONTENT: Dict[str, Dict[str, Any]] = {
     "web_search": {
-        # 与 impl 双向漂移：native 多 queries、缺 max_results/provider —— 历史漂移，保留现状
+        # 已对齐 impl（2026-09-24 漂移合并）：补齐 provider/max_results，描述同步 impl
         "description": (
-            "Broad web search via Alibaba DashScope Responses API (built-in web_search tool). "
-            "Use for web-based queries only, NOT for local files."
+            "Broad web search via Alibaba DashScope Responses API using the built-in "
+            "`web_search` tool (see Model Studio web-search docs). Default provider is `builtin` only. "
+            "For broad comparison tasks, you can pass `queries` with 2-4 focused subqueries; they will run in parallel."
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "The search query.",
+                    "description": "Query string to search for",
                 },
                 "queries": {
                     "type": "array",
-                    "description": "Optional focused subqueries for parallel search on broad comparison tasks.",
+                    "description": "Optional focused subqueries for parallel search on broad comparison tasks",
                     "items": {"type": "string"},
                     "minItems": 2,
                     "maxItems": 6,
+                },
+                "provider": {
+                    "type": "string",
+                    "description": "Optional override: `builtin` (DashScope web_search), `perplexity`, or `tavily`",
+                    "enum": ["builtin", "perplexity", "tavily"],
+                },
+                "max_results": {
+                    "type": "integer",
+                    "description": "Maximum number of results (some providers may ignore this option)",
+                    "default": 5,
+                    "minimum": 1,
+                    "maximum": 20,
                 },
             },
             "required": ["query"],
         },
     },
     "sequence_fetch": {
-        # 参数键集与 impl 一致，仅字段文案差异 —— 历史漂移，保留现状
+        # 已对齐 impl（2026-09-24 漂移合并）：文案与默认值同步 impl
         "description": (
-            "Deterministic accession-to-FASTA downloader with strict domain allowlist. "
-            "Use this when the user asks to download FASTA by accession IDs."
+            "Deterministic accession-to-FASTA downloader with strict allowlist. "
+            "Use this when users ask to download sequence FASTA by accession IDs."
         ),
         "parameters": {
             "type": "object",
@@ -63,28 +76,32 @@ NATIVE_TOOL_CONTENT: Dict[str, Dict[str, Any]] = {
                 "database": {
                     "type": "string",
                     "enum": ["nuccore", "protein"],
+                    "default": "nuccore",
                     "description": "NCBI database type.",
                 },
                 "format": {
                     "type": "string",
                     "enum": ["fasta"],
-                    "description": "Output format (FASTA only).",
+                    "default": "fasta",
+                    "description": "Sequence output format.",
                 },
                 "session_id": {
                     "type": "string",
-                    "description": "Optional session id for session-scoped output storage.",
+                    "description": "Optional chat session id for session-scoped output storage.",
                 },
                 "output_name": {
                     "type": "string",
-                    "description": "Optional output filename.",
+                    "description": "Optional output filename ('.fasta' appended if missing).",
                 },
                 "timeout_sec": {
                     "type": "number",
+                    "default": 30.0,
                     "description": "Network timeout in seconds.",
                 },
                 "max_bytes": {
                     "type": "integer",
-                    "description": "Maximum response payload size in bytes.",
+                    "default": 10485760,
+                    "description": "Maximum allowed response bytes.",
                 },
             },
             "anyOf": [
@@ -94,9 +111,10 @@ NATIVE_TOOL_CONTENT: Dict[str, Dict[str, Any]] = {
         },
     },
     "url_fetch": {
-        # 参数键集与 impl 一致，仅字段文案差异 —— 历史漂移，保留现状
+        # 已对齐 impl（2026-09-24 漂移合并）：文案与默认值同步 impl，保留 native 路由指引句
         "description": (
             "Download a file from a public http/https URL into the current task/session output directory. "
+            "Supports optional content-type and sha256 validation. "
             "Use this for direct public link downloads instead of code_executor."
         ),
         "parameters": {
@@ -108,7 +126,7 @@ NATIVE_TOOL_CONTENT: Dict[str, Dict[str, Any]] = {
                 },
                 "output_name": {
                     "type": "string",
-                    "description": "Optional output filename.",
+                    "description": "Optional output file name. Must be a file name, not a path.",
                 },
                 "session_id": {
                     "type": "string",
@@ -116,20 +134,22 @@ NATIVE_TOOL_CONTENT: Dict[str, Dict[str, Any]] = {
                 },
                 "timeout_sec": {
                     "type": "number",
+                    "default": 60.0,
                     "description": "Network timeout in seconds.",
                 },
                 "max_bytes": {
                     "type": "integer",
-                    "description": "Maximum response size in bytes.",
+                    "default": 52428800,
+                    "description": "Maximum number of bytes to download.",
                 },
                 "allowed_content_types": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "Optional allowed MIME types (for example application/pdf or text/*).",
+                    "description": "Optional allowed MIME types (exact match or major-type wildcard like text/*).",
                 },
                 "sha256": {
                     "type": "string",
-                    "description": "Optional expected sha256 hex digest.",
+                    "description": "Optional expected sha256 hex digest for integrity verification.",
                 },
             },
             "required": ["url"],
@@ -168,11 +188,11 @@ NATIVE_TOOL_CONTENT: Dict[str, Dict[str, Any]] = {
     },
     "code_executor": {
         # native 有意收窄：impl 另有 allowed_tools/add_dirs，描述也不提 Claude Code —— 有意调优（参数面收窄）
+        # 2026-09-24 描述修正：删除 "prefer bio_tools first"（本平台 bio_tools 永不上线，指引会把模型带向不可用工具）
         "description": (
             "Execute Python code for data analysis, visualization, or computation. "
             "Errors are returned transparently with fix guidance — you can inspect "
-            "the generated code and error, then retry with a revised task description. "
-            "For standard bioinformatics tasks, prefer bio_tools first."
+            "the generated code and error, then retry with a revised task description."
         ),
         "parameters": {
             "type": "object",
@@ -186,19 +206,43 @@ NATIVE_TOOL_CONTENT: Dict[str, Dict[str, Any]] = {
         },
     },
     "graph_rag": {
-        # native 暴露 mode(global/local/hybrid)，impl 为 hops/top_k/focus_entities/return_subgraph —— 历史漂移，保留现状
-        "description": "Query a knowledge graph for structured information retrieval.",
+        # 已对齐 impl（2026-09-24 漂移合并）：删除 impl 不支持的 mode（此前被静默丢弃、误导模型），
+        # 暴露真实参数 top_k/hops/return_subgraph/focus_entities，描述同步 impl 的 LEGACY 警示
+        "description": (
+            "LEGACY small local triples graph (limited coverage). Prefer `lightrag_query` "
+            "for literature/knowledge-graph questions. Use only if LightRAG is unavailable "
+            "or the user explicitly requests the small local graph."
+        ),
         "parameters": {
             "type": "object",
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "The knowledge query.",
+                    "description": "Query statement, e.g., 'How do phages infect bacteria?'",
                 },
-                "mode": {
-                    "type": "string",
-                    "enum": ["global", "local", "hybrid"],
-                    "description": "Search mode. Default: hybrid.",
+                "top_k": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 50,
+                    "default": 12,
+                    "description": "Number of most relevant triples to return (limited by system cap).",
+                },
+                "hops": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 4,
+                    "default": 1,
+                    "description": "Number of hops to expand subgraph.",
+                },
+                "return_subgraph": {
+                    "type": "boolean",
+                    "default": True,
+                    "description": "Whether to return k-hop subgraph JSON.",
+                },
+                "focus_entities": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "List of entity names to prioritize, can be used to reorder results.",
                 },
             },
             "required": ["query"],
@@ -539,17 +583,19 @@ NATIVE_TOOL_CONTENT: Dict[str, Dict[str, Any]] = {
         },
     },
     "phagescope_research": {
-        # native 有意收窄：impl 另有 max_rows/top_n；action 枚举 native 少 deep_profile —— 有意调优（参数面收窄）
+        # native 有意收窄：impl 另有 max_rows/top_n —— 有意调优（参数面收窄）
+        # 2026-09-24 漂移合并：action 枚举补 deep_profile（impl 主力动作，缺它 native 流走不通），
+        # min_label_count 默认值 20→100 对齐 handler 真实默认
         "description": (
-            "Prepare and audit the local PhageScope public dataset for host taxon "
-            "prediction research. Use this before code_executor for PhageScope ML tasks."
+            "Prepare, audit, and deep-profile the local PhageScope public dataset for host taxon "
+            "prediction research. Use deep_profile before code_executor or final synthesis for PhageScope ML/data exploration tasks."
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["audit", "research_plan", "prepare_metadata_table"],
+                    "enum": ["audit", "deep_profile", "research_plan", "prepare_metadata_table"],
                     "default": "audit",
                     "description": "Operation to perform.",
                 },
@@ -573,7 +619,7 @@ NATIVE_TOOL_CONTENT: Dict[str, Dict[str, Any]] = {
                 },
                 "min_label_count": {
                     "type": "integer",
-                    "default": 20,
+                    "default": 100,
                     "description": "Minimum class count retained in prepared metadata table.",
                 },
                 "completeness": {
@@ -708,7 +754,9 @@ NATIVE_TOOL_CONTENT: Dict[str, Dict[str, Any]] = {
         },
     },
     "manuscript_writer": {
-        # native 有意收窄：impl 另有 article_mode 及 generation/evaluation/merge model+provider —— 有意调优（参数面收窄）
+        # native 有意收窄：impl 另有 generation/evaluation/merge model+provider —— 有意调优（参数面收窄）
+        # 2026-09-24 漂移合并：补 article_mode（handler 支持，宣称的 review/synthesis 能力此前无法显式控制）；
+        # max_revisions/evaluation_threshold/max_context_bytes 补 handler 真实默认值
         "description": (
             "Write a research manuscript, evidence-based report, structured summary, or section with citation-aware drafting, "
             "evaluation, and merge support. Use this when the user asks to generate/save a research report or Markdown summary from evidence files. "
@@ -739,17 +787,26 @@ NATIVE_TOOL_CONTENT: Dict[str, Dict[str, Any]] = {
                     "items": {"type": "string"},
                     "description": "Optional subset of manuscript sections to draft.",
                 },
+                "article_mode": {
+                    "type": "string",
+                    "enum": ["auto", "review", "research"],
+                    "description": "Optional article mode override. Use review to force review/synthesis behavior, research to force original-study behavior, or auto to infer from the task.",
+                    "default": "auto",
+                },
                 "max_revisions": {
                     "type": "integer",
                     "description": "Maximum revision rounds per section.",
+                    "default": 5,
                 },
                 "evaluation_threshold": {
                     "type": "number",
                     "description": "Section evaluation pass threshold from 0 to 1.",
+                    "default": 0.8,
                 },
                 "max_context_bytes": {
                     "type": "integer",
                     "description": "Maximum context size loaded from supporting files.",
+                    "default": 200000,
                 },
                 "session_id": {
                     "type": "string",
@@ -758,27 +815,36 @@ NATIVE_TOOL_CONTENT: Dict[str, Dict[str, Any]] = {
                 "keep_workspace": {
                     "type": "boolean",
                     "description": "Whether to keep intermediate drafting workspace artifacts.",
+                    "default": False,
                 },
                 "draft_only": {
                     "type": "boolean",
                     "description": "Assemble a lightweight local draft without the full staged evaluation and polish pipeline.",
+                    "default": False,
                 },
             },
             "required": ["task", "output_path"],
         },
     },
     "deliverable_submit": {
-        # 参数键集与 impl 一致，仅描述文案差异（impl 更长）—— 历史漂移，保留现状
+        # 已对齐 impl（2026-09-24 漂移合并）：描述同步 impl 的出版级指引，publish 补默认值
         "description": (
-            "Promote specific files into the session Deliverables tree for paper, report, summary, figure, table, or submission use. "
-            "Use after files already exist and the user wants them published into Deliverables or made visible as final outputs."
+            "Submit FINAL output files to the session Deliverables panel. "
+            "Use this ONLY for publication-ready artifacts:\n"
+            "- Visualization plots (PNG/SVG/PDF charts, figures)\n"
+            "- Summary tables (final analysis results, NOT raw data)\n"
+            "- Manuscripts and reports (LaTeX, Markdown)\n"
+            "- Finished code scripts that produced the above\n"
+            "Do NOT submit: raw input data, intermediate CSVs, downloaded references, logs.\n"
+            "Each artifact requires a path and target module (code, image_tabular, paper, refs, docs)."
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "publish": {
                     "type": "boolean",
-                    "description": "If false, do not copy files in this call.",
+                    "description": "If false, no files are copied in this call.",
+                    "default": True,
                 },
                 "artifacts": {
                     "type": "array",

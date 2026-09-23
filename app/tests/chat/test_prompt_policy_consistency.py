@@ -221,7 +221,7 @@ def test_tool_schemas_advertise_artifact_writing_affordances() -> None:
     assert "save" in file_desc and "write" in file_desc
     assert "structured summary" in manuscript_desc
     assert "report" in manuscript_desc
-    assert "final outputs" in deliverable_desc
+    assert "final output files" in deliverable_desc
     assert "existing plan or task outputs" in interpreter_desc
 
 
