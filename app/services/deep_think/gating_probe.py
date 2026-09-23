@@ -50,7 +50,7 @@ def _detect_partial_completion_in_tool_results(
         raw_text = item.get("tool_result_text") or ""
         try:
             payload = json.loads(raw_text) if isinstance(raw_text, str) else raw_text
-        except (JSONDecodeError, TypeError):
+        except (json.JSONDecodeError, TypeError):
             continue
         inner = payload
         if isinstance(payload, dict) and "result" in payload and isinstance(payload["result"], dict):
