@@ -267,9 +267,12 @@ def _draw_bar(ax: Any, rows: List[Dict[str, Any]], panel: Dict[str, Any]) -> Dic
     rows = _top_rows(rows, y_key, int(panel.get("top_n") or 20))
     labels = [str(row.get(x_key, ""))[:36] for row in rows]
     values = [_coerce_number(row.get(y_key)) or 0.0 for row in rows]
-    ax.barh(range(len(rows)), values, color=COLORS[0], edgecolor="#555555", linewidth=0.4)
+    # One flat coral bar per category was the "stock look" users called ugly;
+    # cycle the Nature palette across categories instead.
+    bar_colors = [COLORS[i % len(COLORS)] for i in range(len(rows))]
+    ax.barh(range(len(rows)), values, height=0.65, color=bar_colors, edgecolor="none")
     ax.set_yticks(range(len(rows)))
-    ax.set_yticklabels(labels, fontsize=8)
+    ax.set_yticklabels(labels, fontsize=9)
     ax.invert_yaxis()
     ax.set_xlabel(str(panel.get("x_label") or y_key))
     ax.set_ylabel(str(panel.get("y_label") or x_key))
@@ -284,7 +287,7 @@ def _draw_line(ax: Any, rows: List[Dict[str, Any]], panel: Dict[str, Any]) -> Di
     y_values = [_coerce_number(row.get(y_key)) or 0.0 for row in rows]
     ax.plot(range(len(rows)), y_values, marker="o", color=COLORS[1], linewidth=2)
     ax.set_xticks(range(len(rows)))
-    ax.set_xticklabels(x_values, rotation=45, ha="right", fontsize=8)
+    ax.set_xticklabels(x_values, rotation=45, ha="right", fontsize=9)
     ax.set_xlabel(str(panel.get("x_label") or x_key))
     ax.set_ylabel(str(panel.get("y_label") or y_key))
     return {"nonzero": sum(1 for v in y_values if v), "swapped": swapped}
@@ -369,7 +372,9 @@ def _draw_panel(ax: Any, dataset: LoadedDataset, panel: Dict[str, Any], panel_la
         raise ValueError(f"Unsupported panel type: {kind}")
     title = str(panel.get("title") or dataset.name).strip()
     ax.set_title(f"{panel_label}. {title}", loc="left", fontsize=11, fontweight="bold")
-    ax.grid(True, axis="x", color="#E8E8E8", linewidth=0.7)
+    grid_axis = "x" if kind == "bar" else "y"
+    ax.grid(True, axis=grid_axis, color="#E3E3E3", linewidth=0.7, linestyle="--", alpha=0.8)
+    ax.set_axisbelow(True)
     return {
         "label": panel_label,
         "title": title,
