@@ -6,7 +6,6 @@ encountered, the preceding safe batch is awaited first, then the unsafe
 call runs alone.  This preserves causal dependencies within a single
 LLM turn (e.g. write-then-read sequences).
 
-Phase 2.1 of the architecture evolution (see docs/architecture-evolution.md).
 """
 
 from __future__ import annotations

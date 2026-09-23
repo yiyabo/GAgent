@@ -3,7 +3,6 @@
 Tracks token usage across the message list and triggers LLM-based
 summarization when approaching the model's context window limit.
 
-Phase 4 of the architecture evolution (see docs/architecture-evolution.md).
 """
 
 from __future__ import annotations

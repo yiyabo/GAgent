@@ -44,5 +44,4 @@ pytest app/tests/tools/test_execution_semantics_regressions.py -v
 - Do not mark a mutating tool as read-only to satisfy probe-loop logic.
 - Do not bypass PhageScope payload builder; required format is unusual.
 - Do not add shell/SSH destructive behavior without preserving approval and timeout semantics.
-- Do not rely on `tool_box/README.md` examples as authoritative; registry and tests are newer.
 - Do not edit bio tool schemas without keeping `tools_config.json`, registry schema, and skills in sync.

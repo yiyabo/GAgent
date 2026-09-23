@@ -12,7 +12,6 @@ Usage in a tool handler::
             logger.info("Running in session %s", tool_context.session_id)
         ...
 
-Phase 1.2 of the architecture evolution (see docs/architecture-evolution.md).
 """
 
 from __future__ import annotations
