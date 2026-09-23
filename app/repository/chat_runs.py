@@ -169,6 +169,9 @@ def append_chat_run_event(
     payload: Dict[str, Any],
 ) -> int:
     """Append one event; returns monotonic seq for this run (>= 0)."""
+    from app.services.chat_run_events import check_chat_run_event
+
+    check_chat_run_event(payload, run_id=run_id)
     event_type = str(payload.get("type") or "unknown")
     payload_json = json.dumps(payload, ensure_ascii=False)
     with get_db() as conn:
@@ -209,6 +212,11 @@ def batch_append_chat_run_events(
     """
     if not payloads:
         return []
+
+    from app.services.chat_run_events import check_chat_run_event
+
+    for payload in payloads:
+        check_chat_run_event(payload, run_id=run_id)
 
     seqs: List[int] = []
     with get_db() as conn:

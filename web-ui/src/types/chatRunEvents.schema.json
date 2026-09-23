@@ -1,0 +1,613 @@
+{
+  "$defs": {
+    "ArtifactEvent": {
+      "additionalProperties": true,
+      "properties": {
+        "type": {
+          "const": "artifact",
+          "title": "Type",
+          "type": "string"
+        },
+        "path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Path"
+        },
+        "extension": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Extension"
+        },
+        "source_tool": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source Tool"
+        },
+        "iteration": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Iteration"
+        },
+        "display_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Display Name"
+        },
+        "mime_family": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mime Family"
+        },
+        "origin": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Origin"
+        },
+        "tracking_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tracking Id"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "title": "ArtifactEvent",
+      "type": "object"
+    },
+    "ControlAckEvent": {
+      "additionalProperties": true,
+      "properties": {
+        "type": {
+          "const": "control_ack",
+          "title": "Type",
+          "type": "string"
+        },
+        "job_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Job Id"
+        },
+        "available": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Available"
+        },
+        "paused": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Paused"
+        },
+        "action": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Action"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "title": "ControlAckEvent",
+      "type": "object"
+    },
+    "DeltaEvent": {
+      "additionalProperties": true,
+      "properties": {
+        "type": {
+          "const": "delta",
+          "title": "Type",
+          "type": "string"
+        },
+        "content": {
+          "title": "Content",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "content"
+      ],
+      "title": "DeltaEvent",
+      "type": "object"
+    },
+    "ErrorEvent": {
+      "additionalProperties": true,
+      "properties": {
+        "type": {
+          "const": "error",
+          "title": "Type",
+          "type": "string"
+        },
+        "message": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Message"
+        },
+        "error_type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error Type"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "title": "ErrorEvent",
+      "type": "object"
+    },
+    "FinalEvent": {
+      "additionalProperties": true,
+      "properties": {
+        "type": {
+          "const": "final",
+          "title": "Type",
+          "type": "string"
+        },
+        "payload": {
+          "additionalProperties": true,
+          "title": "Payload",
+          "type": "object"
+        }
+      },
+      "required": [
+        "type",
+        "payload"
+      ],
+      "title": "FinalEvent",
+      "type": "object"
+    },
+    "JobUpdateEvent": {
+      "additionalProperties": true,
+      "properties": {
+        "type": {
+          "const": "job_update",
+          "title": "Type",
+          "type": "string"
+        },
+        "payload": {
+          "additionalProperties": true,
+          "title": "Payload",
+          "type": "object"
+        }
+      },
+      "required": [
+        "type",
+        "payload"
+      ],
+      "title": "JobUpdateEvent",
+      "type": "object"
+    },
+    "ProgressStatusEvent": {
+      "additionalProperties": true,
+      "properties": {
+        "type": {
+          "const": "progress_status",
+          "title": "Type",
+          "type": "string"
+        },
+        "phase": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Phase"
+        },
+        "label": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Label"
+        },
+        "details": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Details"
+        },
+        "iteration": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Iteration"
+        },
+        "tool": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tool"
+        },
+        "status": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Status"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "title": "ProgressStatusEvent",
+      "type": "object"
+    },
+    "ReasoningDeltaEvent": {
+      "additionalProperties": true,
+      "properties": {
+        "type": {
+          "const": "reasoning_delta",
+          "title": "Type",
+          "type": "string"
+        },
+        "iteration": {
+          "title": "Iteration",
+          "type": "integer"
+        },
+        "delta": {
+          "title": "Delta",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "iteration",
+        "delta"
+      ],
+      "title": "ReasoningDeltaEvent",
+      "type": "object"
+    },
+    "StartEvent": {
+      "additionalProperties": true,
+      "properties": {
+        "type": {
+          "const": "start",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "title": "StartEvent",
+      "type": "object"
+    },
+    "SteerAckEvent": {
+      "additionalProperties": true,
+      "properties": {
+        "type": {
+          "const": "steer_ack",
+          "title": "Type",
+          "type": "string"
+        },
+        "message": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Message"
+        },
+        "iteration": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Iteration"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "title": "SteerAckEvent",
+      "type": "object"
+    },
+    "ThinkingDeltaEvent": {
+      "additionalProperties": true,
+      "properties": {
+        "type": {
+          "const": "thinking_delta",
+          "title": "Type",
+          "type": "string"
+        },
+        "iteration": {
+          "title": "Iteration",
+          "type": "integer"
+        },
+        "delta": {
+          "title": "Delta",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "iteration",
+        "delta"
+      ],
+      "title": "ThinkingDeltaEvent",
+      "type": "object"
+    },
+    "ThinkingStepEvent": {
+      "additionalProperties": true,
+      "properties": {
+        "type": {
+          "const": "thinking_step",
+          "title": "Type",
+          "type": "string"
+        },
+        "step": {
+          "additionalProperties": true,
+          "title": "Step",
+          "type": "object"
+        }
+      },
+      "required": [
+        "type",
+        "step"
+      ],
+      "title": "ThinkingStepEvent",
+      "type": "object"
+    },
+    "ToolOutputEvent": {
+      "additionalProperties": true,
+      "properties": {
+        "type": {
+          "const": "tool_output",
+          "title": "Type",
+          "type": "string"
+        },
+        "tool": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tool"
+        },
+        "stream": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Stream"
+        },
+        "content": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Content"
+        },
+        "iteration": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Iteration"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "title": "ToolOutputEvent",
+      "type": "object"
+    }
+  },
+  "discriminator": {
+    "mapping": {
+      "artifact": "#/$defs/ArtifactEvent",
+      "control_ack": "#/$defs/ControlAckEvent",
+      "delta": "#/$defs/DeltaEvent",
+      "error": "#/$defs/ErrorEvent",
+      "final": "#/$defs/FinalEvent",
+      "job_update": "#/$defs/JobUpdateEvent",
+      "progress_status": "#/$defs/ProgressStatusEvent",
+      "reasoning_delta": "#/$defs/ReasoningDeltaEvent",
+      "start": "#/$defs/StartEvent",
+      "steer_ack": "#/$defs/SteerAckEvent",
+      "thinking_delta": "#/$defs/ThinkingDeltaEvent",
+      "thinking_step": "#/$defs/ThinkingStepEvent",
+      "tool_output": "#/$defs/ToolOutputEvent"
+    },
+    "propertyName": "type"
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/StartEvent"
+    },
+    {
+      "$ref": "#/$defs/DeltaEvent"
+    },
+    {
+      "$ref": "#/$defs/FinalEvent"
+    },
+    {
+      "$ref": "#/$defs/JobUpdateEvent"
+    },
+    {
+      "$ref": "#/$defs/ErrorEvent"
+    },
+    {
+      "$ref": "#/$defs/ThinkingStepEvent"
+    },
+    {
+      "$ref": "#/$defs/ThinkingDeltaEvent"
+    },
+    {
+      "$ref": "#/$defs/ReasoningDeltaEvent"
+    },
+    {
+      "$ref": "#/$defs/ProgressStatusEvent"
+    },
+    {
+      "$ref": "#/$defs/ControlAckEvent"
+    },
+    {
+      "$ref": "#/$defs/ToolOutputEvent"
+    },
+    {
+      "$ref": "#/$defs/ArtifactEvent"
+    },
+    {
+      "$ref": "#/$defs/SteerAckEvent"
+    }
+  ]
+}

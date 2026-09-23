@@ -10,6 +10,8 @@ import {
     ThinkingStep,
     ToolResultPayload,
 } from '@/types';
+import { validateChatRunEvent } from '@/types/chatRunEvents';
+import type { ChatStreamEvent } from '@/types/chatRunEvents';
 import { ENV } from '@/config/env';
 import { chatApi } from '@api/chat';
 import {
@@ -59,30 +61,10 @@ export const parseJobStreamPayload = (raw: MessageEvent<any>): Record<string, an
     }
 };
 
-export type ChatStreamEvent =
-    | { type: 'start' }
-    | { type: 'delta'; content: string }
-    | { type: 'final'; payload: ChatResponsePayload }
-    | { type: 'job_update'; payload: Record<string, any> }
-    | { type: 'error'; message?: string; error_type?: string }
-    | { type: 'thinking_step'; step: ThinkingStep }
-    | { type: 'thinking_delta'; iteration: number; delta: string }
-    | { type: 'reasoning_delta'; iteration: number; delta: string }
-    | { type: 'progress_status'; phase?: string; label?: string; details?: string | null; iteration?: number | null; tool?: string | null; status?: string | null }
-    | { type: 'control_ack'; job_id?: string; available?: boolean; paused?: boolean; action?: string | null }
-    | { type: 'tool_output'; tool?: string; stream?: string; content?: string; iteration?: number | null }
-    | {
-        type: 'artifact';
-        path?: string;
-        extension?: string;
-        source_tool?: string;
-        iteration?: number;
-        display_name?: string;
-        mime_family?: string;
-        origin?: string;
-        tracking_id?: string | null;
-      }
-    | { type: 'steer_ack'; message?: string; iteration?: number };
+// The ChatStreamEvent union lives in `@/types/chatRunEvents` (single source
+// of truth shared with the backend registry); re-exported here for the
+// existing importers.
+export type { ChatStreamEvent } from '@/types/chatRunEvents';
 
 export const parseChatStreamEvent = (raw: string): ChatStreamEvent | null => {
     const lines = raw.split('\n');
@@ -97,7 +79,12 @@ export const parseChatStreamEvent = (raw: string): ChatStreamEvent | null => {
     }
     const payload = dataLines.join('\n');
     try {
-        return JSON.parse(payload) as ChatStreamEvent;
+        const event = JSON.parse(payload) as ChatStreamEvent;
+        const violation = validateChatRunEvent(event);
+        if (violation) {
+            console.warn('[chat-event-schema]', violation, event);
+        }
+        return event;
     } catch (error) {
         console.warn('Failed to parse SSE payload:', error);
         return { type: 'error', message: 'SSE payload parse failed' };
@@ -126,7 +113,12 @@ export const parseChatStreamEventWithSeq = (raw: string): { seq: number | null; 
     }
     const payload = dataLines.join('\n');
     try {
-        return { seq, event: JSON.parse(payload) as ChatStreamEvent };
+        const event = JSON.parse(payload) as ChatStreamEvent;
+        const violation = validateChatRunEvent(event);
+        if (violation) {
+            console.warn('[chat-event-schema]', violation, event);
+        }
+        return { seq, event };
     } catch (error) {
         console.warn('Failed to parse SSE payload:', error);
         return { seq, event: { type: 'error', message: 'SSE payload parse failed' } };

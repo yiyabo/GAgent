@@ -1,0 +1,85 @@
+{
+  "start": {
+    "type": "start"
+  },
+  "delta": {
+    "type": "delta",
+    "content": "token"
+  },
+  "final": {
+    "type": "final",
+    "payload": {
+      "response": "done",
+      "metadata": {}
+    }
+  },
+  "job_update": {
+    "type": "job_update",
+    "payload": {
+      "job_id": "j1",
+      "status": "running"
+    }
+  },
+  "error": {
+    "type": "error",
+    "message": "boom",
+    "error_type": "RuntimeError"
+  },
+  "thinking_step": {
+    "type": "thinking_step",
+    "step": {
+      "iteration": 1,
+      "thought": "...",
+      "status": "thinking"
+    }
+  },
+  "thinking_delta": {
+    "type": "thinking_delta",
+    "iteration": 1,
+    "delta": "..."
+  },
+  "reasoning_delta": {
+    "type": "reasoning_delta",
+    "iteration": 1,
+    "delta": "..."
+  },
+  "progress_status": {
+    "type": "progress_status",
+    "phase": "tool",
+    "label": "code_executor",
+    "details": null,
+    "iteration": 2,
+    "tool": "code_executor",
+    "status": "running"
+  },
+  "control_ack": {
+    "type": "control_ack",
+    "job_id": "j1",
+    "available": true,
+    "paused": false,
+    "action": "pause"
+  },
+  "tool_output": {
+    "type": "tool_output",
+    "tool": "code_executor",
+    "stream": "stdout",
+    "content": "...",
+    "iteration": 2
+  },
+  "artifact": {
+    "type": "artifact",
+    "path": "results/fig.png",
+    "extension": ".png",
+    "source_tool": "code_executor",
+    "iteration": 3,
+    "display_name": "fig.png",
+    "mime_family": "image",
+    "origin": "tool",
+    "tracking_id": null
+  },
+  "steer_ack": {
+    "type": "steer_ack",
+    "message": "noted",
+    "iteration": 4
+  }
+}

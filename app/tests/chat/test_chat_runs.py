@@ -78,12 +78,12 @@ def test_append_chat_run_event_monotonic_seq(memory_chat_run_db: sqlite3.Connect
 
 def test_fetch_events_after_seq(memory_chat_run_db: sqlite3.Connection) -> None:
     cr.create_chat_run("run_b", "sess_unit", "{}")
-    cr.append_chat_run_event("run_b", {"type": "a"})
-    cr.append_chat_run_event("run_b", {"type": "b"})
-    cr.append_chat_run_event("run_b", {"type": "c"})
+    cr.append_chat_run_event("run_b", {"type": "progress_status", "label": "a"})
+    cr.append_chat_run_event("run_b", {"type": "progress_status", "label": "b"})
+    cr.append_chat_run_event("run_b", {"type": "progress_status", "label": "c"})
     rows = cr.fetch_events_after("run_b", 0)
     assert [r[0] for r in rows] == [1, 2]
-    assert rows[0][1]["type"] == "b"
+    assert rows[0][1]["label"] == "b"
 
 
 def test_list_session_runs_filter(memory_chat_run_db: sqlite3.Connection) -> None:
