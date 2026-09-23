@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { ThinkingProcess as ThinkingProcessType, ThinkingStep } from '@/types';
 import {
   CaretRightOutlined,
@@ -19,6 +19,7 @@ import {
 import { motion, AnimatePresence } from 'framer-motion';
 import { Button, Tooltip } from 'antd';
 import { parseServerTimestampMs } from '@utils/serverTime';
+import { MarkdownRenderer } from './MarkdownRenderer';
 import './ThinkingProcess.css';
 
 interface ThinkingProcessProps {
@@ -44,6 +45,8 @@ interface ThinkingProcessProps {
     details?: string | null;
     updated_at?: string | null;
   } | null;
+  /** Forwarded to MarkdownRenderer so relative artifact images in thoughts resolve. */
+  sessionId?: string | null;
 }
 
 interface ToolSemantic {
@@ -86,24 +89,6 @@ function detectLanguage(process: ThinkingProcessType): 'zh' | 'en' {
     return CJK_CHAR_RE.test(sample) ? 'zh' : 'en';
   }
   return 'en';
-}
-
-/** One-line display label for a step header row. */
-function getDisplayLabel(step: ThinkingStep, language: 'zh' | 'en'): string {
-  if (typeof step.display_text === 'string' && step.display_text.trim()) {
-    return step.display_text.trim();
-  }
-  if (step.action) {
-    return extractSemanticLabel(step.action, language)?.label || localize(language, '调用工具', 'Using a tool');
-  }
-  // Fallback: first sentence of thought, sanitized
-  const raw = String(step.thought || '')
-    .replace(/^#{1,6}\s+/gm, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-  if (!raw) return localize(language, '分析中', 'Analyzing');
-  const first = raw.split(/(?<=[。！？!?;；.])\s+/)[0]?.trim() || raw;
-  return first.length <= 80 ? first : `${first.slice(0, 77).trim()}...`;
 }
 
 function extractSemanticLabel(
@@ -166,15 +151,6 @@ function extractSemanticLabel(
   return { icon: meta.icon, label, toolName };
 }
 
-function extractResultSummary(result: string | null | undefined, maxLen = 120): string | null {
-  if (!result) return null;
-  const trimmed = result.trim();
-  if (trimmed.length <= maxLen) return trimmed;
-  const firstLine = trimmed.split('\n')[0].trim();
-  if (firstLine.length >= 12 && firstLine.length <= 200) return firstLine;
-  return `${trimmed.slice(0, maxLen)}...`;
-}
-
 function stepHasToolError(step: ThinkingStep): boolean {
   if (step.status === 'error') return true;
   return typeof step.action_result === 'string' && /^Error[ :]/.test(step.action_result);
@@ -220,7 +196,7 @@ function earliestStepStartMs(steps: ThinkingStep[]): number | null {
   return earliest;
 }
 
-/** Ticks `Date.now()` every second while `active`, so elapsed counters stay live. */
+/** Ticks `Date.now()` every few seconds while `active`, so elapsed counters stay live. */
 function useLiveNow(active: boolean): number {
   const [now, setNow] = useState<number>(() => Date.now());
   useEffect(() => {
@@ -236,32 +212,24 @@ function isGenericText(text: string | null | undefined, language: 'zh' | 'en'): 
   const n = String(text || '').replace(/\s+/g, ' ').trim();
   if (!n) return false;
   const generics = language === 'zh'
-    ? ['分析当前问题，准备下一步', '准备下一步', '准备整理回复', '分析中', '分析当前步骤', '处理当前步骤']
-    : ['Analyzing the request and preparing the next step', 'Preparing the next step', 'Preparing the response', 'Analyzing', 'Working through the current step'];
+    ? ['分析当前问题，准备下一步', '准备下一步', '准备整理回复', '分析中', '分析当前步骤', '处理当前步骤', '思考过程']
+    : ['Analyzing the request and preparing the next step', 'Preparing the next step', 'Preparing the response', 'Analyzing', 'Working through the current step', 'Thought process'];
   return generics.includes(n);
 }
 
-function getMainSteps(steps: ThinkingStep[], language: 'zh' | 'en'): ThinkingStep[] {
-  const labels = steps.map((s) => getDisplayLabel(s, language));
-  const hasSpecific = labels.some((t) => t && !isGenericText(t, language));
-  return steps.filter((step, idx) => {
-    const text = labels[idx];
-    // During active state, keep generic steps too (so user sees something is happening)
-    if (step.status === 'thinking' || step.status === 'calling_tool') return true;
-    if (!step.action && hasSpecific && isGenericText(text, language)) return false;
-    return !!step.action || !!text;
+/**
+ * Steps worth a row in the activity stream. Reasoning steps without any
+ * persisted thought carry no information once labels are uniform, so they are
+ * dropped — unless filtering would empty the list (legacy runs), in which case
+ * everything is shown.
+ */
+function getVisibleSteps(steps: ThinkingStep[]): ThinkingStep[] {
+  const visible = steps.filter((step) => {
+    if (step.status === 'thinking' || step.status === 'calling_tool' || step.status === 'analyzing') return true;
+    if (step.action) return true;
+    return typeof step.thought === 'string' && step.thought.trim().length > 0;
   });
-}
-
-function getProcessSummary(process: ThinkingProcessType, language: 'zh' | 'en'): string {
-  if (typeof process.summary === 'string' && process.summary.trim()) return process.summary.trim();
-  const texts = getMainSteps(process.steps, language)
-    .map((s) => getDisplayLabel(s, language))
-    .filter(Boolean)
-    .slice(0, 3);
-  if (texts.length > 1) return texts.join(' → ');
-  if (texts.length === 1) return texts[0];
-  return localize(language, '整理思考过程', 'Organizing the reasoning process');
+  return visible.length > 0 ? visible : steps;
 }
 
 /** Truncate thought for live display — show last N lines for long content */
@@ -275,20 +243,20 @@ function truncateForLiveDisplay(text: string, maxLines = 12): { text: string; tr
 }
 
 // ---------------------------------------------------------------------------
-// Step item — shows live thinking content
+// Activity item — one collapsible row per step
 // ---------------------------------------------------------------------------
 
-const ThinkingStepItem: React.FC<{
+const ThinkingActivityItem: React.FC<{
   step: ThinkingStep;
-  isLast: boolean;
   isFinished?: boolean;
   isProcessActive?: boolean;
   nextStep?: ThinkingStep;
   language: 'zh' | 'en';
   liveNow?: number;
   hintText?: string | null;
-}> = ({ step, isLast, isFinished, isProcessActive, nextStep, language, liveNow, hintText }) => {
-  const [detailExpanded, setDetailExpanded] = useState(false);
+  sessionId?: string | null;
+}> = ({ step, isFinished, isProcessActive, nextStep, language, liveNow, hintText, sessionId }) => {
+  const [expanded, setExpanded] = useState(false);
   const streamRef = useRef<HTMLDivElement>(null);
   const autoScrollRef = useRef(true);
   const [showScrollBtn, setShowScrollBtn] = useState(false);
@@ -297,33 +265,21 @@ const ThinkingStepItem: React.FC<{
   const isError = stepHasToolError(step);
   const hasResult = !!step.action_result;
   const duration = stepDurationMs(step);
-  const isStepActive = step.status === 'thinking' || step.status === 'calling_tool';
+  const isStepActive =
+    step.status === 'thinking' || step.status === 'calling_tool' || step.status === 'analyzing';
   const isStepComplete =
     step.status === 'done' ||
     step.status === 'completed' ||
     hasResult ||
-    (!isLast && !isStepActive);
+    (!isStepActive && isFinished);
 
   const semantic = useMemo(() => extractSemanticLabel(step.action, language), [step.action, language]);
-  const label = useMemo(() => getDisplayLabel(step, language), [step, language]);
-  const labelIsGeneric = useMemo(() => isGenericText(label, language), [label, language]);
-  const resultSummary = useMemo(() => extractResultSummary(step.action_result), [step.action_result]);
-
-  // Live elapsed for the in-progress step — shows "… 3.2s" next to the label
-  // so the user sees something is happening even before the step finishes.
-  const liveElapsedMs = useMemo(() => {
-    if (!isStepActive) return null;
-    const start = stepStartMs(step);
-    if (start === null || typeof liveNow !== 'number') return null;
-    return Math.max(0, liveNow - start);
-  }, [isStepActive, step, liveNow]);
-
-  // Show hint only for the active step and only when the step's own label is
-  // generic (otherwise the hint would duplicate / distract from real info).
-  const activeHintText =
-    isStepActive && labelIsGeneric && typeof hintText === 'string' && hintText.trim().length > 0
-      ? hintText.trim()
-      : null;
+  // Tool rows always use the action-derived semantic label (specific); reasoning
+  // rows use a uniform label — the backend's generic display_text
+  // ("处理当前步骤") is never surfaced as a row title.
+  const label = isTool
+    ? semantic?.label || localize(language, '调用工具', 'Using a tool')
+    : localize(language, '思考过程', 'Thought process');
 
   const actionDetails = useMemo(() => {
     if (!step.action) return null;
@@ -331,20 +287,39 @@ const ThinkingStepItem: React.FC<{
     catch { return { tool: 'unknown', params: step.action }; }
   }, [step.action]);
 
-  // Raw thought content
-  const rawThought = useMemo(() => {
-    const t = String(step.thought || '').trim();
-    if (!t) return null;
-    return t;
-  }, [step.thought]);
+  const paramsDetail = useMemo(() => {
+    if (!actionDetails) return null;
+    if (Array.isArray(actionDetails.tools) && actionDetails.tools.length > 0) {
+      return JSON.stringify(actionDetails.tools, null, 2);
+    }
+    if (actionDetails.params && Object.keys(actionDetails.params).length > 0) {
+      return typeof actionDetails.params === 'object'
+        ? JSON.stringify(actionDetails.params, null, 2)
+        : String(actionDetails.params);
+    }
+    return null;
+  }, [actionDetails]);
 
-  // For live display: show streaming thought with truncation
+  const thoughtText = useMemo(() => String(step.thought || '').trim(), [step.thought]);
+
+  const expandable = isTool
+    ? Boolean(isStepActive || paramsDetail || hasResult || isError)
+    : thoughtText.length > 0;
+
+  const liveElapsedMs = useMemo(() => {
+    if (!isStepActive) return null;
+    const start = stepStartMs(step);
+    if (start === null || typeof liveNow !== 'number') return null;
+    return Math.max(0, liveNow - start);
+  }, [isStepActive, step, liveNow]);
+
+  const showHint = isStepActive && !isTool && typeof hintText === 'string' && hintText.trim().length > 0;
+
   const liveThought = useMemo(() => {
-    if (!rawThought) return null;
-    return truncateForLiveDisplay(rawThought);
-  }, [rawThought]);
+    if (!thoughtText) return null;
+    return truncateForLiveDisplay(thoughtText);
+  }, [thoughtText]);
 
-  // Icon for the row
   const icon = useMemo(() => {
     if (isTool) return semantic?.icon || <ToolOutlined />;
     return <BulbOutlined />;
@@ -352,36 +327,29 @@ const ThinkingStepItem: React.FC<{
 
   // Auto-scroll the streaming area to bottom
   useEffect(() => {
-    if (isStepActive && streamRef.current && autoScrollRef.current) {
+    if (expanded && isStepActive && streamRef.current && autoScrollRef.current) {
       streamRef.current.scrollTop = streamRef.current.scrollHeight;
     }
-  }, [rawThought, isStepActive]);
-
-  // Whether the step is a reasoning step with thought content worth showing in detail
-  const hasFullThought = !!rawThought && rawThought.length > 100;
-  // Whether to show live stream: active reasoning steps with thought content
-  const showLiveStream = rawThought && (isStepActive || (isLast && isProcessActive));
-  // Whether to show the thought content inline (completed reasoning steps)
-  const showCompletedThought = rawThought && !showLiveStream && isStepComplete;
+  }, [thoughtText, expanded, isStepActive]);
 
   const renderStatus = () => {
     if (isStepActive) {
       return (
-        <span className="tp-step-status running">
+        <span className="tp-item-status running">
           <LoadingOutlined spin style={{ fontSize: 11 }} />
         </span>
       );
     }
     if (isError) {
       return (
-        <span className="tp-step-status error">
+        <span className="tp-item-status error">
           <CloseCircleOutlined style={{ fontSize: 11 }} />
         </span>
       );
     }
-    if (isStepComplete || isFinished) {
+    if (isStepComplete) {
       return (
-        <span className="tp-step-status success">
+        <span className="tp-item-status success">
           <CheckCircleOutlined style={{ fontSize: 11 }} />
         </span>
       );
@@ -389,180 +357,141 @@ const ThinkingStepItem: React.FC<{
     return null;
   };
 
+  const renderDetail = () => {
+    if (!expanded || !expandable) return null;
+
+    if (!isTool) {
+      // Reasoning detail: live tail while streaming, full markdown once done.
+      if (isStepActive && liveThought) {
+        return (
+          <div className="tp-item-stream" ref={streamRef} onScroll={() => {
+            const el = streamRef.current;
+            if (!el) return;
+            const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+            autoScrollRef.current = atBottom;
+            setShowScrollBtn(!atBottom);
+          }} style={{ position: 'relative' }}>
+            {liveThought.truncated && (
+              <div className="tp-stream-truncated">···</div>
+            )}
+            <span className="tp-stream-text">{liveThought.text}</span>
+            {showScrollBtn && (
+              <div
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (streamRef.current) {
+                    streamRef.current.scrollTop = streamRef.current.scrollHeight;
+                    autoScrollRef.current = true;
+                    setShowScrollBtn(false);
+                  }
+                }}
+                className="tp-stream-scrollbtn"
+              >↓</div>
+            )}
+            <span className="tp-stream-cursor" />
+          </div>
+        );
+      }
+      if (!thoughtText) return null;
+      return (
+        <div className="tp-item-thought">
+          <MarkdownRenderer content={thoughtText} className="tp-md" sessionId={sessionId} />
+        </div>
+      );
+    }
+
+    // Tool detail: params + full result / error.
+    return (
+      <div className="tp-item-tooldetail">
+        {paramsDetail && (
+          <div className="tp-tool-params">
+            <div className="tp-tool-detail-caption">{localize(language, '参数', 'Parameters')}</div>
+            <pre className="tp-tool-params-pre">{paramsDetail}</pre>
+          </div>
+        )}
+        {isStepActive && !hasResult && (
+          <div className="tp-tool-waiting">{localize(language, '执行中…', 'Running…')}</div>
+        )}
+        {hasResult && !isError && (
+          <div className="tp-tool-result-full">
+            <div className="tp-tool-detail-caption">{localize(language, '结果', 'Result')}</div>
+            <div className="tp-tool-result-fulltext">{step.action_result}</div>
+          </div>
+        )}
+        {isError && (
+          <div className="tp-error-inline">
+            <span>
+              {(step.action_result?.match(/^Error[: ]\s*(.+)/s)?.[1] || label || localize(language, '未知错误', 'Unknown error')).slice(0, 200)}
+            </span>
+            {step.self_correction && (
+              <>
+                {' '}
+                <SyncOutlined style={{ fontSize: 10 }} />{' '}
+                <span className="tp-error-correction">{step.self_correction.slice(0, 100)}</span>
+              </>
+            )}
+            {nextStep && !step.self_correction && (
+              <>
+                {' '}
+                <SyncOutlined style={{ fontSize: 10 }} />{' '}
+                <span className="tp-error-correction">
+                  {localize(language, '正在尝试下一步', 'Trying the next step')}
+                </span>
+              </>
+            )}
+          </div>
+        )}
+        {Array.isArray(step.evidence) && step.evidence.length > 0 && (
+          <div className="tp-evidence-block">
+            {step.evidence.map((ev, evIdx) => (
+              <div className="tp-evidence-item" key={`${ev.ref || 'ev'}_${evIdx}`}>
+                <span className="tp-evidence-item-title">
+                  {ev.title || ev.type || localize(language, '证据', 'Evidence')}
+                </span>
+                {ev.ref && <span className="tp-evidence-item-ref"> {ev.ref}</span>}
+                {ev.snippet && <div className="tp-evidence-item-snippet">{ev.snippet}</div>}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   return (
     <motion.div
-      className="tp-step-item"
+      className="tp-item"
       initial={{ opacity: 0, y: 4 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.18, ease: 'easeOut' }}
     >
-      {/* Header row */}
       <div
-        className={`tp-step-row${isStepActive ? ' active' : ''}${isError ? ' has-error' : ''}`}
+        className={`tp-item-row${isStepActive ? ' active' : ''}${isError ? ' has-error' : ''}${expandable ? ' expandable' : ''}`}
+        onClick={expandable ? () => setExpanded((v) => !v) : undefined}
       >
-        <div className={`tp-step-icon${isTool ? '' : ' reasoning'}${isError ? ' error' : ''}`}>
+        <div className={`tp-item-icon${isTool ? '' : ' reasoning'}${isError ? ' error' : ''}`}>
           {icon}
         </div>
-        <span className="tp-step-label">{label}</span>
+        <span className="tp-item-label">{label}</span>
         {renderStatus()}
         {isStepActive && liveElapsedMs !== null && (
-          <span className="tp-step-duration" aria-label="elapsed">
+          <span className="tp-item-duration" aria-label="elapsed">
             {formatDurationMs(liveElapsedMs)}
           </span>
         )}
-        {(isStepComplete || isFinished) && !isStepActive && (
-          <span className="tp-step-duration">{formatDurationMs(duration)}</span>
+        {!isStepActive && isStepComplete && (
+          <span className="tp-item-duration">{formatDurationMs(duration)}</span>
+        )}
+        {expandable && (
+          <CaretRightOutlined className={`tp-item-chevron${expanded ? ' expanded' : ''}`} />
         )}
       </div>
 
-      {/* ===== ACTIVE HINT (from deep_think_progress) — only when step label is generic ===== */}
-      {activeHintText && (
-        <div className="tp-step-hint">{activeHintText}</div>
+      {showHint && (
+        <div className="tp-item-hint">{hintText}</div>
       )}
 
-      {/* ===== LIVE STREAMING: Active reasoning step — show thought as it streams ===== */}
-      {showLiveStream && liveThought && (
-        <div className="tp-step-stream" ref={streamRef} onScroll={() => {
-          const el = streamRef.current;
-          if (!el) return;
-          const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
-          autoScrollRef.current = atBottom;
-          setShowScrollBtn(!atBottom);
-        }} style={{ position: 'relative' }}>
-          {liveThought.truncated && (
-            <div className="tp-stream-truncated">···</div>
-          )}
-          <span className="tp-stream-text">{liveThought.text}</span>
-          {showScrollBtn && (
-            <div
-              onClick={() => {
-                if (streamRef.current) {
-                  streamRef.current.scrollTop = streamRef.current.scrollHeight;
-                  autoScrollRef.current = true;
-                  setShowScrollBtn(false);
-                }
-              }}
-              style={{
-                position: 'absolute',
-                bottom: 4,
-                right: 8,
-                background: 'var(--bg-secondary)',
-                border: '1px solid var(--border-color)',
-                borderRadius: 6,
-                padding: '2px 8px',
-                cursor: 'pointer',
-                fontSize: 12,
-                boxShadow: 'var(--shadow-sm)',
-                zIndex: 10,
-              }}
-            >↓</div>
-          )}
-          <span className="tp-stream-cursor" />
-        </div>
-      )}
-
-      {/* ===== COMPLETED REASONING: Show thought preview, expandable for full ===== */}
-      {showCompletedThought && (
-        <div className="tp-step-thought-block">
-          <div
-            className={`tp-step-thought-preview${hasFullThought ? ' clickable' : ''}`}
-            onClick={hasFullThought ? () => setDetailExpanded((v) => !v) : undefined}
-          >
-            <span className="tp-thought-text">
-              {detailExpanded
-                ? rawThought
-                : (rawThought!.length > 200 ? `${rawThought!.slice(0, 200).trim()}...` : rawThought)}
-            </span>
-            {hasFullThought && (
-              <CaretRightOutlined
-                style={{
-                  fontSize: 9,
-                  color: 'var(--text-quaternary)',
-                  transition: 'transform 0.15s ease',
-                  transform: detailExpanded ? 'rotate(90deg)' : 'none',
-                  flexShrink: 0,
-                  marginLeft: 4,
-                }}
-              />
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* ===== TOOL: Show params inline when calling ===== */}
-      {isTool && isStepActive && actionDetails?.params && Object.keys(actionDetails.params).length > 0 && (
-        <div className="tp-tool-params">
-          <pre className="tp-tool-params-pre">
-            {typeof actionDetails.params === 'object'
-              ? JSON.stringify(actionDetails.params, null, 2)
-              : String(actionDetails.params)}
-          </pre>
-        </div>
-      )}
-
-      {/* ===== TOOL RESULT: Show result when complete ===== */}
-      {isTool && hasResult && !isError && (
-        <div
-          className={`tp-tool-result${step.action_result && step.action_result.length > 150 ? ' clickable' : ''}`}
-          onClick={step.action_result && step.action_result.length > 150 ? () => setDetailExpanded((v) => !v) : undefined}
-        >
-          <span className="tp-tool-result-text">
-            {detailExpanded ? step.action_result : resultSummary}
-          </span>
-          {step.action_result && step.action_result.length > 150 && (
-            <CaretRightOutlined
-              style={{
-                fontSize: 9,
-                color: 'var(--text-quaternary)',
-                transition: 'transform 0.15s ease',
-                transform: detailExpanded ? 'rotate(90deg)' : 'none',
-                flexShrink: 0,
-                marginLeft: 4,
-              }}
-            />
-          )}
-        </div>
-      )}
-
-      {/* ===== ERROR INLINE ===== */}
-      {isError && (
-        <div className="tp-error-inline">
-          <span>
-            {(step.action_result?.match(/^Error[: ]\s*(.+)/s)?.[1] || label || localize(language, '未知错误', 'Unknown error')).slice(0, 200)}
-          </span>
-          {step.self_correction && (
-            <>
-              {' '}
-              <SyncOutlined style={{ fontSize: 10 }} />{' '}
-              <span className="tp-error-correction">{step.self_correction.slice(0, 100)}</span>
-            </>
-          )}
-          {nextStep && !step.self_correction && (
-            <>
-              {' '}
-              <SyncOutlined style={{ fontSize: 10 }} />{' '}
-              <span className="tp-error-correction">
-                {localize(language, '正在尝试下一步', 'Trying the next step')}
-              </span>
-            </>
-          )}
-        </div>
-      )}
-
-      {/* ===== EVIDENCE ===== */}
-      {Array.isArray(step.evidence) && step.evidence.length > 0 && (
-        <div className="tp-evidence-block">
-          {step.evidence.map((ev, evIdx) => (
-            <div className="tp-evidence-item" key={`${ev.ref || 'ev'}_${evIdx}`}>
-              <span className="tp-evidence-item-title">
-                {ev.title || ev.type || localize(language, '证据', 'Evidence')}
-              </span>
-              {ev.ref && <span className="tp-evidence-item-ref"> {ev.ref}</span>}
-              {ev.snippet && <div className="tp-evidence-item-snippet">{ev.snippet}</div>}
-            </div>
-          ))}
-        </div>
-      )}
+      {renderDetail()}
     </motion.div>
   );
 };
@@ -585,13 +514,14 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
   controlBusyAction = null,
   cancelRunBusy = false,
   progressHint = null,
+  sessionId = null,
 }) => {
   const [isExpanded, setIsExpanded] = useState(!isFinished && process.status === 'active');
   const language = useMemo(() => detectLanguage(process), [process]);
-  const mainSteps = useMemo(() => getMainSteps(process.steps, language), [process.steps, language]);
-  const mainStepsCount = mainSteps.length;
+  const visibleSteps = useMemo(() => getVisibleSteps(process.steps), [process.steps]);
+  const stepCount = visibleSteps.length;
+  const toolCallCount = useMemo(() => visibleSteps.filter((s) => !!s.action).length, [visibleSteps]);
   const isActive = process.status === 'active' && !isFinished;
-  const summaryText = useMemo(() => getProcessSummary(process, language), [process, language]);
   const stepsEndRef = useRef<HTMLDivElement>(null);
   const liveNow = useLiveNow(isActive);
 
@@ -617,7 +547,7 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
     return formatDurationMs(hasKnown ? total : null);
   }, [process.steps, isActive, liveNow]);
 
-  // Normalized hint text — surfaced when the active step label is too generic.
+  // Normalized hint text — surfaced for the active reasoning step.
   const hintText = useMemo(() => {
     if (!progressHint) return null;
     const label = typeof progressHint.label === 'string' ? progressHint.label.trim() : '';
@@ -635,6 +565,22 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
     return joined;
   }, [progressHint, language]);
 
+  const collapsedStats = useMemo(() => {
+    const parts: string[] = [];
+    if (stepCount > 0) {
+      parts.push(localize(language, `${stepCount} 步`, `${stepCount} step${stepCount > 1 ? 's' : ''}`));
+    }
+    if (toolCallCount > 0) {
+      parts.push(localize(language, `${toolCallCount} 次工具调用`, `${toolCallCount} tool call${toolCallCount > 1 ? 's' : ''}`));
+    }
+    return parts.join(' · ');
+  }, [stepCount, toolCallCount, language]);
+
+  const backendSummary = useMemo(() => {
+    const s = typeof process.summary === 'string' ? process.summary.trim() : '';
+    return s.length > 0 ? s : null;
+  }, [process.summary]);
+
   // Auto-expand when active, auto-collapse when done
   useEffect(() => {
     if (!isFinished && process.status === 'active') setIsExpanded(true);
@@ -647,12 +593,10 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
 
   // Auto-scroll to latest step during active thinking
   useEffect(() => {
-    if (isActive && stepsEndRef.current) {
+    if (isActive && isExpanded && stepsEndRef.current) {
       stepsEndRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     }
-  }, [mainSteps.length, isActive]);
-
-  // Scroll containment is handled by CSS `overscroll-behavior: contain`.
+  }, [visibleSteps.length, isActive, isExpanded]);
 
   return (
     <div className={`tp-container${isActive ? ' tp-active' : ''}`}>
@@ -671,12 +615,10 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
             : localize(language, '思考过程', 'Thought process')}
         </span>
         {!isExpanded && (
-          <span className="tp-header-preview">{summaryText}</span>
+          <span className="tp-header-preview">{backendSummary || collapsedStats}</span>
         )}
-        {mainStepsCount > 0 && (
-          <span className="tp-header-meta">
-            {localize(language, `${mainStepsCount} 步`, `${mainStepsCount} step${mainStepsCount > 1 ? 's' : ''}`)}
-          </span>
+        {isExpanded && collapsedStats && (
+          <span className="tp-header-meta">{collapsedStats}</span>
         )}
         <span className="tp-header-meta">{totalDuration}</span>
 
@@ -731,7 +673,7 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
         <CaretRightOutlined className={`tp-header-chevron${isExpanded ? ' expanded' : ''}`} />
       </div>
 
-      {/* Expanded step list */}
+      {/* Expanded activity stream */}
       <AnimatePresence initial={false}>
         {isExpanded && (
           <motion.div
@@ -743,49 +685,33 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
             <div
               className={`tp-steps${isActive ? '' : ' tp-steps-scroll'}`}
             >
-              {mainSteps.map((step, idx) => {
-                const prevStep = idx > 0 ? mainSteps[idx - 1] : null;
-                const showHeader = step.iteration > 0 && (!prevStep || step.iteration !== prevStep.iteration);
-                return (
-                <React.Fragment key={`${step.iteration}_${idx}`}>
-                  {showHeader && (
-                    <div style={{
-                      fontSize: 11,
-                      color: 'var(--text-tertiary)',
-                      padding: '8px 0 4px',
-                      borderTop: idx > 0 ? '1px solid var(--border-light)' : 'none',
-                      marginTop: idx > 0 ? 8 : 0,
-                    }}>
-                      {language === 'zh' ? `思考 ${step.iteration}` : `Thinking ${step.iteration}`}
-                    </div>
-                  )}
-                  <ThinkingStepItem
-                    step={step}
-                    isLast={idx === mainSteps.length - 1}
-                    isFinished={isFinished}
-                    isProcessActive={isActive}
-                    nextStep={idx < mainSteps.length - 1 ? mainSteps[idx + 1] : undefined}
-                    language={language}
-                    liveNow={liveNow}
-                    hintText={hintText}
-                  />
-                </React.Fragment>
-                );
-              })}
+              {visibleSteps.map((step, idx) => (
+                <ThinkingActivityItem
+                  key={`it-${step.iteration}-${idx}`}
+                  step={step}
+                  isFinished={isFinished}
+                  isProcessActive={isActive}
+                  nextStep={idx < visibleSteps.length - 1 ? visibleSteps[idx + 1] : undefined}
+                  language={language}
+                  liveNow={liveNow}
+                  hintText={hintText}
+                  sessionId={sessionId}
+                />
+              ))}
 
               {/* "Preparing next step" indicator — only when active and last step is complete */}
-              {isActive && mainSteps.length > 0 && !['thinking', 'calling_tool'].includes(mainSteps[mainSteps.length - 1]?.status || '') && (
+              {isActive && visibleSteps.length > 0 && !['thinking', 'calling_tool', 'analyzing'].includes(visibleSteps[visibleSteps.length - 1]?.status || '') && (
                 <motion.div
-                  className="tp-step-item"
+                  className="tp-item"
                   initial={{ opacity: 0 }}
                   animate={{ opacity: [0.4, 0.8, 0.4] }}
                   transition={{ duration: 1.5, repeat: Infinity, ease: 'easeInOut' }}
                 >
-                  <div className="tp-step-row">
-                    <div className="tp-step-icon reasoning">
+                  <div className="tp-item-row">
+                    <div className="tp-item-icon reasoning">
                       <LoadingOutlined spin style={{ fontSize: 10 }} />
                     </div>
-                    <span className="tp-step-label" style={{ color: 'var(--text-quaternary)' }}>
+                    <span className="tp-item-label" style={{ color: 'var(--text-quaternary)' }}>
                       {hintText || localize(language, '准备下一步...', 'Preparing next step...')}
                     </span>
                   </div>
@@ -793,18 +719,18 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
               )}
 
               {/* Empty state when no steps yet */}
-              {isActive && mainSteps.length === 0 && (
+              {isActive && visibleSteps.length === 0 && (
                 <motion.div
-                  className="tp-step-item"
+                  className="tp-item"
                   initial={{ opacity: 0 }}
                   animate={{ opacity: [0.4, 0.8, 0.4] }}
                   transition={{ duration: 1.5, repeat: Infinity, ease: 'easeInOut' }}
                 >
-                  <div className="tp-step-row">
-                    <div className="tp-step-icon reasoning">
+                  <div className="tp-item-row">
+                    <div className="tp-item-icon reasoning">
                       <LoadingOutlined spin style={{ fontSize: 10 }} />
                     </div>
-                    <span className="tp-step-label" style={{ color: 'var(--text-quaternary)' }}>
+                    <span className="tp-item-label" style={{ color: 'var(--text-quaternary)' }}>
                       {hintText || localize(language, '正在分析问题...', 'Analyzing the question...')}
                     </span>
                   </div>

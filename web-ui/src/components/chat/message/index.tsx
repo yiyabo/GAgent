@@ -421,6 +421,7 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
         controlBusyAction={deepThinkControlBusyAction}
         cancelRunBusy={deepThinkCancelRunBusy}
         progressHint={progressHint}
+        sessionId={effectiveSessionId}
       />
     );
   };

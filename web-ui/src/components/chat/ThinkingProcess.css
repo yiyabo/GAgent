@@ -1,4 +1,4 @@
-/* ThinkingProcess – Live thinking display with Claude-inspired style */
+/* ThinkingProcess – collapsible activity stream (Kimi-style two-level folding) */
 
 /* ================================================================
    Container
@@ -80,7 +80,7 @@
 }
 
 /* ================================================================
-   Control bar (Pause / Skip)
+   Control bar (Pause / Skip / Stop)
    ================================================================ */
 
 .tp-control-bar {
@@ -97,7 +97,7 @@
 }
 
 /* ================================================================
-   Step list (expanded)
+   Activity list (expanded)
    ================================================================ */
 
 .tp-steps {
@@ -125,18 +125,18 @@
 }
 
 /* ================================================================
-   Step item — unified row for reasoning + tool
+   Activity item — one collapsible row per step
    ================================================================ */
 
-.tp-step-item {
+.tp-item {
   margin: 0;
 }
 
-.tp-step-item + .tp-step-item {
-  margin-top: 2px;
+.tp-item + .tp-item {
+  margin-top: 1px;
 }
 
-.tp-step-row {
+.tp-item-row {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -148,12 +148,20 @@
   transition: background 0.1s ease;
 }
 
-.tp-step-row.active {
+.tp-item-row.expandable {
+  cursor: pointer;
+}
+
+.tp-item-row.expandable:hover {
+  background: rgba(0, 0, 0, 0.025);
+}
+
+.tp-item-row.active {
   background: rgba(0, 0, 0, 0.02);
 }
 
-/* Step icon — small square badge */
-.tp-step-icon {
+/* Item icon — small square badge; tool = warm accent, reasoning = cool accent */
+.tp-item-icon {
   width: 20px;
   height: 20px;
   border-radius: 5px;
@@ -162,24 +170,22 @@
   justify-content: center;
   font-size: 11px;
   flex-shrink: 0;
-  /* Tool steps: warm accent */
   background: rgba(201, 100, 66, 0.08);
   color: var(--primary-color);
 }
 
-.tp-step-icon.reasoning {
-  /* Reasoning steps: cool accent */
+.tp-item-icon.reasoning {
   background: rgba(100, 130, 200, 0.1);
   color: rgba(80, 110, 180, 0.85);
 }
 
-.tp-step-icon.error {
+.tp-item-icon.error {
   background: rgba(255, 77, 79, 0.1);
   color: #ff4d4f;
 }
 
-/* Step label */
-.tp-step-label {
+/* Item label */
+.tp-item-label {
   flex: 1;
   min-width: 0;
   overflow: hidden;
@@ -189,8 +195,8 @@
   line-height: 1.4;
 }
 
-/* Step status badge */
-.tp-step-status {
+/* Item status badge */
+.tp-item-status {
   display: flex;
   align-items: center;
   font-size: 11px;
@@ -198,20 +204,20 @@
   color: var(--text-quaternary, var(--text-tertiary));
 }
 
-.tp-step-status.success {
+.tp-item-status.success {
   color: var(--success-color, #52c41a);
 }
 
-.tp-step-status.error {
+.tp-item-status.error {
   color: #ff4d4f;
 }
 
-.tp-step-status.running {
+.tp-item-status.running {
   color: var(--primary-color);
 }
 
-/* Step duration */
-.tp-step-duration {
+/* Item duration */
+.tp-item-duration {
   font-size: 11px;
   color: var(--text-quaternary, var(--text-tertiary));
   flex-shrink: 0;
@@ -219,10 +225,21 @@
   font-variant-numeric: tabular-nums;
 }
 
-/* Active-step hint line — surfaces the backend's current phase/tool
-   (from deep_think_progress) when the step's own label is generic. */
-.tp-step-hint {
-  margin: 2px 0 4px 34px;
+/* Item chevron */
+.tp-item-chevron {
+  font-size: 9px;
+  color: var(--text-quaternary, var(--text-tertiary));
+  transition: transform 0.15s ease;
+  flex-shrink: 0;
+}
+
+.tp-item-chevron.expanded {
+  transform: rotate(90deg);
+}
+
+/* Active-step hint line (from deep_think_progress) */
+.tp-item-hint {
+  margin: 0 0 4px 34px;
   font-size: 11px;
   line-height: 1.5;
   color: var(--text-tertiary);
@@ -234,11 +251,81 @@
 }
 
 /* ================================================================
-   LIVE STREAMING — real-time thought display with typewriter cursor
+   Item detail — expanded reasoning thought (markdown)
    ================================================================ */
 
-.tp-step-stream {
-  margin: 4px 0 6px 34px;
+.tp-item-thought {
+  margin: 2px 0 8px 34px;
+  padding: 8px 12px;
+  background: var(--bg-tertiary, rgba(0, 0, 0, 0.02));
+  border-radius: 6px;
+  border-left: 2px solid rgba(100, 130, 200, 0.25);
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: var(--text-secondary);
+  max-height: 400px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.tp-item-thought::-webkit-scrollbar {
+  width: 3px;
+}
+
+.tp-item-thought::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.06);
+  border-radius: 2px;
+}
+
+/* Markdown inside thought detail — compact spacing */
+.tp-md > div > *:first-child,
+.tp-md *:first-child {
+  margin-top: 0;
+}
+
+.tp-md p {
+  margin: 0 0 8px;
+  font-size: 12.5px;
+  line-height: 1.65;
+}
+
+.tp-md p:last-child {
+  margin-bottom: 0;
+}
+
+.tp-md ul,
+.tp-md ol {
+  margin: 0 0 8px;
+  padding-left: 20px;
+}
+
+.tp-md h1,
+.tp-md h2,
+.tp-md h3,
+.tp-md h4 {
+  margin: 10px 0 6px;
+  font-size: 13px;
+}
+
+.tp-md pre {
+  margin: 6px 0;
+  font-size: 11px;
+}
+
+.tp-md code {
+  font-size: 11px;
+}
+
+.tp-md table {
+  font-size: 11.5px;
+}
+
+/* ================================================================
+   Item detail — live reasoning stream
+   ================================================================ */
+
+.tp-item-stream {
+  margin: 2px 0 8px 34px;
   padding: 8px 12px;
   background: var(--bg-tertiary, rgba(0, 0, 0, 0.02));
   border-radius: 6px;
@@ -254,15 +341,11 @@
   scroll-behavior: smooth;
 }
 
-.tp-step-stream::-webkit-scrollbar {
+.tp-item-stream::-webkit-scrollbar {
   width: 3px;
 }
 
-.tp-step-stream::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.tp-step-stream::-webkit-scrollbar-thumb {
+.tp-item-stream::-webkit-scrollbar-thumb {
   background: rgba(0, 0, 0, 0.06);
   border-radius: 2px;
 }
@@ -274,8 +357,18 @@
   letter-spacing: 2px;
 }
 
-.tp-stream-text {
-  /* The streamed content */
+.tp-stream-scrollbtn {
+  position: absolute;
+  bottom: 4px;
+  right: 8px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 2px 8px;
+  cursor: pointer;
+  font-size: 12px;
+  box-shadow: var(--shadow-sm);
+  z-index: 10;
 }
 
 /* Blinking cursor at end of stream */
@@ -295,47 +388,24 @@
 }
 
 /* ================================================================
-   COMPLETED THOUGHT — preview block for finished reasoning steps
+   Item detail — tool params / result / waiting
    ================================================================ */
 
-.tp-step-thought-block {
-  margin: 2px 0 4px 34px;
+.tp-item-tooldetail {
+  margin: 2px 0 8px 34px;
 }
 
-.tp-step-thought-preview {
-  padding: 6px 10px;
-  background: var(--bg-tertiary, rgba(0, 0, 0, 0.02));
-  border-radius: 6px;
-  border-left: 2px solid rgba(100, 130, 200, 0.15);
-  font-size: 12px;
-  line-height: 1.6;
-  color: var(--text-tertiary);
-  white-space: pre-wrap;
-  word-break: break-word;
-  max-height: 400px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  transition: max-height 0.2s ease;
+.tp-tool-detail-caption {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--text-quaternary, var(--text-tertiary));
+  margin-bottom: 3px;
 }
-
-.tp-step-thought-preview.clickable {
-  cursor: pointer;
-}
-
-.tp-step-thought-preview.clickable:hover {
-  background: rgba(0, 0, 0, 0.03);
-}
-
-.tp-thought-text {
-  /* Inline text */
-}
-
-/* ================================================================
-   TOOL PARAMS — shown inline when tool is being called
-   ================================================================ */
 
 .tp-tool-params {
-  margin: 2px 0 4px 34px;
+  margin: 0 0 6px;
   padding: 6px 10px;
   background: var(--bg-tertiary, rgba(0, 0, 0, 0.02));
   border-radius: 6px;
@@ -349,40 +419,43 @@
   color: var(--text-tertiary);
   white-space: pre-wrap;
   word-break: break-word;
-  max-height: 160px;
+  max-height: 200px;
   overflow: auto;
   line-height: 1.5;
 }
 
-/* ================================================================
-   TOOL RESULT — shown after tool completes
-   ================================================================ */
+.tp-tool-waiting {
+  font-size: 12px;
+  color: var(--text-quaternary, var(--text-tertiary));
+  padding: 2px 0;
+}
 
-.tp-tool-result {
-  margin: 2px 0 4px 34px;
-  padding: 4px 10px;
+.tp-tool-result-full {
+  margin: 0;
+  padding: 6px 10px;
+  background: var(--bg-tertiary, rgba(0, 0, 0, 0.02));
+  border-radius: 6px;
+  border-left: 2px solid rgba(82, 196, 26, 0.25);
+}
+
+.tp-tool-result-fulltext {
   font-size: 12px;
   color: var(--text-tertiary);
-  line-height: 1.5;
+  line-height: 1.55;
   white-space: pre-wrap;
   word-break: break-word;
-  border-left: 2px solid rgba(82, 196, 26, 0.2);
-  border-radius: 0 4px 4px 0;
-  max-height: 300px;
+  max-height: 320px;
   overflow-y: auto;
   overscroll-behavior: contain;
 }
 
-.tp-tool-result.clickable {
-  cursor: pointer;
+.tp-tool-result-fulltext::-webkit-scrollbar {
+  width: 3px;
 }
 
-.tp-tool-result.clickable:hover {
-  background: rgba(0, 0, 0, 0.015);
-}
-
-.tp-tool-result-text {
-  /* Inline text */
+.tp-tool-result-fulltext::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.06);
+  border-radius: 2px;
 }
 
 /* ================================================================
@@ -392,7 +465,7 @@
 .tp-error-inline {
   font-size: 12px;
   color: #ff4d4f;
-  padding: 2px 0 2px 34px;
+  padding: 2px 0;
   line-height: 1.5;
 }
 
@@ -406,7 +479,7 @@
    ================================================================ */
 
 .tp-evidence-block {
-  margin: 4px 0 4px 34px;
+  margin: 6px 0 0;
   display: flex;
   flex-direction: column;
   gap: 3px;
