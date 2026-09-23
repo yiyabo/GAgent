@@ -13,7 +13,20 @@
       "scatter",
       "figure",
       "volcano",
-      "coverage plot"
+      "coverage plot",
+      "图表",
+      "柱状图",
+      "条形图",
+      "折线图",
+      "散点图",
+      "直方图",
+      "热力图",
+      "森林图",
+      "火山图",
+      "轨迹图",
+      "画图",
+      "绘制",
+      "可视化"
     ],
     "path_suffixes": [
       ".csv",
