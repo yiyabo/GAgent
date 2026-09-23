@@ -26,9 +26,13 @@ from app.services.deep_think.text_utils import (
     _INLINE_IMAGE_EXT_RE,
     _INLINE_IMAGE_PRODUCTIVE_RE,
     _INLINE_IMAGE_RAW_TMP_RE,
+    _failure_signature_break_count,
+    _failure_signature_warn_count,
     _guard_json_payload,
     _missing_expectations,
     _missing_expectations_detailed,
+    _progress_free_break_streak,
+    _progress_free_nudge_streak,
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -321,7 +325,7 @@ def _apply_loop_guards(
             continue
         failure_counts[signature] = failure_counts.get(signature, 0) + 1
         count = failure_counts[signature]
-        if count == _dta()._failure_signature_warn_count() and signature not in failure_warned:
+        if count == _failure_signature_warn_count() and signature not in failure_warned:
             failure_warned.add(signature)
             messages.append({
                 "role": "user",
@@ -337,7 +341,7 @@ def _apply_loop_guards(
                 iteration,
                 signature,
             )
-        if count >= _dta()._failure_signature_break_count():
+        if count >= _failure_signature_break_count():
             trap_missing = _missing_expectations_detailed(
                 guard_state.get("expected_outputs") or [],
                 verified,
@@ -390,7 +394,7 @@ def _apply_loop_guards(
                 int(elapsed),
             )
         streak = iteration - int(guard_state["last_progress_iteration"])
-        if streak >= _dta()._progress_free_nudge_streak() and not guard_state["no_progress_nudge_sent"]:
+        if streak >= _progress_free_nudge_streak() and not guard_state["no_progress_nudge_sent"]:
             guard_state["no_progress_nudge_sent"] = True
             if verified:
                 files_list = "\n".join(f"- {p}" for p in verified[:6])
@@ -414,13 +418,13 @@ def _apply_loop_guards(
                 streak,
                 len(verified),
             )
-        if streak >= _dta()._progress_free_break_streak():
+        if streak >= _progress_free_break_streak():
             if missing and not guard_state.get("acceptance_extend_used"):
                 # Declarative acceptance: the run has not delivered what was
                 # asked for — grant one short extension instead of breaking.
                 guard_state["acceptance_extend_used"] = True
                 guard_state["last_progress_iteration"] = iteration - (
-                    _dta()._progress_free_break_streak() - 4
+                    _progress_free_break_streak() - 4
                 )
                 labels = ", ".join(missing)
                 messages.append({

@@ -35,6 +35,7 @@ from app.services.deep_think.models import (
 from app.services.deep_think.prompts import _extract_history_messages
 from app.services.deep_think.text_utils import (
     _derive_expected_outputs,
+    _default_max_consecutive_llm_failures,
     _ensure_inline_images,
     _strip_runtime_absolute_paths,
     _missing_expectations,
@@ -1310,7 +1311,7 @@ async def _think_native(
     final_answer = ""
     fallback_used = False
     consecutive_llm_failures = 0
-    max_consecutive_llm_failures = _dta()._default_max_consecutive_llm_failures()
+    max_consecutive_llm_failures = _default_max_consecutive_llm_failures()
     llm_fatal_abort = False
 
     while iteration < cycle.runtime_iteration_limit:

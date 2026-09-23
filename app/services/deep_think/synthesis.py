@@ -27,6 +27,9 @@ from app.services.deep_think.models import (
 from app.services.deep_think.text_utils import (
     _EXPECT_KIND_LABEL,
     _collect_deliverable_display_names,
+    _default_fallback_timeout_seconds,
+    _default_synthesis_max_tokens,
+    _default_synthesis_timeout_seconds,
     _drop_process_echo_bullets,
     _ensure_inline_images,
     _strip_runtime_absolute_paths,
@@ -678,7 +681,7 @@ async def _generate_fallback_from_evidence(
     if not hasattr(agent.llm_client, "chat_async"):
         raise DeepThinkProtocolError("LLM client does not support chat_async")
     if timeout is None:
-        timeout = float(_dta()._default_fallback_timeout_seconds())
+        timeout = float(_default_fallback_timeout_seconds())
     n = len(steps)
     uq = (user_query or "").strip()
 
@@ -936,8 +939,8 @@ async def _forced_synthesis_from_steps(
             prompt += f"=== REASONING PROCESS ===\n{thoughts_text}\n\n"
         prompt += "Please provide your complete answer now:"
 
-        synthesis_timeout = _dta()._default_synthesis_timeout_seconds()
-        synthesis_max_tokens = _dta()._default_synthesis_max_tokens()
+        synthesis_timeout = _default_synthesis_timeout_seconds()
+        synthesis_max_tokens = _default_synthesis_max_tokens()
         logger.info(
             "[DEEP_THINK_NATIVE] Forced synthesis attempt (timeout=%ss max_tokens=%s)",
             synthesis_timeout,
