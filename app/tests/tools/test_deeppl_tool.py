@@ -8,7 +8,6 @@ from typing import Any, Dict
 import pytest
 
 deeppl_module = importlib.import_module("tool_box.tools_impl.deeppl")
-from app.services import tool_schemas
 
 
 def test_deeppl_predict_sequence_text_normalizes_and_parses_output(
@@ -139,9 +138,11 @@ def test_deeppl_job_status_requires_job_id() -> None:
 
 
 def test_tool_schema_contains_deeppl_definition() -> None:
-    schema = tool_schemas.TOOL_REGISTRY["deeppl"]
-    props = schema["function"]["parameters"]["properties"]
-    assert schema["function"]["name"] == "deeppl"
+    # The module's own tool definition is retained for the paper-assets
+    # pipeline; it is intentionally absent from app.services.tool_schemas.
+    schema = deeppl_module.deeppl_tool
+    props = schema["parameters_schema"]["properties"]
+    assert schema["name"] == "deeppl"
     assert "action" in props
     assert "sequence_text" in props
     assert "remote_profile" in props

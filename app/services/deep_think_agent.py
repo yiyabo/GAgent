@@ -267,7 +267,7 @@ def summarize_tool_step_display(step: ThinkingStep, *, language: str) -> str:
         return _localized_text(language, "处理文件内容", "Working with files")
     if tool_name == "code_executor":
         return _localized_text(language, "执行代码与分析", "Executing code and analysis")
-    if tool_name in {"bio_tools", "phagescope", "deeppl", "sequence_fetch", "url_fetch"}:
+    if tool_name in {"bio_tools", "phagescope", "sequence_fetch", "url_fetch"}:
         return _localized_text(language, "运行分析工具", "Running analysis tools")
     if tool_name == "vision_reader":
         return _localized_text(language, "分析图像内容", "Analyzing visual content")
@@ -604,7 +604,6 @@ class DeepThinkAgent:
         "code_executor",
         "bio_tools",
         "terminal_session",
-        "deeppl",
         "phagescope",
         "result_interpreter",
     }
@@ -748,7 +747,6 @@ class DeepThinkAgent:
         "url_fetch",
         "bio_tools",
         "phagescope",
-        "deeppl",
         "code_executor",
     })
 

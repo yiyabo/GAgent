@@ -924,24 +924,6 @@ Parameter rules (CRITICAL):
 - `taskid` must be the numeric remote task id (e.g., 37468), not a local job id like `act_xxx`.
 
 Params: {"action": "submit|task_list|task_detail|result|save_all|download|batch_submit|batch_reconcile|batch_retry|bulk_download", "userid": "...", "phageid": "...", "phageids": "...", "phage_ids": [...], "batch_id": "...", "taskid": "...", "result_kind": "..."}""",
-        "deeppl": """DeepPL lifecycle prediction tool (DNABERT-based).
-
-Actions:
-1. help: inspect usage, defaults, and environment requirements.
-2. predict: run lifecycle prediction.
-3. job_status: query a background DeepPL job.
-
-Predict rules:
-- Provide exactly one of input_file or sequence_text.
-- Prefer execution_mode='local' unless user clearly requires remote.
-- For split CPU/GPU remote servers, set remote_profile='gpu' or 'cpu' explicitly.
-- model_path is required (or configured via env).
-- Optional background=true for long-running prediction; then query via job_status.
-
-Output fields to report:
-- predicted_label: lysogenic|lytic
-- predicted_lifestyle: temperate|virulent
-- positive_window_fraction and thresholds""",
         "result_interpreter": """Data analysis and result interpretation tool.
 Can inspect CSV, TSV, MAT, NPY, H5AD, and TXT helper files and only escalates to generated code when the request truly needs calculations, transformations, or plots.
 

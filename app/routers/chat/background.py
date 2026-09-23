@@ -13,7 +13,6 @@ from typing import Any, Dict, List, Optional
 _BACKGROUND_TOOL_NAMES: Dict[str, str] = {
     "phagescope": "phagescope",
     "code_executor": "code_executor",
-    "deeppl": "deeppl",
 }
 
 # PhageScope actions that should run synchronously (not dispatched to background).
@@ -29,7 +28,7 @@ def _classify_background_category(
 ) -> Optional[str]:
     """Classify an action run as a long-running background category.
 
-    Returns ``"phagescope"``, ``"code_executor"``, ``"deeppl"``, or ``"task_creation"``
+    Returns ``"phagescope"``, ``"code_executor"``, or ``"task_creation"``
     when the actions indicate a long-running background task, otherwise
     ``None``.
     """
@@ -53,18 +52,6 @@ def _classify_background_category(
                 ps_action = str(params.get("action") or "").strip().lower()
                 if ps_action in _PHAGESCOPE_SYNC_ACTIONS:
                     continue  # Don't classify as background
-            if name == "deeppl":
-                params = getattr(action, "parameters", None) or {}
-                deeppl_action = str(params.get("action") or "").strip().lower()
-                deeppl_bg_raw = params.get("background")
-                if isinstance(deeppl_bg_raw, bool):
-                    deeppl_bg = deeppl_bg_raw
-                elif isinstance(deeppl_bg_raw, str):
-                    deeppl_bg = deeppl_bg_raw.strip().lower() in {"1", "true", "yes", "y", "on"}
-                else:
-                    deeppl_bg = bool(deeppl_bg_raw)
-                if deeppl_action != "predict" or not deeppl_bg:
-                    continue
             return _BACKGROUND_TOOL_NAMES[name]
         if kind == "plan_operation" and name in _BACKGROUND_PLAN_OPS:
             return "task_creation"

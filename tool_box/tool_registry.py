@@ -15,7 +15,6 @@ from .tools import register_tool
 from .tools_impl.deliverable_submit import deliverable_submit_tool
 from .tools_impl import (
     code_executor_tool,
-    deeppl_tool,
     document_reader_tool,
     file_operations_tool,
     generate_experiment_card_tool,
@@ -87,10 +86,6 @@ _TOOL_METADATA: Dict[str, Dict[str, Any]] = {
         "search_hint": "download public url link file http https fetch",
     },
 
-    "deeppl": {
-        "is_concurrent_safe": True,
-        "search_hint": "phage lifestyle prediction temperate lytic",
-    },
     # --- read-only but NOT concurrent-safe (heavyweight / stateful) ---
     "result_interpreter": {
         # NOT is_read_only=True: the "execute" operation actually runs generated code.
@@ -164,7 +159,6 @@ _STANDARD_TOOLS: List[Dict[str, Any]] = [
     manuscript_writer_tool,
     phagescope_tool,
     phagescope_research_tool,
-    deeppl_tool,
     sequence_fetch_tool,
     url_fetch_tool,
     terminal_session_tool,

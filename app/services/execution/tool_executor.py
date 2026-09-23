@@ -54,7 +54,6 @@ class UnifiedToolExecutor:
         "vision_reader": 1200,
         "bio_tools": 86400,
         "phagescope": 60,
-        "deeppl": 1800,
         # analyze/execute run Claude Code inside; 300s was too short and surfaced as result.error=timeout.
         "result_interpreter": 1200,
         "plan_operation": 2400,
@@ -431,28 +430,6 @@ class UnifiedToolExecutor:
                     return f"PhageScope batch_retry failed: {result.get('error') or 'unknown error'}"
                 return f"PhageScope batch_retry: batch_id={result.get('batch_id')}; done."
             return f"PhageScope {action} succeeded."
-
-        if tool_name == "deeppl" and isinstance(result, dict):
-            action = str(result.get("action") or "deeppl").strip().lower()
-            if result.get("success") is False:
-                return (
-                    f"DeepPL {action} failed: "
-                    f"{result.get('error') or result.get('message') or 'unknown error'}"
-                )
-            if action == "predict":
-                lifestyle = result.get("predicted_lifestyle") or "unknown"
-                label = result.get("predicted_label") or "unknown"
-                score = result.get("positive_window_fraction")
-                if isinstance(score, (int, float)):
-                    return (
-                        f"DeepPL predict succeeded: label={label}, "
-                        f"lifestyle={lifestyle}, positive_window_fraction={score:.4f}."
-                    )
-                return f"DeepPL predict succeeded: label={label}, lifestyle={lifestyle}."
-            if action == "job_status":
-                status = result.get("status") or "unknown"
-                return f"DeepPL job_status succeeded: status={status}."
-            return f"DeepPL {action} succeeded."
 
         if isinstance(result, dict):
             if "summary" in result:

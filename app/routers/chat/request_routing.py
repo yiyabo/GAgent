@@ -978,7 +978,6 @@ ALL_TOOLS: List[str] = [
     "sequence_fetch",
     "url_fetch",
     "bio_tools",
-    "deeppl",
     "phagescope",
     "phagescope_research",
     "scientific_figure_generator",

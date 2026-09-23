@@ -32,7 +32,6 @@ def _build_deep_think_agent(request_profile: dict[str, Any] | None = None) -> De
         available_tools=[
             "sequence_fetch",
             "bio_tools",
-            "deeppl",
             "web_search",
             "file_operations",
             "code_executor",
@@ -79,7 +78,7 @@ def test_structured_action_catalog_includes_bio_tools() -> None:
     assert any("tool_operation: bio_tools" in line for line in base_actions)
     assert any("tool_operation: sequence_fetch" in line for line in base_actions)
     assert any("tool_operation: url_fetch" in line for line in base_actions)
-    assert any("tool_operation: deeppl" in line for line in base_actions)
+    assert not any("tool_operation: deeppl" in line for line in base_actions)
     bio_line = next(line for line in base_actions if "tool_operation: bio_tools" in line)
     assert "sequence_text" in bio_line
 

@@ -125,7 +125,6 @@ EXECUTOR_AVAILABLE_TOOLS: List[str] = [
     "vision_reader",
     "phagescope",
     "phagescope_research",
-    "deeppl",
     "literature_pipeline",
     "review_pack_writer",
     "manuscript_writer",
@@ -771,62 +770,6 @@ TOOL_REGISTRY: Dict[str, Dict[str, Any]] = {
             "name": "phagescope_research",
             "description": _PHAGESCOPE_RESEARCH_DESCRIPTION,
             "parameters": _PHAGESCOPE_RESEARCH_PARAMETERS_SCHEMA,
-        },
-    },
-    "deeppl": {
-        "type": "function",
-        "function": {
-            "name": "deeppl",
-            "description": (
-                "DeepPL lifecycle prediction (DNABERT-based). "
-                "Actions: help, predict, job_status. "
-                "For predict, provide exactly one of input_file or sequence_text."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "action": {
-                        "type": "string",
-                        "enum": ["help", "predict", "job_status"],
-                        "description": "DeepPL action to perform.",
-                    },
-                    "input_file": {
-                        "type": "string",
-                        "description": "Path to FASTA/raw sequence input file.",
-                    },
-                    "sequence_text": {
-                        "type": "string",
-                        "description": "Inline FASTA or raw sequence text.",
-                    },
-                    "execution_mode": {
-                        "type": "string",
-                        "enum": ["local", "remote"],
-                        "description": "Execution mode for prediction.",
-                    },
-                    "remote_profile": {
-                        "type": "string",
-                        "enum": ["gpu", "cpu", "default"],
-                        "description": "Remote server profile selector when execution_mode=remote.",
-                    },
-                    "model_path": {
-                        "type": "string",
-                        "description": "Model directory path (local/remote).",
-                    },
-                    "background": {
-                        "type": "boolean",
-                        "description": "If true, submit prediction in background.",
-                    },
-                    "job_id": {
-                        "type": "string",
-                        "description": "Background job id for action='job_status'.",
-                    },
-                    "session_id": {
-                        "type": "string",
-                        "description": "Optional session id for runtime-scoped outputs.",
-                    },
-                },
-                "required": ["action"],
-            },
         },
     },
     "result_interpreter": {

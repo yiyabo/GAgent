@@ -110,7 +110,6 @@ _BLOCKED_DEPENDENCY_MARKER_RE = re.compile(
 _PRIMARY_EXECUTION_TOOLS = {
     "code_executor",
     "bio_tools",
-    "deeppl",
     "literature_pipeline",
     "manuscript_writer",
     "review_pack_writer",
@@ -2731,7 +2730,7 @@ class PlanExecutor:
             t for t in [
                 "literature_pipeline", "web_search", "code_executor", "bio_tools",
                 "sequence_fetch", "document_reader", "vision_reader", "graph_rag",
-                "phagescope_research", "phagescope", "deeppl", "manuscript_writer", "review_pack_writer",
+                "phagescope_research", "phagescope", "manuscript_writer", "review_pack_writer",
                 "file_operations", "terminal_session", "deliverable_submit",
             ]
             if t in _instruction_lower
@@ -3004,7 +3003,6 @@ class PlanExecutor:
                 "review_pack_writer",
                 "phagescope_research",
                 "phagescope",
-                "deeppl",
                 "plan_operation",
                 "manuscript_writer",
                 "terminal_session",
@@ -5293,24 +5291,6 @@ class PlanExecutor:
                     return f"PhageScope batch_retry failed: {result.get('error') or 'unknown error'}"
                 return f"PhageScope batch_retry: batch_id={result.get('batch_id')}."
             return f"PhageScope {action} succeeded."
-
-        if tool_name == "deeppl" and isinstance(result, dict):
-            action = str(result.get("action") or "deeppl").strip().lower()
-            if result.get("success") is False:
-                return f"DeepPL {action} failed: {result.get('error') or result.get('message') or 'unknown error'}"
-            if action == "predict":
-                label = result.get("predicted_label") or "unknown"
-                lifestyle = result.get("predicted_lifestyle") or "unknown"
-                fraction = result.get("positive_window_fraction")
-                if isinstance(fraction, (int, float)):
-                    return (
-                        f"DeepPL predict succeeded: label={label}, lifestyle={lifestyle}, "
-                        f"positive_window_fraction={fraction:.4f}."
-                    )
-                return f"DeepPL predict succeeded: label={label}, lifestyle={lifestyle}."
-            if action == "job_status":
-                return f"DeepPL job_status succeeded: status={result.get('status') or 'unknown'}."
-            return f"DeepPL {action} succeeded."
 
         if isinstance(result, dict):
             if "summary" in result:

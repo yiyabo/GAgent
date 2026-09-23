@@ -1,5 +1,8 @@
 """DeepPL lifecycle prediction tool.
 
+NOTE: not registered as an agent tool (retired); retained for
+scripts/build_deeppl_phagescope_paper_assets.py helpers.
+
 Provides a native wrapper for DeepPL (DNABERT fine-tuned) inference with
 session-scoped input preparation, local/remote execution modes, and optional
 background execution with job-status polling.

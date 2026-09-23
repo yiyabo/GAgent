@@ -99,7 +99,6 @@ _AUTO_DEEP_THINK_RETRY_AVAILABLE_TOOLS: List[str] = [
     "vision_reader",
     "bio_tools",
     "phagescope",
-    "deeppl",
     "result_interpreter",
     "terminal_session",
 ]
