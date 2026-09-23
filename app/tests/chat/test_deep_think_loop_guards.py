@@ -337,6 +337,21 @@ class TestInlineImages:
         out = _ensure_inline_images(text, ["deliverables/score_pie.png"])
         assert out == text
 
+    def test_absolute_container_path_inline_ref_rewritten_to_relpath(self) -> None:
+        """The model often pastes the tool result's /app/runtime/<sid>/... path
+        verbatim into markdown; the frontend cannot resolve it, so the ref must
+        be rewritten to the session-relative path, not kept."""
+        from app.services.deep_think_agent import _ensure_inline_images
+
+        text = (
+            "如图：\n\n![三组数据柱状图](/app/runtime/session_x/raw_files/chat_tools/scientific_figure_generator/group_bar.png)\n\n说明。"
+        )
+        out = _ensure_inline_images(
+            text, ["raw_files/chat_tools/scientific_figure_generator/group_bar.png"]
+        )
+        assert "![三组数据柱状图](raw_files/chat_tools/scientific_figure_generator/group_bar.png)" in out
+        assert "/app/runtime" not in out
+
     def test_plain_link_upgraded(self) -> None:
         from app.services.deep_think_agent import _ensure_inline_images
 

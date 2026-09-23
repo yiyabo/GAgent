@@ -224,7 +224,17 @@ def _ensure_inline_images(text: str, image_relpaths: List[str]) -> str:
         if not rel or ".." in rel or "\\" in rel:
             continue
         name = rel.rsplit("/", 1)[-1]
-        if re.search(r"!\[[^\]\n]*\]\([^)\n]*" + re.escape(name) + r"[^)\n]*\)", out):
+        inline_match = re.search(
+            r"!\[([^\]\n]*)\]\(([^)\n]*" + re.escape(name) + r"[^)\n]*)\)", out
+        )
+        if inline_match:
+            url = inline_match.group(2).strip()
+            # An inline ref pointing at an absolute/container path (the model
+            # often copies the tool result's /app/runtime/<sid>/... verbatim)
+            # resolves to nothing in the frontend — rewrite it to the
+            # session-relative rel instead of keeping it.
+            if url.startswith("/") or ".." in url or "\\" in url:
+                out = out[: inline_match.start(2)] + rel + out[inline_match.end(2) :]
             continue
         link_match = re.search(r"\[([^\]\n]*)\]\(([^)\n]*" + re.escape(name) + r"[^)\n]*)\)", out)
         if link_match:

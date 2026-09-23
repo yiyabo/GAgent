@@ -2,6 +2,7 @@ import { buildArtifactFileUrl, buildWorkspaceFileUrl } from '@api/artifacts';
 
 const IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp|svg)$/i;
 const WORKSPACE_ABS_RE = /^(\/|)(Users|home|private|Volumes|tmp|var|opt|workspace|workspaces|data|mnt|srv|root)\//i;
+const PRODUCTIVE_SEGMENT_RE = /(?:^|\/)(raw_files|deliverables|results|figures|image_tabular)\//i;
 
 export function normalizeArtifactImagePath(src: string | null | undefined): string {
   if (src == null || typeof src !== 'string') {
@@ -55,6 +56,17 @@ export function resolveArtifactImageSrc(
   }
   if (isWorkspaceAbsoluteImagePath(normalized)) {
     return buildWorkspaceFileUrl(sid, normalized);
+  }
+
+  // Mangled container-absolute paths: the model often pastes the tool
+  // result's "/app/runtime/<sid>/raw_files/x.png" verbatim into markdown;
+  // normalizeArtifactImagePath strips the leading slash, leaving
+  // "app/runtime/<sid>/raw_files/x.png", which resolves under the session
+  // root as a bogus "app/..." subtree. Cut at the first productive segment
+  // and serve the session-relative remainder instead.
+  const segMatch = PRODUCTIVE_SEGMENT_RE.exec(normalized);
+  if (segMatch && segMatch.index > 0) {
+    return buildArtifactFileUrl(sid, normalized.slice(segMatch.index).replace(/^\/+/, ''));
   }
 
   const pathForApi = sourceType === 'deliverables'

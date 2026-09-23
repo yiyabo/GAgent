@@ -57,6 +57,30 @@ describe('resolveArtifactImageSrc', () => {
     expect(resolveArtifactImageSrc(undefined, 's')).toBe('');
   });
 
+  it('cuts mangled container-absolute paths at the first productive segment', () => {
+    expect(
+      resolveArtifactImageSrc(
+        '/app/runtime/session_x/raw_files/chat_tools/scientific_figure_generator/group_bar.png',
+        'sess_1',
+      ),
+    ).toBe(
+      'http://api.test/artifacts/sessions/sess_1/file?path=' +
+        encodeURIComponent('raw_files/chat_tools/scientific_figure_generator/group_bar.png'),
+    );
+    expect(
+      resolveArtifactImageSrc('app/runtime/session_x/deliverables/latest/image_tabular/fig.png', 'sess_1'),
+    ).toBe(
+      'http://api.test/artifacts/sessions/sess_1/file?path=' +
+        encodeURIComponent('deliverables/latest/image_tabular/fig.png'),
+    );
+  });
+
+  it('keeps workspace-absolute paths on the workspace endpoint despite productive segments', () => {
+    expect(resolveArtifactImageSrc('/Users/apple/proj/results/a.png', 'sess_1')).toContain(
+      'workspace-file',
+    );
+  });
+
   it('does not double-prefix deliverables/latest paths', () => {
     expect(
       resolveArtifactImageSrc('deliverables/latest/image_tabular/a.png', 'sess_1', 'deliverables'),
