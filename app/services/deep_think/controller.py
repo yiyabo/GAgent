@@ -825,6 +825,225 @@ async def _native_real_execution_cycle(
     return "ok"
 
 
+async def _native_final_call_cycle(
+    agent: "DeepThinkAgent",
+    *,
+    result: Any,
+    final_call: Any,
+    iteration: int,
+    current_step: ThinkingStep,
+    thinking_steps: List[ThinkingStep],
+    tools_used: List[str],
+    messages: List[Dict[str, Any]],
+    task_context: Optional[TaskExecutionContext],
+    user_query: str,
+    cycle: _NativeCycleState,
+) -> tuple[str, str]:
+    """submit_final_answer branch: confidence capture, blocked-dependency
+    replacement after probe-only loops, process-only discard, structured
+    plan contract retry, forced directory profile / PhageScope deep_profile
+    evidence, and answer acceptance.
+
+    Returns ``(flow, new_final_answer)`` — ``"continue"`` (a retry/evidence
+    prompt was injected) or ``"break"`` (stop the loop; ``new_final_answer``
+    is the accepted answer, the blocked-dependency replacement, or ``""``
+    when the candidate was discarded). Extracted verbatim from
+    ``_think_native``.
+    """
+    candidate_answer = str(final_call.arguments.get("answer", "") or "")
+    raw_conf = final_call.arguments.get("confidence", 0.8)
+    try:
+        cycle.confidence = max(0.0, min(1.0, float(raw_conf)))
+    except (TypeError, ValueError):
+        cycle.confidence = 0.8
+    current_step.status = "done"
+    current_step.finished_at = datetime.now()
+    if (
+        cycle.probe_only_execution_cycles >= 2
+        and not cycle.had_real_execution_tool
+        and agent._is_execute_task_request()
+        and agent._has_bound_task_context(task_context)
+        and not agent._looks_like_blocked_dependency_answer(candidate_answer)
+        # Do not replace with BLOCKED_DEPENDENCY when the user
+        # explicitly requested this task — forced execution
+        # should have run or the LLM's natural answer is
+        # preferable to a generic "please provide prerequisites"
+        # message that the user has already complained about.
+        and not agent._explicit_task_override_active(task_context)
+    ):
+        current_step.self_correction = (
+            "Rejected a conclusion after repeated observation-only probing and replaced it with a blocked-dependency answer."
+        )
+        final_answer = agent._build_blocked_dependency_answer(
+            task_context=task_context,
+            user_query=user_query,
+            tool_results=[],
+        )
+        if agent.on_final_delta and final_answer:
+            await agent._stream_final_answer(final_answer)
+        thinking_steps.append(current_step)
+        if agent.on_thinking:
+            await agent._safe_callback(current_step)
+        return "break", final_answer
+    if not agent._is_valid_final_answer(candidate_answer, user_query=user_query):
+        current_step.self_correction = (
+            "Discarded a process-only conclusion and switching to fallback synthesis."
+        )
+        final_answer = ""
+    else:
+        structured_plan_outcome = agent._summarize_structured_plan_outcome(
+            thinking_steps,
+            user_query=user_query,
+        )
+        if structured_plan_outcome.get("required") and not structured_plan_outcome.get("satisfied"):
+            current_step.self_correction = (
+                "Rejected the final answer because the required structured plan was not created or updated yet."
+            )
+            final_answer = ""
+            thinking_steps.append(current_step)
+            if agent.on_thinking:
+                await agent._safe_callback(current_step)
+            messages.append({"role": "assistant", "content": result.content or ""})
+            messages.append(
+                {
+                    "role": "user",
+                    "content": agent._get_structured_plan_retry_prompt(),
+                }
+            )
+            return "continue", ""
+        profile_path = agent._needs_directory_profile_before_final(
+            user_query=user_query,
+            steps=thinking_steps,
+        )
+        if profile_path:
+            current_step.self_correction = (
+                "Rejected a directory/dataset final answer until file_operations profile evidence is collected."
+            )
+            final_answer = ""
+            thinking_steps.append(current_step)
+            if agent.on_thinking:
+                await agent._safe_callback(current_step)
+            forced_call = SimpleNamespace(
+                name="file_operations",
+                id=f"forced_directory_profile_{iteration}",
+                arguments={"operation": "profile", "path": profile_path},
+            )
+            forced_result = await agent._execute_native_tool_call(
+                tc=forced_call,
+                iteration=iteration,
+                index=9998,
+            )
+            if "file_operations" not in tools_used:
+                tools_used.append("file_operations")
+            forced_step = ThinkingStep(
+                iteration=iteration,
+                thought="Collecting required directory profile evidence before final answer.",
+                action=json.dumps(
+                    {
+                        "tool": "file_operations",
+                        "params": {"operation": "profile", "path": profile_path},
+                    },
+                    ensure_ascii=False,
+                ),
+                action_result=None,
+                self_correction="Forced directory profile/census evidence for dataset-level analysis.",
+                kind="tool",
+                status="calling_tool",
+            )
+            thinking_steps.append(forced_step)
+            agent._append_tool_cycle_messages(
+                messages=messages,
+                tool_results=[forced_result],
+                assistant_content="",
+                current_step=forced_step,
+            )
+            forced_step.status = "analyzing"
+            if agent.on_thinking:
+                await agent._safe_callback(forced_step)
+            messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "A directory-level file_operations profile was required and has now been collected. "
+                        "Use its evidence_scope/status_counts/status_count_sources in the final answer. "
+                        "Do not make all/every/global-ready claims unless the profile supports them. "
+                        "Now call submit_final_answer with a scoped dataset summary."
+                    ),
+                }
+            )
+            return "continue", ""
+        phagescope_path = agent._needs_phagescope_deep_profile_before_final(
+            user_query=user_query,
+            steps=thinking_steps,
+        )
+        if phagescope_path:
+            current_step.self_correction = (
+                "Rejected a PhageScope dataset final answer until phagescope_research deep_profile evidence is collected."
+            )
+            final_answer = ""
+            thinking_steps.append(current_step)
+            if agent.on_thinking:
+                await agent._safe_callback(current_step)
+            forced_call = SimpleNamespace(
+                name="phagescope_research",
+                id=f"forced_phagescope_deep_profile_{iteration}",
+                arguments={"action": "deep_profile", "data_dir": phagescope_path},
+            )
+            forced_result = await agent._execute_native_tool_call(
+                tc=forced_call,
+                iteration=iteration,
+                index=9997,
+            )
+            if "phagescope_research" not in tools_used:
+                tools_used.append("phagescope_research")
+            forced_step = ThinkingStep(
+                iteration=iteration,
+                thought="Collecting required PhageScope deep profile evidence before final answer.",
+                action=json.dumps(
+                    {
+                        "tool": "phagescope_research",
+                        "params": {"action": "deep_profile", "data_dir": phagescope_path},
+                    },
+                    ensure_ascii=False,
+                ),
+                action_result=None,
+                self_correction="Forced PhageScope deep_profile evidence for dataset-level analysis.",
+                kind="tool",
+                status="calling_tool",
+            )
+            thinking_steps.append(forced_step)
+            agent._append_tool_cycle_messages(
+                messages=messages,
+                tool_results=[forced_result],
+                assistant_content="",
+                current_step=forced_step,
+            )
+            forced_step.status = "analyzing"
+            if agent.on_thinking:
+                await agent._safe_callback(forced_step)
+            messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "A PhageScope deep_profile was required and has now been collected. "
+                        "Use metadata_size_bytes/metadata_size_human for meta_data size claims, "
+                        "total_size_bytes/total_size_human for whole-dataset size claims, and "
+                        "metadata_schema/ml_metadata_table/label_quality/split_readiness for readiness claims. "
+                        "Do not invent numeric size, row, column, or data-readiness claims absent from deep_profile. "
+                        "Now call submit_final_answer with an evidence-bound PhageScope dataset summary."
+                    ),
+                }
+            )
+            return "continue", ""
+        final_answer = candidate_answer
+    thinking_steps.append(current_step)
+    if agent.on_thinking:
+        await agent._safe_callback(current_step)
+    if agent.on_final_delta and final_answer:
+        await agent._stream_final_answer(final_answer)
+    return "break", final_answer
+
+
 async def _think_native(
     agent: "DeepThinkAgent",
     user_query: str,
@@ -978,197 +1197,22 @@ async def _think_native(
                 continue
 
             if final_call:
-                candidate_answer = str(final_call.arguments.get("answer", "") or "")
-                raw_conf = final_call.arguments.get("confidence", 0.8)
-                try:
-                    cycle.confidence = max(0.0, min(1.0, float(raw_conf)))
-                except (TypeError, ValueError):
-                    cycle.confidence = 0.8
-                current_step.status = "done"
-                current_step.finished_at = datetime.now()
-                if (
-                    cycle.probe_only_execution_cycles >= 2
-                    and not cycle.had_real_execution_tool
-                    and agent._is_execute_task_request()
-                    and agent._has_bound_task_context(task_context)
-                    and not agent._looks_like_blocked_dependency_answer(candidate_answer)
-                    # Do not replace with BLOCKED_DEPENDENCY when the user
-                    # explicitly requested this task — forced execution
-                    # should have run or the LLM's natural answer is
-                    # preferable to a generic "please provide prerequisites"
-                    # message that the user has already complained about.
-                    and not agent._explicit_task_override_active(task_context)
-                ):
-                    current_step.self_correction = (
-                        "Rejected a conclusion after repeated observation-only probing and replaced it with a blocked-dependency answer."
-                    )
-                    final_answer = agent._build_blocked_dependency_answer(
-                        task_context=task_context,
-                        user_query=user_query,
-                        tool_results=[],
-                    )
-                    if agent.on_final_delta and final_answer:
-                        await agent._stream_final_answer(final_answer)
-                    thinking_steps.append(current_step)
-                    if agent.on_thinking:
-                        await agent._safe_callback(current_step)
-                    break
-                if not agent._is_valid_final_answer(candidate_answer, user_query=user_query):
-                    current_step.self_correction = (
-                        "Discarded a process-only conclusion and switching to fallback synthesis."
-                    )
-                    final_answer = ""
-                else:
-                    structured_plan_outcome = agent._summarize_structured_plan_outcome(
-                        thinking_steps,
-                        user_query=user_query,
-                    )
-                    if structured_plan_outcome.get("required") and not structured_plan_outcome.get("satisfied"):
-                        current_step.self_correction = (
-                            "Rejected the final answer because the required structured plan was not created or updated yet."
-                        )
-                        final_answer = ""
-                        thinking_steps.append(current_step)
-                        if agent.on_thinking:
-                            await agent._safe_callback(current_step)
-                        messages.append({"role": "assistant", "content": result.content or ""})
-                        messages.append(
-                            {
-                                "role": "user",
-                                "content": agent._get_structured_plan_retry_prompt(),
-                            }
-                        )
-                        continue
-                    profile_path = agent._needs_directory_profile_before_final(
-                        user_query=user_query,
-                        steps=thinking_steps,
-                    )
-                    if profile_path:
-                        current_step.self_correction = (
-                            "Rejected a directory/dataset final answer until file_operations profile evidence is collected."
-                        )
-                        final_answer = ""
-                        thinking_steps.append(current_step)
-                        if agent.on_thinking:
-                            await agent._safe_callback(current_step)
-                        forced_call = SimpleNamespace(
-                            name="file_operations",
-                            id=f"forced_directory_profile_{iteration}",
-                            arguments={"operation": "profile", "path": profile_path},
-                        )
-                        forced_result = await agent._execute_native_tool_call(
-                            tc=forced_call,
-                            iteration=iteration,
-                            index=9998,
-                        )
-                        if "file_operations" not in tools_used:
-                            tools_used.append("file_operations")
-                        forced_step = ThinkingStep(
-                            iteration=iteration,
-                            thought="Collecting required directory profile evidence before final answer.",
-                            action=json.dumps(
-                                {
-                                    "tool": "file_operations",
-                                    "params": {"operation": "profile", "path": profile_path},
-                                },
-                                ensure_ascii=False,
-                            ),
-                            action_result=None,
-                            self_correction="Forced directory profile/census evidence for dataset-level analysis.",
-                            kind="tool",
-                            status="calling_tool",
-                        )
-                        thinking_steps.append(forced_step)
-                        agent._append_tool_cycle_messages(
-                            messages=messages,
-                            tool_results=[forced_result],
-                            assistant_content="",
-                            current_step=forced_step,
-                        )
-                        forced_step.status = "analyzing"
-                        if agent.on_thinking:
-                            await agent._safe_callback(forced_step)
-                        messages.append(
-                            {
-                                "role": "user",
-                                "content": (
-                                    "A directory-level file_operations profile was required and has now been collected. "
-                                    "Use its evidence_scope/status_counts/status_count_sources in the final answer. "
-                                    "Do not make all/every/global-ready claims unless the profile supports them. "
-                                    "Now call submit_final_answer with a scoped dataset summary."
-                                ),
-                            }
-                        )
-                        continue
-                    phagescope_path = agent._needs_phagescope_deep_profile_before_final(
-                        user_query=user_query,
-                        steps=thinking_steps,
-                    )
-                    if phagescope_path:
-                        current_step.self_correction = (
-                            "Rejected a PhageScope dataset final answer until phagescope_research deep_profile evidence is collected."
-                        )
-                        final_answer = ""
-                        thinking_steps.append(current_step)
-                        if agent.on_thinking:
-                            await agent._safe_callback(current_step)
-                        forced_call = SimpleNamespace(
-                            name="phagescope_research",
-                            id=f"forced_phagescope_deep_profile_{iteration}",
-                            arguments={"action": "deep_profile", "data_dir": phagescope_path},
-                        )
-                        forced_result = await agent._execute_native_tool_call(
-                            tc=forced_call,
-                            iteration=iteration,
-                            index=9997,
-                        )
-                        if "phagescope_research" not in tools_used:
-                            tools_used.append("phagescope_research")
-                        forced_step = ThinkingStep(
-                            iteration=iteration,
-                            thought="Collecting required PhageScope deep profile evidence before final answer.",
-                            action=json.dumps(
-                                {
-                                    "tool": "phagescope_research",
-                                    "params": {"action": "deep_profile", "data_dir": phagescope_path},
-                                },
-                                ensure_ascii=False,
-                            ),
-                            action_result=None,
-                            self_correction="Forced PhageScope deep_profile evidence for dataset-level analysis.",
-                            kind="tool",
-                            status="calling_tool",
-                        )
-                        thinking_steps.append(forced_step)
-                        agent._append_tool_cycle_messages(
-                            messages=messages,
-                            tool_results=[forced_result],
-                            assistant_content="",
-                            current_step=forced_step,
-                        )
-                        forced_step.status = "analyzing"
-                        if agent.on_thinking:
-                            await agent._safe_callback(forced_step)
-                        messages.append(
-                            {
-                                "role": "user",
-                                "content": (
-                                    "A PhageScope deep_profile was required and has now been collected. "
-                                    "Use metadata_size_bytes/metadata_size_human for meta_data size claims, "
-                                    "total_size_bytes/total_size_human for whole-dataset size claims, and "
-                                    "metadata_schema/ml_metadata_table/label_quality/split_readiness for readiness claims. "
-                                    "Do not invent numeric size, row, column, or data-readiness claims absent from deep_profile. "
-                                    "Now call submit_final_answer with an evidence-bound PhageScope dataset summary."
-                                ),
-                            }
-                        )
-                        continue
-                    final_answer = candidate_answer
-                thinking_steps.append(current_step)
-                if agent.on_thinking:
-                    await agent._safe_callback(current_step)
-                if agent.on_final_delta and final_answer:
-                    await agent._stream_final_answer(final_answer)
+                flow, new_final_answer = await _native_final_call_cycle(
+                    agent,
+                    result=result,
+                    final_call=final_call,
+                    iteration=iteration,
+                    current_step=current_step,
+                    thinking_steps=thinking_steps,
+                    tools_used=tools_used,
+                    messages=messages,
+                    task_context=task_context,
+                    user_query=user_query,
+                    cycle=cycle,
+                )
+                if flow == "continue":
+                    continue
+                final_answer = new_final_answer
                 break
         else:
             # No tool calls – pure thinking text.
