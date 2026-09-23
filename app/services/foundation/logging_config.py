@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""
-log
+"""Structured logging setup: JSON by default, LOG_LEVEL / LOG_FORMAT knobs.
 
-JSON/ , default JSON, support LOG_LEVEL  LOG_FORMAT . 
+Every handler carries the LogContextFilter so bound run/session/owner ids
+(via app.services.foundation.logging_context) ride on all downstream records.
 """
 import json
 import logging
@@ -59,6 +59,8 @@ class JsonFormatter(logging.Formatter):
 
 
 def setup_logging() -> None:
+    from app.services.foundation.logging_context import LogContextFilter
+
     settings = get_settings()
     root = logging.getLogger()
     for h in list(root.handlers):
@@ -70,6 +72,7 @@ def setup_logging() -> None:
         level_name = "INFO"
     root.setLevel(getattr(logging, level_name, logging.INFO))
     handler = logging.StreamHandler(sys.stdout)
+    handler.addFilter(LogContextFilter())
 
     try:
         fmt_name = str(settings.log_format).lower()
@@ -98,6 +101,7 @@ def setup_logging() -> None:
                 encoding="utf-8",
             )
             file_handler.setFormatter(handler.formatter)
+            file_handler.addFilter(LogContextFilter())
             root.addHandler(file_handler)
         except Exception as exc:
             logging.getLogger(__name__).warning(
