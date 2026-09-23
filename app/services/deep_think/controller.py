@@ -289,64 +289,24 @@ async def _think_native(
         if agent.on_thinking:
             await agent._safe_callback(current_step)
 
-        try:
-            async def _on_delta(chunk: str) -> None:
-                if agent.on_thinking_delta:
-                    await agent._safe_delta_callback(iteration, chunk)
-
-            async def _on_reasoning_delta(chunk: str) -> None:
-                if agent.on_reasoning_delta:
-                    try:
-                        ret = agent.on_reasoning_delta(iteration, chunk)
-                        if asyncio.iscoroutine(ret):
-                            await ret
-                    except Exception:
-                        pass
-
-            update_usage_context(call_purpose="deep_think_iteration", phase="deep_think", tool_name="deep_think")
-            result = await agent.llm_client.stream_chat_with_tools_async(
-                messages=messages,
-                tools=tool_schemas,
-                tool_choice="auto",
-                on_content_delta=_on_delta,
-                on_reasoning_delta=_on_reasoning_delta,
-                enable_thinking=agent.enable_thinking,
-                thinking_budget=agent.thinking_budget,
-            )
-        except Exception as exc:
-            error_detail = _dta()._describe_exception(exc)
-            logger.exception(
-                "[DEEP_THINK_NATIVE] LLM call failed at iteration %d: %s",
-                iteration,
-                error_detail,
-            )
-            current_step.status = "error"
-            current_step.thought = f"Error: {error_detail}"
-            current_step.finished_at = datetime.now()
-            thinking_steps.append(current_step)
-            if agent.on_thinking:
-                await agent._safe_callback(current_step)
-            classified = _dta()._classify_llm_provider_error(exc)
-            if classified is not None and not classified.retryable:
-                logger.error(
-                    "[DEEP_THINK_NATIVE] Non-retryable LLM provider error (%s); aborting run",
-                    getattr(classified, "error_code", "unknown"),
-                )
-                consecutive_llm_failures = max_consecutive_llm_failures
-            else:
-                consecutive_llm_failures += 1
-            if consecutive_llm_failures >= max_consecutive_llm_failures:
-                final_answer = _dta()._build_llm_unavailable_final_answer(classified)
-                fallback_used = True
-                llm_fatal_abort = True
-                logger.error(
-                    "[DEEP_THINK_NATIVE] Circuit breaker tripped after %d consecutive LLM failure(s); aborting run",
-                    consecutive_llm_failures,
-                )
-                break
+        flow, result, consecutive_llm_failures, fatal_answer = await _native_llm_step(
+            agent,
+            messages=messages,
+            tool_schemas=tool_schemas,
+            iteration=iteration,
+            current_step=current_step,
+            thinking_steps=thinking_steps,
+            consecutive_llm_failures=consecutive_llm_failures,
+            max_consecutive_llm_failures=max_consecutive_llm_failures,
+        )
+        if flow == "break":
+            final_answer = fatal_answer
+            fallback_used = True
+            llm_fatal_abort = True
+            break
+        if flow == "continue":
             continue
 
-        consecutive_llm_failures = 0
         current_step.thought = result.content or ""
 
         if result.tool_calls:
@@ -1302,6 +1262,84 @@ async def _think_native(
         messages=messages,
         llm_fatal_abort=llm_fatal_abort,
     )
+
+
+async def _native_llm_step(
+    agent: "DeepThinkAgent",
+    *,
+    messages: List[Dict[str, Any]],
+    tool_schemas: List[Dict[str, Any]],
+    iteration: int,
+    current_step: ThinkingStep,
+    thinking_steps: List[ThinkingStep],
+    consecutive_llm_failures: int,
+    max_consecutive_llm_failures: int,
+) -> tuple[str, Any, int, str]:
+    """One native LLM round-trip plus the provider-failure circuit breaker.
+
+    Returns ``(flow, result, consecutive_llm_failures, fatal_answer)``:
+    ``flow == "ok"`` (use ``result``), ``"continue"`` (retryable failure —
+    skip to the next iteration), or ``"break"`` (circuit breaker tripped;
+    ``fatal_answer`` carries the LLM-unavailable final answer). Extracted
+    verbatim from ``_think_native``.
+    """
+    try:
+        async def _on_delta(chunk: str) -> None:
+            if agent.on_thinking_delta:
+                await agent._safe_delta_callback(iteration, chunk)
+
+        async def _on_reasoning_delta(chunk: str) -> None:
+            if agent.on_reasoning_delta:
+                try:
+                    ret = agent.on_reasoning_delta(iteration, chunk)
+                    if asyncio.iscoroutine(ret):
+                        await ret
+                except Exception:
+                    pass
+
+        update_usage_context(call_purpose="deep_think_iteration", phase="deep_think", tool_name="deep_think")
+        result = await agent.llm_client.stream_chat_with_tools_async(
+            messages=messages,
+            tools=tool_schemas,
+            tool_choice="auto",
+            on_content_delta=_on_delta,
+            on_reasoning_delta=_on_reasoning_delta,
+            enable_thinking=agent.enable_thinking,
+            thinking_budget=agent.thinking_budget,
+        )
+    except Exception as exc:
+        error_detail = _dta()._describe_exception(exc)
+        logger.exception(
+            "[DEEP_THINK_NATIVE] LLM call failed at iteration %d: %s",
+            iteration,
+            error_detail,
+        )
+        current_step.status = "error"
+        current_step.thought = f"Error: {error_detail}"
+        current_step.finished_at = datetime.now()
+        thinking_steps.append(current_step)
+        if agent.on_thinking:
+            await agent._safe_callback(current_step)
+        classified = _dta()._classify_llm_provider_error(exc)
+        if classified is not None and not classified.retryable:
+            logger.error(
+                "[DEEP_THINK_NATIVE] Non-retryable LLM provider error (%s); aborting run",
+                getattr(classified, "error_code", "unknown"),
+            )
+            consecutive_llm_failures = max_consecutive_llm_failures
+        else:
+            consecutive_llm_failures += 1
+        if consecutive_llm_failures >= max_consecutive_llm_failures:
+            fatal_answer = _dta()._build_llm_unavailable_final_answer(classified)
+            logger.error(
+                "[DEEP_THINK_NATIVE] Circuit breaker tripped after %d consecutive LLM failure(s); aborting run",
+                consecutive_llm_failures,
+            )
+            return "break", None, consecutive_llm_failures, fatal_answer
+        return "continue", None, consecutive_llm_failures, ""
+
+    consecutive_llm_failures = 0
+    return "ok", result, consecutive_llm_failures, ""
 
 
 async def _native_finalize(
