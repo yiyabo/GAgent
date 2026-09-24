@@ -137,6 +137,12 @@ from .phagescope_normalize import (
     _validate_module_dependencies,
 )
 
+from .phagescope_actions_batch import (
+    _action_batch_reconcile,
+    _action_batch_retry,
+    _action_batch_submit,
+)
+
 from .phagescope_actions_query import (
     _QueryOutcome,
     _action_ping,
@@ -208,14 +214,7 @@ async def phagescope_handler(
             sequence = None
 
     if action == "batch_submit":
-        # Submit-style names (phageids / phage_id) are common; batch_submit previously only read
-        # phage_ids / phage_ids_file, so calls with phageids only looked "empty" and failed validation.
-        effective_phage_ids = phage_ids
-        if effective_phage_ids is None and phageids is not None and str(phageids).strip():
-            effective_phage_ids = phageids
-        if effective_phage_ids is None and phageid is not None and str(phageid).strip():
-            effective_phage_ids = phageid
-        return await _phagescope_batch_submit(
+        return await _action_batch_submit(
             base_url=base_url,
             token=token,
             timeout=timeout,
@@ -229,11 +228,13 @@ async def phagescope_handler(
             file_path=file_path,
             comparedatabase=comparedatabase,
             neednum=neednum,
-            phage_ids=effective_phage_ids,
+            phage_ids=phage_ids,
+            phageids=phageids,
+            phageid=phageid,
             phage_ids_file=phage_ids_file,
             batch_id=batch_id,
             strategy=strategy,
-            manifest_path_override=manifest_path,
+            manifest_path=manifest_path,
         )
 
     if action == "quality":
@@ -243,21 +244,21 @@ async def phagescope_handler(
     taskid = _resolve_phagescope_taskid(taskid, session_id=session_id)
 
     if action == "batch_reconcile":
-        return await _phagescope_batch_reconcile(
+        return await _action_batch_reconcile(
             base_url=base_url,
             token=token,
             timeout=timeout,
             session_id=session_id,
-            batch_id=str(batch_id or "").strip(),
+            batch_id=batch_id,
             taskid=taskid,
             wait=wait,
             poll_interval=poll_interval,
             poll_timeout=poll_timeout,
-            manifest_path_override=manifest_path,
+            manifest_path=manifest_path,
         )
 
     if action == "batch_retry":
-        return await _phagescope_batch_retry(
+        return await _action_batch_retry(
             base_url=base_url,
             token=token,
             timeout=timeout,
@@ -271,9 +272,9 @@ async def phagescope_handler(
             file_path=file_path,
             comparedatabase=comparedatabase,
             neednum=neednum,
-            batch_id=str(batch_id or "").strip(),
+            batch_id=batch_id,
             retry_phage_ids=retry_phage_ids,
-            manifest_path_override=manifest_path,
+            manifest_path=manifest_path,
         )
 
     if action == "bulk_download":
