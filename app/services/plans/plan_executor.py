@@ -274,11 +274,6 @@ if TYPE_CHECKING:  # pragma: no cover
 # ---------------------------------------------------------------------------
 
 _PATH_LIKE_RE = re.compile(r"(/[a-zA-Z0-9_./-]{8,})")
-_INTERNAL_ARTIFACT_FILENAMES = {"result.json", "manifest.json", "preview.json"}
-_INTERNAL_TOOL_OUTPUT_RE = re.compile(
-    r"(?:^|/)tool_outputs/job_[^/]+/step_\d+_[^/]+(?:/.*)?$",
-    re.IGNORECASE,
-)
 _NON_DELIVERABLE_WORKSPACE_RE = re.compile(
     r"/runtime/session_[^/]+/(?:_scratch/)?plan\d+_task\d+/run_[^/]+(?:/(?:results|code|data|docs))?$",
     re.IGNORECASE,
@@ -4836,14 +4831,8 @@ class PlanExecutor:
 
     @staticmethod
     def _is_internal_artifact_path(value: str) -> bool:
-        normalized = "/" + str(value or "").strip().replace("\\", "/").lstrip("/")
-        if not normalized or normalized == "/":
-            return False
-        lowered = normalized.lower()
-        basename = lowered.rsplit("/", 1)[-1]
-        if basename in _INTERNAL_ARTIFACT_FILENAMES and "/tool_outputs/" in lowered:
-            return True
-        return bool(_INTERNAL_TOOL_OUTPUT_RE.search(lowered))
+        # Single source of truth: TaskVerificationService._is_internal_artifact_path (D5 convergence).
+        return TaskVerificationService._is_internal_artifact_path(value)
 
     @staticmethod
     def _is_non_deliverable_workspace_path(value: str) -> bool:
