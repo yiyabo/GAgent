@@ -87,6 +87,7 @@ async def build_agent_for_chat_request(
                     session_id=request.session_id,
                     api_key=model_provider.get("api_key"),
                     base_url=model_provider.get("base_url"),
+                    model=model_provider.get("model"),
                 )
             except Exception:
                 logger.warning(

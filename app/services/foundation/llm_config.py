@@ -1,4 +1,5 @@
 """Validated production configuration for the platform LLM gateway."""
+
 from __future__ import annotations
 
 import ipaddress
@@ -22,11 +23,7 @@ def is_production() -> bool:
 
 
 def _allowed_hosts() -> set[str]:
-    return {
-        item.strip().lower()
-        for item in _env("PLATFORM_LLM_ALLOWED_HOSTS").split(",")
-        if item.strip()
-    }
+    return {item.strip().lower() for item in _env("PLATFORM_LLM_ALLOWED_HOSTS").split(",") if item.strip()}
 
 
 def _is_public_address(address: str) -> bool:
@@ -46,20 +43,18 @@ def _validate_host(name: str, host: str, *, production: bool) -> None:
     if production and not allowed:
         raise LLMConfigurationError("PLATFORM_LLM_ALLOWED_HOSTS is required in production")
     if allowed and normalized not in allowed:
-        raise LLMConfigurationError(
-            f"{name} host '{normalized}' is not in PLATFORM_LLM_ALLOWED_HOSTS"
-        )
+        raise LLMConfigurationError(f"{name} host '{normalized}' is not in PLATFORM_LLM_ALLOWED_HOSTS")
     try:
         addresses = {item[4][0] for item in socket.getaddrinfo(normalized, None)}
     except socket.gaierror as exc:
         raise LLMConfigurationError(f"{name} host '{normalized}' could not be resolved") from exc
-    if not addresses or any(not _is_public_address(address) for address in addresses):
+    # 公网校验仅生产模式强制：开发环境的项目级 LLM 网关（如本地 sub2api）
+    # 跑在私网/回环地址上，属正常拓扑，不应被阻断
+    if production and (not addresses or any(not _is_public_address(address) for address in addresses)):
         raise LLMConfigurationError(f"{name} host must resolve only to public addresses")
 
 
-def _require_url(
-    name: str, value: str, *, production: bool, allow_dashscope: bool = False
-) -> str:
+def _require_url(name: str, value: str, *, production: bool, allow_dashscope: bool = False) -> str:
     candidate = value.rstrip("/")
     parsed = urlparse(candidate)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
@@ -82,9 +77,7 @@ def _derived_endpoint(chat_url: str, endpoint: str) -> str:
     suffix = "chat/completions"
     if chat_url.endswith(suffix):
         return chat_url[: -len(suffix)] + endpoint
-    raise LLMConfigurationError(
-        "PLATFORM_LLM_API_URL must end in /chat/completions when a derived endpoint is needed"
-    )
+    raise LLMConfigurationError("PLATFORM_LLM_API_URL must end in /chat/completions when a derived endpoint is needed")
 
 
 @dataclass(frozen=True)
@@ -101,9 +94,7 @@ class LLMProfile:
 
 def platform_profile() -> LLMProfile:
     production = is_production()
-    api_url = _require_url(
-        "PLATFORM_LLM_API_URL", _env("PLATFORM_LLM_API_URL"), production=production
-    )
+    api_url = _require_url("PLATFORM_LLM_API_URL", _env("PLATFORM_LLM_API_URL"), production=production)
     api_key = _require_nonempty("PLATFORM_LLM_API_KEY", _env("PLATFORM_LLM_API_KEY"))
     model = _require_nonempty("PLATFORM_LLM_MODEL", _env("PLATFORM_LLM_MODEL"))
     responses_url = _env("PLATFORM_LLM_RESPONSES_API_URL") or _derived_endpoint(api_url, "responses")
@@ -113,12 +104,8 @@ def platform_profile() -> LLMProfile:
         api_url=api_url,
         api_key=api_key,
         model=model,
-        responses_api_url=_require_url(
-            "PLATFORM_LLM_RESPONSES_API_URL", responses_url, production=production
-        ),
-        embeddings_api_url=_require_url(
-            "PLATFORM_LLM_EMBEDDINGS_API_URL", embeddings_url, production=production
-        ),
+        responses_api_url=_require_url("PLATFORM_LLM_RESPONSES_API_URL", responses_url, production=production),
+        embeddings_api_url=_require_url("PLATFORM_LLM_EMBEDDINGS_API_URL", embeddings_url, production=production),
         search_model=_env("PLATFORM_LLM_SEARCH_MODEL") or model,
         embedding_model=_env("PLATFORM_LLM_EMBEDDING_MODEL") or "text-embedding-v4",
     )
@@ -142,9 +129,7 @@ def validate_project_gateway_base_url(base_url: str) -> Optional[str]:
     else:
         url = candidate + "/v1/chat/completions"
     try:
-        return _require_url(
-            "PLATFORM_PROJECT_LLM_BASE_URL", url, production=is_production()
-        )
+        return _require_url("PLATFORM_PROJECT_LLM_BASE_URL", url, production=is_production())
     except LLMConfigurationError:
         return None
 
