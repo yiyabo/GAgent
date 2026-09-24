@@ -7,42 +7,16 @@ surface with the dynamic signature list in its description.
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
-
 import pytest
 
 from app.services import tool_schemas
 from app.routers.chat.request_routing import get_all_tools
-from tool_box.tools_impl.execute_code import execute_code_handler
-
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
-GOLDEN_PATH = (
-    PROJECT_ROOT / "app" / "tests" / "tools" / "fixtures" / "native_schemas_golden.json"
+from app.tests.tools.test_native_tool_schemas import (
+    ALL_NATIVE_TOOLS,
+    GOLDEN_PATH,
+    _normalized,
 )
-
-ALL_NATIVE_TOOLS = [
-    "bio_tools",
-    "code_executor",
-    "deliverable_submit",
-    "document_reader",
-    "file_operations",
-    "graph_rag",
-    "literature_pipeline",
-    "manuscript_writer",
-    "phagescope",
-    "phagescope_research",
-    "plan_operation",
-    "result_interpreter",
-    "review_pack_writer",
-    "scientific_figure_generator",
-    "sequence_fetch",
-    "terminal_session",
-    "url_fetch",
-    "verify_task",
-    "vision_reader",
-    "web_search",
-]
+from tool_box.tools_impl.execute_code import execute_code_handler
 
 
 @pytest.fixture()
@@ -59,10 +33,6 @@ def _code_mode_on(monkeypatch):
     tool_schemas._TOOL_REGISTRY_CACHE = None
     yield
     tool_schemas._TOOL_REGISTRY_CACHE = None
-
-
-def _normalized(payload) -> str:
-    return json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
 
 
 def _names(schemas) -> list:
