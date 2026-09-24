@@ -96,17 +96,22 @@ def _default_fallback_timeout_seconds() -> int:
 
 
 def _acceptance_v2_enabled() -> bool:
-    # Declarative acceptance v2 (LLM spec extraction) is opt-in; default off
-    # keeps every run on the v1 type heuristic with zero behaviour change.
-    return os.getenv("DEEP_THINK_ACCEPTANCE_V2_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
+    # Declarative acceptance v2 (LLM spec extraction) is ON by default; set
+    # DEEP_THINK_ACCEPTANCE_V2_ENABLED=0 to force every run back onto the v1
+    # type heuristic. Any extraction failure silently falls back to v1, so the
+    # default-on path is never a single point of failure.
+    raw = os.getenv("DEEP_THINK_ACCEPTANCE_V2_ENABLED", "1").strip().lower()
+    return raw not in {"0", "false", "no", "off"}
 
 
 def _acceptance_v2_timeout_seconds() -> int:
-    raw = os.getenv("DEEP_THINK_ACCEPTANCE_V2_TIMEOUT_SECONDS", "60")
+    # Hard-capped at 15s: spec extraction is a small auxiliary call and must
+    # never stall the run; on timeout the run silently keeps the v1 heuristic.
+    raw = os.getenv("DEEP_THINK_ACCEPTANCE_V2_TIMEOUT_SECONDS", "15")
     try:
-        return max(10, int(raw))
+        return max(5, min(15, int(raw)))
     except (TypeError, ValueError):
-        return 60
+        return 15
 
 
 def _acceptance_v2_max_tokens() -> int:

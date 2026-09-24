@@ -18,6 +18,9 @@ import pytest
 from app.llm import NativeStreamResult, NativeToolCall
 from app.services.deep_think_agent import DeepThinkAgent
 from app.services.deep_think.acceptance import (
+    AcceptanceSpec,
+    RequiredOutput,
+    build_acceptance_spec_prompt_block,
     extract_acceptance_spec,
     parse_acceptance_spec,
     spec_to_kind_requirements,
@@ -769,7 +772,7 @@ class TestAcceptanceV2Parser:
 
 class TestAcceptanceV2Extraction:
     def test_disabled_env_skips_llm(self, monkeypatch) -> None:
-        monkeypatch.delenv("DEEP_THINK_ACCEPTANCE_V2_ENABLED", raising=False)
+        monkeypatch.setenv("DEEP_THINK_ACCEPTANCE_V2_ENABLED", "0")
         llm = _SpecExtractLLM(chunks=[_SPEC_JSON])
         spec = asyncio.run(extract_acceptance_spec(_spec_agent(llm), "画两张图并写报告"))
         assert spec is None
@@ -813,6 +816,16 @@ class TestAcceptanceV2MissingCounts:
     def test_v1_kinds_outside_spec_still_reported(self) -> None:
         missing = _missing_expectations_detailed(["image", "data"], ["a.png"], {"image": 1})
         assert missing == ["data"]
+
+    def test_v1_shaped_spec_consumes_identically(self) -> None:
+        """Backward compatibility: a v1-style spec (kind only, no count or
+        content fields) must be accepted by every v2 consumer unchanged."""
+        v1_spec = AcceptanceSpec(required_outputs=[RequiredOutput(kind="image"), RequiredOutput(kind="document")])
+        assert spec_to_kind_requirements(v1_spec) == {"image": 1, "document": 1}
+        missing = _missing_expectations_detailed([], ["a.png"], spec_to_kind_requirements(v1_spec))
+        assert missing == ["document"]
+        block = build_acceptance_spec_prompt_block(v1_spec)
+        assert "image x1" in block and "document x1" in block
 
 
 class _SpecLoopLLM(_LoopLLM):
@@ -868,7 +881,7 @@ def test_acceptance_v2_loop_extracts_spec_and_injects_prompt(monkeypatch) -> Non
 
 
 def test_acceptance_v2_disabled_loop_keeps_v1_only(monkeypatch) -> None:
-    monkeypatch.delenv("DEEP_THINK_ACCEPTANCE_V2_ENABLED", raising=False)
+    monkeypatch.setenv("DEEP_THINK_ACCEPTANCE_V2_ENABLED", "0")
     llm = _SpecLoopLLM(_submit_final_responses(), [_SPEC_JSON])
     agent = DeepThinkAgent(
         llm_client=llm,
