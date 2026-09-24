@@ -906,7 +906,7 @@ def _build_system_prompt(
             "\"output_name\", \"allowed_content_types\", \"sha256\", \"timeout_sec\", \"max_bytes\"}. "
             "Do not use code_executor for simple public-link downloads."
         ),
-        "code_executor": "Execute Python/shell code. FALLBACK TOOL: Use this ONLY when bio_tools cannot handle the task (e.g., custom analysis scripts, complex data processing). For FASTA/FASTQ sequence stats or standard bioinformatics tasks, ALWAYS try bio_tools first. For local CSV/TSV overview/schema/count requests, prefer result_interpreter profile first. Use this for custom computation or visualization when the user needs generated artifacts, not just code snippets. Params: {\"task\": \"description\"}",
+        "code_executor": "Execute Python/shell code. FALLBACK TOOL: Use this ONLY when bio_tools cannot handle the task (e.g., custom analysis scripts, complex data processing). For FASTA/FASTQ sequence stats or standard bioinformatics tasks, ALWAYS try bio_tools first. For local CSV/TSV overview/schema/count requests, prefer result_interpreter profile first. Use this for custom computation or visualization when the user needs generated artifacts, not just code snippets. 只读检查/取证/核验/审计（不修改文件）禁止派本工具——用 document_reader、file_operations 或 execute_code（kernel 内直接 open()+正则，秒级）；本工具只用于需要完整编码 agent 的复杂实现任务。 Params: {\"task\": \"description\"}",
         "phagescope_research": (
             "Prepare and audit the local PhageScope public dataset for host prediction research. "
             "For local PhageScope dataset exploration, schema/size/readiness assessment, data splitting, model selection, benchmarking, or biological validation, "
