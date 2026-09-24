@@ -396,6 +396,34 @@ NATIVE_TOOL_CONTENT: Dict[str, Dict[str, Any]] = {
             "required": ["query"],
         },
     },
+    "load_skill": {
+        # 已对齐 impl（2026-09-24 新增）：渐进式披露第④步，模型按需拉取完整 SKILL.md
+        "description": (
+            "Load the complete SKILL.md of a named runtime skill on demand "
+            "(progressive disclosure). Use when the available-skills summary names a "
+            "skill relevant to the current task and you need its full instructions "
+            "before proceeding. Unknown names return the available skill list. For "
+            "large skills, pass 'section' to fetch one markdown section instead of "
+            "the whole body."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Exact skill name (as listed in the available-skills summary).",
+                },
+                "section": {
+                    "type": "string",
+                    "description": (
+                        "Optional markdown section filter (case-insensitive substring of a "
+                        "heading). Use it to page through large skills whose body was truncated."
+                    ),
+                },
+            },
+            "required": ["name"],
+        },
+    },
     "review_pack_writer": {
         # native 有意收窄：impl 另有 generation/evaluation/merge model+provider、out_dir、proxy、user_agent —— 有意调优（参数面收窄）
         "description": (

@@ -659,6 +659,29 @@
     },
     {
       "function": {
+        "description": "Load the complete SKILL.md of a named runtime skill on demand (progressive disclosure). Use when the available-skills summary names a skill relevant to the current task and you need its full instructions before proceeding. Unknown names return the available skill list. For large skills, pass 'section' to fetch one markdown section instead of the whole body.",
+        "name": "load_skill",
+        "parameters": {
+          "properties": {
+            "name": {
+              "description": "Exact skill name (as listed in the available-skills summary).",
+              "type": "string"
+            },
+            "section": {
+              "description": "Optional markdown section filter (case-insensitive substring of a heading). Use it to page through large skills whose body was truncated.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "name"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
         "description": "Generate a literature-backed review draft by first collecting evidence with literature_pipeline and then drafting with manuscript_writer.",
         "name": "review_pack_writer",
         "parameters": {
@@ -1344,6 +1367,29 @@
           },
           "required": [
             "query"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Load the complete SKILL.md of a named runtime skill on demand (progressive disclosure). Use when the available-skills summary names a skill relevant to the current task and you need its full instructions before proceeding. Unknown names return the available skill list. For large skills, pass 'section' to fetch one markdown section instead of the whole body.",
+        "name": "load_skill",
+        "parameters": {
+          "properties": {
+            "name": {
+              "description": "Exact skill name (as listed in the available-skills summary).",
+              "type": "string"
+            },
+            "section": {
+              "description": "Optional markdown section filter (case-insensitive substring of a heading). Use it to page through large skills whose body was truncated.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "name"
           ],
           "type": "object"
         }
@@ -2209,6 +2255,7 @@
     "phagescope",
     "phagescope_research",
     "literature_pipeline",
+    "load_skill",
     "review_pack_writer",
     "manuscript_writer",
     "deliverable_submit",

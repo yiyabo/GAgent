@@ -973,6 +973,7 @@ ALL_TOOLS: List[str] = [
     "lightrag_query",
     "graph_rag",
     "literature_pipeline",
+    "load_skill",
     "review_pack_writer",
     "manuscript_writer",
     "sequence_fetch",

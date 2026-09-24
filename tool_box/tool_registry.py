@@ -33,6 +33,7 @@ from .tools_impl import (
     url_fetch_tool,
     terminal_session_tool,
     execute_code_tool,
+    load_skill_tool,
     vision_reader_tool,
     web_search_tool,
 )
@@ -85,6 +86,11 @@ _TOOL_METADATA: Dict[str, Dict[str, Any]] = {
     },
     "url_fetch": {
         "search_hint": "download public url link file http https fetch",
+    },
+    "load_skill": {
+        "is_read_only": True,
+        "is_concurrent_safe": True,
+        "search_hint": "skill load instructions playbook guide capability progressive disclosure",
     },
 
     # --- read-only but NOT concurrent-safe (heavyweight / stateful) ---
@@ -172,6 +178,7 @@ _STANDARD_TOOLS: List[Dict[str, Any]] = [
     plan_operation_tool,
     deliverable_submit_tool,
     execute_code_tool,
+    load_skill_tool,
 ]
 
 # Tools that need special field mapping

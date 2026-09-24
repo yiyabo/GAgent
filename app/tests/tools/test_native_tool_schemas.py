@@ -35,6 +35,7 @@ ALL_NATIVE_TOOLS = [
     "file_operations",
     "graph_rag",
     "literature_pipeline",
+    "load_skill",
     "manuscript_writer",
     "phagescope",
     "phagescope_research",

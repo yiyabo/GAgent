@@ -22,6 +22,7 @@ tool_box/
 | Runtime registry | `tools.py` | `ToolDefinition`, categories, search. |
 | Code execution | `tools_impl/code_executor.py` | Docker-backed execution and guardrails. |
 | Code mode | `tools_impl/execute_code/` | Env-gated (`CODE_MODE_ENABLED=1`) programmatic tool calling: persistent Python kernel + loopback RPC into the registry. |
+| Skill loading | `tools_impl/load_skill.py` | On-demand full SKILL.md retrieval over `app/services/skills` (progressive disclosure; read-only, always on). |
 | PhageScope | `tools_impl/phagescope.py` | API payload quirks and tracking. |
 | Bio tools | `bio_tools/` | Remote bioinformatics execution wrapper. |
 | Deliverables | `tools_impl/deliverable_submit.py` | Explicit artifact publication surface. |

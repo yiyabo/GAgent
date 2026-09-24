@@ -26,6 +26,7 @@ from .url_fetch import url_fetch_tool
 from .scientific_figure_generator import scientific_figure_generator_tool
 from .terminal_session import terminal_session_tool
 from .execute_code import execute_code_tool
+from .load_skill import load_skill_tool
 
 __all__ = [
     "web_search_tool",
@@ -49,4 +50,5 @@ __all__ = [
     "scientific_figure_generator_tool",
     "terminal_session_tool",
     "execute_code_tool",
+    "load_skill_tool",
 ]
