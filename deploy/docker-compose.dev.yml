@@ -1,0 +1,25 @@
+# bioagent 开发 overlay：与正式部署同一镜像同一入口，只加开发定制。
+# 用法：docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+# 差异只有三点：挂源码、uvicorn --reload 热重启、docker.sock（code_executor sidecar 用）。
+services:
+  bioagent:
+    volumes:
+      # 源码挂载：改代码触发 --reload 自动重启；虚拟环境在镜像内的 /opt/venv，不会被遮住
+      - ../app:/app/app
+      - ../tool_box:/app/tool_box
+      - ../skills:/app/skills
+      - ../scripts:/app/scripts
+      # 数据沿用宿主机目录：直跑时期的历史会话（sqlite/runtime）容器直接可见，零迁移
+      - ../data:/app/data
+      - ../runtime:/app/runtime
+      - /var/run/docker.sock:/var/run/docker.sock
+    command:
+      - uvicorn
+      - app.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "9000"
+      - --reload
+      - --reload-dir
+      - /app/app

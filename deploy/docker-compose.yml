@@ -1,0 +1,54 @@
+# bioagent 正式部署 compose：镜像自包含，不挂源码。
+# 开发用 docker-compose.dev.yml 叠加（-f docker-compose.yml -f docker-compose.dev.yml）。
+# 约定：变量一律由 .env 提供（模板见 .env.template），本文件不设默认值。
+services:
+  bioagent:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: docker.byoryn.cn/ms/biomedical:${BIOAGENT_TAG}
+    container_name: ${COMPOSE_PREFIX}-bioagent
+    hostname: bioagent
+    restart: unless-stopped
+    ports:
+      - "${BIOAGENT_PORT}:9000"
+    env_file:
+      - .env
+    environment:
+      # 数据与运行时都落在卷里，容器层不存状态；
+      # 阶段二接入项目文件空间时，把 APP_RUNTIME_ROOT 换成挂载点下的会话根即可
+      APP_RUNTIME_ROOT: /app/runtime
+      DB_ROOT: /app/data/databases
+      # 同时支持本地登录（bioagent 自带 web-ui）与网关代理身份（ms 智能体页）；
+      # 平台回源地址在 .env 里配（PLATFORM_API_BASE_URL/KEY）
+      AUTH_MODE: hybrid
+    extra_hosts:
+      # 容器内访问宿主机上的 bioapi（平台回源）
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - bioagent-runtime:/app/runtime
+      - bioagent-data:/app/data
+      # 项目/课题组数据根（与 tgrpc 等服务同一挂载）：阶段二会话文件迁入
+      # /data/teams/{team_id}/projects/{project_id}/agent-sessions/ 时启用；
+      # 挂载点必须同为 /data，容器内 tgrpc 建的 /project/{name} 软链才能指向一致
+      - ${HOST_DATA_ROOT}:/data
+      # 平台用户家目录（与 tgrpc 一致）：工具读写用户文件、chown 落属主都需要
+      - ${HOST_DATA_ROOT}/home:/home
+      # 宿主机用户/组定义（只读，参照 tgrpc 的 /etc/host-usersys）：
+      # 写后 chown 解析 project_{id} 等组 id 时从这里查，不覆盖镜像自带账户
+      - ${HOST_USERSYS_DIR}:/etc/host-usersys:ro
+      - /etc/localtime:/etc/localtime:ro
+    networks:
+      - default
+
+# 加入 dcx 聚合编排的既有网络（web-redis 等服务在同网），不在本文件新建
+networks:
+  default:
+    name: ${COMPOSE_PREFIX}-net
+    external: true
+
+volumes:
+  bioagent-runtime:
+    name: ${COMPOSE_PREFIX}-bioagent-runtime
+  bioagent-data:
+    name: ${COMPOSE_PREFIX}-bioagent-data

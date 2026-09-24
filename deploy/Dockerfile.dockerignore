@@ -1,0 +1,24 @@
+# 主应用镜像的构建黑名单（BuildKit 按 <Dockerfile名>.dockerignore 匹配，
+# 与 code_executor 镜像用的 .dockerignore 互不影响）：运行数据、前端、文档不进镜像
+.git
+.venv
+venv
+runtime
+data
+logs
+docs
+tests
+.pytest_cache
+web-ui
+tasks.db
+deploy
+docker
+bioagent.Dockerfile
+bioagent.Dockerfile.dockerignore
+.dockerignore
+.env
+__pycache__
+**/__pycache__
+*.pyc
+*.sqlite
+*.md
