@@ -152,6 +152,11 @@ from .phagescope_actions_query import (
     _resolve_query_action,
 )
 
+from .phagescope_actions_submit import (
+    _action_input_check,
+    _action_submit,
+)
+
 
 async def phagescope_handler(
     action: str,
@@ -364,134 +369,34 @@ async def phagescope_handler(
             return await _action_ping(base_url=base_url, headers=headers, timeout=timeout)
 
         if action == "input_check":
-            data = _build_phage_payload(phageid, phageids)
-            data["inputtype"] = inputtype
-            if sequence:
-                data["file"] = sequence
-                data["inputtype"] = "paste"
-            files = None
-            if file_path:
-                abs_path = Path(file_path).expanduser().resolve()
-                file_handle = abs_path.open("rb")
-                files = {"submitfile": file_handle}
-                data["inputtype"] = "upload"
-            try:
-                status_code, payload = await _request(
-                    "POST", base_url, "/analyze/inputcheck/", data=data, files=files, headers=headers, timeout=timeout
-                )
-            finally:
-                if files:
-                    files["submitfile"].close()
-            return _response_with_business_layer("input_check", status_code, payload)
+            return await _action_input_check(
+                base_url=base_url,
+                headers=headers,
+                timeout=timeout,
+                phageid=phageid,
+                phageids=phageids,
+                inputtype=inputtype,
+                sequence=sequence,
+                file_path=file_path,
+            )
 
         if action == "submit" or action == "cluster_submit":
-            if not userid:
-                return {"success": False, "status_code": 400, "error": "userid is required", "action": action}
-            if not modulelist:
-                return {"success": False, "status_code": 400, "error": "modulelist is required", "action": action}
-
-            requested_module_probe = _coerce_module_items(modulelist, analysistype=analysistype)
-
-            # Auto-select the correct endpoint.
-            if action == "cluster_submit":
-                endpoint = "/analyze/clusterpipline/"
-                actual_analysistype = "Genome Comparison"
-            else:
-                endpoint = _get_analysis_endpoint(analysistype, requested_module_probe)
-                actual_analysistype = analysistype
-
-            (
-                requested_module_items,
-                normalized_modulelist_json,
-                module_items,
-                module_warnings,
-            ) = _normalize_submit_module_request(
-                modulelist,
-                analysistype=actual_analysistype,
-            )
-
-            if not module_items:
-                return {
-                    "success": False,
-                    "status_code": 400,
-                    "error": (
-                        "modulelist does not contain any valid submit modules for "
-                        f"analysistype '{actual_analysistype}'"
-                    ),
-                    "action": action,
-                    "requested_modules": requested_module_items,
-                    "warnings": module_warnings,
-                }
-
-            # Validate module dependencies after normalization.
-            is_valid, dep_error = _validate_module_dependencies(module_items)
-            if not is_valid:
-                return {
-                    "success": False,
-                    "status_code": 400,
-                    "error": dep_error,
-                    "action": action,
-                    "requested_modules": requested_module_items,
-                    "normalized_modules": module_items,
-                    "warnings": module_warnings,
-                }
-
-            # PhageScope cluster API expects sequence/file payloads and may raise 500
-            # for phageid-only requests. Fail fast with a clear local validation error.
-            if endpoint == "/analyze/clusterpipline/" and not sequence and not file_path:
-                return {
-                    "success": False,
-                    "status_code": 400,
-                    "error": (
-                        "cluster_submit requires sequence (inputtype=paste) "
-                        "or file_path (inputtype=upload); phageid-only input is not supported by remote API."
-                    ),
-                    "action": action,
-                }
-
-            data = _build_phage_payload(phageid, phageids)
-            data.update(
-                {
-                    "inputtype": inputtype,
-                    "analysistype": actual_analysistype,
-                    "userid": userid,
-                    "modulelist": normalized_modulelist_json,
-                    "rundemo": str(rundemo).lower(),
-                }
-            )
-
-            # Cluster analysis specific parameters.
-            if endpoint == "/analyze/clusterpipline/":
-                if comparedatabase:
-                    data["comparedatabase"] = comparedatabase
-                if neednum:
-                    data["neednum"] = neednum
-
-            if sequence:
-                data["file"] = sequence
-                data["inputtype"] = "paste"
-            files = None
-            if file_path:
-                abs_path = Path(file_path).expanduser().resolve()
-                file_handle = abs_path.open("rb")
-                files = {"submitfile": file_handle}
-                data["inputtype"] = "upload"
-            try:
-                status_code, payload = await _request(
-                    "POST", base_url, endpoint, data=data, files=files, headers=headers, timeout=timeout
-                )
-            finally:
-                if files:
-                    files["submitfile"].close()
-            return _response_with_business_layer(
-                action,
-                status_code,
-                payload,
-                endpoint=endpoint,
-                analysistype=actual_analysistype,
-                requested_modules=requested_module_items,
-                normalized_modules=module_items,
-                warnings=module_warnings or None,
+            return await _action_submit(
+                action=action,
+                base_url=base_url,
+                headers=headers,
+                timeout=timeout,
+                userid=userid,
+                modulelist=modulelist,
+                analysistype=analysistype,
+                phageid=phageid,
+                phageids=phageids,
+                inputtype=inputtype,
+                rundemo=rundemo,
+                comparedatabase=comparedatabase,
+                neednum=neednum,
+                sequence=sequence,
+                file_path=file_path,
             )
 
         if action == "task_list":
