@@ -82,6 +82,30 @@ import os
 import sys
 import traceback
 
+_BLOCKED_TOP_LEVEL_PACKAGES = ("app", "tool_box")
+
+
+class _BlockedBackendPackageFinder:
+    """Refuse imports of the host backend packages inside the kernel.
+
+    Model-written cells must reach tools through the gagent_tools RPC stubs,
+    not by importing app/tool_box internals (raw DB, settings, live provider
+    keys). Third-party scientific packages (numpy/pandas/matplotlib) and the
+    stdlib are unaffected — the match is on the top-level package name only.
+    """
+
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.split(".", 1)[0] in _BLOCKED_TOP_LEVEL_PACKAGES:
+            raise ImportError(
+                "importing the backend package %r is not allowed inside "
+                "execute_code. Call tools via `from gagent_tools import ...` "
+                "instead of reaching into backend internals." % fullname
+            )
+        return None
+
+
+sys.meta_path.insert(0, _BlockedBackendPackageFinder())
+
 _SENTINEL = os.environ["GAGENT_KERNEL_SENTINEL"]
 _CAPTURE_LIMIT = {capture_limit}
 _SPILL_DIR = os.environ.get("GAGENT_KERNEL_SPILL_DIR", "")
