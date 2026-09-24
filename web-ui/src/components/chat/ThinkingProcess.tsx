@@ -294,8 +294,11 @@ const ThinkingActivityItem: React.FC<{
   const isError = stepHasToolError(step);
   const hasResult = !!step.action_result;
   const duration = stepDurationMs(step);
+  // A finished run has no live steps: backend leaves tool steps at
+  // status 'analyzing' forever, so gate the spinner/elapsed on isFinished.
   const isStepActive =
-    step.status === 'thinking' || step.status === 'calling_tool' || step.status === 'analyzing';
+    !isFinished &&
+    (step.status === 'thinking' || step.status === 'calling_tool' || step.status === 'analyzing');
   const isStepComplete =
     step.status === 'done' ||
     step.status === 'completed' ||

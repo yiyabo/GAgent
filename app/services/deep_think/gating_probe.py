@@ -72,6 +72,19 @@ _READ_ONLY_PHRASE_STRIP_RE = re.compile(
     r"without\s+modif\w*",
     re.IGNORECASE,
 )
+# Full-dump reprint of existing artifacts: printing is inherently read-only,
+# so this family needs no read-only marker; the production disqualifier still
+# applies ("print the full stdout and save it" stays a production task).
+_REPRINT_INTENT_RE = re.compile(
+    r"全量打印|完整打印|逐字打印|打印全文|打印全部|全量输出|"
+    r"print\s+(?:the\s+)?(?:full|entire|complete)\b|"
+    r"dump\s+(?:the\s+)?(?:full|entire)\b",
+    re.IGNORECASE,
+)
+_REPRINT_PHRASE_STRIP_RE = re.compile(
+    r"全量|完整|逐字|全文|全部|full|entire|complete",
+    re.IGNORECASE,
+)
 
 
 def _is_readonly_verification_task_text(text: str) -> bool:
@@ -87,6 +100,11 @@ def _is_readonly_verification_task_text(text: str) -> bool:
     t = str(text or "").strip().lower()
     if not t:
         return False
+    if _REPRINT_INTENT_RE.search(t):
+        # Full-dump reprint path: inherently read-only; only production
+        # signals (write/save/generate) outside the print phrases disqualify.
+        residual = _REPRINT_PHRASE_STRIP_RE.sub(" ", t)
+        return not _PRODUCTION_SIGNAL_RE.search(residual)
     if not _VERIFICATION_INTENT_RE.search(t):
         return False
     if not _READ_ONLY_INTENT_RE.search(t):

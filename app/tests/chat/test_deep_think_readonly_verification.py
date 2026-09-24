@@ -104,6 +104,22 @@ class TestReadonlyVerificationDetector:
         assert not _is_readonly_verification_task_text("只读模式")
         assert not _is_readonly_verification_task_text("")
 
+    def test_full_dump_reprint_hits_without_readonly_marker(self) -> None:
+        # 生产实证漏网形态："Print the FULL stdout text of the previously gen..."
+        assert _is_readonly_verification_task_text(
+            "Print the FULL stdout text of the previously generated report"
+        )
+        assert _is_readonly_verification_task_text("全量打印刚生成的检索报告内容")
+        assert _is_readonly_verification_task_text("dump the entire audit output")
+
+    def test_full_dump_with_production_signal_does_not_hit(self) -> None:
+        assert not _is_readonly_verification_task_text(
+            "Print the FULL stdout and save it to out.txt"
+        )
+        assert not _is_readonly_verification_task_text("全量打印并保存修正版")
+        # 非全量普通打印不命中
+        assert not _is_readonly_verification_task_text("print the summary table")
+
     def test_cycle_level_requires_all_readonly_code_executor(self) -> None:
         assert _cycle_is_readonly_verification([_ce_result("只读核验，不修改文件")])
         assert not _cycle_is_readonly_verification(
