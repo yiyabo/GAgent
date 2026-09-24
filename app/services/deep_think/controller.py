@@ -125,6 +125,7 @@ class _NativeCycleState:
     last_tool_cycle_signature: Optional[str] = None
     identical_tool_cycle_count: int = 0
     probe_only_execution_cycles: int = 0
+    readonly_verification_cycles: int = 0
     forced_probe_followthrough_attempts: int = 0
     forced_handoff_followthrough_attempts: int = 0
     had_real_execution_tool: bool = False
@@ -770,6 +771,53 @@ async def _native_real_execution_cycle(
     from ``_think_native``.
     """
     cycle.probe_only_execution_cycles = 0
+    # Read-only verification delegations ("牛刀核验") never count as real
+    # execution: first hit redirects to the cheap readers/kernel, repeated
+    # hits go through the verified-execution finalization judgment.
+    if agent._cycle_is_readonly_verification(tool_results):
+        cycle.readonly_verification_cycles += 1
+        if cycle.readonly_verification_cycles >= 2 and agent._should_force_verified_execution_finalization(
+            task_context=task_context,
+            tool_results=tool_results,
+            had_real_execution_tool=cycle.had_real_execution_tool,
+        ):
+            cycle.force_verified_execution_finalization = True
+            messages.append(
+                {
+                    "role": "user",
+                    "content": agent._build_verified_execution_finalize_nudge(
+                        task_context=task_context,
+                        user_query=user_query,
+                    ),
+                }
+            )
+            logger.info(
+                "[DEEP_THINK_NATIVE] Repeated read-only verification delegations with verified evidence; entered verified-execution finalization mode at iteration=%s",
+                iteration,
+            )
+            current_step.self_correction = (
+                "Repeated read-only verification delegations to code_executor with verified evidence; entered finalization mode."
+            )
+            return "ok"
+        messages.append(
+            {
+                "role": "user",
+                "content": agent._build_readonly_verification_redirect_nudge(
+                    user_query=user_query,
+                    count=cycle.readonly_verification_cycles,
+                ),
+            }
+        )
+        logger.info(
+            "[DEEP_THINK_NATIVE] Redirected read-only verification delegation away from code_executor (hit #%d) at iteration=%s",
+            cycle.readonly_verification_cycles,
+            iteration,
+        )
+        current_step.self_correction = (
+            "Detected a read-only verification/audit delegation to code_executor; injected a redirect nudge toward document_reader/file_operations/execute_code."
+        )
+        return "ok"
+    cycle.readonly_verification_cycles = 0
     # Only mark cycle.had_real_execution_tool when a code-running
     # tool actually executed.  Coordination tools like
     # plan_operation still reset the probe counter (they ARE

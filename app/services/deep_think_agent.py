@@ -683,6 +683,22 @@ class DeepThinkAgent:
     ) -> bool:
         return _gating._is_verification_only_tool_result_cycle(tool_results)
 
+    @staticmethod
+    def _cycle_is_readonly_verification(tool_results: List[Dict[str, Any]]) -> bool:
+        return _gating._cycle_is_readonly_verification(tool_results)
+
+    def _build_readonly_verification_redirect_nudge(
+        self,
+        *,
+        user_query: str,
+        count: int,
+    ) -> str:
+        return _gating._build_readonly_verification_redirect_nudge(
+            self,
+            user_query=user_query,
+            count=count,
+        )
+
     def _verification_only_cycle_replacement_task_id(
         self,
         executable_calls: Sequence[Any],

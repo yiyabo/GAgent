@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence
 
@@ -34,6 +35,107 @@ def _dta() -> Any:
     from app.services import deep_think_agent
 
     return deep_think_agent
+
+
+# ---------------------------------------------------------------------------
+# Read-only verification delegation detection ("牛刀核验" guard)
+# ---------------------------------------------------------------------------
+# Intent families (Chinese + English): read-only / do-not-modify markers and
+# verification nouns. A delegated code_executor task is treated as read-only
+# verification work ONLY when both families hit AND no production signal
+# (write/save/generate/update/deliverable) survives after the read-only
+# phrases are stripped (the strip prevents "不修改" from tripping the
+# production regex via its bare "修改").
+_READ_ONLY_INTENT_RE = re.compile(
+    r"只读|不修改|不要修改|禁止修改|不得修改|勿修改|不可修改|不写入|不写文件|"
+    r"read[\s-]?only|do\s+not\s+modify|don'?t\s+modify|must\s+not\s+(?:modify|change)|"
+    r"without\s+modif\w*|no\s+changes?\b",
+    re.IGNORECASE,
+)
+_VERIFICATION_INTENT_RE = re.compile(
+    r"核验|审计|取证|校验|核对|审查|检查|核查|"
+    r"verif\w*|audit\w*|check(?:ing|s)?\b|inspect\w*|review\b|forensic\w*",
+    re.IGNORECASE,
+)
+_PRODUCTION_SIGNAL_RE = re.compile(
+    # Imperative production only — passive/adjectival uses (产出目录, 生成的,
+    # 已保存的, generated/created) must NOT disqualify a read-only audit.
+    r"写入|写出|输出到|输出为|生成(?!的)|保存(?!的)|另存|产出(?!目录|物|文件|结果)|创建|更新|覆盖|"
+    r"\b(?:write|writes|writing|save|saves|saving|generate|generates|generating|"
+    r"create|creates|creating|produce|produces|producing|update|updates|updating|"
+    r"overwrite|overwrites|overwriting)\b|deliverable\w*|output\s+to",
+    re.IGNORECASE,
+)
+_READ_ONLY_PHRASE_STRIP_RE = re.compile(
+    r"只读|不修改|不要修改|禁止修改|不得修改|勿修改|不可修改|不写入|不写文件|"
+    r"read[\s-]?only|do\s+not\s+modify|don'?t\s+modify|must\s+not\s+(?:modify|change)|"
+    r"without\s+modif\w*",
+    re.IGNORECASE,
+)
+
+
+def _is_readonly_verification_task_text(text: str) -> bool:
+    """True when a delegated task is read-only verification work (audit,
+    check, forensics) with no production intent — the heavyweight核验 that
+    must never be delegated to code_executor.
+
+    False-positives are avoided twice: the task must carry BOTH a read-only
+    marker and a verification noun, and any production signal (write/save/
+    generate/update/deliverable) outside the read-only phrases disqualifies
+    it (e.g. "核验数据后生成修正版报告并保存" stays a production task).
+    """
+    t = str(text or "").strip().lower()
+    if not t:
+        return False
+    if not _VERIFICATION_INTENT_RE.search(t):
+        return False
+    if not _READ_ONLY_INTENT_RE.search(t):
+        return False
+    residual = _READ_ONLY_PHRASE_STRIP_RE.sub(" ", t)
+    return not _PRODUCTION_SIGNAL_RE.search(residual)
+
+
+def _cycle_is_readonly_verification(tool_results: List[Dict[str, Any]]) -> bool:
+    """A whole cycle counts as read-only verification only when every executed
+    call is a code_executor whose task text is read-only verification work.
+    Mixed or non-code_executor cycles keep the normal execution semantics."""
+    saw_code_executor = False
+    for item in tool_results or []:
+        tool_name = str(item.get("tool_name") or "").strip().lower()
+        if tool_name != "code_executor":
+            return False
+        saw_code_executor = True
+        params = item.get("tool_params")
+        task_text = str(params.get("task") or "") if isinstance(params, dict) else ""
+        if not _is_readonly_verification_task_text(task_text):
+            return False
+    return saw_code_executor
+
+
+def _build_readonly_verification_redirect_nudge(
+    agent: "DeepThinkAgent",
+    *,
+    user_query: str,
+    count: int,
+) -> str:
+    """Redirect nudge for read-only verification delegations; from the second
+    hit on, also clamps the long analysis-prose habit observed in production
+    (直接给结论，不复述、不全量打印)."""
+    language = _dta().detect_reasoning_language(user_query)
+    base = _dta()._localized_text(
+        language,
+        "禁止用 code_executor 做只读检查/取证/核验/审计。这类工作请改用 document_reader、file_operations，或 execute_code（kernel 内直接 open()+正则即可，秒级完成）。code_executor 只用于需要完整编码 agent 的实现任务。",
+        "Do not delegate read-only checks/forensics/verification/audits to code_executor. "
+        "Use document_reader, file_operations, or execute_code (open()+regex inside the kernel is enough and takes seconds). "
+        "Reserve code_executor for implementation tasks that need a full coding agent.",
+    )
+    if count >= 2:
+        base += _dta()._localized_text(
+            language,
+            "\n直接给结论，不要复述已读内容，不要全量打印。",
+            "\nGive the conclusion directly — do not restate what was read or dump full contents.",
+        )
+    return base
 
 
 def _detect_partial_completion_in_tool_results(
