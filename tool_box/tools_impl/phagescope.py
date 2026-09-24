@@ -137,6 +137,15 @@ from .phagescope_normalize import (
     _validate_module_dependencies,
 )
 
+from .phagescope_actions_query import (
+    _QueryOutcome,
+    _action_ping,
+    _action_task_detail,
+    _action_task_list,
+    _action_task_log,
+    _resolve_query_action,
+)
+
 
 async def phagescope_handler(
     action: str,
@@ -334,81 +343,24 @@ async def phagescope_handler(
         }
 
     if action == "query":
-        # Heuristic alias to avoid failing when the caller uses "query".
-        resolved_taskid = taskid
-        resolved_result = result_kind
-
-        module_items: List[str] = []
-        if modulelist is not None:
-            if isinstance(modulelist, (list, tuple)):
-                module_items = [str(item) for item in modulelist]
-            elif isinstance(modulelist, str):
-                parsed_modules = _safe_json_loads(modulelist.replace("'", '"'))
-                if isinstance(parsed_modules, list):
-                    module_items = [str(item) for item in parsed_modules]
-                elif isinstance(parsed_modules, dict):
-                    module_items = [str(key) for key in parsed_modules.keys()]
-                else:
-                    module_items = [modulelist]
-
-        if not resolved_result and module_items:
-            if "quality" in module_items:
-                resolved_result = "quality"
-
-        if not resolved_taskid and userid:
-            status_code, payload = await _request(
-                "GET", base_url, "/tasks/list/", params={"userid": userid}, headers=headers, timeout=timeout
-            )
-            if status_code >= 400:
-                return {
-                    "success": False,
-                    "status_code": status_code,
-                    "action": "query",
-                    "error": "Failed to list tasks for query",
-                    "data": payload,
-                }
-            q_ok, q_meta = _merge_http_and_business_success(status_code, payload)
-            if not q_ok:
-                return {
-                    "success": False,
-                    "status_code": status_code,
-                    "action": "query",
-                    "data": payload,
-                    "error": q_meta.get("error")
-                    or f"PhageScope task list returned business code {q_meta.get('business_code')}",
-                    **{k: v for k, v in q_meta.items() if k in ("business_code", "business_failure")},
-                }
-            tasks = payload.get("results") if isinstance(payload, dict) else None
-            if isinstance(tasks, list) and tasks:
-                def _task_key(item: Any) -> int:
-                    try:
-                        return int(item.get("id", 0))
-                    except Exception:
-                        return 0
-
-                latest = max(tasks, key=_task_key)
-                resolved_taskid = str(latest.get("id"))
-
-        if resolved_taskid:
-            if resolved_result:
-                action = "result"
-                taskid = resolved_taskid
-                result_kind = resolved_result
-            else:
-                action = "task_detail"
-                taskid = resolved_taskid
-        else:
-            return {
-                "success": False,
-                "status_code": 400,
-                "action": "query",
-                "error": "query requires taskid or userid",
-            }
+        outcome = await _resolve_query_action(
+            taskid=taskid,
+            result_kind=result_kind,
+            modulelist=modulelist,
+            userid=userid,
+            base_url=base_url,
+            headers=headers,
+            timeout=timeout,
+        )
+        if outcome.response is not None:
+            return outcome.response
+        action = outcome.action
+        taskid = outcome.taskid
+        result_kind = outcome.result_kind
 
     try:
         if action == "ping":
-            status_code, payload = await _request("GET", base_url, "/", headers=headers, timeout=timeout)
-            return _response_with_business_layer("ping", status_code, payload)
+            return await _action_ping(base_url=base_url, headers=headers, timeout=timeout)
 
         if action == "input_check":
             data = _build_phage_payload(phageid, phageids)
@@ -542,12 +494,13 @@ async def phagescope_handler(
             )
 
         if action == "task_list":
-            if not userid:
-                return {"success": False, "status_code": 400, "error": "userid is required", "action": action}
-            status_code, payload = await _request(
-                "GET", base_url, "/tasks/list/", params={"userid": userid}, headers=headers, timeout=timeout
+            return await _action_task_list(
+                action=action,
+                userid=userid,
+                base_url=base_url,
+                headers=headers,
+                timeout=timeout,
             )
-            return _response_with_business_layer(action, status_code, payload)
 
         if action == "task_detail":
             if not taskid and (phageid or phageids):
@@ -557,20 +510,12 @@ async def phagescope_handler(
             elif not taskid:
                 return {"success": False, "status_code": 400, "error": "taskid is required", "action": action}
             else:
-                status_code, payload = await _request(
-                    "GET", base_url, "/tasks/detail/", params={"taskid": taskid}, headers=headers, timeout=timeout
-                )
-                if isinstance(payload, dict):
-                    results = payload.get("results", {})
-                    modulelist_value = results.get("modulelist")
-                    payload["parsed_modulelist"] = _parse_modulelist(modulelist_value)
-                    task_detail = results.get("task_detail")
-                    parsed_detail = _safe_json_loads(task_detail) if isinstance(task_detail, str) else None
-                    if parsed_detail is not None:
-                        payload["parsed_task_detail"] = parsed_detail
-                return _with_api_only_artifact_hint(
-                    _response_with_business_layer(action, status_code, payload),
-                    taskid,
+                return await _action_task_detail(
+                    action=action,
+                    base_url=base_url,
+                    headers=headers,
+                    timeout=timeout,
+                    taskid=taskid,
                 )
 
             # Fallback: task_detail called with phageid -> redirect to result/phage_detail
@@ -578,24 +523,13 @@ async def phagescope_handler(
             result_kind = "phage_detail"
 
         if action == "task_log":
-            if not taskid or not modulename:
-                return {
-                    "success": False,
-                    "status_code": 400,
-                    "error": "taskid and modulename are required",
-                    "action": action,
-                }
-            status_code, payload = await _request(
-                "GET",
-                base_url,
-                "/tasks/detail/log/",
-                params={"taskid": taskid, "moudlename": modulename},
+            return await _action_task_log(
+                action=action,
+                base_url=base_url,
                 headers=headers,
                 timeout=timeout,
-            )
-            return _with_api_only_artifact_hint(
-                _response_with_business_layer(action, status_code, payload),
-                taskid,
+                taskid=taskid,
+                modulename=modulename,
             )
 
         if action == "result":
