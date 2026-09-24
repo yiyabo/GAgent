@@ -57,8 +57,17 @@ class ToolBoxMCPServer:
 
     async def _handle_list_tools(self) -> Dict[str, Any]:
         """Handle tools/list request"""
+        # Code mode is env-gated: execute_code stays registered (its handler
+        # still answers with a clean code_mode_disabled error) but is hidden
+        # from MCP discovery unless CODE_MODE_ENABLED=1.
+        from .tools_impl.execute_code import TOOL_NAME as _CODE_MODE_TOOL
+        from .tools_impl.execute_code import code_mode_enabled as _code_mode_enabled
+
+        code_mode_on = _code_mode_enabled()
         tools_list = []
         for tool in self.tool_registry.list_tools():
+            if tool.name == _CODE_MODE_TOOL and not code_mode_on:
+                continue
             tools_list.append(
                 {"name": tool.name, "description": tool.description, "inputSchema": tool.parameters_schema}
             )
