@@ -1,0 +1,11 @@
+# evals/reports/
+
+Benchmark report pull-back landing directory. `evals/harness_benchmark/mac_runner.py`
+copies `report.md` / `results.jsonl` (and optionally per-task details) from the .8
+container's `/app/data/evals_harness/<label>/` into
+`evals/reports/harness_benchmark/<label>/` after a suite run.
+
+Everything under this directory is gitignored except this `.gitkeep` (see the
+`evals/reports` negation block in the repo-root `.gitignore`): reports are local
+comparison artifacts, not source. Long-term reference copies live on .8 under
+`/data/phage-agent/data/evals_harness/`.

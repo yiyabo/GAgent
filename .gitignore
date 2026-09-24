@@ -26,6 +26,11 @@ phagescope
 .claude/
 strict_analysis/
 reports/
+# evals/reports holds local benchmark report pull-backs (not committed);
+# keep only its .gitkeep placeholder tracked.
+!evals/reports/
+evals/reports/*
+!evals/reports/.gitkeep
 
 # Bio Tools - Test Data & ogs
 logs/
