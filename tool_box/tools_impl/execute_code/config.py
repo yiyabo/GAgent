@@ -22,13 +22,14 @@ ENV_SCRATCH_DIR = "CODE_MODE_SCRATCH_DIR"
 
 # v1 allowlist: read-only / information tools only. Enforcement lives in the
 # RPC server (tool_box/tools_impl/execute_code/rpc.py), not in the stubs.
+# graph_rag is deliberately absent: its own schema declares LEGACY and
+# lightrag_query covers the same ground; CODE_MODE_ALLOWED_TOOLS can add it back.
 DEFAULT_ALLOWED_TOOLS = (
     "web_search",
     "literature_pipeline",
     "document_reader",
     "vision_reader",
     "lightrag_query",
-    "graph_rag",
     "sequence_fetch",
     "url_fetch",
 )

@@ -127,6 +127,26 @@ def test_on_description_carries_dynamic_signature_list(_code_mode_on):
     assert "50 tool calls" in description
 
 
+def test_default_allowlist_excludes_legacy_graph_rag(_code_mode_on):
+    """Decision lock (2026-09-24): graph_rag is LEGACY in its own schema and
+    lightrag_query covers the same ground; it stays opt-in via
+    CODE_MODE_ALLOWED_TOOLS."""
+    from tool_box.tools_impl.execute_code.config import DEFAULT_ALLOWED_TOOLS, allowed_tools
+
+    assert "graph_rag" not in DEFAULT_ALLOWED_TOOLS
+    assert allowed_tools() == list(DEFAULT_ALLOWED_TOOLS)
+    description = tool_schemas._get_tool_registry()["execute_code"]["function"]["description"]
+    assert "lightrag_query(" in description
+    assert "graph_rag(" not in description
+
+
+def test_allowlist_override_can_add_graph_rag_back(_code_mode_on, monkeypatch):
+    monkeypatch.setenv("CODE_MODE_ALLOWED_TOOLS", "graph_rag,web_search")
+    tool_schemas._TOOL_REGISTRY_CACHE = None
+    description = tool_schemas._get_tool_registry()["execute_code"]["function"]["description"]
+    assert "graph_rag(" in description
+
+
 def test_on_allowlist_override_rewrites_signature_list(_code_mode_on, monkeypatch):
     monkeypatch.setenv("CODE_MODE_ALLOWED_TOOLS", "web_search,url_fetch")
     tool_schemas._TOOL_REGISTRY_CACHE = None
