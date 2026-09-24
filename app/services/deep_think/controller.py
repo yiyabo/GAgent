@@ -142,6 +142,82 @@ class _NativeCycleState:
     handoff_reserve_used: int = 0
 
 
+def _apply_task_handoff_transition(
+    agent: "DeepThinkAgent",
+    *,
+    cycle: _NativeCycleState,
+    messages: List[Dict[str, Any]],
+    current_step: ThinkingStep,
+    task_context: Optional[TaskExecutionContext],
+    user_query: str,
+    iteration: int,
+    previous_task_id: int,
+    next_task_id: int,
+    reset_probe_cycles: bool,
+    handoff_detected_log: bool,
+    self_correction: str,
+    reserve_log_tag: str = "",
+) -> None:
+    """Shared handoff transition used by both native cycle helpers:
+    pending-handoff bookkeeping, per-handoff counter resets, handoff nudge
+    injection, and static iteration-reserve consumption.
+
+    The two call sites differ only in text and in one boundary condition,
+    and those differences are passed explicitly rather than silently
+    unified: ``self_correction`` / ``reserve_log_tag`` / ``handoff_detected_log``
+    are text differences (parameterized), while ``reset_probe_cycles``
+    preserves a real semantic difference — the real-execution handoff
+    resets the probe-cycle counter inside the branch, whereas the forced
+    no-tool followthrough resets it unconditionally *before* the branch
+    (kept in its caller), so this helper only resets when asked.
+    """
+    cycle.pending_handoff_previous_task_id = previous_task_id
+    cycle.pending_handoff_task_id = next_task_id
+    cycle.forced_handoff_followthrough_attempts = 0
+    cycle.had_real_execution_tool = False
+    cycle.last_real_execution_tool_results = []
+    if reset_probe_cycles:
+        cycle.probe_only_execution_cycles = 0
+    cycle.partial_completion_retry_count = 0
+    messages.append(
+        {
+            "role": "user",
+            "content": agent._build_task_handoff_execution_nudge(
+                task_context=task_context,
+                user_query=user_query,
+                previous_task_id=previous_task_id,
+                next_task_id=next_task_id,
+            ),
+        }
+    )
+    new_limit, cycle.handoff_reserve_used = _consume_handoff_iteration_reserve(
+        iteration=iteration,
+        base_limit=cycle.base_iteration_limit,
+        limit=cycle.runtime_iteration_limit,
+        reserve_used=cycle.handoff_reserve_used,
+        reserve_max=cycle.handoff_reserve_max,
+    )
+    if new_limit != cycle.runtime_iteration_limit:
+        cycle.runtime_iteration_limit = new_limit
+        logger.info(
+            "[DEEP_THINK_NATIVE] Consumed handoff iteration reserve%s previous=%s next=%s new_limit=%s reserve_used=%d/%d",
+            reserve_log_tag,
+            previous_task_id,
+            next_task_id,
+            cycle.runtime_iteration_limit,
+            cycle.handoff_reserve_used,
+            cycle.handoff_reserve_max,
+        )
+    if handoff_detected_log:
+        logger.info(
+            "[DEEP_THINK_NATIVE] Detected task handoff from %s to %s at iteration=%s; injected execute-next-task nudge",
+            previous_task_id,
+            next_task_id,
+            iteration,
+        )
+    current_step.self_correction = self_correction
+
+
 async def _native_run_setup(
     agent: "DeepThinkAgent",
     *,
@@ -716,50 +792,22 @@ async def _native_real_execution_cycle(
             and bound_task_after_cycle is not None
             and bound_task_after_cycle != cycle.bound_task_before_cycle
         ):
-            cycle.pending_handoff_previous_task_id = cycle.bound_task_before_cycle
-            cycle.pending_handoff_task_id = bound_task_after_cycle
-            cycle.forced_handoff_followthrough_attempts = 0
-            cycle.had_real_execution_tool = False
-            cycle.last_real_execution_tool_results = []
-            cycle.probe_only_execution_cycles = 0
-            cycle.partial_completion_retry_count = 0
-            messages.append(
-                {
-                    "role": "user",
-                    "content": agent._build_task_handoff_execution_nudge(
-                        task_context=task_context,
-                        user_query=user_query,
-                        previous_task_id=cycle.bound_task_before_cycle,
-                        next_task_id=bound_task_after_cycle,
-                    ),
-                }
-            )
-            new_limit, cycle.handoff_reserve_used = _consume_handoff_iteration_reserve(
+            _apply_task_handoff_transition(
+                agent,
+                cycle=cycle,
+                messages=messages,
+                current_step=current_step,
+                task_context=task_context,
+                user_query=user_query,
                 iteration=iteration,
-                base_limit=cycle.base_iteration_limit,
-                limit=cycle.runtime_iteration_limit,
-                reserve_used=cycle.handoff_reserve_used,
-                reserve_max=cycle.handoff_reserve_max,
-            )
-            if new_limit != cycle.runtime_iteration_limit:
-                cycle.runtime_iteration_limit = new_limit
-                logger.info(
-                    "[DEEP_THINK_NATIVE] Consumed handoff iteration reserve previous=%s next=%s new_limit=%s reserve_used=%d/%d",
-                    cycle.bound_task_before_cycle,
-                    bound_task_after_cycle,
-                    cycle.runtime_iteration_limit,
-                    cycle.handoff_reserve_used,
-                    cycle.handoff_reserve_max,
-                )
-            logger.info(
-                "[DEEP_THINK_NATIVE] Detected task handoff from %s to %s at iteration=%s; injected execute-next-task nudge",
-                cycle.bound_task_before_cycle,
-                bound_task_after_cycle,
-                iteration,
-            )
-            current_step.self_correction = (
-                f"Detected task handoff from {cycle.bound_task_before_cycle} to "
-                f"{bound_task_after_cycle}; injected an execute-next-task nudge."
+                previous_task_id=cycle.bound_task_before_cycle,
+                next_task_id=bound_task_after_cycle,
+                reset_probe_cycles=True,
+                handoff_detected_log=True,
+                self_correction=(
+                    f"Detected task handoff from {cycle.bound_task_before_cycle} to "
+                    f"{bound_task_after_cycle}; injected an execute-next-task nudge."
+                ),
             )
             # Skip partial-completion / finalization checks this
             # iteration — the handoff target hasn't been executed
@@ -1161,43 +1209,23 @@ async def _native_no_tool_call_cycle(
                 bound_task_after_forced is not None
                 and bound_task_after_forced != prior_handoff_task_id
             ):
-                cycle.pending_handoff_previous_task_id = prior_handoff_task_id
-                cycle.pending_handoff_task_id = bound_task_after_forced
-                cycle.forced_handoff_followthrough_attempts = 0
-                cycle.had_real_execution_tool = False
-                cycle.last_real_execution_tool_results = []
-                cycle.partial_completion_retry_count = 0
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": agent._build_task_handoff_execution_nudge(
-                            task_context=task_context,
-                            user_query=user_query,
-                            previous_task_id=prior_handoff_task_id,
-                            next_task_id=bound_task_after_forced,
-                        ),
-                    }
-                )
-                new_limit, cycle.handoff_reserve_used = _consume_handoff_iteration_reserve(
+                _apply_task_handoff_transition(
+                    agent,
+                    cycle=cycle,
+                    messages=messages,
+                    current_step=current_step,
+                    task_context=task_context,
+                    user_query=user_query,
                     iteration=iteration,
-                    base_limit=cycle.base_iteration_limit,
-                    limit=cycle.runtime_iteration_limit,
-                    reserve_used=cycle.handoff_reserve_used,
-                    reserve_max=cycle.handoff_reserve_max,
-                )
-                if new_limit != cycle.runtime_iteration_limit:
-                    cycle.runtime_iteration_limit = new_limit
-                    logger.info(
-                        "[DEEP_THINK_NATIVE] Consumed handoff iteration reserve (forced followthrough) previous=%s next=%s new_limit=%s reserve_used=%d/%d",
-                        prior_handoff_task_id,
-                        bound_task_after_forced,
-                        cycle.runtime_iteration_limit,
-                        cycle.handoff_reserve_used,
-                        cycle.handoff_reserve_max,
-                    )
-                current_step.self_correction = (
-                    f"Detected a no-tool response after handoff to Task {prior_handoff_task_id}; "
-                    f"forced code_executor execution and advanced again to Task {bound_task_after_forced}."
+                    previous_task_id=prior_handoff_task_id,
+                    next_task_id=bound_task_after_forced,
+                    reset_probe_cycles=False,
+                    handoff_detected_log=False,
+                    self_correction=(
+                        f"Detected a no-tool response after handoff to Task {prior_handoff_task_id}; "
+                        f"forced code_executor execution and advanced again to Task {bound_task_after_forced}."
+                    ),
+                    reserve_log_tag=" (forced followthrough)",
                 )
             else:
                 cycle.pending_handoff_task_id = None
