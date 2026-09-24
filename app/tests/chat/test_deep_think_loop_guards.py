@@ -902,3 +902,85 @@ def test_acceptance_v2_invalid_spec_loop_falls_back_to_v1(monkeypatch) -> None:
     assert result.final_answer.startswith("完成")
     assert agent._acceptance_spec is None
     assert "DELIVERABLE SPEC" not in llm.calls[0][0]["content"]
+
+
+class TestForcedHandoffFinalization:
+    """_should_force_verified_execution_finalization call-site contract:
+    in the forced-handoff (no tool calls) branch the forced execution is the
+    only tool that ran, so the predicate receives exactly that one result —
+    finalization is entered iff the forced result itself verifies."""
+
+    def _run_cycle(self, executor_result: dict):
+        from types import SimpleNamespace
+        from datetime import datetime
+
+        from app.services.deep_think.controller import (
+            _NativeCycleState,
+            _native_no_tool_call_cycle,
+        )
+        from app.services.deep_think.models import TaskExecutionContext, ThinkingStep
+
+        async def _executor(name: str, params: dict):
+            assert name == "code_executor"
+            return executor_result
+
+        agent = DeepThinkAgent(
+            llm_client=_LoopLLM([]),
+            available_tools=["code_executor"],
+            tool_executor=_executor,
+            max_iterations=5,
+            request_profile={
+                "request_tier": "execute",
+                "intent_type": "execute_task",
+                "explicit_task_override": True,
+                "current_task_id": 5,
+            },
+        )
+        task_context = TaskExecutionContext(
+            task_id=5,
+            task_name="T5",
+            task_instruction="execute task 5",
+            explicit_task_override=True,
+        )
+        cycle = _NativeCycleState(runtime_iteration_limit=5, base_iteration_limit=5)
+        cycle.pending_handoff_previous_task_id = 3
+        cycle.pending_handoff_task_id = 5
+        current_step = ThinkingStep(
+            iteration=1,
+            thought="",
+            action=None,
+            action_result=None,
+            self_correction=None,
+            timestamp=datetime.now(),
+            status="thinking",
+        )
+        result = SimpleNamespace(content="hmm, thinking out loud", tool_calls=None)
+        messages: list[dict] = []
+        flow, _ = asyncio.run(
+            _native_no_tool_call_cycle(
+                agent,
+                result=result,
+                iteration=1,
+                current_step=current_step,
+                thinking_steps=[],
+                tools_used=[],
+                messages=messages,
+                task_context=task_context,
+                user_query="execute task 5",
+                cycle=cycle,
+            )
+        )
+        return flow, cycle, messages
+
+    def test_verified_forced_result_enters_finalization(self) -> None:
+        flow, cycle, messages = self._run_cycle(
+            {"success": True, "verification_state": "verified_success"}
+        )
+        assert flow == "continue"
+        assert cycle.force_verified_execution_finalization is True
+        assert any("finalize" in str(m.get("content") or "").lower() or "submit_final_answer" in str(m.get("content") or "") for m in messages)
+
+    def test_unverified_forced_result_does_not_finalize(self) -> None:
+        flow, cycle, _ = self._run_cycle({"success": True})
+        assert flow == "continue"
+        assert cycle.force_verified_execution_finalization is False

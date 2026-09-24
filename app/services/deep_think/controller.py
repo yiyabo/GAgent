@@ -1236,6 +1236,11 @@ async def _native_no_tool_call_cycle(
                 )
                 if agent._should_force_verified_execution_finalization(
                     task_context=task_context,
+                    # Intentional narrowing (not a bug): in the no-tool-call
+                    # branch the forced handoff execution is the ONLY tool
+                    # that ran this cycle, so [forced_result] already IS the
+                    # cycle-complete tool_results. Finalization must be
+                    # judged on that evidence alone.
                     tool_results=[forced_result],
                     had_real_execution_tool=cycle.had_real_execution_tool,
                 ):
