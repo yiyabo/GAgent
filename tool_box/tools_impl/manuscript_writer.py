@@ -20,6 +20,7 @@ import logging
 import os
 import shutil
 import re
+import time
 import difflib
 from datetime import datetime, timezone
 from pathlib import Path
@@ -42,6 +43,13 @@ _DEFAULT_THRESHOLD = 0.8
 _DEFAULT_FINAL_POLISH_MAX_REVISIONS = 2
 _DEFAULT_FINAL_POLISH_THRESHOLD = 0.85
 _DEFAULT_FINAL_POLISH_STEP_TIMEOUT_SEC = 0.0
+# Pipeline liveness guards. The per-byte httpx read timeout inside LLMClient
+# cannot stop a stream whose upstream trickles keep-alive bytes forever, and
+# the final-polish clients are intentionally built with timeout=0 (httpx
+# timeout=None). These overall deadlines bound whole calls/stages instead.
+_DEFAULT_LLM_CALL_TIMEOUT_SEC = 600.0
+_DEFAULT_SECTION_TIMEOUT_SEC = 1800.0
+_DEFAULT_HEARTBEAT_LOG_SEC = 60.0
 _VALID_ARTICLE_MODES = {"auto", "review", "research"}
 _ALLOWED_TEXT_EXTENSIONS = {
     ".md",
@@ -372,6 +380,22 @@ async def _chat(
     max_tokens: Optional[int] = None,
     purpose: Optional[str] = None,
 ) -> str:
+    label = purpose or "manuscript_writer"
+    return await _await_with_deadline(
+        _chat_inner(llm, prompt, model, max_tokens=max_tokens, purpose=purpose),
+        timeout_sec=_llm_call_timeout_sec(),
+        heartbeat_sec=_heartbeat_log_sec(),
+        label=label,
+    )
+
+
+async def _chat_inner(
+    llm: LLMService,
+    prompt: str,
+    model: Optional[str],
+    max_tokens: Optional[int] = None,
+    purpose: Optional[str] = None,
+) -> str:
     update_usage_context(
         call_purpose=purpose or "manuscript_writer", tool_name="manuscript_writer", phase="tool"
     )
@@ -421,6 +445,124 @@ async def _maybe_wait_with_timeout(
     if timeout_sec is None or timeout_sec <= 0:
         return await operation
     return await asyncio.wait_for(operation, timeout=timeout_sec)
+
+
+def _env_timeout_sec(name: str, default: float) -> Optional[float]:
+    """Overall-deadline env knob in seconds; <= 0 disables the deadline."""
+    try:
+        value = float(os.getenv(name, str(default)) or default)
+    except (TypeError, ValueError):
+        value = default
+    return value if value > 0 else None
+
+
+def _llm_call_timeout_sec() -> Optional[float]:
+    return _env_timeout_sec("MANUSCRIPT_LLM_CALL_TIMEOUT_SEC", _DEFAULT_LLM_CALL_TIMEOUT_SEC)
+
+
+def _section_timeout_sec() -> Optional[float]:
+    return _env_timeout_sec("MANUSCRIPT_SECTION_TIMEOUT_SEC", _DEFAULT_SECTION_TIMEOUT_SEC)
+
+
+def _heartbeat_log_sec() -> float:
+    try:
+        value = float(os.getenv("MANUSCRIPT_HEARTBEAT_LOG_SEC", str(_DEFAULT_HEARTBEAT_LOG_SEC)) or _DEFAULT_HEARTBEAT_LOG_SEC)
+    except (TypeError, ValueError):
+        value = _DEFAULT_HEARTBEAT_LOG_SEC
+    return max(0.0, value)
+
+
+def _silence_task(task: "asyncio.Task[Any]") -> None:
+    """Consume a cancelled task's terminal exception so it is never logged as
+    'exception was never retrieved' after we abandon it on a deadline."""
+
+    def _consume(done: "asyncio.Task[Any]") -> None:
+        try:
+            done.exception()
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            pass
+
+    task.add_done_callback(_consume)
+
+
+async def _await_with_deadline(
+    operation: Awaitable[str],
+    *,
+    timeout_sec: Optional[float],
+    heartbeat_sec: float,
+    label: str,
+) -> str:
+    """Await *operation* under an overall deadline, logging periodic heartbeats.
+
+    A bare httpx read timeout only bounds the gap between bytes: an upstream
+    that trickles SSE keep-alives while never finishing the generation keeps
+    resetting it and the call hangs forever (observed in production as the
+    manuscript stage sitting silent for >900s). Bounding the whole coroutine
+    instead makes every stage finish, fail, or be cancellable in finite time.
+    """
+    if (timeout_sec is None or timeout_sec <= 0) and heartbeat_sec <= 0:
+        return await operation
+
+    task = asyncio.ensure_future(operation)
+    started_at = time.monotonic()
+    try:
+        while True:
+            wait: Optional[float] = heartbeat_sec if heartbeat_sec > 0 else None
+            if timeout_sec is not None and timeout_sec > 0:
+                remaining = timeout_sec - (time.monotonic() - started_at)
+                if remaining <= 0:
+                    task.cancel()
+                    _silence_task(task)
+                    raise asyncio.TimeoutError(
+                        f"manuscript_writer: {label} exceeded the {timeout_sec:g}s overall deadline"
+                    )
+                wait = remaining if wait is None else min(wait, remaining)
+            try:
+                return await asyncio.wait_for(asyncio.shield(task), timeout=wait)
+            except asyncio.TimeoutError:
+                elapsed = time.monotonic() - started_at
+                if timeout_sec is not None and timeout_sec > 0 and elapsed >= timeout_sec:
+                    task.cancel()
+                    _silence_task(task)
+                    raise asyncio.TimeoutError(
+                        f"manuscript_writer: {label} exceeded the {timeout_sec:g}s overall deadline"
+                    )
+                logger.info(
+                    "manuscript_writer heartbeat: %s still running (%.0fs elapsed)",
+                    label,
+                    elapsed,
+                )
+    except asyncio.CancelledError:
+        task.cancel()
+        _silence_task(task)
+        raise
+
+
+def _build_section_failure_row(
+    *,
+    section: str,
+    idx: int,
+    exc: Exception,
+) -> Dict[str, Any]:
+    """Failure row for a section whose LLM pipeline died, keeping the real
+    section name (instead of the historical 'unknown') so the failure payload
+    and quality gate can attribute it."""
+    is_timeout = isinstance(exc, asyncio.TimeoutError)
+    return {
+        "section": section,
+        "idx": idx,
+        "text": "",
+        "path": None,
+        "attempts": 0,
+        "passed": False,
+        "score": 0.0,
+        "evaluation_path": None,
+        "defects": ["section_llm_timeout" if is_timeout else "section_llm_error"],
+        "error": str(exc)[:500],
+        "review_evidence_coverage": None,
+    }
 
 
 def _parse_json_payload(text: str) -> Optional[Dict[str, Any]]:
@@ -2534,6 +2676,38 @@ async def manuscript_writer_handler(
             section: str,
             idx: int,
         ) -> Dict[str, Any]:
+            """Bounded wrapper: a section finishes, fails as a named row, or is
+            cancelled — it can no longer stall the whole run silently."""
+            logger.info("manuscript_writer: section[%d] '%s' pipeline started", idx, section)
+            try:
+                result = await _await_with_deadline(
+                    _gen_eval_section_core(section, idx),
+                    timeout_sec=_section_timeout_sec(),
+                    heartbeat_sec=_heartbeat_log_sec(),
+                    label=f"section[{idx}] '{section}'",
+                )
+                logger.info(
+                    "manuscript_writer: section[%d] '%s' finished (passed=%s, attempts=%s, score=%s)",
+                    idx,
+                    section,
+                    result.get("passed"),
+                    result.get("attempts"),
+                    result.get("score"),
+                )
+                return result
+            except Exception as exc:
+                logger.warning(
+                    "manuscript_writer: section[%d] '%s' failed: %s",
+                    idx,
+                    section,
+                    exc,
+                )
+                return _build_section_failure_row(section=section, idx=idx, exc=exc)
+
+        async def _gen_eval_section_core(
+            section: str,
+            idx: int,
+        ) -> Dict[str, Any]:
             """Generate, evaluate, and revise one section. Returns a result dict."""
             section_filename = f"{idx:02d}_{section}.md"
             section_path = sections_dir / section_filename
@@ -2803,8 +2977,19 @@ async def manuscript_writer_handler(
         )
 
         analysis_prompt = _build_analysis_prompt(task, context_text, section_list)
+        logger.info(
+            "manuscript_writer: drafting analysis memo (sections=%d, review_mode=%s)",
+            len(section_list),
+            review_mode,
+        )
+        memo_started_at = time.monotonic()
         analysis_memo = await _chat(gen_llm, analysis_prompt, gen_model, max_tokens=_MAX_TOKENS_MEMO, purpose="manuscript_writer:memo")
         analysis_file.write_text(analysis_memo, encoding="utf-8")
+        logger.info(
+            "manuscript_writer: analysis memo ready (%d chars, %.1fs)",
+            len(analysis_memo or ""),
+            time.monotonic() - memo_started_at,
+        )
 
         # ---------------------------------------------------------------
         # Phase: Generate sections (parallel for non-reference sections)
@@ -2818,10 +3003,13 @@ async def manuscript_writer_handler(
                 *[_gen_eval_section(s, idx) for idx, s in non_ref_sections],
                 return_exceptions=True,
             )
-            for res in parallel_results:
-                if isinstance(res, Exception):
-                    logger.error("Section generation failed: %s", res)
-                    failed_sections.append("unknown")
+            for (idx, section_name), res in zip(non_ref_sections, parallel_results):
+                if isinstance(res, BaseException):
+                    logger.error("Section generation failed for '%s': %s", section_name, res)
+                    failed_sections.append(section_name)
+                    section_results.append(
+                        _build_section_failure_row(section=section_name, idx=idx, exc=res)
+                    )
                     continue
                 section_results.append(res)
                 section_scores[res["section"]] = res["score"]
@@ -3054,6 +3242,7 @@ async def manuscript_writer_handler(
         # Run transition smoothing in parallel for all adjacent pairs
         if len(ordered_sections) >= 2:
             pairs = list(zip(ordered_sections[:-1], ordered_sections[1:]))
+            logger.info("manuscript_writer: smoothing %d section transitions", len(pairs))
             transition_results = await asyncio.gather(
                 *[_smooth_transition(a, b) for a, b in pairs],
                 return_exceptions=True,
@@ -3103,6 +3292,11 @@ async def manuscript_writer_handler(
             try:
                 for attempt in range(1, final_polish_max_revisions + 1):
                     current_polish_attempt = attempt
+                    logger.info(
+                        "manuscript_writer: final polish attempt %d/%d started",
+                        attempt,
+                        final_polish_max_revisions,
+                    )
                     if attempt == 1:
                         polish_prompt = _build_final_polish_prompt(
                             task,
