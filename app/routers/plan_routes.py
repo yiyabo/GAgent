@@ -27,7 +27,7 @@ from app.services.plans.plan_decomposer import PlanDecomposer, DecompositionResu
 from app.services.plans.plan_executor import ExecutionConfig, PlanExecutor
 from app.services.plans.audit_repair_loop import AuditRepairLoopConfig, AuditRepairLoopService
 from app.services.plans.artifact_preflight import ArtifactPreflightResult, ArtifactPreflightService
-from app.services.plans.status_resolver import PlanStatusResolver
+from app.services.plans.status_resolver import PlanStatusResolver, _looks_like_retry_or_blocked_failure_text
 from app.services.plans.task_verification import TaskVerificationService
 from app.services.plans.dependency_enrichment import (
     enrich_plan_dependencies,
@@ -459,65 +459,6 @@ def _truncate_reason(value: Optional[str], max_chars: int = 220) -> Optional[str
     if len(text) <= max_chars:
         return text
     return f"{text[: max_chars - 3].rstrip()}..."
-
-
-def _looks_like_failure_text(value: Any) -> bool:
-    text = str(value or "").strip().lower()
-    if not text:
-        return False
-    tokens = (
-        "traceback",
-        "exception",
-        "failed",
-        "error",
-        "unable to",
-        "timed out",
-        "interrupted",
-    )
-    return any(token in text for token in tokens)
-
-
-def _looks_like_dependency_blocked_text(value: Any) -> bool:
-    text = str(value or "").strip().lower()
-    if not text:
-        return False
-    tokens = (
-        "blocked by dependencies",
-        "dependency outputs are missing",
-        "incomplete dependencies",
-        "unmet dependencies",
-    )
-    return any(token in text for token in tokens)
-
-
-def _looks_like_retry_or_blocked_failure_text(value: Any) -> bool:
-    text = str(value or "").strip().lower()
-    if not text:
-        return False
-    tokens = (
-        "retry",
-        "blocked",
-        "did not pass",
-        "quality gate",
-        "release_state: blocked",
-        "release state: blocked",
-        "unable to",
-        "error:",
-        "exception",
-        "failed",
-        "阻断",
-        "重试",
-        "未通过",
-    )
-    return any(token in text for token in tokens)
-
-
-def _looks_like_success_text(value: Any) -> bool:
-    text = str(value or "").strip().lower()
-    if not text:
-        return False
-    tokens = ("completed", "completion", "succeeded", "success", "done")
-    return any(token in text for token in tokens)
 
 
 def _list_plan_execute_job_ids(plan_id: int, *, limit: int = 64) -> List[str]:
