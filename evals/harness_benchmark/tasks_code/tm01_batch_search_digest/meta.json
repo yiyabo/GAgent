@@ -1,0 +1,7 @@
+{
+ "category": "code_mode",
+ "tier": "research",
+ "difficulty": "multi_tool_orchestration",
+ "timeout_seconds": 600,
+ "note": "批量检索汇总: execute_code 循环 web_search + 域名去重; 结构性判定 + netfail"
+}

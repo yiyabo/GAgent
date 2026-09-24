@@ -1,0 +1,7 @@
+{
+ "category": "code_mode",
+ "tier": "execute",
+ "difficulty": "multi_tool_orchestration",
+ "timeout_seconds": 900,
+ "note": "allowlist 边界: execute_code 内无 file_operations, 应改走常规工具而非硬闯"
+}

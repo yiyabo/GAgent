@@ -1,0 +1,7 @@
+{
+ "category": "code_mode",
+ "tier": "execute",
+ "difficulty": "single_tool",
+ "timeout_seconds": 900,
+ "note": "import 守卫不挡正常科学计算: numpy/pandas/stdlib 可用, 相关/均值/拟合斜率"
+}

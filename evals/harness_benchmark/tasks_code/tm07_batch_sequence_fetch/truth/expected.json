@@ -1,0 +1,9 @@
+{
+ "comment": "UniProt canonical sequence lengths, snapshot 2026-09. If UniProt revises a canonical entry, refresh this fixture. Checks recompute expectations from this file, never hardcode them.",
+ "sequences": [
+  {"id": "P04637", "name": "p53", "length": 393},
+  {"id": "P38398", "name": "BRCA1", "length": 1863},
+  {"id": "P61626", "name": "lysozyme", "length": 148}
+ ],
+ "length_threshold": 200
+}

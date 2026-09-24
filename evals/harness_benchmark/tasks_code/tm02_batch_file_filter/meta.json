@@ -1,0 +1,7 @@
+{
+ "category": "code_mode",
+ "tier": "execute",
+ "difficulty": "multi_tool_orchestration",
+ "timeout_seconds": 900,
+ "note": "批量文件处理带过滤: execute_code 循环读 6 个 csv + 条件过滤 + 分组聚合"
+}

@@ -1,0 +1,7 @@
+{
+ "category": "code_mode",
+ "tier": "research",
+ "difficulty": "multi_tool_orchestration",
+ "timeout_seconds": 600,
+ "note": "批量检索汇总(确定性版): execute_code 循环 sequence_fetch + 长度过滤; 真值在 truth/expected.json (不入会话)"
+}

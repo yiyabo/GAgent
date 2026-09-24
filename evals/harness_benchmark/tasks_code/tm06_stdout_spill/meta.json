@@ -1,0 +1,7 @@
+{
+ "category": "code_mode",
+ "tier": "execute",
+ "difficulty": "long_horizon",
+ "timeout_seconds": 900,
+ "note": "大输出截断 + spill 路径: >50KB stdout 触发截断, spill 文件含全文"
+}
