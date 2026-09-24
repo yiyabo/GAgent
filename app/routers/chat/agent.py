@@ -712,6 +712,7 @@ from .artifact_gallery import (
     update_recent_image_artifacts,
 )
 from .action_handlers import (
+    _persist_runtime_context,
     handle_context_request as _handle_context_request_fn,
     handle_plan_action as _handle_plan_action_fn,
     handle_system_action as _handle_system_action_fn,
@@ -807,7 +808,6 @@ from .session_helpers import (
     _record_phagescope_task_memory,
     _save_chat_message,
     _set_session_plan_id,
-    _update_session_metadata,
 )
 from .subject_identity import (
     build_subject_aliases,
@@ -816,13 +816,6 @@ from .subject_identity import (
 )
 
 logger = logging.getLogger(__name__)
-_RUNTIME_CONTEXT_KEYS = (
-    "active_subject",
-    "last_failure_state",
-    "last_evidence_state",
-    "last_subject_action_class",
-    "recent_image_artifacts",
-)
 _CONTINUATION_FILENAME_RE = re.compile(
     r"(?<![A-Za-z0-9_/.-])([A-Za-z0-9][A-Za-z0-9_.-]{1,120}\.(?:tsv|csv|txt|json|ya?ml|gff3?|fa|fasta|faa|fna|fastq|fq|md|pdf|png|jpe?g|svg|xlsx?|zip|gz|tar))",
     flags=re.IGNORECASE,
@@ -1204,24 +1197,6 @@ def _build_recent_image_display_response(
     metadata["analysis_text"] = response_text
     metadata["final_summary"] = response_text
     return response_text, metadata
-
-
-def _persist_runtime_context(agent: Any) -> None:
-    if not getattr(agent, "session_id", None):
-        return
-
-    def _updater(metadata: Dict[str, Any]) -> Dict[str, Any]:
-        for key in _RUNTIME_CONTEXT_KEYS:
-            value = (getattr(agent, "extra_context", {}) or {}).get(key)
-            if isinstance(value, dict):
-                metadata[key] = dict(value)
-            elif isinstance(value, list) and key == "recent_image_artifacts":
-                metadata[key] = [dict(item) for item in value if isinstance(item, dict)]
-            else:
-                metadata.pop(key, None)
-        return metadata
-
-    _update_session_metadata(agent.session_id, _updater)
 
 
 def _seed_active_subject_from_routing(
