@@ -512,3 +512,14 @@
   color: var(--text-tertiary);
   line-height: 1.4;
 }
+
+/* Tool-call group — children indent with a guide line */
+.tp-group-children {
+  margin-left: 9px;
+  padding-left: 12px;
+  border-left: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.tp-group > .tp-item-row .tp-item-label {
+  font-weight: 500;
+}

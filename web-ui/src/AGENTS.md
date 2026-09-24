@@ -20,7 +20,7 @@ src/
 |------|----------|-------|
 | API calls | `api/client.ts` | Timeout tiering and auth event handling. |
 | Chat state | `store/chat.ts`, `store/slices/message/` | Zustand chat/session/message state. |
-| Message loading | `hooks/useMessages.ts` | React Query infinite message loading. |
+| Message loading | `store/slices/message/` (loadChatHistory/loadMoreHistory) | Single-source store loading with cursor pagination. |
 | Main chat UI | `components/layout/ChatMainArea.tsx`, `components/chat/` | Uploads, streaming display, message rendering. |
 | DAG/plan UI | `components/dag/` | Graph visualization and plan interaction. |
 | Terminal UI | `components/terminal/` | WebSocket/xterm integration. |

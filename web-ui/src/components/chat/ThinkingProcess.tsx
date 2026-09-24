@@ -19,6 +19,11 @@ import {
 import { motion, AnimatePresence } from 'framer-motion';
 import { Button, Tooltip } from 'antd';
 import { parseServerTimestampMs } from '@utils/serverTime';
+import {
+  buildStreamRows,
+  summarizeToolGroup,
+  type ToolStepGroup,
+} from '@utils/toolGrouping';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import './ThinkingProcess.css';
 
@@ -525,6 +530,91 @@ const ThinkingActivityItem: React.FC<{
 };
 
 // ---------------------------------------------------------------------------
+// Tool-call group — one collapsible summary row for consecutive tool steps
+// ---------------------------------------------------------------------------
+
+const ToolCallGroupRow: React.FC<{
+  group: ToolStepGroup<ThinkingStep>;
+  isFinished?: boolean;
+  isProcessActive?: boolean;
+  language: 'zh' | 'en';
+  liveNow?: number;
+  hintText?: string | null;
+  sessionId?: string | null;
+}> = ({ group, isFinished, isProcessActive, language, liveNow, hintText, sessionId }) => {
+  const [expanded, setExpanded] = useState(false);
+  const summary = useMemo(
+    () => summarizeToolGroup(group.steps, language),
+    [group.steps, language],
+  );
+  const hasError = group.steps.some((s) => stepHasToolError(s));
+  const duration = useMemo(() => {
+    let total = 0;
+    let known = false;
+    for (const s of group.steps) {
+      const d = stepDurationMs(s);
+      if (d !== null) {
+        total += d;
+        known = true;
+      }
+    }
+    return formatDurationMs(known ? total : null);
+  }, [group.steps]);
+
+  return (
+    <motion.div
+      className="tp-item tp-group"
+      initial={{ opacity: 0, y: 4 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.18, ease: 'easeOut' }}
+    >
+      <div
+        className={`tp-item-row expandable${hasError ? ' has-error' : ''}`}
+        onClick={() => setExpanded((v) => !v)}
+      >
+        <div className={`tp-item-icon${hasError ? ' error' : ''}`}>
+          <ToolOutlined />
+        </div>
+        <span className="tp-item-label">{summary}</span>
+        {hasError && (
+          <span className="tp-item-status error">
+            <CloseCircleOutlined style={{ fontSize: 11 }} />
+          </span>
+        )}
+        <span className="tp-item-duration">{duration}</span>
+        <CaretRightOutlined className={`tp-item-chevron${expanded ? ' expanded' : ''}`} />
+      </div>
+      <AnimatePresence initial={false}>
+        {expanded && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.15 }}
+          >
+            <div className="tp-group-children">
+              {group.steps.map((step, idx) => (
+                <ThinkingActivityItem
+                  key={`git-${step.iteration}`}
+                  step={step}
+                  isFinished={isFinished}
+                  isProcessActive={isProcessActive}
+                  nextStep={idx < group.steps.length - 1 ? group.steps[idx + 1] : undefined}
+                  language={language}
+                  liveNow={liveNow}
+                  hintText={hintText}
+                  sessionId={sessionId}
+                />
+              ))}
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </motion.div>
+  );
+};
+
+// ---------------------------------------------------------------------------
 // Main component
 // ---------------------------------------------------------------------------
 
@@ -570,6 +660,19 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
   const visibleSteps = useMemo(
     () => getVisibleSteps(process.steps, Boolean(isFinished), stickyIterations),
     [process.steps, isFinished, stickyIterations],
+  );
+  const nextStepByIteration = useMemo(() => {
+    const map = new Map<number, ThinkingStep>();
+    for (let i = 0; i < visibleSteps.length - 1; i += 1) {
+      map.set(visibleSteps[i].iteration, visibleSteps[i + 1]);
+    }
+    return map;
+  }, [visibleSteps]);
+  // Fold runs of consecutive tool calls into one collapsible summary row;
+  // during live runs the newest step stays solo so the in-flight call shows.
+  const streamRows = useMemo(
+    () => buildStreamRows(visibleSteps, { keepLastSolo: isActive }),
+    [visibleSteps, isActive],
   );
   const stepCount = visibleSteps.length;
   const toolCallCount = useMemo(() => visibleSteps.filter((s) => !!s.action).length, [visibleSteps]);
@@ -742,19 +845,32 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
             <div
               className={`tp-steps${isActive ? '' : ' tp-steps-scroll'}`}
             >
-              {visibleSteps.map((step, idx) => (
-                <ThinkingActivityItem
-                  key={`it-${step.iteration}`}
-                  step={step}
-                  isFinished={isFinished}
-                  isProcessActive={isActive}
-                  nextStep={idx < visibleSteps.length - 1 ? visibleSteps[idx + 1] : undefined}
-                  language={language}
-                  liveNow={liveNow}
-                  hintText={hintText}
-                  sessionId={sessionId}
-                />
-              ))}
+              {streamRows.map((row) =>
+                row.type === 'step' ? (
+                  <ThinkingActivityItem
+                    key={`it-${row.step.iteration}`}
+                    step={row.step}
+                    isFinished={isFinished}
+                    isProcessActive={isActive}
+                    nextStep={nextStepByIteration.get(row.step.iteration)}
+                    language={language}
+                    liveNow={liveNow}
+                    hintText={hintText}
+                    sessionId={sessionId}
+                  />
+                ) : (
+                  <ToolCallGroupRow
+                    key={row.group.id}
+                    group={row.group}
+                    isFinished={isFinished}
+                    isProcessActive={isActive}
+                    language={language}
+                    liveNow={liveNow}
+                    hintText={hintText}
+                    sessionId={sessionId}
+                  />
+                ),
+              )}
 
               {/* "Preparing next step" indicator — only when active and last step is complete */}
               {isActive && visibleSteps.length > 0 && !['thinking', 'calling_tool', 'analyzing'].includes(visibleSteps[visibleSteps.length - 1]?.status || '') && (
