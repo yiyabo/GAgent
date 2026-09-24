@@ -4955,22 +4955,36 @@ class StructuredChatAgent:
         user_message: str,
     ) -> tuple[RequestRoutingDecision, RequestTierProfile]:
         settings = get_settings()
-        decision = resolve_request_routing(
-            message=user_message,
-            history=self.history,
-            context=self.extra_context,
+        # Attribute the LLM routing-fallback classification to this session;
+        # restores the surrounding context on exit (nesting-safe).
+        from app.llm import clear_usage_context, set_usage_context
+
+        usage_token = set_usage_context(
+            session_id=getattr(self, "session_id", None),
             plan_id=self.plan_session.plan_id,
-            current_task_id=self.extra_context.get("current_task_id"),
+            task_id=self.extra_context.get("current_task_id"),
+            call_purpose="request_routing",
+            phase="routing",
         )
-        profile = build_request_tier_profile(
-            decision,
-            default_thinking_budget=int(getattr(settings, "thinking_budget", 10000)),
-            simple_thinking_budget=int(
-                getattr(settings, "thinking_budget_simple", 2000)
-            ),
-            default_max_iterations=_resolve_deep_think_max_iterations(),
-        )
-        return decision, profile
+        try:
+            decision = resolve_request_routing(
+                message=user_message,
+                history=self.history,
+                context=self.extra_context,
+                plan_id=self.plan_session.plan_id,
+                current_task_id=self.extra_context.get("current_task_id"),
+            )
+            profile = build_request_tier_profile(
+                decision,
+                default_thinking_budget=int(getattr(settings, "thinking_budget", 10000)),
+                simple_thinking_budget=int(
+                    getattr(settings, "thinking_budget_simple", 2000)
+                ),
+                default_max_iterations=_resolve_deep_think_max_iterations(),
+            )
+            return decision, profile
+        finally:
+            clear_usage_context(usage_token)
 
     # ------------------------------------------------------------------
     # Full plan execution via PlanExecutor

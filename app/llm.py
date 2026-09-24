@@ -1776,8 +1776,9 @@ async def stream_chat_collect_async(client: Any, prompt: str, **kwargs: Any) -> 
     chat_async_fn = getattr(client, "chat_async", None)
     if callable(chat_async_fn):
         return await chat_async_fn(prompt, **kwargs)
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, lambda: client.chat(prompt, **kwargs))
+    # to_thread copies the current contextvars (usage attribution) into the
+    # worker thread; run_in_executor would drop them (the no-session leak).
+    return await asyncio.to_thread(client.chat, prompt, **kwargs)
 
 
 def get_default_client() -> LLMClient:
