@@ -38,7 +38,6 @@ from app.services.deep_think.text_utils import (
     _default_max_consecutive_llm_failures,
     _ensure_inline_images,
     _strip_runtime_absolute_paths,
-    _missing_expectations,
     _missing_expectations_detailed,
     _resolve_context_budget_tokens,
 )
@@ -2019,7 +2018,7 @@ async def _think_prompt_based(
                         if correction_nudge:
                             messages.append({"role": "user", "content": correction_nudge})
                             logger.info(
-                                "[DEEP_THINK_NATIVE] Injected correction nudge after repeated tool failure"
+                                "[DEEP_THINK_PROMPT] Injected correction nudge after repeated tool failure"
                             )
                 else:
                     last_tool_cycle_signature = tool_cycle_signature
@@ -2027,9 +2026,19 @@ async def _think_prompt_based(
 
                 if identical_tool_cycle_count >= agent.MAX_IDENTICAL_TOOL_CALL_CYCLES:
                     repeated_cycles = identical_tool_cycle_count + 1
-                    rep_missing = _missing_expectations(
-                        getattr(agent, "_expected_outputs_current", None) or [],
+                    # Acceptance check unified with the native path: spec-aware
+                    # (count-aware) missing-deliverable detection. The prompt
+                    # flow derives expected kinds from the query when the agent
+                    # mirror is unset; with no acceptance spec this degrades
+                    # byte-identically to the v1 check.
+                    from app.services.deep_think.acceptance import (
+                        spec_to_kind_requirements as _spec_requirements,
+                    )
+                    rep_missing = _missing_expectations_detailed(
+                        getattr(agent, "_expected_outputs_current", None)
+                        or _derive_expected_outputs(user_query),
                         getattr(agent, "_produced_deliverable_paths", None) or [],
+                        _spec_requirements(getattr(agent, "_acceptance_spec", None)),
                     )
                     if rep_missing:
                         agent._acceptance_missing = list(rep_missing)
