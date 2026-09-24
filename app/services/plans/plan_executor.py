@@ -4587,19 +4587,6 @@ class PlanExecutor:
             logger.debug(f"Plan {plan_id} task {node.id}: No session_id, skipping deliverable publish")
             return
 
-        from app.config.deliverable_config import get_deliverable_settings
-
-        settings = get_deliverable_settings()
-        if not getattr(settings, "artifact_event_stream_enabled", True):
-            self._legacy_publish_contract_deliverables(
-                plan_id=plan_id,
-                node=node,
-                published=published,
-                session_context=session_context,
-                manifest=manifest,
-            )
-            return
-
         # Unified path: emit one artifact.produced event per output and let
         # the registry projector materialize them.  Publishing no longer
         # depends on the publisher's filename-keyword whitelists (which used
@@ -4719,87 +4706,6 @@ class PlanExecutor:
             return True
         except Exception:
             return False
-
-    def _legacy_publish_contract_deliverables(
-        self,
-        *,
-        plan_id: int,
-        node: PlanNode,
-        published: Dict[str, Dict[str, Any]],
-        session_context: Optional[Dict[str, Any]],
-        manifest: Optional[Dict[str, Any]] = None,
-    ) -> None:
-        session_id = session_context.get("session_id") if isinstance(session_context, dict) else None
-        if not session_id:
-            logger.debug(f"Plan {plan_id} task {node.id}: No session_id, skipping deliverable publish")
-            return
-        
-        def _collect_artifact_entries(entries: Iterable[Dict[str, Any]], include_contract_prefix: bool) -> List[Dict[str, str]]:
-            collected = []
-            for entry in entries:
-                if not isinstance(entry, dict):
-                    continue
-                path_text = str(entry.get("path") or "").strip()
-                if not path_text:
-                    continue
-                candidate = Path(path_text)
-                if not candidate.is_file():
-                    continue
-                module = self._deliverable_publisher._classify_module(candidate)
-                if module is None:
-                    continue
-                collected.append({"path": path_text, "module": module})
-            return collected
-        
-        artifacts: List[Dict[str, str]] = []
-        seen_paths: set[str] = set()
-        
-        for entry in _collect_artifact_entries(published.values(), include_contract_prefix=False):
-            if entry["path"] not in seen_paths:
-                artifacts.append(entry)
-                seen_paths.add(entry["path"])
-        
-        if manifest and isinstance(manifest, dict):
-            manifest_artifacts = manifest.get("artifacts", {})
-            if isinstance(manifest_artifacts, dict):
-                contract_entries = [
-                    entry for key, entry in manifest_artifacts.items()
-                    if isinstance(key, str) and key.startswith("contract:")
-                ]
-                for entry in _collect_artifact_entries(contract_entries, include_contract_prefix=True):
-                    if entry["path"] not in seen_paths:
-                        artifacts.append(entry)
-                        seen_paths.add(entry["path"])
-        
-        if not artifacts:
-            logger.debug(f"Plan {plan_id} task {node.id}: No artifacts to publish")
-            return
-        
-        logger.info(f"Plan {plan_id} task {node.id}: Publishing {len(artifacts)} contract deliverables")
-        
-        synthetic_result: Dict[str, Any] = {
-            "deliverable_submit": {
-                "artifacts": artifacts,
-                "publish": True,
-            },
-        }
-        try:
-            self._deliverable_publisher.publish_from_tool_result(
-                session_id=session_id,
-                tool_name="deliverable_submit",
-                raw_result=synthetic_result,
-                plan_id=plan_id,
-                task_id=node.id,
-                task_name=node.display_name(),
-                task_instruction=node.instruction or "",
-                publish_status="final",
-            )
-            logger.info(f"Plan {plan_id} task {node.id}: Successfully published contract deliverables")
-        except Exception as exc:
-            logger.warning(
-                "Failed to publish contract deliverables for plan %s task %s: %s",
-                plan_id, node.id, exc,
-            )
 
     @classmethod
     def _existing_artifact_metadata_paths(cls, values: Sequence[Any]) -> List[str]:
