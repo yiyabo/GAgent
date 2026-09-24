@@ -189,10 +189,15 @@ NATIVE_TOOL_CONTENT: Dict[str, Dict[str, Any]] = {
     "code_executor": {
         # native 有意收窄：impl 另有 allowed_tools/add_dirs，描述也不提 Claude Code —— 有意调优（参数面收窄）
         # 2026-09-24 描述修正：删除 "prefer bio_tools first"（本平台 bio_tools 永不上线，指引会把模型带向不可用工具）
+        # 2026-09-24 降权：只读核验委派禁令——生产实证模型把只读审计反复派给本工具（单次 ~108s pi 开销干秒级的活）
         "description": (
             "Execute Python code for data analysis, visualization, or computation. "
             "Errors are returned transparently with fix guidance — you can inspect "
-            "the generated code and error, then retry with a revised task description."
+            "the generated code and error, then retry with a revised task description. "
+            "Do NOT use this tool for read-only checking, verification, auditing, or "
+            "evidence extraction that does not modify files — use document_reader, "
+            "file_operations, or execute_code (open()+regex in the kernel, seconds) "
+            "for those; reserve this tool for substantive implementation work."
         ),
         "parameters": {
             "type": "object",
