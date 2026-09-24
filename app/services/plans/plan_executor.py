@@ -5466,20 +5466,8 @@ class PlanExecutor:
 
     @staticmethod
     def _normalize_status(raw: str) -> str:
-        normalized = (raw or "").strip().lower()
-        mapping = {
-            "success": "completed",
-            "failed": "failed",
-            "failure": "failed",
-            "skipped": "skipped",
-            "complete": "completed",
-            "completed": "completed",
-        }
-        if normalized in mapping:
-            return mapping[normalized]
-        if not normalized:
-            return "completed"
-        return normalized
+        # Single source of truth: TaskVerificationService._normalize_status (D4 convergence).
+        return TaskVerificationService._normalize_status(raw)
 
 
 __all__ = [
