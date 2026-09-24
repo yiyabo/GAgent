@@ -328,6 +328,24 @@ def shutdown_all_kernels() -> None:
         kernel.teardown()
 
 
+def shutdown_code_mode_kernels() -> None:
+    """Explicit app-shutdown hook: stop RPC threads, kill process groups, clear
+    the registry. Idempotent and never raises — a single wedged kernel must not
+    block the rest of the lifespan teardown (or mask later cleanup steps).
+    """
+    try:
+        with _REGISTRY_LOCK:
+            doomed = [_KERNELS.pop(key) for key in list(_KERNELS)]
+    except Exception:  # noqa: BLE001 - shutdown must not raise
+        logger.warning("code-mode kernel registry sweep failed", exc_info=True)
+        return
+    for kernel in doomed:
+        try:
+            kernel.teardown()
+        except Exception:  # noqa: BLE001 - keep disposing the remaining kernels
+            logger.warning("code-mode kernel teardown failed", exc_info=True)
+
+
 def shutdown_kernels_for_session(session_id: str) -> None:
     """Dispose every kernel a session owns (key[0] is the session identity)."""
     with _REGISTRY_LOCK:

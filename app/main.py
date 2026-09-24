@@ -287,6 +287,20 @@ async def lifespan(_fastapi_app: FastAPI):
                 )
             await close_shared_clients()
 
+        # Dispose code-mode session kernels (RPC server threads + child
+        # process groups); idempotent, never raises by contract — still
+        # guarded like every other lifespan cleanup step.
+        try:
+            from tool_box.tools_impl.execute_code.kernel import (
+                shutdown_code_mode_kernels,
+            )
+
+            shutdown_code_mode_kernels()
+        except Exception as exc:
+            logging.getLogger("app.main").warning(
+                "Failed to shutdown code-mode kernels: %s", exc,
+            )
+
 
 async def base_error_handler(_request: Request, exc: BaseError):
     """exception."""
