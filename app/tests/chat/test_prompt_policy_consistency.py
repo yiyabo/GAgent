@@ -694,3 +694,27 @@ def test_phagescope_prompt_and_schema_mark_proteins_as_result_not_submit_module(
         rule for rule in common_rules if "ping" in rule and "PhageScope" in rule
     )
     assert "file_operations" in ping_rule.lower()
+
+
+def _code_mode_agent() -> DeepThinkAgent:
+    return DeepThinkAgent(
+        llm_client=SimpleNamespace(),
+        available_tools=["execute_code"],
+        tool_executor=_noop_tool_executor,
+        request_profile={"request_tier": "execute", "intent_type": "execute_task"},
+    )
+
+
+def test_execute_code_catalog_entry_present_when_code_mode_enabled(monkeypatch) -> None:
+    monkeypatch.setenv("CODE_MODE_ENABLED", "1")
+    prompt = _code_mode_agent()._build_system_prompt()
+    assert "- execute_code:" in prompt
+    assert "PERSISTENT kernel" in prompt
+    assert "from gagent_tools import" in prompt
+    assert "ALREADY-PARSED dict" in prompt
+
+
+def test_execute_code_catalog_entry_absent_when_code_mode_disabled(monkeypatch) -> None:
+    monkeypatch.delenv("CODE_MODE_ENABLED", raising=False)
+    prompt = _code_mode_agent()._build_system_prompt()
+    assert "- execute_code:" not in prompt

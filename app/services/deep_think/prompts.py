@@ -36,6 +36,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from app.services.deep_think.models import TaskExecutionContext
 from app.services.foundation.settings import CHAT_HISTORY_ABS_MAX, get_settings
 from app.services.response_style import PROFESSIONAL_STYLE_INSTRUCTION
+from app.services.tool_schemas import code_mode_enabled
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from app.services.deep_think_agent import DeepThinkAgent
@@ -1067,6 +1068,22 @@ IMPORTANT: data must end with \\n to execute the command.""",
             "Use this after files already exist and the user wants reports, summaries, figures, tables, code, or references included in Deliverables."
         ),
     }
+    if code_mode_enabled():
+        # Code mode joins the legacy prompt catalog only when explicitly
+        # enabled — same gate as get_all_tools()/tool_schemas, so the entry is
+        # invisible (and code mode undiscoverable) when disabled.
+        tool_descriptions["execute_code"] = (
+            "Run Python that calls GAgent tools programmatically in a PERSISTENT kernel. "
+            "Use when you need 3+ tool calls with logic between them: loops over pages/files/accessions, "
+            "filtering or reducing large tool outputs BEFORE they enter your context, branching, or retries; "
+            "use a normal tool call for a single call or results you must reason over in full. "
+            "The kernel keeps variables, imports, and loaded data across execute_code calls "
+            "(pass reset=true to start fresh); a timed-out or interrupted call kills the kernel and loses that state. "
+            "Tools are importable Python functions, e.g. `from gagent_tools import web_search`; "
+            "each returns an ALREADY-PARSED dict — never json.loads() it. "
+            "Params: {\"code\": \"from gagent_tools import web_search\\nrows = web_search(query='phage lysin')\\nprint(rows)\", "
+            "optional \"reset\": true|false}."
+        )
 
     tools_desc = []
     for t in agent.available_tools:
