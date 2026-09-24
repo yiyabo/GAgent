@@ -23,7 +23,7 @@ tool_box/
 | Code execution | `tools_impl/code_executor.py`, `tools_impl/code_executor_backend.py` | `code_executor.py` is the compatibility facade/handler (`<2500` lines); backend configuration, local execution, and CLI usage helpers live in the sibling. Docker/Qwen guardrails remain in the executor siblings. |
 | Code mode | `tools_impl/execute_code/` | Env-gated (`CODE_MODE_ENABLED=1`) programmatic tool calling: persistent Python kernel + loopback RPC into the registry. |
 | Skill loading | `tools_impl/load_skill.py` | On-demand full SKILL.md retrieval over `app/services/skills` (progressive disclosure; read-only, always on). |
-| PhageScope | `tools_impl/phagescope.py` | API payload quirks and tracking. |
+| PhageScope | `tools_impl/phagescope.py` + `phagescope_{protocol,normalize,transport,artifacts}.py` | Compatibility facade; protocol mappings, LLM input normalization, remote transport, and artifact locations live in siblings. Preserve late-bound facade patch surfaces; batch/action branches remain in the facade. |
 | Bio tools | `bio_tools/` | Remote bioinformatics execution wrapper. |
 | Deliverables | `tools_impl/deliverable_submit.py` | Explicit artifact publication surface. |
 | Bio config | `bio_tools/tools_config.json` | Operation commands, images, parameters, schema source of truth. |
@@ -65,6 +65,7 @@ pytest app/tests/tools/test_execution_semantics_regressions.py -v
 
 ## SIZE BUDGETS
 - `tools_impl/code_executor.py` is a compatibility facade and handler; keep it below 2500 lines. Put backend configuration/local execution changes in `code_executor_backend.py` and preserve facade re-exports plus late-bound monkeypatch surfaces.
+- `tools_impl/phagescope.py` is a compatibility facade and handler; keep it below 2500 lines. Keep protocol, normalization, transport, and artifact helpers in the sibling modules while preserving direct private imports and late-bound patches.
 
 ## ANTI-PATTERNS
 - Do not mark a mutating tool as read-only to satisfy probe-loop logic.
