@@ -3161,6 +3161,26 @@ from .code_executor_contracts import (
     _summarize_dependency_blockers,
     _validate_scope_contract,
 )
+from .code_executor_promotion import (
+    _build_search_and_generate_prompt,
+    _collect_non_semantic_run_files,
+    _collect_run_artifacts,
+    _collapse_rooted_rel_path,
+    _has_hidden_path_component,
+    _iter_promotable_run_files,
+    _prune_stale_session_root_results,
+    _promote_external_contract_artifacts,
+    _promote_project_level_strays,
+    _promote_results_to_unified_dir,
+    _promote_task_results_to_session_root,
+    _reconcile_deliverables,
+    _recover_files_from_historical_runs,
+    _resolve_promoted_output_files,
+    _resolve_runtime_session_dir,
+    _should_skip_unified_promoted_file,
+)
+
+
 async def code_executor_handler(
     task: str,
     allowed_tools: Optional[Any] = None,
