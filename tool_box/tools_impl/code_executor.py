@@ -129,6 +129,34 @@ from .code_executor_qwen import (
     _wait_for_cli_process_return_code,
     _wait_for_qwen_cli_drain_or_watchdog,
 )
+from .code_executor_contracts import (
+    _append_contract_artifact_paths,
+    _build_ad_hoc_execution_spec,
+    _build_cli_contract_repair_task,
+    _build_cli_task_contract,
+    _build_execution_spec,
+    _build_verification_artifact_paths,
+    _contract_required_artifact_records,
+    _extract_acceptance_criteria_from_node,
+    _extract_code_workspace_metadata,
+    _extract_task_referenced_read_dirs,
+    _final_response_contract_prompt,
+    _format_cli_acceptance_checks,
+    _format_contract_diff_for_cli,
+    _format_resolved_resources_for_prompt,
+    _format_supervised_ml_contract_for_prompt,
+    _generate_task_dir_name_llm,
+    _is_allowed_task_read_path,
+    _is_path_within,
+    _is_path_within_lexical,
+    _is_verification_only_task,
+    _normalize_resolved_resources,
+    _resource_read_dirs,
+    _rerun_update_mode_prompt,
+    _sanitize_task_dir_component,
+    _summarize_dependency_blockers,
+    _validate_scope_contract,
+)
 
 # Compat alias: the CLI-stdout partial-completion detector was renamed to
 # _detect_partial_completion_cli in the qwen sibling (see its docstring) so it
@@ -780,125 +808,7 @@ def _resolve_cli_retry_policy() -> tuple[int, float]:
     return max_retries, base_delay_s
 
 
-def _format_cli_acceptance_checks(criteria: Optional[Dict[str, Any]]) -> List[str]:
-    if not isinstance(criteria, dict):
-        return []
-    checks = criteria.get("checks")
-    if not isinstance(checks, list):
-        return []
-
-    formatted: List[str] = []
-    for raw_check in checks[:12]:
-        if not isinstance(raw_check, dict):
-            continue
-        check_type = str(raw_check.get("type") or "").strip()
-        if check_type == "file_exists":
-            formatted.append(f"file must exist: {raw_check.get('path')}")
-        elif check_type == "file_nonempty":
-            formatted.append(f"file must be non-empty: {raw_check.get('path')}")
-        elif check_type == "glob_count_at_least":
-            pattern = resolve_glob_pattern(raw_check)
-            min_count = resolve_glob_min_count(raw_check)
-            formatted.append(
-                f"at least {min_count} matches for glob: {pattern}"
-            )
-        elif check_type == "text_contains":
-            formatted.append(
-                f"text file {raw_check.get('path')} must contain: {raw_check.get('pattern')}"
-            )
-        else:
-            formatted.append(json.dumps(raw_check, ensure_ascii=False))
-    return formatted
-
-
-
-def _normalize_resolved_resources(value: Any) -> Dict[str, Dict[str, Any]]:
-    """Normalize resource context by re-resolving IDs through the trusted registry.
-
-    ``resolved_resources`` is an orchestration field, but tool parameters can be
-    produced by an LLM. Never trust caller-provided paths here; only resource IDs
-    are accepted and paths/hints are rebuilt from the registry.
-    """
-    if not isinstance(value, dict):
-        return {}
-    resource_ids = [str(raw_id or "").strip() for raw_id in value.keys() if str(raw_id or "").strip()]
-    resolved, missing = _resolve_registered_resources(resource_ids)
-    if missing:
-        logger.warning("Ignoring unresolved code_executor resource IDs: %s", missing)
-    return resolved
-
-
-def _resource_read_dirs(resolved_resources: Dict[str, Dict[str, Any]]) -> List[str]:
-    dirs: List[str] = []
-    seen: set[str] = set()
-    for info in resolved_resources.values():
-        candidates: List[Any] = [info.get("root"), info.get("resolved_root")]
-        required_paths = info.get("required_paths")
-        if isinstance(required_paths, list):
-            candidates.extend(required_paths)
-        for raw_path in candidates:
-            token = str(raw_path or "").strip()
-            if not token or token in seen:
-                continue
-            try:
-                path = Path(token).absolute()
-                if not path.exists() or not path.is_dir():
-                    continue
-            except OSError:
-                continue
-            text = str(path)
-            if text not in seen:
-                seen.add(text)
-                dirs.append(text)
-    return dirs
-
-
-def _format_resolved_resources_for_prompt(resolved_resources: Dict[str, Dict[str, Any]]) -> str:
-    if not resolved_resources:
-        return ""
-    lines: List[str] = ["", "Available external resources:"]
-    for resource_id, info in sorted(resolved_resources.items()):
-        name = str(info.get("name") or resource_id).strip()
-        root = str(info.get("root") or "").strip()
-        resolved_root = str(info.get("resolved_root") or "").strip()
-        lines.append(f"- resource:{resource_id} ({name})")
-        if root:
-            lines.append(f"  root: {root}")
-        if resolved_root and resolved_root != root:
-            lines.append(f"  resolved_root: {resolved_root}")
-        required_paths = info.get("required_paths")
-        if isinstance(required_paths, list) and required_paths:
-            lines.append("  required paths:")
-            for path in required_paths[:8]:
-                lines.append(f"    - {path}")
-        hints = info.get("format_hints")
-        if isinstance(hints, list) and hints:
-            lines.append("  format hints:")
-            for hint in hints[:8]:
-                lines.append(f"    - {hint}")
-        metadata = info.get("metadata")
-        if isinstance(metadata, dict):
-            primary = str(metadata.get("primary_subdir") or "").strip()
-            file_glob = str(metadata.get("file_glob") or "").strip()
-            if primary:
-                lines.append(f"  primary_subdir: {primary}")
-            if file_glob:
-                lines.append(f"  file_glob: {file_glob}")
-    return "\n".join(lines)
-
-
-_SUPERVISED_ML_PROMPT_ALIASES = {
-    "ml_traditional.validation_metrics_json",
-    "ml_traditional.model_checkpoints_dir",
-    "phage_ml.cv_metrics_json",
-    "phage_ml.trained_models_dir",
-    "phage_ml.training_metadata_parquet",
-    "phage_ml.feature_row_ids_json",
-    "phage_ml.label_alignment_json",
-}
-
-
-def _format_supervised_ml_contract_for_prompt(
+def _legacy_format_supervised_ml_contract_for_prompt(
     artifact_contract: Optional[Dict[str, Any]],
     resolved_inputs: Optional[Dict[str, str]],
 ) -> str:
@@ -933,7 +843,7 @@ def _format_supervised_ml_contract_for_prompt(
         lines.append("- Publish phage_ml.label_alignment_json with real label provenance and row-alignment evidence.")
     return "\n".join(lines)
 
-def _build_cli_task_contract(
+def _legacy_build_cli_task_contract(
     task: str,
     execution_spec: Optional[Dict[str, Any]],
     resolved_resources: Optional[Dict[str, Dict[str, Any]]] = None,
@@ -1045,7 +955,7 @@ def _build_cli_task_contract(
     return "\n".join(lines).strip() or task_text
 
 
-def _final_response_contract_prompt() -> str:
+def _legacy_final_response_contract_prompt() -> str:
     return (
         "Final response contract:\n"
         "- End with a JSON object in a fenced ```json block.\n"
@@ -1077,7 +987,7 @@ def _final_response_contract_prompt() -> str:
     )
 
 
-def _rerun_update_mode_prompt() -> str:
+def _legacy_rerun_update_mode_prompt() -> str:
     return (
         "Rerun/update mode:\n"
         "- If previous outputs already exist, inspect them first when useful.\n"
@@ -1087,7 +997,7 @@ def _rerun_update_mode_prompt() -> str:
     )
 
 
-def _format_contract_diff_for_cli(contract_diff: Optional[Dict[str, Any]]) -> str:
+def _legacy_format_contract_diff_for_cli(contract_diff: Optional[Dict[str, Any]]) -> str:
     if not isinstance(contract_diff, dict):
         return ""
 
@@ -1117,7 +1027,7 @@ def _format_contract_diff_for_cli(contract_diff: Optional[Dict[str, Any]]) -> st
     return "\n".join(lines)
 
 
-def _is_verification_only_task(task_text: str) -> bool:
+def _legacy_is_verification_only_task(task_text: str) -> bool:
     """Detect tool calls that should inspect existing artifacts, not rerun the task."""
 
     text = " ".join(str(task_text or "").lower().split())
@@ -1174,7 +1084,7 @@ def _is_verification_only_task(task_text: str) -> bool:
     return has_verification and has_artifact and not has_generation
 
 
-def _build_cli_contract_repair_task(
+def _legacy_build_cli_contract_repair_task(
     task: str,
     execution_spec: Optional[Dict[str, Any]],
     *,
@@ -1203,7 +1113,7 @@ def _build_cli_contract_repair_task(
     return "\n".join(lines).strip()
 
 
-def _validate_scope_contract(
+def _legacy_validate_scope_contract(
     *,
     plan_id: Optional[int],
     task_id: Optional[int],
@@ -1218,21 +1128,18 @@ def _validate_scope_contract(
     return None
 
 
+_MAX_SESSION_PROMOTE_FILE_BYTES = 250 * 1024 * 1024
+_MAX_SESSION_PROMOTE_FILES = 500
+_MAX_STALE_SESSION_ROOT_FILE_BYTES = 1
+
+
 def _resolve_runtime_session_dir(session_id: Optional[str]) -> Path:
     token = str(session_id or "").strip()
     if not token:
-        # For adhoc sessions (no session_id), use session_adhoc directory
-        # This maintains backward compatibility with existing tests and behavior
         adhoc_dir = (_RUNTIME_DIR / "session_adhoc").resolve()
         adhoc_dir.mkdir(parents=True, exist_ok=True)
         return adhoc_dir
     return get_runtime_session_dir(token, create=True)
-
-
-# Skip absurdly large binaries when mirroring into session-level results/ (artifact URLs).
-_MAX_SESSION_PROMOTE_FILE_BYTES = 250 * 1024 * 1024
-_MAX_SESSION_PROMOTE_FILES = 500
-_MAX_STALE_SESSION_ROOT_FILE_BYTES = 1
 
 
 def _prune_stale_session_root_results(
@@ -3224,6 +3131,36 @@ def _prepare_code_executor_read_context(
     }
 
 
+# Contracts sibling re-exports are placed immediately before consumers so all
+# facade bare-name calls and test monkeypatches resolve to the extracted code.
+from .code_executor_contracts import (
+    _append_contract_artifact_paths,
+    _build_ad_hoc_execution_spec,
+    _build_cli_contract_repair_task,
+    _build_cli_task_contract,
+    _build_execution_spec,
+    _build_verification_artifact_paths,
+    _contract_required_artifact_records,
+    _extract_acceptance_criteria_from_node,
+    _extract_code_workspace_metadata,
+    _extract_task_referenced_read_dirs,
+    _final_response_contract_prompt,
+    _format_cli_acceptance_checks,
+    _format_contract_diff_for_cli,
+    _format_resolved_resources_for_prompt,
+    _format_supervised_ml_contract_for_prompt,
+    _generate_task_dir_name_llm,
+    _is_allowed_task_read_path,
+    _is_path_within,
+    _is_path_within_lexical,
+    _is_verification_only_task,
+    _normalize_resolved_resources,
+    _resource_read_dirs,
+    _rerun_update_mode_prompt,
+    _sanitize_task_dir_component,
+    _summarize_dependency_blockers,
+    _validate_scope_contract,
+)
 async def code_executor_handler(
     task: str,
     allowed_tools: Optional[Any] = None,
