@@ -4,12 +4,14 @@ DashScope OpenAI-compatible Responses API with built-in ``web_search`` tool only
 See: https://help.aliyun.com/zh/model-studio/web-search
 """
 
+import asyncio
 import json
 import logging
 import os
+import random
 import re
 import time
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 import aiohttp
@@ -24,6 +26,53 @@ logger = logging.getLogger(__name__)
 
 _EXTRACT_URL_RE = re.compile(r"(https?://[^\s\]\)]+)")
 _MD_LINK_RE = re.compile(r"\[([^\]]*)\]\((https?://[^)\s]+)\)")
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+
+# Transient gateway statuses worth another attempt: the production search
+# gateway fronts an agentic search backend whose latency routinely exceeds
+# intermediate nginx tiers (observed HTML 504 pages from nginx/1.31.2).
+_RETRYABLE_STATUSES = frozenset({408, 409, 425, 429, 500, 502, 503, 504})
+
+
+def _summarize_error_body(raw: str, limit: int = 300) -> str:
+    """Collapse an error body (often an nginx HTML page) into one readable line."""
+    text = _HTML_TAG_RE.sub(" ", raw or "")
+    text = " ".join(text.split())
+    return text[:limit] or "(empty body)"
+
+
+def _parse_retry_after(value: Optional[str]) -> Optional[float]:
+    if not value:
+        return None
+    try:
+        seconds = float(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    return seconds if seconds > 0 else None
+
+
+def _retry_delay(attempt: int, backoff_base: float, retry_after: Optional[float]) -> float:
+    delay = backoff_base * (2 ** (attempt - 1)) + random.uniform(0, backoff_base / 4.0)
+    if retry_after is not None:
+        delay = max(delay, retry_after)
+    return delay
+
+
+def _retry_tuning(settings: SearchSettings) -> Tuple[int, float, float]:
+    # getattr defaults keep duck-typed settings fakes in older tests working.
+    try:
+        retries = int(getattr(settings, "builtin_retries", 2))
+    except (TypeError, ValueError):
+        retries = 2
+    try:
+        backoff_base = float(getattr(settings, "builtin_backoff_base", 2.0))
+    except (TypeError, ValueError):
+        backoff_base = 2.0
+    try:
+        connect_timeout = float(getattr(settings, "builtin_connect_timeout", 20.0))
+    except (TypeError, ValueError):
+        connect_timeout = 20.0
+    return max(0, retries), max(0.0, backoff_base), max(0.5, connect_timeout)
 
 
 def _normalize_http_url(raw: str) -> str:
@@ -240,45 +289,116 @@ async def search(
         "stream": False,
     }
 
-    timeout = aiohttp.ClientTimeout(total=settings.builtin_request_timeout)
-    started_at = time.monotonic()
+    retries, backoff_base, connect_timeout = _retry_tuning(settings)
+    attempts = retries + 1
+    total_timeout = max(1.0, float(settings.builtin_request_timeout or 300.0))
+    timeout = aiohttp.ClientTimeout(total=total_timeout, connect=min(connect_timeout, total_timeout))
+    host = urlparse(api_url).netloc or api_url
 
-    try:
-        async with aiohttp.ClientSession(timeout=timeout) as session:
-            async with session.post(api_url, headers=headers, json=payload) as response:
-                raw_text = await response.text()
-                if response.status != 200:
-                    raise WebSearchError(
-                        code="http_error",
-                        message=f"HTTP {response.status}: {raw_text[:2000]}",
-                        provider="builtin",
-                        meta={"status": response.status, "url": api_url},
+    data: Optional[Dict[str, Any]] = None
+    for attempt in range(1, attempts + 1):
+        started_at = time.monotonic()
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(api_url, headers=headers, json=payload) as response:
+                    raw_text = await response.text()
+                    status = response.status
+                    retry_after = _parse_retry_after((getattr(response, "headers", None) or {}).get("Retry-After"))
+
+            if status != 200:
+                elapsed = round(time.monotonic() - started_at, 2)
+                summary = _summarize_error_body(raw_text)
+                hint = ""
+                if status in _RETRYABLE_STATUSES:
+                    hint = (
+                        " The upstream search service is overloaded or slow to respond; "
+                        "retrying later may help."
                     )
-                try:
-                    data = json.loads(raw_text)
-                except json.JSONDecodeError as exc:
-                    raise WebSearchError(
-                        code="invalid_response",
-                        message=f"Invalid JSON response: {exc}",
-                        provider="builtin",
-                    ) from exc
+                message = (
+                    f"Search gateway HTTP {status} ({host}) after {elapsed}s "
+                    f"(attempt {attempt}/{attempts}): {summary}{hint}"
+                )
+                if status in _RETRYABLE_STATUSES and attempt < attempts:
+                    delay = _retry_delay(attempt, backoff_base, retry_after)
+                    logger.warning(
+                        "web_search builtin attempt %d/%d got HTTP %d from %s; retrying in %.1fs",
+                        attempt,
+                        attempts,
+                        status,
+                        host,
+                        delay,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                logger.error("DashScope Responses web_search request failed: %s", message)
+                raise WebSearchError(
+                    code="http_error",
+                    message=message,
+                    provider="builtin",
+                    meta={
+                        "status": status,
+                        "url": api_url,
+                        "attempts": attempt,
+                        "elapsed_seconds": elapsed,
+                        "retry_after": retry_after,
+                        "body": raw_text[:2000],
+                    },
+                )
+            try:
+                data = json.loads(raw_text)
+            except json.JSONDecodeError as exc:
+                raise WebSearchError(
+                    code="invalid_response",
+                    message=f"Invalid JSON response: {exc}",
+                    provider="builtin",
+                ) from exc
+            break
 
-    except WebSearchError:
-        raise
-    except Exception as exc:  # pragma: no cover - network/runtime
-        elapsed = round(time.monotonic() - started_at, 2)
-        exc_type = type(exc).__name__
-        message = str(exc).strip()
-        detail = f"{exc_type} after {elapsed}s"
-        if message:
-            detail = f"{detail}: {message}"
-        logger.error("DashScope Responses web_search request failed: %s", detail)
+        except WebSearchError:
+            raise
+        except Exception as exc:  # network/timeout — retryable while attempts remain
+            elapsed = round(time.monotonic() - started_at, 2)
+            exc_type = type(exc).__name__
+            detail = f"{exc_type} after {elapsed}s"
+            text = str(exc).strip()
+            if text:
+                detail = f"{detail}: {text}"
+            if attempt < attempts:
+                delay = _retry_delay(attempt, backoff_base, None)
+                logger.warning(
+                    "web_search builtin attempt %d/%d failed (%s); retrying in %.1fs",
+                    attempt,
+                    attempts,
+                    detail,
+                    delay,
+                )
+                await asyncio.sleep(delay)
+                continue
+            logger.error(
+                "DashScope Responses web_search request failed after %d attempts: %s",
+                attempt,
+                detail,
+            )
+            raise WebSearchError(
+                code="request_failed",
+                message=f"{detail} (attempt {attempt}/{attempts}, host {host})",
+                provider="builtin",
+                meta={
+                    "url": api_url,
+                    "model": model,
+                    "elapsed_seconds": elapsed,
+                    "exception_type": exc_type,
+                    "attempts": attempt,
+                },
+            ) from exc
+
+    if data is None:  # pragma: no cover - loop always assigns or raises
         raise WebSearchError(
             code="request_failed",
-            message=detail,
+            message=f"No response from search gateway ({host})",
             provider="builtin",
-            meta={"url": api_url, "model": model, "elapsed_seconds": elapsed, "exception_type": exc_type},
-        ) from exc
+            meta={"url": api_url, "model": model},
+        )
 
     if not isinstance(data, dict):
         raise WebSearchError(

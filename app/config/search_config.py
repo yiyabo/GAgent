@@ -42,6 +42,9 @@ class SearchSettings:
     glm_model: str = "qwen3-max-2026-01-23"
 
     builtin_request_timeout: float = 90.0
+    builtin_connect_timeout: float = 20.0
+    builtin_retries: int = 2
+    builtin_backoff_base: float = 2.0
 
     perplexity_api_key: Optional[str] = None
     perplexity_api_url: str = "https://api.perplexity.ai/chat/completions"
@@ -119,6 +122,21 @@ def get_search_settings() -> SearchSettings:
         builtin_timeout = 300.0
 
     try:
+        builtin_connect_timeout = float(_env("WEB_SEARCH_BUILTIN_CONNECT_TIMEOUT", "20.0"))
+    except Exception:
+        builtin_connect_timeout = 20.0
+
+    try:
+        builtin_retries = int(_env("WEB_SEARCH_BUILTIN_RETRIES", "2"))
+    except Exception:
+        builtin_retries = 2
+
+    try:
+        builtin_backoff_base = float(_env("WEB_SEARCH_BUILTIN_BACKOFF_BASE", "2.0"))
+    except Exception:
+        builtin_backoff_base = 2.0
+
+    try:
         perplexity_timeout = float(_env("WEB_SEARCH_PERPLEXITY_TIMEOUT", "30.0"))
     except Exception:
         perplexity_timeout = 30.0
@@ -141,6 +159,9 @@ def get_search_settings() -> SearchSettings:
         glm_api_url=glm_api_url or "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
         glm_model=glm_model or "qwen3-max-2026-01-23",
         builtin_request_timeout=builtin_timeout,
+        builtin_connect_timeout=builtin_connect_timeout,
+        builtin_retries=builtin_retries,
+        builtin_backoff_base=builtin_backoff_base,
         perplexity_api_key=perplexity_api_key,
         perplexity_api_url=perplexity_api_url or "https://api.perplexity.ai/chat/completions",
         perplexity_model=perplexity_model or "sonar-pro",
