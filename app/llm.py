@@ -164,6 +164,7 @@ def register_project_llm_credentials(
     session_id: Optional[str],
     api_key: Optional[str],
     base_url: Optional[str],
+    model: Optional[str] = None,
 ) -> bool:
     """Validate and activate a platform-delivered project LLM credential.
 
@@ -181,6 +182,7 @@ def register_project_llm_credentials(
     creds = {
         "api_key": key,
         "chat_url": chat_url,
+        "model": str(model or "").strip(),
         "responses_url": chat_url[: -len("chat/completions")] + "responses",
         "embeddings_url": chat_url[: -len("chat/completions")] + "embeddings",
         "ts": time.time(),
@@ -924,7 +926,7 @@ class LLMClient(LLMProvider):
         if self.mock and not force_real:
             return "This is a mock completion."
 
-        if not self.api_key:
+        if not self._effective_api_key():
             raise RuntimeError(f"{self.provider.upper()}_API_KEY is not set in environment")
 
         # Support full messages list for multi-turn conversations
@@ -943,7 +945,7 @@ class LLMClient(LLMProvider):
         except (KeyError, TypeError, ValueError):
             request_retries = self.retries
         payload = {
-            "model": model or self.model,
+            "model": model or self._effective_model(),
             "messages": payload_messages,
             "max_tokens": max_tokens,
         }
@@ -1058,7 +1060,7 @@ class LLMClient(LLMProvider):
             yield "This is a mock completion."
             return
 
-        if not self.api_key:
+        if not self._effective_api_key():
             raise RuntimeError(f"{self.provider.upper()}_API_KEY is not set in environment")
 
         # Support full messages list for multi-turn conversations
@@ -1077,7 +1079,7 @@ class LLMClient(LLMProvider):
         except (KeyError, TypeError, ValueError):
             request_retries = self.retries
         payload = {
-            "model": model or self.model,
+            "model": model or self._effective_model(),
             "messages": payload_messages,
             "max_tokens": max_tokens,
             "stream": True,
@@ -1213,7 +1215,7 @@ class LLMClient(LLMProvider):
         if self.mock and not force_real:
             return "This is a mock completion."
 
-        if not self.api_key:
+        if not self._effective_api_key():
             raise RuntimeError(f"{self.provider.upper()}_API_KEY is not set in environment")
 
         payload_messages = messages if messages else [{"role": "user", "content": prompt}]
@@ -1227,7 +1229,7 @@ class LLMClient(LLMProvider):
         except (KeyError, TypeError, ValueError):
             request_retries = self.retries
         payload = {
-            "model": model or self.model,
+            "model": model or self._effective_model(),
             "messages": payload_messages,
             "max_tokens": max_tokens,
         }
@@ -1338,7 +1340,7 @@ class LLMClient(LLMProvider):
             yield "This is a mock completion."
             return
 
-        if not self.api_key:
+        if not self._effective_api_key():
             raise RuntimeError(f"{self.provider.upper()}_API_KEY is not set in environment")
 
         # Support full messages list for multi-turn conversations
@@ -1348,7 +1350,7 @@ class LLMClient(LLMProvider):
             payload_messages = [{"role": "user", "content": prompt}]
 
         payload: Dict[str, Any] = {
-            "model": model or self.model,
+            "model": model or self._effective_model(),
             "messages": payload_messages,
             "stream": True,
             "max_tokens": 16384,
@@ -1552,11 +1554,11 @@ class LLMClient(LLMProvider):
                 finish_reason="stop",
             )
 
-        if not self.api_key:
+        if not self._effective_api_key():
             raise RuntimeError(f"{self.provider.upper()}_API_KEY is not set")
 
         payload: Dict[str, Any] = {
-            "model": model or self.model,
+            "model": model or self._effective_model(),
             "messages": messages,
             "tools": tools,
             "tool_choice": tool_choice,
@@ -1722,6 +1724,12 @@ class LLMClient(LLMProvider):
         if creds and creds.get("chat_url"):
             return str(creds["chat_url"])
         return self.url
+
+    def _effective_model(self) -> str:
+        creds = get_project_llm_credentials()
+        if creds and creds.get("model"):
+            return str(creds["model"])
+        return self.model
 
     def _build_headers(self) -> Dict[str, str]:
         headers = {

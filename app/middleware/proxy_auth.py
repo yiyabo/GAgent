@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from typing import Optional
 
@@ -25,6 +26,10 @@ from app.services.request_principal import (
     reset_current_principal,
     set_current_principal,
 )
+
+logger = logging.getLogger("app.proxy_auth")
+
+
 def _trim_header(value: Optional[str], *, limit: int = 256) -> Optional[str]:
     if value is None:
         return None
@@ -34,6 +39,8 @@ def _trim_header(value: Optional[str], *, limit: int = 256) -> Optional[str]:
     if len(text) > limit:
         return text[:limit]
     return text
+
+
 def _is_anonymous_path(path: str) -> bool:
     normalized = str(path or "").strip() or "/"
     if normalized in {"/health", "/health/llm", "/openapi.json", "/docs", "/redoc"}:
@@ -43,9 +50,19 @@ def _is_anonymous_path(path: str) -> bool:
     if normalized.startswith("/project"):
         return True
     _API_PREFIXES = (
-        "/api/", "/chat/", "/mcp/", "/plans/", "/jobs/", "/upload/",
-        "/artifacts/", "/execution/", "/interpreter/", "/system/",
-        "/quality/", "/terminal/", "/models/",
+        "/api/",
+        "/chat/",
+        "/mcp/",
+        "/plans/",
+        "/jobs/",
+        "/upload/",
+        "/artifacts/",
+        "/execution/",
+        "/interpreter/",
+        "/system/",
+        "/quality/",
+        "/terminal/",
+        "/models/",
     )
     if any(normalized.startswith(p) for p in _API_PREFIXES):
         return False
@@ -57,12 +74,12 @@ class ProxyAuthMiddleware(BaseHTTPMiddleware):
         super().__init__(app)
         self.mode = get_auth_mode()
         self.proxy_auth_required = proxy_auth_required()
-        self.user_header = str(
-            os.getenv("PROXY_AUTH_USER_HEADER", "X-Forwarded-User")
-        ).strip()
-        self.email_header = str(
-            os.getenv("PROXY_AUTH_EMAIL_HEADER", "X-Forwarded-Email")
-        ).strip()
+        self.user_header = str(os.getenv("PROXY_AUTH_USER_HEADER", "X-Forwarded-User")).strip()
+        self.email_header = str(os.getenv("PROXY_AUTH_EMAIL_HEADER", "X-Forwarded-Email")).strip()
+        # 平台上下文自启开关：只有配置了平台回源地址，网关注入的平台身份头
+        # （X-Forwarded-User-Id / X-Forwarded-Project-Id）才会被解析成平台绑定；
+        # 未配置时这两个头被无视，独立部署行为与升级前完全一致
+        self.platform_context_enabled = bool(os.getenv("PLATFORM_API_BASE_URL", "").strip())
 
     async def dispatch(self, request: Request, call_next):
         if request.method.upper() == "OPTIONS":
@@ -106,11 +123,7 @@ class ProxyAuthMiddleware(BaseHTTPMiddleware):
             reset_current_principal(token)
 
         skip_cookie_refresh = bool(getattr(request.state, "skip_auth_cookie_refresh", False))
-        if (
-            session_refresh_id
-            and session_refresh_expires is not None
-            and not skip_cookie_refresh
-        ):
+        if session_refresh_id and session_refresh_expires is not None and not skip_cookie_refresh:
             set_session_cookie(
                 response,
                 session_id=session_refresh_id,
@@ -124,10 +137,33 @@ class ProxyAuthMiddleware(BaseHTTPMiddleware):
         raw_email = _trim_header(request.headers.get(self.email_header))
         if not raw_owner:
             return None
+
+        # 平台绑定（受信头，仅网关可注入；自启条件见 __init__）：
+        # 两个头必须同时有效才升级为 platform 模式，随后上游会按
+        # (platform_user_id, platform_project_id) 回源主平台拿项目级 LLM 网关与密钥。
+        # 用 isdecimal 而非 isdigit：后者对上下标数字（如 ²）也返回 True 但 int() 会抛错
+        platform_kwargs: dict = {}
+        if self.platform_context_enabled:
+            raw_user_id = _trim_header(request.headers.get("X-Forwarded-User-Id"))
+            raw_project_id = _trim_header(request.headers.get("X-Forwarded-Project-Id"))
+            if raw_user_id and raw_project_id and raw_user_id.isdecimal() and raw_project_id.isdecimal():
+                platform_kwargs = {
+                    "access_mode": "platform",
+                    "platform_user_id": int(raw_user_id),
+                    "platform_project_id": int(raw_project_id),
+                }
+            elif raw_user_id or raw_project_id:
+                logger.debug(
+                    "平台头不完整（user_id=%r project_id=%r），按普通 proxy 身份处理",
+                    raw_user_id,
+                    raw_project_id,
+                )
+
         return RequestPrincipal(
             user_id=raw_owner,
             email=raw_email,
             role="user",
             auth_source="proxy",
             is_authenticated=True,
+            **platform_kwargs,
         )
