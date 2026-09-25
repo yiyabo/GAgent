@@ -3,11 +3,66 @@
 from __future__ import annotations
 
 import os
+import subprocess
+import time
+from pathlib import Path
 
 import pytest
 
 from tool_box.context import ToolContext
 from tool_box.tools_impl.execute_code import kernel as kernel_module
+
+# A process-group member killed by the timeout path ends up in one of two shapes:
+# reaped (the probe raises ESRCH) or an unreaped zombie (a container PID 1 with no
+# child reaper never calls waitpid, so the entry lingers). Both are the same
+# kernel fact — the process body is gone — so the assertion accepts either and
+# still fails on a runnable grandchild.
+_GROUP_MEMBER_EXIT_TIMEOUT = 5.0
+
+
+def _process_state(pid: int) -> str:
+    """Best-effort single-letter process state; "" when it cannot be observed."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        stat = ""
+    if stat:
+        # Field 2 (comm) may contain spaces and parens; state follows the last ')'.
+        tail = stat.rpartition(")")[2].strip()
+        return tail.split(" ")[0] if tail else ""
+    try:
+        probe = subprocess.run(
+            ["ps", "-o", "state=", "-p", str(pid)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return probe.stdout.strip()[:1]
+
+
+def _is_dead_or_zombie(pid: int) -> bool:
+    """True once *pid* no longer runs: reaped, or a zombie awaiting reaping."""
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        return False  # still alive, just not ours to signal
+    return _process_state(pid) == "Z"
+
+
+def _assert_process_group_member_dead(pid: int) -> None:
+    """Wait briefly, then require the process body to be gone."""
+    deadline = time.monotonic() + _GROUP_MEMBER_EXIT_TIMEOUT
+    while not _is_dead_or_zombie(pid) and time.monotonic() < deadline:
+        time.sleep(0.1)
+    assert _is_dead_or_zombie(pid), (
+        f"timeout kill missed part of the process group: pid {pid} is still "
+        f"runnable (state={_process_state(pid)!r})"
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -98,8 +153,12 @@ def test_timeout_kills_whole_process_group_and_reports_state_loss(
     assert "state was lost" in result["error"]
 
     grandchild_pid = int(pid_file.read_text().strip())
-    with pytest.raises(ProcessLookupError):
-        os.kill(grandchild_pid, 0)
+    # Equivalent, platform-independent form of "the whole process group is gone":
+    # a normal init reaps the orphaned grandchild (the probe sees ESRCH), while a
+    # container whose PID 1 has no child reaper leaves it a zombie (the probe
+    # still resolves the entry). Either way the process body must be dead; a
+    # survivable grandchild still fails the assertion.
+    _assert_process_group_member_dead(grandchild_pid)
 
     # Next call starts a fresh kernel (state did not carry over).
     followup = _run("print('fresh start')", ctx)
