@@ -7,6 +7,7 @@ Mock boundary: only LLM is mocked; tool handlers run for real.
 from __future__ import annotations
 
 import asyncio
+import sys
 
 import pytest
 
@@ -97,7 +98,7 @@ def test_code_executor_subprocess_runs_python(
 
     with app_client_factory() as _client:
         proc = subprocess.run(
-            ["python", "-c", "print('hello from integration test')"],
+            [sys.executable, "-c", "print('hello from integration test')"],
             capture_output=True,
             text=True,
             timeout=10,

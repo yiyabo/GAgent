@@ -16,6 +16,7 @@ def test_file_operations_list_results_uses_repo_root(monkeypatch, tmp_path: Path
     (results_dir / "foo.md").write_text("hello", encoding="utf-8")
 
     monkeypatch.chdir(repo_root)
+    monkeypatch.setattr(file_operations, "ALLOWED_BASE_PATHS", [str(repo_root.resolve())])
 
     result = asyncio.run(file_operations_handler("list", "results"))
 
@@ -32,6 +33,7 @@ def test_file_operations_list_dot_uses_tool_work_dir(monkeypatch, tmp_path: Path
     (work_dir / "evidence.md").write_text("evidence", encoding="utf-8")
 
     monkeypatch.chdir(repo_root)
+    monkeypatch.setattr(file_operations, "ALLOWED_BASE_PATHS", [str(repo_root.resolve())])
 
     result = asyncio.run(
         file_operations_handler(
