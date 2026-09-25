@@ -34,6 +34,16 @@ def code_mode_enabled() -> bool:
     return os.environ.get("CODE_MODE_ENABLED", "").strip() == "1"
 
 
+def delegate_task_enabled() -> bool:
+    """Whether the general delegation tool (``delegate_task``) is offered to the LLM.
+
+    Mirrors ``DELEGATE_TASK_ENABLED`` in ``tool_box/tools_impl/delegate_task.py``;
+    read directly from env here for the same circular-import reason as
+    ``code_mode_enabled``.
+    """
+    return os.environ.get("DELEGATE_TASK_ENABLED", "").strip() == "1"
+
+
 def _build_execute_code_description(content: Dict[str, Any]) -> str:
     """Static base + the dynamic per-allowlist signature list (teaching surface)."""
     base = str(content["description"])
@@ -175,6 +185,17 @@ def _build_registry() -> Dict[str, Dict[str, Any]]:
                 _build_execute_code_description(content),
                 content["parameters"],
             )
+        elif name == "delegate_task":
+            # Delegation is env-gated as well (DELEGATE_TASK_ENABLED=1, default
+            # OFF): same contract as code mode — invisible to every offer path
+            # and the golden master stays exact while disabled.
+            if not delegate_task_enabled():
+                continue
+            registry[name] = _function_schema(
+                name,
+                content["description"],
+                content["parameters"],
+            )
         elif name == "bio_tools":
             registry[name] = _function_schema(
                 name,
@@ -302,6 +323,15 @@ def build_tool_schemas(available_tools: List[str]) -> List[Dict[str, Any]]:
         # caller's static tool pool predates the flag. Off: registry has no
         # execute_code entry at all, so nothing can leak through.
         names.append("execute_code")
+    if (
+        delegate_task_enabled()
+        and "delegate_task" not in names
+        and "delegate_task" in registry
+    ):
+        # Same gate shape as code mode. The plan-executor pool stays static on
+        # purpose: delegate_task is the chat-side delegation surface, and plan
+        # tasks already delegate through PlanExecutor's own path.
+        names.append("delegate_task")
     schemas = []
     for name in names:
         schema = registry.get(name)

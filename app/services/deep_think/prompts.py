@@ -36,7 +36,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from app.services.deep_think.models import TaskExecutionContext
 from app.services.foundation.settings import CHAT_HISTORY_ABS_MAX, get_settings
 from app.services.response_style import PROFESSIONAL_STYLE_INSTRUCTION
-from app.services.tool_schemas import code_mode_enabled
+from app.services.tool_schemas import code_mode_enabled, delegate_task_enabled
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from app.services.deep_think_agent import DeepThinkAgent
@@ -1083,6 +1083,26 @@ IMPORTANT: data must end with \\n to execute the command.""",
             "each returns an ALREADY-PARSED dict — never json.loads() it. "
             "Params: {\"code\": \"from gagent_tools import web_search\\nrows = web_search(query='phage lysin')\\nprint(rows)\", "
             "optional \"reset\": true|false}."
+        )
+    if delegate_task_enabled():
+        # General sub-agent delegation: same gate as get_all_tools()/tool_schemas
+        # so the entry is invisible (and the tool undiscoverable) when disabled.
+        tool_descriptions["delegate_task"] = (
+            "Hand ONE self-contained, long-horizon workflow to an ISOLATED sub-agent and get back "
+            "only a summary plus artifact paths — the sub-agent keeps its own context, does not see "
+            "this conversation, and its transcript never enters yours. "
+            "Use it for long self-contained work you do not need to watch (multi-file refactors, "
+            "audit-and-repair passes, bulk literature or accession sweeps). "
+            "Division of labor: code_executor hands off a CODING task to the pi harness; execute_code "
+            "is YOU writing Python in a kernel you keep using; delegate_task hands off a GOAL. "
+            "Do NOT use it for a single query or two tool calls, for read-only checking/counting/"
+            "printing of results you already have, when you must judge the intermediate results "
+            "yourself, when you need the current kernel state, or when the code itself is the "
+            "deliverable (use code_executor). Calls run one at a time — no parallel fan-out. "
+            "Params: {\"goal\": \"audit every Python file under data/pipeline for the removed "
+            "pandas.append API, fix it, and report the changed files\", optional "
+            "\"deliverable\": \"patched files + report\", \"context_paths\": [\"data/pipeline\"]}. "
+            "Returns {summary, artifact_paths, usage, trace_ref}; raw stdout/stderr is never returned."
         )
 
     tools_desc = []

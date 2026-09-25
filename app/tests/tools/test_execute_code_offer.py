@@ -15,6 +15,7 @@ from app.tests.tools.test_native_tool_schemas import (
     ALL_NATIVE_TOOLS,
     GOLDEN_PATH,
     _normalized,
+    without_gated_tools,
 )
 from tool_box.tools_impl.execute_code import execute_code_handler
 
@@ -43,9 +44,15 @@ def _names(schemas) -> list:
 
 
 def test_off_golden_master_byte_identical(_code_mode_off):
+    # The fixture records the all-gates-off payload; without_gated_tools() drops
+    # whichever other env-gated entries happen to be enabled in this shell.
     payload = {
-        "build_tool_schemas_all20": tool_schemas.build_tool_schemas(ALL_NATIVE_TOOLS),
-        "build_executor_tool_schemas": tool_schemas.build_executor_tool_schemas(),
+        "build_tool_schemas_all20": without_gated_tools(
+            tool_schemas.build_tool_schemas(ALL_NATIVE_TOOLS)
+        ),
+        "build_executor_tool_schemas": without_gated_tools(
+            tool_schemas.build_executor_tool_schemas()
+        ),
         "executor_available_tools": tool_schemas.EXECUTOR_AVAILABLE_TOOLS,
     }
     assert _normalized(payload) == GOLDEN_PATH.read_text(encoding="utf-8")

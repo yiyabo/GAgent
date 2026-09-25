@@ -1091,12 +1091,14 @@ class RequestTierProfile:
 def get_all_tools() -> List[str]:
     """Return the flat tool pool — all tools always available."""
     tools = list(ALL_TOOLS)
-    # Code mode (execute_code) joins the pool only when explicitly enabled;
-    # the schema-offer gate lives in app/services/tool_schemas.py.
-    from app.services.tool_schemas import code_mode_enabled
+    # Env-gated tools join the pool only when explicitly enabled; the
+    # schema-offer gate lives in app/services/tool_schemas.py.
+    from app.services.tool_schemas import code_mode_enabled, delegate_task_enabled
 
     if code_mode_enabled():
         tools.append("execute_code")
+    if delegate_task_enabled():
+        tools.append("delegate_task")
     return tools
 
 

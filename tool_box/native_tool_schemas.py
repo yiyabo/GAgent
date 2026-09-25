@@ -1008,6 +1008,77 @@ NATIVE_TOOL_CONTENT: Dict[str, Dict[str, Any]] = {
             "required": ["code"],
         },
     },
+    "delegate_task": {
+        # 2026-09-25 子 Agent 委派面 S2：env 门控（DELEGATE_TASK_ENABLED=1）——未开启时
+        # app/services/tool_schemas.py 在注册表构建期跳过本条目，golden-master 零变更。
+        # 描述与参数镜像 tool_box/tools_impl/delegate_task.py 的基础定义（有意保持同步，
+        # 由 test_native_tool_schemas.py 的漂移锁 test_drift_merged_entries_track_impl_truth 钉住零漂移）。
+        "description": (
+            "Hand one self-contained, long-horizon workflow to an ISOLATED sub-agent and "
+            "get back only a summary plus artifact paths. The sub-agent runs in its own "
+            "session with its own tool loop: it does not see this conversation, and its "
+            "transcript never enters your context. Use it when the work is long, "
+            "self-contained, and you do not need to watch the intermediate steps "
+            "(multi-file refactors, audit-and-repair passes, bulk literature or accession "
+            "sweeps, 'take this dataset and produce X end to end'). "
+            "Division of labor: delegate_task (this tool) hands off a whole GOAL and shows "
+            "only the result; code_executor hands off a CODING task to the pi coding "
+            "harness (it writes and debugs the code) and returns its execution result; "
+            "execute_code is YOU writing Python that calls tools as functions in a kernel "
+            "you keep using. "
+            "Do NOT use delegate_task when: one tool call or two already answers the "
+            "question (call them directly); you must read or judge the intermediate "
+            "results yourself (use the tools, or execute_code when you need fan-out); you "
+            "need to reuse the current kernel's state (use execute_code); the goal is "
+            "'write code that does X' and you want the code back (use code_executor); the "
+            "goal is read-only checking, counting/printing, or verifying results you "
+            "already have (that takes seconds here and a whole agent run there); or the "
+            "goal depends on implicit context from this conversation that you cannot write "
+            "down in goal. Calls run one at a time — there is no parallel fan-out. "
+            "Good: goal='Audit every Python file under data/pipeline for calls to the "
+            "removed pandas.append API, fix them, and report the changed files', "
+            "deliverable='patched files + a markdown report listing every change', "
+            "context_paths=['data/pipeline']. "
+            "Bad: goal='count the rows in data/submissions.csv' — file_operations or "
+            "result_interpreter answers that in one call, while delegating pays a full "
+            "agent run for a one-line answer. "
+            "Returns summary (hard-capped), artifact_paths, usage, and trace_ref; raw CLI "
+            "stdout/stderr is never returned, so inspect the run through trace_ref "
+            "(run id plus absolute log paths) when you really need the detail."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "goal": {
+                    "type": "string",
+                    "description": (
+                        "What must be accomplished, written as a self-contained brief: the "
+                        "sub-agent cannot see this conversation, so name the inputs, the "
+                        "expected outcome, and any constraint that matters."
+                    ),
+                },
+                "deliverable": {
+                    "type": "string",
+                    "description": (
+                        "Optional: the shape of the expected result and how you will accept "
+                        "it (files, formats, must-cover points). Free text; it is passed to "
+                        "the sub-agent verbatim."
+                    ),
+                },
+                "context_paths": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "maxItems": 20,
+                    "description": (
+                        "Optional directories the sub-agent may READ (absolute or "
+                        "project-root-relative). Pass directories, not single files; "
+                        "non-directory or non-existent entries are ignored by the runtime."
+                    ),
+                },
+            },
+            "required": ["goal"],
+        },
+    },
     "terminal_session": {
         # native 有意收窄：impl 另有 ssh_config/cols/rows/approval_id/approved/limit 外的多项（start_ts/end_ts/event_type）—— 有意调优（参数面收窄）
         "description": (

@@ -718,3 +718,30 @@ def test_execute_code_catalog_entry_absent_when_code_mode_disabled(monkeypatch) 
     monkeypatch.delenv("CODE_MODE_ENABLED", raising=False)
     prompt = _code_mode_agent()._build_system_prompt()
     assert "- execute_code:" not in prompt
+
+
+def _delegation_agent() -> DeepThinkAgent:
+    return DeepThinkAgent(
+        llm_client=SimpleNamespace(),
+        available_tools=["delegate_task"],
+        tool_executor=_noop_tool_executor,
+        request_profile={"request_tier": "execute", "intent_type": "execute_task"},
+    )
+
+
+def test_delegate_task_catalog_entry_present_when_delegation_enabled(monkeypatch) -> None:
+    monkeypatch.setenv("DELEGATE_TASK_ENABLED", "1")
+    prompt = _delegation_agent()._build_system_prompt()
+    assert "- delegate_task:" in prompt
+    assert "ISOLATED sub-agent" in prompt
+    # Lane split + the "when not to use" block both have to reach the legacy
+    # catalog, otherwise the model judges delegation from its name alone.
+    assert "code_executor hands off a CODING task" in prompt
+    assert "execute_code is YOU writing Python" in prompt
+    assert "Do NOT use it for a single query" in prompt
+
+
+def test_delegate_task_catalog_entry_absent_when_delegation_disabled(monkeypatch) -> None:
+    monkeypatch.delenv("DELEGATE_TASK_ENABLED", raising=False)
+    prompt = _delegation_agent()._build_system_prompt()
+    assert "- delegate_task:" not in prompt

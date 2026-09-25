@@ -29,10 +29,18 @@ GOLDEN_PATH = (
     PROJECT_ROOT / "app" / "tests" / "tools" / "fixtures" / "native_schemas_golden.json"
 )
 
-# Env-gated entry: registered/offered only when CODE_MODE_ENABLED=1 (see
+# Env-gated entries: registered/offered only when their flag is set (see
 # app/services/tool_schemas.py::_build_registry). Kept out of ALL_NATIVE_TOOLS so
-# the list below stays the gate-off (production default) tool set.
+# the list below stays the all-gates-off (production default) tool set.
 GATED_CODE_MODE_TOOL = "execute_code"
+GATED_DELEGATE_TOOL = "delegate_task"
+
+# name -> flag reader. The golden fixture records the all-gates-off payload, so
+# both the expectation and the comparison filter read the same switches.
+GATED_NATIVE_TOOLS = {
+    GATED_CODE_MODE_TOOL: tool_schemas.code_mode_enabled,
+    GATED_DELEGATE_TOOL: tool_schemas.delegate_task_enabled,
+}
 
 ALL_NATIVE_TOOLS = [
     "bio_tools",
@@ -66,46 +74,47 @@ def _normalized(payload: Any) -> str:
 def _expected_native_tools() -> list[str]:
     """Native tool set the registry exposes in *this* environment.
 
-    ``execute_code`` is env-gated exactly like the registry build is: the
-    expectation has to read the same switch, not assume the default-off shape.
+    Env-gated entries are gated exactly like the registry build is: the
+    expectation has to read the same switches, not assume the default-off shape.
     """
     names = list(ALL_NATIVE_TOOLS)
-    if tool_schemas.code_mode_enabled():
-        names.append(GATED_CODE_MODE_TOOL)
+    names.extend(name for name, enabled in GATED_NATIVE_TOOLS.items() if enabled())
     return names
 
 
-def _without_gated_code_mode(schemas: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
-    """Drop the env-gated ``execute_code`` envelope from a built payload.
+def without_gated_tools(schemas: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
+    """Drop the env-gated envelopes from a built payload.
 
-    The golden fixture records the gate-off payload (``execute_code`` absent),
-    so the recorded bytes stay the contract: under ``CODE_MODE_ENABLED=1`` the
-    same comparison holds once exactly the gated entry is removed. The gated
-    entry's presence is asserted separately in the caller, so this filter can
-    never silently swallow an unexpected extra tool.
+    The golden fixture records the all-gates-off payload (no gated entry), so
+    the recorded bytes stay the contract: under an enabled flag the same
+    comparison holds once exactly the enabled gated entries are removed. Each
+    gated entry's presence is asserted separately in the callers, so this filter
+    can never silently swallow an unexpected extra tool.
     """
+    gated = {name for name, enabled in GATED_NATIVE_TOOLS.items() if enabled()}
     return [
-        schema
-        for schema in schemas
-        if schema["function"]["name"] != GATED_CODE_MODE_TOOL
+        schema for schema in schemas if schema["function"]["name"] not in gated
     ]
 
 
 def test_native_schemas_match_golden_master() -> None:
     all_schemas = build_tool_schemas(ALL_NATIVE_TOOLS)
     executor_schemas = build_executor_tool_schemas()
-    code_mode_on = tool_schemas.code_mode_enabled()
+    all_names = [s["function"]["name"] for s in all_schemas]
+    executor_names = [s["function"]["name"] for s in executor_schemas]
 
-    # Gate check first: execute_code must be offered iff the flag is on, so the
-    # filter below can only ever remove the env-gated entry.
-    assert (GATED_CODE_MODE_TOOL in [s["function"]["name"] for s in all_schemas]) is code_mode_on
-    assert (
-        GATED_CODE_MODE_TOOL in [s["function"]["name"] for s in executor_schemas]
-    ) is code_mode_on
+    # Gate check first: a gated tool must be offered iff its flag is on, so the
+    # filter below can only ever remove an env-gated entry.
+    assert (GATED_CODE_MODE_TOOL in all_names) is tool_schemas.code_mode_enabled()
+    assert (GATED_CODE_MODE_TOOL in executor_names) is tool_schemas.code_mode_enabled()
+    assert (GATED_DELEGATE_TOOL in all_names) is tool_schemas.delegate_task_enabled()
+    # delegate_task is the chat-side delegation surface: the plan-executor pool
+    # stays static (plan tasks delegate through PlanExecutor's own path).
+    assert GATED_DELEGATE_TOOL not in executor_names
 
     payload = {
-        "build_tool_schemas_all20": _without_gated_code_mode(all_schemas),
-        "build_executor_tool_schemas": _without_gated_code_mode(executor_schemas),
+        "build_tool_schemas_all20": without_gated_tools(all_schemas),
+        "build_executor_tool_schemas": without_gated_tools(executor_schemas),
         "executor_available_tools": EXECUTOR_AVAILABLE_TOOLS,
     }
     golden = GOLDEN_PATH.read_text(encoding="utf-8")
@@ -189,6 +198,7 @@ def test_drift_merged_entries_track_impl_truth() -> None:
     """
     from tool_box import native_tool_schemas
     from tool_box.tools_impl import (
+        delegate_task_tool,
         graph_rag_tool,
         manuscript_writer_tool,
         phagescope_research_tool,
@@ -212,6 +222,7 @@ def test_drift_merged_entries_track_impl_truth() -> None:
         ("sequence_fetch", sequence_fetch_tool),
         ("url_fetch", url_fetch_tool),
         ("graph_rag", graph_rag_tool),
+        ("delegate_task", delegate_task_tool),
     ]:
         assert set(native_props(name)) == set(impl_props(tool)), name
         for param, spec in impl_props(tool).items():
@@ -258,3 +269,7 @@ def test_drift_merged_entries_track_impl_truth() -> None:
 
     # code_executor: no guidance pointing at bio_tools (never available on this platform).
     assert "bio_tools" not in content["code_executor"]["description"]
+
+    # delegate_task: the native content mirrors the impl definition verbatim (the
+    # mirrored description is the drift surface a reviewer would otherwise miss).
+    assert content["delegate_task"]["description"] == delegate_task_tool["description"]

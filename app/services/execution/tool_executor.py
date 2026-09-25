@@ -46,6 +46,9 @@ class UnifiedToolExecutor:
     TOOL_TIMEOUTS = {
         "code_executor": 7200,
         "execute_code": 420,
+        # A delegated long-horizon workflow runs a code-agent CLI inside: same
+        # envelope as the code_executor call it drives.
+        "delegate_task": 7200,
         "web_search": 180,
         "sequence_fetch": 120,
         "url_fetch": 180,

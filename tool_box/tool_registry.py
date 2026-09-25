@@ -33,11 +33,13 @@ from .tools_impl import (
     url_fetch_tool,
     terminal_session_tool,
     execute_code_tool,
+    delegate_task_tool,
     load_skill_tool,
     vision_reader_tool,
     web_search_tool,
 )
 from .bio_tools import bio_tools_tool
+from .tools_impl.delegate_task import delegate_task_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +121,9 @@ _TOOL_METADATA: Dict[str, Dict[str, Any]] = {
     "execute_code": {
         "search_hint": "python programmatic tool calling loop batch kernel code mode",
     },
+    "delegate_task": {
+        "search_hint": "delegate subagent isolated long horizon workflow hand off goal",
+    },
     "terminal_session": {
         "is_destructive": True,
         "search_hint": "ssh terminal shell remote command server",
@@ -178,6 +183,7 @@ _STANDARD_TOOLS: List[Dict[str, Any]] = [
     plan_operation_tool,
     deliverable_submit_tool,
     execute_code_tool,
+    delegate_task_tool,
     load_skill_tool,
 ]
 
@@ -225,15 +231,31 @@ def _extract_registration_kwargs(tool_def: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+# Env-gated definitions: absent from the runtime registry unless the flag is on,
+# so they cannot be discovered or dispatched while disabled.
+_GATED_TOOLS = {
+    "delegate_task": delegate_task_enabled,
+}
+
+
+def _is_enabled(tool_def: Dict[str, Any]) -> bool:
+    gate = _GATED_TOOLS.get(str(tool_def.get("name") or ""))
+    return True if gate is None else bool(gate())
+
+
 def register_all_tools() -> None:
     """Register every built-in tool from the declarative definitions."""
-    for tool_def in _STANDARD_TOOLS:
+    enabled: List[Dict[str, Any]] = []
+    skipped: List[str] = []
+    for tool_def in _STANDARD_TOOLS + _CUSTOM_TOOLS:
+        if _is_enabled(tool_def):
+            enabled.append(tool_def)
+        else:
+            skipped.append(str(tool_def["name"]))
+
+    for tool_def in enabled:
         register_tool(**_extract_registration_kwargs(tool_def))
 
-    for tool_def in _CUSTOM_TOOLS:
-        register_tool(**_extract_registration_kwargs(tool_def))
-
-    logger.info(
-        "Registered %d built-in tools",
-        len(_STANDARD_TOOLS) + len(_CUSTOM_TOOLS),
-    )
+    logger.info("Registered %d built-in tools", len(enabled))
+    if skipped:
+        logger.info("Skipped env-gated tools: %s", ", ".join(skipped))
