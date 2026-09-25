@@ -28,7 +28,7 @@
 
 后端 172k 行 Python 中存在 **13 个 ≥2000 行的巨无霸文件**（合计 ~44k 行，占 26%）。它们有**同一个病灶**：每个文件都是"协议翻译层"，在逐 feature 层积中把协议数据、元数据、编排状态机、领域特化逻辑缝进单一文件。其中 **6 个文件拆分条件已成熟**（星型调用拓扑 + 厚测试网 + 已验证的门面迁移模式可整体复用），**4 处同语义重复已实证到字节级**，**3 类层级倒置**需在拆分中一并消除。
 
-推荐节奏：**五个波次、每波独立上线独立回滚**，风险升序：code_executor → phagescope/publisher → manuscript_writer → plan_routes/artifact_routes → plan_executor+task_verification → agent.py 收尾。bio_tools_handler 按用户拍板**冻结不投入**（本平台永不上线 bio-tools）。全部走 §3 的"拆分八步法"（deep_think 拆透已验证的同一套打法）。
+推荐节奏：**五个波次、每波独立上线独立回滚**，风险升序：code_executor → phagescope/publisher → manuscript_writer → plan_routes/artifact_routes → plan_executor+task_verification → agent.py 收尾。bio_tools_handler **暂缓投入**（用户 2026-09-25 更正：本平台**当前**服务器带不动 bio-tools，是"现在没用"而非"以后没用"——模块与随附 Guide 文档一律保留，恢复投入前先与 `tools_config.json` 对账）。全部走 §3 的"拆分八步法"（deep_think 拆透已验证的同一套打法）。
 
 ---
 
@@ -61,7 +61,7 @@
 | 10 | `app/services/deep_think/controller.py` | 2337 | 已拆一轮（编排 221 行 + 8 阶段帮手） | 全量 chat | 🔍 观察 | 本轮刚拆透，暂不再动 |
 | 11 | `app/routers/chat/request_routing.py` | 2160 | 大函数簇 | 79 用例 | 🔍 下一批评估 | 路由/意图判定层积 |
 | 12 | `app/services/deliverables/publisher.py` | 2036 | 线性管道 | ~50 用例 | ✅ 成熟（内部自由度最高） | 多来源发布状态机 |
-| 13 | `tool_box/bio_tools/bio_tools_handler.py` | 2068 | 星型 | 44 用例 | ⛔ **冻结**（用户拍板：bio-tools 本平台永不上线） | — |
+| 13 | `tool_box/bio_tools/bio_tools_handler.py` | 2068 | 星型 | 44 用例 | ⏸ **暂缓**（用户 2026-09-25 更正：本平台当前带不动，非永久弃用；模块与 Guide 文档保留） | — |
 
 第二梯队（1300-2000，规划外备查）：`guardrail_handlers` 1937、`literature_pipeline` 1862、`llm.py` 1809、`deep_think_agent.py` 1785（门面，健康）、`file_operations` 1763、`plan_tools` 1714、`plan_repository` 1708、`artifact_routes` 1707（并入 #7 一并处理）。
 

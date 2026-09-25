@@ -1,5 +1,15 @@
 # Bio-Tools Documentation Guide
 
+> ⚠️ **STALENESS WARNING — 恢复投入前必读（2026-09-25 对账结果）**
+>
+> 本目录是 bio_tools **暂缓期间保留下来的参考材料**（模块当前未在本平台启用，但并非永久弃用）。它与配置真源 `tool_box/bio_tools/tools_config.json` 已出现漂移，按现状直接使用会踩坑：
+>
+> - **15/30** 个工具页写的 Docker image 与 `tools_config.json` 不一致（prodigal / megahit / concoct / das_tool / maxbin2 / metabat2 / minimap2 / nextflow / ngmlr / samtools / sniffles2 / trim_galore / iphop / vibrant / virsorter2）
+> - `dorado`、`hmmer` 在配置里存在但**无文档**；`htstream` 有文档但**未配置**
+> - 下方 Tool Status 计数与上表正文不一致（正文 25 行 ✅），且曾有一处指向不存在页面的死链
+>
+> **以 `tools_config.json` 为唯一真源**；重新启用本模块时，请先按它逐页对账镜像/参数，再信任本目录。`core/`、`phage/`、`binning/`、`assembly/`、`annotation/`、`taxonomy/` 各页的**命令示例**仍有参考价值。
+
 ## 📚 Overview
 
 This directory contains documentation for all bio-informatics tools available in the GAgent platform. Each tool is documented with:
@@ -40,7 +50,7 @@ Bacteriophage prediction, annotation, and analysis
 | **geNomad** | 1.7.6 | Phage/plasmid prediction (ML-based) | [Guide](phage/genomad.md) | ⚠️ High resources |
 | **CheckV** | 1.0.1 | Phage quality assessment | [Guide](phage/checkv.md) | ✅ Documented |
 | **VirSorter2** | 2.2.4 | Phage prediction (ML-based) | [Guide](phage/virsorter2.md) | ✅ Documented |
-| **pharokka** | 1.7.3 | Phage genome annotation | [Guide](phage/pharokka.md) | TODO |
+| **pharokka** | 1.7.3 | Phage genome annotation | _page not written (not a configured tool)_ | TODO |
 | **VIBRANT** | 1.2.1 | Phage prediction (HMM-based) | [Guide](phage/vibrant.md) | TODO |
 
 ### Metagenome Binning
@@ -127,8 +137,10 @@ When adding a new tool:
 
 ## 📊 Tool Status
 
+> 下表计数已过期（与上方分类表不一致），以分类表为准，见文件头的 STALENESS WARNING。
+
 | Status | Count | Description |
 |--------|-------|-------------|
-| ✅ Documented | 1 | seqkit |
+| ✅ Documented | see category tables above | 31 tool pages |
 | 🚧 In Progress | 0 | - |
-| 📝 TODO | 9 | See table above |
+| 📝 TODO | see `tools_config.json` | `dorado`、`hmmer` 有配置无文档 |
