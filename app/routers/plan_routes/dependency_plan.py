@@ -33,29 +33,6 @@ def _facade() -> Any:
     return facade
 
 
-def _build_dependency_block_reason(
-    task_id: int,
-    *,
-    tree: "PlanTree",
-    incomplete_dependencies: List[int],
-    state_by_task: Dict[int, Dict[str, Any]],
-) -> str:
-    parts: List[str] = []
-    for dep_id in incomplete_dependencies:
-        node = tree.nodes.get(dep_id)
-        dep_state = state_by_task.get(dep_id) or {}
-        dep_status = str(dep_state.get("effective_status") or "pending").strip().lower() or "pending"
-        if node is None:
-            parts.append(f"#{dep_id}({dep_status})")
-        else:
-            parts.append(f"#{dep_id}({dep_status})")
-    incomplete_display = ", ".join(parts)
-    return (
-        f"Blocked by dependencies: task #{task_id} requires completed outputs from "
-        f"{len(incomplete_dependencies)} dependency task(s): {incomplete_display}."
-    )
-
-
 def _expected_deliverables_for_node(node: Any) -> List[str]:
     metadata = node.metadata if isinstance(getattr(node, "metadata", None), dict) else {}
     criteria = metadata.get("acceptance_criteria")

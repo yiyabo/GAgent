@@ -81,20 +81,6 @@ def _discover_sibling_context_path(
     return None
 
 
-def _take_unique(items: Iterable[str], *, limit: int) -> List[str]:
-    seen: set[str] = set()
-    out: List[str] = []
-    for item in items:
-        value = str(item or "").strip()
-        if not value or value in seen:
-            continue
-        seen.add(value)
-        out.append(value)
-        if len(out) >= limit:
-            break
-    return out
-
-
 def _review_study_card_excerpt(card: Dict[str, Any]) -> str:
     findings = "; ".join(card.get("quantitative_findings") or []) or "Not available"
     limitations = "; ".join(card.get("limitations") or []) or "Not available"

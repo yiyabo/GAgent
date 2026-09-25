@@ -100,7 +100,6 @@ from .evidence import (
     _render_coverage_markdown,
     _render_study_matrix,
     _review_study_card_excerpt,
-    _take_unique,
     _validate_review_abstract_contract,
 )
 from .llm_bridge import (
@@ -160,7 +159,6 @@ from .prompts import (
 )
 from .rubrics import (
     _apply_release_consistency_report,
-    _average_score,
     _build_release_consistency_report,
     _default_section_list,
     _exemplar_style_enabled,

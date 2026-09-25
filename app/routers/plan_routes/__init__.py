@@ -57,7 +57,6 @@ from app.services.request_principal import ensure_owner_access, get_request_owne
 from .. import register_router
 from .dependency_plan import (
     _build_dependency_block_details,
-    _build_dependency_block_reason,
     _build_execution_checklist_items,
     _build_execution_dependency_plan,
     _collect_subtree_node_ids,

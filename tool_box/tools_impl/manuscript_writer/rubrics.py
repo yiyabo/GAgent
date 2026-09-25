@@ -41,11 +41,6 @@ def _weighted_score(
     return weighted_sum / total_weight
 
 
-def _average_score(scores: Dict[str, Any]) -> float:
-    """Backward-compatible unweighted average."""
-    return _weighted_score(scores)
-
-
 def _extract_markdown_citekeys(text: str) -> List[str]:
     """Extract citekeys from Markdown citekey syntax, including grouped citations."""
     if not text:
