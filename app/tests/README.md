@@ -6,6 +6,8 @@
 - Chat layer: `pytest -q app/tests/chat`
 - Tools layer: `pytest -q app/tests/tools`
 - Paper layer: `pytest -q app/tests/paper`
+- Context layer: `pytest -q app/tests/context`
+- Artifacts layer: `pytest -q app/tests/artifacts`
 - Integration layer: `pytest -q app/tests/integration -m integration`
 - Production smoke layer: `pytest -q app/tests/smoke -m prod_smoke`
 - E2E layer (real LLM): `pytest -q app/tests/e2e -m external`
@@ -17,20 +19,20 @@
 - `app/tests/chat`: chat routing, DeepThink, action execution, cascade behavior, and chat guardrails
 - `app/tests/tools`: tool execution, code executor, terminal, phagescope, bio tools, interpreters, and tool I/O
 - `app/tests/paper`: literature/manuscript/review-pack and paper-specific pipelines
+- `app/tests/context`: context-window budgeting and sample-adequacy contracts
+- `app/tests/artifacts`: artifact streaming contracts
 - `app/tests/integration`: real-app integration coverage
 - `app/tests/smoke`: startup and production-oriented smoke checks
-- `app/tests/e2e`: end-to-end tests with real LLM calls (marked `external`, run nightly)
+- `app/tests/e2e`: end-to-end tests with real LLM calls (marked `external`, run manually)
 
 Legacy/reference test suites remain outside the default Python test entrypoint:
 
-- `reference/GAgent/...`
-- `execute_memory/A-mem-main/tests/...`
+- `reference/GAgent/...` — optional local checkout, gitignored
 
 Manual verification scripts are no longer treated as pytest tests:
 
 - `scripts/run_amem_integration_check.py`
 - `tool_box/bio_tools/run_bio_tools_complete.py`
-- `scripts/dev_tmp/*.py`
 
 ## Naming And Placement Rules
 
@@ -61,6 +63,19 @@ All Python tests must use the file pattern `test_<area>_<behavior>.py`.
 - `realtime_*`: realtime bus primitives
 - `command_*`: command filtering/safety classification
 - `layout_*`: meta-tests that enforce test-suite structure
+- `artifact_*`: artifact document rendering (docx/pdf)
+- `compliance_*`: compliance guardrails
+- `conversation_*`: conversation-quality snapshot, evaluator, and repository
+- `log_*`: logging context/OTel and log-file persistence
+- `platform_*`: platform access boundaries
+- `project_*`: project data roots, embedding billing, LLM credentials
+- `qwen_*`: qwen runtime cleanup
+- `route_*`: route helper limits
+- `sqlite_*`: SQLite pragma behavior
+- `sso_*`: SSO handoffs and user sync
+
+`app/tests/unit/test_layout_conventions.py::_ALLOWED_UNIT_PREFIXES` is the
+enforcing source of truth; update both together.
 
 If a test file needs a prefix outside this list, first ask whether it belongs in `unit/` at all.
 
@@ -72,9 +87,16 @@ If a test file needs a prefix outside this list, first ask whether it belongs in
 
 ## CI split
 
-- PR: run everything except `prod_smoke` and `external`
-- Nightly/manual: run `prod_smoke` with coverage reporting
-- Nightly E2E: run `external` with real LLM API keys (`.github/workflows/nightly-e2e.yml`)
+`.github/workflows/ci.yml` is the only workflow. On every push to `main` and on
+every PR it installs `requirements-ci.txt` and runs the unit layer only:
+
+```bash
+python -m pytest app/tests/unit -q
+```
+
+- Local before a PR: `pytest -q app/tests -m "not external and not prod_smoke"`
+- `prod_smoke` and `external` are not wired into CI; run them manually against
+  an isolated instance with real credentials
 
 ## E2E Test Environment Variables
 

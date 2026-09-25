@@ -35,6 +35,19 @@ Use `test_<prefix>_<behavior>.py`, where `<prefix>` is one of:
 - `realtime`
 - `command`
 - `layout`
+- `artifact`
+- `compliance`
+- `conversation`
+- `log`
+- `platform`
+- `project`
+- `qwen`
+- `route`
+- `sqlite`
+- `sso`
+
+`test_layout_conventions.py::_ALLOWED_UNIT_PREFIXES` is the enforcing source of
+truth; update both together.
 
 Examples:
 
