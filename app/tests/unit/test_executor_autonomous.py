@@ -288,10 +288,15 @@ class TestSmartThrottle:
 class TestResultContextExpansion:
     def test_dep_context_max_length_is_4000(self):
         """Verify the dep context summarization uses 4000 chars."""
-        import app.services.plans.plan_executor as mod
         import inspect
 
-        source = inspect.getsource(mod)
+        import app.services.plans.executor_deepthink as deepthink_mod
+        import app.services.plans.plan_executor as mod
+
+        # `_run_task_with_deep_think`, which builds the dependency_outputs
+        # context, moved to the executor_deepthink sibling in the W4 split;
+        # the source-shape guard follows the code.
+        source = inspect.getsource(mod) + inspect.getsource(deepthink_mod)
         # The old value was 1200, new should be 4000
         assert "max_length=4000" in source
         assert "max_length=1200" not in source
