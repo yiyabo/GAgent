@@ -7,17 +7,29 @@ used by ``app/routers/__init__.py``.
 
 Package layout:
 
-- ``schemas.py``   Pydantic DTOs (pure data)
+- ``schemas.py``         Pydantic DTOs (pure data)
+- ``session_dirs.py``    session directory discovery, path safety, deliverable roots
+- ``deliverable_store.py`` deliverable manifest/version read model, hidden prefixes, item walker
+- ``rendering.py``       LaTeX/PDF, docx and Markdown rendering (subprocess + HTML)
+- ``batch.py``           batch-download resolution (zip payload collection)
 
 The HTTP endpoints, the router and registration stay in this facade, and every
 original module-level name is re-exported here (private names included), so
 ``from app.routers.artifact_routes import X`` and ``artifact_routes.X`` access
 keep working unchanged. Sibling modules must not import facade names at import
 time: the names tests patch (``RUNTIME_DIR``, ``INFO_SESSIONS_DIR``,
-``MAMMOTH_AVAILABLE``, ``mammoth``, ``get_deliverable_settings``,
-``_ensure_session_access``, ``_load_hidden_artifact_prefixes``,
-``_resolve_session_dir``, ``_workspace_root``, ...) are read through the facade
-at call time (``from .. import artifact_routes as facade``).
+``MARKDOWN_AVAILABLE``, ``markdown``, ``MAMMOTH_AVAILABLE``, ``mammoth``,
+``get_deliverable_settings``, ``_ensure_session_access``,
+``_load_hidden_artifact_prefixes``, ``_resolve_session_dir``,
+``_workspace_root``) are read through the facade at call time
+(``from .. import artifact_routes as facade``).
+
+The two former module-level router->router imports
+(``.chat.artifact_gallery.is_image_artifact_path``,
+``.chat.subject_identity._workspace_root``, layer-inversion L3) are now lazy
+delegates defined below: the import edge happens on first call instead of at
+import time, while both names stay resolvable facade attributes so
+``monkeypatch.setattr(artifact_routes, "_workspace_root", ...)`` keeps working.
 """
 
 from __future__ import annotations
@@ -38,8 +50,6 @@ from app.services.request_principal import ensure_owner_access
 from app.services.session_paths import normalize_session_base
 
 from .. import register_router
-from ..chat.artifact_gallery import is_image_artifact_path
-from ..chat.subject_identity import _workspace_root
 from .batch import _collect_batch_files
 from .deliverable_store import (
     _iter_items,
@@ -112,6 +122,24 @@ RUNTIME_DIR = Path(__file__).parent.parent.parent.parent.resolve() / "runtime"
 INFO_SESSIONS_DIR = Path(__file__).parent.parent.parent.parent.resolve() / "data" / "information_sessions"
 
 router = APIRouter(prefix="/artifacts", tags=["artifacts"])
+
+
+# Layer-inversion L3: the two former router->router imports are lazy delegates.
+# The import edge now happens on first call, while both names stay module
+# attributes so ``monkeypatch.setattr(artifact_routes, "_workspace_root", ...)``
+# (test_artifact_routes.py:187/441/464) keeps working.
+def is_image_artifact_path(path: Any) -> bool:
+    """Lazy re-export of ``chat.artifact_gallery.is_image_artifact_path``."""
+    from ..chat.artifact_gallery import is_image_artifact_path as _impl
+
+    return _impl(path)
+
+
+def _workspace_root() -> Path:
+    """Lazy re-export of ``chat.subject_identity._workspace_root``."""
+    from ..chat.subject_identity import _workspace_root as _impl
+
+    return _impl()
 
 
 @router.get("/sessions/{session_id}", response_model=ArtifactListResponse)
