@@ -1,7 +1,26 @@
 # 后端巨无霸文件解耦重构主规划
 
-日期：2026-09-24。状态：**待评审（规划，不含代码变更）**。基线：`646ab4e7`。
+日期：2026-09-24。状态：**✅ 已完成（W0-W5 全部上线，2026-09-25，基线 `5b421110`）**。规划基线：`646ab4e7`。
 数据基础：7 路 file:line 级结构解剖（agent-17..23）+ 全量 wc -l 体检 + 重复块 diff 实证。
+
+## 完成状态（2026-09-25 收尾）
+
+| 波次 | 结果 | 门面行数 | 提交区间 |
+|---|---|---|---|
+| W0 准备 | D1/D2/D4/D5/D6 消重 + 17 个缺口测试 + metrics 基线 | — | `0348e796`…`d807f115` |
+| W1 code_executor | 6402 → 6 兄弟 | **1701** | `fb507e54`…`f04db1f9` |
+| W2 工具组 | phagescope 3307→11 兄弟；publisher 2036→6 兄弟 | **638 / 329** | `28cc2f8f`…`ee37fe60` |
+| W3 管道+路由 | manuscript_writer→包(9 兄弟)；plan_routes→包(5)；artifact_routes→包(5) | **183 / 1468 / 720** | `…3c22fd03` |
+| W4 计划域 | plan_executor 5376→6 兄弟；TV 4279→6；action_handlers 4480→5；action_execution 2767→2 | **1838 / 1406 / 1486 / 1787** | `e7803f7a`…`eef68c20` |
+| W5 收官 | agent.py 5646→10 兄弟 + D3 合并 + 5 相位切出 | **3686** | `65b49886`…`5b421110` |
+
+- **登记册结局**：D1/D2/D4/D5/D6（W0）✅ 已处理；**D13**（`_run_coroutine_sync`）✅ A 档合并（`f642c78b`）；**D3**（两套护栏链）✅ A 档合并为 `_run_response_guard_pipeline` + 8 个等效测试（`bedccdfb`）。
+- **D7/D8/D10/D11/D12 及 L2 剩余边：实证不等价或属语义合并，按登记册保持现状**，逐条证据见 `docs/LOCAL_INFRA.md` §43/§44。
+- **行为零变更证据**：全量 `app/tests` 失败集合 38=38 逐条 diff 为空（W0 前 → W5 后）；每波容器 import 冒烟 + HTTP 200 + 零 traceback；openapi（119 path）在 W3 前后字节级相同。
+- **未达理想值的门面**：plan_executor 1838 / action_handlers 1486 / action_execution 1787 / TV 1406 / agent.py 3686（含 1433 行的 `process_unified_stream` 与 1060 行 `run_agent`）——继续收敛均需先补黄金测试，各文件"下一步"已在下表登记。
+- **新增防治红线**（写入 `app/AGENTS.md` / `app/routers/chat/AGENTS.md` / `tool_box/AGENTS.md`）：单文件 ≤2500、搬名前必 grep patch 面、PEP 562 不能用于模块内 global 查找、SSE 事件序改动前必跑 `test_unified_stream_event_golden.py`。
+
+---
 
 ---
 
