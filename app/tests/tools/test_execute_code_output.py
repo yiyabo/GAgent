@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from tool_box.context import ToolContext
 from tool_box.tools_impl.execute_code import kernel as kernel_module
 from tool_box.tools_impl.execute_code import output as output_module
@@ -40,7 +42,8 @@ def test_truncate_stdout_head_tail_split_and_spill(tmp_path):
 
     spill_path = metadata.get("stdout_spill_path")
     assert spill_path, metadata
-    assert str(tmp_path) in spill_path  # under session scratch, never /tmp
+    # Spill lives under the scratch dir this call was handed (never elsewhere).
+    assert Path(spill_path).resolve().parent == (tmp_path / "spill").resolve()
     with open(spill_path, encoding="utf-8") as handle:
         spilled = handle.read()
     assert spilled == payload  # FULL text, not the truncated view
@@ -106,9 +109,16 @@ def test_oversized_stdout_truncates_and_spills_under_session_scratch(tmp_path):
     assert result["stdout_truncated"] is True
     spill_path = result.get("stdout_spill_path")
     assert spill_path
-    scratch = resolve_scratch_dir(ctx.work_dir)
-    assert spill_path.startswith(str(scratch))
-    assert "/tmp" not in spill_path
+    scratch = Path(resolve_scratch_dir(ctx.work_dir)).resolve()
+    session_root = Path(ctx.work_dir).resolve()
+    spilled = Path(spill_path).resolve()
+    # Containment, not a "/tmp" string match: on Linux pytest's tmp_path *is*
+    # /tmp/pytest-..., so "no /tmp in the path" only encoded the CI host's layout.
+    # What the pipeline must guarantee is that the spill never escapes the
+    # session: it has to be <work_dir>/scratch/code_mode/spill/<file>.
+    assert spilled.parent == (scratch / "spill").resolve()
+    assert scratch in spilled.parents
+    assert session_root in spilled.parents
     assert "file/document tools" in result["warning"]
 
 
