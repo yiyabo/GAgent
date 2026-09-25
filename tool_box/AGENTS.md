@@ -25,6 +25,7 @@ tool_box/
 | Skill loading | `tools_impl/load_skill.py` | On-demand full SKILL.md retrieval over `app/services/skills` (progressive disclosure; read-only, always on). |
 | PhageScope | `tools_impl/phagescope.py` + `phagescope_{protocol,normalize,transport,artifacts,taskid,batch}.py` + `phagescope_actions_{query,submit,batch,results,download}.py` | Thin dispatch facade (`phagescope_handler` + `phagescope_tool` schema). Protocol mappings, input normalization, remote transport, artifact locations, taskid resolution, batch/manifest orchestration, and every action branch live in siblings. Call siblings through the facade (`facade._name(...)`, runtime read) so tests that patch the facade namespace keep working. `_get_manifests_directory` intentionally stays defined in the facade. |
 | Bio tools | `bio_tools/` | Remote bioinformatics execution wrapper. |
+| Manuscript writing | `tools_impl/manuscript_writer/` | Package: `__init__.py` is the facade (≤250 lines) re-exporting every legacy name; `config`/`rubrics`/`prompts`/`paths`/`evidence`/`local_draft`/`llm_bridge`/`pipeline`/`schema` are siblings. Siblings read facade-patched names (`_PROJECT_ROOT`, `_RUNTIME_DIR`, `_chat`, `_build_llm_service`, `update_usage_context`) at call time via `_facade()` (`from .. import manuscript_writer as facade`). The `.manuscript_writer_<ts>` output dir name and the ~50-key success payload are string contracts. `pipeline.py` still holds the 1386-line handler with nested closures (pending split). |
 | Deliverables | `tools_impl/deliverable_submit.py` | Explicit artifact publication surface. |
 | Bio config | `bio_tools/tools_config.json` | Operation commands, images, parameters, schema source of truth. |
 
@@ -65,6 +66,7 @@ pytest app/tests/tools/test_execution_semantics_regressions.py -v
 
 ## SIZE BUDGETS
 - `tools_impl/code_executor.py` is a compatibility facade and handler; keep it below 2500 lines. Put backend configuration/local execution changes in `code_executor_backend.py` and preserve facade re-exports plus late-bound monkeypatch surfaces.
+- `tools_impl/manuscript_writer/__init__.py` is the package facade; keep it at or below 250 lines. Prompt/rubric/evidence/path/LLM-bridge changes belong in their sibling modules; keep the `_facade()` late-binding reads for patched names and preserve the `.manuscript_writer_<ts>` directory name. `_build_merge_prompt` is registered but has no production caller (tests only) — do not delete.
 - `tools_impl/phagescope.py` is a thin dispatch facade and handler; keep it below 700 lines. Action branches belong in `phagescope_actions_*.py`, protocol/normalization/transport/artifact/taskid/batch helpers in `phagescope_*.py` siblings. Preserve facade re-exports, direct private imports, and late-bound `facade.` patch surfaces. The `phagescope_tool` schema stays in the facade: `tool_registry` imports `tools_impl`, so moving the definition into `tool_registry` would create a partial-initialization import cycle.
 
 ## ANTI-PATTERNS
