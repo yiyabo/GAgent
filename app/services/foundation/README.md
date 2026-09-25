@@ -1,20 +1,20 @@
 Services Overview.
 
 Purpose:
-- Centralize environment and configuration access with `app.services.settings.get_settings()`.
+- Centralize environment and configuration access with `app.services.foundation.settings.get_settings()`.
 - Keep GLM Embeddings config in one place and reduce scattered `os.getenv` calls.
 
 Highlights:
 - Use `get_settings()` for all config (logging, DB, LLM, embeddings, cache sizes).
-- `app.services.config.get_config()` builds a typed GLM Embeddings config from settings.
+- `app.services.foundation.config.get_config()` builds a typed GLM Embeddings config from settings.
 - Embedding caches read sizes and persistence from settings (not environment).
 
 Preferred Imports:
 - LLM chat: `from app.llm import get_default_client`
-- LLM service: `from app.services.llm_service import get_llm_service`
+- LLM service: `from app.services.llm.llm_service import get_llm_service`
 - Embeddings: `from app.services.embeddings import get_embeddings_service`
-- Settings: `from app.services.settings import get_settings`
-- Embedding Config: `from app.services.config import get_config`
+- Settings: `from app.services.foundation.settings import get_settings`
+- Embedding Config: `from app.services.foundation.config import get_config`
 
 Env Vars (selected):
 - LOG_LEVEL, LOG_FORMAT
