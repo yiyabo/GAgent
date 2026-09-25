@@ -393,3 +393,84 @@ async def _stream_deterministic_execute(
                         save_err,
                     )
     return
+
+
+async def _stream_full_plan_delegate(
+    agent: Any,
+    *,
+    routing_decision: Any,
+    user_message: str,
+    event_sink: Optional[Callable[[Dict[str, Any]], Awaitable[None]]],
+    run_id: Optional[str],
+    log_delegation: bool,
+) -> AsyncIterator[str]:
+    """Stream the PlanExecutor delegation phase (full-plan 委派).
+
+    Moved out of ``process_unified_stream`` (W5c phase: full-plan).  Both
+    delegating branches (``routing_decision.full_plan_execution`` with a bound
+    plan, and the ``_full_plan_executor_delegate`` context flag) share this body;
+    they differ only in the ``logger.info`` that the routing branch emits before
+    the first delegated event, which is gated by ``log_delegation`` so the log
+    timing stays exactly as it was in each branch.
+
+    The delegate's own SSE events are forwarded verbatim, one per iteration.
+    """
+    if log_delegation:
+        logger.info(
+            "[CHAT][ROUTING][FULL_PLAN] Delegating to PlanExecutor plan_id=%s",
+            agent.plan_session.plan_id,
+        )
+    async for event in agent._run_full_plan_via_executor(
+        user_message=user_message,
+        routing_decision=routing_decision,
+        event_sink=event_sink,
+        run_id=run_id,
+    ):
+        yield event
+
+
+async def _stream_direct_image_response(
+    agent: Any,
+    *,
+    response_text: str,
+    response_metadata: Dict[str, Any],
+    event_sink: Optional[Callable[[Dict[str, Any]], Awaitable[None]]],
+) -> AsyncIterator[str]:
+    """Stream the direct image-reuse response phase (图片直出).
+
+    Moved out of ``process_unified_stream`` (W5c phase: 图片直出).  The caller
+    keeps the ``_build_recent_image_display_response`` call and its ``is not
+    None`` condition; this generator keeps the original order — persist (only
+    when a session and text exist), build the single ``final`` payload, hand it
+    to ``event_sink`` when present, then yield it as one SSE line.
+
+    Patch surface: ``_persist_runtime_context`` and ``_save_chat_message`` are
+    patched on the agent namespace by chat tests, so both are read through
+    ``_ag()`` at call time.
+    """
+    if agent.session_id and response_text:
+        try:
+            _ag()._persist_runtime_context(agent)
+            _ag()._save_chat_message(
+                agent.session_id,
+                "assistant",
+                response_text,
+                metadata=response_metadata,
+                model_provider=(agent.extra_context or {}).get("model_provider"),
+            )
+        except Exception as save_err:  # pragma: no cover - defensive
+            logger.warning(
+                "[CHAT][IMAGE_REUSE] Failed to save direct response: %s",
+                save_err,
+            )
+    payload = {
+        "type": "final",
+        "payload": {
+            "response": response_text,
+            "actions": [],
+            "metadata": response_metadata,
+        },
+    }
+    if event_sink is not None:
+        await event_sink(payload)
+    yield _sse_message(payload)

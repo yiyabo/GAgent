@@ -258,6 +258,8 @@ from .unified_stream import (
     _progress_label_from_phase,
     _progress_phase_from_step,
     _stream_deterministic_execute,
+    _stream_direct_image_response,
+    _stream_full_plan_delegate,
     _tool_progress_details,
     _truncate_progress_text,
 )
@@ -1382,17 +1384,15 @@ class StructuredChatAgent:
             routing_decision.full_plan_execution
             and self.plan_session.plan_id is not None
         ):
-            logger.info(
-                "[CHAT][ROUTING][FULL_PLAN] Delegating to PlanExecutor plan_id=%s",
-                self.plan_session.plan_id,
-            )
-            async for _fp_event in self._run_full_plan_via_executor(
-                user_message=effective_user_message,
+            async for chunk in _stream_full_plan_delegate(
+                self,
                 routing_decision=routing_decision,
+                user_message=effective_user_message,
                 event_sink=event_sink,
                 run_id=run_id,
+                log_delegation=True,
             ):
-                yield _fp_event
+                yield chunk
             return
 
         direct_image_response = _build_recent_image_display_response(
@@ -1402,32 +1402,13 @@ class StructuredChatAgent:
         )
         if direct_image_response is not None:
             response_text, response_metadata = direct_image_response
-            if self.session_id and response_text:
-                try:
-                    _persist_runtime_context(self)
-                    _save_chat_message(
-                        self.session_id,
-                        "assistant",
-                        response_text,
-                        metadata=response_metadata,
-                        model_provider=(self.extra_context or {}).get("model_provider"),
-                    )
-                except Exception as save_err:  # pragma: no cover - defensive
-                    logger.warning(
-                        "[CHAT][IMAGE_REUSE] Failed to save direct response: %s",
-                        save_err,
-                    )
-            payload = {
-                "type": "final",
-                "payload": {
-                    "response": response_text,
-                    "actions": [],
-                    "metadata": response_metadata,
-                },
-            }
-            if event_sink is not None:
-                await event_sink(payload)
-            yield _sse_message(payload)
+            async for chunk in _stream_direct_image_response(
+                self,
+                response_text=response_text,
+                response_metadata=response_metadata,
+                event_sink=event_sink,
+            ):
+                yield chunk
             return
 
         deterministic_execute = self._build_deterministic_execute_task_structured()
@@ -1448,13 +1429,15 @@ class StructuredChatAgent:
         # artifact manifest registration, task verification, and deliverable
         # publishing.
         if self.extra_context.get("_full_plan_executor_delegate"):
-            async for event in self._run_full_plan_via_executor(
-                user_message=effective_user_message,
+            async for chunk in _stream_full_plan_delegate(
+                self,
                 routing_decision=routing_decision,
+                user_message=effective_user_message,
                 event_sink=event_sink,
                 run_id=run_id,
+                log_delegation=False,
             ):
-                yield event
+                yield chunk
             return
 
         queue: asyncio.Queue[Any] = asyncio.Queue()
