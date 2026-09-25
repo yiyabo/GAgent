@@ -9,9 +9,61 @@ from typing import Any, Dict
 
 import pytest
 
+from app.services import path_router as path_router_module
 from app.services.deliverables.paper_builder import PaperBuilder
 from tool_box.tools_impl import manuscript_writer as manuscript_writer_module
 from tool_box.tools_impl import review_pack_writer as review_pack_writer_module
+
+
+class _TmpToolOutputResolver:
+    """Stand-in for ``ToolOutputResolver`` rooted inside ``tmp_path``.
+
+    The real resolver's project-level fallback (priority 5) is the *checkout's*
+    ``runtime/<tool>`` directory, resolved from ``__file__`` and therefore
+    unaffected by the ``_PROJECT_ROOT`` monkeypatching these tests rely on.
+    Production never mixes the two (a real run has no monkeypatched project
+    root), so the stub keeps handler-level tests inside ``tmp_path`` while
+    still exercising the "resolve the output base dir, then join the caller's
+    (sanitized) path onto it" contract added in 42fd12b9.
+    """
+
+    def __init__(self, root: Path) -> None:
+        self._root = root
+
+    def resolve(self, **_kwargs: Any) -> Path:
+        self._root.mkdir(parents=True, exist_ok=True)
+        return self._root
+
+
+def _isolate_tool_output_roots(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    resolver_root: Path | None = None,
+) -> None:
+    """Pin session and tool-output roots under ``tmp_path``.
+
+    ``APP_RUNTIME_ROOT`` plus a fresh PathRouter singleton keep session dirs
+    underneath the monkeypatched project root (``tmp_path``); the resolver stub
+    keeps the project-level fallback from pointing at the real checkout. Both
+    are required by the session-scoped write guard in ``manuscript_writer``
+    (40546b7b): without them the handler writes into the repository ``runtime``
+    tree and the relative-path payloads cannot be derived.
+    """
+    runtime_root = tmp_path / "runtime"
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("APP_RUNTIME_ROOT", str(runtime_root))
+    monkeypatch.setattr(path_router_module, "_default_router", None)
+    resolver = _TmpToolOutputResolver(resolver_root or runtime_root)
+    monkeypatch.setattr(
+        "app.services.tool_output_resolver.get_tool_output_resolver",
+        lambda: resolver,
+    )
+    monkeypatch.setattr(
+        review_pack_writer_module,
+        "get_tool_output_resolver",
+        lambda: resolver,
+    )
 
 
 def _write_review_evidence_bundle(tmp_path: Path, *, low_coverage: bool = False) -> list[str]:
@@ -160,7 +212,10 @@ def _stub_chat_factory(
                 return first_line.split(":", 1)[1].strip()
         return ""
 
-    async def _stub_chat(_llm, prompt: str, _model):
+    async def _stub_chat(_llm, prompt: str, _model, **_kwargs):
+        # ``_chat`` grew cost-control kwargs (``max_tokens`` tiers, ``purpose``
+        # instrumentation) in d60d0f89/ad348aea; the stub mirrors the current
+        # signature instead of the pre-cost-control one.
         if "produce an ANALYSIS MEMO" in prompt:
             return "# Analysis Memo\n- grounded context"
         if "Write the section:" in prompt or "Revise the section:" in prompt:
@@ -302,6 +357,7 @@ def test_manuscript_writer_respects_analysis_path(monkeypatch: pytest.MonkeyPatc
         lambda provider, model, **kwargs: (object(), model),
     )
     monkeypatch.setattr(manuscript_writer_module, "_chat", _stub_chat_factory())
+    _isolate_tool_output_roots(monkeypatch, tmp_path)
 
     bib_path = tmp_path / "ctx" / "references.bib"
     bib_path.parent.mkdir(parents=True, exist_ok=True)
@@ -317,8 +373,8 @@ def test_manuscript_writer_respects_analysis_path(monkeypatch: pytest.MonkeyPatc
     result = asyncio.run(
         manuscript_writer_module.manuscript_writer_handler(
             task="Write a manuscript.",
-            output_path="out/final.md",
-            analysis_path="audit/analysis.md",
+            output_path="runtime/session_demo/out/final.md",
+            analysis_path="runtime/session_demo/audit/analysis.md",
             context_paths=["ctx/references.bib"],
             sections=["abstract", "introduction", "references"],
             keep_workspace=True,
@@ -326,8 +382,8 @@ def test_manuscript_writer_respects_analysis_path(monkeypatch: pytest.MonkeyPatc
     )
 
     assert result["success"] is True
-    assert result["analysis_path"] == "audit/analysis.md"
-    assert result["effective_analysis_path"] == "audit/analysis.md"
+    assert result["analysis_path"] == "runtime/session_demo/audit/analysis.md"
+    assert result["effective_analysis_path"] == "runtime/session_demo/audit/analysis.md"
     assert result["quality_gate_passed"] is True
     assert result["polish_gate_passed"] is True
     assert result["public_release_ready"] is True
@@ -335,7 +391,7 @@ def test_manuscript_writer_respects_analysis_path(monkeypatch: pytest.MonkeyPatc
     assert result["pre_polish_output_path"] is not None
     assert result["polished_output_path"] is not None
 
-    analysis_file = tmp_path / "audit" / "analysis.md"
+    analysis_file = tmp_path / "runtime" / "session_demo" / "audit" / "analysis.md"
     assert analysis_file.exists()
     assert "Analysis Memo" in analysis_file.read_text(encoding="utf-8")
 
@@ -352,6 +408,7 @@ def test_manuscript_writer_scopes_relative_output_path_to_session_dir(
         lambda provider, model, **kwargs: (object(), model),
     )
     monkeypatch.setattr(manuscript_writer_module, "_chat", _stub_chat_factory())
+    _isolate_tool_output_roots(monkeypatch, tmp_path)
 
     bib_path = tmp_path / "ctx" / "references.bib"
     bib_path.parent.mkdir(parents=True, exist_ok=True)
@@ -376,9 +433,22 @@ def test_manuscript_writer_scopes_relative_output_path_to_session_dir(
     )
 
     assert result["success"] is True
-    assert result["output_path"] == "runtime/session_demo/manuscript/methods/data_preprocessing.md"
+    # Relative paths are scoped into the session workspace; since 40546b7b the
+    # session-relative redirect lands under the session's raw_files/tmp.
+    assert result["output_path"] == (
+        "runtime/session_demo/raw_files/tmp/manuscript/methods/data_preprocessing.md"
+    )
 
-    output_file = tmp_path / "runtime" / "session_demo" / "manuscript" / "methods" / "data_preprocessing.md"
+    output_file = (
+        tmp_path
+        / "runtime"
+        / "session_demo"
+        / "raw_files"
+        / "tmp"
+        / "manuscript"
+        / "methods"
+        / "data_preprocessing.md"
+    )
     assert output_file.exists()
     assert output_file.read_text(encoding="utf-8").strip()
 
@@ -395,10 +465,11 @@ def test_manuscript_writer_draft_only_mode_skips_quality_pipeline(
         lambda provider, model, **kwargs: (_ for _ in ()).throw(AssertionError("_build_llm_service should not be called in draft_only mode")),
     )
 
-    async def _unexpected_chat(_llm, _prompt: str, _model):
+    async def _unexpected_chat(_llm, _prompt: str, _model, **_kwargs):
         raise AssertionError("_chat should not be called in draft_only mode")
 
     monkeypatch.setattr(manuscript_writer_module, "_chat", _unexpected_chat)
+    _isolate_tool_output_roots(monkeypatch, tmp_path)
 
     ctx_path = tmp_path / "manuscript" / "results" / "5.1.3.1_atlas_composition.md"
     ctx_path.parent.mkdir(parents=True, exist_ok=True)
@@ -448,6 +519,10 @@ def test_manuscript_writer_blocks_release_when_final_polish_fails(
         lambda provider, model, **kwargs: (object(), model),
     )
     monkeypatch.setattr(manuscript_writer_module, "_chat", _stub_chat_factory(polish_pass=False))
+    _isolate_tool_output_roots(monkeypatch, tmp_path)
+    # ef8bb348 made the final polish gate advisory by default; the hard-fail
+    # release contract these tests cover is restored by the opt-in strict gate.
+    monkeypatch.setenv("MANUSCRIPT_STRICT_GATE", "true")
     monkeypatch.setenv("MANUSCRIPT_FINAL_POLISH_ENABLED", "true")
     monkeypatch.setenv("MANUSCRIPT_FINAL_POLISH_MAX_REVISIONS", "2")
     monkeypatch.setenv("MANUSCRIPT_FINAL_POLISH_THRESHOLD", "0.85")
@@ -502,6 +577,10 @@ def test_manuscript_writer_blocks_release_when_final_polish_times_out(
         "_chat",
         _stub_chat_factory(final_polish_exc=asyncio.TimeoutError("The read operation timed out")),
     )
+    _isolate_tool_output_roots(monkeypatch, tmp_path)
+    # See the sibling polish-failure test: the advisory default is not the
+    # contract under test here.
+    monkeypatch.setenv("MANUSCRIPT_STRICT_GATE", "true")
     monkeypatch.setenv("MANUSCRIPT_FINAL_POLISH_ENABLED", "true")
     monkeypatch.setenv("MANUSCRIPT_FINAL_POLISH_MAX_REVISIONS", "2")
     monkeypatch.setenv("MANUSCRIPT_FINAL_POLISH_THRESHOLD", "0.85")
@@ -565,6 +644,10 @@ def test_manuscript_writer_polish_guard_blocks_citation_and_numeric_drift(
         "_chat",
         _stub_chat_factory(final_polish_text=polished_text),
     )
+    _isolate_tool_output_roots(monkeypatch, tmp_path)
+    # The deterministic consistency guardrails still block release, but only
+    # via the opt-in strict gate (ef8bb348 made the polish gate advisory).
+    monkeypatch.setenv("MANUSCRIPT_STRICT_GATE", "true")
 
     bib_path = tmp_path / "ctx" / "references.bib"
     bib_path.parent.mkdir(parents=True, exist_ok=True)
@@ -580,7 +663,7 @@ def test_manuscript_writer_polish_guard_blocks_citation_and_numeric_drift(
     result = asyncio.run(
         manuscript_writer_module.manuscript_writer_handler(
             task="Write a manuscript.",
-            output_path="out/final.md",
+            output_path="runtime/session_demo/out/final.md",
             context_paths=["ctx/references.bib"],
             sections=["abstract", "introduction", "references"],
             keep_workspace=True,
@@ -628,6 +711,7 @@ def test_manuscript_writer_fails_on_missing_reference_coverage(
     )
     monkeypatch.setattr(manuscript_writer_module, "_chat", _stub_chat_factory(intro_citation="[@known1]"))
     monkeypatch.setenv("MANUSCRIPT_STRICT_GATE", "true")
+    _isolate_tool_output_roots(monkeypatch, tmp_path)
 
     bib_path = tmp_path / "ctx" / "references.bib"
     bib_path.parent.mkdir(parents=True, exist_ok=True)
@@ -643,7 +727,7 @@ def test_manuscript_writer_fails_on_missing_reference_coverage(
     result = asyncio.run(
         manuscript_writer_module.manuscript_writer_handler(
             task="Write a manuscript.",
-            output_path="out/final.md",
+            output_path="runtime/session_demo/out/final.md",
             context_paths=["ctx/references.bib"],
             sections=["introduction"],
             keep_workspace=True,
@@ -671,6 +755,7 @@ def test_manuscript_writer_fails_on_unknown_citekey(
     )
     monkeypatch.setattr(manuscript_writer_module, "_chat", _stub_chat_factory(intro_citation="[@unknown_key]"))
     monkeypatch.setenv("MANUSCRIPT_STRICT_GATE", "true")
+    _isolate_tool_output_roots(monkeypatch, tmp_path)
 
     context_path = tmp_path / "ctx" / "notes.md"
     context_path.parent.mkdir(parents=True, exist_ok=True)
@@ -679,7 +764,7 @@ def test_manuscript_writer_fails_on_unknown_citekey(
     result = asyncio.run(
         manuscript_writer_module.manuscript_writer_handler(
             task="Write a manuscript.",
-            output_path="out/final.md",
+            output_path="runtime/session_demo/out/final.md",
             context_paths=["ctx/notes.md"],
             sections=["introduction", "references"],
             keep_workspace=True,
@@ -704,11 +789,19 @@ def test_manuscript_writer_blocks_review_release_without_structured_evidence(
         lambda provider, model, **kwargs: (object(), model),
     )
     monkeypatch.setattr(manuscript_writer_module, "_chat", _stub_chat_factory(review_mode=True))
+    _isolate_tool_output_roots(monkeypatch, tmp_path)
+    # ef8bb348 made the evidence-coverage gate advisory-only: a missing
+    # study_cards.jsonl is now reported (evidence_coverage_passed /
+    # coverage_summary / evidence_coverage_notice) instead of returning
+    # "low_evidence_coverage". The release itself is still blocked -- by the
+    # citation gate, which is the gate the strict flag hard-fails. A review
+    # written without any bibliography cites citekeys that cannot resolve.
+    monkeypatch.setenv("MANUSCRIPT_STRICT_GATE", "true")
 
     result = asyncio.run(
         manuscript_writer_module.manuscript_writer_handler(
             task="Write a submission-ready English review article on Pseudomonas phage.",
-            output_path="out/review.md",
+            output_path="runtime/session_demo/out/review.md",
             context_paths=[],
             sections=["abstract", "introduction", "method", "experiment", "result", "discussion", "conclusion", "references"],
             keep_workspace=True,
@@ -716,10 +809,14 @@ def test_manuscript_writer_blocks_review_release_without_structured_evidence(
     )
 
     assert result["success"] is False
-    assert result["error_code"] == "low_evidence_coverage"
+    assert result["error_code"] == "citation_validation_failed"
     assert result["public_release_ready"] is False
     assert result["evidence_coverage_passed"] is False
     assert "study_cards" in str(result["coverage_summary"]).lower()
+    assert "study_cards" in str(result["evidence_coverage_notice"]).lower()
+    citation = result.get("citation_validation") or {}
+    assert citation.get("pass") is False
+    assert citation.get("unknown_citekeys")
 
 
 def test_manuscript_writer_article_mode_review_overrides_task_heuristic(
@@ -734,22 +831,38 @@ def test_manuscript_writer_article_mode_review_overrides_task_heuristic(
         lambda provider, model, **kwargs: (object(), model),
     )
     monkeypatch.setattr(manuscript_writer_module, "_chat", _stub_chat_factory(review_mode=True))
+    _isolate_tool_output_roots(monkeypatch, tmp_path)
 
-    result = asyncio.run(
-        manuscript_writer_module.manuscript_writer_handler(
+    async def _run(**overrides):
+        return await manuscript_writer_module.manuscript_writer_handler(
             task="Write a manuscript on Pseudomonas phage.",
-            output_path="out/review.md",
+            output_path="runtime/session_demo/out/review.md",
             context_paths=[],
-            article_mode="review",
             sections=["abstract", "introduction", "method", "experiment", "result", "discussion", "conclusion", "references"],
             keep_workspace=True,
+            **overrides,
         )
-    )
+
+    # Negative control: the task text carries no review marker, so review mode
+    # below can only come from the explicit article_mode override.
+    baseline = asyncio.run(_run())
+    assert baseline["article_mode_requested"] == "auto"
+    assert baseline["article_mode_resolved"] == "research"
+    assert baseline["evidence_coverage_notice"] is None
+
+    # ef8bb348 downgraded the evidence-coverage gate to advisory, so the
+    # review-mode run reports the shortfall instead of returning
+    # "low_evidence_coverage"; the strict gate still blocks the release.
+    monkeypatch.setenv("MANUSCRIPT_STRICT_GATE", "true")
+    result = asyncio.run(_run(article_mode="review"))
 
     assert result["success"] is False
-    assert result["error_code"] == "low_evidence_coverage"
+    assert result["error_code"] == "citation_validation_failed"
     assert result["article_mode_requested"] == "review"
     assert result["article_mode_resolved"] == "review"
+    assert result["evidence_coverage_passed"] is False
+    assert result["evidence_coverage_notice"]
+    assert result["public_release_ready"] is False
 
 
 def test_manuscript_writer_review_mode_passes_with_structured_evidence(
@@ -764,12 +877,13 @@ def test_manuscript_writer_review_mode_passes_with_structured_evidence(
         lambda provider, model, **kwargs: (object(), model),
     )
     monkeypatch.setattr(manuscript_writer_module, "_chat", _stub_chat_factory(review_mode=True))
+    _isolate_tool_output_roots(monkeypatch, tmp_path)
 
     context_paths = _write_review_evidence_bundle(tmp_path)
     result = asyncio.run(
         manuscript_writer_module.manuscript_writer_handler(
             task="Write a submission-ready English review article on Pseudomonas phage.",
-            output_path="out/review.md",
+            output_path="runtime/session_demo/out/review.md",
             context_paths=context_paths,
             keep_workspace=True,
         )
@@ -808,12 +922,13 @@ def test_manuscript_writer_review_mode_blocks_unsupported_claims(
             review_conclusion_citations="[@known6]",
         ),
     )
+    _isolate_tool_output_roots(monkeypatch, tmp_path)
 
     context_paths = _write_review_evidence_bundle(tmp_path)
     result = asyncio.run(
         manuscript_writer_module.manuscript_writer_handler(
             task="Write a submission-ready English review article on Pseudomonas phage.",
-            output_path="out/review.md",
+            output_path="runtime/session_demo/out/review.md",
             context_paths=context_paths,
             keep_workspace=True,
         )
@@ -847,12 +962,13 @@ def test_manuscript_writer_review_mode_blocks_thin_section_coverage(
             review_conclusion_citations="[@known7; @known8]",
         ),
     )
+    _isolate_tool_output_roots(monkeypatch, tmp_path)
 
     context_paths = _write_review_evidence_bundle(tmp_path)
     result = asyncio.run(
         manuscript_writer_module.manuscript_writer_handler(
             task="Write a submission-ready English review article on Pseudomonas phage.",
-            output_path="out/review.md",
+            output_path="runtime/session_demo/out/review.md",
             context_paths=context_paths,
             keep_workspace=True,
         )
