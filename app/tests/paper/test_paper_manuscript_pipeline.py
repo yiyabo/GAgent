@@ -1024,6 +1024,7 @@ def test_review_pack_partial_always_failed(monkeypatch: pytest.MonkeyPatch, tmp_
     monkeypatch.setattr(review_pack_writer_module, "literature_pipeline_handler", _fake_lit)
     monkeypatch.setattr(review_pack_writer_module, "manuscript_writer_handler", _fake_draft)
     monkeypatch.setenv("MANUSCRIPT_STRICT_GATE", "true")
+    _isolate_tool_output_roots(monkeypatch, tmp_path)
 
     result = asyncio.run(review_pack_writer_module.review_pack_writer_handler(topic="Test topic"))
 
@@ -1035,11 +1036,18 @@ def test_review_pack_partial_always_failed(monkeypatch: pytest.MonkeyPatch, tmp_
     assert result["public_release_ready"] is False
 
 
-def test_review_pack_blocks_when_evidence_coverage_fails(
+def test_review_pack_reports_low_evidence_coverage_without_blocking(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    """ef8bb348: a weak evidence pack is advisory, not a hard stop.
+
+    The draft still runs (release is then decided by the manuscript gates), and
+    the shortfall is surfaced on the result instead of hiding the pack.
+    """
     monkeypatch.setattr(review_pack_writer_module, "_PROJECT_ROOT", tmp_path)
+
+    captured: Dict[str, Any] = {}
 
     async def _fake_lit(*args, **kwargs):
         _ = (args, kwargs)
@@ -1059,20 +1067,41 @@ def test_review_pack_blocks_when_evidence_coverage_fails(
             },
         }
 
-    async def _fail_draft(*args, **kwargs):
-        raise AssertionError("manuscript_writer should not run when evidence coverage fails")
+    async def _fake_draft(*args, **kwargs):
+        _ = args
+        captured["draft_kwargs"] = dict(kwargs)
+        return {
+            "success": True,
+            "quality_gate_passed": True,
+            "polish_gate_passed": True,
+            "public_release_ready": True,
+            "release_state": "final",
+            "release_summary": "Ready for publication.",
+            "output_path": kwargs.get("output_path"),
+        }
 
     monkeypatch.setattr(review_pack_writer_module, "literature_pipeline_handler", _fake_lit)
-    monkeypatch.setattr(review_pack_writer_module, "manuscript_writer_handler", _fail_draft)
+    monkeypatch.setattr(review_pack_writer_module, "manuscript_writer_handler", _fake_draft)
+    _isolate_tool_output_roots(monkeypatch, tmp_path)
 
     result = asyncio.run(review_pack_writer_module.review_pack_writer_handler(topic="Sparse topic"))
 
-    assert result["success"] is False
-    assert result["error_code"] == "low_evidence_coverage"
-    assert result["public_release_ready"] is False
+    assert result["success"] is True
+    assert result["error_code"] is None
     assert result["evidence_coverage_passed"] is False
-    assert result["draft"] is None
-    assert "only 4 included studies" in result["release_summary"]
+    assert result["coverage_summary"] == "Evidence coverage blocked: only 4 included studies."
+    assert result["evidence_coverage_notice"] == "Evidence coverage blocked: only 4 included studies."
+    assert any(
+        "Advisory (not blocking): Evidence coverage blocked: only 4 included studies." in str(item)
+        for item in (result.get("warnings") or [])
+    )
+    # The draft ran anyway, and it ran on the (weak) pack's evidence files.
+    assert result["draft"] is not None
+    assert captured["draft_kwargs"]["context_paths"][:2] == [
+        "runtime/literature/study_cards.jsonl",
+        "runtime/literature/coverage_report.json",
+    ]
+    assert result["release_state"] == "final"
 
 
 def test_literature_pipeline_scopes_default_output_by_session(
@@ -1182,6 +1211,11 @@ def test_literature_pipeline_falls_back_from_zero_result_natural_language_query(
 
     monkeypatch.setattr(literature_pipeline_module, "_pubmed_esearch", _fake_esearch)
     monkeypatch.setattr(literature_pipeline_module, "_pubmed_efetch_xml", _fake_efetch)
+    _isolate_tool_output_roots(
+        monkeypatch,
+        tmp_path,
+        resolver_root=tmp_path / "runtime" / "literature_pipeline",
+    )
 
     result = asyncio.run(
         literature_pipeline_module.literature_pipeline_handler(
@@ -1328,7 +1362,7 @@ def test_literature_pipeline_rejects_same_prefix_absolute_out_dir_outside_projec
     assert not outside_dir.exists()
 
 
-def test_review_pack_writer_redirects_single_component_out_dir_under_runtime_lit_reviews(
+def test_review_pack_writer_sanitizes_single_component_out_dir_under_tool_output_root(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -1367,6 +1401,11 @@ def test_review_pack_writer_redirects_single_component_out_dir_under_runtime_lit
 
     monkeypatch.setattr(review_pack_writer_module, "literature_pipeline_handler", _fake_lit)
     monkeypatch.setattr(review_pack_writer_module, "manuscript_writer_handler", _fake_draft)
+    _isolate_tool_output_roots(
+        monkeypatch,
+        tmp_path,
+        resolver_root=tmp_path / "runtime" / "review_pack_writer",
+    )
 
     result = asyncio.run(
         review_pack_writer_module.review_pack_writer_handler(
@@ -1376,13 +1415,16 @@ def test_review_pack_writer_redirects_single_component_out_dir_under_runtime_lit
     )
 
     assert result["success"] is True
-    assert captured["out_dir"] == str((tmp_path / "runtime" / "lit_reviews" / "lit_review_general").resolve())
-    assert captured["output_path"] == str(
-        (tmp_path / "runtime" / "lit_reviews" / "lit_review_general" / "review_draft.md").resolve()
+    assert captured["out_dir"] == str(
+        (tmp_path / "runtime" / "review_pack_writer" / "lit_review_general").resolve()
     )
+    assert captured["output_path"] == str(
+        (tmp_path / "runtime" / "review_pack_writer" / "lit_review_general" / "review_draft.md").resolve()
+    )
+    assert not (tmp_path / "lit_review_general").exists()
 
 
-def test_review_pack_writer_redirects_nested_relative_paths_under_runtime_lit_reviews(
+def test_review_pack_writer_sanitizes_nested_relative_paths_under_tool_output_root(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -1421,6 +1463,11 @@ def test_review_pack_writer_redirects_nested_relative_paths_under_runtime_lit_re
 
     monkeypatch.setattr(review_pack_writer_module, "literature_pipeline_handler", _fake_lit)
     monkeypatch.setattr(review_pack_writer_module, "manuscript_writer_handler", _fake_draft)
+    _isolate_tool_output_roots(
+        monkeypatch,
+        tmp_path,
+        resolver_root=tmp_path / "runtime" / "review_pack_writer",
+    )
 
     result = asyncio.run(
         review_pack_writer_module.review_pack_writer_handler(
@@ -1432,11 +1479,13 @@ def test_review_pack_writer_redirects_nested_relative_paths_under_runtime_lit_re
 
     assert result["success"] is True
     assert captured["out_dir"] == str(
-        (tmp_path / "runtime" / "lit_reviews" / "nested" / "review_pack_b").resolve()
+        (tmp_path / "runtime" / "review_pack_writer" / "nested" / "review_pack_b").resolve()
     )
     assert captured["output_path"] == str(
-        (tmp_path / "runtime" / "lit_reviews" / "drafts" / "review_b.md").resolve()
+        (tmp_path / "runtime" / "review_pack_writer" / "drafts" / "review_b.md").resolve()
     )
+    assert not (tmp_path / "nested").exists()
+    assert not (tmp_path / "drafts").exists()
 
 
 def test_review_pack_writer_default_paths_are_passed_to_downstream_as_absolute(
@@ -1478,6 +1527,11 @@ def test_review_pack_writer_default_paths_are_passed_to_downstream_as_absolute(
 
     monkeypatch.setattr(review_pack_writer_module, "literature_pipeline_handler", _fake_lit)
     monkeypatch.setattr(review_pack_writer_module, "manuscript_writer_handler", _fake_draft)
+    _isolate_tool_output_roots(
+        monkeypatch,
+        tmp_path,
+        resolver_root=tmp_path / "runtime" / "review_pack_writer",
+    )
 
     result = asyncio.run(
         review_pack_writer_module.review_pack_writer_handler(
@@ -1489,7 +1543,7 @@ def test_review_pack_writer_default_paths_are_passed_to_downstream_as_absolute(
     lit_out_dir = Path(captured["out_dir"])
     draft_output_path = Path(captured["output_path"])
     assert lit_out_dir.is_absolute()
-    assert lit_out_dir.parent == (tmp_path / "runtime" / "literature")
+    assert lit_out_dir.parent == (tmp_path / "runtime" / "review_pack_writer")
     assert lit_out_dir.name.startswith("review_pack_")
     assert draft_output_path.is_absolute()
     assert draft_output_path.parent == lit_out_dir
@@ -1543,6 +1597,11 @@ def test_review_pack_writer_rejects_absolute_output_path_outside_project_before_
 
     monkeypatch.setattr(review_pack_writer_module, "literature_pipeline_handler", _unexpected_lit)
     monkeypatch.setattr(review_pack_writer_module, "manuscript_writer_handler", _unexpected_draft)
+    _isolate_tool_output_roots(
+        monkeypatch,
+        tmp_path,
+        resolver_root=tmp_path / "runtime" / "review_pack_writer",
+    )
 
     outside_file = tmp_path.parent / f"{tmp_path.name}-escape" / "review_draft.md"
 
@@ -1649,6 +1708,11 @@ def test_literature_pipeline_counts_oa_fulltext_without_pdf_file(
     monkeypatch.setattr(literature_pipeline_module, "_pubmed_esearch", _fake_esearch)
     monkeypatch.setattr(literature_pipeline_module, "_pubmed_efetch_xml", _fake_efetch)
     monkeypatch.setattr(literature_pipeline_module, "_download_pmc_pdf", _fake_download)
+    _isolate_tool_output_roots(
+        monkeypatch,
+        tmp_path,
+        resolver_root=tmp_path / "runtime" / "literature_pipeline",
+    )
 
     result = asyncio.run(
         literature_pipeline_module.literature_pipeline_handler(
@@ -1711,6 +1775,11 @@ def test_literature_pipeline_tolerates_pmc_download_exceptions(
     monkeypatch.setattr(literature_pipeline_module, "_pubmed_esearch", _fake_esearch)
     monkeypatch.setattr(literature_pipeline_module, "_pubmed_efetch_xml", _fake_efetch)
     monkeypatch.setattr(literature_pipeline_module, "_download_pmc_pdf", _fake_download)
+    _isolate_tool_output_roots(
+        monkeypatch,
+        tmp_path,
+        resolver_root=tmp_path / "runtime" / "literature_pipeline",
+    )
 
     result = asyncio.run(
         literature_pipeline_module.literature_pipeline_handler(
