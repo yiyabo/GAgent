@@ -103,18 +103,6 @@ def _resolve_deep_think_max_iterations() -> int:
     return max(1, min(parsed, _DEEP_THINK_MAX_ITER_CAP))
 
 
-def _code_executor_job_stream_loggers(job_id: str) -> Tuple[Any, Any]:
-    """Stdout/stderr hooks for code_executor when a plan decomposition job log stream is active."""
-
-    async def on_stdout(line: str) -> None:
-        plan_decomposition_jobs.append_log(job_id, "stdout", line, {})
-
-    async def on_stderr(line: str) -> None:
-        plan_decomposition_jobs.append_log(job_id, "stderr", line, {})
-
-    return on_stdout, on_stderr
-
-
 def _should_auto_sync_task_status(
     tool_name: str,
     params: Optional[Dict[str, Any]],
@@ -494,6 +482,7 @@ from .code_executor_helpers import (
     resolve_previous_path as _resolve_previous_path_fn,
     summarize_amem_experiences_for_cc as _summarize_amem_experiences_for_cc_fn,
 )
+from .code_executor_bridge import _code_executor_job_stream_loggers
 from .guardrail_handlers import (
     apply_completion_claim_guardrail as _apply_completion_claim_guardrail_fn,
     apply_experiment_fallback as _apply_experiment_fallback_fn,
