@@ -273,7 +273,8 @@ def _patch_runtime(monkeypatch: Any) -> _JobStub:
 # ---------------------------------------------------------------------------
 
 
-def test_image_reuse_branch_emits_single_final_event(tmp_path) -> None:
+def test_image_reuse_branch_emits_single_final_event(tmp_path, monkeypatch) -> None:
+    _patch_runtime(monkeypatch)
     image = tmp_path / "completeness_pie_chart.png"
     image.write_bytes(b"\x89PNG\r\n")
     agent = _build_agent(
@@ -297,7 +298,8 @@ def test_image_reuse_branch_emits_single_final_event(tmp_path) -> None:
     assert payload["metadata"]["artifact_gallery"][0]["path"] == str(image)
 
 
-def test_image_ambiguity_branch_emits_clarification_final_event(tmp_path) -> None:
+def test_image_ambiguity_branch_emits_clarification_final_event(tmp_path, monkeypatch) -> None:
+    _patch_runtime(monkeypatch)
     first = tmp_path / "first.png"
     second = tmp_path / "second.png"
     first.write_bytes(b"\x89PNG\r\n")
@@ -325,7 +327,9 @@ def test_image_ambiguity_branch_emits_clarification_final_event(tmp_path) -> Non
 # ---------------------------------------------------------------------------
 
 
-def test_deterministic_execute_branch_event_sequence() -> None:
+def test_deterministic_execute_branch_event_sequence(monkeypatch) -> None:
+    jobs = _patch_runtime(monkeypatch)
+
     async def _fake_execute_structured(structured: Any) -> AgentResult:
         return AgentResult(
             reply="Task [66] execution status: completed.",
@@ -365,6 +369,18 @@ def test_deterministic_execute_branch_event_sequence() -> None:
     assert final["metadata"]["deterministic_execute_shortcut"] is True
     assert final["actions"][0]["name"] == "rerun_task"
     assert final["actions"][0]["parameters"] == {"task_id": 66}
+    assert jobs.names() == ["create_job", "register_subscriber"]
+    created = [call for call in jobs.calls if call[0] == "create_job"][0][1]
+    assert created["job_type"] == "plan_execute"
+    assert created["mode"] == "single_task"
+    assert created["task_id"] == 66
+    assert created["params"] == {
+        "session_id": "sess-golden",
+        "task_id": 66,
+        "mode": "rerun_task",
+    }
+    assert created["metadata"]["source"] == "deterministic_execute_shortcut"
+    assert created["metadata"]["target_task_name"] == "Task 66"
 
 
 # ---------------------------------------------------------------------------
