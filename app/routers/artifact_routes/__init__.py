@@ -1,4 +1,24 @@
-"""Runtime artifact listing and preview routes."""
+"""Artifact routes package (compatibility facade).
+
+This package is the split-out form of the former
+``app/routers/artifact_routes.py`` module. The import path
+``app.routers.artifact_routes`` is unchanged: it is the registration contract
+used by ``app/routers/__init__.py``.
+
+Package layout:
+
+- ``schemas.py``   Pydantic DTOs (pure data)
+
+The HTTP endpoints, the router and registration stay in this facade, and every
+original module-level name is re-exported here (private names included), so
+``from app.routers.artifact_routes import X`` and ``artifact_routes.X`` access
+keep working unchanged. Sibling modules must not import facade names at import
+time: the names tests patch (``RUNTIME_DIR``, ``INFO_SESSIONS_DIR``,
+``MAMMOTH_AVAILABLE``, ``mammoth``, ``get_deliverable_settings``,
+``_ensure_session_access``, ``_load_hidden_artifact_prefixes``,
+``_resolve_session_dir``, ``_workspace_root``, ...) are read through the facade
+at call time (``from .. import artifact_routes as facade``).
+"""
 
 from __future__ import annotations
 
@@ -17,16 +37,27 @@ from typing import Any, Dict, Iterator, List, Literal, Optional, Tuple
 
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel, Field
 
 from app.database import get_db
 from app.config.deliverable_config import get_deliverable_settings
 from app.services.request_principal import ensure_owner_access
 from app.services.session_paths import normalize_session_base
 
-from . import register_router
-from .chat.artifact_gallery import is_image_artifact_path
-from .chat.subject_identity import _workspace_root
+from .. import register_router
+from ..chat.artifact_gallery import is_image_artifact_path
+from ..chat.subject_identity import _workspace_root
+from .schemas import (
+    ArtifactItem,
+    ArtifactListResponse,
+    ArtifactRenderResponse,
+    ArtifactTextResponse,
+    BatchDownloadFileEntry,
+    BatchDownloadRequest,
+    DeliverableItem,
+    DeliverableListResponse,
+    DeliverableManifestResponse,
+    DeliverableVersionSummary,
+)
 
 # Optional markdown import
 try:
@@ -41,98 +72,13 @@ try:
 except ImportError:
     MAMMOTH_AVAILABLE = False
 
-RUNTIME_DIR = Path(__file__).parent.parent.parent.resolve() / "runtime"
-INFO_SESSIONS_DIR = Path(__file__).parent.parent.parent.resolve() / "data" / "information_sessions"
+# ``__file__`` now lives one directory deeper (package instead of module), so
+# the project root is four ``parent`` hops up: the resolved values are still
+# <project>/runtime and <project>/data/information_sessions.
+RUNTIME_DIR = Path(__file__).parent.parent.parent.parent.resolve() / "runtime"
+INFO_SESSIONS_DIR = Path(__file__).parent.parent.parent.parent.resolve() / "data" / "information_sessions"
 
 router = APIRouter(prefix="/artifacts", tags=["artifacts"])
-
-
-class ArtifactItem(BaseModel):
-    name: str
-    path: str
-    type: Literal["file", "directory"]
-    size: int = 0
-    modified_at: Optional[str] = None
-    extension: Optional[str] = None
-
-
-class ArtifactListResponse(BaseModel):
-    session_id: str
-    root_path: str
-    items: List[ArtifactItem]
-    count: int
-
-
-class ArtifactTextResponse(BaseModel):
-    path: str
-    content: str
-    truncated: bool = False
-
-
-class DeliverableItem(BaseModel):
-    module: str
-    path: str
-    name: str
-    status: str = "final"
-    size: int = 0
-    extension: Optional[str] = None
-    updated_at: Optional[str] = None
-    source_path: Optional[str] = None
-
-
-class DeliverableVersionSummary(BaseModel):
-    version_id: str
-    created_at: Optional[str] = None
-    published_files_count: int = 0
-    published_modules: List[str] = Field(default_factory=list)
-
-
-class DeliverableListResponse(BaseModel):
-    session_id: str
-    scope: Literal["latest", "history"] = "latest"
-    version_id: Optional[str] = None
-    root_path: str
-    modules: Dict[str, List[DeliverableItem]] = Field(default_factory=dict)
-    items: List[DeliverableItem] = Field(default_factory=list)
-    count: int = 0
-    paper_status: Dict[str, Any] = Field(default_factory=dict)
-    release_state: str = "final"
-    public_release_ready: bool = True
-    release_summary: Optional[str] = None
-    hidden_artifact_prefixes: List[str] = Field(default_factory=list)
-    available_versions: List[DeliverableVersionSummary] = Field(default_factory=list)
-
-
-class DeliverableManifestResponse(BaseModel):
-    session_id: str
-    scope: Literal["latest", "history"] = "latest"
-    version_id: Optional[str] = None
-    manifest_path: Optional[str] = None
-    manifest: Dict[str, Any] = Field(default_factory=dict)
-    release_state: str = "final"
-    public_release_ready: bool = True
-    release_summary: Optional[str] = None
-    hidden_artifact_prefixes: List[str] = Field(default_factory=list)
-    available_versions: List[DeliverableVersionSummary] = Field(default_factory=list)
-
-
-class ArtifactRenderResponse(BaseModel):
-    path: str
-    format: Literal["pdf", "html", "text"]
-    url: Optional[str] = None
-    content: Optional[str] = None
-    rendered_at: str
-    cached: bool = False
-
-
-class BatchDownloadFileEntry(BaseModel):
-    path: str
-    scope: Literal["raw", "deliverables"]
-    version: Optional[str] = None
-
-
-class BatchDownloadRequest(BaseModel):
-    files: List[BatchDownloadFileEntry]
 
 
 def _assert_path_within(target: Path, root: Path, detail: str = "Invalid path") -> None:
