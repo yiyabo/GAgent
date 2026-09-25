@@ -31,7 +31,7 @@ from app.services.llm.llm_service import LLMService, get_llm_service
 
 logger = logging.getLogger(__name__)
 
-_PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve()
+_PROJECT_ROOT = Path(__file__).parent.parent.parent.parent.resolve()
 _RUNTIME_DIR = _PROJECT_ROOT / "runtime"
 _DEFAULT_MAX_CONTEXT_BYTES = 200_000  # 200 KB per file
 # Evidence/context injection caps: re-sending full 200 KB files on every
