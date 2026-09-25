@@ -386,36 +386,12 @@ class StructuredChatAgent:
         )
         self._task_verifier = TaskVerificationService()
 
-    async def handle(self, user_message: str) -> AgentResult:
-        self._current_user_message = user_message
-        routing_decision, _route_profile = self._resolve_request_routing(user_message)
-        effective_user_message = routing_decision.effective_user_message
-        self._update_routing_context(routing_decision)
-        structured = self._build_deterministic_execute_task_structured()
-        if structured is None:
-            structured = await self._invoke_llm(effective_user_message)
-        session_id = getattr(self, "session_id", None)
-        structured = _rewrite_phagescope_dataset_understanding_plan_to_deep_profile(
-            structured,
-            user_message=effective_user_message,
-            extra_context=self.extra_context,
-            session_id=session_id,
-        )
-        structured = await self._apply_experiment_fallback(structured)
-        structured = self._apply_plan_first_guardrail(structured)
-        structured = _rewrite_phagescope_dataset_understanding_plan_to_deep_profile(
-            structured,
-            user_message=effective_user_message,
-            extra_context=self.extra_context,
-            session_id=session_id,
-        )
-        structured = self._apply_phagescope_fallback(structured)
-        structured = self._apply_task_execution_followthrough_guardrail(structured)
-        structured = self._apply_completion_claim_guardrail(structured)
-        return await self.execute_structured(structured)
+    async def _run_response_guard_pipeline(self, user_message: str) -> LLMStructuredResponse:
+        """Resolve routing, build the structured response and run the guard chain.
 
-    async def get_structured_response(self, user_message: str) -> LLMStructuredResponse:
-        """Return the raw structured response without executing actions."""
+        Shared by ``handle`` and ``get_structured_response`` (D3): the two entry
+        points differ only in what they do with the guarded response.
+        """
         self._current_user_message = user_message
         routing_decision, _route_profile = self._resolve_request_routing(user_message)
         effective_user_message = routing_decision.effective_user_message
@@ -441,6 +417,14 @@ class StructuredChatAgent:
         structured = self._apply_phagescope_fallback(structured)
         structured = self._apply_task_execution_followthrough_guardrail(structured)
         return self._apply_completion_claim_guardrail(structured)
+
+    async def handle(self, user_message: str) -> AgentResult:
+        structured = await self._run_response_guard_pipeline(user_message)
+        return await self.execute_structured(structured)
+
+    async def get_structured_response(self, user_message: str) -> LLMStructuredResponse:
+        """Return the raw structured response without executing actions."""
+        return await self._run_response_guard_pipeline(user_message)
 
     def _build_deterministic_local_manuscript_structured(
         self,
