@@ -10,6 +10,7 @@ import subprocess
 import json
 import os
 import re
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -872,6 +873,16 @@ async def code_executor_handler(
 
         cli_progress = {"last_output_at": 0.0}
         cli_prompt_tokens_accumulated = 0
+        cli_delegation_elapsed_ms = 0.0
+
+        @asynccontextmanager
+        async def _measure_cli_delegation():
+            nonlocal cli_delegation_elapsed_ms
+            started_at = time.perf_counter()
+            try:
+                yield
+            finally:
+                cli_delegation_elapsed_ms += (time.perf_counter() - started_at) * 1000.0
 
         async def _record_stream_line(decoded_line: str, lines, callback, stream_name: str):
             try:
@@ -1124,7 +1135,8 @@ async def code_executor_handler(
             return local_return_code, local_stdout, local_stderr, local_output_data
 
         async with _maybe_hold_execution_lock():
-            return_code, stdout, stderr, output_data = await _run_cli_with_retry(task)
+            async with _measure_cli_delegation():
+                return_code, stdout, stderr, output_data = await _run_cli_with_retry(task)
 
             success = return_code == 0
             is_no_output_timeout = _is_qwen_no_output_timeout(stderr, stdout)
@@ -1263,12 +1275,13 @@ async def code_executor_handler(
                     "re-execution (previous timeout/fatal CLI failure)" if (is_no_output_timeout or is_qwen_truncated_tool_failure) else "search",
                 )
                 try:
-                    sg_rc, sg_stdout, sg_stderr, sg_output = await asyncio.wait_for(
-                        _run_cli_with_retry(
-                            sg_prompt, phase="search_generate",
-                        ),
-                        timeout=300.0,
-                    )
+                    async with _measure_cli_delegation():
+                        sg_rc, sg_stdout, sg_stderr, sg_output = await asyncio.wait_for(
+                            _run_cli_with_retry(
+                                sg_prompt, phase="search_generate",
+                            ),
+                            timeout=300.0,
+                        )
                     produced_files = _collect_run_artifacts(run_dir=task_work_dir, subdirs=task_subdirs)
                     if unified_output_dir:
                         unified_promoted_files_qwen = _promote_results_to_unified_dir(
@@ -1362,10 +1375,11 @@ async def code_executor_handler(
                             contract_diff=contract_diff,
                             guidance=contract_fix_guidance,
                         )
-                        return_code, stdout, stderr, output_data = await _run_cli_with_retry(
-                            repair_task,
-                            phase="repair",
-                        )
+                        async with _measure_cli_delegation():
+                            return_code, stdout, stderr, output_data = await _run_cli_with_retry(
+                                repair_task,
+                                phase="repair",
+                            )
                         success = return_code == 0
                         execution_status = "completed" if return_code == 0 else "failed"
                         blocked_detail = _detect_scope_blocked(stdout, output_data)
@@ -1498,6 +1512,10 @@ async def code_executor_handler(
                 plan_id=resolved_plan_id,
                 task_id=resolved_task_id,
                 call_purpose="qwen_code_cli_execution",
+                duration_ms=cli_delegation_elapsed_ms,
+                run_id=run_id,
+                tool_name="code_executor",
+                call_status="ok" if success else "error",
             )
 
         # Build return result

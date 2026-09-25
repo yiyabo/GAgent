@@ -684,13 +684,13 @@ def _parse_cli_usage_from_jsonl(stdout: str) -> Optional[Dict[str, int]]:
     return None
 
 
-def _record_external_cli_usage(*, provider: str, model: Optional[str], prompt_tokens: int, completion_tokens: int, session_id: Optional[str], plan_id: Optional[int], task_id: Optional[int], call_purpose: str) -> Optional[Dict[str, Any]]:
+def _record_external_cli_usage(*, provider: str, model: Optional[str], prompt_tokens: int, completion_tokens: int, session_id: Optional[str], plan_id: Optional[int], task_id: Optional[int], call_purpose: str, duration_ms: Optional[float] = None, run_id: Optional[str] = None, tool_name: Optional[str] = None, call_status: Optional[str] = None) -> Optional[Dict[str, Any]]:
     try:
         from app.repository.llm_usage import estimate_llm_cost, log_llm_usage
         model_name = str(model or "unknown").strip() or "unknown"
         total_tokens = max(0, int(prompt_tokens or 0)) + max(0, int(completion_tokens or 0))
         cost = estimate_llm_cost(provider=provider, model=model_name, prompt_tokens=prompt_tokens, completion_tokens=completion_tokens)
-        log_llm_usage(provider=provider, model=model_name, prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, total_tokens=total_tokens, session_id=session_id, plan_id=plan_id, task_id=task_id, call_purpose=call_purpose, input_cost=cost["input_cost"], output_cost=cost["output_cost"], estimated_cost=cost["estimated_cost"], cost_currency=cost["cost_currency"])
+        log_llm_usage(provider=provider, model=model_name, prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, total_tokens=total_tokens, session_id=session_id, plan_id=plan_id, task_id=task_id, call_purpose=call_purpose, duration_ms=duration_ms, run_id=run_id, tool_name=tool_name, call_status=call_status, input_cost=cost["input_cost"], output_cost=cost["output_cost"], estimated_cost=cost["estimated_cost"], cost_currency=cost["cost_currency"])
         return {"provider": provider, "model": model_name, "prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens, "total_tokens": total_tokens, **cost}
     except Exception as exc:
         logger.warning("[CODE_EXECUTOR] Failed to record external CLI usage: %s", exc)
