@@ -149,3 +149,24 @@ def mock_llm_chat(monkeypatch: pytest.MonkeyPatch):
         )
 
     return _set
+
+
+@pytest.fixture
+def local_phagescope_corpus(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """Minimal PhageScope corpus exposed through the documented PHAGESCOPE_DATA_DIR override.
+
+    The production corpus is a local multi-gigabyte dataset that is not distributed
+    with the repository (``resource_registry`` also lists absolute container paths),
+    so ``phagescope.sequence_corpus`` only resolves on machines that happen to host
+    that data. Tests that need registry resolution point the supported
+    ``PHAGESCOPE_DATA_DIR`` override at a disposable corpus instead of depending on
+    ambient machine state.
+
+    The returned root satisfies the registry contract: it contains ``phage_fasta/``.
+    """
+    corpus = tmp_path / "phagescope"
+    fasta_dir = corpus / "phage_fasta"
+    fasta_dir.mkdir(parents=True, exist_ok=True)
+    (fasta_dir / "demo_phage.fasta").write_text(">demo_phage\nACGTACGT\n", encoding="utf-8")
+    monkeypatch.setenv("PHAGESCOPE_DATA_DIR", str(corpus))
+    return corpus

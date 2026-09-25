@@ -87,8 +87,11 @@ def _write_metadata(path: Path) -> None:
         writer.writerows(rows)
 
 
-def test_phagescope_research_audit_and_prepare_metadata_table(tmp_path: Path) -> None:
-    data_dir = tmp_path / "phagescope"
+def test_phagescope_research_audit_and_prepare_metadata_table(
+    tmp_path: Path,
+    local_phagescope_corpus: Path,
+) -> None:
+    data_dir = local_phagescope_corpus
     _write_metadata(data_dir / "meta_data" / "test_phage_meta_data.tsv")
     output_dir = tmp_path / "out"
 
@@ -106,6 +109,9 @@ def test_phagescope_research_audit_and_prepare_metadata_table(tmp_path: Path) ->
     assert audit["code_executor_add_dirs"] == [str(data_dir), str(data_dir.resolve())]
     assert audit["resource_contract"] == {"requires": ["resource:phagescope.sequence_corpus"]}
     assert "phagescope.sequence_corpus" in audit["resources"]
+    resource = audit["resources"]["phagescope.sequence_corpus"]
+    assert Path(resource["root"]) == data_dir
+    assert [Path(path) for path in resource["required_paths"]] == [data_dir / "phage_fasta"]
     assert any("tarfile.open" in note for note in audit["notes"])
 
     prepared = asyncio.run(

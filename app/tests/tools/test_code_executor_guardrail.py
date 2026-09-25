@@ -1184,6 +1184,9 @@ def test_code_executor_rotates_qwen_session_id_after_in_use_conflict(
     runtime_root = tmp_path / "runtime"
     project_root = tmp_path / "project"
     (project_root / "data").mkdir(parents=True, exist_ok=True)
+    # Qwen Code requires credentials; without an explicit key the handler
+    # short-circuits before the retry logic this test exercises.
+    monkeypatch.setenv("QWEN_API_KEY", "sk-test")
 
     monkeypatch.setattr(code_executor_module, "_RUNTIME_DIR", runtime_root)
     monkeypatch.setattr(code_executor_module, "_PROJECT_ROOT", project_root)
@@ -2113,7 +2116,9 @@ def test_engineering_task_matcher_detects_engineering_requests(task_text: str) -
     assert _looks_like_engineering_task(task_text) is True
 
 
-def test_resolved_resources_are_re_resolved_from_registry() -> None:
+def test_resolved_resources_are_re_resolved_from_registry(
+    local_phagescope_corpus: Path,
+) -> None:
     from tool_box.tools_impl.code_executor import (
         _build_cli_task_contract,
         _normalize_resolved_resources,
@@ -2133,8 +2138,8 @@ def test_resolved_resources_are_re_resolved_from_registry() -> None:
     dirs = _resource_read_dirs(normalized)
 
     assert not any(path == "/etc" or path.startswith("/etc/") for path in dirs)
-    assert any(path.endswith("/phagescope") for path in dirs)
-    assert any(path.endswith("/phage_fasta") for path in dirs)
+    assert str(local_phagescope_corpus) in dirs
+    assert str(local_phagescope_corpus / "phage_fasta") in dirs
     assert "resolved_resources" not in code_executor_tool["parameters"]["properties"]
 
     prompt = _build_cli_task_contract(

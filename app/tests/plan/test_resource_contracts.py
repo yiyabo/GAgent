@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from app.services.plans.artifact_contracts import infer_artifact_contract
 from app.services.resources.resource_registry import resolve_resources
 
@@ -22,7 +24,9 @@ def test_resource_contract_keeps_artifact_aliases_separate() -> None:
     }
 
 
-def test_resource_contract_accepts_resource_requires_and_resolves_phagescope() -> None:
+def test_resource_contract_accepts_resource_requires_and_resolves_phagescope(
+    local_phagescope_corpus: Path,
+) -> None:
     contract = infer_artifact_contract(
         task_name="Compute k-mer features",
         instruction="Use resource:phagescope.sequence_corpus for phage_fasta inputs.",
@@ -41,8 +45,10 @@ def test_resource_contract_accepts_resource_requires_and_resolves_phagescope() -
     resolved, missing = resolve_resources(contract["resources"])
     assert missing == []
     resource = resolved["phagescope.sequence_corpus"]
-    assert resource["root"].endswith("/phagescope")
-    assert any(path.endswith("/phage_fasta") for path in resource["required_paths"])
+    assert Path(resource["root"]) == local_phagescope_corpus
+    assert [Path(path) for path in resource["required_paths"]] == [
+        local_phagescope_corpus / "phage_fasta"
+    ]
     assert any("tarfile.open" in hint for hint in resource["format_hints"])
 
 

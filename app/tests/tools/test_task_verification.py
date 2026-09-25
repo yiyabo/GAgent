@@ -1297,7 +1297,11 @@ def test_derived_criteria_reject_fake_pdf(tmp_path):
     assert any(item["type"] == "pdf_valid" for item in failures)
 
 
-def test_plan_executor_verifies_artifact_path_mentioned_in_final_answer(tmp_path, monkeypatch):
+def test_plan_executor_verifies_artifact_path_mentioned_in_final_answer(
+    tmp_path,
+    monkeypatch,
+    local_phagescope_corpus,
+):
     output_path = tmp_path / "raw_files" / "task_1" / "task_2" / "data_audit.json"
     output_path.parent.mkdir(parents=True)
     output_path.write_text(json.dumps({"metadata": {"metadata_rows": 5}, "metadata_rows": 5}), encoding="utf-8")
