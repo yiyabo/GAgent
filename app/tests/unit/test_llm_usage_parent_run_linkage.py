@@ -162,3 +162,174 @@ def test_log_llm_usage_leaves_parent_null_by_default(ledger_db: Path) -> None:
     assert len(rows) == 1
     assert rows[0]["run_id"] == "chat_run_1"
     assert rows[0]["parent_run_id"] is None
+
+
+def _seed_parent_and_children() -> None:
+    """One parent chat turn with its own calls plus two delegated child runs."""
+    log_llm_usage(
+        provider="qwen",
+        model="qwen-max",
+        prompt_tokens=1000,
+        completion_tokens=500,
+        total_tokens=1500,
+        session_id="session-1",
+        call_purpose="chat_main",
+        run_id="chat_run_42",
+        duration_ms=2000.0,
+    )
+    log_llm_usage(
+        provider="qwen",
+        model="qwen-max",
+        prompt_tokens=200,
+        completion_tokens=100,
+        total_tokens=300,
+        session_id="session-1",
+        call_purpose="chat_main",
+        run_id="chat_run_42",
+        duration_ms=1000.0,
+    )
+    log_llm_usage(
+        provider="qwen_code_cli",
+        model="qwen3.7-max",
+        prompt_tokens=4000,
+        completion_tokens=1000,
+        total_tokens=5000,
+        session_id="session-1",
+        call_purpose="qwen_code_cli_execution",
+        run_id="child_run_a",
+        parent_run_id="chat_run_42",
+        tool_name="code_executor",
+        duration_ms=60000.0,
+        call_status="ok",
+    )
+    log_llm_usage(
+        provider="qwen_code_cli",
+        model="qwen3.7-max",
+        prompt_tokens=200,
+        completion_tokens=100,
+        total_tokens=300,
+        session_id="session-1",
+        call_purpose="qwen_code_cli_execution",
+        run_id="child_run_b",
+        parent_run_id="chat_run_42",
+        tool_name="code_executor",
+        duration_ms=5000.0,
+        call_status="error",
+    )
+
+
+def test_child_run_usage_summary_aggregates_delegations(ledger_db: Path) -> None:
+    from app.repository.llm_usage import get_child_run_usage_summary
+
+    init_llm_usage_table()
+    _seed_parent_and_children()
+
+    summary = get_child_run_usage_summary("chat_run_42")
+
+    assert summary is not None
+    assert summary["parent_run_id"] == "chat_run_42"
+    assert summary["child_run_count"] == 2
+
+    # Children are ordered by wall clock, which is where delegation cost lands.
+    first, second = summary["children"]
+    assert first["child_run_id"] == "child_run_a"
+    assert first["total_tokens"] == 5000
+    assert first["prompt_tokens"] == 4000
+    assert first["completion_tokens"] == 1000
+    assert first["duration_ms"] == 60000.0
+    assert first["providers"] == ["qwen_code_cli"]
+    assert first["models"] == ["qwen3.7-max"]
+    assert first["tool_names"] == ["code_executor"]
+    assert first["call_statuses"] == ["ok"]
+    assert first["ok_calls"] == 1
+    assert first["error_calls"] == 0
+
+    assert second["child_run_id"] == "child_run_b"
+    assert second["total_tokens"] == 300
+    assert second["call_statuses"] == ["error"]
+    assert second["ok_calls"] == 0
+    assert second["error_calls"] == 1
+
+    assert summary["children_total"]["total_tokens"] == 5300
+    assert summary["children_total"]["duration_ms"] == 65000.0
+    assert summary["children_total"]["error_calls"] == 1
+    assert summary["children_total"]["ok_calls"] == 1
+
+    parent_own = summary["parent_own"]
+    assert parent_own is not None
+    assert parent_own["run_id"] == "chat_run_42"
+    assert parent_own["call_count"] == 2
+    assert parent_own["total_tokens"] == 1800
+    assert parent_own["duration_ms"] == 3000.0
+    assert parent_own["error_calls"] == 0
+
+    assert summary["combined_total"]["total_tokens"] == 7100
+    assert summary["combined_total"]["duration_ms"] == 68000.0
+    assert summary["combined_total"]["call_count"] == 4
+
+
+def test_child_run_usage_summary_without_links(ledger_db: Path) -> None:
+    from app.repository.llm_usage import get_child_run_usage_summary
+
+    init_llm_usage_table()
+    log_llm_usage(
+        provider="qwen",
+        model="qwen-max",
+        prompt_tokens=10,
+        completion_tokens=5,
+        total_tokens=15,
+        call_purpose="chat_main",
+        run_id="solo_run",
+        duration_ms=500.0,
+    )
+
+    summary = get_child_run_usage_summary("solo_run")
+
+    assert summary is not None
+    assert summary["child_run_count"] == 0
+    assert summary["children"] == []
+    assert summary["children_total"]["total_tokens"] == 0
+    assert summary["children_total"]["duration_ms"] == 0.0
+    assert summary["parent_own"]["total_tokens"] == 15
+    assert summary["combined_total"]["total_tokens"] == 15
+
+
+def test_child_run_usage_summary_handles_unknown_parent(ledger_db: Path) -> None:
+    from app.repository.llm_usage import get_child_run_usage_summary
+
+    init_llm_usage_table()
+    _seed_parent_and_children()
+
+    summary = get_child_run_usage_summary("no_such_run")
+
+    assert summary is not None
+    assert summary["child_run_count"] == 0
+    assert summary["parent_own"] is None
+    assert summary["combined_total"]["total_tokens"] == 0
+
+
+def test_child_run_usage_summary_requires_parent_run_id(ledger_db: Path) -> None:
+    from app.repository.llm_usage import get_child_run_usage_summary
+
+    init_llm_usage_table()
+    assert get_child_run_usage_summary("") is None
+
+
+def test_run_usage_summary_keeps_reporting_the_child_run(ledger_db: Path) -> None:
+    """A delegated run's own summary must stay keyed on its own run id."""
+    from app.repository.llm_usage import get_run_usage_summary
+
+    init_llm_usage_table()
+    _seed_parent_and_children()
+
+    child = get_run_usage_summary("child_run_a")
+
+    assert child is not None
+    assert child["run_id"] == "child_run_a"
+    assert child["call_count"] == 1
+    assert child["total_tokens"] == 5000
+
+    parent = get_run_usage_summary("chat_run_42")
+    assert parent is not None
+    # Parent's own total excludes delegated spend — the link is opt-in.
+    assert parent["total_tokens"] == 1800

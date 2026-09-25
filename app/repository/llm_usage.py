@@ -122,7 +122,6 @@ def _migrate_add_parent_run_column(conn: Any) -> None:
             pass
 
 
-
 def _cost_env_key(provider: str, model: str, kind: str) -> str:
     token = f"{provider}_{model}_{kind}".upper()
     safe = "".join(ch if ch.isalnum() else "_" for ch in token)
@@ -754,3 +753,126 @@ def get_run_usage_summary(run_id: str) -> Optional[Dict[str, Any]]:
                 for r in by_purpose
             ],
         }
+
+
+def _run_totals(row: Any) -> Dict[str, Any]:
+    return {
+        "call_count": row["call_count"],
+        "prompt_tokens": row["prompt_tokens"],
+        "completion_tokens": row["completion_tokens"],
+        "total_tokens": row["total_tokens"],
+        "estimated_cost": round(float(row["estimated_cost"] or 0.0), 6),
+        "duration_ms": round(float(row["duration_ms"] or 0.0), 1),
+        "ok_calls": row["ok_calls"],
+        "error_calls": row["error_calls"],
+    }
+
+
+def get_child_run_usage_summary(parent_run_id: str) -> Optional[Dict[str, Any]]:
+    """Cost of everything delegated from one run (sub-agent drill-down).
+
+    A delegated run is recorded with its own ``run_id`` and a ``parent_run_id``
+    pointing at the run that delegated it.  Given the parent, this answers the
+    per-turn question "how many times did this turn delegate, and what did the
+    delegated work cost?":
+
+    * ``parent_own`` — what the parent run logged itself (``None`` when the
+      parent has no rows of its own, e.g. it only delegated)
+    * ``children`` — one entry per delegated child run: tokens, wall clock
+      (``duration_ms``), provider/model, call status and tool that delegated
+    * ``child_run_count`` / ``children_total`` — how many delegations happened
+      and what they cost together
+    * ``combined_total`` — parent plus children, the full cost of the turn
+
+    Returns ``None`` for an empty ``parent_run_id``.  Example (a chat turn whose
+    run id is ``chat_run_42``)::
+
+        summary = get_child_run_usage_summary("chat_run_42")
+        summary["child_run_count"]                     # delegations this turn
+        summary["children_total"]["total_tokens"]      # tokens spent inside them
+        summary["children_total"]["error_calls"]       # how many failed
+        summary["combined_total"]["duration_ms"]       # parent + children time
+    """
+    if not parent_run_id:
+        return None
+    with get_db() as conn:
+        parent_row = conn.execute(
+            """
+            SELECT
+                COUNT(*) as call_count,
+                COALESCE(SUM(prompt_tokens), 0) as prompt_tokens,
+                COALESCE(SUM(completion_tokens), 0) as completion_tokens,
+                COALESCE(SUM(total_tokens), 0) as total_tokens,
+                COALESCE(SUM(estimated_cost), 0) as estimated_cost,
+                COALESCE(SUM(duration_ms), 0) as duration_ms,
+                COALESCE(SUM(CASE WHEN call_status = 'ok' THEN 1 ELSE 0 END), 0) as ok_calls,
+                COALESCE(SUM(CASE WHEN call_status = 'error' THEN 1 ELSE 0 END), 0) as error_calls
+            FROM llm_usage_log
+            WHERE run_id = ?
+            """,
+            (parent_run_id,),
+        ).fetchone()
+        child_rows = conn.execute(
+            """
+            SELECT
+                run_id as child_run_id,
+                COUNT(*) as call_count,
+                COALESCE(SUM(prompt_tokens), 0) as prompt_tokens,
+                COALESCE(SUM(completion_tokens), 0) as completion_tokens,
+                COALESCE(SUM(total_tokens), 0) as total_tokens,
+                COALESCE(SUM(estimated_cost), 0) as estimated_cost,
+                COALESCE(SUM(duration_ms), 0) as duration_ms,
+                COALESCE(SUM(CASE WHEN call_status = 'ok' THEN 1 ELSE 0 END), 0) as ok_calls,
+                COALESCE(SUM(CASE WHEN call_status = 'error' THEN 1 ELSE 0 END), 0) as error_calls,
+                MIN(created_at) as first_call_at,
+                MAX(created_at) as last_call_at,
+                GROUP_CONCAT(DISTINCT provider) as providers,
+                GROUP_CONCAT(DISTINCT model) as models,
+                GROUP_CONCAT(DISTINCT COALESCE(tool_name, '')) as tool_names,
+                GROUP_CONCAT(DISTINCT COALESCE(call_status, '')) as call_statuses
+            FROM llm_usage_log
+            WHERE parent_run_id = ? AND run_id IS NOT NULL
+            GROUP BY run_id
+            ORDER BY duration_ms DESC, child_run_id
+            """,
+            (parent_run_id,),
+        ).fetchall()
+
+    children: List[Dict[str, Any]] = []
+    for row in child_rows:
+        children.append({
+            "child_run_id": row["child_run_id"],
+            **_run_totals(row),
+            "providers": sorted({value for value in (row["providers"] or "").split(",") if value}),
+            "models": sorted({value for value in (row["models"] or "").split(",") if value}),
+            "tool_names": sorted({value for value in (row["tool_names"] or "").split(",") if value}),
+            "call_statuses": sorted({value for value in (row["call_statuses"] or "").split(",") if value}),
+            "first_call_at": row["first_call_at"],
+            "last_call_at": row["last_call_at"],
+        })
+
+    totals_keys = ("call_count", "prompt_tokens", "completion_tokens", "total_tokens", "ok_calls", "error_calls")
+    children_total = {key: sum(child[key] for child in children) for key in totals_keys}
+    children_total["estimated_cost"] = round(sum(child["estimated_cost"] for child in children), 6)
+    children_total["duration_ms"] = round(sum(child["duration_ms"] for child in children), 1)
+
+    parent_own = (
+        {"run_id": parent_run_id, **_run_totals(parent_row)}
+        if parent_row and parent_row["call_count"]
+        else None
+    )
+    combined_total = dict(children_total)
+    if parent_own:
+        for key in totals_keys:
+            combined_total[key] += parent_own[key]
+        combined_total["estimated_cost"] = round(combined_total["estimated_cost"] + parent_own["estimated_cost"], 6)
+        combined_total["duration_ms"] = round(combined_total["duration_ms"] + parent_own["duration_ms"], 1)
+
+    return {
+        "parent_run_id": parent_run_id,
+        "child_run_count": len(children),
+        "parent_own": parent_own,
+        "children": children,
+        "children_total": children_total,
+        "combined_total": combined_total,
+    }

@@ -305,6 +305,7 @@ def resolve_parent_run_id(child_run_id: Optional[str] = None) -> Optional[str]:
         return None
     return parent
 
+
 # ---------------------------------------------------------------------------
 # Shared HTTP connection pools — eliminates per-request TCP/TLS handshake
 # overhead (typically 60-150 ms saved per LLM call).
