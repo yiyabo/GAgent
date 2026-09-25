@@ -409,7 +409,12 @@ async def execute_chat_run(run_id: str) -> None:
     )
     from contextlib import ExitStack
 
+    from app.llm import clear_usage_context
+
     _scope = ExitStack()
+    # Handles of the run-scoped usage context, reset in the finally below so the
+    # run's attribution (its run id) cannot outlive the run.
+    usage_context_tokens: list = []
     try:
         row = get_chat_run(run_id)
         if not row:
@@ -431,7 +436,10 @@ async def execute_chat_run(run_id: str) -> None:
         await emitter.emit({"type": "start", "run_id": run_id})
 
         agent, message_to_send = await build_agent_for_chat_request(
-            request, save_user_message=False
+            request,
+            save_user_message=False,
+            run_id=run_id,
+            usage_token_sink=usage_context_tokens.append,
         )
         agent._current_user_message = message_to_send
 
@@ -517,3 +525,10 @@ async def execute_chat_run(run_id: str) -> None:
         hub.forget_worker_task(run_id)
         hub.cleanup_run_signals(run_id)
         cancellation.reset_cancel_token(cancel_handle)
+        for usage_token in usage_context_tokens:
+            try:
+                clear_usage_context(usage_token)
+            except Exception:  # pragma: no cover - attribution must not mask the run result
+                logger.warning(
+                    "usage context reset failed run=%s", run_id, exc_info=True
+                )

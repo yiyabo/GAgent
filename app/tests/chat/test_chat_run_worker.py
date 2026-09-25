@@ -123,7 +123,7 @@ def test_execute_chat_run_uses_unified_stream_for_single_explicit_task(monkeypat
     )
     monkeypatch.setattr("app.services.chat_run_worker.mark_chat_run_started", lambda run_id: None)
     monkeypatch.setattr("app.services.chat_run_worker.mark_chat_run_finished", lambda run_id, status, error=None: None)
-    async def _fake_build_agent(req, save_user_message=False):
+    async def _fake_build_agent(req, **kwargs):
         return (agent, req.message)
 
     monkeypatch.setattr(
@@ -187,7 +187,7 @@ def test_execute_chat_run_binds_the_run_cancel_token_into_the_tool_context(
         lambda run_id, status, error=None: None,
     )
 
-    async def _fake_build_agent(req, save_user_message=False):
+    async def _fake_build_agent(req, **kwargs):
         return (agent, req.message)
 
     monkeypatch.setattr(

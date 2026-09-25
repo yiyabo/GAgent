@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 from app.services.plans.plan_session import PlanSession
 
@@ -35,12 +35,22 @@ async def build_agent_for_chat_request(
     request: ChatRequest,
     *,
     save_user_message: bool = True,
+    run_id: Optional[str] = None,
+    usage_token_sink: Optional[Callable[[Any], None]] = None,
 ) -> Tuple[Any, str]:
     """
     Construct StructuredChatAgent and the effective user message (incl. attachment hints).
 
     When ``save_user_message`` is True and ``session_id`` is set, persists the user turn
     (same behavior as ``/chat/stream``).
+
+    ``run_id`` is the chat run this turn belongs to (the ``dt_...`` id of the
+    background run); it is carried into the usage context so the turn's own LLM
+    calls are attributed to the run — the parent a delegated sub-agent resolves
+    its ``parent_run_id`` from.  The binding outlives this function by design
+    (the caller keeps working in it), so a caller that owns a run scope passes
+    ``usage_token_sink`` to receive the context token and hands it to
+    ``clear_usage_context`` in its ``finally``.
     """
     context = dict(request.context or {})
     incoming_plan_id = context.get("plan_id")
@@ -239,12 +249,20 @@ async def build_agent_for_chat_request(
     )
 
     from app.llm import set_usage_context
-    set_usage_context(
+    usage_token = set_usage_context(
         session_id=request.session_id,
         plan_id=plan_session.plan_id,
         task_id=context.get("current_task_id"),
+        run_id=run_id,
         phase="chat",
         call_purpose="chat_main",
     )
+    if usage_token_sink is not None:
+        try:
+            usage_token_sink(usage_token)
+        except Exception:  # pragma: no cover - attribution bookkeeping only
+            logger.warning(
+                "[CHAT][USAGE] usage token sink failed for run=%s", run_id, exc_info=True
+            )
 
     return agent, message_to_send
