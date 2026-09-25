@@ -8,16 +8,12 @@ Uses the official 'claude' command-line tool.
 import logging
 import subprocess
 import json
-import fnmatch as _fnmatch
-import hashlib
 import os
 import re
-import shlex
-import shutil
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import Any, AsyncIterator, Dict, List, Optional, Callable, Awaitable, Sequence
+from typing import Any, Dict, List, Optional, Callable, Awaitable, Sequence
 import asyncio
 from uuid import uuid4
 from app.services.plans.artifact_validation import get_artifact_validation_prompt_specs

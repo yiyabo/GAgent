@@ -8,17 +8,11 @@ passed as the first argument.
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import json
 import logging
-import os
 import re
-import inspect
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any, Dict, List, Optional, Tuple, Union
-from uuid import uuid4
+from typing import Any, Dict, List, Optional, Tuple
 
 from app.services.llm.structured_response import LLMAction, LLMStructuredResponse
 from app.services.plans.acceptance_criteria import derive_expected_deliverables

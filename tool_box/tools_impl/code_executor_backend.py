@@ -7,7 +7,6 @@ call time; existing lazy imports remain inside their original functions.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import os

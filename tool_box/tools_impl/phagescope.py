@@ -4,16 +4,9 @@ PhageScope API Tool
 Provides access to the PhageScope phage analysis service.
 """
 
-import asyncio
-import ast
-import csv
 import json
 import logging
-import os
-import re
 import time
-from datetime import datetime, timezone
-from io import StringIO
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 

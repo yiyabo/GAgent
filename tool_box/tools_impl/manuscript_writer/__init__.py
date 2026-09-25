@@ -32,17 +32,10 @@ call time (``from .. import manuscript_writer as facade``).
 
 from __future__ import annotations
 
-import asyncio
-import json
 import logging
-import os
-import shutil
 import re
 import time
-import difflib
-from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Awaitable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 logger = logging.getLogger(__name__)
 

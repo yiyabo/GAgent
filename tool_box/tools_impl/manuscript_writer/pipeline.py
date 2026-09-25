@@ -21,7 +21,7 @@ import time
 import difflib
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Awaitable, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
