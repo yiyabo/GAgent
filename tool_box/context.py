@@ -47,11 +47,27 @@ class ToolContext:
 
     # --- cancellation ---
     abort_event: Optional[asyncio.Event] = None
-    """Set by the orchestrator when the user cancels; tools should check periodically."""
+    """Legacy per-context abort flag; the orchestrator does **not** populate it.
+
+    Handlers may set it themselves and it is still honored when present, but it
+    is not the live cancellation signal: the orchestrator sets the thread-safe
+    ambient ``CancelToken`` once per run (``app.services.cancellation``), because
+    an ``asyncio.Event`` belongs to one loop and cannot cross the worker-thread
+    hop a delegated CLI takes.  Check :attr:`is_cancelled`, not this field.
+    """
 
     # --- progress callback ---
     on_progress: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None
     """Async callback for reporting intermediate progress to the UI."""
+
+    on_progress_loop: Optional[asyncio.AbstractEventLoop] = None
+    """Event loop that owns :attr:`on_progress`.
+
+    A handler running on another thread (``delegate_task`` → ``execute_sync`` →
+    ``asyncio.run``) cannot await the callback in place and must post the payload
+    back to this loop; ``None`` means the callback's loop is the caller's own.
+    Set by whoever injects :attr:`on_progress`.
+    """
 
     # --- extensible metadata ---
     model_provider: Optional[Dict[str, Any]] = None
@@ -60,5 +76,17 @@ class ToolContext:
 
     @property
     def is_cancelled(self) -> bool:
-        """Check if the abort signal has been set."""
-        return self.abort_event is not None and self.abort_event.is_set()
+        """Whether this execution has been asked to stop.
+
+        Consults a caller-set :attr:`abort_event` when there is one, plus the
+        ambient cancel token the orchestrator binds for every cancellable run —
+        the token is what actually reaches a delegated CLI's worker thread.
+        """
+        if self.abort_event is not None and self.abort_event.is_set():
+            return True
+        try:
+            from app.services.cancellation import current_cancel_token
+        except ImportError:  # pragma: no cover - tool_box used without the app
+            return False
+        token = current_cancel_token()
+        return bool(token is not None and token.cancelled)

@@ -5,7 +5,9 @@ Extracted from ``code_executor.py`` (clusters C5 + the qwen half of C7) per
 the qwen CLI timeout knobs, the drain/watchdog loop, the early-exit contract
 verification + flat-output materialization, transcript extraction and pending
 shell-call recovery, CLI failure error construction, partial-completion
-detection, and the qwen command/container-mount builders.
+detection, and the qwen command/container-mount builders.  The delegation cancel
+watcher lives here too, and its 0.25s poll also carries the delegation's progress
+heartbeat (``delegation_progress``), self-gated to its own interval.
 
 Compatibility contract (gating.py pattern): the ``code_executor`` facade
 re-exports every name defined here; test and production import sites keep
@@ -30,7 +32,7 @@ import shutil
 import signal
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Sequence
 
 from app.services.cancellation import current_cancel_token
 from app.services.plans.acceptance_criteria import derive_expected_deliverables
@@ -239,6 +241,7 @@ async def _await_delegation_cancellation(
     cli_label: str,
     cancel_state: Dict[str, Any],
     container_name: Optional[str] = None,
+    on_tick: Optional[Callable[[], Awaitable[None]]] = None,
 ) -> None:
     """Kill the CLI process group once the ambient cancel token is set.
 
@@ -246,16 +249,33 @@ async def _await_delegation_cancellation(
     untouched when nothing cancels (the watcher is a no-op task then).  The
     kill makes the stream drain finish, which lets the ordinary return-code
     path report a terminated CLI instead of a fabricated success.
+
+    ``on_tick`` rides the same poll: it is the delegation's progress heartbeat
+    (``delegation_progress``), which self-gates on its own interval so the 0.25s
+    poll never becomes an event every 0.25s.  A tick that raises is contained
+    here — a broken progress channel must not retire the cancel watch.
     """
     token = current_cancel_token()
-    if token is None:
+    if token is None and on_tick is None:
         return
 
     poll = _ce()._resolve_delegation_cancel_poll_seconds()
-    while not token.cancelled:
+    while token is None or not token.cancelled:
         if getattr(process, "returncode", None) is not None:
             return
         await asyncio.sleep(poll)
+        if on_tick is not None:
+            try:
+                await on_tick()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001 - fail-open by contract
+                logger.warning(
+                    "[CODE_EXECUTOR] %s delegation progress heartbeat failed: %s: %s",
+                    cli_label,
+                    type(exc).__name__,
+                    exc,
+                )
 
     if getattr(process, "returncode", None) is not None:
         return
@@ -266,7 +286,7 @@ async def _await_delegation_cancellation(
         "[CODE_EXECUTOR] %s delegation cancelled (token=%s); terminating CLI process group "
         "(pid=%s container=%s)",
         cli_label,
-        token.reason or "cancelled",
+        (token.reason or "cancelled") if token is not None else "cancelled",
         getattr(process, "pid", None),
         container_name or "-",
     )
@@ -279,14 +299,16 @@ def _start_delegation_cancel_watch(
     cli_label: str,
     cancel_state: Dict[str, Any],
     container_name: Optional[str] = None,
+    on_tick: Optional[Callable[[], Awaitable[None]]] = None,
 ) -> None:
     """(Re)arm the cancel watcher for *process*; the previous one is retired.
 
-    Nothing is scheduled at all when no token is bound, so an execution outside
-    a cancellable run keeps its exact previous behaviour.
+    Nothing is scheduled at all when neither a token is bound nor a progress
+    heartbeat is wanted, so an execution outside a cancellable run with no
+    progress channel keeps its exact previous behaviour.
     """
     _stop_delegation_cancel_watch(cancel_state)
-    if current_cancel_token() is None:
+    if current_cancel_token() is None and on_tick is None:
         return
 
     async def _watch() -> None:
@@ -296,6 +318,7 @@ def _start_delegation_cancel_watch(
                 cli_label=cli_label,
                 cancel_state=cancel_state,
                 container_name=container_name,
+                on_tick=on_tick,
             )
         except asyncio.CancelledError:
             raise

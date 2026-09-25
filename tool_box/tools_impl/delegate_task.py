@@ -21,6 +21,7 @@ stdout/stderr, transcripts) never travels back into the parent context. Only
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import os
 import time
@@ -377,11 +378,25 @@ async def delegate_task_handler(
     )
 
     started_at = time.perf_counter()
+    # The parent's activity-stream channel. The delegation is driven from a
+    # worker thread, so the callback and the loop that owns it must travel
+    # together: the CLI lane posts progress back onto this loop.
+    on_progress = getattr(tool_context, "on_progress", None)
+    on_progress_loop = (
+        asyncio.get_running_loop() if on_progress is not None else None
+    )
     try:
         # The delegation is synchronous (and can run for hours), so it must not
         # block the event loop; the worker thread has no running loop, which is
         # the shape the plan domain already drives it in.
-        result = await asyncio.to_thread(_new_executor().execute, spec)
+        result = await asyncio.to_thread(
+            functools.partial(
+                _new_executor().execute,
+                spec,
+                on_progress=on_progress,
+                on_progress_loop=on_progress_loop,
+            )
+        )
     except Exception as exc:  # noqa: BLE001 - reported as a bounded failure
         duration_ms = (time.perf_counter() - started_at) * 1000.0
         logger.exception("delegate_task delegation raised: %s", exc)

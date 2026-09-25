@@ -90,10 +90,18 @@ async def execute_code_handler(
     stop = threading.Event()
 
     def abort_check() -> bool:
+        """Polled by the kernel wait loop (from the cell's worker thread).
+
+        ``ToolContext.is_cancelled`` reports both a caller-set ``abort_event`` and
+        the ambient cancel token the orchestrator binds once per run; the token is
+        the one that actually crosses into this thread, which is why this check
+        used to be dead (nothing ever set ``abort_event``).
+        """
         if stop.is_set():
             return True
-        abort_event = getattr(tool_context, "abort_event", None) if tool_context else None
-        return bool(abort_event is not None and abort_event.is_set())
+        return bool(
+            tool_context is not None and getattr(tool_context, "is_cancelled", False)
+        )
 
     cell = asyncio.to_thread(
         kernel_module.run_cell,

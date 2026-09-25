@@ -294,6 +294,9 @@ async def _execute_native_tool_call(
 
     tool_ctx = ToolContext(
         on_progress=_progress_bridge,
+        # Recorded so a handler that offloads its work to a worker thread (the
+        # delegated CLI lanes) can post progress back onto this loop.
+        on_progress_loop=asyncio.get_running_loop(),
         plan_id=agent._current_plan_id(),
         session_id=str(agent.request_profile.get("session_id") or "").strip() or None,
         owner_id=str(agent.request_profile.get("owner_id") or "").strip() or None,

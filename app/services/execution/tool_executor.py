@@ -40,6 +40,15 @@ class ToolExecutionContext:
     on_stdout: Optional[Callable[[str], Awaitable[None]]] = None
     on_stderr: Optional[Callable[[str], Awaitable[None]]] = None
     resolved_resources: Optional[Dict[str, Any]] = None
+    on_progress: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None
+    """Progress callback forwarded to the handler's ``ToolContext``.
+
+    Carried explicitly so a caller that offloads this execution to a worker
+    thread (``delegate_task`` → ``execute_sync``) can still report into the
+    parent run's activity stream.
+    """
+    on_progress_loop: Optional[asyncio.AbstractEventLoop] = None
+    """The loop that owns ``on_progress``; see ``ToolContext.on_progress_loop``."""
 
 
 class UnifiedToolExecutor:
@@ -91,6 +100,15 @@ class UnifiedToolExecutor:
 
         from tool_box.context import ToolContext  # lazy to avoid circular import
 
+        # The callback's owning loop defaults to this one: ``execute`` is always
+        # awaited somewhere, so when the caller handed us a callback without
+        # naming its loop, this loop is where it may be awaited in place.  A
+        # worker-thread execution (execute_sync) is always given the loop
+        # explicitly, because awaiting it here would be a cross-loop call.
+        progress_loop = (
+            context.on_progress_loop or asyncio.get_running_loop()
+        ) if context.on_progress else None
+
         tool_ctx = ToolContext(
             session_id=context.session_id,
             plan_id=context.plan_id,
@@ -100,6 +118,8 @@ class UnifiedToolExecutor:
             owner_id=context.owner_id,
             work_dir=context.work_dir or "",
             model_provider=getattr(context, 'model_provider', None),
+            on_progress=context.on_progress,
+            on_progress_loop=progress_loop,
         )
 
         timeout = int(self.TOOL_TIMEOUTS.get(tool_name, self._default_timeout))

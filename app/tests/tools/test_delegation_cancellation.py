@@ -491,7 +491,7 @@ async def test_delegate_task_reports_a_cancelled_status(
     monkeypatch.setenv("DELEGATE_TASK_ENABLED", "1")
 
     class _Executor:
-        def execute(self, _spec):
+        def execute(self, _spec, **_kwargs):
             return TaskDelegationResult(
                 status="cancelled",
                 summary="",

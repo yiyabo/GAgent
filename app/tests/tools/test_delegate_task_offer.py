@@ -162,7 +162,7 @@ async def test_on_dispatch_through_the_registry_reaches_the_handler(
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             pass
 
-        def execute(self, spec: Any) -> TaskDelegationResult:
+        def execute(self, spec: Any, **_kwargs: Any) -> TaskDelegationResult:
             captured["spec"] = spec
             return TaskDelegationResult(
                 status="completed",

@@ -46,7 +46,9 @@ class _Recorder:
     def __call__(self, *args: Any, **kwargs: Any) -> "_Recorder":
         return self
 
-    def execute(self, spec: TaskDelegationSpec) -> TaskDelegationResult:
+    def execute(
+        self, spec: TaskDelegationSpec, **_kwargs: Any
+    ) -> TaskDelegationResult:
         self.specs.append(spec)
         if self.raises is not None:
             raise self.raises

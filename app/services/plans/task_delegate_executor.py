@@ -14,7 +14,7 @@ import json
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import cast
+from typing import Any, Callable, Dict, Optional, cast
 
 from ..execution.tool_executor import ToolExecutionContext, UnifiedToolExecutor
 
@@ -65,7 +65,21 @@ class CodeAgentTaskDelegateExecutor:
         self._tool_executor: UnifiedToolExecutor
         self._tool_executor = tool_executor or UnifiedToolExecutor()
 
-    def execute(self, spec: TaskDelegationSpec) -> TaskDelegationResult:
+    def execute(
+        self,
+        spec: TaskDelegationSpec,
+        *,
+        on_progress: Optional[Callable[[Dict[str, Any]], Any]] = None,
+        on_progress_loop: Optional[Any] = None,
+    ) -> TaskDelegationResult:
+        """Run the delegation and return its digest.
+
+        ``on_progress`` / ``on_progress_loop`` are the caller's activity-stream
+        channel: the executor is synchronous and may be driven from a worker
+        thread, so the callback and the loop that owns it are forwarded down to
+        the CLI lane, which reports the run's start, heartbeat and outcome.
+        Omitted (the plan-domain shape), the delegation reports nothing.
+        """
         plan_bound = self._is_plan_bound(spec)
         params: dict[str, object] = {
             "task": self._build_delegate_prompt(spec),
@@ -96,6 +110,8 @@ class CodeAgentTaskDelegateExecutor:
                 channel="plan_executor" if plan_bound else "chat",
                 mode="delegated_task_execution",
                 resolved_resources=spec.resolved_resources,
+                on_progress=on_progress,
+                on_progress_loop=on_progress_loop,
             ),
             ),
         )

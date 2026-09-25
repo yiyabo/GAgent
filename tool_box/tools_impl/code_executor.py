@@ -161,6 +161,10 @@ from .code_executor_contracts import (
     _summarize_dependency_blockers,
     _validate_scope_contract,
 )
+from .delegation_progress import (
+    build_delegation_progress,
+    format_duration as _format_delegation_duration,
+)
 
 # Compat alias: the CLI-stdout partial-completion detector was renamed to
 # _detect_partial_completion_cli in the qwen sibling (see its docstring) so it
@@ -885,6 +889,18 @@ async def code_executor_handler(
         # Shared across the primary / search-generate / repair CLI phases: once a
         # cancellation has been observed, no later phase may run.
         cli_cancel_state: Dict[str, Any] = {"cancelled": False, "note": "", "task": None}
+        # Reported by the progress heartbeat riding the cancel watcher's poll.
+        cli_delegation_state: Dict[str, Any] = {
+            "attempt": 1,
+            "total_attempts": max_cli_retries + 1,
+            "phase": "primary",
+        }
+        delegation_progress = build_delegation_progress(
+            tool_context,
+            run_id=run_id,
+            backend="qwen_code" if use_qwen_code_backend else "claude_code",
+            lane=execution_lane,
+        )
 
         @asynccontextmanager
         async def _measure_cli_delegation():
@@ -894,6 +910,67 @@ async def code_executor_handler(
                 yield
             finally:
                 cli_delegation_elapsed_ms += (time.perf_counter() - started_at) * 1000.0
+
+        async def _heartbeat_cli_delegation() -> None:
+            """Interval-gated "still running" report (no-op without a callback)."""
+            await delegation_progress.heartbeat(
+                attempt=cli_delegation_state["attempt"],
+                total_attempts=cli_delegation_state["total_attempts"],
+                phase=cli_delegation_state["phase"],
+            )
+
+        async def _report_delegation_outcome(
+            *,
+            status: str,
+            success: bool,
+            cancelled: bool,
+            cli_usage: Optional[Dict[str, Any]],
+            produced_files_count: int,
+            error_category: Optional[str] = None,
+        ) -> None:
+            """Terminal report for the whole CLI delegation (never raises)."""
+            elapsed = delegation_progress.elapsed_seconds
+            elapsed_label = _format_delegation_duration(elapsed)
+            artifacts_label = (
+                f"{produced_files_count} artifact"
+                if produced_files_count == 1
+                else f"{produced_files_count} artifacts"
+            )
+            if cancelled:
+                stage, message = "cancelled", f"Sub-agent run cancelled after {elapsed_label}"
+            elif success:
+                stage = "completed"
+                message = f"Sub-agent run completed in {elapsed_label} ({artifacts_label})"
+            else:
+                stage = "failed"
+                message = f"Sub-agent run failed after {elapsed_label}"
+            detail_parts = [f"run {run_id}"]
+            total_tokens = None
+            if isinstance(cli_usage, dict):
+                raw_tokens = cli_usage.get("total_tokens")
+                if isinstance(raw_tokens, (int, float)):
+                    total_tokens = int(raw_tokens)
+            if total_tokens is not None:
+                detail_parts.append(f"{total_tokens} tokens")
+            detail_parts.append(artifacts_label)
+            detail_parts.append(
+                f"attempt {cli_delegation_state['attempt']}/"
+                f"{cli_delegation_state['total_attempts']}"
+            )
+            if error_category:
+                detail_parts.append(str(error_category))
+            await delegation_progress.report(
+                stage,
+                message,
+                detail=" · ".join(detail_parts),
+                elapsed_seconds=round(elapsed, 1),
+                status=status,
+                produced_files_count=produced_files_count,
+                total_tokens=total_tokens,
+                error_category=error_category,
+                attempt=cli_delegation_state["attempt"],
+                phase=cli_delegation_state["phase"],
+            )
 
         async def _record_stream_line(decoded_line: str, lines, callback, stream_name: str):
             try:
@@ -946,6 +1023,9 @@ async def code_executor_handler(
             cancel_state = cli_cancel_state
 
             for _attempt in range(1, max_cli_retries + 2):
+                # What the progress heartbeat reports while this attempt runs.
+                cli_delegation_state["attempt"] = _attempt
+                cli_delegation_state["phase"] = phase
                 if use_qwen_code_backend:
                     if _attempt == 1:
                         _qwen_session_id = _build_qwen_execution_session_id(
@@ -984,12 +1064,14 @@ async def code_executor_handler(
                     _read_stream(process.stderr, local_stderr_lines, on_stderr, "stderr")
                 )
                 # No-op unless a cancel token is bound to this execution context
-                # (chat run / plan task); see app/services/cancellation.py.
+                # (chat run / plan task); see app/services/cancellation.py. The
+                # same watcher carries the delegation's progress heartbeat.
                 _start_delegation_cancel_watch(
                     process=process,
                     cli_label=_cli_label,
                     cancel_state=cancel_state,
                     container_name=_docker_container_name,
+                    on_tick=_heartbeat_cli_delegation,
                 )
 
                 try:
@@ -1166,6 +1248,27 @@ async def code_executor_handler(
                     local_output_data = {"raw_output": local_stdout}
             return local_return_code, local_stdout, local_stderr, local_output_data
 
+        # The delegation is about to begin (the CLI spawn still waits for the
+        # session's execution slot). Reported here rather than at spawn time so
+        # the queue wait is visible too; the heartbeat starts with the CLI, whose
+        # watcher is what carries it.
+        delegation_detail = (
+            f"run {run_id} · backend "
+            f"{'qwen_code' if use_qwen_code_backend else 'claude_code'}"
+            f" · model {effective_model or 'default'}"
+        )
+        task_excerpt = " ".join(str(task or "").split())
+        if task_excerpt:
+            if len(task_excerpt) > 120:
+                task_excerpt = task_excerpt[:119].rstrip() + "…"
+            delegation_detail += f" · task: {task_excerpt}"
+        await delegation_progress.report(
+            "started",
+            f"Delegating to {_cli_label} · lane {execution_lane}",
+            detail=delegation_detail,
+            attempt=1,
+            phase="primary",
+        )
         async with _maybe_hold_execution_lock():
             async with _measure_cli_delegation():
                 return_code, stdout, stderr, output_data = await _run_cli_with_retry(task)
@@ -1725,6 +1828,22 @@ async def code_executor_handler(
             result_payload["error_category"] = "cancelled"
             result_payload["error_summary"] = cancel_summary
             result_payload["error"] = cancel_summary
+
+        # Terminal progress report for the delegation (never raises; a run
+        # without a progress channel skips it). Sent before returning so it
+        # cannot land after the tool result it belongs to.
+        await _report_delegation_outcome(
+            status=str(result_payload.get("execution_status") or ("completed" if success else "failed")),
+            success=bool(result_payload.get("success")),
+            cancelled=bool(result_payload.get("cancelled")),
+            cli_usage=cli_usage if isinstance(cli_usage, dict) else None,
+            produced_files_count=len(produced_files),
+            error_category=(
+                str(result_payload.get("error_category"))
+                if result_payload.get("error_category")
+                else None
+            ),
+        )
 
         return result_payload
 
