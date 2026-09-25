@@ -298,6 +298,7 @@ from .code_executor_backend import (
     _resolve_code_executor_backend,
     _resolve_code_executor_docker_image,
     _resolve_code_executor_local_runtime,
+    _resolve_delegation_parent_run_id,
     _resolve_promoted_output_files,
     _resolve_setting_sources,
     _should_fallback_from_qwen_infra_failure,

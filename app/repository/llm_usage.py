@@ -30,6 +30,7 @@ def init_llm_usage_table() -> None:
         _migrate_add_session_columns(conn)
         _migrate_add_cost_columns(conn)
         _migrate_add_attribution_columns(conn)
+        _migrate_add_parent_run_column(conn)
         conn.commit()
 
 
@@ -99,6 +100,24 @@ def _migrate_add_attribution_columns(conn: Any) -> None:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_llm_usage_billing_key ON llm_usage_log(billing_key)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_llm_usage_logical_call_id ON llm_usage_log(logical_call_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_llm_usage_phase ON llm_usage_log(phase)")
+        except Exception:
+            pass
+
+
+def _migrate_add_parent_run_column(conn: Any) -> None:
+    """Add the sub-agent delegation link (parent_run_id) if missing.
+
+    A delegated run keeps its own ``run_id``; ``parent_run_id`` carries the run
+    it was delegated from (the conversation turn / plan task), so child rows can
+    be grouped under their parent without changing existing attribution.
+    """
+    _migrate_add_columns(conn, [
+        ("parent_run_id", "TEXT"),
+    ])
+    existing_columns = {row["name"] for row in conn.execute("PRAGMA table_info(llm_usage_log)").fetchall()}
+    if "parent_run_id" in existing_columns:
+        try:
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_llm_usage_parent_run_id ON llm_usage_log(parent_run_id)")
         except Exception:
             pass
 
@@ -182,7 +201,15 @@ def log_llm_usage(
     output_cost: Optional[float] = None,
     estimated_cost: Optional[float] = None,
     cost_currency: Optional[str] = None,
+    parent_run_id: Optional[str] = None,
 ) -> None:
+    """Insert one usage row.
+
+    ``run_id`` identifies the run the call belongs to; ``parent_run_id`` links a
+    delegated sub-agent run back to the run that delegated it. Callers leave
+    ``parent_run_id`` unset for their own calls, so nothing changes for rows
+    that carry no delegation link.
+    """
     from ..billing_keys import billing_key_for_purpose, normalize_billing_key
 
     resolved_billing_key = normalize_billing_key(
@@ -210,9 +237,10 @@ def log_llm_usage(
                 run_id, phase, tool_name, call_status, duration_ms,
                 billing_key, logical_call_id, attempt_no, upstream_request_id,
                 cache_read_tokens, cache_creation_tokens,
-                input_cost, output_cost, estimated_cost, cost_currency
+                input_cost, output_cost, estimated_cost, cost_currency,
+                parent_run_id
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 provider,
@@ -240,6 +268,7 @@ def log_llm_usage(
                 output_cost,
                 estimated_cost,
                 cost_currency,
+                parent_run_id,
             ),
         )
         conn.commit()

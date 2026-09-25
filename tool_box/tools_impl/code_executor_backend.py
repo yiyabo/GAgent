@@ -684,13 +684,31 @@ def _parse_cli_usage_from_jsonl(stdout: str) -> Optional[Dict[str, int]]:
     return None
 
 
-def _record_external_cli_usage(*, provider: str, model: Optional[str], prompt_tokens: int, completion_tokens: int, session_id: Optional[str], plan_id: Optional[int], task_id: Optional[int], call_purpose: str, duration_ms: Optional[float] = None, run_id: Optional[str] = None, tool_name: Optional[str] = None, call_status: Optional[str] = None) -> Optional[Dict[str, Any]]:
+def _resolve_delegation_parent_run_id(child_run_id: Optional[str]) -> Optional[str]:
+    """Parent run id for a delegated run, read from the ambient usage context.
+
+    ``asyncio.to_thread`` / ``asyncio.run`` copy contextvars into the worker
+    that runs the delegation, so the surrounding chat-run / plan-task run is
+    visible here.  Fail-open: an unreadable context means "no parent", never a
+    failed accounting row.
+    """
+    try:
+        from app.llm import resolve_parent_run_id
+
+        return resolve_parent_run_id(child_run_id)
+    except Exception:
+        return None
+
+
+def _record_external_cli_usage(*, provider: str, model: Optional[str], prompt_tokens: int, completion_tokens: int, session_id: Optional[str], plan_id: Optional[int], task_id: Optional[int], call_purpose: str, duration_ms: Optional[float] = None, run_id: Optional[str] = None, tool_name: Optional[str] = None, call_status: Optional[str] = None, parent_run_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
     try:
         from app.repository.llm_usage import estimate_llm_cost, log_llm_usage
         model_name = str(model or "unknown").strip() or "unknown"
         total_tokens = max(0, int(prompt_tokens or 0)) + max(0, int(completion_tokens or 0))
+        if parent_run_id is None:
+            parent_run_id = _ce()._resolve_delegation_parent_run_id(run_id)
         cost = estimate_llm_cost(provider=provider, model=model_name, prompt_tokens=prompt_tokens, completion_tokens=completion_tokens)
-        log_llm_usage(provider=provider, model=model_name, prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, total_tokens=total_tokens, session_id=session_id, plan_id=plan_id, task_id=task_id, call_purpose=call_purpose, duration_ms=duration_ms, run_id=run_id, tool_name=tool_name, call_status=call_status, input_cost=cost["input_cost"], output_cost=cost["output_cost"], estimated_cost=cost["estimated_cost"], cost_currency=cost["cost_currency"])
+        log_llm_usage(provider=provider, model=model_name, prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, total_tokens=total_tokens, session_id=session_id, plan_id=plan_id, task_id=task_id, call_purpose=call_purpose, duration_ms=duration_ms, run_id=run_id, parent_run_id=parent_run_id, tool_name=tool_name, call_status=call_status, input_cost=cost["input_cost"], output_cost=cost["output_cost"], estimated_cost=cost["estimated_cost"], cost_currency=cost["cost_currency"])
         return {"provider": provider, "model": model_name, "prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens, "total_tokens": total_tokens, **cost}
     except Exception as exc:
         logger.warning("[CODE_EXECUTOR] Failed to record external CLI usage: %s", exc)

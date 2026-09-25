@@ -279,6 +279,32 @@ def update_usage_context(**fields: Any) -> None:
 def clear_usage_context(token: contextvars.Token) -> None:
     _usage_context.reset(token)
 
+
+def resolve_parent_run_id(child_run_id: Optional[str] = None) -> Optional[str]:
+    """Run id of the ambient usage context — the parent of a delegated run.
+
+    A delegation records its own ``run_id`` (the child run).  This resolves the
+    surrounding context's ``run_id`` (the conversation turn / plan task that
+    delegated) so child rows can be grouped under their parent.
+
+    Returns ``None`` when the child run is unknown, when no usage context is
+    visible, and when the ambient run is the child's own run — a self-reference
+    carries no attribution.
+    """
+    try:
+        ctx = _usage_context.get()
+    except Exception:
+        return None
+    if not isinstance(ctx, dict):
+        return None
+    child = str(child_run_id or "").strip()
+    if not child:
+        return None
+    parent = str(ctx.get("run_id") or "").strip()
+    if not parent or parent == child:
+        return None
+    return parent
+
 # ---------------------------------------------------------------------------
 # Shared HTTP connection pools — eliminates per-request TCP/TLS handshake
 # overhead (typically 60-150 ms saved per LLM call).
