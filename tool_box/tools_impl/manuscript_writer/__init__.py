@@ -147,7 +147,6 @@ from .pipeline import (
     _build_section_failure_row,
     _parse_json_payload,
     manuscript_writer_handler,
-    manuscript_writer_tool,
 )
 from .prompts import (
     _build_analysis_prompt,
@@ -181,3 +180,4 @@ from .rubrics import (
     _validate_citations,
     _weighted_score,
 )
+from .schema import manuscript_writer_tool
