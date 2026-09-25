@@ -1,11 +1,19 @@
 from __future__ import annotations
 
 import json
+from importlib.util import find_spec
+
 import joblib
+import pytest
 from sklearn.dummy import DummyClassifier
 from sklearn.ensemble import RandomForestClassifier
 
 from app.services.plans.artifact_validation import validate_artifact
+
+
+def _parquet_engine_available() -> bool:
+    """pandas needs pyarrow or fastparquet to read/write .parquet files."""
+    return find_spec("pyarrow") is not None or find_spec("fastparquet") is not None
 
 
 def test_ml_validation_metrics_rejects_placeholder_all_zero_metrics(tmp_path):
@@ -159,6 +167,13 @@ def test_ml_model_checkpoints_rejects_dummy_classifier_even_when_large(tmp_path)
     assert "dummyclassifier" in result.failure_reason.lower() or "dummy" in result.failure_reason.lower()
 
 
+@pytest.mark.skipif(
+    not _parquet_engine_available(),
+    reason=(
+        "No Parquet engine installed (pyarrow/fastparquet), so pandas cannot write the "
+        ".parquet fixture this test validates; add pyarrow to requirements*.txt to enable it"
+    ),
+)
 def test_training_metadata_parquet_accepts_required_identifier_column(tmp_path):
     import pandas as pd
 
