@@ -167,7 +167,12 @@ class CodeAgentTaskDelegateExecutor:
         execution_success = bool(result_payload.get("success", tool_success))
         error_category = str(result_payload.get("error_category") or "").strip().lower()
         blocked_reason = str(result_payload.get("blocked_reason") or "").strip()
-        if error_category == "blocked_dependency" or blocked_reason:
+        cancelled = bool(result_payload.get("cancelled")) or error_category == "cancelled"
+        if cancelled:
+            # A cancelled delegation is neither a completed nor a failed task:
+            # keep the distinct status so callers cannot report it as either.
+            status = "cancelled"
+        elif error_category == "blocked_dependency" or blocked_reason:
             status = "blocked"
         elif tool_success and execution_success:
             status = "completed"
@@ -198,6 +203,9 @@ class CodeAgentTaskDelegateExecutor:
             "error_summary": result_payload.get("error_summary"),
             "contract_diff": result_payload.get("contract_diff"),
             "contract_artifacts": result_payload.get("contract_artifacts"),
+            # Additive: present only when the delegation was cancelled, so every
+            # other metadata dict stays byte-identical to before.
+            "cancelled": True if cancelled else None,
         }
         metadata = {key: value for key, value in metadata.items() if value is not None}
         return TaskDelegationResult(
@@ -236,6 +244,8 @@ class CodeAgentTaskDelegateExecutor:
             return "Task completed successfully."
         if status == "blocked":
             return "External task delegation blocked by missing dependency."
+        if status == "cancelled":
+            return "External task delegation cancelled by user request."
         return "External task delegation failed."
 
     @staticmethod

@@ -27,10 +27,12 @@ import os
 import re
 import shlex
 import shutil
+import signal
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
+from app.services.cancellation import current_cancel_token
 from app.services.plans.acceptance_criteria import derive_expected_deliverables
 
 from .code_executor_cli_parse import (
@@ -75,6 +77,18 @@ _QWEN_PROCESS_EXIT_WAIT_SECONDS = 30.0
 _QWEN_PROCESS_KILL_WAIT_SECONDS = 10.0
 _QWEN_CLI_NO_OUTPUT_TIMEOUT_SECONDS = 1800.0
 _QWEN_FATAL_DEBUG_SCAN_BYTES = 65536
+_DELEGATION_CANCEL_POLL_SECONDS = 0.25
+_DELEGATION_CANCEL_GRACE_SECONDS = 2.0
+
+#: Marker appended to stderr when a cancel killed the delegation's CLI process.
+#: It must not overlap the qwen watchdog / infrastructure patterns in
+#: ``code_executor_backend`` — otherwise a cancellation would be reclassified as
+#: a retryable infrastructure failure and re-delegated.
+DELEGATION_CANCELLED_MARKER = "[DELEGATION_CANCELLED]"
+DELEGATION_CANCELLED_NOTE = (
+    f"{DELEGATION_CANCELLED_MARKER} delegation cancelled by user request; "
+    "the CLI process group was terminated"
+)
 
 
 def _resolve_qwen_completed_output_exit_grace_seconds() -> float:
@@ -125,6 +139,190 @@ def _resolve_qwen_cli_no_output_timeout_seconds() -> float:
         return max(5.0, min(7200.0, float(raw)))
     except ValueError:
         return _QWEN_CLI_NO_OUTPUT_TIMEOUT_SECONDS
+
+
+def _resolve_delegation_cancel_poll_seconds() -> float:
+    """How long a cancelled delegation may take to notice (bounds the latency).
+
+    Clamped to 2s so that even at the maximum setting the CLI receives its
+    termination signal well inside the promised five-second bound.
+    """
+    raw = str(os.getenv("DELEGATION_CANCEL_POLL_SECONDS", "")).strip()
+    if not raw:
+        return _DELEGATION_CANCEL_POLL_SECONDS
+    try:
+        return max(0.05, min(2.0, float(raw)))
+    except ValueError:
+        return _DELEGATION_CANCEL_POLL_SECONDS
+
+
+def _resolve_delegation_cancel_grace_seconds() -> float:
+    """How long SIGTERM gets to work before the process group is SIGKILLed."""
+    raw = str(os.getenv("DELEGATION_CANCEL_GRACE_SECONDS", "")).strip()
+    if not raw:
+        return _DELEGATION_CANCEL_GRACE_SECONDS
+    try:
+        return max(0.0, min(10.0, float(raw)))
+    except ValueError:
+        return _DELEGATION_CANCEL_GRACE_SECONDS
+
+
+def _is_delegation_cancelled(*texts: Any) -> bool:
+    """True when any supplied stdout/stderr text carries the cancel marker."""
+    for text in texts:
+        if DELEGATION_CANCELLED_MARKER in str(text or ""):
+            return True
+    return False
+
+
+def _cli_process_group_id(process: Any) -> Optional[int]:
+    """The CLI child's process group, or None when it cannot be signalled.
+
+    None covers every shape the escalation has to fall back from: a fake
+    process without a pid (tests), an already reaped child, and non-POSIX hosts.
+    """
+    pid = getattr(process, "pid", None)
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        return None
+    try:
+        return os.getpgid(pid)
+    except (ProcessLookupError, PermissionError, OSError):
+        return None
+
+
+async def _terminate_cli_process_group(process: Any, *, cli_label: str) -> None:
+    """SIGTERM the CLI's process group, escalating to SIGKILL after the grace window.
+
+    Same escalation as ``execute_code``'s kernel kill (``_kill_process_group``)
+    and the same intent as the qwen watchdog/timeout branches: the process body
+    must be gone, not merely reported as dead.  Killing the *group* is what
+    reaches the shell/python children the CLI spawned; it requires the CLI to be
+    its own session leader (``start_new_session=True`` at spawn).  When the group
+    cannot be resolved — or would be our own process group, which must never be
+    signalled — the fallback is the pre-existing ``process.kill()``.
+    """
+    group = _cli_process_group_id(process)
+    if group is None or group == os.getpgrp():
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass
+        return
+
+    try:
+        os.killpg(group, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+
+    grace = _ce()._resolve_delegation_cancel_grace_seconds()
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + grace
+    while getattr(process, "returncode", None) is None and loop.time() < deadline:
+        await asyncio.sleep(0.05)
+
+    if getattr(process, "returncode", None) is None:
+        logger.warning(
+            "[CODE_EXECUTOR] %s process group %s survived SIGTERM for %.1fs; killing.",
+            cli_label,
+            group,
+            grace,
+        )
+        try:
+            os.killpg(group, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+
+
+async def _await_delegation_cancellation(
+    *,
+    process: Any,
+    cli_label: str,
+    cancel_state: Dict[str, Any],
+    container_name: Optional[str] = None,
+) -> None:
+    """Kill the CLI process group once the ambient cancel token is set.
+
+    Runs beside the normal drain/watchdog wait, so the wait loop's cadence is
+    untouched when nothing cancels (the watcher is a no-op task then).  The
+    kill makes the stream drain finish, which lets the ordinary return-code
+    path report a terminated CLI instead of a fabricated success.
+    """
+    token = current_cancel_token()
+    if token is None:
+        return
+
+    poll = _ce()._resolve_delegation_cancel_poll_seconds()
+    while not token.cancelled:
+        if getattr(process, "returncode", None) is not None:
+            return
+        await asyncio.sleep(poll)
+
+    if getattr(process, "returncode", None) is not None:
+        return
+
+    cancel_state["cancelled"] = True
+    cancel_state["note"] = DELEGATION_CANCELLED_NOTE
+    logger.warning(
+        "[CODE_EXECUTOR] %s delegation cancelled (token=%s); terminating CLI process group "
+        "(pid=%s container=%s)",
+        cli_label,
+        token.reason or "cancelled",
+        getattr(process, "pid", None),
+        container_name or "-",
+    )
+    await _terminate_cli_process_group(process, cli_label=cli_label)
+
+
+def _start_delegation_cancel_watch(
+    *,
+    process: Any,
+    cli_label: str,
+    cancel_state: Dict[str, Any],
+    container_name: Optional[str] = None,
+) -> None:
+    """(Re)arm the cancel watcher for *process*; the previous one is retired.
+
+    Nothing is scheduled at all when no token is bound, so an execution outside
+    a cancellable run keeps its exact previous behaviour.
+    """
+    _stop_delegation_cancel_watch(cancel_state)
+    if current_cancel_token() is None:
+        return
+
+    async def _watch() -> None:
+        try:
+            await _await_delegation_cancellation(
+                process=process,
+                cli_label=cli_label,
+                cancel_state=cancel_state,
+                container_name=container_name,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning(
+                "[CODE_EXECUTOR] delegation cancel watcher failed (%s): %s",
+                cli_label,
+                type(exc).__name__,
+            )
+
+    cancel_state["task"] = asyncio.get_running_loop().create_task(_watch())
+
+
+def _stop_delegation_cancel_watch(cancel_state: Dict[str, Any]) -> None:
+    """Retire the watcher task; it is already done once the CLI has exited."""
+    task = cancel_state.pop("task", None)
+    if task is None:
+        return
+    if not task.done():
+        task.cancel()
+        return
+    # A finished task is never awaited; retrieving its (swallowed) exception here
+    # keeps asyncio from reporting it as never retrieved.
+    try:
+        task.exception()
+    except asyncio.CancelledError:
+        pass
 
 
 async def _wait_for_cli_process_return_code(

@@ -149,6 +149,35 @@ async def test_pump_applies_cancel_and_steer(db: sqlite3.Connection) -> None:
     assert cr.fetch_unconsumed_chat_run_signals("run_sig") == []
 
 
+async def test_pump_cancel_also_sets_the_thread_safe_delegation_token(
+    db: sqlite3.Connection,
+) -> None:
+    """The durable fallback must reach the worker's CLI watchdog too.
+
+    A delegation watches the CLI subprocess from a worker thread, where only a
+    ``threading`` primitive can be observed — so the pump's cancel has to flip
+    the run's cancel token, not just the loop-side event.
+    """
+    _mk_run(db, "run_sig")
+    cancel_ev = hub.ensure_cancel_event("run_sig")
+    token = hub.ensure_cancel_token("run_sig")
+    assert token.cancelled is False
+    cr.insert_chat_run_signal("run_sig", "cancel")
+
+    stop = asyncio.Event()
+    task = asyncio.create_task(run_signal_pump("run_sig", stop))
+    for _ in range(50):
+        if token.cancelled:
+            break
+        await asyncio.sleep(0.05)
+    stop.set()
+    await task
+
+    assert cancel_ev.is_set()
+    assert token.cancelled is True
+    assert token.reason == "chat_run_cancelled"
+
+
 async def test_pump_survives_db_errors(db: sqlite3.Connection, monkeypatch: pytest.MonkeyPatch) -> None:
     _mk_run(db, "run_sig")
     calls = {"n": 0}

@@ -144,3 +144,82 @@ def test_execute_chat_run_uses_unified_stream_for_single_explicit_task(monkeypat
     asyncio.run(execute_chat_run("run-1"))
 
     assert called == {"process": 1, "direct": 0}
+
+def test_execute_chat_run_binds_the_run_cancel_token_into_the_tool_context(
+    monkeypatch,
+) -> None:
+    """The run's cancel token must be visible to the delegation that runs inside.
+
+    ``code_executor`` / ``delegate_task`` supervise their CLI subprocess in a
+    worker thread (``asyncio.to_thread``), so the token has to be bound in the
+    run's context — and a stop request must flip the very object the delegation
+    holds, without touching the loop-side ``asyncio.Event`` plumbing.
+    """
+    from app.services import cancellation
+    from app.services import chat_run_hub as hub
+
+    run_id = "run-cancel-token"
+    request = ChatRequest(message="hello", session_id="session-1")
+    seen: dict = {}
+
+    async def _fake_process_unified_stream(*args, **kwargs):
+        # What a delegation running inside this run would read.
+        seen["token"] = cancellation.current_cancel_token()
+        seen["registry_token"] = hub.cancel_token(run_id)
+        hub.request_cancel(run_id)  # the user pressed stop
+        if False:
+            yield None
+
+    agent = SimpleNamespace(
+        extra_context={},
+        session_id="session-1",
+        history=[],
+        process_unified_stream=_fake_process_unified_stream,
+    )
+
+    monkeypatch.setattr(
+        "app.services.chat_run_worker.get_chat_run",
+        lambda run_id: {"request_json": request.model_dump_json()},
+    )
+    monkeypatch.setattr("app.services.chat_run_worker.mark_chat_run_started", lambda run_id: None)
+    monkeypatch.setattr(
+        "app.services.chat_run_worker.mark_chat_run_finished",
+        lambda run_id, status, error=None: None,
+    )
+
+    async def _fake_build_agent(req, save_user_message=False):
+        return (agent, req.message)
+
+    monkeypatch.setattr(
+        "app.services.chat_run_worker.build_agent_for_chat_request", _fake_build_agent
+    )
+    monkeypatch.setattr("app.services.chat_run_worker.ChatRunEmitter", lambda run_id: _FakeEmitter())
+    monkeypatch.setattr("app.services.chat_run_worker.start_owner_lease", lambda *a, **k: None)
+    monkeypatch.setattr("app.services.chat_run_worker.stop_owner_lease", lambda *a, **k: None)
+    monkeypatch.setattr("app.services.chat_run_worker._capture_quality_snapshot", lambda run_id: None)
+    # Keep this test off the database entirely.
+    monkeypatch.setattr("app.services.chat_run_worker.claim_chat_run_lease", lambda *a, **k: True)
+    monkeypatch.setattr("app.services.chat_run_worker.release_chat_run_lease", lambda *a, **k: True)
+    monkeypatch.setattr("app.services.chat_run_worker.heartbeat_chat_run_lease", lambda *a, **k: True)
+
+    async def _noop_pump(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr("app.services.chat_run_worker.run_signal_pump", _noop_pump)
+
+    try:
+        asyncio.run(execute_chat_run(run_id))
+
+        token = seen.get("token")
+        assert token is not None, "the run never reached the stream"
+        # The delegation sees the run's registered token and a stop request flips
+        # that exact object...
+        assert token is seen.get("registry_token")
+        assert token.cancelled is True
+        assert token.reason == "chat_run_cancelled"
+        # ...and the binding is gone once the run is over.
+        assert cancellation.current_cancel_token() is None
+        assert hub.cancel_token(run_id) is None
+    finally:
+        hub.cleanup_run_signals(run_id)
+        cancellation.set_cancel_token(None)

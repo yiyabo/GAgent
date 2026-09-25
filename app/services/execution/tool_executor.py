@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
+from app.services import cancellation
 from app.services.deliverables import (
     format_deliverable_submit_summary,
     get_deliverable_publisher,
@@ -236,8 +237,17 @@ class UnifiedToolExecutor:
             running_loop = None
 
         if running_loop and running_loop.is_running():
+            # ThreadPoolExecutor.submit does not copy the caller's contextvars
+            # (unlike asyncio.to_thread), so the ambient cancel token is re-bound
+            # explicitly — otherwise a cancellation could not reach the delegated
+            # CLI process from this branch.
+            token = cancellation.current_cancel_token()
             with ThreadPoolExecutor(max_workers=1) as executor:
-                return executor.submit(lambda: asyncio.run(_run())).result()
+                return executor.submit(
+                    cancellation.call_with_cancel_token,
+                    token,
+                    lambda: asyncio.run(_run()),
+                ).result()
         return asyncio.run(_run())
 
     async def _safe_callback(self, callback: Callable[..., Any], *args: Any) -> None:

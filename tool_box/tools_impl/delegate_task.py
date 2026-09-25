@@ -244,6 +244,7 @@ _STATUS_FALLBACK_SUMMARY = {
     "completed": "Sub-agent delegation completed.",
     "blocked": "Sub-agent delegation is blocked: a required input was missing (see trace_ref).",
     "failed": "Sub-agent delegation failed.",
+    "cancelled": "Sub-agent delegation was cancelled by user request.",
 }
 
 

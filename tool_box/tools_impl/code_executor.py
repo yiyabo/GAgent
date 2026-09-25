@@ -90,6 +90,7 @@ from .code_executor_cli_parse import (
     _qwen_truncated_tool_failure_note,
 )
 from .code_executor_qwen import (
+    DELEGATION_CANCELLED_NOTE,
     _PARTIAL_COMPLETION_PATTERNS,
     _QWEN_CLI_NO_OUTPUT_TIMEOUT_SECONDS,
     _QWEN_COMPLETED_OUTPUT_EXIT_CHECK_SECONDS,
@@ -109,6 +110,7 @@ from .code_executor_qwen import (
     _extract_pending_qwen_function_call,
     _extract_pending_qwen_shell_command,
     _find_unique_run_prefixed_contract_source,
+    _is_delegation_cancelled,
     _materialize_contract_outputs_for_standard_paths,
     _materialize_contract_view_for_flat_outputs,
     _qwen_outputs_pass_contract_for_early_exit,
@@ -116,12 +118,17 @@ from .code_executor_qwen import (
     _read_qwen_debug_log_text,
     _read_qwen_transcript_text,
     _recover_pending_qwen_shell_call,
+    _resolve_delegation_cancel_grace_seconds,
+    _resolve_delegation_cancel_poll_seconds,
     _resolve_qwen_cli_no_output_timeout_seconds,
     _resolve_qwen_completed_output_exit_check_seconds,
     _resolve_qwen_completed_output_exit_grace_seconds,
     _resolve_qwen_process_exit_wait_seconds,
     _resolve_qwen_process_kill_wait_seconds,
     _run_subprocess_capture,
+    _start_delegation_cancel_watch,
+    _stop_delegation_cancel_watch,
+    _terminate_cli_process_group,
     _verify_contract_for_qwen_early_exit,
     _wait_for_cli_process_return_code,
     _wait_for_qwen_cli_drain_or_watchdog,
@@ -875,6 +882,9 @@ async def code_executor_handler(
         cli_progress = {"last_output_at": 0.0}
         cli_prompt_tokens_accumulated = 0
         cli_delegation_elapsed_ms = 0.0
+        # Shared across the primary / search-generate / repair CLI phases: once a
+        # cancellation has been observed, no later phase may run.
+        cli_cancel_state: Dict[str, Any] = {"cancelled": False, "note": "", "task": None}
 
         @asynccontextmanager
         async def _measure_cli_delegation():
@@ -933,6 +943,7 @@ async def code_executor_handler(
             local_stdout_lines: list[str] = []
             local_stderr_lines: list[str] = []
             local_return_code = -1
+            cancel_state = cli_cancel_state
 
             for _attempt in range(1, max_cli_retries + 2):
                 if use_qwen_code_backend:
@@ -956,6 +967,10 @@ async def code_executor_handler(
                     env=subprocess_env,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
+                    # The CLI leads its own session/process group so a cancel can
+                    # SIGTERM/SIGKILL the group (CLI + the children it spawned)
+                    # without ever signalling the server's own group.
+                    start_new_session=True,
                 )
                 try:
                     cli_progress["last_output_at"] = asyncio.get_running_loop().time()
@@ -967,6 +982,14 @@ async def code_executor_handler(
                 )
                 stderr_task = asyncio.create_task(
                     _read_stream(process.stderr, local_stderr_lines, on_stderr, "stderr")
+                )
+                # No-op unless a cancel token is bound to this execution context
+                # (chat run / plan task); see app/services/cancellation.py.
+                _start_delegation_cancel_watch(
+                    process=process,
+                    cli_label=_cli_label,
+                    cancel_state=cancel_state,
+                    container_name=_docker_container_name,
                 )
 
                 try:
@@ -1022,6 +1045,13 @@ async def code_executor_handler(
                     if isinstance(_wait_exc, asyncio.CancelledError):
                         raise
                     raise
+
+                if cancel_state["cancelled"]:
+                    # The watcher killed the CLI's process group: stop here so no
+                    # retry, shell-replay recovery or local fallback can run
+                    # after the user asked for this delegation to stop.
+                    local_stderr_lines.append(str(cancel_state.get("note") or DELEGATION_CANCELLED_NOTE))
+                    break
 
                 if local_return_code == 0:
                     break
@@ -1124,6 +1154,7 @@ async def code_executor_handler(
                         _attempt, local_return_code,
                     )
 
+            _stop_delegation_cancel_watch(cancel_state)
             local_stdout = "\n".join(local_stdout_lines)
             local_stderr = "\n".join(local_stderr_lines)
             local_output_data = None
@@ -1139,17 +1170,32 @@ async def code_executor_handler(
             async with _measure_cli_delegation():
                 return_code, stdout, stderr, output_data = await _run_cli_with_retry(task)
 
-            success = return_code == 0
+            # A cancellation is terminal for this delegation: no retry, no local
+            # fallback, no contract repair, and never a success-shaped payload.
+            delegation_cancelled = bool(cli_cancel_state["cancelled"]) or _is_delegation_cancelled(
+                stderr, stdout
+            )
+            if delegation_cancelled:
+                cli_cancel_state["cancelled"] = True
+                logger.warning(
+                    "[CODE_EXECUTOR] Delegation cancelled; CLI terminated (rc=%s, session=%s, run=%s)",
+                    return_code,
+                    effective_execution_session_id,
+                    run_id,
+                )
+
+            success = return_code == 0 and not delegation_cancelled
             is_no_output_timeout = _is_qwen_no_output_timeout(stderr, stdout)
             is_qwen_truncated_tool_failure = _is_qwen_truncated_tool_failure_text(f"{stderr}\n{stdout}")
 
-            blocked_detail = _detect_scope_blocked(stdout, output_data)
+            blocked_detail = None if delegation_cancelled else _detect_scope_blocked(stdout, output_data)
             if blocked_detail:
                 success = False
 
             qwen_infra_failure_detected = (
                 use_qwen_code_backend
                 and not success
+                and not delegation_cancelled
                 and (
                     _is_qwen_container_infrastructure_error(stderr, stdout)
                     or is_qwen_truncated_tool_failure
@@ -1157,7 +1203,7 @@ async def code_executor_handler(
             )
             qwen_infra_fallback_used = False
             fallback_result: Optional[Dict[str, Any]] = None
-            if _should_fallback_from_qwen_infra_failure(
+            if not delegation_cancelled and _should_fallback_from_qwen_infra_failure(
                 use_qwen_code_backend=use_qwen_code_backend,
                 success=success,
                 stderr=stderr,
@@ -1206,14 +1252,20 @@ async def code_executor_handler(
                     success = False
 
             produced_files = _collect_run_artifacts(run_dir=task_work_dir, subdirs=task_subdirs)
-            success, execution_failure = _classify_execution_success(
-                stdout=stdout,
-                output_data=output_data,
-                execution_spec=execution_spec,
-                produced_files=produced_files,
-                success=success,
-                task_work_dir=task_work_dir,
-            )
+            if delegation_cancelled:
+                # Partial CLI output must not be reclassified (e.g. as
+                # blocked_dependency or a semantic failure) after a stop request.
+                execution_failure = None
+                success = False
+            else:
+                success, execution_failure = _classify_execution_success(
+                    stdout=stdout,
+                    output_data=output_data,
+                    execution_spec=execution_spec,
+                    produced_files=produced_files,
+                    success=success,
+                    task_work_dir=task_work_dir,
+                )
 
             if (
                 execution_failure
@@ -1263,7 +1315,7 @@ async def code_executor_handler(
                 task_work_dir=task_work_dir,
                 unified_output_dir=unified_output_dir,
             )
-            if reconcile_report.get("missing"):
+            if reconcile_report.get("missing") and not delegation_cancelled:
                 sg_prompt = _build_search_and_generate_prompt(
                     reconcile_report["missing"],
                     session_dir,
@@ -1516,7 +1568,11 @@ async def code_executor_handler(
                 duration_ms=cli_delegation_elapsed_ms,
                 run_id=run_id,
                 tool_name="code_executor",
-                call_status="ok" if success else "error",
+                call_status=(
+                    "cancelled"
+                    if cli_cancel_state["cancelled"]
+                    else "ok" if success else "error"
+                ),
             )
 
         # Build return result
@@ -1642,18 +1698,33 @@ async def code_executor_handler(
             result_payload["error"] = f"Blocked by scope guardrail: {blocked_detail}"
 
         # Detect partial completion signals even when exit_code==0
-        completion_info = _detect_partial_completion(
-            stdout, stderr, produced_files, success=success,
-        )
-        if completion_info:
-            result_payload.update(completion_info)
-            if completion_info.get("partial_completion_suspected"):
-                logger.warning(
-                    "[CODE_EXECUTOR] Partial completion suspected: ratio=%s warnings=%d files=%d",
-                    completion_info.get("partial_ratio", "N/A"),
-                    len(completion_info.get("output_warnings", [])),
-                    len(produced_files),
-                )
+        if not delegation_cancelled:
+            completion_info = _detect_partial_completion(
+                stdout, stderr, produced_files, success=success,
+            )
+            if completion_info:
+                result_payload.update(completion_info)
+                if completion_info.get("partial_completion_suspected"):
+                    logger.warning(
+                        "[CODE_EXECUTOR] Partial completion suspected: ratio=%s warnings=%d files=%d",
+                        completion_info.get("partial_ratio", "N/A"),
+                        len(completion_info.get("output_warnings", [])),
+                        len(produced_files),
+                    )
+
+        if delegation_cancelled or cli_cancel_state["cancelled"]:
+            # Distinct, identifiable outcome: not a success, not a task failure.
+            cancel_summary = (
+                "Sub-agent delegation was cancelled by user request; the CLI "
+                "process was terminated before it finished."
+            )
+            result_payload["success"] = False
+            result_payload["cancelled"] = True
+            result_payload["execution_status"] = "cancelled"
+            result_payload["failure_kind"] = "cancelled"
+            result_payload["error_category"] = "cancelled"
+            result_payload["error_summary"] = cancel_summary
+            result_payload["error"] = cancel_summary
 
         return result_payload
 

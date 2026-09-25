@@ -18,6 +18,7 @@ from app.repository.chat_runs import (
 from app.routers.chat.models import ChatRequest
 from app.routers.chat.stream_context import build_agent_for_chat_request
 from app.routers.chat.session_helpers import _save_chat_message
+from app.services import cancellation
 from app.services.chat_run_emitter import ChatRunEmitter
 from app.services import chat_run_hub as hub
 from app.services.chat_run_signals import lease_ttl_seconds, run_signal_pump
@@ -386,6 +387,10 @@ async def _run_lease_heartbeat(
 
 async def execute_chat_run(run_id: str) -> None:
     cancel_ev = hub.ensure_cancel_event(run_id)
+    # Thread-safe counterpart of `cancel_ev`: the delegations this run starts
+    # (code_executor / delegate_task CLI subprocesses) are supervised from
+    # worker threads, which can only poll a threading primitive.
+    cancel_handle = cancellation.set_cancel_token(hub.ensure_cancel_token(run_id))
     hub.ensure_steer_queue(run_id)
     emitter = ChatRunEmitter(run_id)
     start_owner_lease("run", run_id)
@@ -511,3 +516,4 @@ async def execute_chat_run(run_id: str) -> None:
         stop_owner_lease("run", run_id)
         hub.forget_worker_task(run_id)
         hub.cleanup_run_signals(run_id)
+        cancellation.reset_cancel_token(cancel_handle)
