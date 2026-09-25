@@ -1,3 +1,13 @@
+"""Neutral sub-agent delegation service.
+
+``CodeAgentTaskDelegateExecutor`` owns the single delegation path shared by the
+plan domain and any caller without plan context.  Plan context is optional:
+``TaskDelegationSpec.plan_id`` / ``task_id`` are ``None`` for a standalone
+delegation, and every branch below stays correct in both shapes.  Plan-domain
+callers (``executor_delegate``, ``audit_repair_loop``) always pass both, so their
+prompt, params and metadata are byte-identical to before.
+"""
+
 from __future__ import annotations
 
 import json
@@ -13,12 +23,12 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class TaskDelegationSpec:
-    plan_id: int
-    task_id: int
     task_name: str
     task_instruction: str
     task_prompt: str
     executor_backend: str
+    plan_id: int | None = None
+    task_id: int | None = None
     session_id: str | None = None
     ancestor_chain: list[int] | None = None
     owner_id: str | None = None
@@ -45,13 +55,18 @@ class TaskDelegationResult:
 
 
 class CodeAgentTaskDelegateExecutor:
-    """Delegate a plan task to the existing code_executor CLI backend."""
+    """Delegate one sub-agent task to the code_executor CLI backend.
+
+    ``execute`` is the single entry point for both shapes: plan-bound (the plan
+    executor and the audit-repair loop) and standalone (no plan context).
+    """
 
     def __init__(self, *, tool_executor: UnifiedToolExecutor | None = None) -> None:
         self._tool_executor: UnifiedToolExecutor
         self._tool_executor = tool_executor or UnifiedToolExecutor()
 
     def execute(self, spec: TaskDelegationSpec) -> TaskDelegationResult:
+        plan_bound = self._is_plan_bound(spec)
         params: dict[str, object] = {
             "task": self._build_delegate_prompt(spec),
             "execution_backend": spec.executor_backend,
@@ -78,7 +93,7 @@ class CodeAgentTaskDelegateExecutor:
                 owner_id=spec.owner_id,
                 current_job_id=spec.current_job_id,
                 work_dir=spec.work_dir,
-                channel="plan_executor",
+                channel="plan_executor" if plan_bound else "chat",
                 mode="delegated_task_execution",
                 resolved_resources=spec.resolved_resources,
             ),
@@ -86,22 +101,48 @@ class CodeAgentTaskDelegateExecutor:
         )
         return self._to_delegation_result(spec, payload)
 
+    @staticmethod
+    def _is_plan_bound(spec: TaskDelegationSpec) -> bool:
+        """Plan identity is all-or-nothing: both fields, or neither.
+
+        A half-set binding is rejected instead of being demoted to a standalone
+        delegation (that would produce a prompt naming a plan the execution
+        context does not carry).
+        """
+        if (spec.plan_id is None) != (spec.task_id is None):
+            raise ValueError(
+                "TaskDelegationSpec requires both plan_id and task_id, or neither"
+            )
+        return spec.plan_id is not None
+
     def _build_delegate_prompt(self, spec: TaskDelegationSpec) -> str:
+        plan_bound = self._is_plan_bound(spec)
+        # The delegate boundary contract is shared by both shapes; only the
+        # scope line, the header and the plan/task labels differ.
         lines = [
-            "You are executing one atomic plan task delegated by the orchestration system.",
-            "Complete only this task; do not create or modify the plan.",
+            (
+                "You are executing one atomic plan task delegated by the orchestration system."
+                if plan_bound
+                else "You are executing one atomic task delegated by the orchestration system."
+            ),
+            (
+                "Complete only this task; do not create or modify the plan."
+                if plan_bound
+                else "Complete only this task; do not expand its scope or take on other work."
+            ),
             "The orchestration system, not you, decides final task completion after deterministic verification.",
             "If inputs are missing, report BLOCKED_DEPENDENCY with a concise DETAIL.",
             "Return the strict final response schema requested by the execution runtime.",
             "Do not claim that internal Phage-Agent tools were called; this delegate only has the external code-agent runtime tools.",
             "",
-            "=== PLAN TASK ===",
-            f"Plan ID: {spec.plan_id}",
-            f"Task ID: {spec.task_id}",
-            f"Task Name: {spec.task_name}",
-            "",
-            spec.task_prompt,
+            "=== PLAN TASK ===" if plan_bound else "=== DELEGATED TASK ===",
         ]
+        if plan_bound:
+            lines.append(f"Plan ID: {spec.plan_id}")
+            lines.append(f"Task ID: {spec.task_id}")
+        lines.append(f"Task Name: {spec.task_name}")
+        lines.append("")
+        lines.append(spec.task_prompt)
         if spec.resolved_input_artifacts:
             lines.append("\n=== RESOLVED INPUT ARTIFACTS ===")
             for alias, path in spec.resolved_input_artifacts.items():
@@ -317,5 +358,9 @@ class CodeAgentTaskDelegateExecutor:
             if summary and len(summary) >= 30:
                 return summary
         except Exception as exc:
-            logger.warning("LLM summary generation failed for task %s: %s", spec.task_id, exc)
+            logger.warning(
+                "LLM summary generation failed for task %s: %s",
+                spec.task_id if spec.task_id is not None else spec.task_name,
+                exc,
+            )
         return None

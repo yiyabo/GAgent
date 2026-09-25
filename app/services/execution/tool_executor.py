@@ -281,7 +281,14 @@ class UnifiedToolExecutor:
                 )
             if safe_params.get("plan_id") is None:
                 safe_params["plan_id"] = context.plan_id
-            safe_params["require_task_context"] = True
+            # Derived from the context, not hard-coded: the plan domain always
+            # supplies plan_id + task_id (still strict), while a context without
+            # them is an intentionally unscoped call with the same shape the chat
+            # path builds. Forcing True would fail every unscoped delegation with
+            # "Missing plan_id for strict atomic execution."
+            safe_params["require_task_context"] = (
+                context.plan_id is not None and context.task_id is not None
+            )
             safe_params["auth_mode"] = "api_env"
             safe_params["setting_sources"] = "project"
             if context.on_stdout:
