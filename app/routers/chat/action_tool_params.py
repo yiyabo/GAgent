@@ -686,6 +686,17 @@ async def _normalize_code_executor_params(
     if isinstance(prepared, AgentStep):
         return prepared
     params, original_task = prepared
+    # The delegation happens *inside* this call and can run for hours, so the
+    # handler needs the turn's progress channel: its CLI lanes report through
+    # ``ToolContext.on_progress`` and this lane never attached a context, which
+    # left a delegated run invisible in the parent's stream until it finished.
+    # Behaviour-neutral for the tool itself: ``code_executor`` reads only
+    # ``on_progress`` (and ``model_provider``, which this context leaves unset)
+    # off the context, never its work_dir/plan/task fields.
+    if "tool_context" not in params:
+        tool_context = _ah()._build_chat_tool_context(agent, tool_name)
+        if tool_context is not None:
+            params["tool_context"] = tool_context
     return params, original_task
 
 

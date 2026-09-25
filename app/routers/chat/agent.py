@@ -1652,6 +1652,18 @@ class StructuredChatAgent:
                 status=status,
             )
 
+        # Publish this turn's progress channel on the agent so the *action* lane
+        # can reach it: every tool call of this stream is executed through
+        # ``action_handlers.handle_tool_action``, which builds its own
+        # ``ToolContext`` and therefore cannot see this closure (the native lane
+        # wires the same closure into its context in
+        # ``deep_think/dispatch.py``).  Without this the delegated ``code_executor``
+        # lanes report into nothing and a long run stays invisible until it ends.
+        # Cleared in ``run_agent``'s ``finally`` (identity-guarded, so a newer
+        # turn's channel is never clobbered).
+        self._tool_progress_emitter = on_tool_progress
+        self._tool_progress_loop = asyncio.get_running_loop()
+
         async def relay_job_events() -> None:
             if deep_think_job_queue is None:
                 return
@@ -2758,6 +2770,9 @@ class StructuredChatAgent:
                         )
                 if job_token is not None:
                     reset_current_job(job_token)
+                if getattr(self, "_tool_progress_emitter", None) is on_tool_progress:
+                    self._tool_progress_emitter = None
+                    self._tool_progress_loop = None
                 await queue.put(None)  # Signal end
 
         # Start agent in background

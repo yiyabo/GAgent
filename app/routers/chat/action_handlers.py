@@ -534,6 +534,64 @@ def _normalize_scientific_figure_raw_result(
     return payload
 
 
+def _chat_tool_progress_channel(agent: Any) -> Tuple[Optional[Any], Optional[Any]]:
+    """Return ``(on_progress, on_progress_loop)`` for a chat tool context.
+
+    ``process_unified_stream`` publishes the turn's ``on_tool_progress`` closure
+    (and the loop that owns it) on the agent while it streams.  The contexts this
+    lane builds otherwise carry no channel at all, so a handler whose work is
+    delegated elsewhere (``code_executor``'s CLI and local lanes, which report
+    through ``ToolContext.on_progress``) reports into nothing for the whole run.
+    Only the tools this lane attaches a context to are affected, so which
+    handlers gain a channel is decided by their normalizer, not here.
+
+    Everything here is best-effort: a bare agent (tests, other callers), a
+    non-callable attribute, or no usable loop all degrade to ``(None, None)``.
+    Wiring progress must never be a reason for a tool call to fail.
+    """
+    callback = getattr(agent, "_tool_progress_emitter", None)
+    if not callable(callback):
+        return None, None
+    try:
+        loop = getattr(agent, "_tool_progress_loop", None)
+        if loop is None or loop.is_closed():
+            # Same default as ``UnifiedToolExecutor.execute``: a callback handed
+            # over without a usable owner loop belongs to the loop we are on.
+            loop = asyncio.get_running_loop()
+    except Exception:
+        return None, None
+    return callback, loop
+
+
+def _bind_chat_tool_progress(callback: Optional[Any], tool_name: str) -> Optional[Any]:
+    """Bind *callback* to *tool_name*, swallowing a reporter that raises.
+
+    Mirrors the native lane's ``_progress_bridge``
+    (``services/deep_think/dispatch.py``): reporting is best-effort, so a broken
+    progress channel can never turn a successful tool call into a failed one.
+    """
+    if callback is None:
+        return None
+
+    async def _on_progress(data: Dict[str, Any]) -> None:
+        try:
+            if asyncio.iscoroutinefunction(callback):
+                await callback(tool_name, data)
+            else:
+                result = callback(tool_name, data)
+                if asyncio.iscoroutine(result):
+                    await result
+        except Exception as exc:  # noqa: BLE001 - fail-open by contract
+            logger.warning(
+                "[CHAT][TOOL_PROGRESS] %s progress callback failed: %s: %s",
+                tool_name,
+                type(exc).__name__,
+                exc,
+            )
+
+    return _on_progress
+
+
 def _build_chat_tool_context(agent: Any, tool_name: str) -> Optional[Any]:
     session_id = getattr(agent, "session_id", None)
     if not isinstance(session_id, str) or not session_id.strip():
@@ -571,6 +629,7 @@ def _build_chat_tool_context(agent: Any, tool_name: str) -> Optional[Any]:
 
     work_dir = get_runtime_session_dir(session_id, create=True) / "raw_files" / "chat_tools" / tool_name
     owner_id = (getattr(agent, "extra_context", {}) or {}).get("owner_id")
+    on_progress, on_progress_loop = _chat_tool_progress_channel(agent)
     return ToolContext(
         session_id=session_id.strip(),
         plan_id=plan_id,
@@ -579,6 +638,8 @@ def _build_chat_tool_context(agent: Any, tool_name: str) -> Optional[Any]:
         job_id=get_current_job(),
         owner_id=str(owner_id).strip() if owner_id is not None and str(owner_id).strip() else None,
         work_dir=str(work_dir),
+        on_progress=_bind_chat_tool_progress(on_progress, tool_name),
+        on_progress_loop=on_progress_loop,
     )
 
 
