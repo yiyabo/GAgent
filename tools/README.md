@@ -15,7 +15,7 @@
 | qwen CLI | — | 可选 | qwen_code_runtime（`interpreter/task_executer.py`） |
 | bibtex | — | 可选 | 文献引用导出（`app/routers/artifact_routes/`） |
 
-## 2. Python 依赖（requirements.txt，31 个直接依赖）
+## 2. Python 依赖（requirements.txt，32 个直接依赖）
 
 | 领域 | 包 | 版本 | 用途 / 使用位置 |
 |---|---|---|---|
