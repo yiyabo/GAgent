@@ -16,8 +16,6 @@ from app.services.tool_output_resolver import get_tool_output_resolver
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_BASE_URL = "https://phageapi.deepomics.org"
-
 from .phagescope_taskid import (
     _PHAGESCOPE_TASKID_HINT_RE,
     _PHAGESCOPE_TASKID_RE,
@@ -67,6 +65,7 @@ from .phagescope_artifacts import (
 
 
 from .phagescope_transport import (
+    DEFAULT_BASE_URL,
     _TLS_RETRY_WARNING,
     _attach_transport_warning,
     _decode_httpx_response,
