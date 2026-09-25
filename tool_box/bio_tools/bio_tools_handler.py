@@ -46,7 +46,7 @@ BIO_TOOLS_BACKGROUND_MODE = "bio_tools_background"
 JOB_STATUS_OPERATION = "job_status"
 
 # 需要把参考数据库挂载到 /work/database 的工具：tool_name -> (env 覆盖变量, 默认路径)
-# 数据库体量大（见 BIO_TOOLS_TABLE.md），通常放在项目外的大盘上，用对应 env 覆盖
+# 数据库体量大，通常放在项目外的大盘上，用对应 env 覆盖
 DATABASE_MOUNT_CONFIG: Dict[str, Tuple[str, str]] = {
     "checkv": ("BIO_TOOLS_CHECKV_DB_PATH", "/home/zczhao/GAgent/data/databases/bio_tools/checkv/checkv-db-v1.5"),
     "genomad": ("BIO_TOOLS_GENOMAD_DB_PATH", "/home/zczhao/GAgent/data/databases/bio_tools/genomad/genomad_db"),
