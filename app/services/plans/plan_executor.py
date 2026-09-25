@@ -1357,7 +1357,7 @@ class PlanExecutor(_ArtifactMethods, _DelegateMethods, _DeepThinkMethods):
                 ][:8]
                 plan_description = "Sub-tasks: " + ", ".join(child_names)
 
-            selection = self._run_coroutine_sync(
+            selection = _run_coroutine_sync(
                 loader.select_plan_skill_candidates(
                     plan_title=plan_title,
                     plan_description=plan_description,

@@ -20,8 +20,10 @@ Monkeypatch surface (the reason this module has a late-bound helper):
   ``_dta().DeepThinkAgent`` precedent of the deep_think split).  This is the
   one body deviation from byte-verbatim; the class is also imported under
   ``TYPE_CHECKING`` for the ``deep_think_agent: DeepThinkAgent`` annotation.
-- ``_run_coroutine_sync`` is the module function re-exported by the facade;
-  verified unpatched anywhere.
+- ``_run_coroutine_sync`` is the module function of ``executor_text_utils``
+  (re-exported by the facade).  The former same-named 2-line delegate method
+  was deleted by the D13 convergence commit and every call site now calls the
+  function directly; the name is unpatched anywhere (0 test references).
 - ``__file__`` is used once (session runtime directory pre-computation): the
   sibling lives in the same ``app/services/plans/`` directory, so the
   ``dirname**4`` project-root arithmetic resolves to the same path.
@@ -285,7 +287,7 @@ class _DeepThinkMethods:
                     dependency_paths=dependency_paths,
                     paper_mode=paper_mode,
                 )
-                selection_result = self._run_coroutine_sync(
+                selection_result = _run_coroutine_sync(
                     loader.select_skills(
                         task_title=node.display_name(),
                         task_description=user_query,
@@ -488,7 +490,7 @@ class _DeepThinkMethods:
                 logger.warning("Failed to register runtime controller: %s", exc)
 
         try:
-            result = self._run_coroutine_sync(
+            result = _run_coroutine_sync(
                 deep_think_agent.think(
                     user_query,
                     context=session_context,
@@ -682,9 +684,6 @@ class _DeepThinkMethods:
                 except Exception:  # pragma: no cover - defensive
                     pass
 
-    def _run_coroutine_sync(self, coro: Any) -> Any:
-        return _run_coroutine_sync(coro)
-
     @staticmethod
     def _is_leaf_task(node: PlanNode, tree: PlanTree) -> bool:
         return not tree.children_ids(node.id)
@@ -785,7 +784,7 @@ class _DeepThinkMethods:
                 draft_only=False,
             )
             if asyncio.iscoroutine(raw_result):
-                result = self._run_coroutine_sync(raw_result)
+                result = _run_coroutine_sync(raw_result)
             else:
                 result = raw_result
 
@@ -850,7 +849,7 @@ class _DeepThinkMethods:
                     "Contract repair attempt started.",
                     {"plan_id": plan_id, "task_id": node.id, "attempt": attempt},
                 )
-                result = self._run_coroutine_sync(
+                result = _run_coroutine_sync(
                     deep_think_agent.think(
                         repair_query,
                         context=repair_context,
