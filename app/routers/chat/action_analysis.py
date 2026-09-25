@@ -19,20 +19,39 @@ carries **zero body deviations**.  The LLM generators appended later do read
 patched on the action_execution namespace
 (app/tests/chat/test_action_execution_summary_math.py:60).
 
-No logger is used in this cluster.
+No logger is used by the part-1 functions; the LLM generators appended in
+part 2 use this module's own ``logging.getLogger(__name__)``, with byte-identical
+messages.
 """
 
 from __future__ import annotations
 
+import json
+import logging
 import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+from app.services.response_style import (
+    PROFESSIONAL_STYLE_INSTRUCTION,
+    sanitize_professional_response_text,
+)
 
 from .artifact_gallery import (
     extract_artifact_files_from_result,
     extract_artifact_gallery_from_result,
     merge_artifact_gallery,
 )
+
+logger = logging.getLogger(__name__)
+
+
+def _ae() -> Any:
+    """Late-bound action_execution facade module (monkeypatch-friendly lookups)."""
+    from . import action_execution
+
+    return action_execution
+
 
 _DISTRIBUTION_TOTAL_PATTERNS = (
     re.compile(r"共\s*([\d,]+)\s*条(?:记录|数据|样本|序列)?"),
@@ -458,3 +477,315 @@ def append_summary_to_reply(
     # the frontend already provides status tags and a "View process" panel.
     # Keep this method signature for backward compatibility.
     return reply
+
+
+async def _generate_tool_analysis(
+    user_message: str,
+    tool_results: List[Dict[str, Any]],
+    session_id: Optional[str] = None,
+    llm_provider: Optional[str] = None,
+) -> Optional[str]:
+    """Use the LLM to generate a detailed analysis from tool results."""
+    try:
+        tools_description = []
+        web_search_items: List[Dict[str, str]] = []
+        for idx, tool_result in enumerate(tool_results, 1):
+            tool_name = tool_result.get("name", "unknown")
+            summary = tool_result.get("summary", "")
+            result_data = tool_result.get("result", {})
+
+            tool_desc = f"{idx}. Tool: {tool_name}"
+            if summary:
+                tool_desc += f"\n   Execution summary: {summary}"
+
+            if isinstance(result_data, dict):
+                useful_fields = [
+                    "output",
+                    "stdout",
+                    "stderr",
+                    "success",
+                    "error",
+                    "produced_files_count",
+                    "verification_status",
+                    "failure_kind",
+                ]
+                for field in useful_fields:
+                    if field in result_data and result_data[field]:
+                        value = result_data[field]
+                        tool_desc += f"\n   {field}: {value}"
+                if tool_name == "web_search":
+                    results = result_data.get("results")
+                    response_text = result_data.get("response") or result_data.get("answer")
+                    if isinstance(response_text, str) and response_text.strip():
+                        clip = response_text.strip()
+                        if len(clip) > 2000:
+                            clip = clip[:1997] + "..."
+                        tool_desc += f"\n   response (may lack structured citations): {clip}"
+                    if isinstance(results, list) and results:
+                        tool_desc += "\n   results:"
+                        for item in results:
+                            if not isinstance(item, dict):
+                                continue
+                            title = str(item.get("title") or "").strip()
+                            url = str(item.get("url") or "").strip()
+                            snippet = str(item.get("snippet") or "").strip()
+                            tool_desc += f"\n   - title: {title}"
+                            tool_desc += f"\n     url: {url}"
+                            if snippet:
+                                tool_desc += f"\n     snippet: {snippet}"
+                            web_search_items.append(
+                                {
+                                    "title": title,
+                                    "url": url,
+                                }
+                            )
+                    else:
+                        tool_desc += (
+                            "\n   results: (empty — no structured URL list from the search tool; "
+                            "do not treat the summary as independently verifiable without links.)"
+                        )
+                else:
+                    details_payload = {}
+                    for field in (
+                        "data",
+                        "results",
+                        "action",
+                        "status_code",
+                        "result_kind",
+                        "produced_files",
+                        "artifact_paths",
+                        "contract_diff",
+                        "artifact_verification",
+                    ):
+                        if field in result_data and result_data[field] is not None:
+                            details_payload[field] = result_data[field]
+                    if details_payload:
+                        details_text = json.dumps(details_payload, ensure_ascii=True)
+                        if len(details_text) > 1200:
+                            details_text = details_text[:1197] + "..."
+                        tool_desc += f"\n   details: {details_text}"
+
+            tools_description.append(tool_desc)
+
+        tools_text = "\n\n".join(tools_description)
+
+        analysis_requirements = [
+            "1. Provide a complete, in-depth analysis; do not repeat the user question.",
+            "2. Clearly separate conclusions, evidence, and caveats/risks.",
+            "3. If web_search is involved, list each result (title + url) and explain its value; "
+            "if results are empty, state that no verifiable links were returned and avoid presenting claims as confirmed.",
+            "4. If errors or uncertainty exist, explain why and propose next steps.",
+            "5. Output at least 6 bullet points or 3 natural paragraphs.",
+            "6. Use only fields present in the tool outputs; do not invent paths, modules, or metrics.",
+            "7. If a field is missing, explicitly say it was not provided by the tool.",
+            "8. Prefer factual summaries over speculation.",
+        ]
+
+        base_prompt = (
+            "You are a senior analysis assistant. Below are the user question and tool execution results.\n"
+            "Write a detailed analysis body that can be shown directly as the final answer.\n\n"
+            f"User question: {user_message}\n\n"
+            "Tool execution results:\n"
+            f"{tools_text}\n\n"
+            "Requirements:\n"
+            + "\n".join(analysis_requirements)
+            + f"\n9. {PROFESSIONAL_STYLE_INSTRUCTION}"
+            + "\n\nOutput analysis:"
+        )
+        llm_service = _ae()._get_llm_service_for_provider(llm_provider)
+
+        analysis = await llm_service.chat_async(base_prompt)
+        if not analysis:
+            return None
+        cleaned = sanitize_professional_response_text(analysis.strip())
+        return _repair_distribution_summary_math(cleaned)
+
+    except Exception as exc:
+        logger.error(
+            "[CHAT][SUMMARY] Failed to generate analysis for session=%s: %s",
+            session_id,
+            exc,
+        )
+        return None
+
+
+async def _generate_tool_summary(
+    user_message: str,
+    tool_results: List[Dict[str, Any]],
+    session_id: Optional[str] = None,
+    llm_provider: Optional[str] = None,
+) -> Optional[str]:
+    """Use the LLM to generate a short summary from tool results (for process panel)."""
+    try:
+        tools_description = []
+        for idx, tool_result in enumerate(tool_results, 1):
+            tool_name = tool_result.get("name", "unknown")
+            summary = tool_result.get("summary", "")
+            tool_desc = f"{idx}. {tool_name}"
+            if summary:
+                tool_desc += f" - {summary}"
+            tools_description.append(tool_desc)
+
+        tools_text = "\n".join(tools_description)
+        prompt = (
+            "You are a project assistant. Provide a brief summary (1-3 sentences) based on tool execution.\n"
+            f"User question: {user_message}\n"
+            f"Tool execution overview:\n{tools_text}\n"
+            f"{PROFESSIONAL_STYLE_INSTRUCTION}\n"
+            "Output summary:"
+        )
+        llm_service = _ae()._get_llm_service_for_provider(llm_provider)
+        summary = await llm_service.chat_async(prompt)
+        return sanitize_professional_response_text(summary.strip()) if summary else None
+    except Exception as exc:
+        logger.error(
+            "[CHAT][SUMMARY] Failed to generate brief summary for session=%s: %s",
+            session_id,
+            exc,
+        )
+        return None
+
+
+def _collect_created_tasks_from_steps(steps: List[Any]) -> List[Dict[str, Any]]:
+    created: List[Dict[str, Any]] = []
+    for step in steps:
+        details = step.details or {}
+        created_nodes = details.get("created")
+        if isinstance(created_nodes, list):
+            for node in created_nodes:
+                if isinstance(node, dict):
+                    created.append(node)
+        task_node = details.get("task")
+        if isinstance(task_node, dict):
+            created.append(task_node)
+    return created
+
+
+async def _generate_action_analysis(
+    user_message: str,
+    steps: List[Any],
+    session_id: Optional[str] = None,
+    llm_provider: Optional[str] = None,
+) -> Optional[str]:
+    created_tasks = _collect_created_tasks_from_steps(steps)
+
+    step_summaries: List[str] = []
+    for step in steps:
+        if not step.success:
+            continue
+        details = step.details or {}
+        kind = step.action.kind or ""
+        name = step.action.name or ""
+        msg = step.message or ""
+        if kind in ("plan_operation", "task_operation"):
+            detail_text = msg
+            if isinstance(details, dict):
+                for key in ("plans", "outline", "task", "plan_id", "task_count"):
+                    val = details.get(key)
+                    if val is not None:
+                        detail_text += (
+                            f"\n{key}: "
+                            f"{json.dumps(val, ensure_ascii=False, default=str)[:2000]}"
+                        )
+            step_summaries.append(f"[{kind}/{name}] {detail_text}")
+
+    if created_tasks:
+        lines: List[str] = []
+        for idx, task in enumerate(created_tasks, 1):
+            task_name = str(task.get("name") or task.get("title") or "").strip()
+            instruction = str(task.get("instruction") or "").strip()
+            if task_name:
+                lines.append(f"{idx}. {task_name}")
+            if instruction:
+                lines.append(f"   - Instruction: {instruction}")
+        tasks_text = "\n".join(lines)
+
+        prompt = (
+            "You are a project analysis assistant. The user requests a detailed analysis of task decomposition results. "
+            "Based on the decomposition, analyze coverage sufficiency, relationships between tasks, "
+            "possible omissions, and potential refinement directions (if any). Do not repeat summaries like "
+            "'X subtasks were generated'; provide a professional analysis body directly.\n"
+            "Requirements: at least 6 bullet points or 3 natural paragraphs; points must be clear, concrete, and actionable.\n"
+            f"{PROFESSIONAL_STYLE_INSTRUCTION}\n\n"
+            f"User question: {user_message}\n\n"
+            "Decomposition results:\n"
+            f"{tasks_text}\n\n"
+            "Output analysis:"
+        )
+    elif step_summaries:
+        steps_text = "\n\n".join(step_summaries)
+        prompt = (
+            "You are a project analysis assistant. The user requests analysis of background task execution results. "
+            "Based on outputs from the following execution steps, provide a structured analysis: key findings, critical data, "
+            "and next-step recommendations. Output the professional analysis body directly; avoid preambles like "
+            "'I will analyze this now.'\n"
+            "Requirements: specific, data-driven, and actionable.\n"
+            f"{PROFESSIONAL_STYLE_INSTRUCTION}\n\n"
+            f"User question: {user_message}\n\n"
+            "Execution results:\n"
+            f"{steps_text}\n\n"
+            "Output analysis:"
+        )
+    else:
+        return None
+    try:
+        llm_service = _ae()._get_llm_service_for_provider(llm_provider)
+        analysis = await llm_service.chat_async(prompt)
+        if not analysis:
+            return None
+        cleaned = sanitize_professional_response_text(analysis.strip())
+        return _repair_distribution_summary_math(cleaned)
+    except Exception as exc:
+        logger.error(
+            "[CHAT][SUMMARY] Failed to generate action analysis for session=%s: %s",
+            session_id,
+            exc,
+        )
+        return None
+
+
+def _build_brief_action_summary(steps: List[Any]) -> Optional[str]:
+    if not steps:
+        return None
+    if len(steps) == 1:
+        step = steps[0]
+        if step.message:
+            return step.message
+        if step.action.name:
+            return f"Completed action: {step.action.name}"
+        if step.action.kind:
+            return f"Completed action: {step.action.kind}"
+        return None
+
+    names: List[str] = []
+    for step in steps:
+        if step.action.name:
+            names.append(step.action.name)
+        elif step.action.kind:
+            names.append(step.action.kind)
+    if not names:
+        return f"Completed {len(steps)} actions."
+    unique = []
+    for name in names:
+        if name not in unique:
+            unique.append(name)
+    preview = ", ".join(unique[:3])
+    suffix = " and more" if len(unique) > 3 else ""
+    return f"Completed {len(steps)} actions: {preview}{suffix}."
+
+
+def _should_skip_post_action_analysis(steps: List[Any]) -> bool:
+    """Skip extra LLM analysis when the action already returned a usable review body."""
+
+    if not steps:
+        return False
+
+    meaningful_steps = [step for step in steps if getattr(step, "action", None) is not None]
+    if not meaningful_steps:
+        return False
+
+    return all(
+        getattr(step.action, "kind", None) == "plan_operation"
+        and getattr(step.action, "name", None) == "review_plan"
+        for step in meaningful_steps
+    )
