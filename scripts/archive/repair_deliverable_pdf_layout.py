@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """将误发布在 deliverables/latest/paper/ 下的参考文献 PDF 移到 refs/，并同步更新 manifest_latest.json。
 
-与 app.services.deliverables.publisher.MANUSCRIPT_PDF_STEMS 保持一致：main/manuscript 等编译产物保留在 paper/。
+与 app.services.deliverables.policy.MANUSCRIPT_PDF_STEMS 保持一致：main/manuscript 等编译产物保留在 paper/。
 
 用法:
   python scripts/repair_deliverable_pdf_layout.py /path/to/session_xxx/deliverables

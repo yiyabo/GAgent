@@ -13,7 +13,7 @@
 | Docker | 20.10+ | 可选 | 代码执行沙箱（`app/services/interpreter/docker_interpreter.py`） |
 | npm | ≥ 9 | 可选 | JS 运行时校验（`runtime_guardrails.py`） |
 | qwen CLI | — | 可选 | qwen_code_runtime（`interpreter/task_executer.py`） |
-| bibtex | — | 可选 | 文献引用导出（`artifact_routes.py`） |
+| bibtex | — | 可选 | 文献引用导出（`app/routers/artifact_routes/`） |
 
 ## 2. Python 依赖（requirements.txt，31 个直接依赖）
 
