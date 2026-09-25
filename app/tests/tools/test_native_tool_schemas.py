@@ -2,7 +2,9 @@
 
 - Golden master: the exact schema payload the LLM sees must stay byte-identical
   (normalized via json.dumps sort_keys) to the pre-refactor output captured in
-  fixtures/native_schemas_golden.json.
+  fixtures/native_schemas_golden.json. The fixture records the gate-off payload;
+  the env-gated ``execute_code`` entry is derived from ``CODE_MODE_ENABLED``
+  here so both gate states compare against the same recorded bytes.
 - Generator smoke: a new tool only needs a content entry (description +
   parameters); the OpenAI function envelope is generated mechanically.
 """
@@ -26,6 +28,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 GOLDEN_PATH = (
     PROJECT_ROOT / "app" / "tests" / "tools" / "fixtures" / "native_schemas_golden.json"
 )
+
+# Env-gated entry: registered/offered only when CODE_MODE_ENABLED=1 (see
+# app/services/tool_schemas.py::_build_registry). Kept out of ALL_NATIVE_TOOLS so
+# the list below stays the gate-off (production default) tool set.
+GATED_CODE_MODE_TOOL = "execute_code"
 
 ALL_NATIVE_TOOLS = [
     "bio_tools",
@@ -56,10 +63,49 @@ def _normalized(payload: Any) -> str:
     return json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
 
 
+def _expected_native_tools() -> list[str]:
+    """Native tool set the registry exposes in *this* environment.
+
+    ``execute_code`` is env-gated exactly like the registry build is: the
+    expectation has to read the same switch, not assume the default-off shape.
+    """
+    names = list(ALL_NATIVE_TOOLS)
+    if tool_schemas.code_mode_enabled():
+        names.append(GATED_CODE_MODE_TOOL)
+    return names
+
+
+def _without_gated_code_mode(schemas: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
+    """Drop the env-gated ``execute_code`` envelope from a built payload.
+
+    The golden fixture records the gate-off payload (``execute_code`` absent),
+    so the recorded bytes stay the contract: under ``CODE_MODE_ENABLED=1`` the
+    same comparison holds once exactly the gated entry is removed. The gated
+    entry's presence is asserted separately in the caller, so this filter can
+    never silently swallow an unexpected extra tool.
+    """
+    return [
+        schema
+        for schema in schemas
+        if schema["function"]["name"] != GATED_CODE_MODE_TOOL
+    ]
+
+
 def test_native_schemas_match_golden_master() -> None:
+    all_schemas = build_tool_schemas(ALL_NATIVE_TOOLS)
+    executor_schemas = build_executor_tool_schemas()
+    code_mode_on = tool_schemas.code_mode_enabled()
+
+    # Gate check first: execute_code must be offered iff the flag is on, so the
+    # filter below can only ever remove the env-gated entry.
+    assert (GATED_CODE_MODE_TOOL in [s["function"]["name"] for s in all_schemas]) is code_mode_on
+    assert (
+        GATED_CODE_MODE_TOOL in [s["function"]["name"] for s in executor_schemas]
+    ) is code_mode_on
+
     payload = {
-        "build_tool_schemas_all20": build_tool_schemas(ALL_NATIVE_TOOLS),
-        "build_executor_tool_schemas": build_executor_tool_schemas(),
+        "build_tool_schemas_all20": _without_gated_code_mode(all_schemas),
+        "build_executor_tool_schemas": _without_gated_code_mode(executor_schemas),
         "executor_available_tools": EXECUTOR_AVAILABLE_TOOLS,
     }
     golden = GOLDEN_PATH.read_text(encoding="utf-8")
@@ -67,7 +113,7 @@ def test_native_schemas_match_golden_master() -> None:
 
 
 def test_registry_has_all_native_tools_with_valid_envelopes() -> None:
-    assert sorted(TOOL_REGISTRY.keys()) == sorted(ALL_NATIVE_TOOLS)
+    assert sorted(TOOL_REGISTRY.keys()) == sorted(_expected_native_tools())
     for name, schema in TOOL_REGISTRY.items():
         assert schema["type"] == "function"
         fn = schema["function"]
