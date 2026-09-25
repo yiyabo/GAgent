@@ -40,161 +40,31 @@ from .model_metric_schema import (
     missing_required_model_metrics,
 )
 from .plan_models import PlanNode
+from .verification_cues import (
+    _COMPLETED_LIKE,
+    _FAILED_LIKE,
+    _INTERNAL_ARTIFACT_FILENAMES,
+    _INTERNAL_TOOL_OUTPUT_RE,
+    _NON_DELIVERABLE_SUFFIXES,
+    _OUTPUT_DISCOVERY_DIR_NAMES,
+    _PATH_KEYS,
+    _PDB_LINE_RECORDS,
+    _SCAFFOLDING_DIR_NAMES,
+    _SEMANTIC_DELIVERABLE_KEYWORDS,
+    _SEMANTIC_DELIVERABLE_SUFFIXES,
+    _SEMANTIC_FILENAME_STOPWORDS,
+    _SEMANTIC_SINGLETON_FALLBACK_GENERIC_TOKENS,
+    _SEMANTIC_TOPIC_ALIASES,
+    _SOURCE_DISCOVERY_CONTEXT_CUES,
+    _SOURCE_DISCOVERY_LINE_FOUND_CUES,
+    _SOURCE_DISCOVERY_LINE_MISSING_CUES,
+    _SOURCE_DISCOVERY_PATH_CHECKS,
+    _SOURCE_DISCOVERY_POSITIVE_CUES,
+    _TABULAR_ROW_COUNT_KEYS,
+    _CueMethods,
+)
 
 logger = logging.getLogger(__name__)
-
-_COMPLETED_LIKE = {"completed", "done", "success"}
-_FAILED_LIKE = {"failed", "failure", "error"}
-_PATH_KEYS = {
-    "path",
-    "output_path",
-    "analysis_path",
-    "effective_output_path",
-    "effective_analysis_path",
-    "partial_output_path",
-    "combined_path",
-    "combined_partial",
-    "sections_dir",
-    "reviews_dir",
-    "merge_queue",
-    "citation_validation_path",
-    "manifest_path",
-    "result_path",
-    "preview_path",
-    "run_directory",
-    "working_directory",
-    "task_directory_full",
-    "task_root_directory",
-    "results_directory",
-    "work_dir",
-    "run_dir",
-    "references_bib",
-    "evidence_md",
-    "library_jsonl",
-    "pdf_dir",
-    "artifact_paths",
-}
-_PDB_LINE_RECORDS = {"HET", "HETNAM", "HETATM", "ATOM", "MODRES", "LINK"}
-_INTERNAL_ARTIFACT_FILENAMES = {"result.json", "manifest.json", "preview.json"}
-_INTERNAL_TOOL_OUTPUT_RE = re.compile(
-    r"(?:^|/)tool_outputs/job_[^/]+/step_\d+_[^/]+(?:/.*)?$",
-    re.IGNORECASE,
-)
-_TABULAR_ROW_COUNT_KEYS = {"row_count", "rows", "record_count"}
-_SEMANTIC_DELIVERABLE_SUFFIXES = {".md"}
-_SEMANTIC_DELIVERABLE_KEYWORDS = {"evidence"}
-_SEMANTIC_FILENAME_STOPWORDS = {
-    "a",
-    "an",
-    "and",
-    "draft",
-    "evidence",
-    "file",
-    "final",
-    "for",
-    "key",
-    "md",
-    "of",
-    "output",
-    "outputs",
-    "report",
-    "section",
-    "sections",
-    "summary",
-    "summaries",
-    "task",
-    "the",
-    "v2",
-    "v3",
-}
-_SEMANTIC_SINGLETON_FALLBACK_GENERIC_TOKENS = {
-    "memo",
-    "memos",
-    "misc",
-    "miscellaneous",
-    "note",
-    "notes",
-    "placeholder",
-    "scratch",
-    "temp",
-    "tmp",
-    "todo",
-    "todos",
-}
-_SEMANTIC_TOPIC_ALIASES = {
-    "conclusion": {
-        "advance",
-        "advances",
-        "future",
-        "outlook",
-        "perspective",
-        "perspectives",
-        "prospect",
-        "prospects",
-    },
-}
-
-_OUTPUT_DISCOVERY_DIR_NAMES = {
-    "artifact",
-    "artifacts",
-    "data",
-    "docs",
-    "figures",
-    "output",
-    "outputs",
-    "plots",
-    "result",
-    "results",
-    "tables",
-}
-_NON_DELIVERABLE_SUFFIXES = {".log", ".tmp", ".pyc"}
-_SCAFFOLDING_DIR_NAMES = {"code", "_scratch", "logs", "__pycache__"}
-
-
-_SOURCE_DISCOVERY_POSITIVE_CUES = {
-    "locate",
-    "located",
-    "find",
-    "found",
-    "search",
-    "inventory",
-    "catalog",
-    "catalogue",
-    "list",
-    "verify presence",
-    "confirm presence",
-}
-_SOURCE_DISCOVERY_CONTEXT_CUES = {
-    "existing",
-    "pre-existing",
-    "preexisting",
-    "source",
-    "input",
-    "reuse",
-    "reusable",
-    "already generated",
-    "already exists",
-}
-_SOURCE_DISCOVERY_LINE_FOUND_CUES = {
-    "found",
-    "exists",
-    "present",
-    "located",
-    "available",
-}
-_SOURCE_DISCOVERY_LINE_MISSING_CUES = {
-    "not found",
-    "missing",
-    "does not exist",
-    "doesn't exist",
-    "absent",
-    "unavailable",
-}
-_SOURCE_DISCOVERY_PATH_CHECKS = {
-    "file_exists",
-    "file_nonempty",
-    "pdf_valid",
-}
 
 
 @dataclass
@@ -206,7 +76,7 @@ class VerificationFinalization:
     artifact_paths: List[str] = field(default_factory=list)
 
 
-class TaskVerificationService:
+class TaskVerificationService(_CueMethods):
     """Deterministic verification gate for file/data-oriented task results."""
 
     @staticmethod
@@ -1882,10 +1752,6 @@ class TaskVerificationService:
             "verification_config_error": True,
             "message": f"Unsupported verification check type: {check_type}",
         }
-
-    @staticmethod
-    def _has_nonempty_string(value: Any) -> bool:
-        return isinstance(value, str) and bool(value.strip())
 
     @staticmethod
     def _verification_config_error(check_type: str, message: str) -> Dict[str, Any]:
