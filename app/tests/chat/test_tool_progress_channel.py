@@ -15,12 +15,15 @@ renders (``type`` / ``phase`` / ``label`` / ``details`` / ``iteration`` /
 ``tool`` / ``status``), cross-thread delivery still works, a bare agent degrades
 to no channel, and a channel that raises never fails the tool.
 
-Note on the turn mode: the stream only *emits* these events when the routing
-decision's ``thinking_visibility`` is ``"progress"`` — ``_emit_progress_status``
-returns early otherwise, which is the pre-existing display-mode gate that keeps
-``progress_status`` out of ``full_thinking`` turns.  The end-to-end test below
-therefore drives a ``progress``-mode turn (like the golden stream tests do);
-the wiring itself is mode-independent.
+Note on the turn mode: the stream's ``_emit_progress_status`` is display-mode
+gated — only `thinking_visibility == "progress"` turns release every tool's
+events, and since a9a3597d production routing returns ``"visible"``.  The one
+narrow exception is the delegation lane itself: ``on_tool_progress`` releases
+the tools in ``DELEGATION_PROGRESS_TOOLS`` in every mode (pinned by
+``test_delegation_progress_visibility.py``).  The end-to-end test below
+therefore drives a ``progress``-mode turn so the whole channel — start, result
+and the delegation's own reports — is observable in one turn, like the golden
+stream tests do; the wiring itself is mode-independent.
 """
 
 from __future__ import annotations

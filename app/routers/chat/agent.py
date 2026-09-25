@@ -55,6 +55,7 @@ from app.services.deep_think_agent import (
     summarize_simple_chat_reasoning,
 )
 from tool_box import execute_tool
+from tool_box.tools_impl.delegation_progress import DELEGATION_PROGRESS_TOOLS
 
 
 from .action_execution import (
@@ -1486,8 +1487,18 @@ class StructuredChatAgent:
             iteration: Optional[int] = None,
             tool: Optional[str] = None,
             status: str = "active",
+            force: bool = False,
         ) -> None:
-            if not progress_visible:
+            # ``force`` is the one narrow exception to the display-mode gate.
+            # Only ``on_tool_progress`` passes it, and only for a tool listed in
+            # ``DELEGATION_PROGRESS_TOOLS``: a delegated sub-agent's reports are
+            # its only sign of life in the parent stream (a CLI delegation can
+            # run for hours), so they are released even when
+            # ``thinking_visibility`` is not ``"progress"``.  Every other event
+            # — this turn's own ``on_tool_start``/``on_tool_result``, any other
+            # tool's ``on_progress`` — stays gated exactly as before, and
+            # ``"progress"`` turns are unaffected (they already pass).
+            if not (progress_visible or force):
                 return
             await queue.put(
                 {
@@ -1641,6 +1652,11 @@ class StructuredChatAgent:
             if not message:
                 return
             status = "completed" if stage == "completed" else "active"
+            # The delegation lane's own reports are released from the display-mode
+            # gate (see ``_emit_progress_status``): a CLI sub-agent run can last
+            # hours and this channel is its only sign of life in the parent
+            # stream.  ``DELEGATION_PROGRESS_TOOLS`` is the single source for
+            # which tools that is; every other tool's progress stays gated.
             await _emit_progress_status(
                 phase="gathering",
                 label=_truncate_progress_text(message, 72),
@@ -1650,6 +1666,7 @@ class StructuredChatAgent:
                 iteration=active_tool_iteration,
                 tool=tool_name,
                 status=status,
+                force=tool_name in DELEGATION_PROGRESS_TOOLS,
             )
 
         # Publish this turn's progress channel on the agent so the *action* lane

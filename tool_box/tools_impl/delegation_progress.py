@@ -27,6 +27,17 @@ send): ``{"stage": ..., "message": ..., **extra}``.  The chat bridge renders
 non-SSE consumers.  ``stage`` reuses the existing vocabulary
 (``started`` / ``running`` / ``completed`` / ``failed``) plus ``cancelled``, the
 terminal state S3b introduced for a user-stopped delegation.
+
+Those reports are the *only* ``progress_status`` events a turn emits outside a
+``thinking_visibility == "progress"`` turn: ``on_tool_progress`` releases them
+for the tools in :data:`DELEGATION_PROGRESS_TOOLS` even when the stream's
+display mode gates progress (``agent.py:_emit_progress_status``).  A delegated
+CLI run must stay visible in the parent stream — that is the whole point of the
+channel — whereas every other tool's start/result/progress event remains
+display-mode gated.  The volume this admits is the heartbeat's own: one
+``progress_status`` per interval (:data:`_DELEGATION_HEARTBEAT_SECONDS`, 15s
+default) for as long as the delegation runs, so a 7200s cap is ≈482 rows in
+``chat_run_events`` per delegation.
 """
 
 from __future__ import annotations
@@ -43,6 +54,20 @@ logger = logging.getLogger(__name__)
 ENV_PROGRESS_ENABLED = "DELEGATION_PROGRESS_ENABLED"
 ENV_HEARTBEAT_SECONDS = "DELEGATION_PROGRESS_HEARTBEAT_SECONDS"
 ENV_DELIVERY_TIMEOUT_SECONDS = "DELEGATION_PROGRESS_DELIVERY_TIMEOUT_SECONDS"
+
+#: The tools whose ``ToolContext.on_progress`` channel carries a *delegated* run
+#: (``code_executor``'s CLI sub-agent lanes and ``delegate_task``), i.e. exactly
+#: the handlers that report through :func:`build_delegation_progress`.
+#:
+#: This is the single source for the one narrow exception to the chat stream's
+#: display-mode gate: ``app/routers/chat/agent.py:on_tool_progress`` releases
+#: ``progress_status`` for these names even when the turn's
+#: ``thinking_visibility`` is not ``"progress"``, so a long delegation is visible
+#: in a production (``"visible"``) turn.  Nothing else is released — not the same
+#: tools' ``on_tool_start`` / ``on_tool_result``, and not any other tool's
+#: ``on_progress``.  Adding a name here is a user-visible behaviour change; keep
+#: the list to handlers that actually build a :class:`DelegationProgressReporter`.
+DELEGATION_PROGRESS_TOOLS = frozenset({"code_executor", "delegate_task"})
 
 #: Interval between "still running" reports.  The heartbeat rides on the cancel
 #: watcher's 0.25s poll, so this knob is what keeps a long delegation from either
@@ -289,6 +314,7 @@ def build_delegation_progress(
 
 
 __all__ = [
+    "DELEGATION_PROGRESS_TOOLS",
     "ENV_DELIVERY_TIMEOUT_SECONDS",
     "ENV_HEARTBEAT_SECONDS",
     "ENV_PROGRESS_ENABLED",
