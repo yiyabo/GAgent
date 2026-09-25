@@ -1378,12 +1378,18 @@ async def _execute_all(
         from app.repository.plan_repository import PlanRepository
         from app.services.plans.todo_list import build_full_plan_todo_list
         from app.services.plans.decomposition_jobs import plan_decomposition_jobs
+        # Sibling addresses, not the HTTP layer: the execution engine and the
+        # plan/task execution locks live outside the plan_routes facade.
+        from app.routers.plan_routes.execution_jobs import _run_full_plan_job
+        from app.routers.plan_routes.state import (
+            _acquire_plan_execution_lock,
+            _release_plan_execution_lock,
+        )
+        # These two stay facade-resolved: tests patch them on the facade
+        # namespace and this call-time import must observe those patches.
         from app.routers.plan_routes import (
             _resolve_effective_task_states,
             _todo_list_to_dict,
-            _run_full_plan_job,
-            _acquire_plan_execution_lock,
-            _release_plan_execution_lock,
         )
         release_execution_lock = _release_plan_execution_lock
         import threading
