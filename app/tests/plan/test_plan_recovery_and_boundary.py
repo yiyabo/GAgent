@@ -229,7 +229,7 @@ class TestSkippedRecoveryAndSummary:
         executor._test_call_counter = call_counter
         return executor
 
-    def test_skipped_blocked_triggers_recovery(self):
+    def test_skipped_blocked_triggers_recovery(self, monkeypatch):
         """A skipped task with blocked_by_dependencies should trigger recovery."""
         from app.services.plans.plan_executor import (
             ExecutionConfig,
@@ -277,9 +277,10 @@ class TestSkippedRecoveryAndSummary:
         # so only the dependent task is scheduled (dep runs via recovery).
         import app.services.plans.todo_list as _tl
         from types import SimpleNamespace as _NS
-        _orig_todo = _tl.build_full_plan_todo_list
-        _tl.build_full_plan_todo_list = (
-            lambda *_a, **_kw: _NS(execution_order=[2], phases=[])
+        monkeypatch.setattr(
+            _tl,
+            "build_full_plan_todo_list",
+            lambda *_a, **_kw: _NS(execution_order=[2], phases=[]),
         )
 
         cfg = ExecutionConfig(
@@ -288,10 +289,7 @@ class TestSkippedRecoveryAndSummary:
             dependency_throttle=True,
         )
 
-        try:
-            summary = executor.execute_plan(1, config=cfg)
-        finally:
-            _tl.build_full_plan_todo_list = _orig_todo
+        summary = executor.execute_plan(1, config=cfg)
 
         # The final result in summary should include both the recovered
         # dependency and the completed task.
@@ -505,7 +503,7 @@ class TestSkippedRecoveryAndSummary:
         assert [result.task_id for result in summary.results] == [1, 2]
         assert summary.results[0].content == "Dependency completed in recovery"
 
-    def test_dependency_recovery_failure_stops_current_task_retry(self):
+    def test_dependency_recovery_failure_stops_current_task_retry(self, monkeypatch):
         """If a dependency rerun fails, the current task should not be retried."""
         from app.services.plans.plan_executor import (
             ExecutionConfig,
@@ -544,11 +542,14 @@ class TestSkippedRecoveryAndSummary:
         executor._repo.get_plan_tree = MagicMock(return_value=tree)
         # execute_plan derives order via build_full_plan_todo_list; pin it
         # so only the dependent task is scheduled (dep runs via recovery).
+        # monkeypatch restores the module attribute for the rest of the session —
+        # a bare assignment here previously leaked this lambda into later tests.
         import app.services.plans.todo_list as _tl
         from types import SimpleNamespace as _NS
-        _orig_todo = _tl.build_full_plan_todo_list
-        _tl.build_full_plan_todo_list = (
-            lambda *_a, **_kw: _NS(execution_order=[2], phases=[])
+        monkeypatch.setattr(
+            _tl,
+            "build_full_plan_todo_list",
+            lambda *_a, **_kw: _NS(execution_order=[2], phases=[]),
         )
 
         summary = executor.execute_plan(
