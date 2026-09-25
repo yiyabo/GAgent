@@ -39,11 +39,12 @@ import asyncio
 import json
 import logging
 import re
+from dataclasses import replace
 from datetime import datetime, timezone
-from typing import Any, AsyncIterator, Awaitable, Callable, Dict, Optional, Tuple
+from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional, Tuple
 from uuid import uuid4
 
-from app.services.deep_think_agent import ThinkingStep, detect_reasoning_language
+from app.services.deep_think_agent import DeepThinkResult, ThinkingStep, detect_reasoning_language
 from app.services.llm.structured_response import LLMStructuredResponse
 
 from .background import _sse_message
@@ -51,6 +52,12 @@ from .deterministic_execute import (
     _build_deterministic_execute_final_payload,
     _build_deterministic_execute_placeholder_step,
 )
+from .response_metadata import (
+    _build_deep_think_response_metadata,
+    _plan_runtime_metadata,
+    _structured_plan_metadata_from_result,
+)
+from .subject_grounding import _apply_grounded_local_answer
 
 logger = logging.getLogger(__name__)
 
@@ -474,3 +481,163 @@ async def _stream_direct_image_response(
     if event_sink is not None:
         await event_sink(payload)
     yield _sse_message(payload)
+
+
+async def _drain_unified_stream_events(
+    agent: Any,
+    *,
+    queue: asyncio.Queue[Any],
+    routing_decision: Any,
+    reasoning_language: str,
+    thinking_visible: bool,
+    progress_visible: bool,
+    current_turn_tool_results: List[Dict[str, Any]],
+    current_turn_artifact_gallery: List[Dict[str, Any]],
+    event_sink: Optional[Callable[[Dict[str, Any]], Awaitable[None]]],
+) -> AsyncIterator[str]:
+    """Drain the unified-stream event queue and yield the SSE lines (finalize).
+
+    Moved out of ``process_unified_stream`` (W5c phase: finalize).  The worker
+    (``run_agent``) keeps producing into ``queue``; this generator consumes until
+    the ``None`` sentinel and renders:
+
+    * the passthrough set (``thinking_step`` / ``thinking_delta`` /
+      ``reasoning_delta`` / ``progress_status`` / ``delta`` / ``control_ack`` /
+      ``tool_output`` / ``artifact`` / ``steer_ack``) verbatim,
+    * ``error`` events with the six optional diagnostic keys copied over,
+    * ``result`` events into the ``final`` SSE payload, emitting it *before* the
+      DB save, then persisting the assistant message.
+
+    Parameter face: nine explicit references that all already existed as locals of
+    the method.  ``current_turn_tool_results`` / ``current_turn_artifact_gallery``
+    are never rebound (only appended to), so aliasing the same list objects keeps
+    the concurrent-mutation semantics identical.
+
+    Patch surface: ``_persist_runtime_context`` and ``_save_chat_message`` are
+    patched on the agent namespace by chat tests and are read through ``_ag()``.
+    """
+
+    async def _through_sink(payload: Dict[str, Any]) -> str:
+        if event_sink is not None:
+            await event_sink(payload)
+        return _sse_message(payload)
+
+    # Consume queue
+    while True:
+        item = await queue.get()
+        if item is None:
+            break
+
+        event_type = item.get("type")
+        if event_type in {
+            "thinking_step",
+            "thinking_delta",
+            "reasoning_delta",
+            "progress_status",
+            "delta",
+            "control_ack",
+            "tool_output",
+            "artifact",
+            "steer_ack",
+        }:
+            out = await _through_sink(item)
+            yield out
+        elif event_type == "error":
+            err_payload = {"type": "error", "message": item["error"]}
+            for key in (
+                "error_type",
+                "error_code",
+                "category",
+                "provider",
+                "retryable",
+                "status_code",
+            ):
+                if key in item:
+                    err_payload[key] = item[key]
+            out = await _through_sink(err_payload)
+            yield out
+        elif event_type == "result":
+            # Final result, yield as standard chat message
+            res: DeepThinkResult = item["result"]
+            grounded_answer = _apply_grounded_local_answer(
+                agent,
+                res.final_answer,
+                routing_decision,
+            )
+            if grounded_answer != str(res.final_answer or "").strip():
+                res = replace(res, final_answer=grounded_answer)
+            result_job_id = (
+                str(item.get("job_id"))
+                if isinstance(item.get("job_id"), str) and item.get("job_id")
+                else None
+            )
+
+            # Construct final content for display and saving
+            final_content_parts = []
+            # Thinking Summary removed per user request
+            if res.final_answer:
+                final_content_parts.append(res.final_answer)
+
+            full_response = "\n\n".join(final_content_parts)
+
+            # Note: final_answer was already streamed via on_final_delta callback
+            # No need to yield it again here to avoid duplication
+
+            # Build metadata ONCE (shared by SSE final event and DB save)
+            bg_category = item.get("bg_category")
+            plan_tree = getattr(agent, "plan_tree", None)
+            structured_plan_meta = _structured_plan_metadata_from_result(
+                res,
+                tool_results=current_turn_tool_results,
+            )
+            plan_runtime_meta = _plan_runtime_metadata(plan_tree)
+            resolved_plan_id = res.structured_plan_plan_id or agent.plan_session.plan_id
+            plan_title = res.structured_plan_title or (plan_tree.title if plan_tree else None)
+            final_metadata = _build_deep_think_response_metadata(
+                result=res,
+                routing_metadata=routing_decision.metadata(),
+                plan_id=resolved_plan_id,
+                plan_title=plan_title,
+                reasoning_language=reasoning_language,
+                thinking_visible=thinking_visible,
+                progress_visible=progress_visible,
+                artifact_gallery=current_turn_artifact_gallery,
+                tool_results=current_turn_tool_results,
+                deep_think_job_id=result_job_id,
+                background_category=bg_category,
+                display_text=full_response,
+                structured_plan_meta=structured_plan_meta,
+                plan_runtime_meta=plan_runtime_meta,
+            )
+
+            # 🚀 Emit final event to client FIRST (before DB save)
+            payload = {
+                "llm_reply": {"message": res.final_answer},
+                "response": full_response,
+                "actions": [],
+                "metadata": final_metadata,
+            }
+            final_payload = {"type": "final", "payload": payload}
+            out = await _through_sink(final_payload)
+            yield out
+
+            # 💾 Save Deep Think response to database AFTER final event
+            if agent.session_id and full_response:
+                try:
+                    _ag()._persist_runtime_context(agent)
+                    _ag()._save_chat_message(
+                        agent.session_id,
+                        "assistant",
+                        full_response,
+                        metadata=final_metadata,
+                        model_provider=(agent.extra_context or {}).get("model_provider"),
+                    )
+                    logger.info(
+                        "[CHAT][DEEP_THINK] Response saved to database for session=%s",
+                        agent.session_id,
+                    )
+                except Exception as save_err:
+                    logger.warning(
+                        "[CHAT][DEEP_THINK] Failed to save response: %s",
+                        save_err,
+                    )

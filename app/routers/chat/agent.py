@@ -253,6 +253,7 @@ from .deterministic_execute import (
     _normalize_deterministic_execute_status,
 )
 from .unified_stream import (
+    _drain_unified_stream_events,
     _extract_tool_context,
     _normalize_progress_text,
     _progress_label_from_phase,
@@ -2768,130 +2769,18 @@ class StructuredChatAgent:
         # Start agent in background
         asyncio.create_task(run_agent())
 
-        async def _through_sink(payload: Dict[str, Any]) -> str:
-            if event_sink is not None:
-                await event_sink(payload)
-            return _sse_message(payload)
-
-        # Consume queue
-        while True:
-            item = await queue.get()
-            if item is None:
-                break
-
-            event_type = item.get("type")
-            if event_type in {
-                "thinking_step",
-                "thinking_delta",
-                "reasoning_delta",
-                "progress_status",
-                "delta",
-                "control_ack",
-                "tool_output",
-                "artifact",
-                "steer_ack",
-            }:
-                out = await _through_sink(item)
-                yield out
-            elif event_type == "error":
-                err_payload = {"type": "error", "message": item["error"]}
-                for key in (
-                    "error_type",
-                    "error_code",
-                    "category",
-                    "provider",
-                    "retryable",
-                    "status_code",
-                ):
-                    if key in item:
-                        err_payload[key] = item[key]
-                out = await _through_sink(err_payload)
-                yield out
-            elif event_type == "result":
-                # Final result, yield as standard chat message
-                res: DeepThinkResult = item["result"]
-                grounded_answer = _apply_grounded_local_answer(
-                    self,
-                    res.final_answer,
-                    routing_decision,
-                )
-                if grounded_answer != str(res.final_answer or "").strip():
-                    res = replace(res, final_answer=grounded_answer)
-                result_job_id = (
-                    str(item.get("job_id"))
-                    if isinstance(item.get("job_id"), str) and item.get("job_id")
-                    else None
-                )
-
-                # Construct final content for display and saving
-                final_content_parts = []
-                # Thinking Summary removed per user request
-                if res.final_answer:
-                    final_content_parts.append(res.final_answer)
-
-                full_response = "\n\n".join(final_content_parts)
-
-                # Note: final_answer was already streamed via on_final_delta callback
-                # No need to yield it again here to avoid duplication
-
-                # Build metadata ONCE (shared by SSE final event and DB save)
-                bg_category = item.get("bg_category")
-                plan_tree = getattr(self, "plan_tree", None)
-                structured_plan_meta = _structured_plan_metadata_from_result(
-                    res,
-                    tool_results=current_turn_tool_results,
-                )
-                plan_runtime_meta = _plan_runtime_metadata(plan_tree)
-                resolved_plan_id = res.structured_plan_plan_id or self.plan_session.plan_id
-                plan_title = res.structured_plan_title or (plan_tree.title if plan_tree else None)
-                final_metadata = _build_deep_think_response_metadata(
-                    result=res,
-                    routing_metadata=routing_decision.metadata(),
-                    plan_id=resolved_plan_id,
-                    plan_title=plan_title,
-                    reasoning_language=reasoning_language,
-                    thinking_visible=thinking_visible,
-                    progress_visible=progress_visible,
-                    artifact_gallery=current_turn_artifact_gallery,
-                    tool_results=current_turn_tool_results,
-                    deep_think_job_id=result_job_id,
-                    background_category=bg_category,
-                    display_text=full_response,
-                    structured_plan_meta=structured_plan_meta,
-                    plan_runtime_meta=plan_runtime_meta,
-                )
-
-                # 🚀 Emit final event to client FIRST (before DB save)
-                payload = {
-                    "llm_reply": {"message": res.final_answer},
-                    "response": full_response,
-                    "actions": [],
-                    "metadata": final_metadata,
-                }
-                final_payload = {"type": "final", "payload": payload}
-                out = await _through_sink(final_payload)
-                yield out
-
-                # 💾 Save Deep Think response to database AFTER final event
-                if self.session_id and full_response:
-                    try:
-                        _persist_runtime_context(self)
-                        _save_chat_message(
-                            self.session_id,
-                            "assistant",
-                            full_response,
-                            metadata=final_metadata,
-                            model_provider=(self.extra_context or {}).get("model_provider"),
-                        )
-                        logger.info(
-                            "[CHAT][DEEP_THINK] Response saved to database for session=%s",
-                            self.session_id,
-                        )
-                    except Exception as save_err:
-                        logger.warning(
-                            "[CHAT][DEEP_THINK] Failed to save response: %s",
-                            save_err,
-                        )
+        async for chunk in _drain_unified_stream_events(
+            self,
+            queue=queue,
+            routing_decision=routing_decision,
+            reasoning_language=reasoning_language,
+            thinking_visible=thinking_visible,
+            progress_visible=progress_visible,
+            current_turn_tool_results=current_turn_tool_results,
+            current_turn_artifact_gallery=current_turn_artifact_gallery,
+            event_sink=event_sink,
+        ):
+            yield chunk
 
     async def process_deep_think_stream(self, user_message: str) -> AsyncIterator[str]:
         """Backward-compatible helper that force-enables the DeepThink path."""
