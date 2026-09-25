@@ -252,6 +252,14 @@ from .deterministic_execute import (
     _build_deterministic_execute_placeholder_step,
     _normalize_deterministic_execute_status,
 )
+from .unified_stream import (
+    _extract_tool_context,
+    _normalize_progress_text,
+    _progress_label_from_phase,
+    _progress_phase_from_step,
+    _tool_progress_details,
+    _truncate_progress_text,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1706,85 +1714,6 @@ class StructuredChatAgent:
 
         reasoning_language = detect_reasoning_language(effective_user_message)
 
-        def _progress_label_from_phase(phase: str) -> str:
-            if reasoning_language == "zh":
-                mapping = {
-                    "planning": "分析请求中",
-                    "gathering": "检索资料中",
-                    "analyzing": "整理候选方向中",
-                    "synthesizing": "汇总结论中",
-                    "finalizing": "生成最终答复中",
-                }
-            else:
-                mapping = {
-                    "planning": "Planning the response",
-                    "gathering": "Gathering evidence",
-                    "analyzing": "Analyzing findings",
-                    "synthesizing": "Synthesizing conclusions",
-                    "finalizing": "Preparing the final answer",
-                }
-            return mapping.get(phase, mapping["analyzing"])
-
-        def _normalize_progress_text(text: Optional[str]) -> str:
-            return re.sub(r"\s+", " ", str(text or "")).strip()
-
-        def _truncate_progress_text(text: Optional[str], max_chars: int = 72) -> str:
-            normalized = _normalize_progress_text(text)
-            if len(normalized) <= max_chars:
-                return normalized
-            return f"{normalized[: max_chars - 1].rstrip()}…"
-
-        def _tool_progress_details(
-            tool_name: str, params: Optional[Dict[str, Any]]
-        ) -> Optional[str]:
-            params = params if isinstance(params, dict) else {}
-            lowered = (tool_name or "").strip().lower()
-            if lowered == "web_search":
-                query = _normalize_progress_text(params.get("query"))
-                return query or None
-            if lowered == "literature_pipeline":
-                topic = _normalize_progress_text(
-                    params.get("topic") or params.get("query") or params.get("question")
-                )
-                return topic or None
-            if lowered == "document_reader":
-                path = _normalize_progress_text(
-                    params.get("path") or params.get("file_path")
-                )
-                return path or None
-            if lowered == "file_operations":
-                target = _normalize_progress_text(
-                    params.get("path")
-                    or params.get("target")
-                    or params.get("file_path")
-                )
-                return target or None
-            return None
-
-        def _extract_tool_context(action_raw: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
-            if not action_raw:
-                return None, None
-            try:
-                parsed = json.loads(action_raw)
-            except Exception:
-                return None, None
-            if not isinstance(parsed, dict):
-                return None, None
-            tool_name = str(parsed.get("tool") or "").strip() or None
-            params = parsed.get("params") if isinstance(parsed.get("params"), dict) else {}
-            return tool_name, _tool_progress_details(tool_name or "", params)
-
-        def _progress_phase_from_step(step: ThinkingStep) -> str:
-            if step.status == "calling_tool" or step.action:
-                return "gathering"
-            if step.status == "done":
-                return "finalizing"
-            if step.status == "analyzing":
-                return "synthesizing"
-            if step.iteration <= 1:
-                return "planning"
-            return "analyzing"
-
         async def _emit_progress_status(
             *,
             phase: str,
@@ -1800,7 +1729,9 @@ class StructuredChatAgent:
                 {
                     "type": "progress_status",
                     "phase": phase,
-                    "label": _truncate_progress_text(label or _progress_label_from_phase(phase), 72),
+                    "label": _truncate_progress_text(
+                        label or _progress_label_from_phase(phase, language=reasoning_language), 72
+                    ),
                     "details": _normalize_progress_text(details) or None,
                     "iteration": iteration,
                     "tool": tool,
@@ -1814,7 +1745,7 @@ class StructuredChatAgent:
             if progress_visible:
                 phase = _progress_phase_from_step(step)
                 progress_tool, progress_details = _extract_tool_context(step.action)
-                progress_label = _progress_label_from_phase(phase)
+                progress_label = _progress_label_from_phase(phase, language=reasoning_language)
                 if progress_tool:
                     progress_label = summarize_tool_step_display(
                         step, language=reasoning_language
@@ -2938,7 +2869,7 @@ class StructuredChatAgent:
 
                 await _emit_progress_status(
                     phase="planning",
-                    label=_progress_label_from_phase("planning"),
+                    label=_progress_label_from_phase("planning", language=reasoning_language),
                     iteration=0,
                     status="active",
                 )
