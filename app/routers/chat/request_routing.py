@@ -9,11 +9,10 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Literal, Mapping, Optional, Sequence
 
-from app.llm import LLMClient, get_default_client
+from app.llm import get_default_client
 
 from .guardrails import (
     extract_task_ids_from_text,
-    local_manuscript_assembly_request,
 )
 from .subject_identity import (
     build_subject_aliases,

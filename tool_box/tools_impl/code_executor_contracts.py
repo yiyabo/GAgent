@@ -18,7 +18,6 @@ from app.services.plans.acceptance_criteria import (
     resolve_glob_pattern,
 )
 from app.services.plans.artifact_validation import get_artifact_validation_prompt_specs
-from app.services.session_paths import get_runtime_session_dir
 from app.services.resources.resource_registry import resolve_resources as _resolve_registered_resources
 
 logger = logging.getLogger(__name__)

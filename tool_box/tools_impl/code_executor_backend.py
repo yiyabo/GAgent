@@ -22,15 +22,10 @@ from app.config.executor_config import (
     resolve_code_execution_docker_image,
     resolve_code_execution_local_runtime,
 )
-from app.services.foundation.llm_config import is_production, platform_profile
-from app.services.resources.resource_registry import resolve_resources as _resolve_registered_resources
-from app.services.plans.acceptance_criteria import derive_expected_deliverables
-
 from .code_executor_cli_parse import _format_directory_choices, _format_task_subdirectories
 from .code_executor_semantic import (
     _BLOCK_SCOPE_REASON,
     _BLOCK_SCOPE_STATUS,
-    _get_skill_guidance,
     _normalize_csv_values,
 )
 from .code_executor_qwen import _is_qwen_truncated_tool_failure_text

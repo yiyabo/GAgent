@@ -11,7 +11,6 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 from .models import ChatMessage, ChatResponse
 from app.services.llm.structured_response import LLMAction
 from app.services.llm.llm_service import LLMService, get_llm_service, get_llm_service_for_provider
-from app.llm import LLMClient
 
 # ---------------------------------------------------------------------------
 # Constants
