@@ -8,7 +8,6 @@ import json
 import logging
 import os
 import re
-import threading
 from dataclasses import replace
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -58,34 +57,6 @@ from app.services.deep_think_agent import (
     summarize_simple_chat_reasoning,
 )
 from tool_box import execute_tool
-
-# Plan auto-review runs in a worker thread (no ambient loop). Reuse ONE
-# daemon-thread loop instead of asyncio.run() per call, which would create a
-# fresh loop and fresh LLM/DB connections every time. Do not "simplify" back.
-_plan_review_loop = None
-_plan_review_loop_lock = threading.Lock()
-
-
-def _get_plan_review_loop():
-    global _plan_review_loop
-    with _plan_review_loop_lock:
-        if _plan_review_loop is None or _plan_review_loop.is_closed():
-            loop = asyncio.new_event_loop()
-            thread = threading.Thread(
-                target=loop.run_forever,
-                name="plan-review-loop",
-                daemon=True,
-            )
-            thread.start()
-            _plan_review_loop = loop
-    return _plan_review_loop
-
-
-def _run_blocking_on_review_loop(coro):
-    """asyncio.run() equivalent for worker threads, on the shared review loop."""
-    future = asyncio.run_coroutine_threadsafe(coro, _get_plan_review_loop())
-    return future.result()
-
 
 _DEEP_THINK_MAX_ITER_DEFAULT = 64
 _DEEP_THINK_MAX_ITER_CAP = 128
@@ -614,6 +585,12 @@ from .phagescope_rewrite import (
     _normalize_phagescope_data_dir,
     _path_is_generic_tabular_file,
     _rewrite_phagescope_dataset_understanding_plan_to_deep_profile,
+)
+from .review_loop import (
+    _get_plan_review_loop,
+    _plan_review_loop,
+    _plan_review_loop_lock,
+    _run_blocking_on_review_loop,
 )
 
 logger = logging.getLogger(__name__)
