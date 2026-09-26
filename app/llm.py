@@ -1731,7 +1731,84 @@ class LLMClient(LLMProvider):
         # Parse accumulated tool calls
         result.tool_calls.extend(_parse_native_tool_calls(tc_accum))
 
+        # A gateway that streams tool calls without their argument fragments
+        # leaves a named call nobody can answer. Re-ask once, non-streaming, and
+        # take that answer only when it actually carries arguments.
+        if _nonstream_toolcall_repair_enabled() and _tool_calls_lost_their_arguments(
+            result.tool_calls
+        ):
+            repaired = await self._repair_tool_calls_nonstream(
+                payload, logical_call_id,
+            )
+            if repaired:
+                logger.warning(
+                    "[LLM] streamed tool call(s) arrived without arguments; "
+                    "re-asked without streaming and recovered %d call(s): %s",
+                    len(repaired),
+                    [tc.name for tc in repaired],
+                )
+                result.tool_calls = repaired
+
         return result
+
+    async def _repair_tool_calls_nonstream(
+        self,
+        payload: Dict[str, Any],
+        logical_call_id: str,
+    ) -> List["NativeToolCall"]:
+        """Re-issue *payload* without ``stream`` and return its tool calls.
+
+        Returns an empty list on any failure or when the re-ask is just as
+        argument-less, so the caller keeps what the stream gave it. The extra
+        request is recorded as attempt 2 of the same ``logical_call_id``: it is
+        a second attempt at one logical call, and the usage ledger already has
+        the column for that.
+        """
+        body = {k: v for k, v in payload.items() if k != "stream"}
+        body["stream"] = False
+        headers = self._build_headers()
+        headers.update(_billing_request_headers(logical_call_id, 2))
+        timeout = _make_request_timeout(self.stream_timeout)
+        client = _get_shared_async_client()
+        try:
+            await _outbound_limiter.acquire_async()
+            _record_attempt_context(logical_call_id, 2)
+            resp = await client.post(
+                self._effective_url(), headers=headers, json=body, timeout=timeout,
+            )
+            if resp.status_code >= 400:
+                text = resp.text
+                try:
+                    resp.raise_for_status()
+                except httpx.HTTPStatusError as exc:
+                    raise RuntimeError(_format_http_error(exc, body=text)) from exc
+            data = resp.json()
+        except Exception as exc:
+            logger.warning("[LLM] non-streaming tool-call repair failed: %s", exc)
+            return []
+
+        if not isinstance(data, dict):
+            return []
+        usage = data.get("usage")
+        if isinstance(usage, dict):
+            _log_usage(
+                provider=self.provider,
+                model=body.get("model") or self.model,
+                prompt_tokens=usage.get("prompt_tokens", 0),
+                completion_tokens=usage.get("completion_tokens", 0),
+                total_tokens=usage.get("total_tokens", 0),
+                call_status="ok",
+            )
+        choices = data.get("choices")
+        message = None
+        if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+            message = choices[0].get("message")
+        calls = _parse_message_tool_calls(
+            message.get("tool_calls") if isinstance(message, dict) else None
+        )
+        if not calls or _tool_calls_lost_their_arguments(calls):
+            return []
+        return calls
 
     def _extract_stream_delta(self, payload: Dict[str, Any]) -> Optional[str]:
         choices = payload.get("choices")
@@ -1857,6 +1934,65 @@ def _parse_native_tool_calls(tc_accum: Dict[Any, Dict[str, str]]) -> List["Nativ
                 raw["arguments"][:200],
             )
         parsed.append(NativeToolCall(id=raw["id"], name=raw["name"], arguments=args))
+    return parsed
+
+
+def _tool_calls_lost_their_arguments(tool_calls: List["NativeToolCall"]) -> bool:
+    """True when the stream named a tool but handed it no arguments.
+
+    Measured 2026-09-26 against sub2api -> ``qwen3.8-flash``: a streamed
+    ``web_search`` call arrives as ``{"name": "web_search", "arguments": ""}``
+    and is followed straight away by ``finish_reason: "tool_calls"`` with no
+    argument fragments, while the identical request without ``stream`` returns
+    ``{"query": "...", "max_results": 3}``.  The gateway's streaming translation
+    drops the payload; nothing downstream can recover a query that never
+    arrived, so the call has to be re-asked for.
+    """
+    return any(tc.name and not tc.arguments for tc in tool_calls)
+
+
+def _nonstream_toolcall_repair_enabled() -> bool:
+    return _truthy(os.getenv("LLM_NONSTREAM_TOOLCALL_REPAIR", "1"))
+
+
+def _parse_message_tool_calls(raw_calls: Any) -> List["NativeToolCall"]:
+    """Parse a **non-streaming** ``message.tool_calls`` payload.
+
+    Unlike the streaming accumulator this arrives whole, with ``arguments`` as a
+    JSON string (some upstreams hand it over already parsed, so both shapes are
+    accepted — the same lesson as ``_accumulate_native_tool_call_deltas``).
+    """
+    parsed: List[NativeToolCall] = []
+    if not isinstance(raw_calls, list):
+        return parsed
+    for raw in raw_calls:
+        if not isinstance(raw, dict):
+            continue
+        fn = raw.get("function")
+        fn = fn if isinstance(fn, dict) else {}
+        name = str(fn.get("name") or "").strip()
+        if not name:
+            continue
+        raw_args = fn.get("arguments")
+        arguments: Dict[str, Any]
+        if isinstance(raw_args, dict):
+            arguments = raw_args
+        elif isinstance(raw_args, str) and raw_args.strip():
+            try:
+                loaded = json.loads(raw_args)
+            except json.JSONDecodeError:
+                arguments = {"_raw": raw_args}
+            else:
+                arguments = loaded if isinstance(loaded, dict) else {"_raw": raw_args}
+        else:
+            arguments = {}
+        parsed.append(
+            NativeToolCall(
+                id=str(raw.get("id") or f"nonstream_{len(parsed)}"),
+                name=name,
+                arguments=arguments,
+            )
+        )
     return parsed
 
 
