@@ -1,17 +1,25 @@
 """Vision Reader Tool Implementation
 
-This module provides vision-based reading capabilities backed by a multimodal
-model (qwen3.6-plus - native multimodal supporting text/image/video).
-It is exposed as a text-only tool to the main agent: all outputs are English
-text / JSON that can be consumed by a text-only LLM such as Qwen3-Max.
+This module provides reading capabilities for PDFs and images.
+
+Images and figure/equation pages go to a multimodal model (qwen3.6-plus -
+native multimodal supporting text/image/video). PDF text does not: a text PDF is
+read locally with pypdf for free, and only a document that yields no text (a scan
+or an image PDF) is handed to the paid per-page file-extract reader. It is
+exposed as a text-only tool to the main agent: all outputs are English text /
+JSON that can be consumed by a text-only LLM such as Qwen3-Max.
 
 The tool supports operations like:
+- read_pdf: PDF text (local pypdf first, paid file-extract only for scans)
 - ocr_page: extract all readable text (including equations and labels)
 - read_equation_image: read and transcribe equations from an image
 - describe_figure: describe the content and trends of a scientific figure
 
-NOTE: This implementation assumes an OpenAI-compatible chat API that accepts
-image URLs via the "image_url" content type. The actual vision backend can be
+Every paid call is recorded as usage (page count, tokens, tool key) so a page
+charge is never invisible.
+
+NOTE: The vision call assumes an OpenAI-compatible chat API that accepts image
+URLs via the "image_url" content type. The actual vision backend can be
 configured via environment variables or settings.
 """
 
@@ -414,23 +422,39 @@ async def _read_pdf_with_qwen_long(
     pdf_path: str,
     prompt: str = "Read this document and extract all text while preserving original structure (paragraphs, lists, headings, etc.).",
 ) -> Dict[str, Any]:
-    """Read PDF using Qwen-Long file upload API - much faster for text PDFs.
-    
-    Uses the file-extract endpoint to upload PDF, then queries with Qwen-Long model.
-    This is significantly faster than converting to images and using vision model.
-    
+    """Read a PDF through the paid file-extract endpoint (Qwen-Long).
+
+    This is the paid path — it prices the *document it is handed*, so the caller
+    uploads a page subset when it only needs a few pages. It is reached only when
+    the free local reader found no text (a scan or an image PDF); a text PDF
+    never gets here.
+
     Args:
         pdf_path: Path to PDF file
         prompt: Question or instruction for the document
-        
+
     Returns:
         Dict with success status and extracted text
     """
     try:
         from openai import OpenAI
     except ImportError:
-        logger.warning("OpenAI SDK not installed, falling back to vision model")
-        return {"success": False, "error": "OpenAI SDK not installed"}
+        # The SDK is not declared in any requirements file, so this is the
+        # production state: the paid path is unreachable until it is either
+        # declared and installed, or rewritten on the aiohttp client already
+        # used by the vision call.
+        logger.error(
+            "PDF file-extract unavailable: the openai SDK is not installed "
+            "(scanned/image PDFs cannot be read without it)"
+        )
+        return {
+            "success": False,
+            "error": (
+                "PDF file-extract parsing is unavailable: the openai SDK is not "
+                "installed in this environment."
+            ),
+            "code": "pdf_extract_sdk_missing",
+        }
     
     settings = get_settings()
     

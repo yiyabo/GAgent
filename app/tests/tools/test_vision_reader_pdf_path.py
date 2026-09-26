@@ -66,6 +66,25 @@ def test_local_render_path_is_absent() -> None:
     assert "pytesseract" not in source
 
 
+async def test_paid_path_names_the_missing_sdk(sandbox: Path, monkeypatch) -> None:
+    """A blocked paid path must say *why* it is blocked.
+
+    ``openai`` is declared in no requirements file, so a shipped image has no
+    file-extract reader. The failure names the dependency instead of blaming the
+    document ("openai SDK not installed, falling back to vision model" was both
+    wrong — there is no vision fallback left — and unactionable).
+    """
+    import sys
+
+    monkeypatch.setitem(sys.modules, "openai", None)
+
+    result = await vision_reader._read_pdf_with_qwen_long(_pdf(sandbox))
+
+    assert result["success"] is False
+    assert result["code"] == "pdf_extract_sdk_missing"
+    assert "openai" in result["error"]
+
+
 async def test_pdf_path_does_not_import_the_renderer_stack(sandbox: Path, monkeypatch) -> None:
     """Reading a PDF must not pull an undeclared dependency in, even by accident."""
     import sys
