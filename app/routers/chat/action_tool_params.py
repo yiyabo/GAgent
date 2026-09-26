@@ -759,6 +759,8 @@ def _normalize_vision_reader_params(
         )
 
     page_number = params.get("page_number")
+    page_numbers = params.get("page_numbers")
+    max_pages = params.get("max_pages")
     region = params.get("region")
     question = params.get("question")
     language = params.get("language")
@@ -769,6 +771,19 @@ def _normalize_vision_reader_params(
     }
     if isinstance(page_number, int):
         clean_params["page_number"] = page_number
+    # PDF parsing is billed per page, so a page selection must survive the lane
+    # unchanged: it is what bounds the charge.
+    if isinstance(page_numbers, list):
+        selected: list[int] = []
+        for value in page_numbers:
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                continue
+            if value not in selected:
+                selected.append(value)
+        if selected:
+            clean_params["page_numbers"] = selected
+    if isinstance(max_pages, int) and not isinstance(max_pages, bool) and max_pages > 0:
+        clean_params["max_pages"] = max_pages
     if isinstance(region, dict):
         clean_params["region"] = region
     if isinstance(question, str):

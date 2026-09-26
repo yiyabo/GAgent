@@ -421,7 +421,7 @@
     },
     {
       "function": {
-        "description": "Read PDFs and images using a vision model. For visual OCR, figures, and equations only.",
+        "description": "Read PDFs and images using a vision model. For visual OCR, figures, and equations only. PDF parsing is billed per document page, so a large PDF without page_numbers is refused; pass the pages you actually need.",
         "name": "vision_reader",
         "parameters": {
           "properties": {
@@ -437,6 +437,13 @@
                 "ocr_page"
               ],
               "type": "string"
+            },
+            "page_numbers": {
+              "description": "Optional 1-indexed pages to parse from a PDF. Only these pages are uploaded, so only they are billed. Required when the document is longer than the per-read page budget.",
+              "items": {
+                "type": "integer"
+              },
+              "type": "array"
             }
           },
           "required": [
@@ -2120,7 +2127,7 @@
     },
     {
       "function": {
-        "description": "Read PDFs and images using a vision model. For visual OCR, figures, and equations only.",
+        "description": "Read PDFs and images using a vision model. For visual OCR, figures, and equations only. PDF parsing is billed per document page, so a large PDF without page_numbers is refused; pass the pages you actually need.",
         "name": "vision_reader",
         "parameters": {
           "properties": {
@@ -2136,6 +2143,13 @@
                 "ocr_page"
               ],
               "type": "string"
+            },
+            "page_numbers": {
+              "description": "Optional 1-indexed pages to parse from a PDF. Only these pages are uploaded, so only they are billed. Required when the document is longer than the per-read page budget.",
+              "items": {
+                "type": "integer"
+              },
+              "type": "array"
             }
           },
           "required": [

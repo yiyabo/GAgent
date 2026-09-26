@@ -285,8 +285,14 @@ NATIVE_TOOL_CONTENT: Dict[str, Dict[str, Any]] = {
         },
     },
     "vision_reader": {
-        # native 有意收窄：仅 operation/file_path，impl 另有 image_path/page_number(s)/region/question/language/max_pages —— 有意调优（参数面收窄）
-        "description": "Read PDFs and images using a vision model. For visual OCR, figures, and equations only.",
+        # native 有意收窄：impl 另有 image_path/page_number/region/question/language/max_pages
+        # —— 有意调优（参数面收窄）；page_numbers 是唯一例外：PDF 解析按页计费，
+        # 页数闸门只有在模型能指定页码时才是可执行的（2026-09-26，费用闸门）。
+        "description": (
+            "Read PDFs and images using a vision model. For visual OCR, figures, and equations only. "
+            "PDF parsing is billed per document page, so a large PDF without page_numbers is refused; "
+            "pass the pages you actually need."
+        ),
         "parameters": {
             "type": "object",
             "properties": {
@@ -298,6 +304,15 @@ NATIVE_TOOL_CONTENT: Dict[str, Dict[str, Any]] = {
                 "file_path": {
                     "type": "string",
                     "description": "Absolute path to the image or PDF file.",
+                },
+                "page_numbers": {
+                    "type": "array",
+                    "items": {"type": "integer"},
+                    "description": (
+                        "Optional 1-indexed pages to parse from a PDF. Only these pages are "
+                        "uploaded, so only they are billed. Required when the document is "
+                        "longer than the per-read page budget."
+                    ),
                 },
             },
             "required": ["operation", "file_path"],
