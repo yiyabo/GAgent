@@ -32,3 +32,11 @@ ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 # httpx2/httpcore2/truststore。
 RUN pip install --no-cache-dir -i ${PIP_INDEX_URL} "openai>=1.40.0,<2.0.0" \
     && python -c "import openai; print('openai', openai.__version__)"
+
+# 运行容器的实际依赖快照。**这一层是必需的不是锦上添花**：这 19 个包只装在运行
+# 容器里、镜像里没有（历史手工 pip install），不补的话用新镜像重建容器会静默丢掉
+# openpyxl/pyarrow/scikit-learn/mplfonts 等一批功能性依赖。清单与来源见该文件头。
+COPY deploy/runtime-container-requirements.txt /tmp/runtime-container-requirements.txt
+RUN pip install --no-cache-dir -i ${PIP_INDEX_URL} -r /tmp/runtime-container-requirements.txt \
+    && rm -f /tmp/runtime-container-requirements.txt \
+    && python -c "import openpyxl, pyarrow, sklearn, mplfonts; print('runtime deps ok')"

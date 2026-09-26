@@ -1,0 +1,38 @@
+# 运行容器的「实际依赖快照」——不是清单，是事实记录
+#
+# 来源：2026-09-26 在 .8 上对 `docker exec phage-agent pip freeze` 与
+# `phage-agent-runtime:qwen-v2` 镜像内 `pip freeze` 求差，得到 19 个
+# **镜像里没有、但生产容器里装着**的包。它们历史上是直接 pip install 进容器的
+# （本项目的既有惯例：能不重建镜像就不重建）。
+#
+# 为什么要落成文件：直接用镜像重建容器会**静默丢掉这 19 个包**，其中一半是
+# 功能性依赖——openpyxl 管 .xlsx、pyarrow 管 parquet、scikit-learn 管 ML 任务、
+# mplfonts/fontmeta 管 matplotlib 的 CJK 字体。所以 deploy/Dockerfile.runtime-overlay
+# 会把这份文件装进去，让新镜像成为运行容器的忠实替身。
+#
+# ⚠ 这 19 个包里有相当一部分**本该进 requirements.txt / pyproject.toml**（pyarrow
+# 与 scikit-learn 的缺席此前已被记录为已知缺口）。这里先只保证"镜像追上生产事实"，
+# 把它们并入正式依赖清单是独立决策（会影响 byoryn 平台那套镜像），留待拍板。
+
+# --- 功能性依赖：缺了生产行为会变（不是可选项）---
+openpyxl==3.1.5          # .xlsx 读写（document_reader / code_executor / xlsx 任务）
+et_xmlfile==2.0.0        # openpyxl 的依赖
+pyarrow==25.0.1          # parquet 引擎（此前只在 code_executor 的 Dockerfile 里）
+scikit-learn==1.7.2      # ML 任务
+joblib==1.6.0            # sklearn 的并行后端
+threadpoolctl==3.6.0     # sklearn 的线程控制
+cloudpickle==3.1.2       # joblib 并行序列化
+mplfonts==0.0.11         # matplotlib CJK 字体助手
+fontmeta==1.6.1          # mplfonts 的依赖
+fire==0.7.1              # CLI 助手（qwen-code 等命令行工具用）
+termcolor==3.3.0         # fire 的依赖
+Pygments==2.21.0         # 语法高亮
+tomli==2.4.1             # py<3.11 的 TOML 解析
+backports.asyncio.runner==1.2.0  # 某些库在 3.10 上的 asyncio.run 兜底
+
+# --- 容器内测试工具：生产不 import，但"容器内验证"的纪律依赖它们 ---
+pytest==9.1.1
+pytest-asyncio==1.4.0
+pytest-timeout==2.4.0
+iniconfig==2.3.0         # pytest 的依赖
+pluggy==1.6.0            # pytest 的依赖
