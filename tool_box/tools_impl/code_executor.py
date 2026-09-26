@@ -1877,12 +1877,18 @@ async def code_executor_handler(
 
 
 # ToolBox tool definition
+# 2026-09-26 对称化：与 delegate_task 对齐的排除清单（委派起步价 = 一次完整 agent 运行 30-60s）
 code_executor_tool = {
     "name": "code_executor",
     "description": (
         "**PRIMARY TOOL FOR COMPLEX CODING TASKS** - Execute one atomic implementation task using Claude Code. "
         "The runtime enforces a strict tool allowlist and task-scoped workspace isolation. "
-        "Use this for data analysis, code generation, model implementation, debugging, and multi-step engineering execution."
+        "Use this for data analysis, code generation, model implementation, debugging, and multi-step engineering execution. "
+        "Do NOT delegate: reading a single file; one-off counting, row totals, or statistics over data you "
+        "already have; arithmetic; drawing a single plot; read-only checking, verification, auditing, or "
+        "evidence extraction that does not modify files — ordinary tools (document_reader, file_operations, "
+        "result_interpreter) or about five lines of execute_code answer those in seconds. Reserve this tool "
+        "for substantive implementation work that needs a full coding agent."
     ),
     "parameters": {
         "type": "object",

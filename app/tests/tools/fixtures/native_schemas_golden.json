@@ -328,7 +328,7 @@
     },
     {
       "function": {
-        "description": "Execute Python code for data analysis, visualization, or computation. Errors are returned transparently with fix guidance — you can inspect the generated code and error, then retry with a revised task description. Do NOT use this tool for read-only checking, verification, auditing, or evidence extraction that does not modify files — use document_reader, file_operations, or execute_code (open()+regex in the kernel, seconds) for those; reserve this tool for substantive implementation work.",
+        "description": "Execute Python code for data analysis, visualization, or computation. This is a DELEGATION to the pi coding harness, not a local one-liner. Errors are returned transparently with fix guidance — you can inspect the generated code and error, then retry with a revised task description. Do NOT delegate: reading a single file; one-off counting, row totals, or statistics over data you already have; arithmetic; drawing a single plot; read-only checking, verification, auditing, or evidence extraction that does not modify files — ordinary tools (document_reader, file_operations, result_interpreter) or about five lines of execute_code answer those in seconds. A delegation pays a full agent run up front (30-60s) before any work starts, so reserve this tool for substantive implementation work.",
         "name": "code_executor",
         "parameters": {
           "properties": {
@@ -1135,7 +1135,7 @@
     },
     {
       "function": {
-        "description": "Execute Python code for data analysis, visualization, or computation. Errors are returned transparently with fix guidance — you can inspect the generated code and error, then retry with a revised task description. Do NOT use this tool for read-only checking, verification, auditing, or evidence extraction that does not modify files — use document_reader, file_operations, or execute_code (open()+regex in the kernel, seconds) for those; reserve this tool for substantive implementation work.",
+        "description": "Execute Python code for data analysis, visualization, or computation. This is a DELEGATION to the pi coding harness, not a local one-liner. Errors are returned transparently with fix guidance — you can inspect the generated code and error, then retry with a revised task description. Do NOT delegate: reading a single file; one-off counting, row totals, or statistics over data you already have; arithmetic; drawing a single plot; read-only checking, verification, auditing, or evidence extraction that does not modify files — ordinary tools (document_reader, file_operations, result_interpreter) or about five lines of execute_code answer those in seconds. A delegation pays a full agent run up front (30-60s) before any work starts, so reserve this tool for substantive implementation work.",
         "name": "code_executor",
         "parameters": {
           "properties": {
