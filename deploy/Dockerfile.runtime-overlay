@@ -9,9 +9,11 @@
 # 规矩：任何新依赖先写进 requirements.txt + pyproject.toml（+ uv lock），
 # 再在这里安装一次——清单是真相，这个文件只是让镜像追上清单。
 #
-# 构建（在 .8 上）：
-#   cd /data/phage-agent
-#   docker build -f deploy/Dockerfile.runtime-overlay -t phage-agent-runtime:qwen-v2-openai .
+# 构建（在 .8 上）——**上下文用 deploy/ 而不是仓库根**：根 .dockerignore 是
+# "* 全禁 + 白名单"（只放 docker/code_executor 那套进去），用仓库根做上下文时
+# COPY 拿不到本目录的文件。deploy/ 只有几个小文件，做上下文最省事。
+#   cd /data/phage-agent/deploy
+#   docker build -f Dockerfile.runtime-overlay -t phage-agent-runtime:qwen-v2-openai .
 #
 # 生效方式：docker restart **不会**换镜像，只有容器重建才会。重建前先抄下现状，
 # 再按同配置起新容器（mounts / env / network / restart 一个都不能少）：
@@ -36,7 +38,7 @@ RUN pip install --no-cache-dir -i ${PIP_INDEX_URL} "openai>=1.40.0,<2.0.0" \
 # 运行容器的实际依赖快照。**这一层是必需的不是锦上添花**：这 19 个包只装在运行
 # 容器里、镜像里没有（历史手工 pip install），不补的话用新镜像重建容器会静默丢掉
 # openpyxl/pyarrow/scikit-learn/mplfonts 等一批功能性依赖。清单与来源见该文件头。
-COPY deploy/runtime-container-requirements.txt /tmp/runtime-container-requirements.txt
+COPY runtime-container-requirements.txt /tmp/runtime-container-requirements.txt
 RUN pip install --no-cache-dir -i ${PIP_INDEX_URL} -r /tmp/runtime-container-requirements.txt \
     && rm -f /tmp/runtime-container-requirements.txt \
     && python -c "import openpyxl, pyarrow, sklearn, mplfonts; print('runtime deps ok')"
