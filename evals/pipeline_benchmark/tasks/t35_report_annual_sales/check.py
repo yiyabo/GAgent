@@ -33,6 +33,32 @@ def num_in_text(text, value, nd=2):
     return any(form in compact for form in forms)
 
 
+def month_forms(ym):
+    """Plausible renderings of a ``YYYY-MM`` key in a Chinese report."""
+    year, month = str(ym).split("-")
+    return {
+        f"{year}-{month}",   # 2025-03
+        f"{year}年{int(month)}月",
+        f"{year}年{month}月",
+        f"{int(month)}月",   # 3月
+        f"{month}月",        # 03月
+    }
+
+
+def mentions_month(text, ym):
+    """Whether the report names the month, tolerating the ``3 月`` spacing.
+
+    The task asks for "销售额最高的月份" in Chinese, so a correct report writes
+    ``3 月`` rather than the ``2025-03`` key — and the space before 月 is a
+    typographic choice, not a different month. Demanding the key alone rejected
+    three correct reports in a row (post_split / ab_pi / ab_split, each with the
+    right month *and* the right value); the month is only ever checked together
+    with its value.
+    """
+    collapsed = re.sub(r"(?<=\d)[\s\u3000]+(?=[年月])", "", str(text))
+    return any(form in collapsed for form in month_forms(ym))
+
+
 def close2(a, b, nd=2):
     return abs(round(float(a), nd) - round(float(b), nd)) <= 1e-6
 
@@ -75,5 +101,5 @@ text = report_text("sales_report.md", 1500)
 require_sections(text, ["## 数据概览", "## 月度趋势分析", "## 关键指标", "## 结论与建议"])
 assert has_md_table(text), "no markdown table in report"
 assert num_in_text(text, total), f"annual total {total:.2f} missing"
-assert best_month in text, f"best month {best_month} missing"
+assert mentions_month(text, best_month), f"best month {best_month} missing"
 assert num_in_text(text, best_val), f"best month value {best_val:.2f} missing"
