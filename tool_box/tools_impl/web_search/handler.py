@@ -172,7 +172,7 @@ def _merge_parallel_results(
 
 
 async def web_search_handler(
-    query: str,
+    query: str = "",
     max_results: int = 5,
     provider: Optional[str] = None,
     include_raw: bool = False,
@@ -182,11 +182,37 @@ async def web_search_handler(
     """
     Web search entry point exposed to toolbox integration.
     """
+    query = str(query or "").strip()
+    explicit_queries = _normalize_queries(list(queries or []))
+    if not query and not explicit_queries:
+        # A call can arrive with no parameters at all (observed 2026-09-26:
+        # `web_search` reached the handler empty and the model was handed a raw
+        # `web_search_handler() missing 1 required positional argument: 'query'`
+        # TypeError, which tells it nothing about what to do next). Answer with
+        # the same actionable shape the chat lane uses.
+        received = set(kwargs)
+        if query:
+            received.add("query")
+        if queries:
+            received.add("queries")
+        if provider:
+            received.add("provider")
+        if include_raw:
+            received.add("include_raw")
+        received = sorted(received)
+        return {
+            "success": False,
+            "tool": "web_search",
+            "error": "missing_query",
+            "summary": (
+                "web_search requires a non-empty query. "
+                f"Received parameters: {received or 'none'}."
+            ),
+        }
 
     settings = get_search_settings()
     requested_provider = (provider or "").strip().lower() or None
     provider_name = requested_provider or settings.default_provider or "builtin"
-    explicit_queries = _normalize_queries(list(queries or []))
     search_queries = (
         explicit_queries
         if explicit_queries

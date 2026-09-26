@@ -106,3 +106,28 @@ def test_unusable_shapes_still_report_missing_query(params: dict) -> None:
     step = _normalize_web_search_params(_agent(), _action(), "web_search", params)
     assert step.success is False
     assert step.details["error"] == "missing_query"
+
+
+async def test_handler_answers_an_empty_call_instead_of_raising() -> None:
+    """A parameter-less call must come back actionable, not as a TypeError.
+
+    Production 2026-09-26: the model was handed
+    `web_search_handler() missing 1 required positional argument: 'query'` —
+    a Python signature error it cannot act on.
+    """
+    from tool_box.tools_impl.web_search.handler import web_search_handler
+
+    result = await web_search_handler()
+
+    assert result["success"] is False
+    assert result["error"] == "missing_query"
+    assert "Received parameters: none" in result["summary"]
+
+
+async def test_handler_names_the_parameters_it_did_receive() -> None:
+    from tool_box.tools_impl.web_search.handler import web_search_handler
+
+    result = await web_search_handler(provider="builtin")
+
+    assert result["error"] == "missing_query"
+    assert "Received parameters: ['provider']" in result["summary"]
