@@ -31,6 +31,7 @@ def init_llm_usage_table() -> None:
         _migrate_add_cost_columns(conn)
         _migrate_add_attribution_columns(conn)
         _migrate_add_parent_run_column(conn)
+        _migrate_add_page_count_column(conn)
         conn.commit()
 
 
@@ -122,6 +123,19 @@ def _migrate_add_parent_run_column(conn: Any) -> None:
             pass
 
 
+def _migrate_add_page_count_column(conn: Any) -> None:
+    """Add the document-page count if missing.
+
+    Some providers bill per document page rather than per token (the PDF
+    file-extract reader charges a flat per-page rate), so the page count is the
+    basis of a charge no token column can reconstruct. ``NULL`` means the call
+    was not page-billed.
+    """
+    _migrate_add_columns(conn, [
+        ("page_count", "INTEGER"),
+    ])
+
+
 def _cost_env_key(provider: str, model: str, kind: str) -> str:
     token = f"{provider}_{model}_{kind}".upper()
     safe = "".join(ch if ch.isalnum() else "_" for ch in token)
@@ -201,6 +215,7 @@ def log_llm_usage(
     estimated_cost: Optional[float] = None,
     cost_currency: Optional[str] = None,
     parent_run_id: Optional[str] = None,
+    page_count: Optional[int] = None,
 ) -> None:
     """Insert one usage row.
 
@@ -208,6 +223,11 @@ def log_llm_usage(
     delegated sub-agent run back to the run that delegated it. Callers leave
     ``parent_run_id`` unset for their own calls, so nothing changes for rows
     that carry no delegation link.
+
+    ``page_count`` records a page-billed document parse (e.g. the PDF
+    file-extract reader). When a caller passes it, ``estimated_cost`` is expected
+    to already include the per-page charge; the column is the basis that makes
+    that charge auditable.
     """
     from ..billing_keys import billing_key_for_purpose, normalize_billing_key
 
@@ -237,9 +257,9 @@ def log_llm_usage(
                 billing_key, logical_call_id, attempt_no, upstream_request_id,
                 cache_read_tokens, cache_creation_tokens,
                 input_cost, output_cost, estimated_cost, cost_currency,
-                parent_run_id
+                parent_run_id, page_count
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 provider,
@@ -268,6 +288,7 @@ def log_llm_usage(
                 estimated_cost,
                 cost_currency,
                 parent_run_id,
+                None if page_count is None else max(0, int(page_count)),
             ),
         )
         conn.commit()

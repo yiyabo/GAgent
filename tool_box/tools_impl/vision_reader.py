@@ -22,6 +22,7 @@ import json
 import logging
 import mimetypes
 import os
+import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -31,6 +32,111 @@ from app.services.foundation.settings import get_settings
 from app.services.foundation.llm_config import is_production, platform_profile
 
 logger = logging.getLogger(__name__)
+
+# Both paid paths below are billed to the project credential; their usage is
+# recorded under this tool key so the cost is attributable per tool.
+TOOL_NAME = "vision_reader"
+CALL_PURPOSE_PDF_PARSE = "pdf_parse"
+CALL_PURPOSE_VISION_READ = "vision_read"
+
+# The PDF file-extract reader charges a flat per-page rate (0.02 CNY/page on the
+# platform tariff). Token rates cannot reconstruct that charge, so the page count
+# travels with the usage row and the per-page rate stays env-overridable.
+PDF_PAGE_CNY_ENV = "VISION_READER_PDF_PAGE_CNY"
+DEFAULT_PDF_PAGE_CNY = 0.02
+
+
+def count_pdf_pages(path: Path) -> Optional[int]:
+    """Free page count via pypdf; ``None`` when the file cannot be parsed."""
+    try:
+        import pypdf
+
+        with path.open("rb") as handle:
+            return len(pypdf.PdfReader(handle).pages)
+    except Exception as exc:
+        logger.info("vision_reader could not count pages of %s: %s", path.name, exc)
+        return None
+
+
+def _page_parse_cost_cny(page_count: Optional[int]) -> float:
+    if not page_count:
+        return 0.0
+    try:
+        rate = float(os.getenv(PDF_PAGE_CNY_ENV, DEFAULT_PDF_PAGE_CNY))
+    except (TypeError, ValueError):
+        rate = DEFAULT_PDF_PAGE_CNY
+    return max(0.0, rate) * int(page_count)
+
+
+def _usage_from_response(payload: Any) -> Dict[str, int]:
+    """Pull token counts out of an OpenAI-compatible response body."""
+    usage = payload.get("usage") if isinstance(payload, dict) else None
+    if not isinstance(usage, dict):
+        return {"prompt_tokens": 0, "completion_tokens": 0}
+    prompt = int(usage.get("prompt_tokens") or usage.get("input_tokens") or 0)
+    completion = int(usage.get("completion_tokens") or usage.get("output_tokens") or 0)
+    return {"prompt_tokens": max(0, prompt), "completion_tokens": max(0, completion)}
+
+
+def record_usage(
+    *,
+    provider: str,
+    model: str,
+    prompt_tokens: int,
+    completion_tokens: int,
+    call_purpose: str,
+    call_status: str = "ok",
+    duration_ms: Optional[float] = None,
+    page_count: Optional[int] = None,
+) -> None:
+    """Best-effort usage row for one paid reader call; never raises.
+
+    Attribution (session/plan/task/run) is inherited from the ambient usage
+    context, so a PDF read lands on the conversation turn or plan task that
+    asked for it. ``parent_run_id`` is intentionally left unset: that column
+    links a *delegated sub-agent run* to its parent, and this call is not a
+    sub-agent run of its own — the ambient ``run_id`` already carries it.
+    """
+    try:
+        from app.llm import _usage_context
+        from app.repository.llm_usage import estimate_llm_cost, log_llm_usage
+    except Exception:  # pragma: no cover - usage plumbing unavailable
+        return
+    try:
+        ctx = _usage_context.get()
+        ctx = ctx if isinstance(ctx, dict) else {}
+        model_name = str(model or "unknown").strip() or "unknown"
+        prompt = max(0, int(prompt_tokens or 0))
+        completion = max(0, int(completion_tokens or 0))
+        cost = estimate_llm_cost(
+            provider=provider, model=model_name, prompt_tokens=prompt, completion_tokens=completion
+        )
+        page_cost = _page_parse_cost_cny(page_count)
+        log_llm_usage(
+            provider=provider,
+            model=model_name,
+            prompt_tokens=prompt,
+            completion_tokens=completion,
+            total_tokens=prompt + completion,
+            session_id=ctx.get("session_id"),
+            plan_id=ctx.get("plan_id"),
+            task_id=ctx.get("task_id"),
+            call_purpose=call_purpose,
+            run_id=ctx.get("run_id"),
+            phase=ctx.get("phase") or "tool_execution",
+            tool_name=TOOL_NAME,
+            call_status=call_status,
+            duration_ms=duration_ms,
+            page_count=page_count,
+            input_cost=cost["input_cost"],
+            output_cost=cost["output_cost"],
+            # The per-page charge is the dominant cost of a PDF parse and no
+            # token column can express it, so it is folded into the estimate.
+            estimated_cost=cost["estimated_cost"] + page_cost,
+            cost_currency=cost["cost_currency"],
+        )
+    except Exception as exc:  # pragma: no cover - observability must not break reads
+        logger.warning("vision_reader usage record failed: %s", exc)
 
 
 async def _call_qwen_vision_api(prompt: str, file_path: str) -> str:
@@ -123,17 +229,46 @@ async def _call_qwen_vision_api(prompt: str, file_path: str) -> str:
     timeout_seconds = 120  # 2 minutes for vision API
     timeout = aiohttp.ClientTimeout(total=timeout_seconds)
 
+    started = time.perf_counter()
     async with aiohttp.ClientSession(timeout=timeout) as session:
         async with session.post(base_url, headers=headers, json=payload) as resp:
             text = await resp.text()
             if resp.status != 200:
+                record_usage(
+                    provider="qwen",
+                    model=model,
+                    prompt_tokens=0,
+                    completion_tokens=0,
+                    call_purpose=CALL_PURPOSE_VISION_READ,
+                    call_status=f"http_{resp.status}",
+                    duration_ms=(time.perf_counter() - started) * 1000.0,
+                )
                 raise RuntimeError(f"Qwen vision API error {resp.status}: {text}")
             try:
                 obj = json.loads(text)
             except json.JSONDecodeError:
                 # Fallback: return raw text if JSON is not parseable
                 logger.warning("Qwen vision response is not valid JSON; returning raw text.")
+                record_usage(
+                    provider="qwen",
+                    model=model,
+                    prompt_tokens=0,
+                    completion_tokens=0,
+                    call_purpose=CALL_PURPOSE_VISION_READ,
+                    call_status="unparsed_response",
+                    duration_ms=(time.perf_counter() - started) * 1000.0,
+                )
                 return text
+
+    tokens = _usage_from_response(obj)
+    record_usage(
+        provider="qwen",
+        model=model,
+        prompt_tokens=tokens["prompt_tokens"],
+        completion_tokens=tokens["completion_tokens"],
+        call_purpose=CALL_PURPOSE_VISION_READ,
+        duration_ms=(time.perf_counter() - started) * 1000.0,
+    )
 
     # Parse OpenAI-compatible response format
     # Response structure: {"choices": [{"message": {"content": "..."}}]}
@@ -225,7 +360,9 @@ async def _read_pdf_with_qwen_long(
         return {"success": False, "error": f"PDF too large: {file_size/1024/1024:.1f}MB (max: 150MB)"}
     
     logger.info(f"Using Qwen-Long for PDF: {abs_path.name}, size: {file_size/1024:.1f}KB")
+    page_count = count_pdf_pages(abs_path)
     
+    started = time.perf_counter()
     try:
         client = OpenAI(api_key=api_key, base_url=base_url)
         
@@ -250,8 +387,18 @@ async def _read_pdf_with_qwen_long(
         
         # Extract response
         content = completion.choices[0].message.content if completion.choices else ""
+        usage = getattr(completion, "usage", None)
         
         logger.info(f"Qwen-Long response: {len(content)} characters")
+        record_usage(
+            provider="qwen",
+            model=model,
+            prompt_tokens=int(getattr(usage, "prompt_tokens", 0) or 0),
+            completion_tokens=int(getattr(usage, "completion_tokens", 0) or 0),
+            call_purpose=CALL_PURPOSE_PDF_PARSE,
+            duration_ms=(time.perf_counter() - started) * 1000.0,
+            page_count=page_count,
+        )
         
         return {
             "success": True,
@@ -259,6 +406,7 @@ async def _read_pdf_with_qwen_long(
             "file_name": abs_path.name,
             "file_id": file_id,
             "model": model,
+            "page_count": page_count,
             "text": content,
             "text_length": len(content),
             "method": "qwen-long",
@@ -266,10 +414,23 @@ async def _read_pdf_with_qwen_long(
         
     except Exception as e:
         logger.error(f"Qwen-Long PDF reading failed: {e}")
+        # The upload is billed per page even when the query then fails, so the
+        # page charge must stay visible on the failure row too.
+        record_usage(
+            provider="qwen",
+            model=model,
+            prompt_tokens=0,
+            completion_tokens=0,
+            call_purpose=CALL_PURPOSE_PDF_PARSE,
+            call_status="error",
+            duration_ms=(time.perf_counter() - started) * 1000.0,
+            page_count=page_count,
+        )
         return {
             "success": False,
             "error": str(e),
             "method": "qwen-long",
+            "page_count": page_count,
         }
 
 
