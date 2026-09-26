@@ -25,6 +25,28 @@ from .services.foundation.llm_config import (
 logger = logging.getLogger(__name__)
 
 
+def _default_max_tokens() -> int:
+    """Output ceiling for a call that does not pass ``max_tokens``.
+
+    Measured 2026-09-26: every defaulted call in a long run came back at
+    exactly 16384 completion tokens after ~280s, because the model keeps
+    generating to whatever ceiling it is given (deep_think iterations hit the
+    cap 11 times, and one four-panel plot task burned 42 minutes of LLM wall
+    clock in one 17-minute window). ``LLM_MAX_TOKENS`` lowers the ceiling
+    without touching a single call site; the default stays 16384 so behaviour
+    is unchanged unless an operator sets it.
+    """
+    raw = str(os.getenv("LLM_MAX_TOKENS", "")).strip()
+    if not raw:
+        return 16384
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        logger.warning("Ignoring non-numeric LLM_MAX_TOKENS=%r", raw)
+        return 16384
+    return value if value > 0 else 16384
+
+
 _BALANCE_ERROR_MARKERS = (
     "insufficient account balance",
     "insufficient balance",
@@ -965,7 +987,7 @@ class LLMClient(LLMProvider):
         try:
             max_tokens = int(kwargs.pop("max_tokens"))
         except (KeyError, TypeError, ValueError):
-            max_tokens = 16384
+            max_tokens = _default_max_tokens()
         timeout_override = _normalize_timeout(kwargs.pop("timeout", None), self.timeout)
         try:
             request_retries = max(0, int(kwargs.pop("retries")))
@@ -1099,7 +1121,7 @@ class LLMClient(LLMProvider):
         try:
             max_tokens = int(kwargs.pop("max_tokens"))
         except (KeyError, TypeError, ValueError):
-            max_tokens = 16384
+            max_tokens = _default_max_tokens()
         timeout_override = _normalize_timeout(kwargs.pop("timeout", None), self.stream_timeout)
         try:
             request_retries = max(0, int(kwargs.pop("retries")))
@@ -1249,7 +1271,7 @@ class LLMClient(LLMProvider):
         try:
             max_tokens = int(kwargs.pop("max_tokens"))
         except (KeyError, TypeError, ValueError):
-            max_tokens = 16384
+            max_tokens = _default_max_tokens()
         timeout_override = _normalize_timeout(kwargs.pop("timeout", None), self.timeout)
         try:
             request_retries = max(0, int(kwargs.pop("retries")))
@@ -1380,7 +1402,7 @@ class LLMClient(LLMProvider):
             "model": model or self._effective_model(),
             "messages": payload_messages,
             "stream": True,
-            "max_tokens": 16384,
+            "max_tokens": _default_max_tokens(),
         }
         if enable_thinking is not None:
             payload["enable_thinking"] = enable_thinking
@@ -1590,7 +1612,7 @@ class LLMClient(LLMProvider):
             "tools": tools,
             "tool_choice": tool_choice,
             "stream": True,
-            "max_tokens": 16384,
+            "max_tokens": _default_max_tokens(),
         }
 
         # Inject thinking parameters (DashScope OpenAI-compatible endpoint

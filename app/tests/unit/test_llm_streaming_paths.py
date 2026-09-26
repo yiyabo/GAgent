@@ -93,6 +93,37 @@ def _client() -> LLMClient:
 
 
 class TestLLMClientStreamChat:
+    def test_env_lowers_the_default_output_ceiling(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """`LLM_MAX_TOKENS` caps every defaulted call (measured: 16k ≈ 280s)."""
+        monkeypatch.setenv("LLM_MAX_TOKENS", "4096")
+        fake = _FakeSyncClient([_FakeStreamResponse(200, _sse_lines(["ok"]))])
+        monkeypatch.setattr(llm_mod, "_get_shared_sync_client", lambda: fake)
+        monkeypatch.setattr(llm_mod, "_outbound_limiter", _NoopLimiter())
+
+        assert "".join(_client().stream_chat("ping")) == "ok"
+        assert fake.calls[0]["json"]["max_tokens"] == 4096
+
+    def test_explicit_max_tokens_still_wins(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("LLM_MAX_TOKENS", "4096")
+        fake = _FakeSyncClient([_FakeStreamResponse(200, _sse_lines(["ok"]))])
+        monkeypatch.setattr(llm_mod, "_get_shared_sync_client", lambda: fake)
+        monkeypatch.setattr(llm_mod, "_outbound_limiter", _NoopLimiter())
+
+        "".join(_client().stream_chat("ping", max_tokens=200))
+
+        assert fake.calls[0]["json"]["max_tokens"] == 200
+
+    def test_default_ceiling_is_unchanged_without_the_knob(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("LLM_MAX_TOKENS", raising=False)
+
+        assert llm_mod._default_max_tokens() == 16384
+
+    def test_garbage_knob_falls_back_to_the_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("LLM_MAX_TOKENS", "not-a-number")
+        assert llm_mod._default_max_tokens() == 16384
+        monkeypatch.setenv("LLM_MAX_TOKENS", "0")
+        assert llm_mod._default_max_tokens() == 16384
+
     def test_streams_deltas_and_marks_payload_stream(self, monkeypatch: pytest.MonkeyPatch) -> None:
         fake = _FakeSyncClient([_FakeStreamResponse(200, _sse_lines(["Hello, ", "world"]))])
         monkeypatch.setattr(llm_mod, "_get_shared_sync_client", lambda: fake)
