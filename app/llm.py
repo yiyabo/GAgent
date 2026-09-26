@@ -1792,8 +1792,19 @@ class LLMClient(LLMProvider):
 
 _default_client: Optional[LLMClient] = None
 
+# Wall-clock bound for one synchronous streaming collection. Generous on
+# purpose (a long report is legitimately slow) but finite: an upstream that
+# stalls while keeping the socket warm must not pin a request forever.
+_STREAM_COLLECT_DEFAULT_TIMEOUT_SEC = 900.0
 
-def stream_chat_collect(client: Any, prompt: str, **kwargs: Any) -> str:
+
+def stream_chat_collect(
+    client: Any,
+    prompt: str,
+    *,
+    total_timeout: Optional[float] = _STREAM_COLLECT_DEFAULT_TIMEOUT_SEC,
+    **kwargs: Any,
+) -> str:
     """Collect a complete chat response through the client's streaming API.
 
     Synchronous sibling of :func:`stream_chat_collect_async`, for the
@@ -1804,14 +1815,32 @@ def stream_chat_collect(client: Any, prompt: str, **kwargs: Any) -> str:
     an abdication answer even though the figure had already been produced).
     Falls back to ``chat`` when the client cannot stream, when it rejects the
     extra kwargs, or when the stream came back empty.
+
+    ``total_timeout`` is a *wall-clock* bound on the collection, not a socket
+    timeout: a stalled upstream that keeps the connection warm with SSE
+    keepalive lines resets httpx's read timeout forever, which turned a 60s
+    504 into an unbounded hang (observed 2026-09-26: a 26.8KB streamed codegen
+    request sat in flight for 5+ minutes, the task ran into its 900s harness
+    timeout). Exceeding the budget raises, so callers degrade the way they did
+    on the 504.
     """
     stream_fn = getattr(client, "stream_chat", None)
     if callable(stream_fn):
         for attempt_kwargs in (kwargs, {}):
             try:
-                text = "".join(
-                    str(chunk) for chunk in stream_fn(prompt, **attempt_kwargs) if chunk
-                )
+                chunks: List[str] = []
+                started = time.perf_counter()
+                for chunk in stream_fn(prompt, **attempt_kwargs):
+                    if chunk:
+                        chunks.append(str(chunk))
+                    if (
+                        total_timeout is not None
+                        and (time.perf_counter() - started) > total_timeout
+                    ):
+                        raise TimeoutError(
+                            f"streamed chat exceeded {total_timeout:.0f}s"
+                        )
+                text = "".join(chunks)
             except TypeError:
                 # Implementation that does not accept these kwargs.
                 continue

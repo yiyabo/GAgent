@@ -193,6 +193,41 @@ class TestStreamChatCollect:
         with pytest.raises(RuntimeError):
             stream_chat_collect(_Dead(), "p")
 
+    def test_content_within_the_budget_is_returned(self) -> None:
+        class _FastStream:
+            def stream_chat(self, prompt: str, **kwargs: Any) -> Iterator[str]:
+                yield "a"
+                yield "b"
+
+            def chat(self, prompt: str, **kwargs: Any) -> str:  # pragma: no cover
+                raise AssertionError("buffered call not expected")
+
+        assert stream_chat_collect(_FastStream(), "p", total_timeout=5.0) == "ab"
+
+    def test_total_timeout_bounds_a_stalled_stream(self) -> None:
+        """SSE keepalives reset httpx's read timeout; the wall clock does not.
+
+        Production 2026-09-26: a stalled upstream kept a 26.8KB streamed
+        codegen request in flight for 5+ minutes and the harness task ran into
+        its 900s timeout, where the buffered path used to fail at 60s.
+        """
+        seen = {"chunks": 0}
+
+        class _KeepaliveStream:
+            def stream_chat(self, prompt: str, **kwargs: Any) -> Iterator[str]:
+                while True:
+                    seen["chunks"] += 1
+                    yield ""  # keepalive: socket stays warm, no content arrives
+
+            def chat(self, prompt: str, **kwargs: Any) -> str:
+                return "buffered after stall"
+
+        assert (
+            stream_chat_collect(_KeepaliveStream(), "p", total_timeout=0.05)
+            == "buffered after stall"
+        )
+        assert seen["chunks"] > 1
+
 
 class TestCodegenGoesOutStreaming:
     """The local lane's code generator must not sit on a buffered call."""

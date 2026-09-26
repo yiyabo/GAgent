@@ -147,7 +147,35 @@ _DEFAULT_COST_CNY_PER_1K: Dict[tuple[str, str], tuple[float, float]] = {
     ("qwen_code_cli", "qwen3.7-max"): (0.006, 0.018),
     ("qwen", "qwen-max"): (0.006, 0.018),
     ("qwen_code_cli", "qwen-max"): (0.006, 0.018),
+    # The gateway prices both chat models off one row (sub2api
+    # `channel_model_pricing`: models ["qwen3.7-max", "qwen3.8-flash"] share
+    # 0.000024 input / 0.000072 output per token), so flash carries the same
+    # rate as max here. NOTE: that gateway row is 4x these per-1K numbers; the
+    # rate is a product decision (env override below wins), the table only has
+    # to stop returning zero for the lane that logs `platform/<model>`.
+    ("qwen", "qwen3.8-flash"): (0.006, 0.018),
+    # text-embedding-v3 list price (0.0005 CNY / 1K tokens).
+    ("qwen_embedding", "qwen3.7-text-embedding"): (0.0005, 0.0),
 }
+
+
+def _default_rate_cny_per_1k(provider_key: str, model_key: str) -> tuple[float, float]:
+    """Resolve the default rate pair for a logged (provider, model).
+
+    The provider component is not stable across lanes for the same upstream
+    model — the platform gateway logs ``platform/qwen3.8-flash`` while the
+    direct lanes log ``qwen/qwen3.8-flash`` — so an unknown provider falls back
+    to the rate of the same model on any provider. Without that fallback the
+    lookup missed 194M logged tokens (measured 2026-09-26: 112M on
+    ``platform/qwen3.8-flash`` alone) and every one of them was priced at 0.
+    """
+    exact = _DEFAULT_COST_CNY_PER_1K.get((provider_key, model_key))
+    if exact is not None:
+        return exact
+    for (_provider, model), rates in _DEFAULT_COST_CNY_PER_1K.items():
+        if model == model_key:
+            return rates
+    return (0.0, 0.0)
 
 
 def estimate_llm_cost(
@@ -160,10 +188,7 @@ def estimate_llm_cost(
     """Return estimated CNY cost from configurable per-1K token rates."""
     provider_key = str(provider or "").strip().lower()
     model_key = str(model or "").strip().lower()
-    default_input, default_output = _DEFAULT_COST_CNY_PER_1K.get(
-        (provider_key, model_key),
-        (0.0, 0.0),
-    )
+    default_input, default_output = _default_rate_cny_per_1k(provider_key, model_key)
 
     def _rate(kind: str, default: float) -> float:
         import os

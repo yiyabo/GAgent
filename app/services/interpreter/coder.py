@@ -115,11 +115,14 @@ class CodeGenerator:
 
         A buffered call stays silent until the whole completion is ready, so
         the upstream gateway kills long generations; streamed ones keep bytes
-        flowing and survive (``app.llm.stream_chat_collect``).
+        flowing and survive (``app.llm.stream_chat_collect``). The streamed
+        collection is bounded by the same 180s budget the request itself uses,
+        so a stalled upstream degrades instead of hanging the whole task.
         """
         return stream_chat_collect(
             self.llm,
             prompt,
+            total_timeout=_CODEGEN_REQUEST_TIMEOUT_SEC,
             timeout=_CODEGEN_REQUEST_TIMEOUT_SEC,
             retries=_CODEGEN_ATTEMPTS - 1,
         )

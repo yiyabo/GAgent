@@ -427,3 +427,58 @@ def test_estimate_llm_cost_uses_default_qwen_code_rates():
     assert cost["output_cost"] > 0
     assert cost["estimated_cost"] == cost["input_cost"] + cost["output_cost"]
     assert cost["cost_currency"] == "CNY"
+
+
+def _cost(provider: str, model: str, prompt: int = 1000, completion: int = 1000) -> float:
+    from app.repository.llm_usage import estimate_llm_cost
+
+    return estimate_llm_cost(
+        provider=provider,
+        model=model,
+        prompt_tokens=prompt,
+        completion_tokens=completion,
+    )["estimated_cost"]
+
+
+def test_platform_lane_is_priced_like_the_model_it_calls():
+    """The gap that made 194M logged tokens cost exactly 0.
+
+    `platform/qwen3.8-flash` is the busiest key in the usage table and the rate
+    lookup used to miss every platform-lane row, because the table keys the
+    provider as `qwen`/`qwen_code_cli` for the same upstream models.
+    """
+    platform = _cost("platform", "qwen3.8-flash")
+    direct = _cost("qwen", "qwen3.8-flash")
+
+    assert platform > 0
+    assert platform == direct
+
+
+def test_openai_lane_qwen_max_is_priced():
+    assert _cost("openai", "qwen3.7-max") > 0
+
+
+def test_embedding_model_carries_its_input_rate():
+    from app.repository.llm_usage import estimate_llm_cost
+
+    cost = estimate_llm_cost(
+        provider="qwen_embedding",
+        model="qwen3.7-text-embedding",
+        prompt_tokens=1000,
+        completion_tokens=0,
+    )
+
+    assert cost["input_cost"] == 0.0005
+    assert cost["output_cost"] == 0.0
+
+
+def test_unknown_model_still_costs_zero():
+    """The fallback is by model name, not a blanket "anything goes" rate."""
+    assert _cost("platform", "some-unlisted-model") == 0.0
+
+
+def test_env_override_beats_the_table_for_platform_lane(monkeypatch):
+    monkeypatch.setenv("LLM_COST_PLATFORM_QWEN3_8_FLASH_INPUT_PER_1K_CNY", "1.0")
+    monkeypatch.setenv("LLM_COST_PLATFORM_QWEN3_8_FLASH_OUTPUT_PER_1K_CNY", "2.0")
+
+    assert _cost("platform", "qwen3.8-flash", 1000, 1000) == 3.0
