@@ -1881,9 +1881,10 @@ async def code_executor_handler(
 code_executor_tool = {
     "name": "code_executor",
     "description": (
-        "**PRIMARY TOOL FOR COMPLEX CODING TASKS** - Execute one atomic implementation task using Claude Code. "
+        "Delegate one atomic implementation task to a coding agent that writes, runs and debugs the "
+        "code for you — which harness serves that delegation is deployment-configured, so do not assume "
+        "a particular one. Every call pays that agent's start-up before any work begins. "
         "The runtime enforces a strict tool allowlist and task-scoped workspace isolation. "
-        "Use this for data analysis, code generation, model implementation, debugging, and multi-step engineering execution. "
         "Do NOT delegate: reading a single file; one-off counting, row totals, or statistics over data you "
         "already have; arithmetic; drawing a single plot; read-only checking, verification, auditing, or "
         "evidence extraction that does not modify files — ordinary tools (document_reader, file_operations, "

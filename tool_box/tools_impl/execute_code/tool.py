@@ -3,7 +3,8 @@
 The orchestration model writes Python directly; the code runs in a persistent
 session kernel and calls tool_box tools as plain Python functions
 (``from gagent_tools import web_search``). Distinct from ``code_executor``,
-which DELEGATES an agentic coding task to the pi coding harness.
+which DELEGATES an agentic coding task to a coding agent (deployment-configured
+harness), and is the expensive path for anything one script can do.
 
 The tool is env-gated (CODE_MODE_ENABLED=1); the offer-side gating lives in
 ``app/services/tool_schemas.py`` and ``app/routers/chat/request_routing.py``.
@@ -34,10 +35,12 @@ BASE_DESCRIPTION = (
     "pages/files/accessions, filtering or reducing large tool outputs BEFORE "
     "they enter your context, branching, or retries. Use a normal tool call "
     "for a single call or results you must reason over in full. "
-    "Division of labor: code_executor DELEGATES an agentic coding task to the "
-    "pi coding harness (it writes and debugs the code); execute_code is YOU "
-    "writing Python directly that calls tools as functions — prefer it for "
-    "programmatic fan-out over tool results, not for general software tasks. "
+    "Division of labor: execute_code is YOU writing Python directly that calls tools as "
+    "functions — the cheap path for one script (reading or filtering a file, one-off "
+    "statistics, a single plot, a loop over many tool calls). code_executor DELEGATES an "
+    "agentic coding task to a coding agent that writes and debugs the code (which harness "
+    "serves the delegation is deployment-configured) and pays that agent's start-up before "
+    "any work begins — reserve it for multi-file or long implementation work. "
     "The kernel keeps variables, imports, and loaded data across execute_code "
     "calls (pass reset=true to start fresh); a timed-out or interrupted call "
     "kills the kernel and LOSES that state — the result's kernel metadata "

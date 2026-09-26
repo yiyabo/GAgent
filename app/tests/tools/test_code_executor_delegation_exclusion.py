@@ -111,3 +111,43 @@ def test_the_two_delegation_surfaces_agree_on_the_start_up_cost() -> None:
 def test_exclusion_list_does_not_shadow_the_real_use_case(surface, keep_clause) -> None:
     """The exclusion must not talk the model out of the tool's actual job."""
     assert keep_clause in surface()
+
+
+# ---------------------------------------------------------------------------
+# Drift locks on the routing copy (2026-09-26)
+#
+# A/B evidence (28-task arms): the same task lands at 25-80s when the model
+# writes the script itself (execute_code) and at 100-900s when it delegates,
+# yet the delegation was framed as the "PRIMARY TOOL" and as "pi coding
+# harness"/"Claude Code" — a harness that `auto+split` does not even use for
+# analysis work. The copy pushed the model onto the expensive lane and
+# described a lane it may never get.
+# ---------------------------------------------------------------------------
+
+_HARNESS_NAMES = ("pi coding harness", "claude code", "qwen code", "qwen_code")
+
+
+def test_delegation_copy_names_no_specific_harness() -> None:
+    for surface in (_native_description(), code_executor_tool["description"]):
+        lowered = surface.lower()
+        for harness in _HARNESS_NAMES:
+            assert harness not in lowered, f"delegation copy still names {harness!r}"
+        assert "deployment-configured" in lowered
+
+
+def test_delegation_copy_does_not_sell_itself_as_the_default() -> None:
+    """It is the expensive lane; the copy may not read as the primary tool."""
+    for surface in (_native_description(), code_executor_tool["description"]):
+        assert "PRIMARY TOOL" not in surface
+
+
+def test_code_mode_copy_claims_the_one_script_case() -> None:
+    """The cheap path has to say out loud what it is cheap for."""
+    from tool_box.native_tool_schemas import NATIVE_TOOL_CONTENT
+    from tool_box.tools_impl.execute_code.tool import BASE_DESCRIPTION
+
+    for surface in (BASE_DESCRIPTION, NATIVE_TOOL_CONTENT["execute_code"]["description"]):
+        lowered = surface.lower()
+        assert "cheap path" in lowered
+        assert "single plot" in lowered
+        assert "execute_code is YOU writing Python" in surface
