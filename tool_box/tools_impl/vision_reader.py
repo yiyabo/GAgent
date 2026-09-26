@@ -22,9 +22,10 @@ import json
 import logging
 import mimetypes
 import os
+import tempfile
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import aiohttp
 
@@ -44,6 +45,113 @@ CALL_PURPOSE_VISION_READ = "vision_read"
 # travels with the usage row and the per-page rate stays env-overridable.
 PDF_PAGE_CNY_ENV = "VISION_READER_PDF_PAGE_CNY"
 DEFAULT_PDF_PAGE_CNY = 0.02
+
+# Routing: a text PDF is read locally for free (pypdf), and only a document that
+# yields no text is sent to the paid file-extract reader. Set to 0 to send every
+# PDF to the paid reader again.
+LOCAL_TEXT_FIRST_ENV = "VISION_READER_LOCAL_TEXT_FIRST"
+# Cost gate: a whole-document parse above this many pages is refused until the
+# caller names the pages it needs (or raises the budget on purpose).
+PDF_MAX_PAGES_ENV = "VISION_READER_PDF_MAX_PAGES"
+DEFAULT_PDF_MAX_PAGES = 50
+# A scan extracts (almost) no text; below this many characters the local reader
+# is treated as having found nothing and the paid reader takes over.
+MIN_LOCAL_TEXT_CHARS = 400
+
+
+def _env_flag(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() not in {"", "0", "false", "no", "off"}
+
+
+def local_text_first_enabled() -> bool:
+    """Whether a PDF is tried locally (free) before the paid reader."""
+    return _env_flag(LOCAL_TEXT_FIRST_ENV, True)
+
+
+def pdf_page_budget(override: Optional[int] = None) -> int:
+    """Per-read page budget: explicit argument, then env, then the default."""
+    if isinstance(override, int) and not isinstance(override, bool) and override > 0:
+        return override
+    try:
+        budget = int(os.getenv(PDF_MAX_PAGES_ENV, str(DEFAULT_PDF_MAX_PAGES)))
+    except (TypeError, ValueError):
+        budget = DEFAULT_PDF_MAX_PAGES
+    return max(1, budget)
+
+
+def extract_local_pdf_text(path: Path, page_numbers: Optional[List[int]] = None) -> Optional[Dict[str, Any]]:
+    """Free pypdf text extraction; ``None`` when the document yields no text.
+
+    ``None`` is the signal that this is a scan or an image PDF, which is exactly
+    the case the paid file-extract reader exists for.
+    """
+    try:
+        import pypdf
+    except Exception as exc:
+        logger.info("pypdf unavailable, skipping the free PDF text path: %s", exc)
+        return None
+
+    try:
+        with path.open("rb") as handle:
+            reader = pypdf.PdfReader(handle)
+            total_pages = len(reader.pages)
+            wanted = [
+                number for number in (page_numbers or range(1, total_pages + 1))
+                if 1 <= number <= total_pages
+            ]
+            parts: List[str] = []
+            pages_with_text = 0
+            for number in wanted:
+                try:
+                    page_text = reader.pages[number - 1].extract_text() or ""
+                except Exception:
+                    page_text = ""
+                if page_text.strip():
+                    pages_with_text += 1
+                parts.append(f"--- Page {number} ---\n{page_text}")
+    except Exception as exc:
+        logger.info("pypdf could not read %s: %s", path.name, exc)
+        return None
+
+    text = "\n\n".join(parts)
+    if pages_with_text == 0 or len(text.strip()) < MIN_LOCAL_TEXT_CHARS:
+        return None
+    return {
+        "page_count": total_pages,
+        "pages_read": wanted,
+        "text": text,
+        "text_length": len(text),
+    }
+
+
+def build_page_subset_pdf(path: Path, page_numbers: List[int], dest_dir: Path) -> Optional[Path]:
+    """Write a PDF holding only ``page_numbers``, so only those pages are billed.
+
+    The file-extract reader prices the document it is handed, so the cheapest
+    whole-document parse is the one that never happens.
+    """
+    try:
+        import pypdf
+
+        reader = pypdf.PdfReader(str(path))
+        total_pages = len(reader.pages)
+        selected = [number for number in page_numbers if 1 <= number <= total_pages]
+        if not selected:
+            return None
+        writer = pypdf.PdfWriter()
+        for number in selected:
+            writer.add_page(reader.pages[number - 1])
+        label = "-".join(str(number) for number in selected[:8])
+        dest = dest_dir / f"{path.stem}.pages_{label}.pdf"
+        with dest.open("wb") as handle:
+            writer.write(handle)
+        return dest
+    except Exception as exc:
+        logger.warning("Could not build a page subset of %s: %s", path.name, exc)
+        return None
 
 
 def count_pdf_pages(path: Path) -> Optional[int]:
@@ -443,12 +551,15 @@ async def vision_reader_handler(
     region: Optional[Dict[str, float]] = None,
     question: Optional[str] = None,
     language: str = "en",
-    max_pages: int = 50,
+    max_pages: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Vision reader tool handler - reads documents and images using vision model.
 
     This handler delegates visual understanding tasks to a multimodal model
     (qwen3.6-plus - native multimodal) and returns text that can be consumed by downstream LLMs.
+
+    PDFs are read locally first (free) and only handed to the paid file-extract
+    reader when the local reader finds no text, so a page count is a charge.
 
     Args:
         operation: One of "read_pdf", "read_image", "ocr_page", "read_equation_image", "describe_figure", "extract_table".
@@ -459,7 +570,9 @@ async def vision_reader_handler(
         region: Optional normalized region of interest {x1,y1,x2,y2} in [0,1].
         question: Optional extra question or instruction about the content.
         language: Output language hint (currently only "en" is supported).
-        max_pages: Maximum pages to process for PDFs (default 50).
+        max_pages: Per-read page budget for a paid parse; defaults to
+            ``VISION_READER_PDF_MAX_PAGES`` (50). A document above the budget is
+            refused until the caller names the pages it needs.
     """
 
     op = (operation or "").strip().lower()
@@ -492,14 +605,98 @@ async def vision_reader_handler(
 
     # Handle PDF reading
     if op == "read_pdf" or abs_path.suffix.lower() == ".pdf":
-        logger.info(f"Reading PDF with Qwen-Long file-extract: {abs_path.name}")
-        result = await _read_pdf_with_qwen_long(
-            str(abs_path),
-            prompt=question
-            or "Read this document and extract all text while preserving original structure (paragraphs, lists, headings, etc.)."
+        # One canonical order, so the page subset, the prompt note and the report
+        # all describe the same pages.
+        selected_pages: List[int] = sorted({
+            int(number) for number in (page_numbers or [])
+            if isinstance(number, int) and not isinstance(number, bool) and number > 0
+        })
+        if isinstance(page_number, int) and not isinstance(page_number, bool) and not selected_pages:
+            selected_pages = [page_number]
+        budget = pdf_page_budget(max_pages)
+        total_pages = count_pdf_pages(abs_path)
+
+        # 1) Free local text extraction: a text PDF needs neither an upload nor a
+        #    page charge. A scan yields almost no text and falls through.
+        if local_text_first_enabled():
+            local = extract_local_pdf_text(abs_path, page_numbers=selected_pages or None)
+            if local is not None:
+                logger.info(
+                    "PDF read locally with pypdf: %s (%s pages, %s chars)",
+                    abs_path.name, local["page_count"], local["text_length"],
+                )
+                return {
+                    "tool": TOOL_NAME,
+                    "success": True,
+                    "operation": "read_pdf",
+                    "file_path": str(abs_path),
+                    "file_name": abs_path.name,
+                    "method": "pypdf-local",
+                    "page_count": local["page_count"],
+                    "pages_read": local["pages_read"],
+                    "text": local["text"],
+                    "text_length": local["text_length"],
+                }
+
+        # 2) Paid file-extract, bounded: a page is a charge, so an explicit page
+        #    selection is how a caller spends less; a blind whole-document parse
+        #    above the budget is refused with the way out.
+        if selected_pages and len(selected_pages) > budget:
+            return {
+                "tool": TOOL_NAME,
+                "success": False,
+                "operation": "read_pdf",
+                "code": "page_budget_exceeded",
+                "error": (
+                    f"Requested {len(selected_pages)} pages but the per-read budget is {budget}. "
+                    f"Narrow page_numbers, or raise {PDF_MAX_PAGES_ENV} deliberately "
+                    f"(parsing costs {_page_parse_cost_cny(1):.2f} CNY per page)."
+                ),
+                "page_count": total_pages,
+                "page_budget": budget,
+            }
+        if not selected_pages and total_pages and total_pages > budget:
+            return {
+                "tool": TOOL_NAME,
+                "success": False,
+                "operation": "read_pdf",
+                "code": "page_budget_exceeded",
+                "error": (
+                    f"{abs_path.name} has {total_pages} pages and PDF parsing is billed per page, "
+                    f"which is above the per-read budget of {budget}. Pass page_numbers=[...] for the "
+                    f"pages you actually need, or raise {PDF_MAX_PAGES_ENV} if the whole document "
+                    f"really is required."
+                ),
+                "page_count": total_pages,
+                "page_budget": budget,
+            }
+
+        prompt = question or (
+            "Read this document and extract all text while preserving original structure "
+            "(paragraphs, lists, headings, etc.)."
         )
-        result["tool"] = "vision_reader"
+        with tempfile.TemporaryDirectory(prefix="vision_pdf_pages_") as scratch:
+            upload_path = abs_path
+            if selected_pages:
+                subset = build_page_subset_pdf(abs_path, selected_pages, Path(scratch))
+                if subset is not None:
+                    upload_path = subset
+                prompt = (
+                    f"{prompt}\n\n(Only pages {sorted(selected_pages)} of the original document "
+                    f"are included in this file.)"
+                )
+            logger.info(f"Reading PDF with Qwen-Long file-extract: {upload_path.name}")
+            result = await _read_pdf_with_qwen_long(str(upload_path), prompt=prompt)
+
+        # The upload may have been a page subset; report the caller's document.
+        result["tool"] = TOOL_NAME
         result["operation"] = "read_pdf"
+        result["file_path"] = str(abs_path)
+        result["file_name"] = abs_path.name
+        if selected_pages:
+            result["pages_parsed"] = sorted(selected_pages)
+        if total_pages:
+            result["source_page_count"] = total_pages
         return result
 
     # Handle generic image reading
@@ -617,9 +814,11 @@ async def vision_reader_handler(
 vision_reader_tool: Dict[str, Any] = {
     "name": "vision_reader",
     "description": (
-        "Vision-based reader for documents and images. Uses qwen3.6-plus (native multimodal) "
-        "to read PDFs (page by page), OCR images, read equations, describe figures, and "
-        "extract tables. Replaces document_reader for all file reading needs."
+        "Reads PDFs and images. A text PDF is read locally for free (pypdf); only a scan or "
+        "image PDF goes to the paid multimodal/page-billed reader. PDF parsing is billed per "
+        "page, so for a long document pass page_numbers for the pages you actually need — a "
+        "whole-document parse above the per-read budget is refused. Use for visual OCR, "
+        "figures, and equations, not for DOCX."
     ),
     "category": "vision",
     "parameters_schema": {
@@ -648,7 +847,10 @@ vision_reader_tool: Dict[str, Any] = {
             "page_numbers": {
                 "type": "array",
                 "items": {"type": "integer"},
-                "description": "Optional list of specific pages to read (1-indexed, for PDFs).",
+                "description": (
+                    "Optional list of specific pages to read (1-indexed, for PDFs). Only these "
+                    "pages are uploaded, so only they are billed."
+                ),
             },
             "page_number": {
                 "type": "integer",
@@ -664,7 +866,11 @@ vision_reader_tool: Dict[str, Any] = {
             },
             "max_pages": {
                 "type": "integer",
-                "description": "Maximum pages to process for PDFs (default: 50).",
+                "description": (
+                    "Per-read page budget for a paid PDF parse (default: 50, env "
+                    "VISION_READER_PDF_MAX_PAGES). A document above the budget is refused until "
+                    "page_numbers names the pages that are needed."
+                ),
                 "default": 50,
             },
             "language": {
