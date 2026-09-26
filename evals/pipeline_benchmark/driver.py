@@ -14,6 +14,19 @@ available_tools=get_all_tools(), tool_executor=<async wrapper forwarding
 tool_box.execute_tool with the loop-injected ToolContext>, max_iterations,
 tool_timeout=120, request_profile={session_id, request_tier, intent_type}).
 
+Fidelity gap and its fix (2026-09-26): production does NOT call
+``tool_box.execute_tool`` here. The deep-think loop dispatches through
+``UnifiedToolExecutor`` (app/services/deep_think/dispatch.py), which derives
+``code_executor``'s ``require_task_context`` from the bound plan/task
+(app/services/execution/tool_executor.py:321) — an unscoped chat call therefore
+arrives with False. Calling ``tool_box.execute_tool`` directly leaves the
+handler's own default (True, tool_box/tools_impl/code_executor.py:398), so every
+bench ``code_executor`` call was refused with "Missing plan_id for strict atomic
+execution", the guard booked that as a failed execution, and the run ended in a
+hedged synthesis answer. That artifact — not the lane under test — produced the
+t09/t26 failures and the 50% fallback rate in the split arms. The driver now
+mirrors the derivation instead of inheriting the wrong default.
+
 Usage attribution mirrors the app startup: init_db() points the connection
 pool at the real main database ($DB_ROOT/main/plan_registry.db, default
 data/databases/main/plan_registry.db) instead of the pool's auto-init
@@ -83,6 +96,12 @@ async def _run_agent(query: str, meta: dict, sid: str, session_dir: Path):
         params = dict(params or {})
         if "tool_context" not in params:
             params["tool_context"] = ToolContext(session_id=sid, work_dir=str(session_dir))
+        if name == "code_executor":
+            # This bench has no bound plan/task, which is exactly the shape of an
+            # unscoped chat call — and the shape production answers with False
+            # (see the module docstring). setdefault keeps an explicit caller
+            # value authoritative.
+            params.setdefault("require_task_context", False)
         return await execute_tool(name, **params)
 
     tier = str(meta.get("tier") or "standard")
