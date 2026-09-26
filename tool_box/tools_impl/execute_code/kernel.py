@@ -81,9 +81,43 @@ import io
 import json
 import os
 import sys
+import threading
 import traceback
 
 _BLOCKED_TOP_LEVEL_PACKAGES = ("app", "tool_box")
+
+
+def _start_parent_watchdog():
+    """Exit the kernel when the host process goes away, however it dies.
+
+    The kernel is spawned with start_new_session=True, so it is not in the
+    host's process group and never receives its signals: if the host is
+    SIGKILLed or crashes, the kernel would keep running as an orphan. The host
+    holds the write end of an inherited pipe, so EOF on our read end is proof
+    the host is gone.
+    """
+    fd_raw = os.environ.get("GAGENT_KERNEL_PARENT_FD", "")
+    if not fd_raw.isdigit():
+        return
+    fd = int(fd_raw)
+    try:
+        # Do not hand this fd to processes the cell spawns: a grandchild
+        # holding the write end would delay the EOF past the host's death.
+        os.set_inheritable(fd, False)
+    except OSError:
+        pass
+
+    def _watch():
+        try:
+            while True:
+                if not os.read(fd, 1):
+                    break
+        except OSError:
+            pass
+        sys.stderr.flush()
+        os._exit(0)
+
+    threading.Thread(target=_watch, daemon=True).start()
 
 
 class _BlockedBackendPackageFinder:
@@ -106,6 +140,8 @@ class _BlockedBackendPackageFinder:
 
 
 sys.meta_path.insert(0, _BlockedBackendPackageFinder())
+
+_start_parent_watchdog()
 
 _SENTINEL = os.environ["GAGENT_KERNEL_SENTINEL"]
 _CAPTURE_LIMIT = {capture_limit}
@@ -233,6 +269,8 @@ class SessionKernel:
         self.raw, self.stderr = _BoundedBuffer(), _BoundedBuffer()
         self.execution_count = 0
         self.last_used = time.monotonic()
+        # Write end of the parent-liveness pipe handed to the kernel.
+        self.parent_fd_w: Optional[int] = None
 
     def alive(self) -> bool:
         return self.proc is not None and self.proc.poll() is None
@@ -248,6 +286,14 @@ class SessionKernel:
         if self.alive():
             _kill_process_group(self.proc, escalate=True)
         self.proc = None
+        if self.parent_fd_w is not None:
+            # Closing the write end is what tells a *surviving* kernel the host
+            # is done with it; the kill above already covers the normal path.
+            try:
+                os.close(self.parent_fd_w)
+            except OSError:
+                pass
+            self.parent_fd_w = None
         if self.kernel_dir is not None:
             shutil.rmtree(self.kernel_dir, ignore_errors=True)
             self.kernel_dir = None
@@ -505,6 +551,11 @@ def _spawn(
     kernel.rpc_server = KernelRPCServer(kernel)
     rpc_endpoint = kernel.rpc_server.start()
 
+    # Parent-liveness pipe: the child watches the read end, we hold the write
+    # end. Closing it (or dying) tells the kernel the host is gone.
+    parent_read, parent_write = os.pipe()
+    kernel.parent_fd_w = parent_write
+
     (kernel.kernel_dir / "gagent_tools.py").write_text(
         generate_stub_module(sorted(allowlist)), encoding="utf-8"
     )
@@ -516,17 +567,24 @@ def _spawn(
         rpc_token=kernel.rpc_token,
         kernel_dir=kernel.kernel_dir,
         sentinel=kernel.sentinel,
+        parent_fd=parent_read,
     )
-    kernel.proc = subprocess.Popen(
-        [sys.executable, str(runner_path)],
-        cwd=str(child_cwd),
-        env=child_env,
-        start_new_session=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        stdin=subprocess.PIPE,
-        close_fds=True,
-    )
+    try:
+        kernel.proc = subprocess.Popen(
+            [sys.executable, str(runner_path)],
+            cwd=str(child_cwd),
+            env=child_env,
+            start_new_session=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            stdin=subprocess.PIPE,
+            close_fds=True,
+            pass_fds=(parent_read,),
+        )
+    finally:
+        # Only the child needs the read end; the parent keeps the write end
+        # open for the kernel's lifetime so EOF means "host is gone".
+        os.close(parent_read)
     for target in (_stdout_reader, _stderr_reader):
         threading.Thread(target=target, args=(kernel,), daemon=True).start()
     _ensure_background_reaper()

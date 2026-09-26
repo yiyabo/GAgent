@@ -176,6 +176,41 @@ def test_timeout_kills_whole_process_group_and_reports_state_loss(
 
 
 @pytest.mark.timeout(60)
+def test_kernel_exits_when_the_host_dies(ctx):
+    """Host death must not leave an orphan kernel behind.
+
+    The kernel runs in its own session (start_new_session=True), so it never
+    sees the host's signals; it learns the host is gone from EOF on the
+    parent-liveness pipe. Closing the write end here stands in for the host
+    being SIGKILLed — the case where the app's atexit path cannot run.
+    """
+    assert _run("x = 41", ctx)["status"] == "success"
+
+    with kernel_module._REGISTRY_LOCK:
+        live = [
+            kernel
+            for key, kernel in kernel_module._KERNELS.items()
+            if key[0] == str(ctx.session_id)
+        ]
+    assert len(live) == 1, "expected exactly one kernel for the session"
+    kernel = live[0]
+    proc = kernel.proc
+    assert proc is not None and proc.poll() is None
+    assert kernel.parent_fd_w is not None
+
+    os.close(kernel.parent_fd_w)
+    kernel.parent_fd_w = None
+
+    assert proc.wait(timeout=10) == 0
+
+    # The session keeps working: the next cell respawns a fresh kernel.
+    followup = _run("print('after host death')", ctx)
+    assert followup["status"] == "success"
+    assert followup["kernel"]["reused"] is False
+    assert followup["kernel"]["state_reset"] is True
+
+
+@pytest.mark.timeout(60)
 def test_runner_and_stubs_are_written_into_kernel_dir(ctx):
     from tool_box.tools_impl.execute_code.config import resolve_scratch_dir
 

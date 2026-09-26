@@ -74,6 +74,14 @@ def test_failure_hint_rules():
         "ModuleNotFoundError: No module named 'pandas'", allowed
     )
     assert hint and "not installed in the kernel interpreter" in hint
+    # The dependency hint must not present the delegation as the first answer
+    # (upstream Hermes points at its own in-sandbox channel here): name what is
+    # already importable, frame it as a dependency problem, and only then name
+    # the escalation with its price.
+    assert "Use the stack that is already there" in hint
+    assert "dependency problem" in hint
+    assert hint.index("Use the stack") < hint.index("code_executor")
+    assert "pays a full coding agent" in hint
 
     hint = output_module.failure_hint(
         "TypeError: the JSON object must be str, bytes or bytearray, not dict",

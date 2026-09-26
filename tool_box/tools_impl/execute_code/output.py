@@ -135,9 +135,12 @@ _FAILURE_HINT_RULES = (
     (
         r"ModuleNotFoundError: No module named '([\w.]+)'",
         lambda match, _: (
-            f"'{match.group(1)}' is not installed in the kernel interpreter. "
-            "execute_code runs with the backend's Python environment and stdlib; "
-            "install the package into that environment or use code_executor instead."
+            f"'{match.group(1)}' is not installed in the kernel interpreter, and a cell cannot "
+            "install it. Use the stack that is already there — numpy, pandas, scipy, matplotlib, "
+            "openpyxl, pyarrow, scikit-learn, reportlab, Pillow — or a stdlib path. If the package "
+            "is genuinely required, stop retrying the cell: this is a dependency problem, not a "
+            "scripting one, so re-issue the step through code_executor, which brings its own "
+            "environment but pays a full coding agent up front."
         ),
     ),
     (

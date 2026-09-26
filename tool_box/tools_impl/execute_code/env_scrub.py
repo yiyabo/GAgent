@@ -52,6 +52,10 @@ ENV_RPC_ENDPOINT = "GAGENT_RPC_ENDPOINT"
 ENV_RPC_TOKEN = "GAGENT_RPC_TOKEN"
 ENV_KERNEL_SENTINEL = "GAGENT_KERNEL_SENTINEL"
 ENV_KERNEL_SPILL_DIR = "GAGENT_KERNEL_SPILL_DIR"
+# Read end of the parent-liveness pipe. The kernel is spawned in its own session
+# (start_new_session=True), so it never sees the host's signals: this fd is how
+# it learns the host is gone (EOF) instead of running on as an orphan.
+ENV_KERNEL_PARENT_FD = "GAGENT_KERNEL_PARENT_FD"
 
 
 def _is_secret_name(name: str) -> bool:
@@ -79,18 +83,22 @@ def build_child_env(
     rpc_token: str,
     kernel_dir: Path,
     sentinel: str,
+    parent_fd: Optional[int] = None,
     source_env: Optional[Mapping[str, str]] = None,
 ) -> Dict[str, str]:
     """Scrubbed env + injected kernel protocol variables.
 
     ``kernel_dir`` heads PYTHONPATH so the generated ``gagent_tools`` stub
-    module is importable inside the kernel.
+    module is importable inside the kernel. ``parent_fd`` is the read end of
+    the parent-liveness pipe; the runner watches it and exits on EOF.
     """
     env = scrub_child_env(source_env)
     env[ENV_RPC_ENDPOINT] = rpc_endpoint
     env[ENV_RPC_TOKEN] = rpc_token
     env[ENV_KERNEL_SENTINEL] = sentinel
     env[ENV_KERNEL_SPILL_DIR] = str(kernel_dir)
+    if parent_fd is not None:
+        env[ENV_KERNEL_PARENT_FD] = str(parent_fd)
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUTF8"] = "1"
