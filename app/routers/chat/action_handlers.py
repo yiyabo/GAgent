@@ -241,6 +241,9 @@ def _extract_explicit_plan_tasks_from_goal(goal: Any) -> List[Dict[str, Any]]:
 
 
 _PHAGESCOPE_RESEARCH_ACTIONS = {"audit", "research_plan", "prepare_metadata_table"}
+# Tools with no per-tool parameter normalizer: their advertised parameters are
+# already the handler contract, so they fall through to the generic execution path.
+_GENERIC_EXECUTION_TOOLS = frozenset({"execute_code", "delegate_task", "load_skill"})
 _artifact_preflight_service = ArtifactPreflightService()
 
 # ---------------------------------------------------------------------------
@@ -900,6 +903,16 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
         if isinstance(normalized, AgentStep):
             return normalized
         params = normalized
+
+    elif tool_name in _GENERIC_EXECUTION_TOOLS:
+        # Env-gated / progressive-disclosure tools: the LLM's parameters are the
+        # handler's own contract, so they need no per-tool normalizer. They do
+        # need the session context the deep-think wrapper strips from the action
+        # parameters (`execute_code`'s kernel routing, delegation progress).
+        if "tool_context" not in params:
+            tool_context = _build_chat_tool_context(agent, tool_name)
+            if tool_context is not None:
+                params["tool_context"] = tool_context
 
     else:
         return AgentStep(

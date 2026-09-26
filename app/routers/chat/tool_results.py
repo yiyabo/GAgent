@@ -579,6 +579,133 @@ def sanitize_tool_result(tool_name: str, raw_result: Any) -> Dict[str, Any]:
 
         return sanitized
 
+    if tool_name == "execute_code" and isinstance(raw_result, dict):
+        sanitized: Dict[str, Any] = {
+            "tool": tool_name,
+            "success": raw_result.get("success", False),
+        }
+        if "status" in raw_result:
+            sanitized["status"] = raw_result.get("status")
+        # The kernel already head/tail-caps stdout and spills the full text; the
+        # limit below only guards an oversized stdout+stderr passthrough, so a
+        # truncated cell can still be paged through `stdout_spill_path`.
+        output_value = raw_result.get("output")
+        if isinstance(output_value, str) and output_value.strip():
+            sanitized["output"] = _trim_text(output_value, limit=50_000)
+        if "error" in raw_result:
+            sanitized["error"] = _trim_text(str(raw_result.get("error") or ""), limit=4000)
+        for key in ("exit_code", "tool_calls_made", "duration_seconds"):
+            if raw_result.get(key) is not None:
+                sanitized[key] = raw_result.get(key)
+        kernel_state = raw_result.get("kernel")
+        if isinstance(kernel_state, dict):
+            compact_kernel: Dict[str, Any] = {}
+            for key in ("reused", "execution_count", "state_reset", "ended"):
+                if kernel_state.get(key) is not None:
+                    compact_kernel[key] = kernel_state.get(key)
+            if compact_kernel:
+                sanitized["kernel"] = compact_kernel
+        for key in ("hint", "warning"):
+            value = raw_result.get(key)
+            if isinstance(value, str) and value.strip():
+                sanitized[key] = _trim_text(value, limit=1000)
+        for key in (
+            "stdout_truncated",
+            "stdout_bytes_captured",
+            "stdout_bytes_total",
+            "stdout_bytes_omitted",
+            "stdout_spill_path",
+        ):
+            if key in raw_result:
+                sanitized[key] = raw_result.get(key)
+        return sanitized
+
+    if tool_name == "delegate_task" and isinstance(raw_result, dict):
+        sanitized = {
+            "tool": tool_name,
+            "success": raw_result.get("success", False),
+            "status": raw_result.get("status"),
+        }
+        summary_value = raw_result.get("summary")
+        if isinstance(summary_value, str) and summary_value.strip():
+            sanitized["summary"] = _trim_text(summary_value, limit=4000)
+        if "error" in raw_result:
+            sanitized["error"] = _trim_text(str(raw_result.get("error") or ""), limit=2000)
+        artifact_paths = raw_result.get("artifact_paths")
+        if isinstance(artifact_paths, list) and artifact_paths:
+            trimmed_paths: List[str] = []
+            for item in artifact_paths[:20]:
+                if isinstance(item, str) and item.strip():
+                    trimmed_paths.append(item.strip().replace("\\", "/"))
+            if trimmed_paths:
+                sanitized["artifact_paths"] = trimmed_paths
+        usage = raw_result.get("usage")
+        if isinstance(usage, dict):
+            compact_usage: Dict[str, Any] = {}
+            for key in (
+                "duration_ms",
+                "prompt_tokens",
+                "completion_tokens",
+                "total_tokens",
+                "model",
+                "provider",
+            ):
+                if usage.get(key) is not None:
+                    compact_usage[key] = usage.get(key)
+            if compact_usage:
+                sanitized["usage"] = compact_usage
+        trace_ref = raw_result.get("trace_ref")
+        if isinstance(trace_ref, dict):
+            compact_trace: Dict[str, Any] = {}
+            for key in (
+                "run_id",
+                "execution_backend",
+                "run_directory",
+                "task_directory_full",
+                "session_directory",
+                "log_path",
+                "debug_log_path",
+                "path_base",
+            ):
+                value = trace_ref.get(key)
+                if isinstance(value, str) and value.strip():
+                    compact_trace[key] = value.strip()
+            if compact_trace:
+                sanitized["trace_ref"] = compact_trace
+        return sanitized
+
+    if tool_name == "load_skill" and isinstance(raw_result, dict):
+        sanitized = {
+            "tool": tool_name,
+            "success": raw_result.get("success", False),
+        }
+        name_value = raw_result.get("name")
+        if isinstance(name_value, str) and name_value.strip():
+            sanitized["name"] = name_value.strip()
+        description_value = raw_result.get("description")
+        if isinstance(description_value, str) and description_value.strip():
+            sanitized["description"] = _trim_text(description_value, limit=600)
+        # The loader caps the body at 30k chars and appends its own re-call hint;
+        # keep that whole payload (the limit leaves the hint intact).
+        content_value = raw_result.get("content")
+        if isinstance(content_value, str) and content_value.strip():
+            sanitized["content"] = _trim_text(content_value, limit=32_000)
+        if "error" in raw_result:
+            sanitized["error"] = _trim_text(str(raw_result.get("error") or ""), limit=400)
+        for key in ("section", "truncated", "content_chars", "total_chars"):
+            if key in raw_result:
+                sanitized[key] = raw_result.get(key)
+        for key in ("available_skills", "available_sections"):
+            value = raw_result.get(key)
+            if isinstance(value, list) and value:
+                names = [str(item).strip() for item in value[:20] if str(item).strip()]
+                if names:
+                    sanitized[key] = names
+        summary_value = raw_result.get("summary")
+        if isinstance(summary_value, str) and summary_value.strip():
+            sanitized["summary"] = _trim_text(summary_value, limit=1000)
+        return sanitized
+
     if isinstance(raw_result, dict):
         sanitized: Dict[str, Any] = {"tool": tool_name}
         for key in (
@@ -1218,6 +1345,52 @@ def summarize_tool_result(tool_name: str, result: Dict[str, Any]) -> str:
             return f"result_interpreter {operation} finished with status={execution_status}."
 
         return f"result_interpreter {operation} succeeded."
+
+    if tool_name == "execute_code":
+        if result.get("success") is False:
+            error = result.get("error") or "Code execution failed"
+            parts = [f"execute_code failed: {_trim_text(str(error), limit=400)}"]
+            hint = result.get("hint")
+            if isinstance(hint, str) and hint.strip():
+                parts.append(f"Hint: {_trim_text(hint, limit=600)}")
+            return " ".join(parts)
+
+        kernel_state = result.get("kernel")
+        reused = (
+            bool(kernel_state.get("reused"))
+            if isinstance(kernel_state, dict)
+            else False
+        )
+        prefix = "execute_code succeeded (kernel reused)." if reused else "execute_code succeeded."
+        output_text = result.get("output")
+        snippet = output_text.strip() if isinstance(output_text, str) else ""
+        if snippet:
+            return f"{prefix} Output: {snippet}"
+        return f"{prefix} The cell produced no output."
+
+    if tool_name == "delegate_task":
+        status = str(result.get("status") or "").strip() or "failed"
+        summary_text = _trim_text(str(result.get("summary") or "").strip(), limit=400)
+        if result.get("success") is False:
+            error = str(result.get("error") or "").strip() or summary_text or "Delegation failed"
+            return f"delegate_task failed ({status}): {_trim_text(error, limit=400)}"
+        artifact_paths = result.get("artifact_paths")
+        artifact_count = len(artifact_paths) if isinstance(artifact_paths, list) else 0
+        suffix = f"; {artifact_count} artifact(s) reported" if artifact_count else ""
+        if summary_text:
+            return f"delegate_task completed{suffix}: {summary_text}"
+        return f"delegate_task completed{suffix}."
+
+    if tool_name == "load_skill":
+        if result.get("success") is False:
+            error = result.get("error") or "Skill loading failed"
+            return f"load_skill failed: {_trim_text(str(error), limit=400)}"
+        name = str(result.get("name") or "").strip() or "unknown skill"
+        suffix = " (truncated; re-call with 'section')" if result.get("truncated") else ""
+        char_count = result.get("content_chars")
+        if isinstance(char_count, int):
+            return f"load_skill loaded '{name}' ({char_count} chars){suffix}."
+        return f"load_skill loaded '{name}'{suffix}."
 
     return f"{tool_name} finished execution."
 
