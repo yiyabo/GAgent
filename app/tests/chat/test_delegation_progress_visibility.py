@@ -643,3 +643,142 @@ def test_visible_mode_delegated_run_reports_progress_into_the_stream(
     # ``on_tool_start`` / ``on_tool_result`` for the same tool added nothing, and
     # the turn still ends on the normal ``final`` event.
     assert _types(events) == ["control_ack", "progress_status", "progress_status", "progress_status", "final"]
+
+
+# ---------------------------------------------------------------------------
+# end to end: the generic-execution tools reach the executor through tool_wrapper
+# ---------------------------------------------------------------------------
+
+GENERIC_EXECUTION_CALLS = (
+    ("execute_code", {"code": "print(1 + 1)"}),
+    ("delegate_task", {"goal": "audit the repo"}),
+    ("load_skill", {"name": "gget"}),
+)
+
+
+class _GenericToolThinkingAgent:
+    """Deep-think stand-in driving one *generic* tool call per turn.
+
+    ``execute_code``, ``delegate_task`` and ``load_skill`` carry no per-tool
+    parameter normalizer, so before the ``_GENERIC_EXECUTION_TOOLS`` branch of
+    ``action_handlers.handle_tool_action`` they fell into its ``unsupported_tool``
+    step — advertised to the model, unreachable at execution.  This drives them
+    through ``tool_executor`` (the agent's ``tool_wrapper``) like a real cycle.
+    """
+
+    tool_name = ""
+    params: Dict[str, Any] = {}
+
+    def __init__(self, **kwargs: Any) -> None:
+        self.kwargs = kwargs
+
+    def pause(self) -> None:
+        return None
+
+    def resume(self) -> None:
+        return None
+
+    def skip_step(self) -> None:
+        return None
+
+    async def think(
+        self,
+        user_query: str,
+        context: Optional[Dict[str, Any]] = None,
+        task_context: Any = None,
+    ) -> DeepThinkResult:
+        await self.kwargs["on_tool_start"](self.tool_name, dict(self.params))
+        result = await self.kwargs["tool_executor"](self.tool_name, dict(self.params))
+        await self.kwargs["on_tool_result"](
+            self.tool_name,
+            {
+                "success": bool(result.get("success")),
+                "summary": str(result.get("summary") or ""),
+            },
+        )
+        return DeepThinkResult(
+            final_answer="stub answer",
+            thinking_steps=[],
+            total_iterations=1,
+            tools_used=[self.tool_name],
+            confidence=1.0,
+            thinking_summary="done",
+        )
+
+
+def _generic_tool_agent_class(tool_name: str, params: Dict[str, Any]) -> type:
+    """The production constructor kwargs are fixed, so bind the call in a class."""
+
+    class _ScriptedGenericAgent(_GenericToolThinkingAgent):
+        pass
+
+    _ScriptedGenericAgent.tool_name = tool_name
+    _ScriptedGenericAgent.params = dict(params)
+    return _ScriptedGenericAgent
+
+
+def _generic_tools_profile() -> RequestTierProfile:
+    return RequestTierProfile(
+        request_tier="standard",
+        thinking_budget=10000,
+        max_iterations=8,
+        available_tools=["execute_code", "delegate_task", "load_skill"],
+        output_bias="balanced",
+        intent_type="chat",
+        explicit_task_ids=[],
+        explicit_task_override=False,
+    )
+
+
+@pytest.mark.parametrize("tool_name,params", GENERIC_EXECUTION_CALLS)
+def test_generic_execution_tools_reach_the_executor(
+    tool_name: str,
+    params: Dict[str, Any],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``tool_wrapper`` hands these three to the executor instead of rejecting them.
+
+    The env gates are what put ``execute_code`` / ``delegate_task`` in the tool
+    pool, and ``_enforce_capability_guard`` rejects anything outside it, so they
+    have to be on for the turn to look like production.
+    """
+    monkeypatch.setenv("APP_RUNTIME_ROOT", str(tmp_path / "runtime"))
+    monkeypatch.setenv("CODE_MODE_ENABLED", "1")
+    monkeypatch.setenv("DELEGATE_TASK_ENABLED", "1")
+    _patch_runtime(monkeypatch)
+    monkeypatch.setattr(
+        chat_routes,
+        "DeepThinkAgent",
+        _generic_tool_agent_class(tool_name, params),
+    )
+
+    captured: Dict[str, Any] = {}
+
+    async def _stub_execute_tool(registered_tool_name: str, **kwargs: Any) -> Dict[str, Any]:
+        captured["tool_name"] = registered_tool_name
+        captured["params"] = kwargs
+        return {"success": True, "summary": f"{registered_tool_name} stub ran", "tool": registered_tool_name}
+
+    monkeypatch.setattr(chat_routes, "execute_tool", _stub_execute_tool)
+    monkeypatch.setattr(agent_module, "execute_tool", _stub_execute_tool)
+
+    agent = _build_stream_agent()
+    agent._resolve_request_routing = lambda _message: (
+        _decision("run the tool"),
+        _generic_tools_profile(),
+    )
+
+    events = _run(agent, "run the tool")
+
+    assert captured.get("tool_name") == tool_name, (
+        f"{tool_name} never reached the executor; events were {_types(events)}"
+    )
+    # The deep-think wrapper strips `tool_context` out of the action parameters,
+    # so the lane has to rebuild it: execute_code needs it for kernel routing.
+    assert captured["params"].get("tool_context") is not None, (
+        f"{tool_name} reached the executor without a ToolContext"
+    )
+    for key, value in params.items():
+        assert captured["params"].get(key) == value
+    assert "unsupported_tool" not in json.dumps(events)
