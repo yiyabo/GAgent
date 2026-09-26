@@ -23,7 +23,11 @@ NATIVE_TOOL_CONTENT: Dict[str, Dict[str, Any]] = {
         "description": (
             "Broad web search via Alibaba DashScope Responses API using the built-in "
             "`web_search` tool (see Model Studio web-search docs). Default provider is `builtin` only. "
-            "For broad comparison tasks, you can pass `queries` with 2-4 focused subqueries; they will run in parallel."
+            "One call is one server-side search and takes about two minutes, so batch: when the "
+            "question needs several separate lookups (comparing entities, covering several facets, "
+            "verifying several facts), put all of them in ONE call as `queries` (2-6 entries) instead "
+            "of calling this tool once per lookup - they run together and cost one round trip. Use "
+            "`query` only when a single search is genuinely enough."
         ),
         "parameters": {
             "type": "object",
@@ -34,7 +38,7 @@ NATIVE_TOOL_CONTENT: Dict[str, Dict[str, Any]] = {
                 },
                 "queries": {
                     "type": "array",
-                    "description": "Optional focused subqueries for parallel search on broad comparison tasks",
+                    "description": "Several focused subqueries, run together in ONE call. Prefer this over repeated single-query calls whenever the question needs more than one lookup.",
                     "items": {"type": "string"},
                     "minItems": 2,
                     "maxItems": 6,

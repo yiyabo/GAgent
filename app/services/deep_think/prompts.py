@@ -519,6 +519,9 @@ def _build_shared_strategy_block(agent: "DeepThinkAgent") -> str:
         "- For immutable source inputs, prefer canonical data-directory paths over same-named session-root `results/` copies; ignore empty or malformed session duplicates.\n"
         "- For single-cell workflows, do not assume `adata.var['mt']` already exists. If mitochondrial flags are needed, derive them from gene_symbols, feature_name, or var_names.\n"
         "- For single-cell integration, fewer than 2 valid samples means the preconditions are not met; do not claim batch integration succeeded or emit placeholder success artifacts.\n"
+        "- For web_search: batch your lookups. One call is one server-side search costing roughly two "
+        "minutes, so when a question needs several facets covered, send them as `queries` (2-6) in a "
+        "single call instead of searching once per iteration.\n"
         "- For web_search: cite verifiable sources. When stating time-sensitive or factual claims, include URLs from the tool JSON "
         "`results` list (title/url) in your final answer. If `results` is empty and the tool response has no URLs, say sources were "
         "not returned and avoid presenting specific claims as independently verified.\n"
@@ -920,7 +923,7 @@ def _build_system_prompt(
             "Accepts datasets as inline rows or CSV/TSV/JSON/JSONL paths and panel specs (auto, bar, line, scatter, heatmap, table). "
             "Prefer this over code_executor for standard scientific figure generation."
         ),
-        "web_search": "Search the internet for information. USE THIS ONLY for web-based queries, NOT for local files. For broad comparisons, prefer focused parallel subqueries with Params: {\"query\": \"original request\", \"queries\": [\"focused query 1\", \"focused query 2\"]}.",
+        "web_search": "Search the internet for information. USE THIS ONLY for web-based queries, NOT for local files. Each call is one server-side search costing roughly two minutes, so batch: whenever you need several lookups, put them together in ONE call as Params: {\"query\": \"original request\", \"queries\": [\"focused query 1\", \"focused query 2\", \"focused query 3\"]} instead of searching once per turn.",
         "lightrag_query": (
             "PREFERRED knowledge-graph / literature RAG over the large LightRAG corpus. "
             "Use for corpus factual questions, entity/relation evidence, and literature-backed context. "
