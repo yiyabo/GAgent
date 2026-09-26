@@ -482,6 +482,28 @@ def _resolve_cli_retry_policy() -> tuple[int, float]:
     return max_retries, base_delay_s
 
 
+def build_local_task_description(*, task: str, work_dir: str, results_dir: str) -> str:
+    """Assemble the instruction handed to the code-generating model.
+
+    The wording is load-bearing. ``execute_code_locally`` receives this same text
+    and scans it for absolute paths that do not exist, refusing to execute when it
+    finds one (``_find_missing_absolute_input_paths``). An earlier version
+    illustrated the "use relative paths" rule with ``/home/.../results`` and
+    ``/home/.../output`` — the scanner read those as referenced inputs, so *every*
+    local-lane call was refused with BLOCKED_DEPENDENCY naming exactly those two
+    strings (measured in production 2026-09-26). The rule stays; the
+    absolute-looking example does not.
+    """
+    return (
+        f"{task}\n\n"
+        f"Working directory: {work_dir}\n"
+        f"Save outputs to: {results_dir}\n"
+        "IMPORTANT: Use RELATIVE paths from your working directory (e.g. "
+        "results/output.csv). Never use absolute paths — not even for the outputs "
+        "directory."
+    )
+
+
 async def _execute_task_locally(task: str, *, work_dir: Optional[str] = None, data_dir: Optional[str] = None, extra_dirs: Optional[Sequence[str]] = None, docker_image: Optional[str] = None, runtime_mode: Optional[str] = None, tool_context: Optional[Any] = None, auto_fix: bool = True, session_dir: Optional[str] = None, execution_spec: Optional[Dict[str, Any]] = None, resolved_resources: Optional[Dict[str, Dict[str, Any]]] = None) -> Dict[str, Any]:
     """Execute a task using the unified local code execution backend."""
     from app.services.interpreter.code_execution import CodeExecutionSpec, execute_code_locally
@@ -512,7 +534,7 @@ async def _execute_task_locally(task: str, *, work_dir: Optional[str] = None, da
         await _report("failed", blocked_reason, error_category="blocked_dependency")
         return {"success": False, "stdout": "", "stderr": "", "exit_code": 1, "result": blocked_reason, "error": blocked_reason, "error_category": "blocked_dependency", "error_summary": blocked_reason, "execution_mode": f"code_executor_{effective_runtime_mode}", "docker_image_effective": effective_docker_image, "runtime_failure": False}
     results_dir = os.path.join(work_dir, "results")
-    task_desc = f"{task}\n\nWorking directory: {work_dir}\nSave outputs to: {results_dir}\nIMPORTANT: Use RELATIVE paths from your working directory (e.g. results/output.csv). Do NOT use absolute paths like /home/.../results/ or /home/.../output/."
+    task_desc = build_local_task_description(task=task, work_dir=work_dir, results_dir=results_dir)
     if session_dir:
         session_results = os.path.join(session_dir, "results")
         if os.path.isdir(session_results):
