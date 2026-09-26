@@ -36,7 +36,11 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from app.services.deep_think.models import TaskExecutionContext
 from app.services.foundation.settings import CHAT_HISTORY_ABS_MAX, get_settings
 from app.services.response_style import PROFESSIONAL_STYLE_INSTRUCTION
-from app.services.tool_schemas import code_mode_enabled, delegate_task_enabled
+from app.services.tool_schemas import (
+    code_executor_enabled,
+    code_mode_enabled,
+    delegate_task_enabled,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from app.services.deep_think_agent import DeepThinkAgent
@@ -310,7 +314,7 @@ def _build_request_tier_block(agent: "DeepThinkAgent") -> str:
             "- Keep the tone professional and execution-focused; avoid decorative emojis or cheerleading.\n"
             "- Use web_search only to fill a concrete factual gap that blocks execution quality.\n"
             "- For a bound execute_task request, observation-only probing is only a short precursor. After one observation-only cycle, move to real execution or report BLOCKED_DEPENDENCY.\n"
-            "- For local structured-data overview/schema/count/sample-value requests, prefer result_interpreter profile before heavier code_executor runs.\n"
+            "- For local structured-data overview/schema/count/sample-value requests, prefer result_interpreter profile; drop to execute_code only for custom logic it cannot express.\n"
             "- Do not silently rewrite the current task into an upstream preprocessing task just because prerequisite deliverables are missing.\n"
             "- For immutable source inputs, prefer canonical data-directory paths over same-named session-root `results/` copies, especially when the session copy is empty or malformed.\n"
             "- For single-cell integration tasks, fewer than 2 valid upstream samples means the preconditions are not met; do not claim integration succeeded.\n"
@@ -382,7 +386,7 @@ def _build_bio_tools_quick_map_block(agent: "DeepThinkAgent") -> str:
         return ""
     return (
         "=== BIO_TOOLS QUICK MAP ===\n"
-        "For FASTA/FASTQ/sequence tasks, prefer bio_tools over code_executor.\n"
+        "For FASTA/FASTQ/sequence tasks, prefer bio_tools over ad-hoc scripting.\n"
         "Call bio_tools(operation='help', tool_name='<tool>') for full param details.\n"
         "Common patterns:\n"
         "- seqkit stats: {\"tool_name\": \"seqkit\", \"operation\": \"stats\", \"input_file\": \"/path/to/file.fasta\"}\n"
@@ -439,7 +443,7 @@ def _build_evidence_scope_block(agent: "DeepThinkAgent") -> str:
         "Only make a global completion claim when complete enumeration plus a manifest/status file supports it.\n"
         "- For PhageScope local dataset exploration, use `phagescope_research` action=`deep_profile` before making "
         "numeric size/row/schema/readiness claims; do not estimate dataset sizes from directory names or samples.\n"
-        "- Do not treat generic spreadsheet/tabular files (`.xlsx`/`.xls`/`.csv`/`.parquet`) as PhageScope datasets even if their path contains 'phagescope'; analyze those with `code_executor`, not `phagescope_research`.\n"
+        "- Do not treat generic spreadsheet/tabular files (`.xlsx`/`.xls`/`.csv`/`.parquet`) as PhageScope datasets even if their path contains 'phagescope'; analyze those with `execute_code` or `result_interpreter`, not `phagescope_research`.\n"
         "- If failure/error status files or partial-completion signals are present, state the completed and failed counts explicitly and qualify the conclusion.\n\n"
     )
 
@@ -502,13 +506,13 @@ def _build_shared_strategy_block(agent: "DeepThinkAgent") -> str:
         "- Prefer clear headings and plain wording over expressive decoration.\n\n"
         "=== TOOL PRIORITY ===\n"
         "- For accession-based FASTA downloads, call sequence_fetch first.\n"
-        "- For FASTA/FASTQ/sequence work, ALWAYS try bio_tools first before code_executor.\n"
+        "- For FASTA/FASTQ/sequence work, ALWAYS try bio_tools first before ad-hoc scripting (execute_code).\n"
         "- If the user provides inline sequence text (not a file), pass it as bio_tools(sequence_text=...).\n"
         "- If bio_tools routing is uncertain, call bio_tools(operation='help') first; use web_search only when help is insufficient.\n"
-        "- For scientific/composite figures, plots, charts, visualizations, or requests that require PNG/PDF plus summary, provenance, QA, or Deliverables publication, call scientific_figure_generator first when available. Use code_executor only for figure types or preprocessing that scientific_figure_generator cannot express.\n"
-        "- For complex custom analysis not covered by bio_tools, then use code_executor.\n"
-        "- Never use code_executor as fallback for sequence_fetch failures.\n"
-        "- Never use code_executor as fallback for bio_tools input-conversion/parsing failures.\n"
+        "- For scientific/composite figures, plots, charts, visualizations, or requests that require PNG/PDF plus summary, provenance, QA, or Deliverables publication, call scientific_figure_generator first when available. Use execute_code only for figure types or preprocessing that scientific_figure_generator cannot express.\n"
+        "- For complex custom analysis not covered by bio_tools, then use execute_code.\n"
+        "- Never script around sequence_fetch failures with execute_code.\n"
+        "- Never script around bio_tools input-conversion/parsing failures with execute_code.\n"
         "- For status polling tools, if state is unchanged across several checks, stop active polling and summarize current status.\n"
         "- If the user explicitly asks for a plan or task breakdown and plan_operation is available, use plan_operation to create or update a structured plan instead of replying with a prose-only pseudo-plan.\n"
         "- For plan creation, `plan_operation.create` already performs integrated material collection before decomposition when needed. Do not manually split this into create-then-decompose unless you are explicitly refining an existing plan later.\n"
@@ -900,16 +904,15 @@ def _build_system_prompt(
             "Params: {\"accession\": \"NC_001416.1\"} or "
             "{\"accessions\": [\"NC_001416.1\", \"NC_001417.1\"], "
             "\"database\": \"nuccore|protein\", \"format\": \"fasta\"}. "
-            "Do not use code_executor as fallback when sequence_fetch fails."
+            "Do not script around a sequence_fetch failure with execute_code."
         ),
         "url_fetch": (
             "Public file downloader for direct http/https links. "
             "Use this for downloading a file from a public URL into the current task/session output directory. "
             "Params: {\"url\": \"https://example.com/file.csv\", optional "
             "\"output_name\", \"allowed_content_types\", \"sha256\", \"timeout_sec\", \"max_bytes\"}. "
-            "Do not use code_executor for simple public-link downloads."
+            "For simple public-link downloads this is the right tool — do not hand-roll download code."
         ),
-        "code_executor": "Execute Python/shell code. FALLBACK TOOL: Use this ONLY when bio_tools cannot handle the task (e.g., custom analysis scripts, complex data processing). For FASTA/FASTQ sequence stats or standard bioinformatics tasks, ALWAYS try bio_tools first. For local CSV/TSV overview/schema/count requests, prefer result_interpreter profile first. Use this for custom computation or visualization when the user needs generated artifacts, not just code snippets. 禁止派本工具的场景：单文件读取、一次性统计/计数/汇总、算术、单张图绘制、只读检查/取证/核验/审计（不修改文件）——普通工具（document_reader、file_operations、result_interpreter）或 5 行 execute_code（kernel 内直接 open()+正则）秒级完成；派一次 = 一次完整 agent 运行（起步 30-60s）。本工具只用于需要完整编码 agent 的复杂实现任务。 Params: {\"task\": \"description\"}",
         "phagescope_research": (
             "Prepare and audit the local PhageScope public dataset for host prediction research. "
             "For local PhageScope dataset exploration, schema/size/readiness assessment, data splitting, model selection, benchmarking, or biological validation, "
@@ -921,7 +924,7 @@ def _build_system_prompt(
             "PREFERRED tool for scientific/composite figures, plots, charts, visualizations, and publication-style outputs. "
             "Use it when the user asks for PNG/PDF figures, visual summaries, English summary/legend, provenance TSV, QA JSON, or Deliverables publication; do not answer with plotting code when the user asked for an actual figure. "
             "Accepts datasets as inline rows or CSV/TSV/JSON/JSONL paths and panel specs (auto, bar, line, scatter, heatmap, table). "
-            "Prefer this over code_executor for standard scientific figure generation."
+            "Prefer this over hand-written plotting for standard scientific figure generation."
         ),
         "web_search": "Search the internet for information. USE THIS ONLY for web-based queries, NOT for local files. Each call is one server-side search costing roughly two minutes, so batch: whenever you need several lookups, put them together in ONE call as Params: {\"query\": \"original request\", \"queries\": [\"focused query 1\", \"focused query 2\", \"focused query 3\"]} instead of searching once per turn.",
         "lightrag_query": (
@@ -937,7 +940,7 @@ def _build_system_prompt(
         "document_reader": (
             "Read local documents (.docx, .pdf, .txt, .md). For .csv/.tsv, this tool "
             "returns a built-in preview (headers + sample rows) — use it for quick inspection; "
-            "for aggregation, row counts on huge files, or plots use code_executor. "
+            "for aggregation, row counts on huge files, or plots use execute_code. "
             "For a bound execute_task request, this is an inspection tool, not a substitute for actually executing the task. "
             "Params: {\"operation\": \"read_any|read_pdf|read_text\", \"file_path\": \"/abs/path\"}"
         ),
@@ -1050,8 +1053,8 @@ IMPORTANT: data must end with \\n to execute the command.""",
             "\"context_paths\": [\"/path/to/refs.bib\", \"/path/to/data.csv\"], "
             "\"analysis_path\": \"/path/to/analysis_results\"}. "
             "IMPORTANT: For ANY paper/manuscript/report/summary writing task that should create a file (sections, drafts, revisions, assembly), "
-            "ALWAYS use manuscript_writer instead of code_executor. "
-            "code_executor should NEVER be used to write paper content directly."
+            "ALWAYS use manuscript_writer instead of ad-hoc scripting. "
+            "Never write paper content directly with execute_code."
         ),
         "literature_pipeline": (
             "Collect a literature evidence pack from PubMed/PMC. "
@@ -1077,6 +1080,9 @@ IMPORTANT: data must end with \\n to execute the command.""",
         # invisible (and code mode undiscoverable) when disabled.
         tool_descriptions["execute_code"] = (
             "Run Python that calls GAgent tools programmatically in a PERSISTENT kernel. "
+            "This is YOUR default way to run code: one script (reading or filtering a file, "
+            "one-off statistics, a single plot, a loop over many tool calls) belongs here; "
+            "hand a long self-contained GOAL to delegate_task instead. "
             "Use when you need 3+ tool calls with logic between them: loops over pages/files/accessions, "
             "filtering or reducing large tool outputs BEFORE they enter your context, branching, or retries; "
             "use a normal tool call for a single call or results you must reason over in full. "
@@ -1084,6 +1090,10 @@ IMPORTANT: data must end with \\n to execute the command.""",
             "(pass reset=true to start fresh); a timed-out or interrupted call kills the kernel and loses that state. "
             "Tools are importable Python functions, e.g. `from gagent_tools import web_search`; "
             "each returns an ALREADY-PARSED dict — never json.loads() it. "
+            "The cell starts in your session workspace: save output files under results/ "
+            "(e.g. plt.savefig('results/chart.png')); files you create are reported back as "
+            "produced_files, images under results/ are inlined into the final answer, and "
+            "deliverable_submit publishes them into Deliverables. "
             "Params: {\"code\": \"from gagent_tools import web_search\\nrows = web_search(query='phage lysin')\\nprint(rows)\", "
             "optional \"reset\": true|false}."
         )
@@ -1096,16 +1106,24 @@ IMPORTANT: data must end with \\n to execute the command.""",
             "this conversation, and its transcript never enters yours. "
             "Use it for long self-contained work you do not need to watch (multi-file refactors, "
             "audit-and-repair passes, bulk literature or accession sweeps). "
-            "Division of labor: code_executor hands off a CODING task to the pi harness; execute_code "
-            "is YOU writing Python in a kernel you keep using; delegate_task hands off a GOAL. "
+            "Division of labor: execute_code is YOU writing Python in a kernel you keep using; "
+            "delegate_task (this tool) is THE delegation surface — it hands a GOAL to an "
+            "isolated coding sub-agent. "
             "Do NOT use it for a single query or two tool calls, for read-only checking/counting/"
             "printing of results you already have, when you must judge the intermediate results "
             "yourself, when you need the current kernel state, or when the code itself is the "
-            "deliverable (use code_executor). Calls run one at a time — no parallel fan-out. "
+            "deliverable (write it with execute_code). Calls run one at a time — no parallel fan-out. "
             "Params: {\"goal\": \"audit every Python file under data/pipeline for the removed "
             "pandas.append API, fix it, and report the changed files\", optional "
             "\"deliverable\": \"patched files + report\", \"context_paths\": [\"data/pipeline\"]}. "
             "Returns {summary, artifact_paths, usage, trace_ref}; raw stdout/stderr is never returned."
+        )
+    if code_executor_enabled():
+        # Delegated-coding harness: same gate as get_all_tools()/tool_schemas —
+        # the entry appears only when explicitly enabled (default off since
+        # 2026-09-27: execute_code owns one-script coding, delegate_task goals).
+        tool_descriptions["code_executor"] = (
+            "Execute Python/shell code. FALLBACK TOOL: Use this ONLY when bio_tools cannot handle the task (e.g., custom analysis scripts, complex data processing). For FASTA/FASTQ sequence stats or standard bioinformatics tasks, ALWAYS try bio_tools first. For local CSV/TSV overview/schema/count requests, prefer result_interpreter profile first. Use this for custom computation or visualization when the user needs generated artifacts, not just code snippets. 禁止派本工具的场景：单文件读取、一次性统计/计数/汇总、算术、单张图绘制、只读检查/取证/核验/审计（不修改文件）——普通工具（document_reader、file_operations、result_interpreter）或 5 行 execute_code（kernel 内直接 open()+正则）秒级完成；派一次 = 一次完整 agent 运行（起步 30-60s）。本工具只用于需要完整编码 agent 的复杂实现任务。 Params: {\"task\": \"description\"}"
         )
 
     tools_desc = []
@@ -1199,7 +1217,7 @@ Your goal is to choose the right depth for the user's request: be thorough when 
 1. Call bio_tools(..., operation="help") and inspect required parameters.
 2. Retry bio_tools with corrected parameters and verified absolute paths.
 3. If still failing, run targeted web_search for operation/parameter mapping.
-4. If still failing for reasons other than input parsing/conversion, use code_executor for minimal shell-level diagnostics.
+4. If still failing for reasons other than input parsing/conversion, use execute_code for minimal shell-level diagnostics.
 Try at least 3 different recovery attempts before reporting failure.
 
 === PLAN CREATION RULE ===

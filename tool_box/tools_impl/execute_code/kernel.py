@@ -618,6 +618,66 @@ def _with_stderr(stdout_text: str, stderr_text: str) -> str:
     return stdout_text + "\n--- stderr ---\n" + stderr_text
 
 
+# Produced-file collection: one mtime-watermark walk per settled cell. Any
+# regular file under the session workspace newer than the cell start counts as
+# produced (created OR overwritten), excluding the code-mode scratch subtree
+# (RPC stubs / stdout spills) and dotfiles. Best-effort bookkeeping — a walk
+# error must never fail the cell, and the reported paths are session-relative
+# so the artifact surfaces (guards / inline images / deliverable_submit) can
+# resolve them against the session root.
+_PRODUCED_FILES_CAP = 40
+_PRODUCED_SCAN_CAP = 200_000
+
+
+def _collect_produced_files(root: Path, since_ns: int, scratch_dir: Path) -> List[str]:
+    """Session-relative paths (newest first) of files the cell created or modified."""
+    root_s = str(root)
+    scratch_s = str(scratch_dir)
+    scratch_prefix = scratch_s + os.sep
+    produced: List[Tuple[int, str]] = []
+    scanned = 0
+    capped = False
+
+    def _keep_dir(parent: str, name: str) -> bool:
+        if name.startswith("."):
+            return False
+        full = os.path.join(parent, name)
+        return full != scratch_s and not full.startswith(scratch_prefix)
+
+    try:
+        for dirpath, dirnames, filenames in os.walk(root_s):
+            dirnames[:] = [name for name in dirnames if _keep_dir(dirpath, name)]
+            for name in filenames:
+                if name.startswith("."):
+                    continue
+                scanned += 1
+                if scanned > _PRODUCED_SCAN_CAP:
+                    capped = True
+                    break
+                full = os.path.join(dirpath, name)
+                try:
+                    if not os.path.isfile(full):
+                        continue
+                    mtime_ns = os.stat(full).st_mtime_ns
+                except OSError:
+                    continue
+                if mtime_ns < since_ns:
+                    continue
+                produced.append((mtime_ns, os.path.relpath(full, root_s).replace(os.sep, "/")))
+            if capped:
+                break
+    except OSError:
+        pass
+    if capped:
+        logger.warning(
+            "execute_code produced-files scan capped at %s entries under %s",
+            scanned,
+            root_s,
+        )
+    produced.sort(key=lambda item: item[0], reverse=True)
+    return [rel for _, rel in produced[:_PRODUCED_FILES_CAP]]
+
+
 def _cell_result(
     kernel: SessionKernel,
     key: Tuple,
@@ -750,6 +810,13 @@ def run_cell(
     """Run one cell in the (session_id, sorted(allowlist), cwd) kernel."""
     scratch_dir = config.resolve_scratch_dir(work_dir)
     child_cwd = config.resolve_child_cwd(work_dir, scratch_dir)
+    # Produced-file collection only runs against a real session workspace: the
+    # repo-level fallback scratch is shared across sessions and its paths mean
+    # nothing to the session's artifact surfaces. Mirrors resolve_child_cwd's
+    # validity check exactly (child_cwd == Path(work_dir) iff it accepted it).
+    collect_root: Optional[Path] = None
+    if work_dir and child_cwd == Path(work_dir):
+        collect_root = child_cwd
     allowlist = tuple(sorted(set(config.allowed_tools())))
     key = (session_id, allowlist, str(child_cwd))
     timeout = config.cell_timeout_seconds()
@@ -769,6 +836,7 @@ def run_cell(
             exec_start=exec_start,
             state_reset=state_reset,
             tool_context=tool_context,
+            collect_root=collect_root,
         )
     finally:
         with _REGISTRY_LOCK:
@@ -794,6 +862,7 @@ def _run_cell(
     exec_start: float,
     state_reset: bool,
     tool_context: Optional[object],
+    collect_root: Optional[Path] = None,
 ) -> Dict[str, Any]:
     reused = kernel.proc is not None and kernel.alive()
     with kernel.cell_lock:
@@ -815,12 +884,13 @@ def _run_cell(
             kernel.raw.drain()
             kernel.stderr.drain()
             kernel.authority = binding
+            cell_start_ns = time.time_ns()
             kernel.proc.stdin.write(
                 (json.dumps({"id": uuid.uuid4().hex, "code": code}) + "\n").encode("utf-8")
             )
             kernel.proc.stdin.flush()
             status, payload = _await_cell(kernel, timeout, abort_check)
-            return _cell_result(
+            result = _cell_result(
                 kernel,
                 key,
                 status,
@@ -831,6 +901,11 @@ def _run_cell(
                 exec_start=exec_start,
                 scratch_dir=scratch_dir,
             )
+            if collect_root is not None:
+                produced = _collect_produced_files(collect_root, cell_start_ns, scratch_dir)
+                if produced:
+                    result["produced_files"] = produced
+            return result
         except (BrokenPipeError, OSError) as exc:
             logger.error("execute_code kernel pipe failed: %s", exc)
             _discard_kernel(key, kernel)

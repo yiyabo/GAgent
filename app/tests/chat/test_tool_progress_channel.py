@@ -56,6 +56,14 @@ from app.services.plans.plan_models import PlanNode, PlanTree
 from tool_box.tools_impl.delegation_progress import build_delegation_progress
 
 RUN_ID = "run-1"
+
+
+@pytest.fixture(autouse=True)
+def _code_executor_offer_enabled(monkeypatch: pytest.MonkeyPatch):
+    # Every test in this file drives the code_executor lane, which is
+    # offer-gated off by default since 2026-09-27 (CODE_EXECUTOR_ENABLED=1);
+    # run them with the flag on.
+    monkeypatch.setenv("CODE_EXECUTOR_ENABLED", "1")
 # The wording the real CLI lane reports (``tools_impl/code_executor.py``).
 DELEGATION_STARTED = "Delegating to Qwen Code · lane qwen_primary"
 DELEGATION_COMPLETED = "Sub-agent run completed in 12s (2 artifacts)"

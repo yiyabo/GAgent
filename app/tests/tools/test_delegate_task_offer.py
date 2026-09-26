@@ -136,11 +136,15 @@ def test_on_registered_with_orchestration_metadata(_flag_on) -> None:
     assert "subagent" in metadata["search_hint"]
 
 
-def test_description_carries_the_three_lane_division_of_labor(_flag_on) -> None:
+def test_description_carries_the_two_lane_division_of_labor(_flag_on) -> None:
     description = tool_schemas._get_tool_registry()[_TOOL]["function"]["description"]
 
-    assert "code_executor" in description
+    # 2026-09-27: code_executor is offer-gated off by default, so the visible
+    # division of labor spans exactly two lanes (delegate_task vs execute_code);
+    # pointing at an invisible tool would only confuse the model.
+    assert "THE delegation surface" in description
     assert "execute_code" in description
+    assert "code_executor" not in description
     assert "Do NOT use delegate_task when" in description
     assert "Good: goal=" in description
     assert "Bad: goal=" in description

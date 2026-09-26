@@ -273,6 +273,25 @@ async def _emit_artifacts(agent: "DeepThinkAgent", tool_name: str, result: Any, 
         )
 
 
+def _native_tool_work_dir(tool_name: str, session_id: str) -> str:
+    """Kernel cwd for execute_code: the session workspace root.
+
+    Other tools keep this lane's historical empty work_dir. execute_code needs
+    a real one: without it the kernel falls back to a repo-level scratch shared
+    across sessions, and files the cell writes never reach the session's
+    artifact surfaces (guards, inline images, deliverable_submit).
+    """
+    if tool_name != "execute_code" or not session_id:
+        return ""
+    try:
+        from app.services.session_paths import get_runtime_session_dir
+
+        return str(get_runtime_session_dir(session_id, create=True))
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("execute_code work_dir resolution failed: %s", exc)
+        return ""
+
+
 async def _execute_native_tool_call(
     agent: "DeepThinkAgent",
     tc: Any,
@@ -300,6 +319,10 @@ async def _execute_native_tool_call(
         plan_id=agent._current_plan_id(),
         session_id=str(agent.request_profile.get("session_id") or "").strip() or None,
         owner_id=str(agent.request_profile.get("owner_id") or "").strip() or None,
+        work_dir=_native_tool_work_dir(
+            tool_name,
+            str(agent.request_profile.get("session_id") or "").strip(),
+        ),
         extra={
             "chat_history": list(agent.messages[-20:]) if getattr(agent, "messages", None) else [],
             "paper_mode": bool(agent.request_profile.get("paper_mode", False)),
@@ -622,6 +645,8 @@ def _compact_tool_result_for_llm(
         return cls._compact_phagescope_research_result_for_llm(result)
     if str(tool_name or "").strip().lower() == "code_executor":
         return cls._compact_code_executor_result_for_llm(result)
+    if str(tool_name or "").strip().lower() == "execute_code":
+        return cls._compact_execute_code_result_for_llm(result)
     return None
 
 
@@ -660,6 +685,51 @@ def _compact_code_executor_result_for_llm(
         val = result.get(key)
         if val is not None:
             compact[key] = val
+    return compact
+
+
+def _compact_execute_code_result_for_llm(
+    cls: Any, result: Any
+) -> Optional[Dict[str, Any]]:
+    """Keep one execute_code result inside the native-lane result cap.
+
+    Without a branch the raw JSON (50KB stdout head/tail + spill metadata)
+    could ride into the prompt whole. Preserves the keys the model actually
+    acts on: status/error/hint, kernel truth metadata, produced_files, and the
+    spill pointer for paging.
+    """
+    if not isinstance(result, dict):
+        return None
+    output_raw = str(result.get("output") or "")
+    if len(output_raw) > 4000:
+        output_text = output_raw[:2000] + "\n…[truncated]…\n" + output_raw[-2000:]
+    else:
+        output_text = output_raw
+    compact: Dict[str, Any] = {
+        "tool": "execute_code",
+        "success": bool(result.get("success", False)),
+        "status": result.get("status"),
+        "exit_code": result.get("exit_code"),
+        "output": output_text,
+        "llm_compacted": True,
+    }
+    for key in ("error", "hint", "warning", "duration_seconds", "tool_calls_made",
+                "stdout_truncated", "stdout_bytes_total", "stdout_spill_path"):
+        val = result.get(key)
+        if val is not None and val != "":
+            compact[key] = val
+    kernel_state = result.get("kernel")
+    if isinstance(kernel_state, dict):
+        kernel_compact = {
+            key: kernel_state[key]
+            for key in ("reused", "execution_count", "state_reset", "ended")
+            if kernel_state.get(key) is not None
+        }
+        if kernel_compact:
+            compact["kernel"] = kernel_compact
+    produced = result.get("produced_files")
+    if isinstance(produced, list) and produced:
+        compact["produced_files"] = [str(path) for path in produced[:40]]
     return compact
 
 

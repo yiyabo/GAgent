@@ -34,17 +34,20 @@ GOLDEN_PATH = (
 # the list below stays the all-gates-off (production default) tool set.
 GATED_CODE_MODE_TOOL = "execute_code"
 GATED_DELEGATE_TOOL = "delegate_task"
+# Default-off since 2026-09-27: the delegated-coding harness is opt-in; the
+# golden fixture records the all-gates-off payload (without it).
+GATED_CODE_EXECUTOR_TOOL = "code_executor"
 
 # name -> flag reader. The golden fixture records the all-gates-off payload, so
 # both the expectation and the comparison filter read the same switches.
 GATED_NATIVE_TOOLS = {
     GATED_CODE_MODE_TOOL: tool_schemas.code_mode_enabled,
     GATED_DELEGATE_TOOL: tool_schemas.delegate_task_enabled,
+    GATED_CODE_EXECUTOR_TOOL: tool_schemas.code_executor_enabled,
 }
 
 ALL_NATIVE_TOOLS = [
     "bio_tools",
-    "code_executor",
     "deliverable_submit",
     "document_reader",
     "file_operations",
@@ -111,6 +114,8 @@ def test_native_schemas_match_golden_master() -> None:
     # delegate_task is the chat-side delegation surface: the plan-executor pool
     # stays static (plan tasks delegate through PlanExecutor's own path).
     assert GATED_DELEGATE_TOOL not in executor_names
+    assert (GATED_CODE_EXECUTOR_TOOL in all_names) is tool_schemas.code_executor_enabled()
+    assert (GATED_CODE_EXECUTOR_TOOL in executor_names) is tool_schemas.code_executor_enabled()
 
     payload = {
         "build_tool_schemas_all20": without_gated_tools(all_schemas),

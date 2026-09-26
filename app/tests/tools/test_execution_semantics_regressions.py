@@ -47,6 +47,15 @@ def _build_minimal_agent() -> StructuredChatAgent:
     return agent
 
 
+@pytest.fixture(autouse=True)
+def _code_executor_offer_enabled(monkeypatch: pytest.MonkeyPatch):
+    # Several tests in this file drive code_executor lanes, which are
+    # offer-gated off by default since 2026-09-27 (CODE_EXECUTOR_ENABLED=1);
+    # run the whole file with the offer flag on. No test here asserts the
+    # default tool pool.
+    monkeypatch.setenv("CODE_EXECUTOR_ENABLED", "1")
+
+
 def test_generate_experiment_card_reuse_does_not_reference_pdf_result(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

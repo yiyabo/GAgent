@@ -1544,6 +1544,12 @@ class DeepThinkAgent:
         return _dispatch._compact_code_executor_result_for_llm(cls, result)
 
     @classmethod
+    def _compact_execute_code_result_for_llm(
+        cls, result: Any
+    ) -> Optional[Dict[str, Any]]:
+        return _dispatch._compact_execute_code_result_for_llm(cls, result)
+
+    @classmethod
     def _compact_phagescope_research_result_for_llm(
         cls, result: Any
     ) -> Optional[Dict[str, Any]]:

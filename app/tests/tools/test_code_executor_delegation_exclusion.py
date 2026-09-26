@@ -53,6 +53,13 @@ def _prompt_catalog_description() -> str:
     return line
 
 
+@pytest.fixture(autouse=True)
+def _code_executor_offer_enabled(monkeypatch: pytest.MonkeyPatch):
+    # The catalog entry is offer-gated (CODE_EXECUTOR_ENABLED=1, default off
+    # since 2026-09-27); this file pins the enabled-state guidance copy.
+    monkeypatch.setenv("CODE_EXECUTOR_ENABLED", "1")
+
+
 # Every clause the offer-side guidance must keep. Each entry is the cheapest
 # answer among the tools the model already has, so re-delegating it is pure cost.
 _EXCLUSION_CLAUSES = (
@@ -142,12 +149,13 @@ def test_delegation_copy_does_not_sell_itself_as_the_default() -> None:
 
 
 def test_code_mode_copy_claims_the_one_script_case() -> None:
-    """The cheap path has to say out loud what it is cheap for."""
+    """The default coding lane has to say out loud what it is the default for."""
     from tool_box.native_tool_schemas import NATIVE_TOOL_CONTENT
     from tool_box.tools_impl.execute_code.tool import BASE_DESCRIPTION
 
     for surface in (BASE_DESCRIPTION, NATIVE_TOOL_CONTENT["execute_code"]["description"]):
         lowered = surface.lower()
-        assert "cheap path" in lowered
+        assert "default way to run code" in lowered
         assert "single plot" in lowered
-        assert "execute_code is YOU writing Python" in surface
+        # The escalation pointer for work one script cannot cover.
+        assert "delegate_task" in surface

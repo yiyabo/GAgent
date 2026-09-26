@@ -630,7 +630,15 @@ def _build_chat_tool_context(agent: Any, tool_name: str) -> Optional[Any]:
         except Exception:
             task_name = None
 
-    work_dir = get_runtime_session_dir(session_id, create=True) / "raw_files" / "chat_tools" / tool_name
+    session_dir = get_runtime_session_dir(session_id, create=True)
+    if tool_name == "execute_code":
+        # Code-mode kernel cwd is the session workspace itself: produced files
+        # must land session-relative to reach the artifact surfaces (guards,
+        # inline images, deliverable_submit). All other tools keep the
+        # per-tool scratch convention.
+        work_dir = session_dir
+    else:
+        work_dir = session_dir / "raw_files" / "chat_tools" / tool_name
     owner_id = (getattr(agent, "extra_context", {}) or {}).get("owner_id")
     on_progress, on_progress_loop = _chat_tool_progress_channel(agent)
     return ToolContext(

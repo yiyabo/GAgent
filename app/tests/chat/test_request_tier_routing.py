@@ -607,7 +607,9 @@ def test_file_followup_inherits_active_subject_and_keeps_local_inspect_tools() -
     )
     assert "file_operations" in profile.available_tools
     assert "result_interpreter" in profile.available_tools
-    assert "code_executor" in profile.available_tools
+    # code_executor left the default pool (offer-gated off, 2026-09-27); the
+    # local inspect floor itself is unaffected.
+    assert "code_executor" not in profile.available_tools
     assert "deliverable_submit" in profile.available_tools
     assert profile.max_iterations == 100
 
@@ -668,7 +670,9 @@ def test_manual_deepthink_followup_keeps_local_inspect_floor() -> None:
     )
     assert "file_operations" in profile.available_tools
     assert "result_interpreter" in profile.available_tools
-    assert "code_executor" in profile.available_tools
+    # code_executor left the default pool (offer-gated off, 2026-09-27); the
+    # local inspect floor itself is unaffected.
+    assert "code_executor" not in profile.available_tools
     assert profile.max_iterations == 100
 
 

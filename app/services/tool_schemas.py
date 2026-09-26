@@ -44,6 +44,18 @@ def delegate_task_enabled() -> bool:
     return os.environ.get("DELEGATE_TASK_ENABLED", "").strip() == "1"
 
 
+def code_executor_enabled() -> bool:
+    """Whether the delegated-coding harness (``code_executor``) is offered to the LLM.
+
+    Default OFF (decision 2026-09-27): one-script coding belongs to
+    ``execute_code`` (code mode) and whole-goal delegation to ``delegate_task``;
+    ``code_executor`` stays as an explicit opt-in (rollback / debugging).
+    Offer-side only — the handler is NOT refused when the flag is off, so
+    plan/evals/scripts that call it directly keep working.
+    """
+    return os.environ.get("CODE_EXECUTOR_ENABLED", "").strip() == "1"
+
+
 def _build_execute_code_description(content: Dict[str, Any]) -> str:
     """Static base + the dynamic per-allowlist signature list (teaching surface)."""
     base = str(content["description"])
@@ -190,6 +202,17 @@ def _build_registry() -> Dict[str, Dict[str, Any]]:
             # OFF): same contract as code mode — invisible to every offer path
             # and the golden master stays exact while disabled.
             if not delegate_task_enabled():
+                continue
+            registry[name] = _function_schema(
+                name,
+                content["description"],
+                content["parameters"],
+            )
+        elif name == "code_executor":
+            # Delegated-coding harness: env-gated OFF by default
+            # (CODE_EXECUTOR_ENABLED=1, decision 2026-09-27). Same contract as
+            # the other gated tools — invisible to every offer path while off.
+            if not code_executor_enabled():
                 continue
             registry[name] = _function_schema(
                 name,

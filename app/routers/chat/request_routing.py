@@ -981,7 +981,8 @@ ALL_TOOLS: List[str] = [
     "phagescope",
     "phagescope_research",
     "scientific_figure_generator",
-    "code_executor",
+    # code_executor is env-gated (CODE_EXECUTOR_ENABLED=1, default OFF since
+    # 2026-09-27): it joins the pool in get_all_tools() only when enabled.
     "plan_operation",
     "deliverable_submit",
     "terminal_session",
@@ -1093,12 +1094,20 @@ def get_all_tools() -> List[str]:
     tools = list(ALL_TOOLS)
     # Env-gated tools join the pool only when explicitly enabled; the
     # schema-offer gate lives in app/services/tool_schemas.py.
-    from app.services.tool_schemas import code_mode_enabled, delegate_task_enabled
+    from app.services.tool_schemas import (
+        code_executor_enabled,
+        code_mode_enabled,
+        delegate_task_enabled,
+    )
 
     if code_mode_enabled():
         tools.append("execute_code")
     if delegate_task_enabled():
         tools.append("delegate_task")
+    if code_executor_enabled():
+        # Default off (2026-09-27): delegated-coding harness is opt-in only;
+        # execute_code owns one-script coding, delegate_task owns goals.
+        tools.append("code_executor")
     return tools
 
 

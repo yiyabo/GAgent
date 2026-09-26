@@ -2,9 +2,10 @@
 
 The general delegation surface of ``design/2026-09-25-subagent-delegation-plane.md``
 §3 S2, built on the S1 neutral contract (``CodeAgentTaskDelegateExecutor`` with
-``plan_id`` / ``task_id`` unset). Distinct from ``code_executor`` (a CODING task
-for the pi harness) and ``execute_code`` (the orchestrator writing Python in its
-own kernel): here the goal is handed off and only a summary comes back.
+``plan_id`` / ``task_id`` unset). Distinct from ``execute_code`` (the orchestrator
+writing Python in its own kernel) and the offer-gated ``code_executor``
+(``CODE_EXECUTOR_ENABLED``, default OFF since 2026-09-27): here the goal is
+handed off and only a summary comes back.
 
 Env-gated (``DELEGATE_TASK_ENABLED=1``, default OFF). The offer-side gates live
 in ``tool_box/tool_registry.py`` (not registered at all),
@@ -53,20 +54,21 @@ DESCRIPTION = (
     "self-contained, and you do not need to watch the intermediate steps "
     "(multi-file refactors, audit-and-repair passes, bulk literature or accession "
     "sweeps, 'take this dataset and produce X end to end'). "
-    "Division of labor: delegate_task (this tool) hands off a whole GOAL and shows "
-    "only the result; code_executor hands off a CODING task to the pi coding "
-    "harness (it writes and debugs the code) and returns its execution result; "
-    "execute_code is YOU writing Python that calls tools as functions in a kernel "
-    "you keep using. "
+    "Division of labor: delegate_task (this tool) is THE delegation surface — it "
+    "hands a whole GOAL to an isolated coding sub-agent (which writes and debugs "
+    "the code in its own run) and shows only the result; execute_code is YOU "
+    "writing Python that calls tools as functions in a kernel you keep using — "
+    "the cheap default for anything one script can do. "
     "Do NOT use delegate_task when: one tool call or two already answers the "
     "question (call them directly); you must read or judge the intermediate "
     "results yourself (use the tools, or execute_code when you need fan-out); you "
     "need to reuse the current kernel's state (use execute_code); the goal is "
-    "'write code that does X' and you want the code back (use code_executor); the "
-    "goal is read-only checking, counting/printing, or verifying results you "
-    "already have (that takes seconds here and a whole agent run there); or the "
-    "goal depends on implicit context from this conversation that you cannot write "
-    "down in goal. Calls run one at a time — there is no parallel fan-out. "
+    "'write code that does X' and you want the code itself back (write it with "
+    "execute_code); the goal is read-only checking, counting/printing, or "
+    "verifying results you already have (that takes seconds here and a whole "
+    "agent run there); or the goal depends on implicit context from this "
+    "conversation that you cannot write down in goal. Calls run one at a time — "
+    "there is no parallel fan-out. "
     "Good: goal='Audit every Python file under data/pipeline for calls to the "
     "removed pandas.append API, fix them, and report the changed files', "
     "deliverable='patched files + a markdown report listing every change', "

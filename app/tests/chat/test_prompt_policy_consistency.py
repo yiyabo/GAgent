@@ -138,9 +138,9 @@ def test_deep_think_native_and_legacy_prompts_share_effort_matching_and_bio_prio
         assert "Default to the lightest path that fully satisfies the user." in prompt
         assert "Do NOT start broad web/literature research" in prompt
         assert "For accession-based FASTA downloads, call sequence_fetch first." in prompt
-        assert "ALWAYS try bio_tools first before code_executor" in prompt
-        assert "Never use code_executor as fallback for sequence_fetch failures." in prompt
-        assert "Never use code_executor as fallback for bio_tools input-conversion/parsing failures." in prompt
+        assert "ALWAYS try bio_tools first before ad-hoc scripting (execute_code)" in prompt
+        assert "Never script around sequence_fetch failures with execute_code." in prompt
+        assert "Never script around bio_tools input-conversion/parsing failures with execute_code." in prompt
         assert "do NOT use plan_operation or task_operation just to mark that task completed/failed" in prompt
         assert "report BLOCKED_DEPENDENCY clearly" in prompt
         assert "Do not convert an integration/analysis task into full upstream preprocessing" in prompt
@@ -736,8 +736,11 @@ def test_delegate_task_catalog_entry_present_when_delegation_enabled(monkeypatch
     assert "ISOLATED sub-agent" in prompt
     # Lane split + the "when not to use" block both have to reach the legacy
     # catalog, otherwise the model judges delegation from its name alone.
-    assert "code_executor hands off a CODING task" in prompt
+    # 2026-09-27: the visible split is two lanes (delegate_task vs execute_code);
+    # the offer-gated code_executor must not be advertised here.
+    assert "THE delegation surface" in prompt
     assert "execute_code is YOU writing Python" in prompt
+    assert "code_executor hands off" not in prompt
     assert "Do NOT use it for a single query" in prompt
 
 

@@ -618,6 +618,14 @@ def sanitize_tool_result(tool_name: str, raw_result: Any) -> Dict[str, Any]:
         ):
             if key in raw_result:
                 sanitized[key] = raw_result.get(key)
+        produced_files = raw_result.get("produced_files")
+        if isinstance(produced_files, list) and produced_files:
+            trimmed_paths: List[str] = []
+            for item in produced_files[:40]:
+                if isinstance(item, str) and item.strip():
+                    trimmed_paths.append(_trim_text(item.strip().replace("\\", "/"), limit=300))
+            if trimmed_paths:
+                sanitized["produced_files"] = trimmed_paths
         return sanitized
 
     if tool_name == "delegate_task" and isinstance(raw_result, dict):

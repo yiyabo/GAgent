@@ -118,7 +118,10 @@ def test_execute_code_reaches_executor_with_code_and_tool_context(
     tool_context = kwargs.get("tool_context")
     assert isinstance(tool_context, ToolContext)
     assert tool_context.session_id == _SESSION_ID
-    assert tool_context.work_dir.endswith("chat_tools/execute_code")
+    # 2026-09-27: the code-mode kernel cwd is the session workspace root (so
+    # produced files land session-relative for the artifact surfaces), not the
+    # per-tool chat_tools scratch the other generic-execution tools keep.
+    assert tool_context.work_dir.endswith("session_chat-lane-code-tools")
 
     details = step.details
     assert details["tool"] == "execute_code"
@@ -309,6 +312,31 @@ def test_sanitize_execute_code_trims_oversized_output() -> None:
 
     assert sanitized["output"].endswith("...")
     assert len(sanitized["output"]) < 60_000
+
+
+def test_sanitize_execute_code_keeps_produced_files() -> None:
+    # G1 artifact landing: the model must see the session-relative produced
+    # list (guards / inline images / deliverable_submit all key off it).
+    sanitized = sanitize_tool_result(
+        "execute_code",
+        {
+            "success": True,
+            "status": "ok",
+            "output": "saved\n",
+            "produced_files": ["results/chart.png", "results/data.csv", "", 7],
+        },
+    )
+
+    assert sanitized["produced_files"] == ["results/chart.png", "results/data.csv"]
+
+
+def test_sanitize_execute_code_omits_produced_files_when_absent() -> None:
+    sanitized = sanitize_tool_result(
+        "execute_code",
+        {"success": True, "status": "ok", "output": "2\n"},
+    )
+
+    assert "produced_files" not in sanitized
 
 
 def test_sanitize_delegate_task_keeps_bounded_digest() -> None:

@@ -328,25 +328,6 @@
     },
     {
       "function": {
-        "description": "Execute Python code for data analysis, visualization, or computation. This is a DELEGATION to a coding agent that writes and debugs the code, not a local one-liner; which harness serves that delegation is deployment-configured. Errors are returned transparently with fix guidance — you can inspect the generated code and error, then retry with a revised task description. Do NOT delegate: reading a single file; one-off counting, row totals, or statistics over data you already have; arithmetic; drawing a single plot; read-only checking, verification, auditing, or evidence extraction that does not modify files — ordinary tools (document_reader, file_operations, result_interpreter) or about five lines of execute_code answer those in seconds. A delegation pays a full agent run up front (30-60s) before any work starts, so reserve this tool for substantive implementation work.",
-        "name": "code_executor",
-        "parameters": {
-          "properties": {
-            "task": {
-              "description": "Description of the code task to execute.",
-              "type": "string"
-            }
-          },
-          "required": [
-            "task"
-          ],
-          "type": "object"
-        }
-      },
-      "type": "function"
-    },
-    {
-      "function": {
         "description": "LEGACY small local triples graph (limited coverage). Prefer `lightrag_query` for literature/knowledge-graph questions. Use only if LightRAG is unavailable or the user explicitly requests the small local graph.",
         "name": "graph_rag",
         "parameters": {
@@ -1134,25 +1115,6 @@
           "required": [
             "tool_name",
             "operation"
-          ],
-          "type": "object"
-        }
-      },
-      "type": "function"
-    },
-    {
-      "function": {
-        "description": "Execute Python code for data analysis, visualization, or computation. This is a DELEGATION to a coding agent that writes and debugs the code, not a local one-liner; which harness serves that delegation is deployment-configured. Errors are returned transparently with fix guidance — you can inspect the generated code and error, then retry with a revised task description. Do NOT delegate: reading a single file; one-off counting, row totals, or statistics over data you already have; arithmetic; drawing a single plot; read-only checking, verification, auditing, or evidence extraction that does not modify files — ordinary tools (document_reader, file_operations, result_interpreter) or about five lines of execute_code answer those in seconds. A delegation pays a full agent run up front (30-60s) before any work starts, so reserve this tool for substantive implementation work.",
-        "name": "code_executor",
-        "parameters": {
-          "properties": {
-            "task": {
-              "description": "Description of the code task to execute.",
-              "type": "string"
-            }
-          },
-          "required": [
-            "task"
           ],
           "type": "object"
         }

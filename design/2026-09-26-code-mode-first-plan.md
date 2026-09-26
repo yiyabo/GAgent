@@ -1,9 +1,28 @@
 # code-mode 优先：把单脚本留在进程内，把 pi 降级为"按需升级"
 
 日期：2026-09-26
-状态：规划（P0 部分待实施）
+状态：路由翻转已实施（2026-09-27 修订，见文末"实施记录"）
 上游依据：`design/2026-09-24-code-mode.md`（code-mode 权威设计，直接抄 Hermes 的两条契约）
 触发证据：2026-09-26 的 28 任务双臂 A/B（`sample28_split` / `sample28_pi`）
+
+---
+
+## 实施记录（2026-09-27，用户拍板，越过 §0 判定直接执行）
+
+1. **`code_executor` offer 门控化，默认关**（`CODE_EXECUTOR_ENABLED=1` 才出现）：
+   注册表构建期跳过（`tool_schemas._build_registry`）、`get_all_tools()` 不加入、
+   legacy 目录条件化；**handler 不拒**（plan/evals/脚本直调不受影响）。pi 只剩两条
+   合法车道：`delegate_task`（chat 整体目标委派）与 plan 执行（`PLAN_TASK_*` 不变）。
+2. **G1 已落地**：kernel 每 cell 按 mtime 水位线收集 `produced_files`（会话相对路径，
+   排除 scratch 子树）；native 车道 `dispatch.py` 给 execute_code 补了 `work_dir=会话根`
+   （原来为空 → kernel cwd 落到仓库级共享 scratch，产物永远到不了会话面——这是
+   "code-mode 画的图出不来"的根因）；action 车道同步特判；sanitize/compaction 均透传。
+3. **G4(a) 已落地**：`_compact_tool_result_for_llm` 新增 execute_code 分支
+   （保留 status/error/hint/kernel/produced_files/spill 指针，output 4k 头尾截断）。
+4. 路由文案全面改写：imperative 指针从 code_executor 换成 execute_code；
+   delegate_task 描述改为"两车道分工"（THE delegation surface）。
+5. **仍按本文档原计划未动**：G2（装包通道）、G3（长任务快照/后台 cell）、G5（rlimit）。
+   §0 的正式判定（补 pi 强项任务评测）仍然有效，作为 G2/G3 开工前的门槛。
 
 ---
 

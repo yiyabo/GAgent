@@ -556,6 +556,9 @@ def test_visible_mode_delegated_run_reports_progress_into_the_stream(
     so the only ``code_executor`` progress events are the delegation's own.
     """
     monkeypatch.setenv("APP_RUNTIME_ROOT", str(tmp_path / "runtime"))
+    # The delegated-coding lane is offer-gated off by default (2026-09-27);
+    # this test drives it explicitly, so the offer flag goes on.
+    monkeypatch.setenv("CODE_EXECUTOR_ENABLED", "1")
     _patch_runtime(monkeypatch)
     monkeypatch.setattr(chat_routes, "DeepThinkAgent", _tool_calling_agent_class())
 
