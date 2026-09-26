@@ -10,6 +10,7 @@ conversation-quality evaluator, and phase narrator.
 from __future__ import annotations
 
 import json
+import logging
 from types import SimpleNamespace
 from typing import Any, Dict, Iterator, List, Optional
 
@@ -281,6 +282,68 @@ class TestCodegenGoesOutStreaming:
 
         assert response.code == "print(1)"
         assert buffer_calls == []
+
+
+class TestCappedAnswerDiagnostics:
+    """A capped answer must name its caller — the 949-token mystery of §61 D."""
+
+    def _call(self, **overrides: Any) -> None:
+        kwargs: Dict[str, Any] = {
+            "prompt": "Report the annual sales trend in detail.",
+            "messages": None,
+            "payload": {"max_tokens": 16384},
+            "obj": {
+                "choices": [{"finish_reason": "length"}],
+                "usage": {"completion_tokens": 16384},
+            },
+            "provider": "platform",
+            "model": "qwen3.8-flash",
+        }
+        kwargs.update(overrides)
+        llm_mod._warn_if_answer_was_capped(**kwargs)
+
+    def test_names_the_caller_and_the_prompt_head(self, caplog: Any) -> None:
+        with caplog.at_level(logging.WARNING, logger="app.llm"):
+            self._call()
+
+        text = caplog.text
+        assert "hit the output ceiling" in text
+        assert "cap=16384" in text
+        assert "completion=16384" in text
+        # the frame that asked for the call — this is the whole point
+        assert "test_llm_streaming_paths.py" in text
+        assert "Report the annual sales trend" in text
+
+    def test_warns_when_usage_reaches_a_lower_ceiling_too(self, caplog: Any) -> None:
+        with caplog.at_level(logging.WARNING, logger="app.llm"):
+            self._call(
+                payload={"max_tokens": 4096},
+                obj={"choices": [{"finish_reason": None}], "usage": {"completion_tokens": 4096}},
+            )
+
+        assert "hit the output ceiling" in caplog.text
+
+    def test_quiet_on_a_normal_stop(self, caplog: Any) -> None:
+        with caplog.at_level(logging.WARNING, logger="app.llm"):
+            self._call(
+                obj={"choices": [{"finish_reason": "stop"}], "usage": {"completion_tokens": 120}},
+            )
+
+        assert caplog.text == ""
+
+    def test_never_raises_on_junk(self) -> None:
+        llm_mod._warn_if_answer_was_capped(
+            prompt=None, messages=None, payload={}, obj=object(), provider="p", model="m"
+        )
+
+    def test_prompt_head_falls_back_to_the_first_message(self, caplog: Any) -> None:
+        with caplog.at_level(logging.WARNING, logger="app.llm"):
+            self._call(
+                prompt="",
+                messages=[{"role": "system", "content": "You write long reports about sales."}],
+            )
+
+        assert "You write long reports about sales" in caplog.text
 
 
 class TestStreamChatCollectAsync:

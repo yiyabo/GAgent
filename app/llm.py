@@ -1,5 +1,6 @@
 import asyncio
 import contextvars
+import traceback
 import uuid
 import functools
 import json
@@ -1047,6 +1048,14 @@ class LLMClient(LLMProvider):
                         status="ok", latency_ms=(time.perf_counter() - _t0) * 1000,
                         attempts=attempt + 1, usage=usage,
                     )
+                    _warn_if_answer_was_capped(
+                        prompt=prompt,
+                        messages=messages,
+                        payload=payload,
+                        obj=obj,
+                        provider=self.provider,
+                        model=model or self.model,
+                    )
                     return content
                 except Exception:
                     raise RuntimeError(f"Unexpected LLM response: {obj}")
@@ -1329,6 +1338,14 @@ class LLMClient(LLMProvider):
                         method="chat_async", provider=self.provider, model=model or self.model,
                         status="ok", latency_ms=(time.perf_counter() - _t0) * 1000,
                         attempts=attempt + 1, usage=usage,
+                    )
+                    _warn_if_answer_was_capped(
+                        prompt=prompt,
+                        messages=messages,
+                        payload=payload,
+                        obj=obj,
+                        provider=self.provider,
+                        model=model or self.model,
                     )
                     return content
                 except Exception:
@@ -1810,6 +1827,68 @@ class LLMClient(LLMProvider):
             "has_api_key": bool(self.api_key),
             "mock": bool(self.mock),
         }
+
+
+def _warn_if_answer_was_capped(
+    *,
+    prompt: str,
+    messages: Optional[list],
+    payload: Dict[str, Any],
+    obj: Any,
+    provider: str,
+    model: str,
+) -> None:
+    """Name the call site when an answer was cut off at the output ceiling.
+
+    Measured 2026-09-26: nine buffered calls inside one 17-minute window each
+    returned exactly ``max_tokens`` completion tokens after 245-319s, and none
+    of them reached ``llm_usage_log`` — so neither their cost nor the code that
+    issued them was visible. This warning prints the frame that asked for the
+    call plus the head of its prompt, which is what identifies the caller.
+
+    Diagnostics only: it never changes the response and never raises.
+    """
+    try:
+        choices = obj.get("choices") if isinstance(obj, dict) else None
+        finish_reason = ""
+        if choices:
+            finish_reason = str((choices[0] or {}).get("finish_reason") or "")
+        usage = obj.get("usage") if isinstance(obj, dict) else None
+        try:
+            completion = int((usage or {}).get("completion_tokens") or 0)
+        except (TypeError, ValueError):
+            completion = 0
+        try:
+            cap = int(payload.get("max_tokens") or 0)
+        except (TypeError, ValueError):
+            cap = 0
+        if finish_reason != "length" and not (cap and completion >= cap):
+            return
+
+        caller = "unknown"
+        for frame in reversed(traceback.extract_stack()[:-1]):
+            if frame.filename.endswith("llm.py"):
+                continue
+            caller = f"{frame.filename}:{frame.lineno} {frame.name}"
+            break
+
+        head = str(prompt or "")[:120].replace("\n", " ")
+        if not head and messages:
+            first = messages[0] if isinstance(messages[0], dict) else {}
+            head = str(first.get("content") or "")[:120].replace("\n", " ")
+        logger.warning(
+            "LLM answer hit the output ceiling (provider=%s model=%s cap=%s completion=%s "
+            "finish=%s) caller=%s prompt_head=%r",
+            provider,
+            model,
+            cap or "?",
+            completion or "?",
+            finish_reason or "?",
+            caller,
+            head,
+        )
+    except Exception:  # pragma: no cover - diagnostics must never break a call
+        pass
 
 
 _default_client: Optional[LLMClient] = None
