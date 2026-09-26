@@ -141,6 +141,11 @@ def main() -> None:
     runtime_root = work_root / "runtime"
     runtime_root.mkdir(parents=True, exist_ok=True)
     os.environ["APP_RUNTIME_ROOT"] = str(runtime_root)
+    # The one-script delegation guard is a *chat routing* policy: it refuses an
+    # unbound delegation that a short script already answers. This bench makes
+    # unbound calls on purpose (every task here is a short script), so leaving
+    # the guard on would measure the guard instead of the lane under test.
+    os.environ["CODE_EXECUTOR_ONE_SCRIPT_GUARD"] = "0"
     if str(REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(REPO_ROOT))
 

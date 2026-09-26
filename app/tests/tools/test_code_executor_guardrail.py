@@ -940,7 +940,10 @@ def test_code_executor_handler_passes_docker_image_override_to_local_backend(
 
     result = asyncio.run(
         code_executor_module.code_executor_handler(
-            task="generate a plot",
+            # Substantive on purpose: an unbound one-script ask is now refused
+            # by the delegation-size guard, and this test is about the backend
+            # plumbing, not that policy (which has its own test module).
+            task="Debug the failing plot generation step and fix the loader.",
             docker_image="custom:image",
             require_task_context=False,
         )
@@ -953,9 +956,12 @@ def test_code_executor_handler_passes_docker_image_override_to_local_backend(
 @pytest.mark.parametrize(
     "task_text",
     [
-        "Read /TMP_PROJECT/phagescope/gvd_phage_meta_data.tsv and plot completeness.",
-        "Read phagescope/gvd_phage_meta_data.tsv and plot completeness.",
-        "读取 /TMP_PROJECT/phagescope/gvd_phage_meta_data.tsv，统计 Completeness 并绘图。",
+        "Debug the completeness pipeline and fix its loader: "
+        "/TMP_PROJECT/phagescope/gvd_phage_meta_data.tsv drives the failing plot step.",
+        "Debug the completeness pipeline and fix its loader: "
+        "phagescope/gvd_phage_meta_data.tsv drives the failing plot step.",
+        "调试完整性流程并修复其加载器："
+        "/TMP_PROJECT/phagescope/gvd_phage_meta_data.tsv 是绘图报错的那一步。",
     ],
 )
 def test_code_executor_handler_infers_task_referenced_project_dir_for_local_backend(

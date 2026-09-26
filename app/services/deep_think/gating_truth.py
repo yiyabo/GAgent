@@ -73,6 +73,19 @@ def _collect_execute_truth_events(
                 raw_success = payload.get("success")
             success = bool(raw_success) if raw_success is not None else False
 
+            blocked_reason = str(
+                inner.get("blocked_reason") or payload.get("blocked_reason") or ""
+            ).strip().lower()
+            if (
+                blocked_reason == "delegation_too_small"
+                and tool_name in cls._CODE_EXECUTION_TOOLS
+            ):
+                # A one-script delegation refusal is policy, not an execution
+                # attempt: counting it as a failed execution would make the
+                # answer read "the main execution tool failed" for a nudge, and
+                # would burn the failure-signature trap's budget.
+                continue
+
             operation = str(
                 inner.get("operation")
                 or payload.get("operation")

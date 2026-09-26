@@ -38,8 +38,10 @@ from app.config.executor_config import (
 from app.services.foundation.llm_config import is_production, platform_profile
 from app.services.interpreter.runtime_guardrails import (
     ENV_GUARD_BIN as _ENV_GUARD_BIN,
+    ONE_SCRIPT_REFUSAL_MESSAGE as _ONE_SCRIPT_REFUSAL_MESSAGE,
     inject_env_mutation_guard as _inject_env_mutation_guard,
     looks_like_engineering_task as _looks_like_engineering_task,
+    should_refuse_one_script_delegation as _should_refuse_one_script_delegation,
 )
 
 # --- Extracted siblings (facade re-export; design/2026-09-24 §4.1) ---------
@@ -466,6 +468,29 @@ async def code_executor_handler(
                 "error": scope_error,
                 "blocked_by_scope_guardrail": True,
                 "blocked_reason": "missing_atomic_context",
+                "task": task,
+            }
+
+        if _should_refuse_one_script_delegation(
+            task,
+            require_task_context=require_task_context,
+            session_key=str(session_id or ""),
+        ):
+            logger.info(
+                "code_executor refused a one-script delegation (no plan binding): %s",
+                str(task or "")[:160],
+            )
+            return {
+                "success": False,
+                "error": _ONE_SCRIPT_REFUSAL_MESSAGE,
+                "blocked_by_delegation_size_guardrail": True,
+                "blocked_reason": "delegation_too_small",
+                "alternatives": [
+                    "execute_code",
+                    "document_reader",
+                    "file_operations",
+                    "result_interpreter",
+                ],
                 "task": task,
             }
 
