@@ -160,11 +160,19 @@ def test_timeout_kills_whole_process_group_and_reports_state_loss(
     # survivable grandchild still fails the assertion.
     _assert_process_group_member_dead(grandchild_pid)
 
-    # Next call starts a fresh kernel (state did not carry over).
+    # Next call starts a fresh kernel (state did not carry over) — and it must
+    # say so: `state_reset` used to come back False right after a state-losing
+    # kill, contradicting the kernel metadata contract in the tool description.
     followup = _run("print('fresh start')", ctx)
     assert followup["status"] == "success"
     assert followup["kernel"]["reused"] is False
     assert followup["kernel"]["execution_count"] == 1
+    assert followup["kernel"]["state_reset"] is True
+
+    # The marker is consumed: the call after that reuses a live kernel again.
+    settled = _run("print('reused now')", ctx)
+    assert settled["kernel"]["reused"] is True
+    assert settled["kernel"]["state_reset"] is False
 
 
 @pytest.mark.timeout(60)

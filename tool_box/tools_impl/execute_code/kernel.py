@@ -29,8 +29,9 @@ import sys
 import threading
 import time
 import uuid
+from collections import OrderedDict
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from . import config
 from .env_scrub import build_child_env
@@ -279,14 +280,42 @@ def _kill_process_group(proc: subprocess.Popen, escalate: bool = True) -> None:
 _KERNELS: Dict[Tuple, SessionKernel] = {}
 _REGISTRY_LOCK = threading.Lock()
 
+# Keys whose kernel is gone for good: a timeout kill, an LRU/idle retirement, or
+# an explicit reset. The next acquire for such a key starts a fresh kernel, and
+# the result has to say so — `state_reset` used to come back False there, which
+# contradicted the description's promise that kernel metadata always tells the
+# truth (`tool.py`: "the result's kernel metadata ... always tells the truth").
+# Consumed on the next acquire, so this stays bounded by the sessions that have
+# lost state and not yet called back.
+_STALE_KEYS: "OrderedDict[Tuple, None]" = OrderedDict()
+_STALE_KEYS_MAX = 256
+
+
+def _mark_state_lost(keys: "Iterable[Tuple]") -> None:
+    """Caller holds _REGISTRY_LOCK."""
+    for key in keys:
+        _STALE_KEYS[key] = None
+    while len(_STALE_KEYS) > _STALE_KEYS_MAX:
+        _STALE_KEYS.popitem(last=False)
+
+
+def _take_state_lost(key: Tuple) -> bool:
+    """Caller holds _REGISTRY_LOCK."""
+    if key in _STALE_KEYS:
+        del _STALE_KEYS[key]
+        return True
+    return False
+
 
 def _pop_idle_expired(now: float, idle_timeout: float) -> List[SessionKernel]:
     """Pop (caller holds _REGISTRY_LOCK) every idle-expired unattached kernel."""
-    return [
-        _KERNELS.pop(key)
+    expired = [
+        (key, _KERNELS.pop(key))
         for key in list(_KERNELS)
         if _KERNELS[key].attached == 0 and now - _KERNELS[key].last_used > idle_timeout
     ]
+    _mark_state_lost(key for key, _kernel in expired)
+    return [kernel for _key, kernel in expired]
 
 
 def _acquire_kernel(key: Tuple, reset: bool) -> Tuple[SessionKernel, bool]:
@@ -307,6 +336,8 @@ def _acquire_kernel(key: Tuple, reset: bool) -> Tuple[SessionKernel, bool]:
                 expired.append(dropped)
             kernel = None
         if kernel is None:
+            if _take_state_lost(key):
+                state_reset = True
             kernel = _KERNELS[key] = SessionKernel(key)
         kernel.last_used = time.monotonic()
         kernel.attached += 1
@@ -314,7 +345,9 @@ def _acquire_kernel(key: Tuple, reset: bool) -> Tuple[SessionKernel, bool]:
             (other for other in _KERNELS if other != key and _KERNELS[other].attached == 0),
             key=lambda other: _KERNELS[other].last_used,
         )
-        expired.extend(_KERNELS.pop(other) for other in by_age[: max(0, len(_KERNELS) - cap)])
+        evicted_keys = by_age[: max(0, len(_KERNELS) - cap)]
+        _mark_state_lost(evicted_keys)
+        expired.extend(_KERNELS.pop(other) for other in evicted_keys)
     for doomed in expired:
         doomed.teardown()
     return kernel, state_reset
@@ -641,6 +674,9 @@ def _discard_kernel(key: Tuple, kernel: SessionKernel) -> None:
     with _REGISTRY_LOCK:
         if _KERNELS.get(key) is kernel:
             _KERNELS.pop(key, None)
+            # The next call for this key respawns: its state is gone, and the
+            # result must not claim otherwise.
+            _mark_state_lost([key])
     kernel.teardown()
 
 
