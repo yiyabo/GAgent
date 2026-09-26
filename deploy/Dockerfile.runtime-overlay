@@ -1,0 +1,34 @@
+# .8 生产 runtime 镜像的「依赖补丁层」
+#
+# 为什么是"补丁层"而不是完整配方：.8 上跑的生产镜像是 phage-agent-runtime:qwen-v2，
+# 而**它的构建配方不在仓库里**——deploy/Dockerfile 产的是 byoryn 平台那套
+# docker.byoryn.cn/ms/biomedical，属于另一个部署。凭空补写一份配方风险更高
+# （可能丢掉 Node/qwen CLI/pi，直接毁掉委派），所以这里以现成镜像为 base，
+# 只做一件事：把依赖清单里已声明、镜像里却缺失的包装进去。
+#
+# 规矩：任何新依赖先写进 requirements.txt + pyproject.toml（+ uv lock），
+# 再在这里安装一次——清单是真相，这个文件只是让镜像追上清单。
+#
+# 构建（在 .8 上）：
+#   cd /data/phage-agent
+#   docker build -f deploy/Dockerfile.runtime-overlay -t phage-agent-runtime:qwen-v2-openai .
+#
+# 生效方式：docker restart **不会**换镜像，只有容器重建才会。重建前先抄下现状，
+# 再按同配置起新容器（mounts / env / network / restart 一个都不能少）：
+#   docker inspect phage-agent --format '{{json .Mounts}} {{json .Config.Env}} {{json .HostConfig.NetworkMode}} {{json .HostConfig.RestartPolicy}}'
+#
+# BASE 用 digest 而不是 qwen-v2 这个 tag：该 tag 已经被后来的构建推到了子层
+# sha256:447e474c2ea4，而生产容器实际跑的是 sha256:1e4eeec2cd8d（两者不同层）。
+# 钉住 digest 才能保证"补丁层"是打在**正在运行的那个镜像**上。
+ARG BASE_IMAGE=sha256:1e4eeec2cd8d322632ade99511db45fd023a05dc6a9c388836d33705ef9cc5ba
+FROM ${BASE_IMAGE}
+
+# 容器内直连 pypi.org 不通，走清华源（2026-09-26 实测 200）。
+ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+
+# openai：vision_reader 的 PDF file-extract 路径唯一使用者。此前未声明、镜像里也没有，
+# 该路径一直 ImportError。版本锁 1.x：代码用 v1 风格客户端（client.files.create /
+# client.chat.completions.create），且 1.x 复用镜像里已有的 httpx；3.x 会再拉一套
+# httpx2/httpcore2/truststore。
+RUN pip install --no-cache-dir -i ${PIP_INDEX_URL} "openai>=1.40.0,<2.0.0" \
+    && python -c "import openai; print('openai', openai.__version__)"

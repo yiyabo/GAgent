@@ -80,7 +80,13 @@ def test_page_billed_pdf_parse_records_pages_tokens_and_charge(ledger_db: Path) 
     assert row["parent_run_id"] is None
 
 
-def test_failed_parse_still_records_the_page_charge(ledger_db: Path) -> None:
+def test_record_usage_keeps_an_explicit_page_count_on_an_error_row(ledger_db: Path) -> None:
+    """The recorder never second-guesses its caller: a page count stays a page count.
+
+    Whether a page is *chargeable* is the caller's judgement (it depends on
+    whether the document was accepted), so ``record_usage`` records what it is
+    handed and the caller decides.
+    """
     vision_reader.record_usage(
         provider="qwen",
         model="qwen-long",
@@ -162,3 +168,75 @@ def test_count_pdf_pages_is_optional_not_fatal(tmp_path: Path) -> None:
     bogus.write_bytes(b"this is not a pdf")
 
     assert vision_reader.count_pdf_pages(bogus) is None
+
+
+def _stub_openai(monkeypatch, *, upload_error=None, query_error=None, pages: int = 5) -> None:
+    import sys
+
+    class _Files:
+        def create(self, file, purpose):  # noqa: A002 - mirrors the SDK signature
+            if upload_error is not None:
+                raise upload_error
+            return SimpleNamespace(id="file-abc")
+
+    class _Completions:
+        def create(self, **kwargs):
+            if query_error is not None:
+                raise query_error
+            return SimpleNamespace(
+                choices=[SimpleNamespace(message=SimpleNamespace(content="text"))],
+                usage=SimpleNamespace(prompt_tokens=100, completion_tokens=10),
+            )
+
+    class _Client:
+        def __init__(self, **kwargs):
+            self.files = _Files()
+            self.chat = SimpleNamespace(completions=_Completions())
+
+    monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=_Client))
+    monkeypatch.setattr(vision_reader, "is_production", lambda: False)
+    monkeypatch.setattr(vision_reader, "count_pdf_pages", lambda path: pages)
+    monkeypatch.setenv("QWEN_API_KEY", "test-key")
+
+
+async def _paid_pdf_call(tmp_path: Path) -> tuple[dict, Path]:
+    pdf = tmp_path / "paper.pdf"
+    pdf.write_bytes(b"%PDF-1.4\n% placeholder\n")
+    return await vision_reader._read_pdf_with_qwen_long(str(pdf)), pdf
+
+
+async def test_a_failed_upload_is_not_billed(
+    ledger_db: Path, monkeypatch, tmp_path: Path
+) -> None:
+    """Nothing was parsed, so no page charge may appear.
+
+    The platform gateway serves /chat/completions and /embeddings but 404s
+    /files (verified on .8, 2026-09-26), so this is the real production failure
+    for a scanned PDF — and it must not look like a billable parse.
+    """
+    _stub_openai(monkeypatch, upload_error=RuntimeError("404 page not found"))
+
+    result, _ = await _paid_pdf_call(tmp_path)
+
+    assert result["success"] is False
+    assert result["code"] == "pdf_extract_endpoint_unavailable"
+    row = _rows(ledger_db)[0]
+    assert row["call_status"] == "error"
+    assert row["page_count"] is None
+    assert row["estimated_cost"] == pytest.approx(0.0)
+
+
+async def test_a_failed_query_is_billed(
+    ledger_db: Path, monkeypatch, tmp_path: Path
+) -> None:
+    """The document was accepted, so the per-page charge is real even if the read fails."""
+    _stub_openai(monkeypatch, query_error=RuntimeError("upstream 500"))
+
+    result, _ = await _paid_pdf_call(tmp_path)
+
+    assert result["success"] is False
+    assert "code" not in result
+    row = _rows(ledger_db)[0]
+    assert row["call_status"] == "error"
+    assert row["page_count"] == 5
+    assert row["estimated_cost"] == pytest.approx(5 * vision_reader.DEFAULT_PDF_PAGE_CNY)

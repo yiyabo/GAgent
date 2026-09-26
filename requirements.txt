@@ -9,6 +9,11 @@ httpx>=0.23.0
 socksio>=1.0.0
 requests>=2.31.0
 aiohttp>=3.8.0
+# vision_reader 的 PDF file-extract 路径（按页计费）唯一使用者；此前未声明，
+# 容器里没装 → 该路径一直 ImportError（扫描件读不了），2026-09-26 补声明。
+# 锁 1.x：代码用的是 v1 风格客户端（client.files.create / chat.completions.create），
+# 且 1.x 复用镜像里已有的 httpx；3.x 会再拉一套 httpx2/httpcore2/truststore。
+openai>=1.40.0,<2.0.0
 numpy>=1.26.0
 pandas>=2.0.0
 networkx>=3.0.0

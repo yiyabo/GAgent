@@ -495,6 +495,7 @@ async def _read_pdf_with_qwen_long(
     page_count = count_pdf_pages(abs_path)
     
     started = time.perf_counter()
+    uploaded = False
     try:
         client = OpenAI(api_key=api_key, base_url=base_url)
         
@@ -505,6 +506,7 @@ async def _read_pdf_with_qwen_long(
             purpose="file-extract"
         )
         file_id = file_object.id
+        uploaded = True
         logger.info(f"PDF uploaded, file_id: {file_id}")
         
         # Step 2: Query with Qwen-Long
@@ -545,9 +547,11 @@ async def _read_pdf_with_qwen_long(
         }
         
     except Exception as e:
-        logger.error(f"Qwen-Long PDF reading failed: {e}")
-        # The upload is billed per page even when the query then fails, so the
-        # page charge must stay visible on the failure row too.
+        message = str(e)
+        logger.error(f"Qwen-Long PDF reading failed: {message}")
+        # A page is charged when the document is *accepted* for parsing, so the
+        # charge is only real once the upload landed. A failed upload (e.g. a
+        # gateway without the Files API) parsed nothing and must not be billed.
         record_usage(
             provider="qwen",
             model=model,
@@ -556,14 +560,24 @@ async def _read_pdf_with_qwen_long(
             call_purpose=CALL_PURPOSE_PDF_PARSE,
             call_status="error",
             duration_ms=(time.perf_counter() - started) * 1000.0,
-            page_count=page_count,
+            page_count=page_count if uploaded else None,
         )
-        return {
+        result = {
             "success": False,
-            "error": str(e),
+            "error": message,
             "method": "qwen-long",
             "page_count": page_count,
         }
+        if not uploaded:
+            # The endpoint itself is missing, not the document: verified 2026-09-26
+            # that the platform gateway serves /chat/completions and /embeddings but
+            # 404s /files, which is what the Files API needs.
+            result["code"] = (
+                "pdf_extract_endpoint_unavailable"
+                if "404" in message
+                else "pdf_extract_upload_failed"
+            )
+        return result
 
 
 async def vision_reader_handler(
