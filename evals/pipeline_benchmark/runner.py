@@ -197,6 +197,11 @@ def run_one(task_dir: Path, out_dir: Path, env: dict, timeout_scale: float,
         tail = ""
         driver_note = f"driver subprocess timeout after {task_timeout + 120:.0f}s"
     (result_dir / "driver_stdout.txt").write_text(tail[-4000:], encoding="utf-8")
+    # Keep the whole thing too. The tail alone repeatedly left investigations
+    # blind — t29_lit_uniprot_p53 spent 869s in one iteration's tool calls and
+    # all that survived was 24 lines, so the tool-call composition of the slow
+    # iteration was unrecoverable after the fact.
+    (result_dir / "driver_stdout_full.txt").write_text(tail, encoding="utf-8")
 
     if result_json.is_file():
         try:

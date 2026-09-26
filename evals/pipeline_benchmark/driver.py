@@ -138,6 +138,13 @@ def main() -> None:
     out_path = Path(args.out)
 
     _strip_proxy_env()
+    # Surface the executor's concurrency decision in the captured log: whether
+    # two concurrent-safe calls got gathered or were segmented apart is the one
+    # thing that separates a slow-but-parallel iteration from a serialised one,
+    # and async_tool_executor logs it at DEBUG only.
+    import logging
+
+    logging.getLogger("app.services.execution.async_tool_executor").setLevel(logging.DEBUG)
     runtime_root = work_root / "runtime"
     runtime_root.mkdir(parents=True, exist_ok=True)
     os.environ["APP_RUNTIME_ROOT"] = str(runtime_root)
