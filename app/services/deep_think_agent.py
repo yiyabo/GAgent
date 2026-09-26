@@ -1555,6 +1555,12 @@ class DeepThinkAgent:
     ) -> Optional[Dict[str, Any]]:
         return _dispatch._compact_file_operations_result_for_llm(cls, result)
 
+    @classmethod
+    def _compact_web_search_result_for_llm(
+        cls, result: Any
+    ) -> Optional[Dict[str, Any]]:
+        return _dispatch._compact_web_search_result_for_llm(cls, result)
+
     @staticmethod
     def _append_tool_cycle_messages(
         *,

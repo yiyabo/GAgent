@@ -590,12 +590,15 @@ def _build_tool_result_text_for_llm(
         "error": error,
     }
     raw_text = json.dumps(payload, ensure_ascii=False, default=str)
-    if len(raw_text) <= cls.MAX_TOOL_RESULT_TEXT_CHARS:
+    if (
+        len(raw_text) <= cls.MAX_TOOL_RESULT_TEXT_CHARS
+        and str(tool_name or "").strip().lower() not in _ALWAYS_COMPACT_TOOLS
+    ):
         return raw_text
 
     compact_result = cls._compact_tool_result_for_llm(tool_name, result)
     if compact_result is None:
-        return raw_text
+        return _clip_tool_result_text(raw_text)
 
     compact_payload = {
         "success": success,
@@ -616,13 +619,82 @@ def _build_tool_result_text_for_llm(
 def _compact_tool_result_for_llm(
     cls: Any, tool_name: str, result: Any
 ) -> Optional[Dict[str, Any]]:
-    if str(tool_name or "").strip().lower() == "file_operations":
+    name = str(tool_name or "").strip().lower()
+    if name == "file_operations":
         return cls._compact_file_operations_result_for_llm(result)
-    if str(tool_name or "").strip().lower() == "phagescope_research":
+    if name == "phagescope_research":
         return cls._compact_phagescope_research_result_for_llm(result)
-    if str(tool_name or "").strip().lower() == "code_executor":
+    if name == "code_executor":
         return cls._compact_code_executor_result_for_llm(result)
+    if name == "web_search":
+        return cls._compact_web_search_result_for_llm(result)
     return None
+
+
+_WEB_SEARCH_ANSWER_CHARS = 4_000
+_WEB_SEARCH_SNIPPET_CHARS = 300
+_CLIPPED_TOOL_RESULT_CHARS = 6_000
+# A search result is ~9.6k chars, i.e. under MAX_TOOL_RESULT_TEXT_CHARS, so the
+# size gate alone would never compact it even though it is re-sent on every
+# later iteration. Compact these regardless of size.
+_ALWAYS_COMPACT_TOOLS = frozenset({"web_search"})
+
+
+def _compact_web_search_result_for_llm(
+    cls: Any, result: Any
+) -> Optional[Dict[str, Any]]:
+    """Trim a search result before it enters the prompt.
+
+    Measured 2026-09-27: one result is ~9.6k chars (~3.2k tokens) — under the
+    12k cap, so with no compactor it entered the context whole and was re-sent
+    on every later iteration. The answer is the useful part; the raw provider
+    envelope is not.
+    """
+    if not isinstance(result, dict):
+        return None
+    compact: Dict[str, Any] = {
+        "tool": "web_search",
+        "query": result.get("query"),
+        "provider": result.get("provider"),
+        "success": bool(result.get("success", True)),
+        "llm_compacted": True,
+    }
+    answer = result.get("answer") or result.get("response")
+    if isinstance(answer, str) and answer.strip():
+        compact["answer"] = answer[:_WEB_SEARCH_ANSWER_CHARS]
+        if len(answer) > _WEB_SEARCH_ANSWER_CHARS:
+            compact["answer_truncated"] = True
+    items = result.get("results")
+    if isinstance(items, list) and items:
+        compact["results"] = [
+            {
+                "title": str(item.get("title") or "")[:200],
+                "url": str(item.get("url") or ""),
+                "snippet": str(item.get("snippet") or "")[:_WEB_SEARCH_SNIPPET_CHARS],
+            }
+            for item in items[:5]
+            if isinstance(item, dict)
+        ]
+    for key in ("total_results", "fallback_from", "cache_hit", "error"):
+        if result.get(key) is not None:
+            compact[key] = result.get(key)
+    return compact
+
+
+def _clip_tool_result_text(raw_text: str) -> str:
+    """Bound a tool result that has no dedicated compactor.
+
+    ``_compact_tool_result_for_llm`` returning ``None`` used to hand the raw
+    text through no matter how large it was, so any tool without a branch could
+    put an unbounded blob in the prompt. Clip it and say so.
+    """
+    if len(raw_text) <= _CLIPPED_TOOL_RESULT_CHARS:
+        return raw_text
+    head = raw_text[: _CLIPPED_TOOL_RESULT_CHARS - 160]
+    return (
+        f"{head}…[clipped from {len(raw_text)} chars; "
+        "narrow the request or read the file for the rest]"
+    )
 
 
 def _compact_code_executor_result_for_llm(
