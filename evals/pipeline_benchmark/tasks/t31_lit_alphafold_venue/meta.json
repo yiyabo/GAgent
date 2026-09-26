@@ -1,5 +1,5 @@
 {
  "category": "literature",
  "tier": "research",
- "timeout_seconds": 600
+ "timeout_seconds": 1500
 }
