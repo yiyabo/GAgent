@@ -28,6 +28,7 @@ from app.config.executor_config import (
     get_executor_settings,
     resolve_code_execution_docker_image,
 )
+from app.llm import stream_chat_collect
 from app.services.llm.llm_service import LLMService, get_llm_service
 from app.services.skills import SkillsLoader, get_skills_loader
 from .code_execution import execute_code_locally, CodeExecutionOutcome
@@ -536,7 +537,7 @@ class TaskExecutor:
         full_prompt = f"{TASK_TYPE_SYSTEM_PROMPT}\n\n{user_prompt}"
 
         try:
-            response = self.llm_service.chat(prompt=full_prompt)
+            response = stream_chat_collect(self.llm_service, full_prompt)
             response_text = response.strip()
 
             # Try to parse JSON.
@@ -916,7 +917,7 @@ class TaskExecutor:
         if skill_hints:
             prompt += f"\n{skill_hints.strip()}\n"
 
-        response = self.llm_service.chat(prompt=prompt)
+        response = stream_chat_collect(self.llm_service, prompt)
         return TaskExecutionResult(
             task_type=TaskType.TEXT_ONLY,
             success=True,

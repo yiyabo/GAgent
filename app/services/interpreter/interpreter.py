@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from app.database import init_db
+from app.llm import stream_chat_collect
 from app.repository.plan_repository import PlanRepository
 from app.services.plans.plan_decomposer import PlanDecomposer
 from app.services.plans.tree_simplifier import TreeSimplifier
@@ -129,7 +130,7 @@ def run_analysis(
         data_info = "\n\n".join(data_info_parts)
 
         experiment_prompt = f"{EXPERIMENT_DESIGN_SYSTEM}\n\n{EXPERIMENT_DESIGN_USER.format(description=description, data_info=data_info)}"
-        experiment_design = llm_service.chat(prompt=experiment_prompt)
+        experiment_design = stream_chat_collect(llm_service, experiment_prompt)
 
         enhanced_description = f"""{description}
 
@@ -319,7 +320,7 @@ async def run_analysis_async(
         data_info = "\n\n".join(data_info_parts)
 
         experiment_prompt = f"{EXPERIMENT_DESIGN_SYSTEM}\n\n{EXPERIMENT_DESIGN_USER.format(description=description, data_info=data_info)}"
-        experiment_design = llm_service.chat(prompt=experiment_prompt)
+        experiment_design = stream_chat_collect(llm_service, experiment_prompt)
 
         enhanced_description = f"""{description}
 

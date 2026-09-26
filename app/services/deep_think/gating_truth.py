@@ -22,6 +22,7 @@ from app.services.deep_think.gating_finalize import (
     _looks_like_global_success_claim_text,
 )
 from app.services.deep_think.models import ThinkingStep
+from app.services.deep_think.text_utils import _ensure_inline_images
 from app.services.response_style import sanitize_professional_response_text
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -225,6 +226,39 @@ def _build_execute_failure_truth_barrier(
     )
 
 
+def _append_produced_image_section(
+    agent: "DeepThinkAgent",
+    text: str,
+    *,
+    user_query: str = "",
+) -> str:
+    """Keep already-produced figures reachable when a run ends on a failure.
+
+    The barrier replaces the answer with an execution-failed message. Without
+    this, figures that *do* exist on disk disappear from the answer entirely
+    (production 2026-09-26: a four-panel CJK chart had been written to
+    ``deliverables/`` before the code generator died on a gateway 504, and the
+    final answer neither showed nor mentioned it). The section is explicitly
+    marked unverified so the barrier's honesty contract stays intact.
+    """
+    relpaths = [str(path) for path in (agent._collect_inline_image_relpaths() or [])]
+    if not relpaths:
+        return text
+    language = _dta().detect_reasoning_language(user_query or "")
+    listing = "\n".join(f"- {rel}" for rel in relpaths)
+    if language == "zh":
+        note = (
+            "本轮执行虽被上述错误中断，但已产出以下图像文件（未经核验，仅供参考）：\n"
+            f"{listing}"
+        )
+    else:
+        note = (
+            "Execution was interrupted by the error above, but these image files were "
+            f"produced (not verified, use with caution):\n{listing}"
+        )
+    return _ensure_inline_images(f"{text}\n\n{note}", relpaths)
+
+
 def _apply_execute_failure_truth_barrier(
     agent: "DeepThinkAgent",
     answer: str,
@@ -235,6 +269,9 @@ def _apply_execute_failure_truth_barrier(
     text = str(answer or "").strip()
     if not text or not agent._is_execute_task_request():
         return text
+
+    def _barrier(payload: str) -> str:
+        return _append_produced_image_section(agent, payload, user_query=user_query)
 
     events = agent._collect_execute_truth_events(steps)
     failed_execution_events = [
@@ -273,7 +310,7 @@ def _apply_execute_failure_truth_barrier(
             failed_event=last_failure,
             profile_text=str(profile_recovery.get("summary_text") or "").strip(),
         )
-        return barrier
+        return _barrier(barrier)
 
     # Check if the model's answer contains substantive content from
     # successful read tools (document_reader, file_operations, etc.).
@@ -282,9 +319,11 @@ def _apply_execute_failure_truth_barrier(
     has_substantive_answer = len(text) > 200
     if has_substantive_answer:
         if _looks_like_completion_claim_text(text):
-            return agent._build_execute_failure_truth_barrier(
-                user_query=user_query,
-                failed_event=last_failure,
+            return _barrier(
+                agent._build_execute_failure_truth_barrier(
+                    user_query=user_query,
+                    failed_event=last_failure,
+                )
             )
         warning = agent._build_execute_failure_warning(
             user_query=user_query,
@@ -292,9 +331,11 @@ def _apply_execute_failure_truth_barrier(
         )
         return f"{warning}\n\n---\n\n{text}"
 
-    return agent._build_execute_failure_truth_barrier(
-        user_query=user_query,
-        failed_event=last_failure,
+    return _barrier(
+        agent._build_execute_failure_truth_barrier(
+            user_query=user_query,
+            failed_event=last_failure,
+        )
     )
 
 

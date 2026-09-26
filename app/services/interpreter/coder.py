@@ -6,6 +6,8 @@ from typing import Optional, List
 
 from pydantic import BaseModel, Field
 
+from app.llm import stream_chat_collect
+
 from .metadata import DatasetMetadata
 from .prompts.coder_prompt import (
     CODER_SYSTEM_PROMPT,
@@ -16,8 +18,10 @@ from .prompts.coder_prompt import (
 logger = logging.getLogger(__name__)
 
 _CODEGEN_REQUEST_TIMEOUT_SEC = 180
-_CODEGEN_SERVICE_ATTEMPTS = 2
-_CODEGEN_CLIENT_RETRIES = 0
+# Attempt budget for one code-generation call. The retry now lives in the
+# client's streaming path (the only level that can retry before response
+# bytes flow), so ``retries`` below is attempts - 1.
+_CODEGEN_ATTEMPTS = 2
 
 
 class CodeTaskResponse(BaseModel):
@@ -107,15 +111,18 @@ class CodeGenerator:
         return "\n\n".join(datasets_info)
 
     def _chat_with_codegen_budget(self, prompt: str) -> str:
-        kwargs = {
-            "timeout": _CODEGEN_REQUEST_TIMEOUT_SEC,
-            "retry_attempts": _CODEGEN_SERVICE_ATTEMPTS,
-            "retries": _CODEGEN_CLIENT_RETRIES,
-        }
-        try:
-            return self.llm.chat(prompt=prompt, **kwargs)
-        except TypeError:
-            return self.llm.chat(prompt=prompt)
+        """Generate code over SSE — buffered generation gets cut with 504s.
+
+        A buffered call stays silent until the whole completion is ready, so
+        the upstream gateway kills long generations; streamed ones keep bytes
+        flowing and survive (``app.llm.stream_chat_collect``).
+        """
+        return stream_chat_collect(
+            self.llm,
+            prompt,
+            timeout=_CODEGEN_REQUEST_TIMEOUT_SEC,
+            retries=_CODEGEN_ATTEMPTS - 1,
+        )
 
     def generate(
         self,

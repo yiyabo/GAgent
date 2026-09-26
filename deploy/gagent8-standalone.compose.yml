@@ -1,0 +1,72 @@
+# GAgent standalone shape — the ad-hoc `docker run` that .8 has been running.
+#
+# Provenance: recovered 2026-09-26 from the live container
+# (`docker inspect phage-agent`) so the configuration stops existing only
+# inside the container. This is NOT the byoryn platform deployment — that one
+# is `deploy/docker-compose.yml` (image `docker.byoryn.cn/ms/biomedical`,
+# port 9000, named volumes, external network).
+#
+# What this file reproduces, exactly:
+#   image            phage-agent-runtime:qwen-v2-openai  (built by
+#                    deploy/Dockerfile.runtime-overlay on top of the base image)
+#   command          python -m uvicorn app.main:app --host 0.0.0.0 --port 40003 --no-access-log
+#   network          host            (so the app owns host :40003)
+#   restart          unless-stopped
+#   working dir      /app
+#   mounts           /data/phage-agent -> /app            rw (source bind: no rebuild per commit)
+#                    /data             -> /data           ro
+#                    /data/phage-agent/runtime -> same    rw (executor artifact root; a missing
+#                                                             mount here used to create a phantom
+#                                                             tree on the host, see LOCAL_INFRA §56)
+#                    /var/run/docker.sock -> same         rw (DooD: the local lane runs its code
+#                                                             in gagent-python-runtime:latest)
+#   environment      none in the container config — every app setting (API keys
+#                    included) comes from /data/phage-agent/.env, loaded by
+#                    dotenv when `app.services.foundation.settings` is imported.
+#                    Do NOT add secrets here.
+#
+# Host prerequisite (not container config, so it lives on the host):
+#   ln -s /data/phage-agent /app    — keeps the app's /app/... paths resolvable
+#                                     on the host for the docker daemon's bind
+#                                     sources. Documented in LOCAL_INFRA §56.
+#
+# Apply / verify on .8:
+#   docker compose -f deploy/gagent8-standalone.compose.yml config   # syntax + resolved config
+#   docker compose -f deploy/gagent8-standalone.compose.yml up -d    # recreates phage-agent
+# Rollback if the recreate goes wrong: the pre-change container config is kept
+# outside the repo at /data/gagent-git/container-configs/, and the equivalent
+# plain command is `docker run -d --name phage-agent --restart unless-stopped
+# --network host -w /app -v /data/phage-agent:/app -v /data:/data:ro
+# -v /var/run/docker.sock:/var/run/docker.sock
+# -v /data/phage-agent/runtime:/data/phage-agent/runtime
+# phage-agent-runtime:qwen-v2-openai python -m uvicorn app.main:app
+# --host 0.0.0.0 --port 40003 --no-access-log`.
+services:
+  phage-agent:
+    image: phage-agent-runtime:qwen-v2-openai
+    container_name: phage-agent
+    hostname: tds-iprivacy
+    working_dir: /app
+    network_mode: host
+    restart: unless-stopped
+    command:
+      - python
+      - -m
+      - uvicorn
+      - app.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "40003"
+      - --no-access-log
+    environment:
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - /data/phage-agent:/app
+      - /data:/data:ro
+      - /data/phage-agent/runtime:/data/phage-agent/runtime
+      - /var/run/docker.sock:/var/run/docker.sock
+    # No healthcheck in the live container; add one only together with a
+    # deliberate change, or `docker compose up` will keep reporting "starting".
+    logging:
+      driver: json-file

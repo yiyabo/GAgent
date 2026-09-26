@@ -41,6 +41,40 @@ _ABSOLUTE_PATH_TOKEN_RE = re.compile(
     r"(?<![\w.-])/(?:[^\s'\"`<>\(\)\[\]\{\},;:，。；：！？、（）【】《》「」『』“”‘’])+"
 )
 _TRAILING_PATH_PUNCTUATION = ".,;:!?)]}'\"，。；：！？、）】》」』”’"
+# A URL is not a filesystem path. `https://github.com/...` used to be read as
+# the path `//github.com/...`, so a task that merely *mentioned* a download URL
+# was refused with BLOCKED_DEPENDENCY naming a path nobody asked for.
+_URL_SPAN_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.\-]*://[^\s'\"`<>()\[\]{}]+")
+# Roots the executor's own OS owns (fonts, package trees, scratch): the agent
+# container need not mirror them, so their absence here is not a missing input.
+# Data roots (/app, /data, /home, /mnt, /srv) deliberately stay out of this set.
+_EXECUTOR_OWNED_PATH_ROOTS = (
+    "/usr",
+    "/etc",
+    "/opt",
+    "/bin",
+    "/sbin",
+    "/lib",
+    "/lib32",
+    "/lib64",
+    "/var",
+    "/tmp",
+    "/dev",
+    "/proc",
+    "/sys",
+    "/run",
+    "/snap",
+)
+
+
+def _is_executor_owned_path(path: str) -> bool:
+    token = str(path or "").strip()
+    if not token:
+        return False
+    for root in _EXECUTOR_OWNED_PATH_ROOTS:
+        if token == root or token.startswith(f"{root}/"):
+            return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -385,7 +419,15 @@ def _find_missing_absolute_input_paths(
     *,
     writable_roots: Sequence[str] = (),
 ) -> List[str]:
-    text = str(task_description or "")
+    """Absolute paths in *task_description* that look like inputs but are absent.
+
+    Only paths the task is expected to *read* count. Download URLs and
+    executor-owned OS roots are not inputs — refusing on those blocked the
+    local lane twice in one benchmark round (production 2026-09-26: a plotting
+    task naming ``https://github.com/googlefonts/noto-cjk/...`` and
+    ``/usr/share/fonts`` was refused before any code ran).
+    """
+    text = _URL_SPAN_RE.sub(" ", str(task_description or ""))
     if not text.strip():
         return []
 
@@ -396,6 +438,8 @@ def _find_missing_absolute_input_paths(
         if not token or token in seen:
             continue
         seen.add(token)
+        if _is_executor_owned_path(token):
+            continue
         candidate = Path(token).expanduser()
         if candidate.exists():
             continue

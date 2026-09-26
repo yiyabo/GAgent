@@ -17,7 +17,7 @@ import httpx
 import pytest
 
 import app.llm as llm_mod
-from app.llm import LLMClient, stream_chat_collect_async
+from app.llm import LLMClient, stream_chat_collect, stream_chat_collect_async
 
 
 @pytest.fixture(autouse=True)
@@ -130,6 +130,91 @@ class TestLLMClientStreamChat:
             "".join(_client().stream_chat("ping", retries=3))
         # No retry once deltas were emitted — retrying would duplicate content.
         assert len(fake.calls) == 1
+
+
+class TestStreamChatCollect:
+    """Sync sibling used by the code generator and other buffered call sites."""
+
+    def test_prefers_streaming_and_joins_deltas(self) -> None:
+        seen_kwargs: List[Dict[str, Any]] = []
+
+        class _StreamingClient:
+            def stream_chat(self, prompt: str, **kwargs: Any) -> Iterator[str]:
+                seen_kwargs.append(kwargs)
+                yield "a"
+                yield "b"
+
+            def chat(self, prompt: str, **kwargs: Any) -> str:  # pragma: no cover
+                raise AssertionError("streaming client must not be buffered-called")
+
+        assert stream_chat_collect(_StreamingClient(), "p", retries=1) == "ab"
+        assert seen_kwargs == [{"retries": 1}]
+
+    def test_falls_back_when_client_cannot_stream(self) -> None:
+        class _NoStream:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def chat(self, prompt: str, **kwargs: Any) -> str:
+                self.calls += 1
+                return "buffered"
+
+        client = _NoStream()
+        assert stream_chat_collect(client, "p") == "buffered"
+        assert client.calls == 1
+
+    def test_falls_back_when_stream_rejects_kwargs(self) -> None:
+        class _StrictStream:
+            def stream_chat(self, prompt: str) -> Iterator[str]:
+                yield "no-kwargs"
+
+            def chat(self, prompt: str, **kwargs: Any) -> str:  # pragma: no cover
+                raise AssertionError("buffered call not expected")
+
+        assert stream_chat_collect(_StrictStream(), "p", retries=1) == "no-kwargs"
+
+    def test_falls_back_when_stream_is_empty(self) -> None:
+        """A stream error that yields nothing must not become an empty answer."""
+
+        class _BrokenStream:
+            def stream_chat(self, prompt: str, **kwargs: Any) -> Iterator[str]:
+                raise RuntimeError("LLM HTTP 504: Gateway Time-out")
+                yield ""  # pragma: no cover - generator marker
+
+            def chat(self, prompt: str, **kwargs: Any) -> str:
+                return "buffered after empty stream"
+
+        assert stream_chat_collect(_BrokenStream(), "p") == "buffered after empty stream"
+
+    def test_raises_when_client_has_neither_path(self) -> None:
+        class _Dead:
+            pass
+
+        with pytest.raises(RuntimeError):
+            stream_chat_collect(_Dead(), "p")
+
+
+class TestCodegenGoesOutStreaming:
+    """The local lane's code generator must not sit on a buffered call."""
+
+    def test_code_generator_prefers_stream(self) -> None:
+        from app.services.interpreter.coder import CodeGenerator
+
+        buffer_calls: List[str] = []
+
+        class _StreamingLLM:
+            def stream_chat(self, prompt: str, **kwargs: Any) -> Iterator[str]:
+                yield '{"code": "print(1)", "description": "ok"}'
+
+            def chat(self, prompt: str, **kwargs: Any) -> str:
+                buffer_calls.append(prompt)
+                return '{"code": "print(2)", "description": "buffered"}'
+
+        generator = CodeGenerator(llm_service=_StreamingLLM())
+        response = generator.generate([], "t", "d")
+
+        assert response.code == "print(1)"
+        assert buffer_calls == []
 
 
 class TestStreamChatCollectAsync:

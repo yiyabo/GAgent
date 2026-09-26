@@ -1793,6 +1793,43 @@ class LLMClient(LLMProvider):
 _default_client: Optional[LLMClient] = None
 
 
+def stream_chat_collect(client: Any, prompt: str, **kwargs: Any) -> str:
+    """Collect a complete chat response through the client's streaming API.
+
+    Synchronous sibling of :func:`stream_chat_collect_async`, for the
+    code-generation / experiment-design calls that used to run buffered: a
+    buffered call stays silent until the whole generation is ready, so the
+    upstream gateway cuts long ones with 504s (production 2026-09-26: the
+    local lane's code generator died twice on a 504 and the run degraded into
+    an abdication answer even though the figure had already been produced).
+    Falls back to ``chat`` when the client cannot stream, when it rejects the
+    extra kwargs, or when the stream came back empty.
+    """
+    stream_fn = getattr(client, "stream_chat", None)
+    if callable(stream_fn):
+        for attempt_kwargs in (kwargs, {}):
+            try:
+                text = "".join(
+                    str(chunk) for chunk in stream_fn(prompt, **attempt_kwargs) if chunk
+                )
+            except TypeError:
+                # Implementation that does not accept these kwargs.
+                continue
+            except Exception as exc:
+                logger.warning("Streaming chat failed, falling back to buffered: %s", exc)
+                text = ""
+            if text.strip():
+                return text
+            break
+    chat_fn = getattr(client, "chat", None)
+    if not callable(chat_fn):
+        raise RuntimeError("LLM client supports neither stream_chat nor chat")
+    try:
+        return chat_fn(prompt, **kwargs)
+    except TypeError:
+        return chat_fn(prompt)
+
+
 async def stream_chat_collect_async(client: Any, prompt: str, **kwargs: Any) -> str:
     """Collect a complete chat response through the client's streaming API.
 

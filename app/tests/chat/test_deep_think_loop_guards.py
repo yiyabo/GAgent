@@ -10,6 +10,7 @@ production code deliberately ignores /tmp/ paths as scratch.
 from __future__ import annotations
 
 import asyncio
+import json
 import shutil
 from pathlib import Path
 
@@ -435,6 +436,92 @@ class TestStripRuntimeAbsolutePaths:
         clean = "deliverables/latest/image_tabular/x.png 已发布"
         assert _strip_runtime_absolute_paths(clean) == clean
 
+
+    def test_execute_failure_barrier_keeps_produced_images_reachable(self, monkeypatch) -> None:
+        """A run that dies *after* writing a figure must still show that figure.
+
+        Production 2026-09-26: the four-panel CJK chart was on disk in
+        deliverables/, the code generator then hit a gateway 504, and the
+        failure barrier replaced the whole answer with an abdication message
+        that neither showed nor named the figure.
+        """
+        from app.services.deep_think.models import ThinkingStep
+
+        sandbox = _SANDBOX.resolve()
+        deliv_dir = sandbox / "testsess" / "deliverables"
+        deliv_dir.mkdir(parents=True, exist_ok=True)
+        png = deliv_dir / "multi_panel.png"
+        png.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 64)
+        monkeypatch.setenv("APP_RUNTIME_ROOT", str(sandbox))
+        try:
+            agent = DeepThinkAgent(
+                llm_client=_LoopLLM([]),
+                available_tools=["code_executor"],
+                tool_executor=_noop_tool_executor,
+                max_iterations=1,
+                request_profile={
+                    "session_id": "testsess",
+                    "request_tier": "execute",
+                    "intent_type": "execute_task",
+                },
+            )
+            agent._produced_image_paths = [str(png)]
+            step = ThinkingStep(
+                iteration=1,
+                thought="",
+                action='{"tool":"code_executor","params":{"task":"plot four panels"}}',
+                action_result=json.dumps(
+                    {
+                        "success": False,
+                        "error": "LLM chat failed after 2 attempts: LLM HTTP 504",
+                    }
+                ),
+                self_correction=None,
+            )
+
+            answer = agent._apply_execute_failure_truth_barrier(
+                "已生成四联图。",
+                user_query="画四联图并内联展示",
+                steps=[step],
+            )
+
+            assert "执行工具未成功完成" in answer
+            assert "![multi_panel.png](deliverables/multi_panel.png)" in answer
+            # The barrier's honesty contract stays: figures ride along as
+            # explicitly unverified, never as evidence the run succeeded.
+            assert "未经核验" in answer
+        finally:
+            shutil.rmtree(_SANDBOX, ignore_errors=True)
+
+    def test_execute_failure_barrier_unchanged_without_produced_images(self) -> None:
+        """No produced images → the barrier text is byte-for-byte as before."""
+        from app.services.deep_think.models import ThinkingStep
+
+        agent = DeepThinkAgent(
+            llm_client=_LoopLLM([]),
+            available_tools=["code_executor"],
+            tool_executor=_noop_tool_executor,
+            max_iterations=1,
+            request_profile={
+                "session_id": "testsess",
+                "request_tier": "execute",
+                "intent_type": "execute_task",
+            },
+        )
+        step = ThinkingStep(
+            iteration=1,
+            thought="",
+            action='{"tool":"code_executor","params":{"task":"run"}}',
+            action_result=json.dumps({"success": False, "error": "boom"}),
+            self_correction=None,
+        )
+
+        answer = agent._apply_execute_failure_truth_barrier(
+            "已完成。", user_query="跑一下", steps=[step]
+        )
+
+        assert "执行工具未成功完成" in answer
+        assert "![" not in answer
 
     def test_collect_relpaths_from_guard_mirror(self, monkeypatch) -> None:
         sandbox = _SANDBOX.resolve()

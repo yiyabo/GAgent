@@ -56,3 +56,56 @@ def test_a_genuine_missing_input_is_still_blocked() -> None:
     )
 
     assert missing == ["/nonexistent/input/orders2.csv"]
+
+
+# ---------------------------------------------------------------------------
+# False positives that refused real tasks (production 2026-09-26)
+# ---------------------------------------------------------------------------
+
+_NOTO_CJK_TASK = """
+绘制四联图（含中文标签）。matplotlib 默认字体没有中文，先用本机已有字体；
+没有就下载：https://github.com/googlefonts/noto-cjk/raw/main/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf
+镜像地址 https://raw.githubusercontent.com/googlefonts/noto-cjk/main/Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf
+也可以先探测 /usr/share/fonts 与 /etc/fonts/conf.d 是否存在可用字体。
+"""
+
+
+def test_urls_are_not_filesystem_paths() -> None:
+    """A download URL used to be read as the path ``//github.com/...``."""
+    missing = _find_missing_absolute_input_paths(
+        _NOTO_CJK_TASK, writable_roots=(_WORK_DIR,)
+    )
+
+    assert [p for p in missing if "github" in p or "http" in p] == []
+
+
+def test_executor_owned_system_roots_do_not_block() -> None:
+    """``/usr/share/fonts`` lives in the executor image, not in the agent."""
+    missing = _find_missing_absolute_input_paths(
+        "register the font found under /usr/share/fonts/truetype and /tmp/cc_scratch",
+        writable_roots=(_WORK_DIR,),
+    )
+
+    assert missing == []
+
+
+def test_the_noto_task_runs_instead_of_being_refused() -> None:
+    """End-to-end shape of the regression: a plotting task must not be refused."""
+    missing = _find_missing_absolute_input_paths(
+        _NOTO_CJK_TASK, writable_roots=(_WORK_DIR,)
+    )
+
+    assert missing == [], f"the local lane would block on: {missing}"
+
+
+def test_data_roots_are_still_scanned() -> None:
+    """System roots are exempt; where real inputs live is not."""
+    missing = _find_missing_absolute_input_paths(
+        "join /home/data/orders.csv with /app/data/phage-agent/data/uploads/x.csv",
+        writable_roots=(_WORK_DIR,),
+    )
+
+    assert missing == [
+        "/home/data/orders.csv",
+        "/app/data/phage-agent/data/uploads/x.csv",
+    ]
