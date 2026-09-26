@@ -156,20 +156,69 @@ def _extract_scientific_figure_inline_rows(
     return rows
 
 
+def _web_search_query_from_params(params: Dict[str, Any]) -> str:
+    """Best-effort recovery of the search text from whatever shape arrived.
+
+    The native schema offers `query` and invites `queries` for broad comparison
+    questions, so a request that only carries the plural is legitimate and must
+    not be rejected. `_raw` is the tool call's unparsed argument string (see
+    ``app/llm.py``): a query can be recovered from it when the JSON never
+    parsed. Anything else falls back to the longest string value present, since
+    a slightly-off search beats a hard dead end.
+    """
+    query = params.get("query")
+    if isinstance(query, str) and query.strip():
+        return query.strip()
+
+    queries = params.get("queries")
+    if isinstance(queries, (list, tuple)):
+        joined = " ".join(str(item).strip() for item in queries if str(item).strip())
+        if joined:
+            return joined[:400]
+    elif isinstance(queries, str) and queries.strip():
+        return queries.strip()[:400]
+
+    raw = params.get("_raw")
+    if isinstance(raw, str) and raw.strip():
+        try:
+            import json as _json
+
+            reparsed = _json.loads(raw)
+        except Exception:
+            reparsed = None
+        if isinstance(reparsed, dict):
+            recovered = _web_search_query_from_params(reparsed)
+            if recovered:
+                return recovered
+
+    candidates = [
+        str(value).strip()
+        for key, value in params.items()
+        if key not in {"provider", "max_results", "query", "queries", "_raw"}
+        and isinstance(value, str)
+        and value.strip()
+    ]
+    return max(candidates, key=len)[:400] if candidates else ""
+
+
 def _normalize_web_search_params(
     agent: Any,
     action: LLMAction,
     tool_name: str,
     params: Dict[str, Any],
 ) -> Any:
-    query = params.get("query")
-    if not isinstance(query, str) or not query.strip():
+    query = _web_search_query_from_params(params)
+    if not query:
         return AgentStep(
             action=action,
             success=False,
-            message="web_search requires a non-empty query.",
+            message=(
+                "web_search requires a non-empty query. "
+                f"Received parameters: {sorted(params.keys()) or 'none'}."
+            ),
             details={"error": "missing_query", "tool": tool_name},
         )
+    params["query"] = query
 
     provider_value = params.get("provider")
     normalized_provider = _normalize_search_provider(provider_value)

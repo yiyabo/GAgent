@@ -346,6 +346,64 @@ class TestCappedAnswerDiagnostics:
         assert "You write long reports about sales" in caplog.text
 
 
+class TestNativeToolCallAccumulation:
+    """Argument fragments must survive the streaming assembly.
+
+    Measured 2026-09-26: `web_search` reached the chat lane with empty
+    parameters three times in one run, and the model diagnosed it itself
+    ("query 参数连续丢失"). One way that happens is an upstream handing over
+    the arguments already parsed, which the string-only accumulator dropped.
+    """
+
+    def test_string_fragments_are_joined(self) -> None:
+        accum: Dict[Any, Dict[str, str]] = {}
+        llm_mod._accumulate_native_tool_call_deltas(
+            accum,
+            [
+                {"index": 0, "id": "c1", "function": {"name": "web_search", "arguments": '{"query": "a'}},
+                {"index": 0, "function": {"arguments": 'b"}'}},
+            ],
+        )
+
+        calls = llm_mod._parse_native_tool_calls(accum)
+        assert len(calls) == 1
+        assert calls[0].name == "web_search"
+        assert calls[0].arguments == {"query": "ab"}
+
+    def test_already_parsed_arguments_are_kept(self) -> None:
+        accum: Dict[Any, Dict[str, str]] = {}
+        llm_mod._accumulate_native_tool_call_deltas(
+            accum,
+            [{"index": 0, "id": "c2", "function": {"name": "web_search", "arguments": {"query": "对象参数"}}}],
+        )
+
+        calls = llm_mod._parse_native_tool_calls(accum)
+        assert calls[0].arguments == {"query": "对象参数"}
+
+    def test_unparsed_arguments_are_kept_as_raw(self) -> None:
+        accum: Dict[Any, Dict[str, str]] = {}
+        llm_mod._accumulate_native_tool_call_deltas(
+            accum,
+            [{"index": 0, "id": "c3", "function": {"name": "web_search", "arguments": "{oops"}}],
+        )
+
+        assert llm_mod._parse_native_tool_calls(accum)[0].arguments == {"_raw": "{oops"}
+
+    def test_a_named_call_with_no_arguments_is_logged(self, caplog: Any) -> None:
+        """Silent emptiness is what made the production failure unreadable."""
+        accum: Dict[Any, Dict[str, str]] = {}
+        llm_mod._accumulate_native_tool_call_deltas(
+            accum, [{"index": 0, "id": "c4", "function": {"name": "web_search"}}]
+        )
+
+        with caplog.at_level(logging.WARNING, logger="app.llm"):
+            calls = llm_mod._parse_native_tool_calls(accum)
+
+        assert calls[0].arguments == {}
+        assert "arrived with empty arguments" in caplog.text
+        assert "web_search" in caplog.text
+
+
 class TestStreamChatCollectAsync:
     async def test_prefers_streaming(self) -> None:
         class _StreamingClient:

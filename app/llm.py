@@ -1726,36 +1726,10 @@ class LLMClient(LLMProvider):
                             pass
 
                 # Tool call deltas
-                tcs = delta.get("tool_calls")
-                if isinstance(tcs, list):
-                    for tc_delta in tcs:
-                        if not isinstance(tc_delta, dict):
-                            continue
-                        idx = tc_delta.get("index", 0)
-                        if idx not in tc_accum:
-                            tc_accum[idx] = {"id": "", "name": "", "arguments": ""}
-                        tc_id = tc_delta.get("id")
-                        if isinstance(tc_id, str) and tc_id:
-                            tc_accum[idx]["id"] = tc_id
-                        fn = tc_delta.get("function")
-                        if isinstance(fn, dict):
-                            fn_name = fn.get("name")
-                            if isinstance(fn_name, str) and fn_name:
-                                tc_accum[idx]["name"] = fn_name
-                            fn_args = fn.get("arguments")
-                            if isinstance(fn_args, str):
-                                tc_accum[idx]["arguments"] += fn_args
+                _accumulate_native_tool_call_deltas(tc_accum, delta.get("tool_calls"))
 
         # Parse accumulated tool calls
-        for idx in sorted(tc_accum.keys()):
-            raw = tc_accum[idx]
-            try:
-                args = json.loads(raw["arguments"]) if raw["arguments"] else {}
-            except json.JSONDecodeError:
-                args = {"_raw": raw["arguments"]}
-            result.tool_calls.append(
-                NativeToolCall(id=raw["id"], name=raw["name"], arguments=args)
-            )
+        result.tool_calls.extend(_parse_native_tool_calls(tc_accum))
 
         return result
 
@@ -1827,6 +1801,63 @@ class LLMClient(LLMProvider):
             "has_api_key": bool(self.api_key),
             "mock": bool(self.mock),
         }
+
+
+def _accumulate_native_tool_call_deltas(tc_accum: Dict[Any, Dict[str, str]], tcs: Any) -> None:
+    """Merge one streaming ``tool_calls`` delta batch into *tc_accum*.
+
+    Argument fragments arrive as JSON *strings* on every provider seen so far,
+    but some upstreams hand them over already parsed: those used to be dropped
+    by the ``isinstance(fn_args, str)`` guard, which left the call with empty
+    arguments. Measured 2026-09-26: ``web_search`` was called with no query
+    three times in one run and the model reported "the query argument keeps
+    getting lost" — a silently-emptied call is indistinguishable from a
+    deliberate one downstream.
+    """
+    if not isinstance(tcs, list):
+        return
+    for tc_delta in tcs:
+        if not isinstance(tc_delta, dict):
+            continue
+        idx = tc_delta.get("index", 0)
+        if idx not in tc_accum:
+            tc_accum[idx] = {"id": "", "name": "", "arguments": ""}
+        tc_id = tc_delta.get("id")
+        if isinstance(tc_id, str) and tc_id:
+            tc_accum[idx]["id"] = tc_id
+        fn = tc_delta.get("function")
+        if isinstance(fn, dict):
+            fn_name = fn.get("name")
+            if isinstance(fn_name, str) and fn_name:
+                tc_accum[idx]["name"] = fn_name
+            fn_args = fn.get("arguments")
+            if isinstance(fn_args, str):
+                tc_accum[idx]["arguments"] += fn_args
+            elif isinstance(fn_args, (dict, list)):
+                tc_accum[idx]["arguments"] += json.dumps(fn_args, ensure_ascii=False)
+
+
+def _parse_native_tool_calls(tc_accum: Dict[Any, Dict[str, str]]) -> List["NativeToolCall"]:
+    """Turn the accumulator into tool calls, keeping argument loss visible."""
+    parsed: List[NativeToolCall] = []
+    for idx in sorted(tc_accum.keys()):
+        raw = tc_accum[idx]
+        try:
+            args = json.loads(raw["arguments"]) if raw["arguments"] else {}
+        except json.JSONDecodeError:
+            args = {"_raw": raw["arguments"]}
+        if raw["name"] and not args:
+            # A named call with no parameters is nearly always a lost stream,
+            # not an intentional empty call: make it visible instead of letting
+            # the tool reject it with a puzzling validation error.
+            logger.warning(
+                "Tool call %r arrived with empty arguments (id=%s, raw=%r)",
+                raw["name"],
+                raw["id"],
+                raw["arguments"][:200],
+            )
+        parsed.append(NativeToolCall(id=raw["id"], name=raw["name"], arguments=args))
+    return parsed
 
 
 def _warn_if_answer_was_capped(
