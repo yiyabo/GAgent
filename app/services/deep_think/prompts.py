@@ -938,7 +938,7 @@ def _build_system_prompt(
             "For a bound execute_task request, this is an inspection tool, not a substitute for actually executing the task. "
             "Params: {\"operation\": \"read_any|read_pdf|read_text\", \"file_path\": \"/abs/path\"}"
         ),
-        "vision_reader": "Read PDFs and images. A text PDF is read locally for free (pypdf); only a scan/image PDF goes to the paid reader. PDF parsing is billed per page, so for a long document pass page_numbers for the pages you need — a whole-document parse above the per-read budget (50) is refused. Use for visual OCR/figures/equations, not for DOCX. For a bound execute_task request, this is inspection-only and should not replace the actual execution tool. Params: {\"operation\": \"read_pdf|read_image|ocr_page\", \"file_path\": \"/path/to/file\", optional \"page_numbers\": [1,2,5]}",
+        "vision_reader": "Read PDFs and images. A text PDF is read locally for free (pypdf); a scan/image PDF is rasterized locally and read by the vision model. Reading is page-bounded, so for a long document pass page_numbers for the pages you need — a whole-document read above the per-read budget (50) is refused. Use for visual OCR/figures/equations, not for DOCX. For a bound execute_task request, this is inspection-only and should not replace the actual execution tool. Params: {\"operation\": \"read_pdf|read_image|ocr_page\", \"file_path\": \"/path/to/file\", optional \"page_numbers\": [1,2,5]}",
         "bio_tools": (
             "PREFERRED for bioinformatics: Execute Docker-based tools for FASTA/FASTQ/sequence analysis. "
             "Example: {\"tool_name\": \"seqkit\", \"operation\": \"stats\", \"input_file\": \"/absolute/path/to/file.fasta\"}. "

@@ -54,6 +54,9 @@ dependencies = [
     "pyahocorasick>=2.0.0",
     # --- 文档解析与产出 ---
     "pypdf>=3.0.0",
+    # PDF 页栅格化（扫描件 → 图片 → 已通的视觉通道）。选它而非 poppler：纯 pip 轮子、
+    # 无系统包、无 subprocess、不需要 apt 换源，而且能在单测里真跑渲染。
+    "pypdfium2>=5.0.0",
     "Pillow>=10.0.0",
     "reportlab>=4.0.0", # 交付物 PDF 排版
     "markdown>=3.5.0",

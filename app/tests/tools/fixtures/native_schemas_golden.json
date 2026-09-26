@@ -421,7 +421,7 @@
     },
     {
       "function": {
-        "description": "Read PDFs and images using a vision model. For visual OCR, figures, and equations only. PDF parsing is billed per document page, so a large PDF without page_numbers is refused; pass the pages you actually need.",
+        "description": "Read PDFs and images. A text PDF is read locally for free; a scan is rasterized locally and read by the vision model. Reading is page-bounded, so a long document without page_numbers is refused — pass the pages you actually need. Use for visual OCR, figures, and equations.",
         "name": "vision_reader",
         "parameters": {
           "properties": {
@@ -2127,7 +2127,7 @@
     },
     {
       "function": {
-        "description": "Read PDFs and images using a vision model. For visual OCR, figures, and equations only. PDF parsing is billed per document page, so a large PDF without page_numbers is refused; pass the pages you actually need.",
+        "description": "Read PDFs and images. A text PDF is read locally for free; a scan is rasterized locally and read by the vision model. Reading is page-bounded, so a long document without page_numbers is refused — pass the pages you actually need. Use for visual OCR, figures, and equations.",
         "name": "vision_reader",
         "parameters": {
           "properties": {

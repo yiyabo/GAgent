@@ -1,11 +1,14 @@
-"""``vision_reader``'s PDF routing: free text first, paid pages second.
+"""``vision_reader``'s PDF routing: free text, then local render, then paid pages.
 
-Two decisions are locked here, both cost decisions:
+Three steps, in cost order:
 
-- A text PDF is read locally with pypdf — no upload, no per-page charge. Only a
-  document that yields no text (a scan or an image PDF) is worth paying for.
-- The paid reader is bounded. A page is a charge, so a page selection decides the
-  bill, and a whole-document parse above the budget is refused with the way out
+- A text PDF is read locally with pypdf — no upload, no per-page charge, no image
+  tokens.
+- A scan (no extractable text) is rasterized locally with pypdfium2 and the pages
+  are read by the multimodal model over the chat API. This is the only path that
+  works on a gateway without a Files API — verified on .8, 2026-09-26.
+- The paid file-extract reader is the last resort, and is bounded: a page is a
+  charge, so a whole-document parse above the budget is refused with the way out
   instead of silently costing 50x what the caller meant.
 """
 
@@ -17,6 +20,7 @@ from typing import Dict, List
 
 import pypdf
 import pytest
+from PIL import Image, ImageDraw
 
 from tool_box.tools_impl import vision_reader
 
@@ -30,6 +34,31 @@ def sandbox() -> Path:
     _SANDBOX.mkdir(parents=True)
     yield _SANDBOX
     shutil.rmtree(_SANDBOX, ignore_errors=True)
+
+
+@pytest.fixture(autouse=True)
+def _paid_path_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Rendering off by default in this file.
+
+    These routing tests were written against the paid path, and a text-less PDF
+    now reaches the local renderer *before* the paid reader — which, left on,
+    would send rendered pages to the live vision model from a unit test. The
+    render tests below turn it back on explicitly.
+    """
+    monkeypatch.setenv(vision_reader.PDF_RENDER_ENV, "0")
+
+
+def _write_scanned_pdf(path: Path, page_labels: List[str]) -> Path:
+    """Build a PDF whose pages are pictures — i.e. a real scan: no extractable text."""
+    pages = []
+    for label in page_labels:
+        page = Image.new("RGB", (900, 400), "white")
+        draw = ImageDraw.Draw(page)
+        draw.rectangle([40, 40, 400, 200], fill="black")
+        draw.text((60, 240), label, fill="black")
+        pages.append(page)
+    pages[0].save(path, "PDF", save_all=True, append_images=pages[1:])
+    return path
 
 
 def _write_pdf(path: Path, page_texts: List[str]) -> Path:
@@ -253,3 +282,131 @@ def test_page_budget_override_beats_the_env(sandbox: Path, monkeypatch) -> None:
     assert vision_reader.pdf_page_budget() == 7
     assert vision_reader.pdf_page_budget(2) == 2
     assert vision_reader.pdf_page_budget(0) == 7
+
+
+# --- the scan path: rasterize locally, read with the vision model ------------------
+
+
+def test_render_pdf_pages_produces_readable_images(sandbox: Path) -> None:
+    """Real rendering, real pixels: a blank render would defeat the whole path."""
+    pdf = _write_scanned_pdf(sandbox / "scan.pdf", ["page one", "page two"])
+
+    rendered = vision_reader.render_pdf_pages(pdf, dest_dir=sandbox / "out")
+
+    assert rendered is not None
+    assert [page["page_number"] for page in rendered] == [1, 2]
+    for page in rendered:
+        assert page["path"].is_file()
+        # The fixture paints a black block, so the page cannot be uniform.
+        with Image.open(page["path"]) as image:
+            colors = image.convert("L").getcolors(maxcolors=256) or []
+        assert len(colors) > 2, f"{page['path'].name} rendered blank"
+        assert max(page["size"]) <= vision_reader.pdf_render_max_edge()
+
+
+def test_render_pdf_pages_honours_the_page_selection(sandbox: Path) -> None:
+    pdf = _write_scanned_pdf(sandbox / "scan.pdf", ["a", "b", "c"])
+
+    rendered = vision_reader.render_pdf_pages(pdf, page_numbers=[3], dest_dir=sandbox / "out")
+
+    assert rendered is not None
+    assert [page["page_number"] for page in rendered] == [3]
+
+
+def test_render_pdf_pages_returns_none_for_an_unreadable_document(sandbox: Path) -> None:
+    bogus = sandbox / "not-a.pdf"
+    bogus.write_bytes(b"definitely not a pdf")
+
+    assert vision_reader.render_pdf_pages(bogus, dest_dir=sandbox / "out") is None
+
+
+async def test_scanned_pdf_is_rendered_and_read_by_the_vision_model(
+    sandbox: Path, monkeypatch
+) -> None:
+    """The scan path must not touch the file-extract reader at all."""
+    seen: List[Path] = []
+
+    async def _vision(prompt: str, file_path: str) -> str:
+        assert "extract ALL text" in prompt
+        seen.append(Path(file_path))
+        return f"TEXT OF {Path(file_path).stem}"
+
+    async def _must_not_run(*_args, **_kwargs):
+        raise AssertionError("a scan must be read locally, not uploaded")
+
+    monkeypatch.setenv(vision_reader.PDF_RENDER_ENV, "1")
+    monkeypatch.setattr(vision_reader, "_call_qwen_vision_api", _vision)
+    monkeypatch.setattr(vision_reader, "_read_pdf_with_qwen_long", _must_not_run)
+    pdf = _write_scanned_pdf(sandbox / "scan.pdf", ["one", "two"])
+
+    result = await vision_reader.vision_reader_handler(operation="read_pdf", file_path=str(pdf))
+
+    assert result["success"] is True
+    assert result["method"] == "pypdfium2-vision"
+    assert result["pages_read"] == [1, 2]
+    assert len(seen) == 2
+    assert "TEXT OF page_0001" in result["text"]
+    assert "TEXT OF page_0002" in result["text"]
+    assert result["file_path"] == str(pdf.resolve())
+
+
+async def test_scanned_pdf_renders_only_the_requested_pages(sandbox: Path, monkeypatch) -> None:
+    seen: List[Path] = []
+
+    async def _vision(prompt: str, file_path: str) -> str:
+        seen.append(Path(file_path))
+        return "text"
+
+    monkeypatch.setenv(vision_reader.PDF_RENDER_ENV, "1")
+    monkeypatch.setattr(vision_reader, "_call_qwen_vision_api", _vision)
+    pdf = _write_scanned_pdf(sandbox / "scan.pdf", ["a", "b", "c"])
+
+    result = await vision_reader.vision_reader_handler(
+        operation="read_pdf", file_path=str(pdf), page_numbers=[2]
+    )
+
+    assert result["pages_read"] == [2]
+    assert [path.name for path in seen] == ["page_0002.png"]
+
+
+async def test_a_blank_vision_read_falls_through_to_file_extract(
+    sandbox: Path, monkeypatch
+) -> None:
+    """If the model returns nothing for every page, the last resort still runs."""
+    async def _vision(prompt: str, file_path: str) -> str:
+        return "   "
+
+    calls: List[str] = []
+
+    async def _paid(path: str, prompt: str = "") -> dict:
+        calls.append(path)
+        return {"success": True, "method": "qwen-long", "text": "paid", "text_length": 4}
+
+    monkeypatch.setenv(vision_reader.PDF_RENDER_ENV, "1")
+    monkeypatch.setattr(vision_reader, "_call_qwen_vision_api", _vision)
+    monkeypatch.setattr(vision_reader, "_read_pdf_with_qwen_long", _paid)
+    pdf = _write_scanned_pdf(sandbox / "scan.pdf", ["one"])
+
+    result = await vision_reader.vision_reader_handler(operation="read_pdf", file_path=str(pdf))
+
+    assert calls == [str(pdf.resolve())]
+    assert result["method"] == "qwen-long"
+
+
+async def test_a_scan_above_budget_is_refused_before_rendering(
+    sandbox: Path, monkeypatch
+) -> None:
+    async def _must_not_run(*_args, **_kwargs):
+        raise AssertionError("an over-budget scan must not be rendered")
+
+    monkeypatch.setenv(vision_reader.PDF_RENDER_ENV, "1")
+    monkeypatch.setattr(vision_reader, "_call_qwen_vision_api", _must_not_run)
+    monkeypatch.setattr(vision_reader, "_read_pdf_with_qwen_long", _must_not_run)
+    pdf = _write_scanned_pdf(sandbox / "scan.pdf", ["a", "b"])
+
+    result = await vision_reader.vision_reader_handler(
+        operation="read_pdf", file_path=str(pdf), max_pages=1
+    )
+
+    assert result["success"] is False
+    assert result["code"] == "page_budget_exceeded"

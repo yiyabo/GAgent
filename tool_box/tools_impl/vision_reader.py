@@ -3,20 +3,28 @@
 This module provides reading capabilities for PDFs and images.
 
 Images and figure/equation pages go to a multimodal model (qwen3.6-plus -
-native multimodal supporting text/image/video). PDF text does not: a text PDF is
-read locally with pypdf for free, and only a document that yields no text (a scan
-or an image PDF) is handed to the paid per-page file-extract reader. It is
-exposed as a text-only tool to the main agent: all outputs are English text /
-JSON that can be consumed by a text-only LLM such as Qwen3-Max.
+native multimodal supporting text/image/video). PDFs are read in cost order:
+
+1. a text PDF is read locally with pypdf for free;
+2. a document that yields no text (a scan or an image PDF) is rasterized locally
+   with pypdfium2, and those pages are read by the multimodal model;
+3. the paid per-page file-extract reader is the last resort.
+
+Step 2 is what makes scans work on this platform at all: every model call goes
+through the platform gateway, which serves /chat/completions and /embeddings but
+NOT /files, so the paid reader's upload always 404s (verified 2026-09-26).
+
+It is exposed as a text-only tool to the main agent: all outputs are English text
+/ JSON that can be consumed by a text-only LLM such as Qwen3-Max.
 
 The tool supports operations like:
-- read_pdf: PDF text (local pypdf first, paid file-extract only for scans)
+- read_pdf: PDF text (local pypdf first, then local render + vision)
 - ocr_page: extract all readable text (including equations and labels)
 - read_equation_image: read and transcribe equations from an image
 - describe_figure: describe the content and trends of a scientific figure
 
-Every paid call is recorded as usage (page count, tokens, tool key) so a page
-charge is never invisible.
+Every call that costs anything is recorded as usage (page count, tokens, tool
+key), so the volume and the attributed cost are never invisible.
 
 NOTE: The vision call assumes an OpenAI-compatible chat API that accepts image
 URLs via the "image_url" content type. The actual vision backend can be
@@ -48,23 +56,40 @@ TOOL_NAME = "vision_reader"
 CALL_PURPOSE_PDF_PARSE = "pdf_parse"
 CALL_PURPOSE_VISION_READ = "vision_read"
 
-# The PDF file-extract reader charges a flat per-page rate (0.02 CNY/page on the
-# platform tariff). Token rates cannot reconstruct that charge, so the page count
-# travels with the usage row and the per-page rate stays env-overridable.
+# The PDF file-extract reader is billed per document page. NOTE (2026-09-26): that
+# tariff is the provider console's, and this platform does not reach the provider
+# directly — every model call goes through the platform gateway, which does not
+# expose the Files API at all. Treat this rate as an internal estimate, not a bill.
 PDF_PAGE_CNY_ENV = "VISION_READER_PDF_PAGE_CNY"
 DEFAULT_PDF_PAGE_CNY = 0.02
 
-# Routing: a text PDF is read locally for free (pypdf), and only a document that
-# yields no text is sent to the paid file-extract reader. Set to 0 to send every
-# PDF to the paid reader again.
+# Routing: a text PDF is read locally for free (pypdf); a document that yields no
+# text is a scan, which is rasterized locally and read by the multimodal model;
+# the paid file-extract reader is the last resort. Set to 0 to disable a step.
 LOCAL_TEXT_FIRST_ENV = "VISION_READER_LOCAL_TEXT_FIRST"
-# Cost gate: a whole-document parse above this many pages is refused until the
-# caller names the pages it needs (or raises the budget on purpose).
+PDF_RENDER_ENV = "VISION_READER_PDF_RENDER"
+# Page budget: neither a paid parse nor a rendered page should happen 300 times
+# because nobody said which pages were wanted.
 PDF_MAX_PAGES_ENV = "VISION_READER_PDF_MAX_PAGES"
 DEFAULT_PDF_MAX_PAGES = 50
 # A scan extracts (almost) no text; below this many characters the local reader
-# is treated as having found nothing and the paid reader takes over.
+# is treated as having found nothing and the scan path takes over.
 MIN_LOCAL_TEXT_CHARS = 400
+# Rasterization: 150 dpi reads comfortably; the longest edge is capped so one page
+# cannot blow up the image payload (and its token cost).
+PDF_RENDER_DPI_ENV = "VISION_READER_PDF_RENDER_DPI"
+DEFAULT_PDF_RENDER_DPI = 150
+PDF_RENDER_MAX_EDGE_ENV = "VISION_READER_PDF_RENDER_MAX_EDGE"
+DEFAULT_PDF_RENDER_MAX_EDGE = 2000
+
+# Prompt for one rasterized page of a scan: transcribe, do not summarize or
+# translate — the same contract the text readers keep.
+_SCANNED_PAGE_PROMPT = (
+    "You are a vision assistant for document reading. Read this PDF page and "
+    "extract ALL text content accurately, preserving the structure (paragraphs, "
+    "lists, tables, headers). Include any equations, captions, and annotations. "
+    "Return the text in proper reading order. Do not translate or add commentary."
+)
 
 
 def _env_flag(name: str, default: bool) -> bool:
@@ -88,6 +113,92 @@ def pdf_page_budget(override: Optional[int] = None) -> int:
     except (TypeError, ValueError):
         budget = DEFAULT_PDF_MAX_PAGES
     return max(1, budget)
+
+
+def pdf_render_enabled() -> bool:
+    """Whether a text-less PDF is rasterized for the multimodal model."""
+    return _env_flag(PDF_RENDER_ENV, True)
+
+
+def pdf_render_dpi() -> int:
+    try:
+        dpi = int(os.getenv(PDF_RENDER_DPI_ENV, str(DEFAULT_PDF_RENDER_DPI)))
+    except (TypeError, ValueError):
+        dpi = DEFAULT_PDF_RENDER_DPI
+    return max(36, min(600, dpi))
+
+
+def pdf_render_max_edge() -> int:
+    try:
+        edge = int(os.getenv(PDF_RENDER_MAX_EDGE_ENV, str(DEFAULT_PDF_RENDER_MAX_EDGE)))
+    except (TypeError, ValueError):
+        edge = DEFAULT_PDF_RENDER_MAX_EDGE
+    return max(200, edge)
+
+
+def render_pdf_pages(
+    path: Path,
+    *,
+    page_numbers: Optional[List[int]] = None,
+    dest_dir: Path,
+) -> Optional[List[Dict[str, Any]]]:
+    """Rasterize PDF pages to PNG; ``None`` when rendering is unavailable.
+
+    ``None`` (no pypdfium2, or an unreadable document) is the signal to hand the
+    document to a reader that does not need local rendering.
+
+    pypdfium2 rather than poppler: one pip wheel, no system package, no
+    subprocess, and it can therefore be exercised for real in the test suite.
+    """
+    try:
+        import pypdfium2 as pdfium
+    except Exception as exc:
+        logger.info("pypdfium2 unavailable, skipping local PDF rendering: %s", exc)
+        return None
+
+    dpi = pdf_render_dpi()
+    scale = dpi / 72.0
+    max_edge = pdf_render_max_edge()
+    try:
+        dest_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        logger.warning("Could not prepare the render directory %s: %s", dest_dir, exc)
+        return None
+    rendered: List[Dict[str, Any]] = []
+    document = None
+    try:
+        document = pdfium.PdfDocument(str(path))
+        total_pages = len(document)
+        wanted = [
+            number for number in (page_numbers or range(1, total_pages + 1))
+            if 1 <= number <= total_pages
+        ]
+        for number in wanted:
+            try:
+                page = document[number - 1]
+                image = page.render(scale=scale).to_pil()
+            except Exception as exc:
+                logger.warning("Could not render page %s of %s: %s", number, path.name, exc)
+                continue
+            longest = max(image.size)
+            if longest > max_edge:
+                ratio = max_edge / float(longest)
+                image = image.resize(
+                    (max(1, int(image.size[0] * ratio)), max(1, int(image.size[1] * ratio)))
+                )
+            png_path = dest_dir / f"page_{number:04d}.png"
+            image.save(png_path)
+            rendered.append({"page_number": number, "path": png_path, "size": image.size})
+    except Exception as exc:
+        logger.info("pypdfium2 could not render %s: %s", path.name, exc)
+        return None
+    finally:
+        if document is not None:
+            try:
+                document.close()
+            except Exception:
+                pass
+    return rendered or None
 
 
 def extract_local_pdf_text(path: Path, page_numbers: Optional[List[int]] = None) -> Optional[Dict[str, Any]]:
@@ -608,9 +719,10 @@ async def vision_reader_handler(
         region: Optional normalized region of interest {x1,y1,x2,y2} in [0,1].
         question: Optional extra question or instruction about the content.
         language: Output language hint (currently only "en" is supported).
-        max_pages: Per-read page budget for a paid parse; defaults to
-            ``VISION_READER_PDF_MAX_PAGES`` (50). A document above the budget is
-            refused until the caller names the pages it needs.
+        max_pages: Per-read page budget; defaults to
+            ``VISION_READER_PDF_MAX_PAGES`` (50). It bounds both the rendered pages
+            and a paid parse: a document above the budget is refused until the
+            caller names the pages it needs.
     """
 
     op = (operation or "").strip().lower()
@@ -687,8 +799,7 @@ async def vision_reader_handler(
                 "code": "page_budget_exceeded",
                 "error": (
                     f"Requested {len(selected_pages)} pages but the per-read budget is {budget}. "
-                    f"Narrow page_numbers, or raise {PDF_MAX_PAGES_ENV} deliberately "
-                    f"(parsing costs {_page_parse_cost_cny(1):.2f} CNY per page)."
+                    f"Narrow page_numbers, or raise {PDF_MAX_PAGES_ENV} deliberately."
                 ),
                 "page_count": total_pages,
                 "page_budget": budget,
@@ -700,14 +811,60 @@ async def vision_reader_handler(
                 "operation": "read_pdf",
                 "code": "page_budget_exceeded",
                 "error": (
-                    f"{abs_path.name} has {total_pages} pages and PDF parsing is billed per page, "
-                    f"which is above the per-read budget of {budget}. Pass page_numbers=[...] for the "
-                    f"pages you actually need, or raise {PDF_MAX_PAGES_ENV} if the whole document "
-                    f"really is required."
+                    f"{abs_path.name} has {total_pages} pages, above the per-read budget of {budget}. "
+                    f"Pass page_numbers=[...] for the pages you actually need, or raise "
+                    f"{PDF_MAX_PAGES_ENV} if the whole document really is required."
                 ),
                 "page_count": total_pages,
                 "page_budget": budget,
             }
+
+        # 2) A scan: rasterize the pages locally and let the multimodal model read
+        #    them. This needs nothing beyond the chat API, so it works wherever the
+        #    model does — including gateways without a Files API.
+        if pdf_render_enabled():
+            with tempfile.TemporaryDirectory(prefix="vision_pdf_render_") as scratch:
+                rendered = render_pdf_pages(
+                    abs_path,
+                    page_numbers=selected_pages or None,
+                    dest_dir=Path(scratch),
+                )
+                if rendered:
+                    logger.info(
+                        "PDF rendered locally with pypdfium2: %s (%s pages at %s dpi)",
+                        abs_path.name, len(rendered), pdf_render_dpi(),
+                    )
+                    page_prompt = _SCANNED_PAGE_PROMPT
+                    if question:
+                        page_prompt = f"{page_prompt}\n\nAdditional instruction from the user: {question}"
+                    pages_text: List[str] = []
+                    for page in rendered:
+                        number = page["page_number"]
+                        try:
+                            page_text = await _call_qwen_vision_api(page_prompt, str(page["path"]))
+                        except Exception as exc:
+                            logger.warning("Vision read failed for page %s of %s: %s", number, abs_path.name, exc)
+                            page_text = ""
+                        if page_text.strip():
+                            pages_text.append(f"--- Page {number} ---\n{page_text}")
+                    if pages_text:
+                        text = "\n\n".join(pages_text)
+                        return {
+                            "tool": TOOL_NAME,
+                            "success": True,
+                            "operation": "read_pdf",
+                            "file_path": str(abs_path),
+                            "file_name": abs_path.name,
+                            "method": "pypdfium2-vision",
+                            "page_count": total_pages,
+                            "pages_read": [page["page_number"] for page in rendered],
+                            "text": text,
+                            "text_length": len(text),
+                        }
+                    logger.info(
+                        "Local rendering produced no readable text for %s; falling through to file-extract",
+                        abs_path.name,
+                    )
 
         prompt = question or (
             "Read this document and extract all text while preserving original structure "
@@ -852,10 +1009,10 @@ async def vision_reader_handler(
 vision_reader_tool: Dict[str, Any] = {
     "name": "vision_reader",
     "description": (
-        "Reads PDFs and images. A text PDF is read locally for free (pypdf); only a scan or "
-        "image PDF goes to the paid multimodal/page-billed reader. PDF parsing is billed per "
-        "page, so for a long document pass page_numbers for the pages you actually need — a "
-        "whole-document parse above the per-read budget is refused. Use for visual OCR, "
+        "Reads PDFs and images. A text PDF is read locally for free (pypdf); a scan is "
+        "rasterized locally (pypdfium2) and read by the multimodal model. Reading is "
+        "page-bounded, so pass page_numbers for the pages you actually need — a "
+        "whole-document read above the per-read budget is refused. Use for visual OCR, "
         "figures, and equations, not for DOCX."
     ),
     "category": "vision",
@@ -905,9 +1062,10 @@ vision_reader_tool: Dict[str, Any] = {
             "max_pages": {
                 "type": "integer",
                 "description": (
-                    "Per-read page budget for a paid PDF parse (default: 50, env "
-                    "VISION_READER_PDF_MAX_PAGES). A document above the budget is refused until "
-                    "page_numbers names the pages that are needed."
+                    "Per-read page budget for reading a PDF (default: 50, env "
+                    "VISION_READER_PDF_MAX_PAGES). It bounds the rendered pages as well as a "
+                    "paid parse: a document above the budget is refused until page_numbers "
+                    "names the pages that are needed."
                 ),
                 "default": 50,
             },

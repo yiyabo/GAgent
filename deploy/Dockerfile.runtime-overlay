@@ -28,12 +28,14 @@ FROM ${BASE_IMAGE}
 # 容器内直连 pypi.org 不通，走清华源（2026-09-26 实测 200）。
 ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 
-# openai：vision_reader 的 PDF file-extract 路径唯一使用者。此前未声明、镜像里也没有，
-# 该路径一直 ImportError。版本锁 1.x：代码用 v1 风格客户端（client.files.create /
-# client.chat.completions.create），且 1.x 复用镜像里已有的 httpx；3.x 会再拉一套
-# httpx2/httpcore2/truststore。
-RUN pip install --no-cache-dir -i ${PIP_INDEX_URL} "openai>=1.40.0,<2.0.0" \
-    && python -c "import openai; print('openai', openai.__version__)"
+# 两个"已在 requirements.txt 声明、但基础镜像里没有"的包。这一层存在的唯一原因是
+# 基础镜像比这些声明旧；新依赖仍然一律先写清单，再在这里补装。
+#   openai      —— vision_reader 的 PDF file-extract 路径（按页计费）唯一使用者。
+#                  锁 1.x：代码用 v1 风格客户端，且 1.x 复用镜像里已有的 httpx；
+#                  3.x 会再拉一套 httpx2/httpcore2/truststore。
+#   pypdfium2   —— 扫描件栅格化（本地渲染 → 视觉通道）。纯 wheel，无系统包、无 subprocess。
+RUN pip install --no-cache-dir -i ${PIP_INDEX_URL} "openai>=1.40.0,<2.0.0" "pypdfium2>=5.0.0" \
+    && python -c "import openai, pypdfium2; print('openai', openai.__version__)"
 
 # 运行容器的实际依赖快照。**这一层是必需的不是锦上添花**：这 19 个包只装在运行
 # 容器里、镜像里没有（历史手工 pip install），不补的话用新镜像重建容器会静默丢掉

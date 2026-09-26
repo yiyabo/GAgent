@@ -286,12 +286,13 @@ NATIVE_TOOL_CONTENT: Dict[str, Dict[str, Any]] = {
     },
     "vision_reader": {
         # native 有意收窄：impl 另有 image_path/page_number/region/question/language/max_pages
-        # —— 有意调优（参数面收窄）；page_numbers 是唯一例外：PDF 解析按页计费，
-        # 页数闸门只有在模型能指定页码时才是可执行的（2026-09-26，费用闸门）。
+        # —— 有意调优（参数面收窄）；page_numbers 是唯一例外：PDF 读取按页有预算
+        # （渲染/解析都算），页数闸门只有在模型能指定页码时才是可执行的。
         "description": (
-            "Read PDFs and images using a vision model. For visual OCR, figures, and equations only. "
-            "PDF parsing is billed per document page, so a large PDF without page_numbers is refused; "
-            "pass the pages you actually need."
+            "Read PDFs and images. A text PDF is read locally for free; a scan is rasterized "
+            "locally and read by the vision model. Reading is page-bounded, so a long document "
+            "without page_numbers is refused — pass the pages you actually need. Use for visual "
+            "OCR, figures, and equations."
         ),
         "parameters": {
             "type": "object",

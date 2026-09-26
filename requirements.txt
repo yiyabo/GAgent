@@ -24,6 +24,9 @@ sentence-transformers>=2.7.0
 torch>=2.0.0
 psutil>=5.9.0
 pypdf>=3.0.0
+# PDF 页栅格化（扫描件/图片型 PDF → 图片 → 走已通的视觉通道）。选它而不是 poppler：
+# 纯 pip 轮子、无系统包、无 subprocess、不需要 apt 换源，且能进单测真跑渲染。
+pypdfium2>=5.0.0
 Pillow>=10.0.0
 reportlab>=4.0.0
 pytest>=7.0.0
