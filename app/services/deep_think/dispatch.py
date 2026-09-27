@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from app.services.deep_think.models import ThinkingStep
+from app.services.deep_think.schema_disclosure import META_TOOL_NAME
 from app.services.execution.tool_executor import UnifiedToolExecutor
 from app.services.response_style import sanitize_professional_response_text
 
@@ -333,7 +334,28 @@ async def _execute_native_tool_call(
     if agent.on_tool_start and tool_name:
         await agent._safe_generic_callback(agent.on_tool_start, tool_name, tool_params)
 
+    disclosure = getattr(agent, "_schema_disclosure", None)
+    if disclosure is not None and disclosure.enabled and tool_name == META_TOOL_NAME:
+        # Progressive disclosure meta tool: not a registry tool — it only
+        # records the request; the schema joins the payload next iteration.
+        load_result = disclosure.record_load(str(tool_params.get("name") or ""))
+        if agent.on_tool_result and tool_name:
+            await agent._safe_generic_callback(agent.on_tool_result, tool_name, load_result)
+        return {
+            "index": index,
+            "tool_call_id": tool_call_id,
+            "tool_name": tool_name,
+            "tool_params": tool_params,
+            "tool_result": load_result,
+            "tool_result_text": json.dumps(load_result, ensure_ascii=False),
+            "evidence": [],
+        }
+
     if tool_name not in agent.available_tools:
+        if disclosure is not None and disclosure.enabled:
+            # The trimmed payload could not serve this call: restore the full
+            # payload for the rest of the run (escape hatch).
+            disclosure.force_full(f"tool_not_available:{tool_name}")
         error_payload = {
             "success": False,
             "error": f"tool_not_available:{tool_name}",

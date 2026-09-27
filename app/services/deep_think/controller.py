@@ -45,6 +45,7 @@ from app.services.execution.tool_executor import UnifiedToolExecutor
 from app.services.foundation.settings import get_settings
 from app.services.response_style import sanitize_professional_response_text
 from app.services.tool_schemas import build_tool_schemas
+from app.services.deep_think.schema_disclosure import SchemaDisclosure
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from app.services.deep_think_agent import DeepThinkAgent
@@ -237,6 +238,9 @@ async def _native_run_setup(
     thinking_steps: List[ThinkingStep] = []
     tools_used: List[str] = []
     tool_schemas = build_tool_schemas(agent.available_tools)
+    # Progressive schema disclosure (2026-09-27): iteration 1 sends the full
+    # payload, later iterations trim to used ∪ core ∪ loaded ∪ load_tool_schema.
+    agent._schema_disclosure = SchemaDisclosure(tool_schemas, agent.available_tools)
 
     expected_outputs = _derive_expected_outputs(user_query)
     acceptance_spec = None
@@ -1373,7 +1377,7 @@ async def _think_native(
     context = setup.context
     thinking_steps = setup.thinking_steps
     tools_used = setup.tools_used
-    tool_schemas = setup.tool_schemas
+    tool_schemas_full = setup.tool_schemas
     messages = setup.messages
     ctx_mgr = setup.ctx_mgr
     loop_guard_state = setup.loop_guard_state
@@ -1434,6 +1438,16 @@ async def _think_native(
         if agent.on_thinking:
             await agent._safe_callback(current_step)
 
+        disclosure = getattr(agent, "_schema_disclosure", None)
+        tool_schemas = (
+            disclosure.effective(
+                iteration=iteration,
+                tools_used=tools_used,
+                plan_bound=bool(agent._current_plan_id()),
+            )
+            if disclosure is not None
+            else tool_schemas_full
+        )
         flow, result, consecutive_llm_failures, fatal_answer = await _native_llm_step(
             agent,
             messages=messages,
