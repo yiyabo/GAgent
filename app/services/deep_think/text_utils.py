@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import os
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 
 def _default_max_consecutive_llm_failures() -> int:
@@ -264,6 +264,32 @@ _INLINE_IMAGE_PRODUCTIVE_RE = re.compile(
 _INLINE_IMAGE_RAW_TMP_RE = re.compile(r"(?:^|/)raw_files/(?:tmp|chat_tools)/", re.IGNORECASE)
 
 
+def _fenced_line_ranges(text: str) -> List[Tuple[int, int]]:
+    """Inclusive line-index ranges of fenced code blocks (``` … ```).
+
+    The marker lines themselves count as inside: inserting right after the
+    opening marker would still land content inside the code block. An
+    unclosed fence runs to the last line.
+    """
+    lines = text.split("\n")
+    ranges: List[Tuple[int, int]] = []
+    open_idx: Optional[int] = None
+    for idx, line in enumerate(lines):
+        if line.lstrip().startswith("```"):
+            if open_idx is None:
+                open_idx = idx
+            else:
+                ranges.append((open_idx, idx))
+                open_idx = None
+    if open_idx is not None:
+        ranges.append((open_idx, len(lines) - 1))
+    return ranges
+
+
+def _pos_in_ranges(ranges: List[Tuple[int, int]], line_idx: int) -> bool:
+    return any(start <= line_idx <= end for start, end in ranges)
+
+
 def _ensure_inline_images(text: str, image_relpaths: List[str]) -> str:
     """Guarantee produced images render inline in the final answer.
 
@@ -272,6 +298,12 @@ def _ensure_inline_images(text: str, image_relpaths: List[str]) -> str:
     For each produced image: keep an existing inline reference, upgrade a
     plain markdown link, convert a bare filename line, or — only when no
     anchor exists at all — append the image at the end.
+
+    Anchors inside fenced code blocks never count: a reference there renders
+    as literal text (the 2026-09-27 code-mode E2E case — the model's only
+    mention of chart.png sat inside a ```python fence), so fence-internal
+    references are left untouched and the image lands at the first prose
+    mention, or at the end when there is none.
     """
     out = text or ""
     for rel in image_relpaths or []:
@@ -279,8 +311,20 @@ def _ensure_inline_images(text: str, image_relpaths: List[str]) -> str:
         if not rel or ".." in rel or "\\" in rel:
             continue
         name = rel.rsplit("/", 1)[-1]
-        inline_match = re.search(
-            r"!\[([^\]\n]*)\]\(([^)\n]*" + re.escape(name) + r"[^)\n]*)\)", out
+        fenced = _fenced_line_ranges(out)
+
+        def _inside(pos: int) -> bool:
+            return _pos_in_ranges(fenced, out.count("\n", 0, pos))
+
+        inline_match = next(
+            (
+                match
+                for match in re.finditer(
+                    r"!\[([^\]\n]*)\]\(([^)\n]*" + re.escape(name) + r"[^)\n]*)\)", out
+                )
+                if not _inside(match.start())
+            ),
+            None,
         )
         if inline_match:
             url = inline_match.group(2).strip()
@@ -291,14 +335,29 @@ def _ensure_inline_images(text: str, image_relpaths: List[str]) -> str:
             if url.startswith("/") or ".." in url or "\\" in url:
                 out = out[: inline_match.start(2)] + rel + out[inline_match.end(2) :]
             continue
-        link_match = re.search(r"\[([^\]\n]*)\]\(([^)\n]*" + re.escape(name) + r"[^)\n]*)\)", out)
+        link_match = next(
+            (
+                match
+                for match in re.finditer(
+                    r"\[([^\]\n]*)\]\(([^)\n]*" + re.escape(name) + r"[^)\n]*)\)", out
+                )
+                if not _inside(match.start())
+            ),
+            None,
+        )
         if link_match:
             caption = link_match.group(1) or name
             out = out[: link_match.start()] + f"![{caption}]({rel})" + out[link_match.end() :]
             continue
-        bare_match = re.search(
-            r"(?m)^(?P<prefix>\s*(?:[-*]\s+)?)`?" + re.escape(name) + r"`?\s*$",
-            out,
+        bare_match = next(
+            (
+                match
+                for match in re.finditer(
+                    r"(?m)^(?P<prefix>\s*(?:[-*]\s+)?)`?" + re.escape(name) + r"`?\s*$", out
+                )
+                if not _inside(match.start())
+            ),
+            None,
         )
         if bare_match:
             out = (
@@ -311,7 +370,14 @@ def _ensure_inline_images(text: str, image_relpaths: List[str]) -> str:
         # a composite bullet): keep the text and place the image right after
         # the mentioning line so the figure appears where it is referenced.
         out_lines = out.split("\n")
-        mention_idx = next((i for i, line in enumerate(out_lines) if name in line), None)
+        mention_idx = next(
+            (
+                i
+                for i, line in enumerate(out_lines)
+                if name in line and not _pos_in_ranges(fenced, i)
+            ),
+            None,
+        )
         if mention_idx is not None:
             out_lines[mention_idx + 1 : mention_idx + 1] = ["", f"![{name}]({rel})", ""]
             out = "\n".join(out_lines)

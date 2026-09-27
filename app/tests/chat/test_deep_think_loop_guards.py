@@ -407,6 +407,59 @@ class TestInlineImages:
         out = _ensure_inline_images(text, ["", "../x.png", "a\\b.png", None])
         assert out == text
 
+    def test_mention_inside_code_fence_is_not_an_anchor(self) -> None:
+        """The 2026-09-27 code-mode E2E case: the model's only mention of the
+        figure sits inside a ```python fence; a reference inserted there would
+        render as literal text, so the image must be appended at the end and
+        the fence content left untouched."""
+        from app.services.deep_think_agent import _ensure_inline_images
+
+        text = (
+            "统计完成，均值 5.2。\n\n"
+            "```python\n"
+            "import matplotlib.pyplot as plt\n"
+            "fig.savefig(\"results/chart.png\")\n"
+            "```\n"
+        )
+        out = _ensure_inline_images(text, ["results/chart.png"])
+        assert "fig.savefig(\"results/chart.png\")\n```" in out
+        assert "![chart.png](results/chart.png)" in out
+        # The image lands after the closing fence, never inside it.
+        assert out.index("![chart.png]") > out.rindex("```")
+
+    def test_inline_ref_inside_code_fence_does_not_count_as_anchor(self) -> None:
+        from app.services.deep_think_agent import _ensure_inline_images
+
+        text = (
+            "见下面的代码与说明。\n\n"
+            "```markdown\n"
+            "示例：![chart.png](results/chart.png)\n"
+            "```\n"
+        )
+        out = _ensure_inline_images(text, ["results/chart.png"])
+        # The fence-internal sample stays as documentation, and a real,
+        # rendering reference is appended outside the fence.
+        assert "示例：![chart.png](results/chart.png)\n```" in out
+        assert out.count("![chart.png](results/chart.png)") == 2
+        assert out.index("![chart.png](results/chart.png)", out.rindex("```")) > out.rindex("```")
+
+    def test_prose_mention_wins_over_fence_mention(self) -> None:
+        from app.services.deep_think_agent import _ensure_inline_images
+
+        text = (
+            "```python\n"
+            "fig.savefig(\"results/chart.png\")\n"
+            "```\n"
+            "柱状图见 results/chart.png，均值线已叠加。\n"
+        )
+        out = _ensure_inline_images(text, ["results/chart.png"])
+        lines = out.split("\n")
+        mention_idx = next(i for i, line in enumerate(lines) if "均值线已叠加" in line)
+        image_idx = next(i for i, line in enumerate(lines) if line.startswith("![chart.png]"))
+        # Inserted right after the prose mention (blank line, image, blank line).
+        assert image_idx == mention_idx + 2
+
+
 
 class TestStripRuntimeAbsolutePaths:
     """_strip_runtime_absolute_paths: container-absolute prefixes leave the final answer."""
