@@ -26,6 +26,7 @@ byte-identical.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from .continuation_hints import _current_user_turn_index_from_history
@@ -35,6 +36,51 @@ from .subject_identity import (
     canonicalize_subject_ref,
     subject_identity_matches,
 )
+
+
+_TRACEBACK_MARKER = "Traceback (most recent call last)"
+_EXCEPTION_LINE_RE = re.compile(
+    r"^([A-Za-z_][\w.]*?(?:Error|Exception|Warning|Exit|Interrupt|Timeout|Stop\w+))\s*(?::\s*(.*))?$"
+)
+_EXCEPTION_MENTION_RE = re.compile(r"([A-Za-z_][\w.]*?(?:Error|Exception|Stop\w+))\b")
+_CELL_FRAME_RE = re.compile(r'File "<cell>", line (\d+)')
+
+
+def _humanize_failure_message(message: str, *, limit: int = 240) -> str:
+    """Compress a raw traceback wall into one readable line for the user-facing
+    caveat (full detail stays in logs and tool results).
+
+    Takes the final ``XxxError: message`` line when present; otherwise the last
+    exception-type mention (upstream may truncate the wall before the exception
+    line); otherwise the last non-empty line. Appends the offending code-mode
+    cell line number when visible. Non-traceback text passes through, capped.
+    """
+    text = str(message or "").strip()
+    if not text:
+        return text
+    if _TRACEBACK_MARKER not in text:
+        return text if len(text) <= limit else text[: limit - 1] + "…"
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    summary = ""
+    for ln in reversed(lines):
+        match = _EXCEPTION_LINE_RE.match(ln)
+        if match:
+            exc_type = match.group(1).rsplit(".", 1)[-1]
+            detail = (match.group(2) or "").strip()
+            summary = f"{exc_type}: {detail}" if detail else exc_type
+            break
+    if not summary:
+        mentions = _EXCEPTION_MENTION_RE.findall(text + " ")
+        if mentions:
+            summary = mentions[-1].rsplit(".", 1)[-1]
+        elif lines:
+            summary = lines[-1]
+    cell_frames = _CELL_FRAME_RE.findall(text)
+    if cell_frames:
+        # Traceback frames run outermost → innermost; the last <cell> frame is
+        # the user's failing line.
+        summary = f"{summary}（cell 第 {cell_frames[-1]} 行）"
+    return summary if len(summary) <= limit else summary[: limit - 1] + "…"
 
 
 def _seed_active_subject_from_routing(
@@ -115,14 +161,15 @@ def _apply_grounded_local_answer(
                 return text
 
     if isinstance(failure_state, dict) and str(failure_state.get("error_message") or "").strip():
-        message = str(failure_state.get("error_message") or "").strip()
-        if message.lower() not in text.lower():
+        message = _humanize_failure_message(str(failure_state.get("error_message") or ""))
+        if message and message.lower() not in text.lower():
             return f"{text}\n\n⚠️ 本次操作未被验证成功：{message}"
 
     if isinstance(evidence_state, dict) and str(evidence_state.get("status") or "").strip().lower() == "failed":
         unresolved = evidence_state.get("unresolved")
         if isinstance(unresolved, list):
             details = "；".join(str(item).strip() for item in unresolved if str(item).strip())
+            details = _humanize_failure_message(details)
             if details and details.lower() not in text.lower():
                 return f"{text}\n\n⚠️ 本次操作未被验证成功：{details}"
 
