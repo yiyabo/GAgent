@@ -143,18 +143,21 @@ def _cost_env_key(provider: str, model: str, kind: str) -> str:
 
 
 _DEFAULT_COST_CNY_PER_1K: Dict[tuple[str, str], tuple[float, float]] = {
-    ("qwen", "qwen3.7-max"): (0.006, 0.018),
-    ("qwen_code_cli", "qwen3.7-max"): (0.006, 0.018),
-    ("qwen", "qwen-max"): (0.006, 0.018),
-    ("qwen_code_cli", "qwen-max"): (0.006, 0.018),
-    # The gateway prices both chat models off one row (sub2api
-    # `channel_model_pricing`: models ["qwen3.7-max", "qwen3.8-flash"] share
-    # 0.000024 input / 0.000072 output per token), so flash carries the same
-    # rate as max here. NOTE: that gateway row is 4x these per-1K numbers; the
-    # rate is a product decision (env override below wins), the table only has
-    # to stop returning zero for the lane that logs `platform/<model>`.
-    ("qwen", "qwen3.8-flash"): (0.006, 0.018),
-    # text-embedding-v3 list price (0.0005 CNY / 1K tokens).
+    ("qwen", "qwen3.7-max"): (0.024, 0.072),
+    ("qwen_code_cli", "qwen3.7-max"): (0.024, 0.072),
+    ("qwen", "qwen-max"): (0.024, 0.072),
+    ("qwen_code_cli", "qwen-max"): (0.024, 0.072),
+    # Verified against the gateway's own DB (sub2api postgres
+    # `channel_model_pricing` row 177, 2026-09-27): models
+    # ["qwen3.7-max", "qwen3.8-flash"] share input 0.000024 / output 0.000072
+    # per token (= 0.024/0.072 per 1K), billing_mode=token; the embedding row
+    # (0.0000005/token) cross-checks the unit as CNY per token. Until
+    # 2026-09-27 this table was 4x UNDER the gateway (0.006/0.018) — cost
+    # reports spanning the change show a one-time step up (reporting only,
+    # nothing gates on estimated_cost). Env override below still wins.
+    ("qwen", "qwen3.8-flash"): (0.024, 0.072),
+    # text-embedding list price 0.0005 CNY / 1K — matches gateway row 178
+    # (0.0000005/token), the unit cross-check above.
     ("qwen_embedding", "qwen3.7-text-embedding"): (0.0005, 0.0),
 }
 

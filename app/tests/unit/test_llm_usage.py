@@ -472,6 +472,22 @@ def test_embedding_model_carries_its_input_rate():
     assert cost["output_cost"] == 0.0
 
 
+def test_default_chat_rates_match_the_verified_gateway_pricing():
+    """Drift lock on the 2026-09-27 correction.
+
+    Ground truth is the gateway's own DB (sub2api postgres
+    `channel_model_pricing` row 177): qwen3.7-max / qwen3.8-flash share
+    0.000024 input / 0.000072 output per token = 0.024/0.072 CNY per 1K.
+    The table used to sit 4x under (0.006/0.018); it must not drift back.
+    """
+    from app.repository.llm_usage import _DEFAULT_COST_CNY_PER_1K
+
+    for key, rates in _DEFAULT_COST_CNY_PER_1K.items():
+        if "embedding" in key[1]:
+            continue
+        assert rates == (0.024, 0.072), key
+
+
 def test_unknown_model_still_costs_zero():
     """The fallback is by model name, not a blanket "anything goes" rate."""
     assert _cost("platform", "some-unlisted-model") == 0.0
