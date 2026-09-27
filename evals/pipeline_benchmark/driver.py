@@ -27,6 +27,22 @@ hedged synthesis answer. That artifact — not the lane under test — produced 
 t09/t26 failures and the 50% fallback rate in the split arms. The driver now
 mirrors the derivation instead of inheriting the wrong default.
 
+Fidelity boundary (2026-09-27, read before drawing production conclusions):
+this driver measures **DeepThinkAgent + registry dispatch** — NOT the full
+chat lane. Production wraps the loop's tool calls in a ~200-line chat-policy
+``tool_wrapper`` (app/routers/chat/agent.py:1913: plan rebinding,
+sequence/bio failure blocks, capability guard, per-tool param normalizers,
+progress channels). Reproducing it here would mean shipping a second copy of
+agent.py, so the driver does not; what it DOES mirror is the execution-relevant
+state (require_task_context derivation, ToolContext with session work_dir —
+the code-mode G1 lane, schema disclosure which attaches in think() setup).
+The known-biting gaps are closed; the residual delta is chat-layer policy.
+**When the question is about the production lane (router, guardrails, SSE,
+persistence), use evals/harness_benchmark/container_driver.py instead** — it
+runs start_background_chat_run(), the real chat-run worker chain. The t29
+weekend (2026-09-26/27) is the cautionary tale: a bench-shaped artifact was
+chased for hours as if it were a production-lane defect.
+
 Usage attribution mirrors the app startup: init_db() points the connection
 pool at the real main database ($DB_ROOT/main/plan_registry.db, default
 data/databases/main/plan_registry.db) instead of the pool's auto-init
