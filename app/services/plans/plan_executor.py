@@ -613,6 +613,7 @@ class PlanExecutor(_ArtifactMethods, _DelegateMethods, _DeepThinkMethods):
             call_purpose="plan_task_execution",
             phase="plan",
             run_id=f"plan_{plan_id}_task_{node.id}",
+            billing_lane="plan_task",
         )
         try:
 

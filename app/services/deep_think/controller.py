@@ -25,7 +25,7 @@ from datetime import datetime
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
-from app.llm import stream_chat_collect_async, update_usage_context
+from app.llm import stream_chat_collect_async, update_usage_context, current_usage_context
 from app.services.deep_think.models import (
     DeepThinkProtocolError,
     DeepThinkResult,
@@ -1590,6 +1590,20 @@ async def _think_native(
     )
 
 
+def _pin_iteration_billing_context() -> None:
+    """Pin the billing purpose for one deep-think iteration.
+
+    计费归因（口径 2026-09-29）：计划任务车道（billing_lane=plan_task）内的
+    深想迭代归属 plan.task_execution；计划外的对话深想记 deep_think.iteration。
+    billing_lane 不受 action/synthesis 的 purpose 覆盖污染；逐迭代重钉
+    purpose 以清除残留。
+    """
+    if current_usage_context().get("billing_lane") == "plan_task":
+        update_usage_context(call_purpose="plan_task_execution", phase="deep_think")
+    else:
+        update_usage_context(call_purpose="deep_think_iteration", phase="deep_think", tool_name="deep_think")
+
+
 async def _native_llm_step(
     agent: "DeepThinkAgent",
     *,
@@ -1623,7 +1637,7 @@ async def _native_llm_step(
                 except Exception:
                     pass
 
-        update_usage_context(call_purpose="deep_think_iteration", phase="deep_think", tool_name="deep_think")
+        _pin_iteration_billing_context()
         result = await agent.llm_client.stream_chat_with_tools_async(
             messages=messages,
             tools=tool_schemas,

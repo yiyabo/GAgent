@@ -9,7 +9,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Literal, Mapping, Optional, Sequence
 
-from app.llm import get_default_client
+from app.llm import get_default_client, usage_context_override
 
 from .guardrails import (
     extract_task_ids_from_text,
@@ -1498,13 +1498,14 @@ def _llm_routing_fallback(
 
     try:
         client = get_default_client()
-        response = client.chat(
-            prompt=prompt,
-            messages=[],
-            max_tokens=256,
-            timeout=8.0,
-            response_format={"type": "json_object"},
-        )
+        with usage_context_override(call_purpose="request_routing", phase="routing"):
+            response = client.chat(
+                prompt=prompt,
+                messages=[],
+                max_tokens=256,
+                timeout=8.0,
+                response_format={"type": "json_object"},
+            )
         if not isinstance(response, str):
             return None
         data = json.loads(response)

@@ -7,7 +7,7 @@ from typing import Any, Dict, Optional
 from pydantic import BaseModel, Field, ValidationError
 
 from ...config.decomposer_config import DecomposerSettings, get_decomposer_settings
-from ...llm import LLMClient
+from ...llm import LLMClient, usage_context_override
 from .llm_service import LLMService
 
 logger = logging.getLogger(__name__)
@@ -185,10 +185,11 @@ class PlanDecomposerLLMService:
         structured outputs and buffered calls get 504'd by the upstream
         gateway (LOCAL_INFRA §7; journey 2026-09-21 T3 reproduction).
         """
-        response = "".join(self._llm.stream_chat(
-            prompt,
-            model=self._settings.model,
-        ))
+        with usage_context_override(call_purpose="plan_decomposition", phase="plan"):
+            response = "".join(self._llm.stream_chat(
+                prompt,
+                model=self._settings.model,
+            ))
         cleaned = strip_code_fences(response)
         try:
             return DecompositionResponse.model_validate_json(cleaned)
@@ -198,7 +199,8 @@ class PlanDecomposerLLMService:
 
     def decide_search(self, prompt: str) -> str:
         """Ask the LLM whether plan generation needs external material collection."""
-        return "".join(self._llm.stream_chat(
-            prompt,
-            model=self._settings.model,
-        ))
+        with usage_context_override(call_purpose="plan_decomposition", phase="plan"):
+            return "".join(self._llm.stream_chat(
+                prompt,
+                model=self._settings.model,
+            ))

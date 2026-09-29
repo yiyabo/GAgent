@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
-from app.llm import LLMClient
+from app.llm import LLMClient, usage_context_override
 from app.repository.plan_repository import PlanRepository
 from app.services.foundation.settings import get_settings
 from app.services.llm.llm_service import LLMService
@@ -567,7 +567,8 @@ def _call_optimizer_llm(
 
     service = LLMService(client)
     try:
-        response = service.chat(prompt, model=model, temperature=0.0)
+        with usage_context_override(call_purpose="plan_optimize", phase="plan"):
+            response = service.chat(prompt, model=model, temperature=0.0)
         payload = service.parse_json_response(response)
     except Exception as exc:
         logger.warning("Plan optimizer LLM call failed: %s", exc)

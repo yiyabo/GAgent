@@ -1,7 +1,10 @@
 from typing import Any, Optional
 
+import time
+
 from app.config import SearchSettings, get_search_settings
 
+from ..invocation_meter import record_tool_invocation
 from .exceptions import WebSearchError
 from .providers import get_provider, init_default_providers
 from .result import WebSearchResult
@@ -37,9 +40,22 @@ async def dispatch(
             provider=provider_name,
         )
 
-    return await func(
-        query=query,
-        max_results=max_results,
-        settings=settings,
-        **kwargs,
-    )
+    started = time.monotonic()
+    call_status = "ok"
+    try:
+        return await func(
+            query=query,
+            max_results=max_results,
+            settings=settings,
+            **kwargs,
+        )
+    except Exception:
+        call_status = "error"
+        raise
+    finally:
+        # 按次计费落行（key tool.web_search）：一次 provider 搜索 = 一次付费调用
+        record_tool_invocation(
+            tool_name="web_search",
+            call_status=call_status,
+            duration_ms=(time.monotonic() - started) * 1000.0,
+        )

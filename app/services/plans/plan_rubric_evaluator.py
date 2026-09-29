@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
-from app.llm import LLMClient
+from app.llm import LLMClient, usage_context_override
 from app.services.plans.plan_models import PlanNode, PlanTree
 
 logger = logging.getLogger(__name__)
@@ -650,37 +650,38 @@ def _invoke_evaluator_client(
     # with 504s (LOCAL_INFRA §7; journey 2026-09-22 review_plan reproduction).
     # Keep the async fallback for custom evaluator stubs used in tests or
     # alternative integrations that only expose async methods.
-    if isinstance(client, LLMClient):
-        return "".join(client.stream_chat("", messages=messages, model=evaluator_model))
+    with usage_context_override(call_purpose="plan_review", phase="plan"):
+        if isinstance(client, LLMClient):
+            return "".join(client.stream_chat("", messages=messages, model=evaluator_model))
 
-    async def _runner() -> str:
-        stream_chat_async = getattr(client, "stream_chat_async", None)
-        if callable(stream_chat_async):
-            chunks: List[str] = []
-            async for chunk in stream_chat_async("", messages=messages, model=evaluator_model):
-                if chunk:
-                    chunks.append(str(chunk))
-            streamed = "".join(chunks).strip()
-            if streamed:
-                return streamed
+        async def _runner() -> str:
+            stream_chat_async = getattr(client, "stream_chat_async", None)
+            if callable(stream_chat_async):
+                chunks: List[str] = []
+                async for chunk in stream_chat_async("", messages=messages, model=evaluator_model):
+                    if chunk:
+                        chunks.append(str(chunk))
+                streamed = "".join(chunks).strip()
+                if streamed:
+                    return streamed
 
-        chat_async = getattr(client, "chat_async", None)
-        if callable(chat_async):
-            return await chat_async("", messages=messages, model=evaluator_model)
+            chat_async = getattr(client, "chat_async", None)
+            if callable(chat_async):
+                return await chat_async("", messages=messages, model=evaluator_model)
 
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(
-            None,
-            lambda: client.chat("", messages=messages, model=evaluator_model),
-        )
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(
+                None,
+                lambda: client.chat("", messages=messages, model=evaluator_model),
+            )
 
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(_runner())
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(_runner())
 
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        return executor.submit(lambda: asyncio.run(_runner())).result()
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            return executor.submit(lambda: asyncio.run(_runner())).result()
 
 
 def _client_from_model_provider(

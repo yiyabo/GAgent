@@ -1412,7 +1412,7 @@ def _build_evidence_md(records: List[PaperRecord], topic: str) -> str:
     return "\n".join(lines).strip() + "\n"
 
 
-async def literature_pipeline_handler(
+async def _literature_pipeline_handler_impl(
     query: str,
     *,
     max_results: int = 80,
@@ -1799,6 +1799,33 @@ async def literature_pipeline_handler(
         result["session_artifact_paths"] = output_files
 
     return result
+
+
+async def literature_pipeline_handler(query: str, **kwargs: Any) -> Dict[str, Any]:
+    """Metering wrapper: one fee row per pipeline invocation (key tool.literature_pipeline).
+
+    The pipeline itself makes no ledger-visible LLM call; the per-call row keeps
+    the registered billing key observable (口径 2026-09-29). Metering never
+    blocks or alters the handler result.
+    """
+    from .invocation_meter import record_tool_invocation
+
+    started = time.monotonic()
+    call_status = "ok"
+    try:
+        result = await _literature_pipeline_handler_impl(query, **kwargs)
+        if isinstance(result, dict) and result.get("success") is False:
+            call_status = "error"
+        return result
+    except Exception:
+        call_status = "error"
+        raise
+    finally:
+        record_tool_invocation(
+            tool_name="literature_pipeline",
+            call_status=call_status,
+            duration_ms=(time.monotonic() - started) * 1000.0,
+        )
 
 
 literature_pipeline_tool = {

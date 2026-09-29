@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import contextvars
 import traceback
 import uuid
@@ -259,6 +260,7 @@ def set_usage_context(
     phase: Optional[str] = None,
     tool_name: Optional[str] = None,
     billing_key: Optional[str] = None,
+    billing_lane: Optional[str] = None,
 ) -> contextvars.Token:
     resolved_billing_key = normalize_billing_key(
         billing_key or billing_key_for_purpose(call_purpose, tool_name)
@@ -272,6 +274,7 @@ def set_usage_context(
         "phase": phase,
         "tool_name": tool_name,
         "billing_key": resolved_billing_key,
+        "billing_lane": billing_lane,
     }
     return _usage_context.set(ctx)
 
@@ -301,6 +304,27 @@ def update_usage_context(**fields: Any) -> None:
 
 def clear_usage_context(token: contextvars.Token) -> None:
     _usage_context.reset(token)
+
+
+def current_usage_context() -> Dict[str, Any]:
+    """Snapshot of the ambient usage context (empty dict when unset)."""
+    ctx = _usage_context.get()
+    return dict(ctx) if isinstance(ctx, dict) else {}
+
+
+@contextlib.contextmanager
+def usage_context_override(**fields: Any) -> Iterator[None]:
+    """Temporarily merge attribution fields, restoring the prior context on exit.
+
+    Use for one-shot LLM calls (routing fallback, plan decompose/review/optimize)
+    whose billing key must not leak into subsequent calls in the same scope.
+    """
+    prev = _usage_context.get()
+    update_usage_context(**fields)
+    try:
+        yield
+    finally:
+        _usage_context.set(prev)
 
 
 def resolve_parent_run_id(child_run_id: Optional[str] = None) -> Optional[str]:
