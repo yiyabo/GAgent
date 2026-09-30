@@ -64,6 +64,8 @@ def run(dry_run: bool) -> int:
                 session_owner[session_id] = str(row[0]) if row and row[0] else None
             return session_owner[session_id]
 
+        from app.services.memory.memory_service import resolve_owner_id_for_task
+
         rows = conn.execute(
             "SELECT id, tags, related_task_id FROM memories WHERE owner_id IS NULL"
         ).fetchall()
@@ -76,18 +78,14 @@ def run(dry_run: bool) -> int:
             memory_id = row[0]
             session_id = _session_tag_of(row[1])
             owner_id: str | None = None
-            session_missing = False
             if session_id:
                 owner_id = owner_of_session(session_id)
-                session_missing = owner_id is None
-            if owner_id is None and row[2] is not None:
-                task_row = conn.execute(
-                    "SELECT s.owner_id FROM tasks t JOIN chat_sessions s ON s.id = t.session_id WHERE t.id = ?",
-                    (int(row[2]),),
-                ).fetchone()
-                if task_row and task_row[0]:
-                    owner_id = str(task_row[0])
-                    session_missing = False
+                if owner_id is None:
+                    # Source session was deleted -> purge regardless of other anchors.
+                    orphan_ids.append(memory_id)
+                    continue
+            elif row[2] is not None:
+                owner_id = resolve_owner_id_for_task(int(row[2]))
             if owner_id is not None:
                 if not dry_run:
                     conn.execute(
@@ -95,8 +93,6 @@ def run(dry_run: bool) -> int:
                         (owner_id, memory_id),
                     )
                 backfilled += 1
-            elif session_missing:
-                orphan_ids.append(memory_id)
             else:
                 unresolved += 1
 

@@ -142,9 +142,26 @@ def test_delete_memories_for_session_no_match(service) -> None:
 
 def test_owner_resolvers(service) -> None:
     _svc, conn = service
+    ms._task_owner_cache.clear()
     conn.execute("INSERT INTO chat_sessions (id, owner_id) VALUES ('s1', 'u1')")
-    conn.execute("INSERT INTO tasks (id, session_id) VALUES (5, 's1')")
+    conn.execute("CREATE TABLE plans (id INTEGER PRIMARY KEY, owner TEXT)")
+    conn.execute("INSERT INTO plans (id, owner) VALUES (42, 'u1')")
+    conn.execute("INSERT INTO plans (id, owner) VALUES (43, NULL)")
     conn.commit()
+
+    from app.repository.plan_storage import get_plan_db_path
+
+    shard_path = get_plan_db_path(42)
+    shard = sqlite3.connect(str(shard_path))
+    shard.execute("CREATE TABLE tasks (id INTEGER PRIMARY KEY, name TEXT)")
+    shard.execute("INSERT INTO tasks (id, name) VALUES (5, 't5')")
+    shard.commit()
+    shard.close()
+    empty_shard_path = get_plan_db_path(43)
+    empty_shard = sqlite3.connect(str(empty_shard_path))
+    empty_shard.execute("CREATE TABLE tasks (id INTEGER PRIMARY KEY, name TEXT)")
+    empty_shard.commit()
+    empty_shard.close()
 
     assert ms.resolve_owner_id_for_session("s1") == "u1"
     assert ms.resolve_owner_id_for_session("missing") is None
@@ -187,9 +204,18 @@ async def test_hooks_task_complete_resolves_owner(
     monkeypatch: pytest.MonkeyPatch, service
 ) -> None:
     _svc, conn = service
-    conn.execute("INSERT INTO chat_sessions (id, owner_id) VALUES ('s1', 'u1')")
-    conn.execute("INSERT INTO tasks (id, session_id) VALUES (7, 's1')")
+    ms._task_owner_cache.clear()
+    conn.execute("CREATE TABLE IF NOT EXISTS plans (id INTEGER PRIMARY KEY, owner TEXT)")
+    conn.execute("INSERT INTO plans (id, owner) VALUES (42, 'u1')")
     conn.commit()
+
+    from app.repository.plan_storage import get_plan_db_path
+
+    shard = sqlite3.connect(str(get_plan_db_path(42)))
+    shard.execute("CREATE TABLE IF NOT EXISTS tasks (id INTEGER PRIMARY KEY, name TEXT)")
+    shard.execute("INSERT OR REPLACE INTO tasks (id, name) VALUES (7, 't7')")
+    shard.commit()
+    shard.close()
 
     stub = _StubMemoryService()
     hooks = MemoryHooks.__new__(MemoryHooks)

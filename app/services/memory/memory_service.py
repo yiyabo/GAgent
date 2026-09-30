@@ -79,21 +79,52 @@ def resolve_owner_id_for_session(session_id: Optional[str]) -> Optional[str]:
     return None
 
 
+_task_owner_cache: Dict[int, Optional[str]] = {}
+
+
 def resolve_owner_id_for_task(task_id: Optional[int]) -> Optional[str]:
-    """Look up the owning user of a task via its session (None when unknown)."""
+    """Look up the owning user of a task (None when unknown).
+
+    Tasks live in per-plan SQLite shards (no global tasks table), so scan plan
+    DBs for the task id and read the plan's owner from the main ``plans``
+    table. Results are cached per process.
+    """
     if task_id is None:
         return None
+    tid = int(task_id)
+    if tid in _task_owner_cache:
+        return _task_owner_cache[tid]
+    owner: Optional[str] = None
     try:
         with get_db() as conn:
-            row = conn.execute(
-                "SELECT s.owner_id FROM tasks t JOIN chat_sessions s ON s.id = t.session_id WHERE t.id = ?",
-                (int(task_id),),
-            ).fetchone()
-        if row and row[0]:
-            return str(row[0])
+            plans = conn.execute("SELECT id, owner FROM plans").fetchall()
+        from ...repository.plan_storage import get_plan_db_path
+
+        for plan_row in plans:
+            plan_id, plan_owner = plan_row[0], plan_row[1]
+            try:
+                db_path = get_plan_db_path(plan_id)
+            except Exception:
+                continue
+            if not db_path.exists():
+                continue
+            shard = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
+            try:
+                hit = shard.execute(
+                    "SELECT 1 FROM tasks WHERE id = ?", (tid,)
+                ).fetchone()
+            except sqlite3.Error:
+                hit = None
+            finally:
+                shard.close()
+            if hit:
+                owner = str(plan_owner) if plan_owner else None
+                break
     except Exception as exc:
         logger.warning("resolve_owner_id_for_task failed for %s: %s", task_id, exc)
-    return None
+        return None
+    _task_owner_cache[tid] = owner
+    return owner
 
 
 class IntegratedMemoryService:
