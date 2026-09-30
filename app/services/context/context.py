@@ -447,18 +447,27 @@ def gather_context(
         except Exception as e:
             _CTX_LOGGER.warning(f"GLM semantic retrieval failed: {e}")
 
-    # 7) Memory system retrieval - query relevant memories
+    # 7) Memory system retrieval - query relevant memories (owner-isolated)
     try:
-        from ...services.memory.memory_service import get_memory_service
+        from ...services.memory.memory_service import (
+            get_memory_service,
+            resolve_owner_id_for_session,
+        )
         from ...models_memory import QueryMemoryRequest
 
         memory_service = get_memory_service()
+
+        owner_id = None
+        me_task = _get_task_by_id(task_id, repo)
+        if isinstance(me_task, dict):
+            owner_id = resolve_owner_id_for_session(me_task.get("session_id"))
 
         # Query memories using the same query text
         memory_request = QueryMemoryRequest(
             search_text=query_text,
             limit=3,  # Limit to top 3 memories
             min_similarity=0.5,  # Higher threshold for memories
+            owner_id=owner_id,
         )
 
         # Run async query synchronously

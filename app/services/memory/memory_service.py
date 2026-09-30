@@ -54,6 +54,48 @@ def _coerce_memory_embedding_for_query(
     return raw_vector
 
 
+def _ensure_owner_column(conn: sqlite3.Connection) -> None:
+    """Idempotent migration: memories.owner_id + index (recall is owner-isolated)."""
+    cols = {row[1] for row in conn.execute("PRAGMA table_info(memories)").fetchall()}
+    if "owner_id" not in cols:
+        conn.execute("ALTER TABLE memories ADD COLUMN owner_id TEXT")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_owner ON memories(owner_id)")
+    conn.commit()
+
+
+def resolve_owner_id_for_session(session_id: Optional[str]) -> Optional[str]:
+    """Look up the owning user of a chat session (None when unknown)."""
+    if not session_id:
+        return None
+    try:
+        with get_db() as conn:
+            row = conn.execute(
+                "SELECT owner_id FROM chat_sessions WHERE id = ?", (session_id,)
+            ).fetchone()
+        if row and row[0]:
+            return str(row[0])
+    except Exception as exc:
+        logger.warning("resolve_owner_id_for_session failed for %s: %s", session_id, exc)
+    return None
+
+
+def resolve_owner_id_for_task(task_id: Optional[int]) -> Optional[str]:
+    """Look up the owning user of a task via its session (None when unknown)."""
+    if task_id is None:
+        return None
+    try:
+        with get_db() as conn:
+            row = conn.execute(
+                "SELECT s.owner_id FROM tasks t JOIN chat_sessions s ON s.id = t.session_id WHERE t.id = ?",
+                (int(task_id),),
+            ).fetchone()
+        if row and row[0]:
+            return str(row[0])
+    except Exception as exc:
+        logger.warning("resolve_owner_id_for_task failed for %s: %s", task_id, exc)
+    return None
+
+
 class IntegratedMemoryService:
     """memoryservice - , support session """
 
@@ -112,6 +154,7 @@ class IntegratedMemoryService:
                 context TEXT DEFAULT 'General',
                 tags TEXT,
                 related_task_id INTEGER,
+                owner_id TEXT,
                 links TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 last_accessed TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -142,6 +185,8 @@ class IntegratedMemoryService:
         conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_created_at ON memories(created_at)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_embeddings_model ON memory_embeddings(embedding_model)")
 
+        _ensure_owner_column(conn)
+
         conn.commit()
 
     def _ensure_memory_tables(self):
@@ -158,6 +203,7 @@ class IntegratedMemoryService:
                     context TEXT DEFAULT 'General',
                     tags TEXT,
                     related_task_id INTEGER,
+                    owner_id TEXT,
                     links TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     last_accessed TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -188,6 +234,8 @@ class IntegratedMemoryService:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_memories_created_at ON memories(created_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_memory_embeddings_model ON memory_embeddings(embedding_model)")
 
+            _ensure_owner_column(conn)
+
             conn.commit()
 
     async def save_memory(self, request: SaveMemoryRequest) -> SaveMemoryResponse:
@@ -217,6 +265,7 @@ class IntegratedMemoryService:
                 context=context,
                 tags=tags,
                 related_task_id=request.related_task_id,
+                owner_id=request.owner_id,
                 created_at=datetime.now(),
                 last_accessed=datetime.now(),
             )
@@ -258,6 +307,16 @@ class IntegratedMemoryService:
                 type_placeholders = ",".join(["?" for _ in request.memory_types])
                 where_conditions.append(f"memory_type IN ({type_placeholders})")
                 params.extend([t.value for t in request.memory_types])
+
+            if not request.session_id:
+                # Global store: recall is owner-isolated and fail-closed.
+                if not request.owner_id:
+                    logger.warning(
+                        "query_memory on global store without owner_id; returning empty"
+                    )
+                    return QueryMemoryResponse(memories=[], total=0, search_time_ms=0.0)
+                where_conditions.append("owner_id = ?")
+                params.append(request.owner_id)
 
             memories = await self._semantic_search(
                 query=request.search_text,
@@ -359,9 +418,9 @@ Return the analysis result in JSON format:
                 """
                 INSERT INTO memories (
                     id, content, memory_type, importance, keywords, context, tags,
-                    related_task_id, links, created_at, last_accessed, retrieval_count,
+                    related_task_id, owner_id, links, created_at, last_accessed, retrieval_count,
                     evolution_history, embedding_generated, embedding_model
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
                 (
                     memory_note.id,
@@ -372,6 +431,7 @@ Return the analysis result in JSON format:
                     memory_note.context,
                     json.dumps(memory_note.tags),
                     memory_note.related_task_id,
+                    memory_note.owner_id,
                     json.dumps(memory_note.links),
                     memory_note.created_at,
                     memory_note.last_accessed,
@@ -675,7 +735,8 @@ Return the analysis result in JSON format:
                 search_text=memory_note.content,
                 limit=5,
                 min_similarity=0.6,
-                session_id=session_id
+                session_id=session_id,
+                owner_id=memory_note.owner_id,
             )
 
             related_memories = await self.query_memory(query_request)
@@ -731,6 +792,45 @@ Return the analysis result in JSON format:
     async def _evolve_single_memory(self, memory_row):
         """memory"""
         pass
+
+    def delete_memories_for_session(self, session_id: str) -> int:
+        """Delete global-store memories tagged ``session:<id>`` (session-delete cascade).
+
+        Also removes the per-session memory database file when present.
+        Never raises for missing data; returns the number of deleted memories.
+        """
+        if not session_id:
+            return 0
+        pattern = f'%"session:{session_id}"%'
+        deleted = 0
+        with get_db() as conn:
+            ids = [
+                row[0]
+                for row in conn.execute(
+                    "SELECT id FROM memories WHERE tags LIKE ?", (pattern,)
+                ).fetchall()
+            ]
+            if ids:
+                placeholders = ",".join("?" for _ in ids)
+                conn.execute(
+                    f"DELETE FROM memory_embeddings WHERE memory_id IN ({placeholders})",
+                    tuple(ids),
+                )
+                cursor = conn.execute(
+                    f"DELETE FROM memories WHERE id IN ({placeholders})",
+                    tuple(ids),
+                )
+                deleted = cursor.rowcount
+                conn.commit()
+        try:
+            db_path = self.db_config.get_session_db_path(session_id)
+            if db_path.exists():
+                db_path.unlink()
+        except OSError as exc:
+            logger.warning("Failed to remove session memory db for %s: %s", session_id, exc)
+        if deleted:
+            logger.info("Deleted %s memories for session %s", deleted, session_id)
+        return deleted
 
     async def get_memory_stats(self) -> MemoryStats:
         """getmemorysystemstatistics"""

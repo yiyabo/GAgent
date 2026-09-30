@@ -7,7 +7,7 @@ Provides MCP-compatible memory management endpoints integrated with the main sys
 import logging
 from typing import Any, Dict
 
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, HTTPException, Request
 
 from ..models_memory import (
     MemoryStats,
@@ -16,7 +16,11 @@ from ..models_memory import (
     SaveMemoryRequest,
     SaveMemoryResponse,
 )
-from ..services.memory.memory_service import get_memory_service
+from ..services.memory.memory_service import (
+    get_memory_service,
+    resolve_owner_id_for_session,
+)
+from ..services.request_principal import get_request_owner_id
 from ..services.memory.memory_hooks import get_memory_hooks
 from ..services.memory.chat_memory_middleware import get_chat_memory_middleware
 from ..routers import register_router
@@ -37,13 +41,15 @@ register_router(
 
 
 @memory_router.post("/save_memory", response_model=Dict[str, Any])
-async def save_memory_endpoint(request: SaveMemoryRequest):
+async def save_memory_endpoint(request: SaveMemoryRequest, raw_request: Request):
     """
     Save memory to the system
 
     Compatible with Memory-MCP save_memory interface
     """
     try:
+        # Ownership always comes from the request principal, never the payload.
+        request.owner_id = get_request_owner_id(raw_request)
         memory_service = get_memory_service()
         response = await memory_service.save_memory(request)
 
@@ -76,13 +82,15 @@ async def save_memory_endpoint(request: SaveMemoryRequest):
 
 
 @memory_router.post("/query_memory", response_model=Dict[str, Any])
-async def query_memory_endpoint(request: QueryMemoryRequest):
+async def query_memory_endpoint(request: QueryMemoryRequest, raw_request: Request):
     """
     Query memory
 
     Compatible with Memory-MCP query_memory interface
     """
     try:
+        # Ownership always comes from the request principal, never the payload.
+        request.owner_id = get_request_owner_id(raw_request)
         memory_service = get_memory_service()
         response = await memory_service.query_memory(request)
 
@@ -207,6 +215,7 @@ async def auto_save_task_memory(task_data: Dict[str, Any] = Body(...)):
             tags=["task_output", "auto_generated"],
             related_task_id=task_id,
             session_id=session_id,  # support session
+            owner_id=resolve_owner_id_for_session(session_id),
         )
 
         memory_service = get_memory_service()

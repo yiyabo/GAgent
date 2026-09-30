@@ -1062,6 +1062,16 @@ async def delete_chat_session(
                         session_id,
                         exc,
                     )
+                try:
+                    from ...services.memory.memory_service import get_memory_service
+
+                    get_memory_service().delete_memories_for_session(session_id)
+                except Exception as mem_exc:
+                    logger.warning(
+                        "Failed to delete memories for %s: %s",
+                        session_id,
+                        mem_exc,
+                    )
         return Response(status_code=204)
     except HTTPException:
         raise

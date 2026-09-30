@@ -49,6 +49,9 @@ class MemoryNote(BaseModel):
     related_task_id: Optional[int] = Field(default=None, description="Related task ID")
     links: List[str] = Field(default_factory=list, description="Related memory ID list")
 
+    # Ownership (recall is isolated per owner)
+    owner_id: Optional[str] = Field(default=None, description="Owning user ID for recall isolation")
+
     # Time information
     created_at: datetime = Field(default_factory=datetime.now, description="Creation time")
     last_accessed: datetime = Field(default_factory=datetime.now, description="Last access time")
@@ -83,6 +86,9 @@ class SaveMemoryRequest(BaseModel):
 
     # Session isolation
     session_id: Optional[str] = Field(default=None, description="Session ID for memory isolation")
+
+    # Ownership (recall is isolated per owner)
+    owner_id: Optional[str] = Field(default=None, description="Owning user ID for recall isolation")
 
     @field_validator("content")
     def content_must_not_be_empty(cls, v):
@@ -120,6 +126,9 @@ class QueryMemoryRequest(BaseModel):
 
     # Session isolation
     session_id: Optional[str] = Field(default=None, description="Session ID for memory isolation")
+
+    # Ownership: required for global-store recall (fail-closed when absent)
+    owner_id: Optional[str] = Field(default=None, description="Owning user ID for recall isolation")
 
 
 class MemoryItem(BaseModel):

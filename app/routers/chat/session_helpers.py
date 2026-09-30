@@ -1098,6 +1098,7 @@ def _save_chat_message(
                         role=role,
                         session_id=session_id,
                         model_provider=model_provider,
+                        owner_id=owner_id,
                     )
                 )
             except Exception as mem_err:

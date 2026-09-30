@@ -13,7 +13,11 @@ from ...models_memory import (
     MemoryType,
     SaveMemoryRequest,
 )
-from .memory_service import get_memory_service
+from .memory_service import (
+    get_memory_service,
+    resolve_owner_id_for_session,
+    resolve_owner_id_for_task,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +85,7 @@ class MemoryHooks:
                 importance=importance,
                 tags=tags,
                 related_task_id=task_id,
+                owner_id=resolve_owner_id_for_task(task_id),
             )
 
             response = await self.memory_service.save_memory(request)
@@ -128,6 +133,7 @@ class MemoryHooks:
                 memory_type=MemoryType.CONVERSATION,
                 importance=importance,
                 tags=tags,
+                owner_id=resolve_owner_id_for_session(session_id),
             )
 
             response = await self.memory_service.save_memory(request)
@@ -179,6 +185,7 @@ class MemoryHooks:
                 importance=ImportanceLevel.HIGH,
                 tags=["error", error_type],
                 related_task_id=task_id,
+                owner_id=resolve_owner_id_for_task(task_id),
             )
 
             response = await self.memory_service.save_memory(request)
@@ -270,6 +277,7 @@ class MemoryHooks:
                 importance=importance,
                 tags=["evaluation", f"score:{score:.2f}"],
                 related_task_id=task_id,
+                owner_id=resolve_owner_id_for_task(task_id),
             )
 
             response = await self.memory_service.save_memory(request)

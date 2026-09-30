@@ -31,6 +31,7 @@ class ChatMemoryMiddleware:
         session_id: Optional[str] = None,
         force_save: bool = False,
         model_provider: Optional[dict] = None,
+        owner_id: Optional[str] = None,
     ) -> Optional[str]:
         """
         Process one chat message and conditionally persist it to memory.
@@ -40,6 +41,7 @@ class ChatMemoryMiddleware:
             role: Message role (`user`/`assistant`).
             session_id: Optional session ID.
             force_save: Force save without LLM decision.
+            owner_id: Owning user ID (recall is owner-isolated).
 
         Returns:
             Saved memory ID, or `None` when not saved.
@@ -75,6 +77,7 @@ class ChatMemoryMiddleware:
                 memory_type=memory_type,
                 importance=importance,
                 tags=tags,
+                owner_id=owner_id,
             )
 
             response = await memory_service.save_memory(request)

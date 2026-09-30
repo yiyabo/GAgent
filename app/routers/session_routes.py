@@ -194,6 +194,13 @@ async def delete_session(session_id: str):
             except Exception as e:
                 logger.warning("Failed to delete session storage for %s: %s", session_id, e)
 
+            try:
+                from ..services.memory.memory_service import get_memory_service
+
+                get_memory_service().delete_memories_for_session(session_id)
+            except Exception as mem_exc:
+                logger.warning("Failed to delete memories for %s: %s", session_id, mem_exc)
+
             return {
                 "message": f"Session deleted successfully",
                 "session_id": session_id,
