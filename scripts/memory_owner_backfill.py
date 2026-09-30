@@ -44,8 +44,12 @@ def _session_tag_of(tags_raw: str | None) -> str | None:
 
 
 def run(dry_run: bool) -> int:
-    from app.database import get_db
+    from app.database import get_db, init_db
     from app.services.memory.memory_service import _ensure_owner_column
+
+    # Required: without init_db() the pool auto-initializes onto the default
+    # tasks.db shell instead of the real main database.
+    init_db()
 
     with get_db() as conn:
         _ensure_owner_column(conn)
