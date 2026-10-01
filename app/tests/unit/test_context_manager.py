@@ -232,3 +232,111 @@ class TestSummarizationPrompt:
         assert "User asked about files." in prompt
         assert "Concise summary" in prompt
         assert "bullet points" in prompt
+
+
+class TestToolConversationCompaction:
+    @pytest.mark.asyncio
+    async def test_reused_ids_keep_each_result_with_its_preceding_call(self):
+        def call(path):
+            return {
+                "role": "assistant", "content": "",
+                "tool_calls": [{"id": "call_0", "type": "function", "function": {
+                    "name": "read_file", "arguments": f'{{"path":"{path}"}}',
+                }}],
+            }
+
+        messages = [
+            {"role": "system", "content": "Read both inputs."},
+            {"role": "user", "content": "Start."},
+            call("first.csv"),
+            {"role": "tool", "tool_call_id": "call_0", "content": "first result"},
+            {"role": "user", "content": "Read the next file."},
+            {"role": "assistant", "content": "Continuing."},
+            call("second.csv"),
+            {"role": "tool", "tool_call_id": "call_0", "content": "second result"},
+            {"role": "assistant", "content": "Both files read."},
+        ]
+
+        async def summarize(_text):
+            return "The user requested both inputs."
+
+        compacted = await ContextWindowManager().compact_if_needed(
+            messages, summarizer=summarize, force=True,
+        )
+        pending = set()
+        calls_kept = 0
+        for message in compacted:
+            for tool_call in message.get("tool_calls") or []:
+                pending.add(tool_call["id"])
+                calls_kept += 1
+            if message["role"] == "tool":
+                assert message["tool_call_id"] in pending
+                pending.remove(message["tool_call_id"])
+        assert calls_kept == 2
+        assert not pending
+
+    @pytest.mark.asyncio
+    async def test_retained_results_keep_their_entire_tool_call_batch(self):
+        messages = [
+            {"role": "system", "content": "Keep the active task."},
+            {"role": "user", "content": "Inspect both inputs."},
+            {
+                "role": "assistant", "content": "",
+                "tool_calls": [
+                    {"id": "read-a", "type": "function", "function": {"name": "read_file", "arguments": '{"path":"a.csv"}'}},
+                    {"id": "read-b", "type": "function", "function": {"name": "read_file", "arguments": '{"path":"b.csv"}'}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "read-a", "content": "rows=10"},
+            {"role": "tool", "tool_call_id": "read-b", "content": "rows=20"},
+            {"role": "user", "content": "Compare them."},
+            {"role": "assistant", "content": "The second input is larger."},
+            {"role": "user", "content": "Keep working."},
+            {"role": "assistant", "content": "I will use both inputs."},
+        ]
+
+        async def summarize(_text):
+            return "The user requested an input comparison."
+
+        compacted = await ContextWindowManager().compact_if_needed(
+            messages, summarizer=summarize, force=True,
+        )
+        calls = {
+            call["id"]
+            for message in compacted
+            for call in message.get("tool_calls", [])
+        }
+        results = {message["tool_call_id"] for message in compacted if message["role"] == "tool"}
+        assert results == calls == {"read-a", "read-b"}
+        assert compacted[-1] == messages[-1]
+
+    @pytest.mark.asyncio
+    async def test_summary_receives_tool_names_arguments_and_result_identity(self):
+        messages = [
+            {"role": "system", "content": "Preserve file provenance."},
+            {"role": "user", "content": "Inspect this file."},
+            {
+                "role": "assistant", "content": "",
+                "tool_calls": [{
+                    "id": "read-origin", "type": "function",
+                    "function": {"name": "read_file", "arguments": '{"path":"cohort/input.csv"}'},
+                }],
+            },
+            {"role": "tool", "tool_call_id": "read-origin", "content": "sample_count=10"},
+            *[{"role": "user", "content": f"Follow-up {i}"} for i in range(8)],
+        ]
+        summary_inputs = []
+
+        async def summarize(text):
+            summary_inputs.append(text)
+            return "The file cohort/input.csv has ten samples."
+
+        compacted = await ContextWindowManager().compact_if_needed(
+            messages, summarizer=summarize, force=True,
+        )
+        assert len(compacted) < len(messages)
+        assert len(summary_inputs) == 1
+        assert "read_file" in summary_inputs[0]
+        assert "cohort/input.csv" in summary_inputs[0]
+        assert "read-origin" in summary_inputs[0]
+        assert "sample_count=10" in summary_inputs[0]

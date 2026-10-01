@@ -180,8 +180,8 @@ class ContextWindowManager:
     WARNING_RATIO = 0.75
     CRITICAL_RATIO = 0.90
 
-    # How many recent messages to keep intact during compaction.
-    # These are never summarized — only older messages are compressed.
+    # Minimum recent messages to keep intact during compaction. A tool-call
+    # batch crossing this boundary is retained in full, including all results.
     KEEP_RECENT = 6
 
     # Minimum messages required before compaction triggers.
@@ -244,7 +244,8 @@ class ContextWindowManager:
 
         Returns:
             Potentially shortened message list. The first message (system
-            prompt) and last KEEP_RECENT messages are always preserved.
+            prompt) and at least the last KEEP_RECENT messages are preserved.
+            The boundary never splits a tool call from its retained results.
         """
         if len(messages) < self.MIN_MESSAGES_FOR_COMPACTION:
             return messages
@@ -267,6 +268,7 @@ class ContextWindowManager:
         start_idx = 1 if system_msg else 0
         keep_count = min(self.KEEP_RECENT, len(messages) - start_idx)
         split_point = len(messages) - keep_count
+        split_point = self._tool_safe_split_point(messages, split_point, start_idx)
 
         if split_point <= start_idx:
             logger.info("[CONTEXT] Not enough compactable messages, skipping")
@@ -320,6 +322,39 @@ class ContextWindowManager:
         return result
 
     @staticmethod
+    def _tool_safe_split_point(
+        messages: List[Dict[str, Any]], split_point: int, start_idx: int,
+    ) -> int:
+        """Keep every call needed by a retained tool result on the same side.
+
+        Moving backwards may expose results from another batch, so repeat
+        until the boundary is stable. If the whole history is one batch,
+        retaining it is preferable to constructing an invalid conversation.
+        """
+        call_positions: Dict[str, int] = {}
+        result_call_positions: Dict[int, int] = {}
+        for index, message in enumerate(messages):
+            if message.get("role") == "assistant":
+                for call in message.get("tool_calls") or []:
+                    if isinstance(call, dict) and call.get("id"):
+                        call_positions[str(call["id"])] = index
+            elif message.get("role") == "tool":
+                # Some providers reuse call IDs in later rounds. Capture the
+                # nearest preceding call now, before a later batch replaces it.
+                call_index = call_positions.get(str(message.get("tool_call_id") or ""))
+                if call_index is not None:
+                    result_call_positions[index] = call_index
+        while split_point > start_idx:
+            earlier = split_point
+            for result_index, call_index in result_call_positions.items():
+                if result_index >= split_point and start_idx <= call_index < earlier:
+                    earlier = call_index
+            if earlier == split_point:
+                break
+            split_point = earlier
+        return split_point
+
+    @staticmethod
     def _messages_to_text(messages: List[Dict[str, Any]]) -> str:
         """Convert messages to a plain text block for summarization."""
         lines: List[str] = []
@@ -335,12 +370,24 @@ class ContextWindowManager:
                     elif isinstance(part, str):
                         parts.append(part)
                 content = "\n".join(p for p in parts if p)
+            if not isinstance(content, str):
+                content = json.dumps(content, ensure_ascii=False, default=str) if content else ""
+            call_parts: List[str] = []
+            tool_calls = msg.get("tool_calls")
+            if tool_calls:
+                call_parts.append("Tool calls: " + json.dumps(tool_calls, ensure_ascii=False, default=str))
+            if msg.get("function_call"):
+                call_parts.append("Function call: " + json.dumps(msg["function_call"], ensure_ascii=False, default=str))
+            if call_parts:
+                content = "\n".join([*call_parts, content]).strip()
             if not content:
                 continue
             # Truncate very long messages to keep summarization prompt manageable
             if len(content) > 2000:
                 content = content[:1800] + "\n...[truncated]"
-            lines.append(f"[{role}]: {content}")
+            result_id = msg.get("tool_call_id")
+            label = f"{role} result of {result_id}" if result_id else role
+            lines.append(f"[{label}]: {content}")
         return "\n\n".join(lines)
 
 

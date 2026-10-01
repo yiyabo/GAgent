@@ -220,9 +220,10 @@ class PlanExecutor(_ArtifactMethods, _DelegateMethods, _DeepThinkMethods):
         tree = self._infer_missing_dependencies(tree)
         tree = self._normalize_plan_dependency_edges(tree)
         
-        # Use structure-based ordering (post-order traversal) instead of dependency-based
+        # Display position is not an execution dependency. Use the shared
+        # topological phases, which also keep synthesis parents after children.
         from app.services.plans.todo_list import build_full_plan_todo_list
-        todo = build_full_plan_todo_list(tree, expand_composites=True, ordering_mode="structure")
+        todo = build_full_plan_todo_list(tree, expand_composites=True, ordering_mode="dependency_phase")
         order = [tree.nodes[task_id] for task_id in todo.execution_order if task_id in tree.nodes]
 
         if cfg.max_tasks is not None:
