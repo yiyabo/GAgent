@@ -31,6 +31,22 @@ def test_explicit_contract_is_authoritative() -> None:
     assert resolved.publishes() == ["ai_dl.evidence_md"]
 
 
+def test_source_marked_contract_aliases_remain_inferred() -> None:
+    resolved = resolve_artifact_contract_with_provenance(
+        task_name="Generated task", instruction="",
+        metadata={"artifact_contract": {
+            "source": "inferred_text",
+            "requires": ["ai_dl.references_bib"],
+            "publishes": ["ai_dl.evidence_md"],
+        }},
+    )
+    assert resolved.explicit_requires == []
+    assert resolved.explicit_publishes == []
+    assert resolved.inferred_requires == ["ai_dl.references_bib"]
+    assert resolved.inferred_publishes == ["ai_dl.evidence_md"]
+    assert resolved.contract_source == "inferred"
+
+
 def test_inferred_contract_marked_as_fallback() -> None:
     resolved = resolve_artifact_contract_with_provenance(
         task_name="AI evidence task",

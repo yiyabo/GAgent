@@ -36,6 +36,7 @@ from .model_metric_schema import (
     missing_required_model_metrics,
 )
 from .plan_models import PlanNode
+from .task_metadata_generator import is_inferred_task_spec
 from .verification_checks import _CheckMethods
 from .verification_discovery import _DiscoveryMethods
 from .verification_records import _RecordMethods
@@ -92,6 +93,55 @@ class TaskVerificationService(_CueMethods, _PathMethods, _CheckMethods, _Discove
             return status == "accepted"
         accepted = manual_acceptance.get("accepted")
         return accepted is True
+
+    @classmethod
+    def has_authoritative_verification_failure(
+        cls, node: PlanNode, metadata: Optional[Dict[str, Any]]
+    ) -> bool:
+        """Recognize rejected explicit/hard checks, including older warning payloads.
+
+        Ordinary generated checks remain advisory. A criteria block explicitly
+        marked nonblocking stays advisory even when it contains hard checks.
+        """
+        if not isinstance(metadata, dict) or cls.is_manual_acceptance_active(metadata):
+            return False
+        verification = metadata.get("verification")
+        verification = verification if isinstance(verification, dict) else {}
+        status = str(verification.get("status") or metadata.get("verification_status") or "").strip().lower()
+        if status not in {"failed", "warning", "config_error"}:
+            return False
+        failures = (
+            verification.get("failures")
+            or metadata.get("verification_warnings")
+            or metadata.get("verification_config_errors")
+            or []
+        )
+        if status != "failed" and not failures:
+            return False
+        criteria = (node.metadata or {}).get("acceptance_criteria")
+        if not isinstance(criteria, dict):
+            criteria = metadata.get("acceptance_criteria")
+        if isinstance(criteria, dict) and cls._has_checks(criteria):
+            if not bool(criteria.get("blocking", True)):
+                return False
+            if not is_inferred_task_spec(criteria):
+                return True
+            # Saved heuristic checks do not become explicit just because a
+            # previous verifier record used generated=False. Hard integrity
+            # failures from the current inferred pipeline remain authoritative.
+            if verification.get("blocking") is False:
+                return False
+            return any(isinstance(item, dict) and item.get("hard") for item in failures) or bool(
+                verification.get("generated") is True
+                and (metadata.get("verification_authoritative") or verification.get("authoritative"))
+            )
+        if verification.get("blocking") is False:
+            return False
+        if metadata.get("verification_authoritative") or verification.get("authoritative"):
+            return True
+        if verification.get("generated") is False and verification.get("blocking") is True:
+            return True
+        return any(isinstance(item, dict) and item.get("hard") for item in failures)
 
     @staticmethod
     def _is_delegation_successfully_executed(metadata: Optional[Dict[str, Any]]) -> bool:
@@ -184,6 +234,7 @@ class TaskVerificationService(_CueMethods, _PathMethods, _CheckMethods, _Discove
         metadata.pop("failure_kind", None)
         metadata.pop("contract_diff", None)
         metadata.pop("plan_patch_suggestion", None)
+        metadata.pop("verification_authoritative", None)
 
         effective_criteria, generated = self._effective_acceptance_criteria(node)
 
@@ -330,17 +381,23 @@ class TaskVerificationService(_CueMethods, _PathMethods, _CheckMethods, _Discove
                 # Defensive: _run_check should never return None, but if it
                 # does, treat it as an error rather than silently skipping.
                 logger.warning("Verification check returned None for: %s", raw_check)
-                failures.append({
+                failure = {
                     "type": str((raw_check or {}).get("type", "unknown")),
                     "success": False,
                     "message": "Check returned no result.",
-                })
+                }
+                if isinstance(raw_check, dict) and bool(raw_check.get("hard")):
+                    failure["hard"] = True
+                    hard_failures.append(failure)
+                failures.append(failure)
                 checks_executed += 1
                 continue
             checks_executed += 1
             if outcome["success"]:
                 checks_passed += 1
             else:
+                if isinstance(raw_check, dict) and bool(raw_check.get("hard")):
+                    outcome["hard"] = True
                 failures.append(outcome)
                 if isinstance(raw_check, dict) and bool(raw_check.get("hard")):
                     hard_failures.append(outcome)
@@ -357,6 +414,9 @@ class TaskVerificationService(_CueMethods, _PathMethods, _CheckMethods, _Discove
             artifact_paths=local_artifact_paths,
         )
         metadata["verification_status"] = verification_status
+        authoritative = blocking and (not generated or bool(hard_failures))
+        metadata["verification_authoritative"] = authoritative
+        verification["authoritative"] = authoritative
         contract_diff: Optional[Dict[str, List[str]]] = None
         if failures:
             contract_diff = self._build_contract_diff(
@@ -443,6 +503,7 @@ class TaskVerificationService(_CueMethods, _PathMethods, _CheckMethods, _Discove
 
         if (
             failures
+            and not authoritative
             and self._failures_are_verification_config_errors(failures)
             and self._has_output_evidence(local_artifact_paths)
             and normalized_execution_status in _COMPLETED_LIKE
@@ -489,7 +550,11 @@ class TaskVerificationService(_CueMethods, _PathMethods, _CheckMethods, _Discove
             f for f in failures
             if isinstance(f, dict) and f.get("format_mismatch")
         ]
-        if format_mismatch_failures and (normalized_execution_status in _COMPLETED_LIKE or execution_output_recovered):
+        if (
+            not authoritative
+            and format_mismatch_failures
+            and (normalized_execution_status in _COMPLETED_LIKE or execution_output_recovered)
+        ):
             metadata["format_mismatch_recovery"] = True
             metadata["verification_status"] = "warning"
             metadata["verification_warning"] = True
@@ -515,7 +580,7 @@ class TaskVerificationService(_CueMethods, _PathMethods, _CheckMethods, _Discove
                     artifact_paths=local_artifact_paths,
                 )
 
-        if failures and normalized_execution_status in _COMPLETED_LIKE and not hard_failures:
+        if failures and not authoritative and normalized_execution_status in _COMPLETED_LIKE and not hard_failures:
             source_discovery_verification = self._source_discovery_verification(
                 node=node,
                 criteria=effective_criteria,
@@ -620,6 +685,7 @@ class TaskVerificationService(_CueMethods, _PathMethods, _CheckMethods, _Discove
 
         if (
             failures
+            and not authoritative
             and (normalized_execution_status in _COMPLETED_LIKE or execution_output_recovered)
             and trigger != "manual"
             and self._has_output_evidence(local_artifact_paths)
@@ -1052,11 +1118,8 @@ class TaskVerificationService(_CueMethods, _PathMethods, _CheckMethods, _Discove
         metadata["artifact_authority"] = authority_summary
 
         manual_acceptance_active = self.is_manual_acceptance_active(metadata)
-        delegation_success = self._is_delegation_successfully_executed(metadata)
-
         if (
             not manual_acceptance_active
-            and not delegation_success
             and require_aliases
             and finalization.final_status in _COMPLETED_LIKE
             and missing_require_aliases
@@ -1069,16 +1132,15 @@ class TaskVerificationService(_CueMethods, _PathMethods, _CheckMethods, _Discove
 
         if (
             not manual_acceptance_active
-            and not delegation_success
             and publish_aliases
             and finalization.final_status in _COMPLETED_LIKE
             and missing_publish_aliases
         ):
-            metadata["artifact_publish_warning"] = True
+            metadata["artifact_publish_rejected"] = True
             metadata["missing_publish_aliases"] = list(missing_publish_aliases)
-            metadata.setdefault("verification_status", "warning")
-            payload["status"] = "completed"
-            finalization.final_status = "completed"
+            metadata["failure_kind"] = "contract_mismatch"
+            payload["status"] = "failed"
+            finalization.final_status = "failed"
 
         if manual_acceptance_active:
             payload["status"] = "completed"
@@ -1092,7 +1154,7 @@ class TaskVerificationService(_CueMethods, _PathMethods, _CheckMethods, _Discove
         metadata = node.metadata if isinstance(node.metadata, dict) else {}
         criteria = metadata.get("acceptance_criteria")
         if isinstance(criteria, dict):
-            return strengthen_acceptance_criteria(copy.deepcopy(criteria)), False
+            return strengthen_acceptance_criteria(copy.deepcopy(criteria)), is_inferred_task_spec(criteria)
         exec_result = node.execution_result
         if isinstance(exec_result, str):
             try:
@@ -1104,7 +1166,7 @@ class TaskVerificationService(_CueMethods, _PathMethods, _CheckMethods, _Discove
             if isinstance(exec_meta, dict):
                 criteria = exec_meta.get("acceptance_criteria")
                 if isinstance(criteria, dict):
-                    return strengthen_acceptance_criteria(copy.deepcopy(criteria)), False
+                    return strengthen_acceptance_criteria(copy.deepcopy(criteria)), is_inferred_task_spec(criteria)
         derived = derive_acceptance_criteria_from_text(getattr(node, "instruction", None))
         if isinstance(derived, dict) and self._has_checks(derived):
             return derived, True

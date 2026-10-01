@@ -789,7 +789,7 @@ class TestArtifactContracts:
         assert finalization.payload["status"] == "completed"
         assert finalization.payload["metadata"]["artifact_authority"]["published_aliases"] == ["general.evidence_md"]
 
-    def test_execute_plan_skips_completed_task_with_publish_warning(
+    def test_execute_plan_reruns_completed_task_with_missing_explicit_publish(
         self,
         monkeypatch,
         tmp_path,
@@ -824,7 +824,7 @@ class TestArtifactContracts:
 
         summary = executor.execute_plan(7, config=ExecutionConfig(session_context={}))
 
-        assert calls == []
+        assert calls == [1]
         assert summary.executed_task_ids == [1]
 
     def test_run_task_allows_dependency_with_verifier_only_failed_status(

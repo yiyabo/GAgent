@@ -15,10 +15,9 @@ _FAILED_LIKE = {"failed", "failure", "error"}
 # The synthetic "blocked" effective status repeatedly confused users: tasks
 # that had genuinely finished were displayed as "blocked" because a contract
 # alias went unregistered, and dependency-waiting tasks read as failures.
-# By default "blocked" is now disabled — a task that really ran to
-# completion shows "completed" (with a warning reason), and tasks that
-# have not run yet show "pending".  Set PLAN_STATUS_BLOCKED_ENABLED=true
-# to restore the legacy behaviour.
+# By default dependency-waiting tasks show "pending". This display choice
+# must not promote rejected acceptance or missing explicit inputs to completed.
+# Set PLAN_STATUS_BLOCKED_ENABLED=true to expose the blocked state instead.
 _BLOCKED_STATUS_DISABLED = (
     os.getenv("PLAN_STATUS_BLOCKED_ENABLED", "false").strip().lower()
     not in {"1", "true", "yes", "on"}
@@ -162,7 +161,6 @@ class PlanStatusResolver:
             except (TypeError, ValueError):
                 pass
         manifest_artifacts = manifest_payload.get("artifacts") if isinstance(manifest_payload.get("artifacts"), dict) else {}
-        artifact_tracking_active = bool(manifest_artifacts)
         memo: Dict[int, Dict[str, Any]] = {}
         visiting: Set[int] = set()
 
@@ -378,6 +376,7 @@ class PlanStatusResolver:
             )
             manual_acceptance = metadata.get("manual_acceptance") if isinstance(metadata, dict) else None
             manual_acceptance_active = TaskVerificationService.is_manual_acceptance_active(metadata)
+            authoritative_rejection = TaskVerificationService.has_authoritative_verification_failure(node, metadata)
             manual_acceptance_reason = None
             if isinstance(manual_acceptance, dict):
                 manual_acceptance_reason = str(manual_acceptance.get("reason") or "").strip() or None
@@ -391,18 +390,30 @@ class PlanStatusResolver:
                 effective_status = "running"
                 status_reason = "Currently executing in an active background job."
                 reason_code = "active_execution"
-            elif incomplete_dependencies:
-                effective_status = "blocked"
-                status_reason = _dependency_block_reason(task_id, incomplete_dependencies)
-                reason_code = "dependency_blocked"
             elif manual_acceptance_active:
                 effective_status = "completed"
                 status_reason = manual_acceptance_reason or "Task was manually accepted after review."
                 reason_code = "manual_acceptance"
+            elif authoritative_rejection:
+                effective_status = "failed"
+                status_reason = "Explicit acceptance or a hard verification check failed."
+                reason_code = "acceptance_rejected"
+            elif incomplete_dependencies:
+                effective_status = "blocked"
+                status_reason = _dependency_block_reason(task_id, incomplete_dependencies)
+                reason_code = "dependency_blocked"
             elif missing_required_aliases:
                 effective_status = "blocked"
                 status_reason = _missing_required_reason(task_id, missing_required_aliases)
                 reason_code = "artifact_input_missing"
+            elif missing_publish_aliases and (
+                raw_status in _COMPLETED_LIKE
+                or payload_status in _COMPLETED_LIKE
+                or execution_status in _COMPLETED_LIKE
+            ):
+                effective_status = "failed"
+                status_reason = _missing_publish_reason(task_id, missing_publish_aliases)
+                reason_code = "publish_contract_missing"
             elif payload_status in _FAILED_LIKE and execution_status not in _COMPLETED_LIKE:
                 effective_status = "failed"
                 status_reason = _truncate_reason(content or raw_result_text) or "Task failed."
@@ -445,7 +456,7 @@ class PlanStatusResolver:
                     status_reason = _truncate_reason(content or raw_result_text) or "Task failed."
                     reason_code = f"{raw_status}_failed"
                 elif payload_status in _COMPLETED_LIKE or _looks_like_success_text(raw_result_text):
-                    if missing_publish_aliases and artifact_tracking_active:
+                    if missing_publish_aliases:
                         effective_status = "failed"
                         status_reason = _missing_publish_reason(task_id, missing_publish_aliases)
                         reason_code = "publish_contract_missing"
@@ -477,14 +488,6 @@ class PlanStatusResolver:
                     effective_status = "failed"
                     status_reason = _truncate_reason(content or raw_result_text) or "Task failed."
                     reason_code = "retry_or_blocked_failure"
-                elif missing_publish_aliases and artifact_tracking_active and verification_status not in {"passed", "warning"}:
-                    effective_status = "failed"
-                    status_reason = _missing_publish_reason(task_id, missing_publish_aliases)
-                    reason_code = "publish_contract_missing"
-                elif missing_publish_aliases and verification_status not in {"passed", "warning"}:
-                    effective_status = "completed"
-                    status_reason = _missing_publish_reason(task_id, missing_publish_aliases)
-                    reason_code = "completed_publish_warning"
                 else:
                     effective_status = "completed"
                     status_reason = _truncate_reason(content or raw_result_text) or "Completed."
@@ -520,23 +523,15 @@ class PlanStatusResolver:
                 and effective_status == "blocked"
                 and not is_active_execution
             ):
-                if raw_status in _COMPLETED_LIKE or payload_status in _COMPLETED_LIKE:
-                    note = f" (note: {status_reason})" if status_reason else ""
-                    effective_status = "completed"
-                    status_reason = (
-                        _truncate_reason(content or raw_result_text) or "Completed."
-                    ) + note
-                    reason_code = "completed_with_contract_warning"
-                else:
-                    effective_status = "pending"
-                    status_reason = (
-                        f"Waiting to run. ({status_reason})" if status_reason else "Waiting to run."
-                    )
-                    reason_code = (
-                        "waiting_dependencies"
-                        if reason_code == "dependency_blocked"
-                        else "ready"
-                    )
+                effective_status = "pending"
+                status_reason = (
+                    f"Waiting to run. ({status_reason})" if status_reason else "Waiting to run."
+                )
+                reason_code = (
+                    "waiting_dependencies"
+                    if reason_code == "dependency_blocked"
+                    else "ready"
+                )
 
             state = {
                 "task_id": task_id,

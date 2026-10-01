@@ -16,7 +16,7 @@ def _tree(plan_id: int, *nodes: PlanNode) -> PlanTree:
     return tree
 
 
-def test_status_resolver_keeps_completed_task_completed_when_canonical_publish_missing(
+def test_status_resolver_rejects_completed_task_when_explicit_publish_missing(
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -36,9 +36,9 @@ def test_status_resolver_keeps_completed_task_completed_when_canonical_publish_m
 
     state = resolver.resolve_plan_states(21, tree)[1]
 
-    assert state["effective_status"] == "completed"
+    assert state["effective_status"] == "failed"
     assert state["missing_publish_aliases"] == ["general.evidence_md"]
-    assert state["reason_code"] == "completed_publish_warning"
+    assert state["reason_code"] == "publish_contract_missing"
 
 
 def test_status_resolver_blocks_missing_required_alias_without_manifest(
@@ -67,7 +67,7 @@ def test_status_resolver_blocks_missing_required_alias_without_manifest(
     assert state["reason_code"] == "ready"
 
 
-def test_status_resolver_does_not_block_unregistered_business_alias_without_manifest(
+def test_status_resolver_enforces_explicit_business_alias_without_manifest(
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -105,11 +105,8 @@ def test_status_resolver_does_not_block_unregistered_business_alias_without_mani
 
     states = resolver.resolve_plan_states(31, tree)
 
-    # Free-form business aliases are first-class contract aliases since 91faf39:
-    # the declared publish is now tracked and its absence from the manifest is
-    # reported as a warning signal — but nothing is blocked: the completed
-    # producer stays completed and the dependency-waiting consumer stays pending.
-    assert states[1]["effective_status"] == "completed"
+    # Free-form explicit aliases have the same authority as catalog aliases.
+    assert states[1]["effective_status"] == "failed"
     assert states[1]["missing_publish_aliases"] == [
         "feature_engineering.derived_features_csv"
     ]
@@ -394,7 +391,7 @@ def test_status_resolver_preserves_retryable_skipped_status(monkeypatch, tmp_pat
     assert state["reason_code"] == "skipped_retryable"
 
 
-def test_task_verifier_records_warning_when_publish_contract_missing(
+def test_task_verifier_rejects_missing_explicit_publish_contract(
     monkeypatch,
     tmp_path,
 ) -> None:
@@ -415,9 +412,9 @@ def test_task_verifier_records_warning_when_publish_contract_missing(
 
     finalization = verifier.apply_artifact_authority(26, node, finalization)
 
-    assert finalization.final_status == "completed"
-    assert finalization.payload["status"] == "completed"
-    assert finalization.payload["metadata"]["artifact_publish_warning"] is True
+    assert finalization.final_status == "failed"
+    assert finalization.payload["status"] == "failed"
+    assert finalization.payload["metadata"]["artifact_publish_rejected"] is True
     assert finalization.payload["metadata"]["missing_publish_aliases"] == ["general.evidence_md"]
 
 

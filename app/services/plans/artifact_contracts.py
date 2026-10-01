@@ -13,6 +13,7 @@ from typing import Any, Dict, Iterable, List, Optional
 
 from app.services.resources.resource_registry import get_resource_spec, normalize_resource_id
 from .artifact_validation import artifact_entry_is_valid, validate_artifact
+from .task_metadata_generator import is_inferred_task_spec
 
 from pydantic import BaseModel, Field
 
@@ -764,7 +765,9 @@ def resolve_artifact_contract_with_provenance(
 ) -> ArtifactContractProvenance:
     """Resolve a task's artifact contract while tracking provenance.
 
-    Explicit declarations from ``metadata.artifact_contract`` are authoritative.
+    Structured declarations from ``metadata.artifact_contract`` are authoritative
+    unless marked ``source=inferred_text`` by the metadata generator. Unmarked
+    historical blocks stay explicit because their original intent is unknown.
     Inferred aliases from paper_context_paths / instruction / acceptance
     criteria checks remain as compatibility fallbacks and are flagged as such
     on the returned object.
@@ -775,8 +778,11 @@ def resolve_artifact_contract_with_provenance(
         raw_contract = {}
     preferred_namespace = infer_artifact_namespace(task_name, instruction)
 
-    explicit_requires = _extract_explicit_aliases(raw_contract.get("requires"))
-    explicit_publishes = _extract_explicit_aliases(raw_contract.get("publishes"))
+    declared_requires = _extract_explicit_aliases(raw_contract.get("requires"))
+    declared_publishes = _extract_explicit_aliases(raw_contract.get("publishes"))
+    text_derived_contract = is_inferred_task_spec(raw_contract)
+    explicit_requires = [] if text_derived_contract else declared_requires
+    explicit_publishes = [] if text_derived_contract else declared_publishes
     resource_requires = _merge_unique(
         _extract_resource_requires(raw_contract.get("resources"), allow_unknown=True),
         _extract_resource_requires(raw_contract.get("requires"), allow_unknown=False),
@@ -787,8 +793,8 @@ def resolve_artifact_contract_with_provenance(
     explicit_require_set = set(explicit_requires)
     explicit_publish_set = set(explicit_publishes)
 
-    inferred_requires: List[str] = []
-    seen_inferred_req: set[str] = set()
+    inferred_requires: List[str] = list(declared_requires) if text_derived_contract else []
+    seen_inferred_req: set[str] = set(inferred_requires)
 
     raw_context_paths = payload.get("paper_context_paths")
     if isinstance(raw_context_paths, list):
@@ -811,8 +817,8 @@ def resolve_artifact_contract_with_provenance(
         seen_inferred_req.add(alias)
         inferred_requires.append(alias)
 
-    inferred_publishes: List[str] = []
-    seen_inferred_pub: set[str] = set()
+    inferred_publishes: List[str] = list(declared_publishes) if text_derived_contract else []
+    seen_inferred_pub: set[str] = set(inferred_publishes)
 
     acceptance = payload.get("acceptance_criteria")
     checks = acceptance.get("checks") if isinstance(acceptance, dict) else None

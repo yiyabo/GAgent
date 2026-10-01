@@ -10,6 +10,18 @@ import re
 from typing import Dict, List, Optional, Any
 
 
+INFERRED_TEXT_SOURCE = "inferred_text"
+
+
+def is_inferred_task_spec(spec: Any) -> bool:
+    """Only an explicit provenance marker identifies a text-derived spec.
+
+    Historical unmarked blocks stay structured/explicit: filename similarity
+    cannot distinguish intentional requirements from old generated metadata.
+    """
+    return isinstance(spec, dict) and spec.get("source") == INFERRED_TEXT_SOURCE
+
+
 _OUTPUT_PATH_PATTERNS = [
     r"保存到\s*[`'\"]?([^\s`'\"，。！？；：]+)[`'\"]?",
     r"输出到\s*[`'\"]?([^\s`'\"，。！？；：]+)[`'\"]?",
@@ -111,6 +123,7 @@ def generate_acceptance_criteria(
         "category": "file_data",
         "blocking": True,
         "checks": checks,
+        "source": INFERRED_TEXT_SOURCE,
     }
 
 
@@ -134,6 +147,7 @@ def generate_artifact_contract(
     contract = {
         "requires": [],
         "publishes": [],
+        "source": INFERRED_TEXT_SOURCE,
     }
     
     if acceptance_criteria and "checks" in acceptance_criteria:
@@ -161,6 +175,8 @@ def ensure_task_metadata(
     
     If LLM already generated these fields and they're valid, preserve them.
     Otherwise, generate them deterministically.
+    Text-derived blocks retain ``source=inferred_text`` when saved or copied;
+    unmarked existing structured blocks are preserved as explicit requirements.
     
     Args:
         metadata: Existing metadata dict (may be None)

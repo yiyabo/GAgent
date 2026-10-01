@@ -12,6 +12,7 @@ from .artifact_contracts import (
     resolve_manifest_aliases,
 )
 from .plan_models import PlanNode, PlanTree
+from .task_metadata_generator import is_inferred_task_spec
 
 _COMPLETED_LIKE = {"completed", "done", "success"}
 
@@ -268,16 +269,17 @@ class ArtifactPreflightService:
         instruction = str(getattr(node, "instruction", "") or "")
         metadata_contract = metadata.get("artifact_contract")
         raw_contract = metadata_contract if isinstance(metadata_contract, dict) else {}
+        explicit_contract = {} if is_inferred_task_spec(raw_contract) else raw_contract
         explicit_requires, explicit_require_errors = self._normalize_explicit_aliases(
             plan_id,
-            raw_contract.get("requires"),
+            explicit_contract.get("requires"),
             task_id=task_id,
             field_name="requires",
             session_id=session_id,
         )
         explicit_publishes, explicit_publish_errors = self._normalize_explicit_aliases(
             plan_id,
-            raw_contract.get("publishes"),
+            explicit_contract.get("publishes"),
             task_id=task_id,
             field_name="publishes",
             session_id=session_id,

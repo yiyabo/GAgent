@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from app.routers import plan_routes
 from app.services.plans.artifact_contracts import find_candidate_source_for_alias
 from app.services.plans.acceptance_criteria import (
@@ -160,9 +162,9 @@ def test_task_verifier_does_not_override_unrelated_missing_deliverable(tmp_path)
     )
 
     metadata = finalization.payload["metadata"]
-    assert finalization.final_status == "completed"
-    assert metadata["verification_status"] == "warning"
-    assert metadata["verification_warning"] is True
+    assert finalization.final_status == "failed"
+    assert metadata["verification_status"] == "failed"
+    assert metadata.get("verification_warning") is not True
     assert metadata.get("artifact_contract_satisfied_verification") is None
 
 
@@ -197,9 +199,9 @@ def test_task_verifier_does_not_override_when_explicit_publish_missing(tmp_path)
     )
 
     metadata = finalization.payload["metadata"]
-    assert finalization.final_status == "completed"
-    assert metadata["verification_status"] == "warning"
-    assert metadata["verification_warning"] is True
+    assert finalization.final_status == "failed"
+    assert metadata["verification_status"] == "failed"
+    assert metadata.get("verification_warning") is not True
     assert metadata.get("artifact_contract_satisfied_verification") is None
 
 
@@ -290,7 +292,7 @@ def test_task_verifier_discovers_results_outputs_for_relative_contract(tmp_path)
     assert str(result_file.resolve()) in finalization.artifact_paths
 
 
-def test_task_verifier_converts_failed_execution_with_results_output_to_warning(tmp_path):
+def test_task_verifier_does_not_recover_failed_execution_with_unrelated_outputs(tmp_path):
     run_dir = tmp_path / "run_20260601"
     result_file = run_dir / "results" / "meta_analysis_results.csv"
     result_file.parent.mkdir(parents=True, exist_ok=True)
@@ -324,9 +326,9 @@ def test_task_verifier_converts_failed_execution_with_results_output_to_warning(
     )
 
     metadata = finalization.payload["metadata"]
-    assert finalization.final_status == "completed"
-    assert metadata["verification_status"] == "warning"
-    assert metadata["verification_warning"] is True
+    assert finalization.final_status == "failed"
+    assert metadata["verification_status"] == "failed"
+    assert metadata.get("verification_warning") is not True
     assert metadata["execution_warning"] is True
     assert metadata["execution_reported_status"] == "failed"
     assert str(result_file.resolve()) in finalization.artifact_paths
@@ -369,18 +371,19 @@ def test_task_verifier_records_contract_diff_for_mismatch(tmp_path):
     )
 
     metadata = finalization.payload["metadata"]
-    assert finalization.final_status == "completed"
+    assert finalization.final_status == "failed"
     assert metadata["execution_status"] == "completed"
-    assert metadata["verification_status"] == "warning"
-    assert metadata["verification_warning"] is True
-    assert "failure_kind" not in metadata
+    assert metadata["verification_status"] == "failed"
+    assert metadata.get("verification_warning") is not True
+    assert metadata["failure_kind"] == "contract_mismatch"
     assert metadata["artifact_verification"]["missing_required_outputs"] == [
         "results/enrichment/upregulated_genes.csv"
     ]
     assert "results/NK_cell_upregulated_genes.csv" in metadata["artifact_verification"]["unexpected_outputs"]
 
 
-def test_task_verifier_accepts_source_discovery_with_actual_source_dir_and_format_alternative(tmp_path):
+@pytest.mark.parametrize("blocking", [False, True])
+def test_task_verifier_source_discovery_respects_explicit_format_authority(tmp_path, blocking):
     source_dir = tmp_path / "results" / "05_CellChat"
     source_dir.mkdir(parents=True)
     for name in [
@@ -411,8 +414,8 @@ def test_task_verifier_accepts_source_discovery_with_actual_source_dir_and_forma
         metadata={
             "acceptance_criteria": {
                 "category": "file_data",
-                "blocking": True,
                 "checks": [{"type": "file_exists", "path": str(path)} for path in expected],
+                "blocking": blocking,
             }
         },
     )
@@ -439,6 +442,12 @@ def test_task_verifier_accepts_source_discovery_with_actual_source_dir_and_forma
     )
 
     metadata = finalization.payload["metadata"]
+    if blocking:
+        assert finalization.final_status == "failed"
+        assert finalization.verification["status"] == "failed"
+        assert "verification_overridden_by_source_discovery" not in metadata
+        assert metadata["failure_kind"] == "contract_mismatch"
+        return
     assert finalization.final_status == "completed"
     assert finalization.verification is not None
     assert finalization.verification["status"] == "passed"
@@ -497,9 +506,9 @@ def test_task_verifier_does_not_apply_source_discovery_override_to_copy_tasks(tm
         execution_status="completed",
     )
 
-    assert finalization.final_status == "completed"
-    assert finalization.payload["metadata"]["verification_status"] == "warning"
-    assert "failure_kind" not in finalization.payload["metadata"]
+    assert finalization.final_status == "failed"
+    assert finalization.payload["metadata"]["verification_status"] == "failed"
+    assert finalization.payload["metadata"]["failure_kind"] == "contract_mismatch"
     assert "source_discovery_verification" not in finalization.payload["metadata"]
 
 
@@ -537,9 +546,9 @@ def test_task_verifier_keeps_source_discovery_failed_when_expected_identity_miss
         execution_status="completed",
     )
 
-    assert finalization.final_status == "completed"
-    assert finalization.payload["metadata"]["verification_status"] == "warning"
-    assert "failure_kind" not in finalization.payload["metadata"]
+    assert finalization.final_status == "failed"
+    assert finalization.payload["metadata"]["verification_status"] == "failed"
+    assert finalization.payload["metadata"]["failure_kind"] == "contract_mismatch"
 
 
 def test_task_verifier_accepts_semantic_general_evidence_alias_match(tmp_path):
@@ -827,9 +836,9 @@ def test_task_verifier_derives_acceptance_criteria_from_instruction(tmp_path):
     )
 
     metadata = finalization.payload["metadata"]
-    assert finalization.final_status == "completed"
-    assert metadata["verification_status"] == "warning"
-    assert metadata["verification_warning"] is True
+    assert finalization.final_status == "failed"
+    assert metadata["verification_status"] == "failed"
+    assert metadata.get("verification_warning") is not True
     assert "contract_mismatch" in metadata["artifact_verification"]["tags"]
     assert metadata["artifact_verification"]["missing_required_outputs"] == [
         "subset_manifest.tsv",
@@ -898,7 +907,7 @@ def test_task_verifier_marks_cross_extension_outputs_as_wrong_format(tmp_path):
     )
 
     metadata = finalization.payload["metadata"]
-    assert finalization.final_status == "completed"
+    assert finalization.final_status == "failed"
     assert metadata["artifact_verification"]["missing_required_outputs"] == [
         "results/subset_manifest.csv"
     ]
@@ -1106,11 +1115,11 @@ def test_derived_criteria_reject_header_only_tsv(tmp_path, monkeypatch):
         execution_status="completed",
     )
 
-    assert finalization.final_status == "completed"
+    assert finalization.final_status == "failed"
     failures = finalization.payload["metadata"]["verification"]["failures"]
     assert any(item["type"] == "json_field_at_least" and item.get("actual") == 0 for item in failures)
     assert finalization.payload["metadata"].get("verification_overridden_by_llm") is None
-    assert finalization.payload["metadata"]["verification_status"] == "warning"
+    assert finalization.payload["metadata"]["verification_status"] == "failed"
 
 
 def test_explicit_weak_criteria_are_strengthened_for_header_only_tsv(tmp_path):
@@ -1141,7 +1150,7 @@ def test_explicit_weak_criteria_are_strengthened_for_header_only_tsv(tmp_path):
         execution_status="completed",
     )
 
-    assert finalization.final_status == "completed"
+    assert finalization.final_status == "failed"
     failures = finalization.payload["metadata"]["verification"]["failures"]
     assert any(item["type"] == "json_field_at_least" and item.get("actual") == 0 for item in failures)
 
@@ -1164,8 +1173,8 @@ def test_derived_criteria_reject_audit_json_without_metadata_rows(tmp_path):
         execution_status="completed",
     )
 
-    assert finalization.final_status == "completed"
-    assert finalization.payload["metadata"]["verification_status"] == "warning"
+    assert finalization.final_status == "failed"
+    assert finalization.payload["metadata"]["verification_status"] == "failed"
     assert any(item["type"] == "json_field_at_least" for item in finalization.payload["metadata"]["verification"]["failures"])
 
 
@@ -1187,8 +1196,8 @@ def test_derived_criteria_reject_metrics_json_without_tree_metrics(tmp_path):
         execution_status="completed",
     )
 
-    assert finalization.final_status == "completed"
-    assert finalization.payload["metadata"]["verification_status"] == "warning"
+    assert finalization.final_status == "failed"
+    assert finalization.payload["metadata"]["verification_status"] == "failed"
     assert finalization.payload["metadata"]["verification"]["failures"][0]["type"] == "model_metrics_valid"
 
     metrics.write_text(
@@ -1291,8 +1300,8 @@ def test_derived_criteria_reject_fake_pdf(tmp_path):
         execution_status="completed",
     )
 
-    assert finalization.final_status == "completed"
-    assert finalization.payload["metadata"]["verification_status"] == "warning"
+    assert finalization.final_status == "failed"
+    assert finalization.payload["metadata"]["verification_status"] == "failed"
     failures = finalization.payload["metadata"]["verification"]["failures"]
     assert any(item["type"] == "pdf_valid" for item in failures)
 
@@ -1441,7 +1450,7 @@ def test_verify_task_route_rechecks_existing_output(tmp_path, monkeypatch):
     assert repo.update_calls[-1][2]["status"] == "completed"
 
 
-def test_verify_task_route_reports_publish_warning_without_demoting_result(tmp_path, monkeypatch):
+def test_verify_task_route_rejects_missing_explicit_publish(tmp_path, monkeypatch):
     output_path = tmp_path / "report.json"
     output_path.write_text(json.dumps({"ok": True}), encoding="utf-8")
     payload = {
@@ -1478,9 +1487,9 @@ def test_verify_task_route_reports_publish_warning_without_demoting_result(tmp_p
     response = plan_routes.verify_task_result(23, request=None, plan_id=56)
 
     assert response.success is False
-    assert response.result.status == "completed"
+    assert response.result.status == "failed"
     assert "artifact authority failed" in response.message.lower()
-    assert repo.update_calls[-1][2]["status"] == "completed"
+    assert repo.update_calls[-1][2]["status"] == "failed"
 
 
 def test_parse_shorthand_criteria_basic():
@@ -1751,9 +1760,9 @@ def test_task_verifier_does_not_materialize_generic_notes_file_as_evidence(tmp_p
     )
 
     expected = task_dir / "introduction_evidence.md"
-    assert finalization.final_status == "completed"
+    assert finalization.final_status == "failed"
     assert finalization.verification is not None
-    assert finalization.verification["status"] == "warning"
+    assert finalization.verification["status"] == "failed"
     assert not expected.exists()
 
 
@@ -1793,9 +1802,9 @@ def test_task_verifier_does_not_materialize_generic_notes_summary_as_evidence(tm
     )
 
     expected = task_dir / "introduction_evidence.md"
-    assert finalization.final_status == "completed"
+    assert finalization.final_status == "failed"
     assert finalization.verification is not None
-    assert finalization.verification["status"] == "warning"
+    assert finalization.verification["status"] == "failed"
     assert not expected.exists()
 
 
@@ -1835,9 +1844,9 @@ def test_task_verifier_does_not_materialize_unrelated_singleton_summary_as_evide
     )
 
     expected = task_dir / "conclusion_evidence.md"
-    assert finalization.final_status == "completed"
+    assert finalization.final_status == "failed"
     assert finalization.verification is not None
-    assert finalization.verification["status"] == "warning"
+    assert finalization.verification["status"] == "failed"
     assert not expected.exists()
 
 
@@ -1877,9 +1886,9 @@ def test_task_verifier_does_not_materialize_semantic_target_outside_task_workspa
         execution_status="completed",
     )
 
-    assert finalization.final_status == "completed"
+    assert finalization.final_status == "failed"
     assert finalization.verification is not None
-    assert finalization.verification["status"] == "warning"
+    assert finalization.verification["status"] == "failed"
     assert not shared_target.exists()
 
 
@@ -1919,9 +1928,9 @@ def test_task_verifier_does_not_materialize_semantic_absolute_target(tmp_path):
         execution_status="completed",
     )
 
-    assert finalization.final_status == "completed"
+    assert finalization.final_status == "failed"
     assert finalization.verification is not None
-    assert finalization.verification["status"] == "warning"
+    assert finalization.verification["status"] == "failed"
     assert not absolute_target.exists()
 
 
@@ -2004,9 +2013,9 @@ def test_task_verifier_does_not_materialize_unrelated_singleton_evidence_file(tm
     )
 
     expected = task_dir / "introduction_evidence.md"
-    assert finalization.final_status == "completed"
+    assert finalization.final_status == "failed"
     assert finalization.verification is not None
-    assert finalization.verification["status"] == "warning"
+    assert finalization.verification["status"] == "failed"
     assert not expected.exists()
 
 
@@ -2384,9 +2393,9 @@ def test_manuscript_markdown_quality_rejects_report_style_bullets(tmp_path):
         execution_status="completed",
     )
 
-    assert finalization.final_status == "completed"
+    assert finalization.final_status == "failed"
     assert finalization.verification is not None
-    assert finalization.verification["status"] == "warning"
+    assert finalization.verification["status"] == "failed"
     failure = finalization.verification["failures"][0]
     assert failure["type"] == "manuscript_markdown_quality"
     assert "bullet_ratio" in failure["message"] or "text_chars" in failure["message"]
@@ -2946,8 +2955,8 @@ def test_file_nonempty_does_not_pass_on_extension_only_match(tmp_path):
         },
         execution_status="completed",
     )
-    assert fin.final_status == "completed"
-    assert fin.verification["status"] == "warning"
+    assert fin.final_status == "failed"
+    assert fin.verification["status"] == "failed"
 
 
 def test_file_exists_fallback_lenient_different_extension(tmp_path):
@@ -2987,8 +2996,8 @@ def test_file_exists_fallback_lenient_different_extension(tmp_path):
         },
         execution_status="completed",
     )
-    assert fin.final_status == "completed"
-    assert fin.verification["status"] == "warning"
+    assert fin.final_status == "failed"
+    assert fin.verification["status"] == "failed"
 
 
 def test_file_exists_no_fallback_without_artifacts(tmp_path):
@@ -3327,9 +3336,9 @@ def test_artifact_authority_combined_publish_and_require(tmp_path):
     assert authority["require_status"] == "passed"
     assert authority["publish_status"] == "failed"
     assert authority["status"] == "failed"
-    # Missing publish is recorded as a warning; producer execution remains completed.
-    assert result.final_status == "completed"
-    assert result.payload["metadata"]["artifact_publish_warning"] is True
+    # Explicit output publication is required independently of satisfied inputs.
+    assert result.final_status == "failed"
+    assert result.payload["metadata"]["artifact_publish_rejected"] is True
 
 
 
@@ -3372,9 +3381,9 @@ def test_task_verifier_rejects_invalid_sparse_npz_schema(tmp_path):
     )
 
     metadata = finalization.payload["metadata"]
-    assert finalization.final_status == "completed"
-    assert metadata["verification_status"] == "warning"
-    assert metadata["verification_warning"] is True
+    assert finalization.final_status == "failed"
+    assert metadata["verification_status"] == "failed"
+    assert metadata.get("verification_warning") is not True
     schema = metadata["artifact_schema_validation"]["phage_ml.kmer_features_npz"]
     assert schema["validated"] is False
     assert "shape" in schema["failure_reason"]
@@ -3505,7 +3514,7 @@ def test_task_verifier_resolves_relative_checks_against_task_raw_files_dir(tmp_p
     assert metadata["verification"]["failures"] == []
 
 
-def test_task_verifier_config_error_does_not_fail_completed_task_with_outputs(tmp_path) -> None:
+def test_task_verifier_rejects_invalid_explicit_blocking_criteria_with_outputs(tmp_path) -> None:
     task_dir = tmp_path / "runtime" / "session_test" / "raw_files" / "task_1" / "task_2" / "task_46"
     task_dir.mkdir(parents=True)
     report = task_dir / "metadata_parsing_report.json"
@@ -3542,14 +3551,12 @@ def test_task_verifier_config_error_does_not_fail_completed_task_with_outputs(tm
     )
 
     metadata = finalization.payload["metadata"]
-    assert finalization.final_status == "completed"
+    assert finalization.final_status == "failed"
     assert finalization.verification is not None
-    assert metadata["verification_status"] == "config_error"
-    assert metadata["verification_config_error"] is True
-    assert metadata["verification"]["blocking"] is False
-    assert metadata["verification_config_errors"][0]["failure_kind"] == "verification_config_error"
-    assert "failure_kind" not in metadata
-    assert "contract_diff" not in metadata
+    assert metadata["verification_status"] == "failed"
+    assert metadata["verification"]["blocking"] is True
+    assert metadata["verification"]["failures"][0]["failure_kind"] == "verification_config_error"
+    assert metadata["failure_kind"] == "contract_mismatch"
 
 
 def test_task_verifier_still_fails_config_error_when_no_output_evidence(tmp_path) -> None:

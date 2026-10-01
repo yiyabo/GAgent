@@ -681,13 +681,12 @@ class _ArtifactMethods:
         contract = self._resolve_task_artifact_contract(node)
         required_aliases = list(contract.get("requires") or [])
         metadata = node.metadata if isinstance(node.metadata, dict) else {}
-        raw_explicit_contract = metadata.get("artifact_contract")
-        explicit_contract = raw_explicit_contract if isinstance(raw_explicit_contract, dict) else {}
-        explicit_required_aliases = [
-            str(alias).strip()
-            for alias in list(explicit_contract.get("requires") or [])
-            if str(alias).strip()
-        ]
+        provenance = resolve_artifact_contract_with_provenance(
+            task_name=node.display_name(),
+            instruction=node.instruction or "",
+            metadata=metadata,
+        )
+        explicit_required_aliases = list(provenance.explicit_requires)
         if not required_aliases:
             return contract, {}, [], {}
 

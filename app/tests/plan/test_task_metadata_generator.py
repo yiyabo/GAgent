@@ -195,6 +195,7 @@ class TestEnsureTaskMetadata:
         )
         assert "acceptance_criteria" in result
         assert result["acceptance_criteria"]["checks"][0]["path"] == "output/report.md"
+        assert result["acceptance_criteria"]["source"] == "inferred_text"
 
     def test_preserves_valid_artifact_contract(self):
         metadata = {
@@ -231,6 +232,14 @@ class TestEnsureTaskMetadata:
         )
         assert "artifact_contract" in result
         assert "output.report.md" in result["artifact_contract"]["publishes"]
+        assert result["artifact_contract"]["source"] == "inferred_text"
+
+    def test_preserves_inferred_source_when_metadata_is_reused(self):
+        first = ensure_task_metadata(None, "Generate report", "Save to results/report.md")
+        second = ensure_task_metadata(first, "Generate report", "Save to results/report.md")
+        assert second == first
+        assert second["acceptance_criteria"]["source"] == "inferred_text"
+        assert second["artifact_contract"]["source"] == "inferred_text"
 
     def test_handles_none_metadata(self):
         result = ensure_task_metadata(
