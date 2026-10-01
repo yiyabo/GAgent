@@ -582,7 +582,7 @@ def _handle_control_message(message: Dict[str, Any]) -> bool:
         run_id = str(message.get("run_id") or "").strip()
         content = str(message.get("message") or "").strip()
         if run_id and content:
-            return chat_run_hub.push_steer_message(run_id, content)
+            return chat_run_hub.push_steer_message(run_id, content, signal_id=message.get("signal_id"))
         return False
     if kind == "job.control":
         job_id = str(message.get("job_id") or "").strip()

@@ -1,6 +1,8 @@
 import asyncio
 from types import SimpleNamespace
 
+import pytest
+
 from app.routers.chat.models import ChatRequest
 from app.services.chat_run_worker import (
     _run_explicit_task_execution,
@@ -71,6 +73,109 @@ def test_run_explicit_task_execution_emits_standard_final_payload_and_persists_m
     assert saved_messages[0]["metadata"]["explicit_task_execution"] is True
 
 
+@pytest.mark.parametrize("task_status, expected", [("failed", "failed"), ("skipped", "failed"), ("completed", "succeeded")])
+def test_explicit_execution_returns_its_actual_outcome(monkeypatch, task_status, expected):
+    agent = SimpleNamespace(extra_context={"current_task_id": 43}, session_id=None, history=[])
+    executor = SimpleNamespace(execute_task=lambda *args, **kwargs: SimpleNamespace(status=task_status))
+    emitter = _FakeEmitter()
+    outcome = asyncio.run(_run_explicit_task_execution(
+        agent, executor, 77, run_id="run-outcome", cancel_ev=asyncio.Event(), emitter=emitter,
+    ))
+    assert outcome.status == expected
+    assert emitter.events[-1]["payload"]["metadata"]["status"] == ("completed" if expected == "succeeded" else expected)
+
+
+def _isolate_worker(monkeypatch, agent):
+    import app.services.chat_run_worker as worker
+
+    request = ChatRequest(message="execute", session_id="session-1")
+    emitter = _FakeEmitter()
+    finished = []
+    monkeypatch.setattr(worker, "get_chat_run", lambda run_id: {"request_json": request.model_dump_json()})
+    monkeypatch.setattr(worker, "claim_chat_run_lease", lambda *args, **kwargs: True)
+    monkeypatch.setattr(worker, "release_chat_run_lease", lambda *args, **kwargs: None)
+    monkeypatch.setattr(worker, "heartbeat_chat_run_lease", lambda *args, **kwargs: True)
+    monkeypatch.setattr(worker, "mark_chat_run_started", lambda *args, **kwargs: True)
+    monkeypatch.setattr(worker, "mark_chat_run_finished", lambda run_id, status, **kwargs: finished.append(status))
+    monkeypatch.setattr(worker, "ChatRunEmitter", lambda run_id: emitter)
+    monkeypatch.setattr(worker, "start_owner_lease", lambda *args: None)
+    monkeypatch.setattr(worker, "stop_owner_lease", lambda *args: None)
+    monkeypatch.setattr(worker, "_capture_quality_snapshot", lambda *args: None)
+    monkeypatch.setattr(worker, "_save_chat_message", lambda *args, **kwargs: None)
+
+    async def build(req, **kwargs):
+        return agent, req.message
+
+    async def pump(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(worker, "build_agent_for_chat_request", build)
+    monkeypatch.setattr(worker, "run_signal_pump", pump)
+    return emitter, finished
+
+
+def test_failed_explicit_execution_marks_run_failed(monkeypatch):
+    agent = SimpleNamespace(
+        extra_context={"explicit_task_override": True, "current_task_id": 43, "pending_scope_task_ids": [44]},
+        session_id="session-1", history=[], plan_session=SimpleNamespace(plan_id=77),
+        plan_executor=SimpleNamespace(execute_task=lambda *args, **kwargs: SimpleNamespace(status="failed")),
+    )
+    emitter, finished = _isolate_worker(monkeypatch, agent)
+    asyncio.run(execute_chat_run("run-explicit-failed"))
+    assert finished == ["failed"]
+    assert emitter.events[-1]["type"] == "final"
+    assert emitter.events[-1]["payload"]["metadata"]["status"] == "failed"
+
+
+def test_error_stream_is_not_marked_succeeded(monkeypatch):
+    async def stream(*args, event_sink, **kwargs):
+        await event_sink({"type": "error", "message": "provider unavailable"})
+        yield ""
+
+    agent = SimpleNamespace(extra_context={}, process_unified_stream=stream)
+    emitter, finished = _isolate_worker(monkeypatch, agent)
+    asyncio.run(execute_chat_run("run-stream-failed"))
+    assert finished == ["failed"]
+    assert emitter.events[-1]["message"] == "provider unavailable"
+
+
+def test_worker_without_claim_does_not_start_execution(monkeypatch):
+    import app.services.chat_run_worker as worker
+
+    monkeypatch.setattr(worker, "claim_chat_run_lease", lambda *args, **kwargs: False)
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("a losing worker must not read or execute the run")
+
+    monkeypatch.setattr(worker, "get_chat_run", unexpected)
+    monkeypatch.setattr(worker, "start_owner_lease", unexpected)
+    asyncio.run(worker.execute_chat_run("owned-elsewhere"))
+
+
+def test_lost_lease_cancels_work_without_terminal_write(monkeypatch):
+    import app.services.chat_run_worker as worker
+    from app.services.cancellation import current_cancel_token
+    from app.services.chat_run_state import chat_run_claim
+
+    seen = {}
+
+    async def stream(*args, **kwargs):
+        seen["token"] = current_cancel_token()
+        await asyncio.Event().wait()
+        yield ""
+
+    agent = SimpleNamespace(extra_context={}, process_unified_stream=stream)
+    emitter, finished = _isolate_worker(monkeypatch, agent)
+    monkeypatch.setattr(worker, "heartbeat_chat_run_lease", lambda *args, **kwargs: False)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(asyncio.wait_for(worker.execute_chat_run("run-lease-lost"), timeout=2))
+    assert seen["token"].cancelled
+    assert seen["token"].reason == "chat_run_lease_lost"
+    assert finished == []
+    assert [event["type"] for event in emitter.events] == ["start"]
+    assert chat_run_claim.get() is None
+
+
 def test_explicit_execution_final_payload_preserves_tool_facts() -> None:
     from app.services.chat_run_worker import _build_explicit_execution_final_payload
 
@@ -121,8 +226,17 @@ def test_execute_chat_run_uses_unified_stream_for_single_explicit_task(monkeypat
         "app.services.chat_run_worker.get_chat_run",
         lambda run_id: {"request_json": request.model_dump_json()},
     )
-    monkeypatch.setattr("app.services.chat_run_worker.mark_chat_run_started", lambda run_id: None)
-    monkeypatch.setattr("app.services.chat_run_worker.mark_chat_run_finished", lambda run_id, status, error=None: None)
+    monkeypatch.setattr("app.services.chat_run_worker.mark_chat_run_started", lambda run_id, **kwargs: True)
+    monkeypatch.setattr("app.services.chat_run_worker.mark_chat_run_finished", lambda run_id, status, **kwargs: True)
+    monkeypatch.setattr("app.services.chat_run_worker.claim_chat_run_lease", lambda *args, **kwargs: True)
+    monkeypatch.setattr("app.services.chat_run_worker.release_chat_run_lease", lambda *args, **kwargs: None)
+    monkeypatch.setattr("app.services.chat_run_worker.heartbeat_chat_run_lease", lambda *args, **kwargs: True)
+    monkeypatch.setattr("app.services.chat_run_worker._capture_quality_snapshot", lambda run_id: None)
+
+    async def _noop_pump(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr("app.services.chat_run_worker.run_signal_pump", _noop_pump)
     async def _fake_build_agent(req, **kwargs):
         return (agent, req.message)
 
@@ -181,10 +295,10 @@ def test_execute_chat_run_binds_the_run_cancel_token_into_the_tool_context(
         "app.services.chat_run_worker.get_chat_run",
         lambda run_id: {"request_json": request.model_dump_json()},
     )
-    monkeypatch.setattr("app.services.chat_run_worker.mark_chat_run_started", lambda run_id: None)
+    monkeypatch.setattr("app.services.chat_run_worker.mark_chat_run_started", lambda run_id, **kwargs: True)
     monkeypatch.setattr(
         "app.services.chat_run_worker.mark_chat_run_finished",
-        lambda run_id, status, error=None: None,
+        lambda run_id, status, **kwargs: True,
     )
 
     async def _fake_build_agent(req, **kwargs):

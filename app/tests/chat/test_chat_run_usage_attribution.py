@@ -188,9 +188,9 @@ def _stub_chat_run_worker(
             "request_json": request.model_dump_json(),
         },
     )
-    monkeypatch.setattr(worker, "mark_chat_run_started", lambda run_id: None)
+    monkeypatch.setattr(worker, "mark_chat_run_started", lambda run_id, **kwargs: True)
     monkeypatch.setattr(
-        worker, "mark_chat_run_finished", lambda run_id, status, error=None: None
+        worker, "mark_chat_run_finished", lambda run_id, status, **kwargs: True
     )
     monkeypatch.setattr(worker, "ChatRunEmitter", lambda run_id: _RecordingEmitter())
     monkeypatch.setattr(worker, "start_owner_lease", lambda *a, **k: None)

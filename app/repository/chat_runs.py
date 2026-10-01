@@ -3,9 +3,78 @@
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from typing import Any, Dict, List, Optional, Tuple
 
 from app.database import get_db
+
+
+@contextmanager
+def _write_transaction(conn):
+    """Keep lifecycle writes atomic, including on autocommit pool connections."""
+    nested = conn.in_transaction
+    conn.execute("SAVEPOINT chat_run_write" if nested else "BEGIN IMMEDIATE")
+    try:
+        yield
+    except BaseException:
+        if nested:
+            conn.execute("ROLLBACK TO chat_run_write")
+            conn.execute("RELEASE chat_run_write")
+        else:
+            conn.rollback()
+        raise
+    else:
+        if nested:
+            conn.execute("RELEASE chat_run_write")
+        else:
+            conn.commit()
+
+
+def _owns_active_run(conn, run_id: str, worker_id: Optional[str], *, allow_terminal: bool = False) -> bool:
+    if worker_id is None:
+        return True
+    ownership_clause = "status IN ('queued', 'running') AND lease_expires_at > datetime('now')"
+    if allow_terminal:
+        # A terminal row never heartbeats. Only the claim that atomically won
+        # its terminal event may finish message persistence after TTL expiry.
+        # Reaper errors deliberately carry no terminal_claim_id.
+        ownership_clause = f"""({ownership_clause}) OR (
+            status IN ('succeeded', 'failed', 'cancelled') AND EXISTS (
+                SELECT 1 FROM chat_run_events e WHERE e.run_id = chat_runs.run_id
+                  AND e.event_type IN ('final', 'error')
+                  AND json_extract(e.payload_json, '$.terminal_claim_id') = chat_runs.worker_id
+            ))"""
+    return conn.execute(
+        f"""SELECT 1 FROM chat_runs WHERE run_id = ? AND worker_id = ?
+           AND ({ownership_clause})""",
+        (run_id, worker_id),
+    ).fetchone() is not None
+
+
+@contextmanager
+def guard_chat_run_assistant_save(conn, session_id: str, role: str):
+    """Fence active saves; a recorded terminal winner retains save authority.
+
+    Lease expiry/release after an owned final commit cannot drop its message.
+    A reaper-interrupted claim has no winning event marker and stays fenced.
+    """
+    from app.services.chat_run_state import chat_run_claim
+
+    claim = chat_run_claim.get()
+    if role != "assistant" or claim is None:
+        yield None
+        return
+    run_id, worker_id = claim
+    with _write_transaction(conn):
+        if not _owns_active_run(conn, run_id, worker_id, allow_terminal=True):
+            yield False
+            return
+        row = conn.execute(
+            """SELECT run_id, assistant_message_id FROM chat_runs
+               WHERE run_id = ? AND session_id = ? AND worker_id = ?""",
+            (run_id, session_id, worker_id),
+        ).fetchone()
+        yield row if row is not None else False
 
 
 def create_chat_run(
@@ -59,12 +128,14 @@ def set_chat_run_user_message_id(run_id: str, user_message_id: int) -> None:
         conn.commit()
 
 
-def mark_chat_run_started(run_id: str) -> None:
+def mark_chat_run_started(run_id: str, *, worker_id: Optional[str] = None) -> bool:
     from app.services.chat_run_state import transition_chat_run_status
 
     with get_db() as conn:
-        transition_chat_run_status(conn, run_id, "running", started=True)
-        conn.commit()
+        with _write_transaction(conn):
+            if not _owns_active_run(conn, run_id, worker_id):
+                return False
+            return transition_chat_run_status(conn, run_id, "running", started=True)
 
 
 def mark_chat_run_finished(
@@ -73,18 +144,60 @@ def mark_chat_run_finished(
     *,
     error: Optional[str] = None,
     assistant_message_id: Optional[int] = None,
-) -> None:
+    worker_id: Optional[str] = None,
+) -> bool:
     from app.services.chat_run_state import transition_chat_run_status
 
     with get_db() as conn:
-        transition_chat_run_status(
-            conn,
-            run_id,
-            status,
-            error=error,
-            assistant_message_id=assistant_message_id,
-        )
-        conn.commit()
+        with _write_transaction(conn):
+            if not _owns_active_run(conn, run_id, worker_id, allow_terminal=True):
+                return False
+            transitioned = transition_chat_run_status(
+                conn, run_id, status, error=error,
+                assistant_message_id=assistant_message_id,
+            )
+            if transitioned and assistant_message_id is not None:
+                conn.execute(
+                    "UPDATE chat_runs SET assistant_message_id = COALESCE(assistant_message_id, ?) WHERE run_id = ?",
+                    (assistant_message_id, run_id),
+                )
+            return transitioned
+
+
+def finish_chat_run_with_event(
+    run_id: str,
+    status: str,
+    payload: Dict[str, Any],
+    *,
+    error: Optional[str] = None,
+    assistant_message_id: Optional[int] = None,
+    worker_id: Optional[str] = None,
+) -> Optional[int]:
+    """Commit the terminal transition, event, and winning claim marker together.
+
+    The marker is added only for an acquired owner, never for reaper recovery,
+    and authorizes that winner's later assistant save without a live lease.
+    """
+    from app.services.chat_run_events import check_chat_run_event
+    from app.services.chat_run_state import TERMINAL_STATUSES, transition_chat_run_status
+
+    if status not in TERMINAL_STATUSES or payload.get("type") not in {"final", "error"}:
+        raise ValueError("a terminal status and final/error event are required")
+    payload = dict(payload)
+    payload.pop("terminal_claim_id", None)
+    if worker_id is not None:
+        payload["terminal_claim_id"] = worker_id
+    check_chat_run_event(payload, run_id=run_id)
+    with get_db() as conn:
+        with _write_transaction(conn):
+            if not _owns_active_run(conn, run_id, worker_id):
+                return None
+            row = conn.execute("SELECT status FROM chat_runs WHERE run_id = ?", (run_id,)).fetchone()
+            if row is None or row["status"] in TERMINAL_STATUSES:
+                return None
+            if not transition_chat_run_status(conn, run_id, status, error=error, assistant_message_id=assistant_message_id):
+                return None
+            return _append_event(conn, run_id, payload)
 
 
 def get_chat_run(run_id: str) -> Optional[Dict[str, Any]]:
@@ -156,45 +269,41 @@ def list_session_runs(
     return [dict(r) for r in rows]
 
 
+def _append_event(conn, run_id: str, payload: Dict[str, Any]) -> int:
+    """Append inside the caller's write transaction."""
+    conn.execute(
+        """INSERT INTO chat_run_events (run_id, seq, event_type, payload_json)
+           VALUES (?, (SELECT COALESCE(MAX(seq), -1) + 1 FROM chat_run_events WHERE run_id = ?), ?, ?)""",
+        (run_id, run_id, str(payload.get("type") or "unknown"), json.dumps(payload, ensure_ascii=False)),
+    )
+    row = conn.execute("SELECT MAX(seq) AS s FROM chat_run_events WHERE run_id = ?", (run_id,)).fetchone()
+    seq = int(row["s"])
+    conn.execute("UPDATE chat_runs SET last_event_seq = ? WHERE run_id = ?", (seq, run_id))
+    return seq
+
+
 def append_chat_run_event(
     run_id: str,
     payload: Dict[str, Any],
-) -> int:
+    *,
+    worker_id: Optional[str] = None,
+) -> Optional[int]:
     """Append one event; returns monotonic seq for this run (>= 0)."""
     from app.services.chat_run_events import check_chat_run_event
 
     check_chat_run_event(payload, run_id=run_id)
-    event_type = str(payload.get("type") or "unknown")
-    payload_json = json.dumps(payload, ensure_ascii=False)
     with get_db() as conn:
-        conn.execute(
-            """
-            INSERT INTO chat_run_events (run_id, seq, event_type, payload_json)
-            VALUES (
-                ?,
-                (SELECT COALESCE(MAX(seq), -1) + 1 FROM chat_run_events WHERE run_id = ?),
-                ?,
-                ?
-            )
-            """,
-            (run_id, run_id, event_type, payload_json),
-        )
-        row = conn.execute(
-            "SELECT MAX(seq) AS s FROM chat_run_events WHERE run_id = ?",
-            (run_id,),
-        ).fetchone()
-        seq = int(row["s"]) if row and row["s"] is not None else -1
-        conn.execute(
-            "UPDATE chat_runs SET last_event_seq = ? WHERE run_id = ?",
-            (seq, run_id),
-        )
-        conn.commit()
-    return seq
+        with _write_transaction(conn):
+            if not _owns_active_run(conn, run_id, worker_id):
+                return None
+            return _append_event(conn, run_id, payload)
 
 
 def batch_append_chat_run_events(
     run_id: str,
     payloads: List[Dict[str, Any]],
+    *,
+    worker_id: Optional[str] = None,
 ) -> List[int]:
     """Append multiple events in a single transaction; returns list of seq values.
 
@@ -212,32 +321,19 @@ def batch_append_chat_run_events(
 
     seqs: List[int] = []
     with get_db() as conn:
-        # Determine starting seq for the batch
-        row = conn.execute(
-            "SELECT COALESCE(MAX(seq), -1) AS s FROM chat_run_events WHERE run_id = ?",
-            (run_id,),
-        ).fetchone()
-        next_seq = (int(row["s"]) if row and row["s"] is not None else -1) + 1
-
-        for payload in payloads:
-            event_type = str(payload.get("type") or "unknown")
-            payload_json = json.dumps(payload, ensure_ascii=False)
-            conn.execute(
-                """
-                INSERT INTO chat_run_events (run_id, seq, event_type, payload_json)
-                VALUES (?, ?, ?, ?)
-                """,
-                (run_id, next_seq, event_type, payload_json),
-            )
-            seqs.append(next_seq)
-            next_seq += 1
-
-        last_seq = seqs[-1] if seqs else -1
-        conn.execute(
-            "UPDATE chat_runs SET last_event_seq = ? WHERE run_id = ?",
-            (last_seq, run_id),
-        )
-        conn.commit()
+        with _write_transaction(conn):
+            if not _owns_active_run(conn, run_id, worker_id):
+                return []
+            row = conn.execute("SELECT COALESCE(MAX(seq), -1) AS s FROM chat_run_events WHERE run_id = ?", (run_id,)).fetchone()
+            next_seq = int(row["s"]) + 1
+            for payload in payloads:
+                conn.execute(
+                    "INSERT INTO chat_run_events (run_id, seq, event_type, payload_json) VALUES (?, ?, ?, ?)",
+                    (run_id, next_seq, str(payload.get("type") or "unknown"), json.dumps(payload, ensure_ascii=False)),
+                )
+                seqs.append(next_seq)
+                next_seq += 1
+            conn.execute("UPDATE chat_runs SET last_event_seq = ? WHERE run_id = ?", (seqs[-1], run_id))
     return seqs
 
 
@@ -319,33 +415,42 @@ def fetch_unconsumed_chat_run_signals(run_id: str) -> List[Dict[str, Any]]:
     return out
 
 
-def mark_chat_run_signals_consumed(signal_ids: List[int]) -> None:
+def is_chat_run_owned(run_id: str, worker_id: str) -> bool:
+    with get_db() as conn:
+        return _owns_active_run(conn, run_id, worker_id)
+
+
+def mark_chat_run_signals_consumed(signal_ids: List[int], *, run_id: Optional[str] = None, worker_id: Optional[str] = None) -> None:
     if not signal_ids:
         return
     placeholders = ",".join("?" for _ in signal_ids)
     with get_db() as conn:
-        conn.execute(
-            f"UPDATE chat_run_signals SET consumed_at = CURRENT_TIMESTAMP WHERE id IN ({placeholders})",
-            tuple(signal_ids),
-        )
-        conn.commit()
+        with _write_transaction(conn):
+            if worker_id is not None and not _owns_active_run(conn, str(run_id or ""), worker_id):
+                return
+            conn.execute(
+                f"UPDATE chat_run_signals SET consumed_at = CURRENT_TIMESTAMP WHERE id IN ({placeholders})",
+                tuple(signal_ids),
+            )
 
 
-def claim_chat_run_lease(run_id: str, worker_id: str, *, ttl_seconds: int = DEFAULT_LEASE_TTL_SECONDS) -> None:
-    """Record which worker executes this run and how long the claim is valid."""
+def claim_chat_run_lease(run_id: str, worker_id: str, *, ttl_seconds: int = DEFAULT_LEASE_TTL_SECONDS) -> bool:
+    """Acquire an unowned/expired active run; a live claim is never replaced."""
     ttl = max(5, int(ttl_seconds))
     with get_db() as conn:
-        conn.execute(
+        cursor = conn.execute(
             f"""
             UPDATE chat_runs
             SET worker_id = ?,
                 heartbeat_at = CURRENT_TIMESTAMP,
                 lease_expires_at = datetime('now', '+{ttl} seconds')
-            WHERE run_id = ?
+            WHERE run_id = ? AND status IN ('queued', 'running')
+              AND (lease_expires_at IS NULL OR lease_expires_at <= datetime('now'))
             """,
             (worker_id, run_id),
         )
         conn.commit()
+        return cursor.rowcount == 1
 
 
 def heartbeat_chat_run_lease(run_id: str, worker_id: str, *, ttl_seconds: int = DEFAULT_LEASE_TTL_SECONDS) -> bool:
@@ -357,7 +462,8 @@ def heartbeat_chat_run_lease(run_id: str, worker_id: str, *, ttl_seconds: int = 
             UPDATE chat_runs
             SET heartbeat_at = CURRENT_TIMESTAMP,
                 lease_expires_at = datetime('now', '+{ttl} seconds')
-            WHERE run_id = ? AND worker_id = ?
+            WHERE run_id = ? AND worker_id = ? AND status IN ('queued', 'running')
+              AND lease_expires_at > datetime('now')
             """,
             (run_id, worker_id),
         )
@@ -403,43 +509,40 @@ def reap_expired_chat_runs(*, ttl_seconds: int = DEFAULT_LEASE_TTL_SECONDS) -> i
     pre-lease legacy rows). Fresh NULL-lease rows are left alone. Terminal
     runs' leftover signals are marked consumed as housekeeping.
     """
+    from app.services.chat_run_state import transition_chat_run_status
+
     ttl = max(5, int(ttl_seconds))
-    with get_db() as conn:
-        rows = conn.execute(
-            f"""
-            SELECT run_id FROM chat_runs
-            WHERE status IN ('queued', 'running')
-              AND (
-                    (lease_expires_at IS NOT NULL AND lease_expires_at < datetime('now'))
-                 OR (lease_expires_at IS NULL AND created_at < datetime('now', '-{ttl} seconds'))
-              )
-            """
-        ).fetchall()
     n = 0
-    for row in rows:
-        rid = str(row["run_id"])
-        try:
-            append_chat_run_event(
-                rid,
-                {
-                    "type": "error",
-                    "message": "Server restarted; this run was interrupted.",
-                    "run_interrupted": True,
-                },
-            )
-            mark_chat_run_finished(rid, "failed", error=_STALE_RUN_ERROR)
-            n += 1
-        except Exception:
-            continue
     with get_db() as conn:
-        conn.execute(
-            """
-            UPDATE chat_run_signals SET consumed_at = CURRENT_TIMESTAMP
-            WHERE consumed_at IS NULL
-              AND run_id IN (SELECT run_id FROM chat_runs WHERE status IN ('succeeded', 'failed', 'cancelled'))
-            """
-        )
-        conn.commit()
+        # Acquire the write lock before selecting: a heartbeat/completion cannot
+        # invalidate the candidate between selection and its terminal event.
+        with _write_transaction(conn):
+            rows = conn.execute(
+                f"""
+                SELECT run_id FROM chat_runs
+                WHERE status IN ('queued', 'running')
+                  AND (
+                        (lease_expires_at IS NOT NULL AND lease_expires_at <= datetime('now'))
+                     OR (lease_expires_at IS NULL AND created_at < datetime('now', '-{ttl} seconds'))
+                  )
+                """
+            ).fetchall()
+            for row in rows:
+                rid = str(row["run_id"])
+                if transition_chat_run_status(conn, rid, "failed", error=_STALE_RUN_ERROR):
+                    _append_event(conn, rid, {
+                        "type": "error",
+                        "message": "Server restarted; this run was interrupted.",
+                        "run_interrupted": True,
+                    })
+                    n += 1
+            conn.execute(
+                """
+                UPDATE chat_run_signals SET consumed_at = CURRENT_TIMESTAMP
+                WHERE consumed_at IS NULL
+                  AND run_id IN (SELECT run_id FROM chat_runs WHERE status IN ('succeeded', 'failed', 'cancelled'))
+                """
+            )
     return n
 
 

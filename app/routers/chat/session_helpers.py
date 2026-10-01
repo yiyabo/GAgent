@@ -1042,8 +1042,13 @@ def _save_chat_message(
     """Persist chat message."""
     try:
         from ...database import get_db  # lazy import to avoid circular deps
+        from ...repository.chat_runs import guard_chat_run_assistant_save
 
-        with get_db() as conn:
+        with get_db() as conn, guard_chat_run_assistant_save(conn, session_id, role) as run_scope:
+            if run_scope is False:
+                return None
+            if run_scope is not None and run_scope["assistant_message_id"] is not None:
+                return int(run_scope["assistant_message_id"])
             _ensure_session_exists(session_id, conn, owner_id=owner_id)
             cursor = conn.cursor()
             client_message_id = None
@@ -1056,12 +1061,18 @@ def _save_chat_message(
                     """
                     SELECT id FROM chat_messages
                     WHERE session_id = ?
+                      AND role = ?
                       AND json_extract(metadata, '$.client_message_id') = ?
                     LIMIT 1
                     """,
-                    (session_id, client_message_id),
+                    (session_id, role, client_message_id),
                 ).fetchone()
                 if existing_row is not None:
+                    if run_scope is not None:
+                        cursor.execute(
+                            "UPDATE chat_runs SET assistant_message_id = ? WHERE run_id = ?",
+                            (int(existing_row[0]), run_scope["run_id"]),
+                        )
                     logger.info(
                         "[CHAT][SAVE] dedupe session=%s client_message_id=%s -> message %s",
                         session_id,
@@ -1087,6 +1098,11 @@ def _save_chat_message(
                 (session_id, role, content, metadata_json),
             )
             message_id = int(cursor.lastrowid)
+            if run_scope is not None:
+                cursor.execute(
+                    "UPDATE chat_runs SET assistant_message_id = ? WHERE run_id = ?",
+                    (message_id, run_scope["run_id"]),
+                )
 
             # Process message through chat memory middleware
             try:
@@ -1114,7 +1130,8 @@ def _save_chat_message(
                 """,
                 (session_id,),
             )
-            conn.commit()
+            if run_scope is None:
+                conn.commit()
             return message_id
     except PermissionError:
         raise

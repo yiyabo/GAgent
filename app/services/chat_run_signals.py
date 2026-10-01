@@ -13,9 +13,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from typing import Optional
 
 from app.repository.chat_runs import (
     fetch_unconsumed_chat_run_signals,
+    is_chat_run_owned,
     mark_chat_run_signals_consumed,
     reap_expired_chat_runs,
 )
@@ -48,7 +50,9 @@ def sweep_interval_seconds() -> float:
         return 30.0
 
 
-async def _apply_signals_once(run_id: str) -> None:
+async def _apply_signals_once(run_id: str, *, worker_id: Optional[str] = None) -> None:
+    if worker_id is not None and not await asyncio.to_thread(is_chat_run_owned, run_id, worker_id):
+        return
     rows = await asyncio.to_thread(fetch_unconsumed_chat_run_signals, run_id)
     if not rows:
         return
@@ -62,22 +66,24 @@ async def _apply_signals_once(run_id: str) -> None:
         elif kind == "steer":
             message = str(row["payload"].get("message") or "").strip()
             if message:
-                hub.push_steer_message(run_id, message)
+                if not hub.push_steer_message(run_id, message, signal_id=int(row["id"])):
+                    # The owning run has not accepted it yet; retry next poll.
+                    continue
             consumed.append(int(row["id"]))
             logger.info("[CHAT][RUN] durable steer signal applied run=%s", run_id)
         else:
             # Unknown kinds are consumed so they do not accumulate.
             consumed.append(int(row["id"]))
             logger.warning("[CHAT][RUN] unknown signal kind=%s consumed run=%s", kind, run_id)
-    await asyncio.to_thread(mark_chat_run_signals_consumed, consumed)
+    await asyncio.to_thread(mark_chat_run_signals_consumed, consumed, run_id=run_id, worker_id=worker_id)
 
 
-async def run_signal_pump(run_id: str, stop_event: asyncio.Event) -> None:
+async def run_signal_pump(run_id: str, stop_event: asyncio.Event, *, worker_id: Optional[str] = None) -> None:
     """Poll and apply durable signals until ``stop_event`` is set."""
     poll = signal_poll_seconds()
     while not stop_event.is_set():
         try:
-            await _apply_signals_once(run_id)
+            await _apply_signals_once(run_id, worker_id=worker_id)
         except Exception as exc:  # fail-open: fast paths still deliver
             logger.warning(
                 "[CHAT][RUN] signal pump iteration failed run=%s error=%s",

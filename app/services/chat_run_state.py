@@ -10,13 +10,41 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Any, Optional, Set
+from contextvars import ContextVar
+from dataclasses import dataclass
+from typing import Any, Literal, Optional, Set
 
 logger = logging.getLogger(__name__)
 
 ACTIVE_STATUSES: Set[str] = {"queued", "running"}
 TERMINAL_STATUSES: Set[str] = {"succeeded", "failed", "cancelled"}
 ALL_STATUSES: Set[str] = ACTIVE_STATUSES | TERMINAL_STATUSES
+chat_run_claim: ContextVar[Optional[tuple[str, str]]] = ContextVar("chat_run_claim", default=None)
+
+
+@dataclass(frozen=True)
+class ChatRunOutcome:
+    """Execution result shared by the worker and durable terminal event."""
+
+    status: Literal["succeeded", "failed", "cancelled"]
+    error: Optional[str] = None
+
+    @classmethod
+    def from_event(cls, payload: dict, *, cancelled: bool = False) -> Optional["ChatRunOutcome"]:
+        kind = payload.get("type")
+        if kind not in {"final", "error"}:
+            return None
+        if cancelled:
+            return cls("cancelled", "cancelled")
+        if kind == "error":
+            return cls("failed", str(payload.get("message") or payload.get("error") or "run failed"))
+        metadata = (payload.get("payload") or {}).get("metadata") or {}
+        status = str(metadata.get("status") or "").lower()
+        if status in {"cancelled", "canceled"}:
+            return cls("cancelled", "cancelled")
+        if status in {"failed", "error", "blocked"}:
+            return cls("failed", str(metadata.get("error") or metadata.get("final_summary") or "task execution failed"))
+        return cls("succeeded")
 
 ALLOWED_TRANSITIONS = {
     "queued": {"running", "failed", "cancelled"},

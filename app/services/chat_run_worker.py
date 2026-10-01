@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import uuid
+from types import SimpleNamespace
 from typing import Optional
 
 from app.repository.chat_runs import (
@@ -20,6 +22,7 @@ from app.routers.chat.stream_context import build_agent_for_chat_request
 from app.routers.chat.session_helpers import _save_chat_message
 from app.services import cancellation
 from app.services.chat_run_emitter import ChatRunEmitter
+from app.services.chat_run_state import ChatRunOutcome, chat_run_claim
 from app.services import chat_run_hub as hub
 from app.services.chat_run_signals import lease_ttl_seconds, run_signal_pump
 from app.services.foundation.logging_context import bind_log_context, clear_log_context
@@ -49,8 +52,9 @@ def _build_explicit_execution_final_payload(
     total_tasks: int,
     tools_used: Optional[list[str]] = None,
     tool_failures: Optional[list[str]] = None,
+    status: Optional[str] = None,
 ) -> dict:
-    status = "failed" if failed_id is not None else "completed"
+    status = status or ("failed" if failed_id is not None else "completed")
     metadata = {
         "plan_id": plan_id,
         "status": status,
@@ -83,7 +87,7 @@ async def _run_explicit_task_execution(
     run_id: str,
     cancel_ev,
     emitter: ChatRunEmitter,
-) -> None:
+) -> ChatRunOutcome:
     """Execute all tasks in the explicit scope via plan_executor directly.
 
     This bypasses the chat DeepThink agent (process_unified_stream) which
@@ -116,6 +120,7 @@ async def _run_explicit_task_execution(
     )
     completed_ids = []
     failed_id = None
+    skipped_ids: list[int] = []
     tools_used: list[str] = []
     tool_failures: list[str] = []
 
@@ -199,6 +204,7 @@ async def _run_explicit_task_execution(
         if task_status in ("completed", "done", "success"):
             completed_ids.append(task_id)
         elif task_status == "skipped":
+            skipped_ids.append(task_id)
             logger.info(
                 "[EXPLICIT_EXEC] Task %d skipped (deps not met), continuing",
                 task_id,
@@ -214,6 +220,15 @@ async def _run_explicit_task_execution(
     )
     if failed_id:
         summary += f" Failed at task {failed_id}."
+    if skipped_ids:
+        summary += f" Skipped: {skipped_ids}."
+
+    if cancel_ev.is_set():
+        outcome = ChatRunOutcome("cancelled", "cancelled")
+    elif failed_id is not None or skipped_ids:
+        outcome = ChatRunOutcome("failed", summary)
+    else:
+        outcome = ChatRunOutcome("succeeded")
 
     logger.info("[EXPLICIT_EXEC] %s run=%s", summary, run_id)
 
@@ -225,12 +240,10 @@ async def _run_explicit_task_execution(
         total_tasks=len(all_task_ids),
         tools_used=tools_used,
         tool_failures=tool_failures,
+        status="completed" if outcome.status == "succeeded" else outcome.status,
     )
 
-    try:
-        await emitter.emit(final_payload)
-    except Exception:
-        pass
+    await emitter.emit(final_payload)
 
     session_id = getattr(agent, "session_id", None)
     if session_id and summary:
@@ -243,6 +256,7 @@ async def _run_explicit_task_execution(
             )
         except Exception:
             pass
+    return outcome
 
 
 async def _run_cascade(
@@ -357,7 +371,10 @@ async def _run_cascade(
 
 
 async def _run_lease_heartbeat(
-    run_id: str, worker_id: str, stop_event: asyncio.Event
+    run_id: str, worker_id: str, stop_event: asyncio.Event,
+    *, owner_task: Optional[asyncio.Task] = None,
+    lease_lost: Optional[asyncio.Event] = None,
+    terminal_committed: Optional[asyncio.Event] = None,
 ) -> None:
     """Renew the run's worker lease until stopped; never raises."""
     interval = max(2.0, lease_ttl_seconds() / 3.0)
@@ -370,9 +387,17 @@ async def _run_lease_heartbeat(
                 ttl_seconds=lease_ttl_seconds(),
             )
             if not ok:
+                if terminal_committed is not None and terminal_committed.is_set():
+                    return
                 logger.warning(
                     "chat_run lease heartbeat lost run=%s (claimed elsewhere?)", run_id
                 )
+                if lease_lost is not None:
+                    lease_lost.set()
+                hub.request_cancel(run_id, "chat_run_lease_lost")
+                if owner_task is not None:
+                    owner_task.cancel()
+                return
         except Exception as exc:  # pragma: no cover - heartbeat must not kill a run
             logger.warning(
                 "chat_run lease heartbeat failed run=%s error=%s",
@@ -386,26 +411,49 @@ async def _run_lease_heartbeat(
 
 
 async def execute_chat_run(run_id: str) -> None:
+    # The process routes controls; this unique claim fences earlier attempts
+    # even when a queued run is redispatched in the same process.
+    worker_id = f"{get_worker_id()}:{uuid.uuid4().hex}"
+    try:
+        acquired = claim_chat_run_lease(run_id, worker_id, ttl_seconds=lease_ttl_seconds())
+    except Exception as exc:
+        logger.warning("chat_run lease claim failed run=%s error=%s", run_id, type(exc).__name__)
+        return  # execution requires a durable claim; retries can heal queued runs
+    if not acquired:
+        logger.info("chat_run already owned or terminal; skipping run=%s", run_id)
+        return
     cancel_ev = hub.ensure_cancel_event(run_id)
     # Thread-safe counterpart of `cancel_ev`: the delegations this run starts
     # (code_executor / delegate_task CLI subprocesses) are supervised from
     # worker threads, which can only poll a threading primitive.
-    cancel_handle = cancellation.set_cancel_token(hub.ensure_cancel_token(run_id))
+    hub.ensure_cancel_token(run_id)
     hub.ensure_steer_queue(run_id)
     emitter = ChatRunEmitter(run_id)
+    emitter.worker_id = worker_id
     start_owner_lease("run", run_id)
-    worker_id = get_worker_id()
-    try:
-        claim_chat_run_lease(run_id, worker_id, ttl_seconds=lease_ttl_seconds())
-    except Exception as exc:  # pragma: no cover - lease must not block execution
-        logger.warning(
-            "chat_run lease claim failed run=%s error=%s", run_id, type(exc).__name__
-        )
+    lease_lost = asyncio.Event()
+    terminal_committed = asyncio.Event()
+    emitter.terminal_committed = terminal_committed
+    outcome: Optional[ChatRunOutcome] = None
+
+    async def emit_run_event(payload: dict) -> bool:
+        nonlocal outcome
+        event_outcome = ChatRunOutcome.from_event(payload, cancelled=cancel_ev.is_set())
+        accepted = await emitter.emit(payload)
+        if accepted is not False and outcome is None and event_outcome is not None:
+            outcome = event_outcome
+            # Simple sinks used by embedding callers may not expose commit
+            # hooks; a completed, accepted emit also signals completion.
+            terminal_committed.set()
+        return accepted is not False
     pump_stop = asyncio.Event()
     heartbeat_stop = asyncio.Event()
-    pump_task = asyncio.create_task(run_signal_pump(run_id, pump_stop))
+    pump_task = asyncio.create_task(run_signal_pump(run_id, pump_stop, worker_id=worker_id))
     heartbeat_task = asyncio.create_task(
-        _run_lease_heartbeat(run_id, worker_id, heartbeat_stop)
+        _run_lease_heartbeat(
+            run_id, worker_id, heartbeat_stop, owner_task=asyncio.current_task(),
+            lease_lost=lease_lost, terminal_committed=terminal_committed,
+        )
     )
     from contextlib import ExitStack
 
@@ -415,6 +463,8 @@ async def execute_chat_run(run_id: str) -> None:
     # Handles of the run-scoped usage context, reset in the finally below so the
     # run's attribution (its run id) cannot outlive the run.
     usage_context_tokens: list = []
+    cancel_handle = cancellation.set_cancel_token(hub.ensure_cancel_token(run_id))
+    claim_handle = chat_run_claim.set((run_id, worker_id))
     try:
         row = get_chat_run(run_id)
         if not row:
@@ -426,13 +476,14 @@ async def execute_chat_run(run_id: str) -> None:
         )
         raw = row.get("request_json")
         if not raw:
-            mark_chat_run_finished(run_id, "failed", error="missing request_json")
+            await emit_run_event({"type": "error", "message": "missing request_json"})
             _capture_quality_snapshot(run_id)
             return
         data = json.loads(raw)
         request = ChatRequest.model_validate(data)
 
-        mark_chat_run_started(run_id)
+        if mark_chat_run_started(run_id, worker_id=worker_id) is False:
+            return
         await emitter.emit({"type": "start", "run_id": run_id})
 
         agent, message_to_send = await build_agent_for_chat_request(
@@ -459,13 +510,13 @@ async def execute_chat_run(run_id: str) -> None:
 
         if _explicit and _first_task and _plan_id and _executor and _pending:
             # Direct execution path: use plan_executor for ALL tasks
-            await _run_explicit_task_execution(
+            outcome = await _run_explicit_task_execution(
                 agent,
                 _executor,
                 _plan_id,
                 run_id=run_id,
                 cancel_ev=cancel_ev,
-                emitter=emitter,
+                emitter=SimpleNamespace(emit=emit_run_event),
             )
         else:
             if _explicit and _first_task and _plan_id and _executor:
@@ -478,20 +529,31 @@ async def execute_chat_run(run_id: str) -> None:
                 message_to_send,
                 run_id=run_id,
                 cancel_event=cancel_ev,
-                event_sink=emitter.emit,
+                event_sink=emit_run_event,
                 steer_drain=lambda: hub.drain_steer_messages(run_id),
             ):
                 pass
 
-        if cancel_ev.is_set():
-            mark_chat_run_finished(run_id, "cancelled", error="cancelled")
-        else:
-            mark_chat_run_finished(run_id, "succeeded")
+        if outcome is None:
+            await emit_run_event({
+                "type": "error",
+                "message": "Run cancelled." if cancel_ev.is_set() else "Chat execution ended without a final response.",
+            })
+        if outcome is not None:
+            mark_chat_run_finished(run_id, outcome.status, error=outcome.error, worker_id=worker_id)
         _capture_quality_snapshot(run_id)
+    except asyncio.CancelledError:
+        # A stale worker cannot commit a terminal outcome for the new owner.
+        # The shared token also tears down delegated subprocesses in threads.
+        if not lease_lost.is_set():
+            hub.request_cancel(run_id)
+            await emit_run_event({"type": "error", "message": "Run cancelled."})
+        raise
     except Exception as exc:
         logger.exception("chat_run worker failed run_id=%s", run_id)
+        error_emitted = False
         try:
-            await emitter.emit(
+            error_emitted = await emit_run_event(
                 {
                     "type": "error",
                     "message": str(exc),
@@ -500,7 +562,8 @@ async def execute_chat_run(run_id: str) -> None:
             )
         except Exception:
             pass
-        mark_chat_run_finished(run_id, "failed", error=str(exc))
+        if error_emitted:
+            mark_chat_run_finished(run_id, "failed", error=str(exc), worker_id=worker_id)
         _capture_quality_snapshot(run_id)
     finally:
         pump_stop.set()
@@ -525,6 +588,7 @@ async def execute_chat_run(run_id: str) -> None:
         hub.forget_worker_task(run_id)
         hub.cleanup_run_signals(run_id)
         cancellation.reset_cancel_token(cancel_handle)
+        chat_run_claim.reset(claim_handle)
         for usage_token in usage_context_tokens:
             try:
                 clear_usage_context(usage_token)

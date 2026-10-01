@@ -374,18 +374,17 @@ async def steer_run(run_id: str, request: Request, body: Dict[str, Any] = Body(.
         raise HTTPException(status_code=400, detail="message is required")
     # Durable first: the worker's signal pump drains the row even when both
     # fast paths miss (cross-worker bus degraded or in-process queue absent).
-    insert_chat_run_signal(run_id, "steer", {"message": message})
+    signal_id = insert_chat_run_signal(run_id, "steer", {"message": message})
     accepted = await route_control_message(
         "run",
         run_id,
-        {"type": "chat_run.steer", "run_id": run_id, "message": message},
+        {"type": "chat_run.steer", "run_id": run_id, "message": message, "signal_id": signal_id},
     )
     if not accepted:
-        accepted = hub.push_steer_message(run_id, message)
+        accepted = hub.push_steer_message(run_id, message, signal_id=signal_id)
     if not accepted:
         logger.info(
             "[CHAT][RUN] steer fast paths missed run=%s; durable row queued for pump",
             run_id,
         )
     return {"run_id": run_id, "status": "steer_queued"}
-    return {"run_id": run_id, "status": "accepted"}

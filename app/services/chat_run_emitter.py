@@ -16,8 +16,10 @@ import asyncio
 import logging
 from typing import Any, Dict, List, Optional, Tuple
 
-from app.repository.chat_runs import append_chat_run_event, batch_append_chat_run_events
+from app.repository.chat_runs import append_chat_run_event, batch_append_chat_run_events, finish_chat_run_with_event
 from app.services import chat_run_hub as hub
+from app.services.cancellation import current_cancel_token
+from app.services.chat_run_state import ChatRunOutcome
 from app.services.realtime_bus import get_realtime_bus
 
 logger = logging.getLogger(__name__)
@@ -43,6 +45,10 @@ class ChatRunEmitter:
 
     def __init__(self, run_id: str, *, flush_interval: float = _FLUSH_INTERVAL_S) -> None:
         self.run_id = run_id
+        self.worker_id: Optional[str] = None
+        # Set synchronously after the winning DB transaction, before any
+        # potentially slow publication. Attempted/rejected events never set it.
+        self.terminal_committed = asyncio.Event()
         self._flush_interval = flush_interval
 
         # Buffered payloads awaiting batch write.
@@ -50,7 +56,7 @@ class ChatRunEmitter:
         self._flush_task: Optional[asyncio.Task[None]] = None
         self._closed = False
 
-    async def emit(self, payload: Dict[str, Any]) -> None:
+    async def emit(self, payload: Dict[str, Any]) -> bool:
         """Emit a single event.
 
         Immediate events are persisted and fan-out right away.
@@ -63,20 +69,38 @@ class ChatRunEmitter:
             if self._buffer:
                 await self._flush_buffer()
             try:
-                seq = append_chat_run_event(self.run_id, payload)
+                token = current_cancel_token()
+                outcome = ChatRunOutcome.from_event(payload, cancelled=bool(token and token.cancelled))
+                if outcome is not None:
+                    payload = dict(payload)
+                    if self.worker_id is not None:
+                        payload["terminal_claim_id"] = self.worker_id
+                    seq = finish_chat_run_with_event(
+                        self.run_id, outcome.status, payload,
+                        error=outcome.error, worker_id=self.worker_id,
+                    )
+                else:
+                    seq = append_chat_run_event(self.run_id, payload, worker_id=self.worker_id)
             except Exception as exc:  # pragma: no cover
                 logger.warning("chat_run append_event failed run=%s: %s", self.run_id, exc)
-                return
+                if event_type in {"final", "error"}:
+                    raise  # the worker must not claim success without its event
+                return False
+            if seq is None:
+                return False  # terminal winner or another owner already committed
+            if outcome is not None:
+                self.terminal_committed.set()
             try:
                 bus = await get_realtime_bus()
                 await bus.publish_run_event(self.run_id, seq, payload)
             except Exception as exc:  # pragma: no cover - defensive
                 logger.warning("chat_run publish_run_event failed run=%s seq=%s: %s", self.run_id, seq, exc)
-            return
+            return True
 
         # Buffer high-frequency events.
         self._buffer.append(payload)
         self._schedule_flush()
+        return True
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -107,7 +131,7 @@ class ChatRunEmitter:
         self._buffer.clear()
 
         try:
-            seqs = batch_append_chat_run_events(self.run_id, batch)
+            seqs = batch_append_chat_run_events(self.run_id, batch, worker_id=self.worker_id)
         except Exception as exc:
             # Restore the batch to the front of the buffer so events are not
             # permanently lost.  The next flush cycle (or an immediate event

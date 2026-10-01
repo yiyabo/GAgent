@@ -17,6 +17,7 @@ _cancel_events: Dict[str, asyncio.Event] = {}
 _cancel_tokens: Dict[str, CancelToken] = {}
 _tasks: Dict[str, asyncio.Task[None]] = {}
 _steer_queues: Dict[str, asyncio.Queue[str]] = {}
+_steer_signal_ids: Dict[str, set[int]] = {}
 
 
 def _get_lock() -> asyncio.Lock:
@@ -59,7 +60,7 @@ def forget_worker_task(run_id: str) -> None:
     _tasks.pop(run_id, None)
 
 
-def request_cancel(run_id: str) -> None:
+def request_cancel(run_id: str, reason: str = "chat_run_cancelled") -> None:
     """Fan the cancel signal out to the loop-side and thread-side consumers.
 
     Every cancel delivery path funnels through here — the ``/cancel`` route,
@@ -67,7 +68,7 @@ def request_cancel(run_id: str) -> None:
     the thread-safe token here covers all of them.
     """
     ensure_cancel_event(run_id).set()
-    ensure_cancel_token(run_id).set("chat_run_cancelled")
+    ensure_cancel_token(run_id).set(reason)
 
 
 async def register_subscriber(
@@ -119,6 +120,7 @@ def cleanup_run_signals(run_id: str) -> None:
     _cancel_events.pop(run_id, None)
     _cancel_tokens.pop(run_id, None)
     _steer_queues.pop(run_id, None)
+    _steer_signal_ids.pop(run_id, None)
 
 
 # ---- Steer (mid-run user guidance) ----------------------------------------
@@ -129,10 +131,16 @@ def ensure_steer_queue(run_id: str) -> asyncio.Queue[str]:
     return _steer_queues[run_id]
 
 
-def push_steer_message(run_id: str, message: str) -> bool:
+def push_steer_message(run_id: str, message: str, *, signal_id: Optional[int] = None) -> bool:
+    """Accept a steer once; duplicate durable/fast deliveries acknowledge it."""
     q = _steer_queues.get(run_id)
     if q is None:
         return False
+    if signal_id is not None:
+        seen = _steer_signal_ids.setdefault(run_id, set())
+        if signal_id in seen:
+            return True
+        seen.add(signal_id)
     q.put_nowait(message)
     return True
 
