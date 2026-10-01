@@ -455,4 +455,28 @@ export const createSessionSlice: ChatSliceCreator = (set, get) => ({
   };
   });
   },
+
+  moveSessionToProject: async (sessionId, projectId) => {
+  const sessionKey = sessionId?.trim();
+  if (!sessionKey) {
+  throw new Error('Missing session id.');
+  }
+
+  await chatApi.updateSession(sessionKey, { project_id: projectId });
+
+  set((state) => {
+  const applyMove = (session: ChatSession): ChatSession => {
+  const matchId = session.session_id ?? session.id;
+  return matchId === sessionKey ? { ...session, project_id: projectId } : session;
+  };
+  return {
+  currentSession: state.currentSession ? applyMove(state.currentSession) : state.currentSession,
+  sessions: state.sessions.map(applyMove),
+  };
+  });
+
+  // The session list is project-filtered server-side in platform mode;
+  // reload so the moved session leaves/joins the visible list.
+  await get().loadSessions();
+  },
 });

@@ -197,6 +197,7 @@ class ChatSessionSummary(BaseModel):
     last_message_at: Optional[str] = None
     is_active: bool
     settings: Optional[ChatSessionSettings] = None
+    project_id: Optional[int] = None
 
 
 class ChatSessionsResponse(BaseModel):
@@ -206,6 +207,20 @@ class ChatSessionsResponse(BaseModel):
     total: int
     limit: int
     offset: int
+
+
+class ChatProjectSummary(BaseModel):
+    """One project the current user may file sessions into."""
+
+    id: int
+    label: str
+    current: bool = False
+
+
+class ChatProjectsResponse(BaseModel):
+    """Response wrapper for the movable-to project list."""
+
+    projects: List[ChatProjectSummary]
 
 
 class ChatSessionUpdateRequest(BaseModel):
@@ -220,6 +235,7 @@ class ChatSessionUpdateRequest(BaseModel):
     current_task_id: Optional[int] = None
     current_task_name: Optional[str] = None
     settings: Optional[ChatSessionSettings] = None
+    project_id: Optional[int] = None
 
 
 class ChatSessionAutoTitleRequest(BaseModel):

@@ -59,6 +59,7 @@ export interface ChatState {
         options?: { force?: boolean; strategy?: string | null }
     ) => Promise<ChatSessionAutoTitleResult | null>;
     renameSession: (sessionId: string, title: string) => Promise<void>;
+    moveSessionToProject: (sessionId: string, projectId: number | null) => Promise<void>;
 
     // Message Actions
     addMessage: (message: ChatMessage) => void;

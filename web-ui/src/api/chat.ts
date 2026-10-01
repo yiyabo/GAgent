@@ -1,6 +1,7 @@
 import { BaseApi } from './client';
 import type {
   ActionStatusResponse,
+  ChatProjectsResponse,
   ChatResponsePayload,
   ChatSessionsResponse,
   ChatSessionSummary,
@@ -108,6 +109,10 @@ export class ChatApi extends BaseApi {
   payload: ChatSessionUpdatePayload
   ): Promise<ChatSessionSummary> => {
   return this.patch(`/chat/sessions/${sessionId}`, payload);
+  };
+
+  getProjects = async (): Promise<ChatProjectsResponse> => {
+  return this.get('/chat/projects');
   };
 
   deleteSession = async (

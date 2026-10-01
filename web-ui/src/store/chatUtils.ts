@@ -482,6 +482,7 @@ export const summaryToChatSession = (summary: ChatSessionSummary): ChatSession =
         is_active: summary.is_active,
         titleSource,
         isUserNamed,
+        project_id: summary.project_id ?? null,
     };
 };
 

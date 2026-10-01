@@ -5,6 +5,7 @@ import {
   Input,
   MenuProps,
   Modal,
+  Select,
   Spin,
   Typography,
   Tooltip,
@@ -20,11 +21,13 @@ import {
   InboxOutlined,
   ReloadOutlined,
   MenuFoldOutlined,
+  SwapOutlined,
 } from '@ant-design/icons';
 import { useChatStore } from '@store/chat';
 import { useLayoutStore } from '@store/layout';
 import { useAuthStore } from '@store/auth';
-import { ChatSession } from '@/types';
+import { chatApi } from '@api/chat';
+import { ChatProjectItem, ChatSession } from '@/types';
 import { shallow } from 'zustand/shallow';
 
 const { Text } = Typography;
@@ -60,6 +63,7 @@ export const ChatSidebar: React.FC = () => {
     loadChatHistory,
     autotitleSession,
     renameSession,
+    moveSessionToProject,
   } = useChatStore(
     (state) => ({
       sessions: state.sessions,
@@ -70,6 +74,7 @@ export const ChatSidebar: React.FC = () => {
       loadChatHistory: state.loadChatHistory,
       autotitleSession: state.autotitleSession,
       renameSession: state.renameSession,
+      moveSessionToProject: state.moveSessionToProject,
     }),
     shallow
   );
@@ -82,6 +87,12 @@ export const ChatSidebar: React.FC = () => {
   const [renameValue, setRenameValue] = useState('');
   const [renameTarget, setRenameTarget] = useState<ChatSession | null>(null);
   const [isRenaming, setIsRenaming] = useState(false);
+  const [moveModalOpen, setMoveModalOpen] = useState(false);
+  const [moveTarget, setMoveTarget] = useState<ChatSession | null>(null);
+  const [moveProjects, setMoveProjects] = useState<ChatProjectItem[]>([]);
+  const [moveValue, setMoveValue] = useState<number | null>(null);
+  const [moveLoading, setMoveLoading] = useState(false);
+  const [moveSubmitting, setMoveSubmitting] = useState(false);
 
   const isSessionsLoading = !currentSession && sessions.length === 0;
 
@@ -208,9 +219,58 @@ export const ChatSidebar: React.FC = () => {
     });
   };
 
+  const openMoveModal = async (session: ChatSession) => {
+    setMoveTarget(session);
+    setMoveValue(session.project_id ?? null);
+    setMoveModalOpen(true);
+    setMoveLoading(true);
+    try {
+      const response = await chatApi.getProjects();
+      setMoveProjects(response.projects ?? []);
+    } catch (error) {
+      console.warn('Failed to load projects:', error);
+      setMoveProjects([]);
+      message.error('项目列表加载失败，请稍后重试');
+    } finally {
+      setMoveLoading(false);
+    }
+  };
+
+  const closeMoveModal = () => {
+    setMoveModalOpen(false);
+    setMoveTarget(null);
+    setMoveProjects([]);
+    setMoveValue(null);
+    setMoveLoading(false);
+    setMoveSubmitting(false);
+  };
+
+  const handleMoveConfirm = async () => {
+    if (!moveTarget) return;
+    const sessionId = moveTarget.session_id ?? moveTarget.id;
+    setMoveSubmitting(true);
+    try {
+      await moveSessionToProject(sessionId, moveValue);
+      const targetLabel = moveValue === null
+        ? '未分配'
+        : moveProjects.find((p) => p.id === moveValue)?.label ?? `项目 ${moveValue}`;
+      message.success(`已移动到「${targetLabel}」`);
+      closeMoveModal();
+    } catch (error) {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      message.error(`移动失败: ${errMsg}`);
+      setMoveSubmitting(false);
+    }
+  };
+
   const handleSessionMenuAction = async (session: ChatSession, key: string) => {
     if (key === 'rename') {
       openRenameModal(session);
+      return;
+    }
+
+    if (key === 'move') {
+      void openMoveModal(session);
       return;
     }
 
@@ -244,6 +304,11 @@ export const ChatSidebar: React.FC = () => {
         key: 'autotitle',
         label: '重新生成标题',
         icon: <ReloadOutlined />,
+      },
+      {
+        key: 'move',
+        label: '移动到项目',
+        icon: <SwapOutlined />,
       },
     ];
 
@@ -442,6 +507,43 @@ export const ChatSidebar: React.FC = () => {
           onPressEnter={() => void handleRenameConfirm()}
           autoFocus
         />
+      </Modal>
+
+      <Modal
+        title="移动到项目"
+        open={moveModalOpen}
+        onOk={() => void handleMoveConfirm()}
+        confirmLoading={moveSubmitting}
+        onCancel={closeMoveModal}
+        okText="移动"
+        cancelText="取消"
+        destroyOnClose
+      >
+        <Spin spinning={moveLoading}>
+          <div style={{ marginBottom: 8 }}>
+            <Text type="secondary">
+              将「{moveTarget?.title || moveTarget?.id}」移动到：
+            </Text>
+          </div>
+          <Select
+            style={{ width: '100%' }}
+            value={moveValue}
+            onChange={(value) => setMoveValue(value ?? null)}
+            placeholder="选择目标项目"
+            optionFilterProp="label"
+            showSearch
+            allowClear
+            options={moveProjects.map((p) => ({
+              value: p.id,
+              label: p.current ? `${p.label}（当前项目）` : p.label,
+            }))}
+          />
+          <div style={{ marginTop: 8 }}>
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              清空选择表示移出所有项目（未分配）。移动后该会话会从当前项目列表消失。
+            </Text>
+          </div>
+        </Spin>
       </Modal>
     </div>
   );

@@ -38,6 +38,8 @@ from .confirmation import (
 )
 from .models import (
     ActionStatusResponse,
+    ChatProjectSummary,
+    ChatProjectsResponse,
     ChatRequest,
     ChatResponse,
     ChatSessionAutoTitleBulkRequest,
@@ -749,6 +751,7 @@ async def list_chat_sessions(
                         s.metadata,
                         s.plan_id,
                         s.plan_title,
+                        s.project_id,
                         s.current_task_id,
                         s.current_task_name,
                         s.created_at,
@@ -784,6 +787,57 @@ async def list_chat_sessions(
         logger.error("Failed to list chat sessions: %s", exc)
         raise HTTPException(status_code=500, detail="Failed to load sessions") from exc
 
+async def list_chat_projects(raw_request: Request) -> ChatProjectsResponse:
+    """List the projects the current user may move sessions into.
+
+    Sources: the trusted entry project (platform SSO) plus every project id
+    already used by the owner's sessions. Labels are resolved best-effort via
+    the platform project API; failures fall back to a generic label.
+    """
+    from ...database import get_db  # lazy import
+
+    owner_id = get_request_owner_id(raw_request)
+    principal = get_request_principal(raw_request)
+
+    project_ids: set[int] = set()
+    current_project_id: Optional[int] = None
+    if principal.is_platform_access:
+        current_project_id = principal.require_platform_project_id()
+        project_ids.add(current_project_id)
+
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT project_id FROM chat_sessions WHERE owner_id = ? AND project_id IS NOT NULL",
+            (owner_id,),
+        ).fetchall()
+    for row in rows:
+        project_ids.add(int(row[0]))
+
+    projects: List[ChatProjectSummary] = []
+    client = get_platform_api_client() if principal.is_platform_access else None
+    platform_user_id = principal.platform_user_id if principal.is_platform_access else None
+    for pid in sorted(project_ids):
+        label: Optional[str] = None
+        if client is not None and platform_user_id is not None:
+            try:
+                data = await client.get_project_context(platform_user_id, pid)
+                for key in ("name", "label", "title"):
+                    candidate = data.get(key)
+                    if isinstance(candidate, str) and candidate.strip():
+                        label = candidate.strip()
+                        break
+            except Exception:
+                label = None
+        projects.append(
+            ChatProjectSummary(
+                id=pid,
+                label=label or f"项目 {pid}",
+                current=pid == current_project_id,
+            )
+        )
+    return ChatProjectsResponse(projects=projects)
+
+
 async def update_chat_session(
     session_id: str,
     payload: ChatSessionUpdateRequest,
@@ -805,11 +859,12 @@ async def update_chat_session(
             _ensure_session_exists(session_id, conn, owner_id=owner_id)
 
             row = conn.execute(
-                "SELECT id FROM chat_sessions WHERE id=? AND owner_id=?",
+                "SELECT id, project_id FROM chat_sessions WHERE id=? AND owner_id=?",
                 (session_id, owner_id),
             ).fetchone()
             if not row:
                 raise HTTPException(status_code=404, detail="Session not found")
+            current_project_id = row["project_id"]
 
             set_clauses: List[str] = []
             params: List[Any] = []
@@ -891,6 +946,31 @@ async def update_chat_session(
             if "current_task_name" in updates:
                 set_clauses.append("current_task_name=?")
                 params.append(updates["current_task_name"])
+
+            if "project_id" in updates:
+                new_project_id = updates["project_id"]
+                if new_project_id is not None:
+                    principal = get_request_principal(raw_request)
+                    if principal.is_platform_access:
+                        # The entry project is trusted already; any other target
+                        # must be validated against the platform as belonging to
+                        # the same platform user.
+                        platform_project_id = principal.require_platform_project_id()
+                        if int(new_project_id) != platform_project_id:
+                            platform_user_id = principal.require_platform_user_id()
+                            await get_platform_api_client().get_project_context(
+                                platform_user_id,
+                                int(new_project_id),
+                            )
+                set_clauses.append("project_id=?")
+                params.append(new_project_id)
+                logger.info(
+                    "Rebound chat session %s project %s -> %s (owner=%s)",
+                    session_id,
+                    current_project_id,
+                    new_project_id,
+                    owner_id,
+                )
 
             if not set_clauses:
                 raise HTTPException(status_code=400, detail="No valid fields to update")
@@ -1314,6 +1394,12 @@ router.add_api_route(
     list_chat_sessions,
     methods=["GET"],
     response_model=ChatSessionsResponse,
+)
+router.add_api_route(
+    "/projects",
+    list_chat_projects,
+    methods=["GET"],
+    response_model=ChatProjectsResponse,
 )
 router.add_api_route(
     "/sessions/{session_id}",

@@ -15,6 +15,17 @@ export interface ChatSessionSummary {
   updated_at?: string | null;
   is_active: boolean;
   settings?: ChatSessionSettings | null;
+  project_id?: number | null;
+}
+
+export interface ChatProjectItem {
+  id: number;
+  label: string;
+  current: boolean;
+}
+
+export interface ChatProjectsResponse {
+  projects: ChatProjectItem[];
 }
 
 export interface ChatSessionsResponse {
@@ -278,6 +289,7 @@ export interface ChatSession {
   is_active?: boolean;
   titleSource?: string | null;
   isUserNamed?: boolean | null;
+  project_id?: number | null;
 }
 
 export interface ChatSessionUpdatePayload {
@@ -288,6 +300,7 @@ export interface ChatSessionUpdatePayload {
   current_task_id?: number | null;
   current_task_name?: string | null;
   settings?: ChatSessionSettings | null;
+  project_id?: number | null;
 }
 
 export interface ChatSessionAutoTitleResult {

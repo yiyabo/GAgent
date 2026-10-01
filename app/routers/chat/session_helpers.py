@@ -216,6 +216,7 @@ def _row_to_session_info(row) -> Dict[str, Any]:
         "updated_at": row["updated_at"],
         "last_message_at": row["last_message_at"],
         "is_active": bool(row["is_active"]) if row["is_active"] is not None else True,
+        "project_id": row["project_id"] if "project_id" in row.keys() else None,
     }
     settings = _extract_session_settings(metadata)
     if settings:
@@ -248,6 +249,7 @@ def _fetch_session_info(
             s.metadata,
             s.plan_id,
             s.plan_title,
+            s.project_id,
             s.current_task_id,
             s.current_task_name,
             s.created_at,
