@@ -6,7 +6,7 @@ on:
   pull_request:
 
 jobs:
-  unit-tests:
+  backend-regressions:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -23,5 +23,30 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements-ci.txt
 
-      - name: Run unit tests
-        run: python -m pytest app/tests/unit -q
+      - name: Run backend contract and execution regressions
+        run: >-
+          python -m pytest app/tests/unit app/tests/chat app/tests/plan app/tests/artifacts
+          app/tests/tools/test_task_verification.py
+          app/tests/tools/test_async_tool_executor.py
+          app/tests/tools/test_execute_code_cancellation.py
+          app/tests/tools/test_delegation_cancellation.py
+          -q -m "not external"
+
+  frontend-regressions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: web-ui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web-ui/package-lock.json
+      - run: npm ci
+      - name: Check TypeScript
+        run: npm run type-check
+      - name: Run frontend regressions
+        run: npm run test -- --run
