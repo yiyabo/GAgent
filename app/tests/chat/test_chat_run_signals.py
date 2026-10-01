@@ -436,6 +436,27 @@ def test_reaper_interrupted_owner_cannot_save_after_terminal(db: sqlite3.Connect
         chat_run_claim.reset(handle)
 
 
+def test_closed_producer_cannot_save_even_for_terminal_winner(db: sqlite3.Connection) -> None:
+    from app.routers.chat.session_helpers import _save_chat_message
+    from app.services.chat_run_state import chat_run_claim
+    from app.services.cancellation import CancelToken, set_cancel_token, reset_cancel_token
+
+    _mk_run(db, "run_lease")
+    cr.claim_chat_run_lease("run_lease", "attempt-a")
+    cr.mark_chat_run_started("run_lease", worker_id="attempt-a")
+    cr.finish_chat_run_with_event("run_lease", "succeeded", {"type": "final", "payload": {}}, worker_id="attempt-a")
+    handle = chat_run_claim.set(("run_lease", "attempt-a"))
+    token = CancelToken()
+    token.close()
+    token_handle = set_cancel_token(token)
+    try:
+        assert _save_chat_message("sess_unit", "assistant", "late zombie output") is None
+        assert db.execute("SELECT COUNT(*) FROM chat_messages").fetchone()[0] == 0
+    finally:
+        reset_cancel_token(token_handle)
+        chat_run_claim.reset(handle)
+
+
 async def test_rejected_terminal_event_does_not_signal_committed(db: sqlite3.Connection) -> None:
     from app.services.chat_run_emitter import ChatRunEmitter
 

@@ -20,6 +20,7 @@ from app.repository.chat_runs import append_chat_run_event, batch_append_chat_ru
 from app.services import chat_run_hub as hub
 from app.services.cancellation import current_cancel_token
 from app.services.chat_run_state import ChatRunOutcome
+from app.services.run_budget import DEADLINE_REASON
 from app.services.realtime_bus import get_realtime_bus
 
 logger = logging.getLogger(__name__)
@@ -70,7 +71,7 @@ class ChatRunEmitter:
                 await self._flush_buffer()
             try:
                 token = current_cancel_token()
-                outcome = ChatRunOutcome.from_event(payload, cancelled=bool(token and token.cancelled))
+                outcome = ChatRunOutcome.from_event(payload, cancelled=bool(token and token.cancelled and token.reason != DEADLINE_REASON))
                 if outcome is not None:
                     payload = dict(payload)
                     if self.worker_id is not None:

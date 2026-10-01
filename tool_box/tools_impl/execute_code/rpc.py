@@ -18,6 +18,7 @@ and late requests are refused.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import logging
 import secrets
@@ -25,6 +26,7 @@ import threading
 from typing import Any, Dict, Optional
 
 from . import config
+from app.services.run_budget import RunDeadlineExceeded, run_stage
 
 logger = logging.getLogger(__name__)
 
@@ -168,10 +170,15 @@ class KernelRPCServer:
             )
 
         try:
-            result = await asyncio.wait_for(
+            context = getattr(binding, "execution_context", None)
+            runtime_context = context.copy() if context is not None else contextvars.copy_context()
+            task = runtime_context.run(asyncio.create_task, run_stage(
                 self._dispatch(tool_name, tool_args, binding.tool_context),
-                timeout=config.DEFAULT_TOOL_CALL_TIMEOUT_SECONDS,
-            )
+                stage=f"code-rpc:{tool_name}", timeout=config.DEFAULT_TOOL_CALL_TIMEOUT_SECONDS,
+            ))
+            result = await task
+        except RunDeadlineExceeded as exc:
+            result = {"success": False, "error": str(exc), "failure_kind": "deadline_exceeded", "error_code": "run_deadline_exceeded"}
         except asyncio.TimeoutError:
             result = {
                 "error": f"Tool '{tool_name}' timed out after "

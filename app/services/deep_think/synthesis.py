@@ -40,6 +40,7 @@ from app.services.response_style import (
     PROFESSIONAL_STYLE_INSTRUCTION,
     sanitize_professional_response_text,
 )
+from app.services.run_budget import RunDeadlineExceeded, iterate_stage, run_stage
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from app.services.deep_think_agent import DeepThinkAgent
@@ -661,10 +662,10 @@ async def _chat_text_streaming(agent: "DeepThinkAgent", prompt: str, *, max_toke
     stream_fn = getattr(agent.llm_client, "stream_chat_async", None)
     if callable(stream_fn):
         chunks: List[str] = []
-        async for chunk in stream_fn(prompt=prompt, max_tokens=max_tokens):
+        async for chunk in iterate_stage(stream_fn(prompt=prompt, max_tokens=max_tokens), stage="deepthink-synthesis-llm", cancel_event=getattr(agent, "cancel_event", None)):
             chunks.append(str(chunk))
         return "".join(chunks)
-    return await agent.llm_client.chat_async(prompt=prompt, max_tokens=max_tokens)
+    return await run_stage(agent.llm_client.chat_async(prompt=prompt, max_tokens=max_tokens), stage="deepthink-synthesis-llm", cancel_event=getattr(agent, "cancel_event", None))
 
 
 async def _generate_fallback_from_evidence(
@@ -742,9 +743,9 @@ async def _generate_fallback_from_evidence(
     last_exc: Optional[Exception] = None
     for attempt in range(max_retries):
         try:
-            raw = await asyncio.wait_for(
+            raw = await run_stage(
                 agent._chat_text_streaming(prompt, max_tokens=max_tokens),
-                timeout=timeout,
+                stage="deepthink-fallback", timeout=timeout,
             )
             cleaned = sanitize_professional_response_text(str(raw or "").strip())
             if len(cleaned) < 20:
@@ -753,6 +754,8 @@ async def _generate_fallback_from_evidence(
                 _ensure_inline_images(cleaned, agent._collect_inline_image_relpaths())
             )
             return cleaned
+        except RunDeadlineExceeded:
+            raise
         except Exception as exc:
             last_exc = exc
             logger.warning(
@@ -946,9 +949,9 @@ async def _forced_synthesis_from_steps(
             synthesis_timeout,
             synthesis_max_tokens,
         )
-        raw = await asyncio.wait_for(
+        raw = await run_stage(
             agent._chat_text_streaming(prompt, max_tokens=synthesis_max_tokens),
-            timeout=synthesis_timeout,
+            stage="deepthink-synthesis", timeout=synthesis_timeout,
         )
         cleaned = sanitize_professional_response_text(str(raw or "").strip())
         if len(cleaned) < 30 or _dta().is_process_only_answer(cleaned, user_query=user_query):
@@ -964,6 +967,8 @@ async def _forced_synthesis_from_steps(
         )
         logger.info("[DEEP_THINK_NATIVE] Forced synthesis succeeded (%d chars)", len(cleaned))
         return cleaned
+    except RunDeadlineExceeded:
+        raise
     except Exception as exc:
         logger.warning("[DEEP_THINK_NATIVE] Forced synthesis failed: %r", exc, exc_info=True)
         return ""
@@ -1000,6 +1005,8 @@ async def _fallback_answer_from_steps(
                 task_context=task_context,
             ):
                 return generated
+        except RunDeadlineExceeded:
+            raise
         except Exception:
             logger.warning(
                 "DeepThink fallback synthesis from tool evidence failed; using structured fallback.",

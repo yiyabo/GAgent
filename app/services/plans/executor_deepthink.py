@@ -40,6 +40,9 @@ import asyncio
 import json
 import logging
 import os
+from app.services.run_budget import RunDeadlineExceeded, check_run_active
+from app.repository.run_steps import StaleRunClaim
+from app.services.deep_think.checkpointing import ControllerRestoreError
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
@@ -90,9 +93,12 @@ class _DeepThinkMethods:
         tree: PlanTree,
         config: ExecutionConfig,
     ) -> ExecutionResult:
+        check_run_active()
         try:
             self._repo.update_task(plan_id, node.id, status="running", execution_result="")
             node.status = "running"
+        except (RunDeadlineExceeded, StaleRunClaim, ControllerRestoreError):
+            raise
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning(
                 "Failed to mark task %s as running for plan %s: %s",
@@ -103,6 +109,9 @@ class _DeepThinkMethods:
 
         session_context = dict(config.session_context or {})
         node_metadata = node.metadata if isinstance(node.metadata, dict) else {}
+        for key in ("output_spec", "output_input_snapshot", "output_spec_base_dir"):
+            if key in node_metadata:
+                session_context[key] = node_metadata[key]
         paper_mode = bool(
             config.paper_mode
             or session_context.get("paper_mode")
@@ -315,6 +324,8 @@ class _DeepThinkMethods:
                         len(skill_context),
                         node.id,
                     )
+            except (RunDeadlineExceeded, StaleRunClaim, ControllerRestoreError):
+                raise
             except Exception as exc:
                 logger.warning("Skill content loading failed (non-blocking): %s", exc)
 
@@ -336,6 +347,7 @@ class _DeepThinkMethods:
             context_summary=node.context_combined,
             context_sections=list(node.context_sections or []),
             paper_context_paths=dependency_paths[:40],
+            output_spec=node_metadata.get("output_spec"),
         )
         reasoning_language = detect_reasoning_language(user_query)
 
@@ -472,6 +484,11 @@ class _DeepThinkMethods:
             on_thinking_delta=on_thinking_delta,
             on_tool_start=on_tool_start,
             on_tool_result=on_tool_result,
+            request_profile={
+                "current_plan_id": node.plan_id, "current_task_id": node.id,
+                "session_id": session_context.get("session_id"),
+                "owner_id": session_context.get("owner_id"),
+            },
         )
         current_job_id = self._current_job_id()
         if current_job_id:
@@ -497,6 +514,7 @@ class _DeepThinkMethods:
                     task_context=task_context,
                 )
             )
+            check_run_active()
 
             fallback_result = None
             if paper_mode and "manuscript_writer" not in (result.tools_used or []):
@@ -515,6 +533,9 @@ class _DeepThinkMethods:
                 or _deep_think_has_failed_primary_execution_tool(result)
             )
             deep_think_status = "failed" if primary_tool_failed else "success"
+            execution_issues = list(getattr(result, "execution_issues", None) or [])
+            if execution_issues:
+                deep_think_status = "failed"
             tools_used = list(result.tools_used or [])
             if fallback_result and fallback_result.get("success"):
                 if "manuscript_writer" not in tools_used:
@@ -539,6 +560,7 @@ class _DeepThinkMethods:
                     "confidence": result.confidence,
                     "tools_used": tools_used,
                     "tool_failures": list(getattr(result, "tool_failures", []) or []),
+                    "execution_issues": execution_issues,
                     "thinking_process": {
                         "status": "completed",
                         "total_iterations": result.total_iterations,
@@ -556,6 +578,13 @@ class _DeepThinkMethods:
             }
             metadata_payload = payload.get("metadata")
             if isinstance(metadata_payload, dict):
+                for key in ("output_spec", "output_input_snapshot", "output_spec_base_dir", "output_verification"):
+                    value = getattr(result, key, None)
+                    if value is not None:
+                        metadata_payload[key] = value
+                output_verification = getattr(result, "output_verification", None)
+                if isinstance(output_verification, dict):
+                    metadata_payload["output_produced_paths"] = list(output_verification.get("artifact_paths") or [])
                 if session_context.get("dependency_warning"):
                     metadata_payload["dependency_warning"] = True
                     metadata_payload["degraded_input"] = True
@@ -642,6 +671,8 @@ class _DeepThinkMethods:
                 raw_response=raw_response,
                 attempts=1,
             )
+        except (RunDeadlineExceeded, StaleRunClaim, ControllerRestoreError):
+            raise
         except Exception as exc:
             logger.exception("DeepThink task execution failed for task %s: %s", node.id, exc)
             failure_payload = {
@@ -803,6 +834,8 @@ class _DeepThinkMethods:
 
             return result if isinstance(result, dict) else None
 
+        except (RunDeadlineExceeded, StaleRunClaim, ControllerRestoreError):
+            raise
         except Exception as exc:
             logger.exception("Manuscript writer fallback error for task %s: %s", node.id, exc)
             return None
@@ -856,6 +889,8 @@ class _DeepThinkMethods:
                         task_context=task_context,
                     )
                 )
+            except (RunDeadlineExceeded, StaleRunClaim, ControllerRestoreError):
+                raise
             except Exception as exc:
                 logger.warning("Contract repair attempt failed for task %s: %s", node.id, exc)
                 metadata["contract_repair_error"] = str(exc)

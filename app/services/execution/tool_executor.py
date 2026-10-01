@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import logging
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from app.services import cancellation
+from app.services.run_budget import RunDeadlineExceeded, current_run_budget, run_stage
 from app.services.deliverables import (
     format_deliverable_submit_summary,
     get_deliverable_publisher,
@@ -137,10 +139,12 @@ class UnifiedToolExecutor:
         try:
             from tool_box import execute_tool
 
-            result = await asyncio.wait_for(
+            result = await run_stage(
                 execute_tool(tool_name, tool_context=tool_ctx, **safe_params),
-                timeout=timeout,
+                stage=f"tool:{tool_name}", timeout=timeout,
             )
+        except RunDeadlineExceeded:
+            raise
         except asyncio.TimeoutError:
             payload = {
                 "success": False,
@@ -269,11 +273,26 @@ class UnifiedToolExecutor:
             # explicitly — otherwise a cancellation could not reach the delegated
             # CLI process from this branch.
             token = cancellation.current_cancel_token()
+            runtime_context = contextvars.copy_context()
+            budget = current_run_budget()
+            if budget is not None:
+                executor = ThreadPoolExecutor(max_workers=1)
+                future = executor.submit(runtime_context.run, cancellation.call_with_cancel_token, token, lambda: asyncio.run(_run()))
+                try:
+                    # A blocking coroutine in the temporary loop cannot stop
+                    # this caller from reaching its total run deadline.
+                    return future.result(timeout=budget.remaining_seconds(closeout=True))
+                except FutureTimeout as exc:
+                    if future.done() and budget.remaining_seconds(closeout=True) > 0:
+                        raise  # an underlying timeout, not this bridge's deadline
+                    budget.expire()
+                    raise RunDeadlineExceeded("Run deadline reached in the synchronous tool bridge.") from exc
+                finally:
+                    executor.shutdown(wait=False, cancel_futures=True)
             with ThreadPoolExecutor(max_workers=1) as executor:
                 return executor.submit(
-                    cancellation.call_with_cancel_token,
-                    token,
-                    lambda: asyncio.run(_run()),
+                    runtime_context.run, cancellation.call_with_cancel_token,
+                    token, lambda: asyncio.run(_run()),
                 ).result()
         return asyncio.run(_run())
 

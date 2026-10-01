@@ -59,13 +59,18 @@ def guard_chat_run_assistant_save(conn, session_id: str, role: str):
     A reaper-interrupted claim has no winning event marker and stays fenced.
     """
     from app.services.chat_run_state import chat_run_claim
+    from app.services.cancellation import current_cancel_token
 
     claim = chat_run_claim.get()
     if role != "assistant" or claim is None:
         yield None
         return
+    token = current_cancel_token()
     run_id, worker_id = claim
     with _write_transaction(conn):
+        if token is not None and token.closed:
+            yield False
+            return
         if not _owns_active_run(conn, run_id, worker_id, allow_terminal=True):
             yield False
             return

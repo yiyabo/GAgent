@@ -91,3 +91,6 @@ queries memory by default and supplies it as chat context, while the native
 DeepThink reference-context builder does not currently render that field.
 Session-tagged main-store records and per-session-store queries also need a
 consistent storage/recall policy before broader memory behavior changes.
+
+The next batch implements the output-specification, shared-deadline and native
+checkpoint foundations in `design/2026-10-02-verified-resumable-runs.md`.

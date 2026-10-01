@@ -50,6 +50,11 @@ class DeepThinkResult:
     structured_plan_plan_id: Optional[int] = None
     structured_plan_title: Optional[str] = None
     structured_plan_operation: Optional[str] = None
+    output_spec: Optional[Dict[str, Any]] = None
+    output_input_snapshot: Dict[str, Any] = field(default_factory=dict)
+    output_spec_base_dir: Optional[str] = None
+    output_verification: Optional[Dict[str, Any]] = None
+    execution_issues: List[Dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -69,6 +74,7 @@ class TaskExecutionContext:
     # set and must NOT fall back to prose status summaries or plan-optimise suggestions.
     explicit_task_ids: List[int] = field(default_factory=list)
     explicit_task_override: bool = False
+    output_spec: Optional[Dict[str, Any]] = None
 
 
 class DeepThinkProtocolError(RuntimeError):

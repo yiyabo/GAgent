@@ -25,9 +25,14 @@ from app.services.chat_run_emitter import ChatRunEmitter
 from app.services.chat_run_state import ChatRunOutcome, chat_run_claim
 from app.services import chat_run_hub as hub
 from app.services.chat_run_signals import lease_ttl_seconds, run_signal_pump
+from app.services.run_resume import prepare_run_resume
 from app.services.foundation.logging_context import bind_log_context, clear_log_context
 from app.services.foundation.otel import otel_span
 from app.services.realtime_bus import get_worker_id, start_owner_lease, stop_owner_lease
+from app.services.run_budget import (
+    DEADLINE_REASON, RunDeadlineExceeded, bind_run_budget, configured_run_budget,
+    reset_run_budget, run_stage, watch_run_owner,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +124,7 @@ async def _run_explicit_task_execution(
         skill_trace_enabled=False,
     )
     completed_ids = []
+    _ctx["completed_scope_task_ids"] = completed_ids
     failed_id = None
     skipped_ids: list[int] = []
     tools_used: list[str] = []
@@ -169,12 +175,14 @@ async def _run_explicit_task_execution(
             pass
 
         try:
-            exec_result = await asyncio.to_thread(
+            exec_result = await run_stage(asyncio.to_thread(
                 executor.execute_task,
                 plan_id,
                 task_id,
                 config=exec_config,
-            )
+            ), stage=f"plan-task:{task_id}")
+        except RunDeadlineExceeded:
+            raise
         except Exception as exc:
             logger.exception(
                 "[EXPLICIT_EXEC] Task %d exception: %s", task_id, exc
@@ -338,12 +346,14 @@ async def _run_cascade(
         exec_config = ExecutionConfig(session_context=session_ctx)
 
         try:
-            exec_result = await asyncio.to_thread(
+            exec_result = await run_stage(asyncio.to_thread(
                 executor.execute_task,
                 plan_id,
                 next_task_id,
                 config=exec_config,
-            )
+            ), stage=f"plan-task:{next_task_id}")
+        except RunDeadlineExceeded:
+            raise
         except Exception as exc:
             logger.exception(
                 "[CASCADE] Task %d raised exception: %s", next_task_id, exc
@@ -435,9 +445,17 @@ async def execute_chat_run(run_id: str) -> None:
     terminal_committed = asyncio.Event()
     emitter.terminal_committed = terminal_committed
     outcome: Optional[ChatRunOutcome] = None
+    observed_artifacts: list[dict] = []
 
     async def emit_run_event(payload: dict) -> bool:
         nonlocal outcome
+        token = hub.ensure_cancel_token(run_id)
+        if token.reason == DEADLINE_REASON and payload.get("type") == "final":
+            metadata = (payload.get("payload") or {}).get("metadata") or {}
+            if metadata.get("failure_kind") != "deadline_exceeded":
+                raise RunDeadlineExceeded("Run deadline reached before final completion.")
+        if payload.get("type") == "artifact":
+            observed_artifacts.append(dict(payload))
         event_outcome = ChatRunOutcome.from_event(payload, cancelled=cancel_ev.is_set())
         accepted = await emitter.emit(payload)
         if accepted is not False and outcome is None and event_outcome is not None:
@@ -465,6 +483,37 @@ async def execute_chat_run(run_id: str) -> None:
     usage_context_tokens: list = []
     cancel_handle = cancellation.set_cancel_token(hub.ensure_cancel_token(run_id))
     claim_handle = chat_run_claim.set((run_id, worker_id))
+    budget = configured_run_budget(hub.ensure_cancel_token(run_id))
+    budget_handle = bind_run_budget(budget)
+    budget_stop = asyncio.Event()
+    budget_watch = asyncio.create_task(watch_run_owner(asyncio.current_task(), budget, hub.ensure_cancel_token(run_id), budget_stop))
+    request = None
+    agent = None
+
+    async def report_deadline() -> None:
+        budget_stop.set()
+        message = "The run reached its time limit. Execution stopped before completion."
+        if observed_artifacts:
+            message += " Already published outputs remain available."
+        completed_ids = list((getattr(agent, "extra_context", None) or {}).get("completed_scope_task_ids") or [])
+        if completed_ids:
+            message += f" Completed tasks: {completed_ids}."
+        metadata = {
+            "status": "failed", "failure_kind": "deadline_exceeded",
+            "completion_reason": "deadline_exceeded", "partial": bool(observed_artifacts or completed_ids),
+            "completed_task_ids": completed_ids,
+            "artifact_gallery": observed_artifacts, "analysis_text": message,
+            "final_summary": message, "thinking_display_mode": "final_answer",
+        }
+        accepted = await run_stage(
+            emit_run_event({"type": "final", "payload": {"response": message, "actions": [], "metadata": metadata}}),
+            stage="deadline-closeout", closeout=True,
+        )
+        if accepted:
+            mark_chat_run_finished(run_id, "failed", error=message, worker_id=worker_id)
+        if accepted and request is not None and request.session_id:
+            _save_chat_message(request.session_id, "assistant", message, metadata=metadata)
+        _capture_quality_snapshot(run_id)
     try:
         row = get_chat_run(run_id)
         if not row:
@@ -481,6 +530,7 @@ async def execute_chat_run(run_id: str) -> None:
             return
         data = json.loads(raw)
         request = ChatRequest.model_validate(data)
+        await prepare_run_resume(run_id, request.context or {})
 
         if mark_chat_run_started(run_id, worker_id=worker_id) is False:
             return
@@ -493,6 +543,10 @@ async def execute_chat_run(run_id: str) -> None:
             usage_token_sink=usage_context_tokens.append,
         )
         agent._current_user_message = message_to_send
+        resume_source = (request.context or {}).get("resume_from_run_id")
+        if resume_source:
+            from app.llm import update_usage_context
+            update_usage_context(parent_run_id=str(resume_source))
 
         # ── Detect explicit task execution ──────────────────────
         # When user says "执行任务8", bypass the chat DeepThink agent and
@@ -535,6 +589,8 @@ async def execute_chat_run(run_id: str) -> None:
                 pass
 
         if outcome is None:
+            if hub.ensure_cancel_token(run_id).reason == DEADLINE_REASON:
+                raise RunDeadlineExceeded("Run deadline reached before a final response.")
             await emit_run_event({
                 "type": "error",
                 "message": "Run cancelled." if cancel_ev.is_set() else "Chat execution ended without a final response.",
@@ -542,14 +598,27 @@ async def execute_chat_run(run_id: str) -> None:
         if outcome is not None:
             mark_chat_run_finished(run_id, outcome.status, error=outcome.error, worker_id=worker_id)
         _capture_quality_snapshot(run_id)
+    except RunDeadlineExceeded:
+        try:
+            await report_deadline()
+        except RunDeadlineExceeded:
+            logger.warning("chat_run deadline closeout time exhausted run=%s", run_id)
     except asyncio.CancelledError:
+        budget_stop.set()
         # A stale worker cannot commit a terminal outcome for the new owner.
         # The shared token also tears down delegated subprocesses in threads.
+        if hub.ensure_cancel_token(run_id).reason == DEADLINE_REASON and not lease_lost.is_set():
+            try:
+                await report_deadline()
+            except RunDeadlineExceeded:
+                logger.warning("chat_run deadline closeout time exhausted run=%s", run_id)
+            return
         if not lease_lost.is_set():
             hub.request_cancel(run_id)
-            await emit_run_event({"type": "error", "message": "Run cancelled."})
+            await run_stage(emit_run_event({"type": "error", "message": "Run cancelled."}), stage="cancel-closeout", closeout=True)
         raise
     except Exception as exc:
+        budget_stop.set()
         logger.exception("chat_run worker failed run_id=%s", run_id)
         error_emitted = False
         try:
@@ -566,6 +635,13 @@ async def execute_chat_run(run_id: str) -> None:
             mark_chat_run_finished(run_id, "failed", error=str(exc), worker_id=worker_id)
         _capture_quality_snapshot(run_id)
     finally:
+        if budget is not None:
+            budget.close()
+        else:
+            hub.ensure_cancel_token(run_id).close()
+        budget_stop.set()
+        budget_watch.cancel()
+        await asyncio.gather(budget_watch, return_exceptions=True)
         pump_stop.set()
         heartbeat_stop.set()
         for task in (pump_task, heartbeat_task):
@@ -589,6 +665,7 @@ async def execute_chat_run(run_id: str) -> None:
         hub.cleanup_run_signals(run_id)
         cancellation.reset_cancel_token(cancel_handle)
         chat_run_claim.reset(claim_handle)
+        reset_run_budget(budget_handle)
         for usage_token in usage_context_tokens:
             try:
                 clear_usage_context(usage_token)

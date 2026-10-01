@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from app.services.run_budget import RunDeadlineExceeded
+from app.services.deep_think.checkpointing import ControllerRestoreError
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
@@ -33,6 +35,8 @@ async def _run_one(call: PendingToolCall) -> None:
     """Execute a single PendingToolCall and store its result."""
     try:
         call.result = await call.coroutine_factory()
+    except (RunDeadlineExceeded, ControllerRestoreError):
+        raise
     except Exception as exc:
         logger.warning(
             "[AsyncToolExecutor] Tool %s raised: %s", call.tool_name, exc,
@@ -88,6 +92,8 @@ async def execute_with_concurrency(
                 return_exceptions=True,
             )
             for call, result in zip(segment, results):
+                if isinstance(result, (RunDeadlineExceeded, ControllerRestoreError)):
+                    raise result
                 if isinstance(result, BaseException):
                     logger.warning(
                         "[AsyncToolExecutor] Concurrent tool %s raised: %s",

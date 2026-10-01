@@ -428,6 +428,7 @@ class DeepThinkAgent:
         on_steer_ack: Optional[Callable[[str, int], Any]] = None,
         on_tool_progress: Optional[Callable[[str, Dict[str, Any]], Any]] = None,
         request_profile: Optional[Dict[str, Any]] = None,
+        on_runtime_restore: Optional[Callable[[Dict[str, Any]], Any]] = None,
     ):
         self.llm_client = llm_client
         self.request_profile = dict(request_profile or {})
@@ -441,6 +442,7 @@ class DeepThinkAgent:
         self.on_final_delta = on_final_delta
         self.on_tool_start = on_tool_start
         self.on_tool_result = on_tool_result
+        self.on_runtime_restore = on_runtime_restore
         self.on_artifact = on_artifact
         self.enable_thinking = enable_thinking
         self.thinking_budget = thinking_budget
@@ -1494,13 +1496,23 @@ class DeepThinkAgent:
             guard_state=guard_state,
         )
 
+    async def _restore_runtime_state(self, state: Dict[str, Any]) -> None:
+        from app.services.deep_think.checkpointing import restore_runtime_state
+
+        await restore_runtime_state(self, state)
+
     async def _execute_native_tool_call(
         self,
         tc: Any,
         iteration: int,
         index: int,
     ) -> Dict[str, Any]:
-        return await _dispatch._execute_native_tool_call(self, tc, iteration, index)
+        from app.services.deep_think.checkpointing import execute_recorded_tool
+
+        return await execute_recorded_tool(
+            self, tc, iteration, index,
+            lambda: _dispatch._execute_native_tool_call(self, tc, iteration, index),
+        )
 
     def _extract_evidence(
         self,

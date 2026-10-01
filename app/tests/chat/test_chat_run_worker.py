@@ -176,6 +176,118 @@ def test_lost_lease_cancels_work_without_terminal_write(monkeypatch):
     assert chat_run_claim.get() is None
 
 
+def test_deadline_stops_active_stream_and_reports_failed_partial(monkeypatch):
+    from app.services.run_budget import current_run_budget
+
+    seen = {}
+
+    async def stream(*args, event_sink, **kwargs):
+        seen["budget"] = current_run_budget()
+        try:
+            await event_sink({"type": "artifact", "path": "published-output.txt"})
+            await asyncio.Event().wait()
+        finally:
+            seen["joined"] = True
+        yield ""
+
+    agent = SimpleNamespace(extra_context={}, process_unified_stream=stream)
+    emitter, finished = _isolate_worker(monkeypatch, agent)
+    monkeypatch.setenv("CHAT_RUN_BUDGET_SECONDS", "0.12")
+    monkeypatch.setenv("CHAT_RUN_CLOSE_RESERVE_SECONDS", "0.04")
+    asyncio.run(execute_chat_run("run-deadline"))
+    metadata = emitter.events[-1]["payload"]["metadata"]
+    assert seen["joined"]
+    assert seen["budget"].cancel_token.reason == "run_deadline_exceeded"
+    assert metadata["status"] == "failed" and metadata["failure_kind"] == "deadline_exceeded"
+    assert metadata["partial"] is True
+    assert finished == ["failed"]
+    assert current_run_budget() is None
+
+
+def test_user_stop_while_provider_waits_is_cancelled_not_deadline(monkeypatch):
+    from app.services import chat_run_hub as hub
+
+    run_id = "run-user-stop"
+
+    async def stream(*args, **kwargs):
+        asyncio.get_running_loop().call_soon(hub.request_cancel, run_id)
+        await asyncio.Event().wait()
+        yield ""
+
+    agent = SimpleNamespace(extra_context={}, process_unified_stream=stream)
+    emitter, _ = _isolate_worker(monkeypatch, agent)
+    monkeypatch.setenv("CHAT_RUN_BUDGET_SECONDS", "10")
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(execute_chat_run(run_id))
+    assert emitter.events[-1]["type"] == "error"
+    assert emitter.events[-1]["message"] == "Run cancelled."
+
+
+def test_explicit_resume_prepares_inside_scope_and_attributes_parent_after_build(monkeypatch):
+    from app.services import chat_run_worker as worker
+    from app.services.run_budget import current_run_budget
+    from app.services.chat_run_state import chat_run_claim
+    import app.llm as llm
+
+    async def stream(*args, event_sink, **kwargs):
+        await event_sink({"type": "final", "payload": {"response": "done", "metadata": {"status": "completed"}}})
+        yield ""
+
+    agent = SimpleNamespace(extra_context={}, process_unified_stream=stream)
+    _isolate_worker(monkeypatch, agent)
+    request = ChatRequest(message="continue", session_id="session-1", context={"resume_from_run_id": "source-run"})
+    monkeypatch.setattr(worker, "get_chat_run", lambda run_id: {"request_json": request.model_dump_json()})
+    order = []
+
+    async def prepare(run_id, context):
+        assert current_run_budget() is not None
+        assert chat_run_claim.get()[0] == run_id
+        assert context["resume_from_run_id"] == "source-run"
+        order.append("prepare")
+
+    async def build(req, **kwargs):
+        order.append("build")
+        return agent, req.message
+
+    def usage(**fields):
+        assert fields == {"parent_run_id": "source-run"}
+        order.append("usage")
+
+    monkeypatch.setattr(worker, "prepare_run_resume", prepare)
+    monkeypatch.setattr(worker, "build_agent_for_chat_request", build)
+    monkeypatch.setattr(llm, "update_usage_context", usage)
+    asyncio.run(worker.execute_chat_run("child-run"))
+    assert order == ["prepare", "build", "usage"]
+
+
+def test_explicit_task_handoffs_share_budget_and_preserve_completed_ids(monkeypatch):
+    from app.services.cancellation import current_cancel_token
+    from app.services.run_budget import current_run_budget
+
+    seen = []
+
+    def execute(plan_id, task_id, **kwargs):
+        seen.append(current_run_budget())
+        if task_id == 43:
+            return SimpleNamespace(status="completed")
+        current_cancel_token().wait(5)
+        return SimpleNamespace(status="cancelled")
+
+    agent = SimpleNamespace(
+        extra_context={"explicit_task_override": True, "current_task_id": 43, "pending_scope_task_ids": [44]},
+        session_id="session-1", history=[], plan_session=SimpleNamespace(plan_id=77),
+        plan_executor=SimpleNamespace(execute_task=execute),
+    )
+    emitter, _ = _isolate_worker(monkeypatch, agent)
+    monkeypatch.setenv("CHAT_RUN_BUDGET_SECONDS", "0.18")
+    monkeypatch.setenv("CHAT_RUN_CLOSE_RESERVE_SECONDS", "0.06")
+    asyncio.run(execute_chat_run("run-task-handoff"))
+    assert len(seen) == 2 and seen[0] is seen[1]
+    metadata = emitter.events[-1]["payload"]["metadata"]
+    assert metadata["failure_kind"] == "deadline_exceeded"
+    assert metadata["partial"] and metadata["completed_task_ids"] == [43]
+
+
 def test_explicit_execution_final_payload_preserves_tool_facts() -> None:
     from app.services.chat_run_worker import _build_explicit_execution_final_payload
 

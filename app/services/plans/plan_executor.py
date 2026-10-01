@@ -5,12 +5,16 @@ import logging
 import os
 import re
 import time
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple
 
 from pydantic import ValidationError
 
 from ...config.executor_config import ExecutorSettings, get_executor_settings
 from ...llm import LLMClient, NativeStreamResult, close_current_loop_async_client
+from app.services.run_budget import RunDeadlineExceeded, check_run_active
+from app.repository.run_steps import StaleRunClaim
+from app.services.deep_think.checkpointing import ControllerRestoreError
 from ..tool_schemas import build_executor_tool_schemas, EXECUTOR_AVAILABLE_TOOLS
 from app.services.resources.resource_registry import resolve_resources
 from ..deep_think_agent import (
@@ -301,6 +305,7 @@ class PlanExecutor(_ArtifactMethods, _DelegateMethods, _DeepThinkMethods):
 
         total_tasks = len(order)
         for idx, node in enumerate(order):
+            check_run_active()
             # --- Layer 1: skip already-completed tasks (resume support) ---
             plan_state_by_task = self._status_resolver.resolve_plan_states(
                 plan_id,
@@ -360,6 +365,9 @@ class PlanExecutor(_ArtifactMethods, _DelegateMethods, _DeepThinkMethods):
             )
             try:
                 result = self._run_task(plan_id, node, tree, cfg)
+                check_run_active()
+            except (RunDeadlineExceeded, StaleRunClaim, ControllerRestoreError):
+                raise
             except Exception as exc:
                 logger.exception(
                     "Execution failed for plan %s task %s: %s",
@@ -477,6 +485,8 @@ class PlanExecutor(_ArtifactMethods, _DelegateMethods, _DeepThinkMethods):
                             result.duration_sec = (time.time() - start)
                             if retry_result.status == "completed":
                                 recovered = True
+                except (RunDeadlineExceeded, StaleRunClaim, ControllerRestoreError):
+                    raise
                 except ImportError:
                     logger.debug("failure_recovery module not available, skipping auto-recovery")
                 except Exception as rec_err:
@@ -603,6 +613,7 @@ class PlanExecutor(_ArtifactMethods, _DelegateMethods, _DeepThinkMethods):
         tree: PlanTree,
         config: ExecutionConfig,
     ) -> ExecutionResult:
+        check_run_active()
         from app.llm import clear_usage_context, set_usage_context
         session_id = None
         if isinstance(config.session_context, dict):
@@ -617,7 +628,25 @@ class PlanExecutor(_ArtifactMethods, _DelegateMethods, _DeepThinkMethods):
             billing_lane="plan_task",
         )
         try:
+            from app.services.chat_run_state import chat_run_claim
+            from app.services.run_resume import current_resume_source
+            from app.services.deep_think.checkpointing import ensure_plan_resume_scope
 
+            claim = chat_run_claim.get()
+            if claim is not None:
+                node_metadata = dict(node.metadata or {})
+                previously_entered = bool(node_metadata.get("controller_run_id"))
+                task_session_context = dict(config.session_context or {})
+                task_session_context["resume_scope_entered"] = previously_entered
+                config = replace(config, session_context=task_session_context)
+                if current_resume_source():
+                    if previously_entered and (
+                        self._should_delegate_plan_task(config) or not self._should_use_deep_think(config)
+                    ):
+                        raise ControllerRestoreError("This entered task cannot resume through a delegate/legacy controller; reconciliation is required.")
+                    query = (node.instruction or node.display_name() or f"Execute task #{node.id}").strip()
+                    ensure_plan_resume_scope(plan_id, node.id, query, previously_entered=previously_entered)
+                check_run_active()
             parent = tree.nodes.get(node.parent_id) if node.parent_id else None
             dependencies = self._resolve_dependencies(tree, node)
             plan_state_by_task = self._status_resolver.resolve_plan_states(
@@ -816,6 +845,19 @@ class PlanExecutor(_ArtifactMethods, _DelegateMethods, _DeepThinkMethods):
                     missing_resources=missing_resources,
                     resolved_resources=resolved_resources,
                 )
+            from app.services.plans.output_spec import seed_task_output_snapshot
+            from app.services.run_resume import current_resume_source
+
+            _, output_base = self._resolve_task_tool_workspace(node, session_id=session_id, tree=tree)
+            preserve_snapshot = bool(current_resume_source()) and bool((config.session_context or {}).get("resume_scope_entered"))
+            if seed_task_output_snapshot(node, output_base, preserve_existing=preserve_snapshot) is not None:
+                self._repo.update_task(plan_id, node.id, metadata=node.metadata)
+            if claim is not None:
+                check_run_active()
+                entered_metadata = dict(node.metadata or {})
+                entered_metadata["controller_run_id"] = claim[0]
+                self._repo.update_task(plan_id, node.id, metadata=entered_metadata)
+                node.metadata = entered_metadata
             outline = tree.to_outline(max_depth=4, max_nodes=80) if config.include_plan_outline else None
 
             if self._should_delegate_plan_task(config):
@@ -858,6 +900,8 @@ class PlanExecutor(_ArtifactMethods, _DelegateMethods, _DeepThinkMethods):
             try:
                 self._repo.update_task(plan_id, node.id, status="running", execution_result="")
                 node.status = "running"
+            except (RunDeadlineExceeded, StaleRunClaim, ControllerRestoreError):
+                raise
             except Exception as exc:  # pragma: no cover - defensive
                 logger.warning(
                     "Failed to mark task %s as running for plan %s: %s",
@@ -881,7 +925,9 @@ class PlanExecutor(_ArtifactMethods, _DelegateMethods, _DeepThinkMethods):
                         "task_id": node.id,
                         "attempt": attempt,
                     })
+                    check_run_active()
                     response = self._llm.generate(prompt, config, tools=build_executor_tool_schemas())
+                    check_run_active()
                     _log_job("info", "LLM call completed.", {
                         "sub_type": "llm_call_end",
                         "task_id": node.id,
@@ -1015,6 +1061,8 @@ class PlanExecutor(_ArtifactMethods, _DelegateMethods, _DeepThinkMethods):
                         raw_response=raw_response,
                         attempts=attempt,
                     )
+                except (RunDeadlineExceeded, StaleRunClaim, ControllerRestoreError):
+                    raise
                 except Exception as exc:  # pragma: no cover - retry path
                     last_error = exc
                     logger.warning(

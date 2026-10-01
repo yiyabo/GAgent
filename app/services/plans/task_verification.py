@@ -36,6 +36,7 @@ from .model_metric_schema import (
     missing_required_model_metrics,
 )
 from .plan_models import PlanNode
+from .output_spec import output_spec_from_metadata, spec_metadata_view, validate_output_spec, is_readonly_output_probe, accepted_output_paths, session_output_origin_map
 from .task_metadata_generator import is_inferred_task_spec
 from .verification_checks import _CheckMethods
 from .verification_discovery import _DiscoveryMethods
@@ -118,7 +119,8 @@ class TaskVerificationService(_CueMethods, _PathMethods, _CheckMethods, _Discove
         )
         if status != "failed" and not failures:
             return False
-        criteria = (node.metadata or {}).get("acceptance_criteria")
+        node_meta = dict(node.metadata or {})
+        criteria = spec_metadata_view(node_meta, output_spec_from_metadata(node_meta)).get("acceptance_criteria")
         if not isinstance(criteria, dict):
             criteria = metadata.get("acceptance_criteria")
         if isinstance(criteria, dict) and cls._has_checks(criteria):
@@ -237,12 +239,32 @@ class TaskVerificationService(_CueMethods, _PathMethods, _CheckMethods, _Discove
         metadata.pop("verification_authoritative", None)
 
         effective_criteria, generated = self._effective_acceptance_criteria(node)
+        output_spec = output_spec_from_metadata(node.metadata)
+        runtime_spec = output_spec_from_metadata(metadata)
+        if runtime_spec and runtime_spec.required_outputs and (not output_spec or not output_spec.required_outputs):
+            if output_spec:
+                runtime_spec.acceptance_criteria = output_spec.acceptance_criteria or runtime_spec.acceptance_criteria
+                runtime_spec.artifact_contract = output_spec.artifact_contract or runtime_spec.artifact_contract
+            output_spec = runtime_spec
+        if output_spec:
+            metadata["output_spec"] = output_spec.to_dict()
+        file_requirements = bool(output_spec and output_spec.required_outputs)
+        if file_requirements and not self._has_checks(effective_criteria):
+            generated = not output_spec.authoritative
 
         artifact_paths = self._extract_artifact_paths(normalized_payload)
         local_artifact_paths = self._normalize_artifact_paths(
             artifact_paths,
             payload=normalized_payload,
         )
+        if metadata.get("execution_issues") and not self.is_manual_acceptance_active(metadata):
+            metadata["failure_kind"] = "step_reconciliation_required"
+            normalized_payload["status"] = "failed"
+            normalized_payload["metadata"] = metadata
+            return VerificationFinalization(
+                final_status="failed", execution_status="failed", payload=normalized_payload,
+                artifact_paths=local_artifact_paths,
+            )
         precheck_base_dir = self._resolve_base_dir(
             effective_criteria,
             local_artifact_paths,
@@ -297,7 +319,7 @@ class TaskVerificationService(_CueMethods, _PathMethods, _CheckMethods, _Discove
             )
             metadata["execution_reported_status"] = normalized_execution_status
 
-        if not self._has_checks(effective_criteria):
+        if not self._has_checks(effective_criteria) and not file_requirements:
             skipped_status = "warning" if execution_output_recovered else "skipped"
             verification = self._build_verification_record(
                 status=skipped_status,
@@ -369,7 +391,7 @@ class TaskVerificationService(_CueMethods, _PathMethods, _CheckMethods, _Discove
         )
         metadata["verification_diagnostics"] = diagnostics
         criteria = effective_criteria if isinstance(effective_criteria, dict) else {}
-        blocking = bool(criteria.get("blocking", True))
+        blocking = bool(criteria.get("blocking", True)) if self._has_checks(criteria) else bool(output_spec.blocking)
         failures: List[Dict[str, Any]] = []
         hard_failures: List[Dict[str, Any]] = []
         checks = criteria.get("checks") or []
@@ -401,6 +423,35 @@ class TaskVerificationService(_CueMethods, _PathMethods, _CheckMethods, _Discove
                 failures.append(outcome)
                 if isinstance(raw_check, dict) and bool(raw_check.get("hard")):
                     hard_failures.append(outcome)
+
+        if file_requirements:
+            node_metadata = node.metadata if isinstance(node.metadata, dict) else {}
+            output_base_dir = node_metadata.get("output_spec_base_dir") or metadata.get("output_spec_base_dir") or base_dir
+            input_snapshot = node_metadata.get("output_input_snapshot", metadata.get("output_input_snapshot"))
+            produced_paths = metadata.get("output_produced_paths")
+            output_candidates = produced_paths if isinstance(produced_paths, list) else local_artifact_paths
+            tool_call = normalized_payload.get("tool_call")
+            if not isinstance(produced_paths, list) and isinstance(tool_call, dict):
+                if is_readonly_output_probe(tool_call.get("name"), tool_call.get("parameters", {})):
+                    output_candidates = list(metadata.get("produced_files") or normalized_payload.get("produced_files") or [])
+            manifest = load_artifact_manifest(node.plan_id, node_metadata.get("session_id") or metadata.get("session_id"))
+            output_candidates = [*output_candidates, *accepted_output_paths(manifest, node.id, output_spec, output_base_dir, output_candidates)]
+            output_report = validate_output_spec(
+                output_spec, output_candidates, base_dir=output_base_dir, input_snapshot=input_snapshot,
+                artifact_manifest=manifest,
+                origin_map=session_output_origin_map(
+                    node_metadata.get("session_id") or metadata.get("session_id"),
+                    manifest,
+                ),
+            )
+            metadata["output_spec_base_dir"] = str(output_base_dir)
+            metadata["output_input_snapshot"] = copy.deepcopy(input_snapshot or {})
+            metadata["output_verification"] = output_report
+            checks_executed += len(output_spec.required_outputs)
+            checks_passed += len(output_spec.required_outputs) - len(output_report["failures"])
+            failures.extend(output_report["failures"])
+            if output_report["authoritative"]:
+                hard_failures.extend(output_report["failures"])
 
         verification_status = "passed" if not failures else "failed"
         verification = self._build_verification_record(
@@ -1034,6 +1085,7 @@ class TaskVerificationService(_CueMethods, _PathMethods, _CheckMethods, _Discove
         metadata = payload_metadata if isinstance(payload_metadata, dict) else {}
         payload["metadata"] = metadata
         node_metadata = node.metadata if isinstance(node.metadata, dict) else {}
+        node_metadata = spec_metadata_view(node_metadata, output_spec_from_metadata(node_metadata))
         provenance = resolve_artifact_contract_with_provenance(
             task_name=node.display_name(),
             instruction=node.instruction or "",
@@ -1152,6 +1204,7 @@ class TaskVerificationService(_CueMethods, _PathMethods, _CheckMethods, _Discove
 
     def _effective_acceptance_criteria(self, node: PlanNode) -> Tuple[Optional[Dict[str, Any]], bool]:
         metadata = node.metadata if isinstance(node.metadata, dict) else {}
+        metadata = spec_metadata_view(metadata, output_spec_from_metadata(metadata))
         criteria = metadata.get("acceptance_criteria")
         if isinstance(criteria, dict):
             return strengthen_acceptance_criteria(copy.deepcopy(criteria)), is_inferred_task_spec(criteria)
@@ -1164,6 +1217,7 @@ class TaskVerificationService(_CueMethods, _PathMethods, _CheckMethods, _Discove
         if isinstance(exec_result, dict):
             exec_meta = exec_result.get("metadata")
             if isinstance(exec_meta, dict):
+                exec_meta = spec_metadata_view(exec_meta, output_spec_from_metadata(exec_meta))
                 criteria = exec_meta.get("acceptance_criteria")
                 if isinstance(criteria, dict):
                     return strengthen_acceptance_criteria(copy.deepcopy(criteria)), is_inferred_task_spec(criteria)

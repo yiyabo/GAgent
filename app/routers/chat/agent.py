@@ -7,6 +7,7 @@ import inspect
 import json
 import logging
 import re
+from contextlib import aclosing
 from dataclasses import replace
 from datetime import datetime, timezone, timedelta
 from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional, Tuple, Union
@@ -17,6 +18,8 @@ from app.repository.chat_action_runs import create_action_run, fetch_action_run,
 from app.repository.plan_storage import append_action_log_entry, update_decomposition_job_status
 from app.llm import LLMClient
 from app.services.llm.llm_service import LLMProviderError
+from app.services.run_budget import RunDeadlineExceeded, cancel_and_join, iterate_stage
+from app.services.cancellation import current_cancel_token
 from app.services.foundation.settings import CHAT_HISTORY_ABS_MAX, get_settings
 from app.services.llm.decomposer_service import PlanDecomposerLLMService
 from app.services.llm.llm_service import LLMService, get_llm_service
@@ -1437,6 +1440,7 @@ class StructuredChatAgent:
             return
 
         queue: asyncio.Queue[Any] = asyncio.Queue()
+        producer_closed = False
         deep_think_job_id: Optional[str] = run_id or f"dt_{uuid4().hex}"
         deep_think_job_created = False
         deep_think_job_queue: Optional[asyncio.Queue[Any]] = None
@@ -1906,8 +1910,49 @@ class StructuredChatAgent:
                     request_profile = getattr(dt_agent, "request_profile", None)
                     if isinstance(request_profile, dict):
                         request_profile["current_plan_id"] = plan_id
+                        request_profile["plan_id"] = plan_id
                         if isinstance(plan_title, str) and plan_title.strip():
                             request_profile["current_plan_title"] = plan_title.strip()
+                            request_profile["plan_title"] = plan_title.strip()
+
+                async def on_runtime_restore(state: Dict[str, Any]) -> None:
+                    nonlocal created_plan_this_turn_id
+                    from app.services.deep_think.checkpointing import ControllerRestoreError
+                    from app.services.run_budget import check_run_active
+
+                    check_run_active()
+                    if producer_closed:
+                        raise ControllerRestoreError('The controller stream has closed')
+                    if 'created_plan_this_turn_id' in state:
+                        created = state['created_plan_this_turn_id']
+                        created_plan_this_turn_id = int(created) if created is not None else None
+                        if dt_agent is not None:
+                            dt_agent._created_plan_this_turn_id = created_plan_this_turn_id
+                    if 'bound_plan_id' not in state:
+                        return
+                    plan_id = int(state['bound_plan_id']) if state['bound_plan_id'] is not None else None
+                    self.plan_session.bind(plan_id)
+                    self._refresh_plan_tree(force_reload=True)
+                    plan_tree = getattr(self, 'plan_tree', None)
+                    title = str(state.get('bound_plan_title') or getattr(plan_tree, 'title', '') or '').strip() or None
+                    if plan_id is None:
+                        title = None
+                        self.plan_tree = None
+                        self.extra_context.update({'plan_id': None, 'plan_title': None})
+                        if dt_agent is not None:
+                            dt_agent.request_profile.update({'current_plan_id': None, 'plan_id': None,
+                                'current_plan_title': None, 'plan_title': None})
+                    else:
+                        if plan_tree is None:
+                            raise ControllerRestoreError('The restored plan tree is unavailable')
+                        _sync_dt_agent_plan_binding(plan_id, plan_title=title)
+                    self.extra_context['current_plan_id'] = plan_id
+                    if title:
+                        self.extra_context['plan_title'] = title
+                    check_run_active()
+                    if self.session_id:
+                        _set_session_plan_id(self.session_id, plan_id)
+                    self._dirty = True
 
                 # Wrapper for tool execution with plan_operation binding
                 async def tool_wrapper(name: str, params: Dict[str, Any]) -> Any:
@@ -2383,6 +2428,8 @@ class StructuredChatAgent:
                                             created_plan_this_turn_id = int(plan_id)
                                         except (TypeError, ValueError):
                                             created_plan_this_turn_id = None
+                                        if dt_agent is not None:
+                                            dt_agent._created_plan_this_turn_id = created_plan_this_turn_id
                                         self._dirty = True
 
                                         if (
@@ -2658,6 +2705,8 @@ class StructuredChatAgent:
                             self.extra_context.get("owner_id") or ""
                         ).strip() or None,
                     }
+                if "on_runtime_restore" in ctor_params:
+                    dt_agent_kwargs['on_runtime_restore'] = on_runtime_restore
                 dt_agent = dt_agent_cls(**dt_agent_kwargs)
 
                 await _emit_progress_status(
@@ -2711,6 +2760,8 @@ class StructuredChatAgent:
                     think_context,
                     task_context=deep_think_task_context,
                 )
+                if producer_closed:
+                    return
                 if cancel_event is not None and cancel_event.is_set():
                     if deep_think_job_created and deep_think_job_id:
                         plan_decomposition_jobs.mark_failure(
@@ -2733,20 +2784,44 @@ class StructuredChatAgent:
                     # Persist job status AFTER the result is queued (non-blocking
                     # for the SSE consumer).
                     if deep_think_job_created and deep_think_job_id:
-                        plan_decomposition_jobs.mark_success(
-                            deep_think_job_id,
-                            result={
+                        job_result = {
                                 "final_answer": str(result.final_answer or "")[:2000],
                                 "total_iterations": result.total_iterations,
                                 "tools_used": result.tools_used,
                                 "confidence": result.confidence,
-                            },
-                            stats={
+                        }
+                        verification = getattr(result, "output_verification", None) or {}
+                        execution_issues = getattr(result, "execution_issues", None) or []
+                        if execution_issues or (verification.get("authoritative") and verification.get("status") == "failed"):
+                            plan_decomposition_jobs.mark_failure(
+                                deep_think_job_id, "Execution or output verification did not complete successfully.",
+                                result={**job_result, "output_verification": verification, "execution_issues": execution_issues},
+                            )
+                        else:
+                            plan_decomposition_jobs.mark_success(deep_think_job_id, result=job_result, stats={
                                 "iterations": result.total_iterations,
                                 "tool_count": len(result.tools_used),
-                            },
-                        )
+                            })
+            except RunDeadlineExceeded as exc:
+                if deep_think_job_created and deep_think_job_id:
+                    plan_decomposition_jobs.mark_failure(
+                        deep_think_job_id, str(exc),
+                        result={"failure_kind": "deadline_exceeded", "cancelled": False},
+                    )
+                raise
+            except asyncio.CancelledError:
+                token = current_cancel_token()
+                reason = token.reason if token is not None else "cancelled"
+                if deep_think_job_created and deep_think_job_id and reason != "chat_run_lease_lost":
+                    deadline = reason == "run_deadline_exceeded"
+                    plan_decomposition_jobs.mark_failure(
+                        deep_think_job_id, "deadline_exceeded" if deadline else "cancelled",
+                        result={"failure_kind": "deadline_exceeded" if deadline else "cancelled", "cancelled": not deadline},
+                    )
+                raise
             except Exception as e:
+                if producer_closed:
+                    return
                 error_message = str(e) or type(e).__name__
                 error_payload: Dict[str, Any] = {
                     "type": "error",
@@ -2792,10 +2867,8 @@ class StructuredChatAgent:
                     self._tool_progress_loop = None
                 await queue.put(None)  # Signal end
 
-        # Start agent in background
-        asyncio.create_task(run_agent())
-
-        async for chunk in _drain_unified_stream_events(
+        producer = asyncio.create_task(run_agent())
+        drainer = _drain_unified_stream_events(
             self,
             queue=queue,
             routing_decision=routing_decision,
@@ -2805,8 +2878,15 @@ class StructuredChatAgent:
             current_turn_tool_results=current_turn_tool_results,
             current_turn_artifact_gallery=current_turn_artifact_gallery,
             event_sink=event_sink,
-        ):
-            yield chunk
+        )
+        try:
+            async for chunk in drainer:
+                yield chunk
+            await producer  # preserve deadline/cancellation instead of empty success
+        finally:
+            producer_closed = True
+            await drainer.aclose()
+            await cancel_and_join(producer)
 
     async def process_deep_think_stream(self, user_message: str) -> AsyncIterator[str]:
         """Backward-compatible helper that force-enables the DeepThink path."""
@@ -2815,8 +2895,9 @@ class StructuredChatAgent:
         previous = self.extra_context.get("deep_think_enabled")
         self.extra_context["deep_think_enabled"] = True
         try:
-            async for chunk in self.process_unified_stream(user_message):
-                yield chunk
+            async with aclosing(self.process_unified_stream(user_message)) as stream:
+                async for chunk in stream:
+                    yield chunk
         finally:
             if previous is None:
                 self.extra_context.pop("deep_think_enabled", None)
@@ -2846,8 +2927,10 @@ class StructuredChatAgent:
         thinking_budget = route_profile.thinking_budget
         visible_reasoning = summarize_simple_chat_reasoning(user_message)
 
+        sink_closed = False
+
         async def _through_sink(payload: Dict[str, Any]) -> str:
-            if event_sink is not None:
+            if event_sink is not None and not sink_closed:
                 await event_sink(payload)
             return _sse_message(payload)
 
@@ -2876,15 +2959,17 @@ class StructuredChatAgent:
 
         async def _run_stream() -> None:
             try:
-                async for delta in self.llm_service.stream_chat_async(
+                async for delta in iterate_stage(self.llm_service.stream_chat_async(
                     prompt, force_real=True, model=model_override,
                     enable_thinking=enable_thinking,
                     thinking_budget=thinking_budget,
-                ):
+                ), stage="simple-chat-llm"):
                     content_parts.append(delta)
                     await queue.put(
                         await _through_sink({"type": "delta", "content": delta})
                     )
+            except RunDeadlineExceeded:
+                raise
             except Exception as exc:
                 logger.error("Simple chat stream failed: %s", exc)
                 await queue.put(
@@ -2896,13 +2981,19 @@ class StructuredChatAgent:
             finally:
                 await queue.put(None)
 
-        asyncio.create_task(_run_stream())
-
-        while True:
-            item = await queue.get()
-            if item is None:
-                break
-            yield item
+        producer = asyncio.create_task(_run_stream())
+        try:
+            while True:
+                item = await queue.get()
+                if item is None:
+                    break
+                yield item
+            await producer
+        except BaseException:
+            sink_closed = True
+            raise
+        finally:
+            await cancel_and_join(producer)
 
         full_response = "".join(content_parts)
         display_text = _coerce_plain_text_chat_response_fn(full_response)

@@ -34,11 +34,13 @@ class ChatRunOutcome:
         kind = payload.get("type")
         if kind not in {"final", "error"}:
             return None
+        metadata = (payload.get("payload") or {}).get("metadata") or {}
+        if payload.get("error_code") == "run_deadline_exceeded" or metadata.get("failure_kind") == "deadline_exceeded":
+            return cls("failed", str(payload.get("message") or metadata.get("final_summary") or "Run deadline exceeded."))
         if cancelled:
             return cls("cancelled", "cancelled")
         if kind == "error":
             return cls("failed", str(payload.get("message") or payload.get("error") or "run failed"))
-        metadata = (payload.get("payload") or {}).get("metadata") or {}
         status = str(metadata.get("status") or "").lower()
         if status in {"cancelled", "canceled"}:
             return cls("cancelled", "cancelled")

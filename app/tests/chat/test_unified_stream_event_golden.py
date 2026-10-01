@@ -459,6 +459,67 @@ def test_deep_think_visible_thinking_event_sequence(monkeypatch) -> None:
     assert final["metadata"]["thinking_process"]["steps"][0]["iteration"] == 1
 
 
+def test_closing_unified_stream_joins_agent_and_prevents_late_events(monkeypatch) -> None:
+    _patch_runtime(monkeypatch)
+    settled = asyncio.Event()
+    tasks = []
+    received = []
+
+    class HangingAgent(_ThinkingStub):
+        def __init__(self, **kwargs):
+            super().__init__([], **kwargs)
+
+        async def think(self, *args, **kwargs):
+            tasks.append(asyncio.current_task())
+            try:
+                await self.kwargs["on_thinking"](ThinkingStep(1, "started", None, None, None))
+                await asyncio.Event().wait()
+            finally:
+                # A cancellation-time callback must not reach the closed sink.
+                await self.kwargs["on_final_delta"]("late")
+                settled.set()
+
+    monkeypatch.setattr(chat_routes, "DeepThinkAgent", HangingAgent)
+    agent = _build_agent()
+    agent._resolve_request_routing = lambda _message: (_decision("hello", visibility="visible"), _profile())
+
+    async def sink(payload):
+        received.append(payload)
+
+    async def drive():
+        stream = agent.process_unified_stream("hello", event_sink=sink)
+        await stream.__anext__()
+        await stream.__anext__()
+        await stream.aclose()
+        assert settled.is_set() and tasks[0].done()
+        count = len(received)
+        await asyncio.sleep(0.01)
+        assert len(received) == count
+        assert all(event.get("content") != "late" for event in received)
+
+    asyncio.run(drive())
+
+
+def test_failed_authoritative_output_is_not_a_successful_job(monkeypatch) -> None:
+    jobs = _patch_runtime(monkeypatch)
+
+    class RejectedAgent(_ThinkingStub):
+        def __init__(self, **kwargs):
+            super().__init__([], **kwargs)
+
+        async def think(self, *args, **kwargs):
+            result = await super().think(*args, **kwargs)
+            result.output_verification = {"authoritative": True, "status": "failed"}
+            return result
+
+    monkeypatch.setattr(chat_routes, "DeepThinkAgent", RejectedAgent)
+    agent = _build_agent()
+    agent._resolve_request_routing = lambda _message: (_decision("hello"), _profile())
+    _run(agent, "hello")
+    assert "mark_failure" in jobs.names()
+    assert "mark_success" not in jobs.names()
+
+
 def test_deep_think_progress_event_sequence(monkeypatch) -> None:
     _patch_runtime(monkeypatch)
     monkeypatch.setattr(

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import sqlite3
 from typing import Any, AsyncIterator, Dict, Optional
@@ -295,6 +296,62 @@ async def cancel_run(run_id: str, request: Request) -> Dict[str, str]:
     return {"run_id": run_id, "status": "cancel_requested"}
 
 
+async def resume_run(
+    run_id: str, request: Request, body: Optional[Dict[str, Any]] = Body(default=None),
+) -> Dict[str, str]:
+    """Fork an interrupted execution into an idempotent continuation run."""
+    from app.services.execution.step_ledger import StepLedger
+    from app.repository.run_steps import list_checkpoint_pointers
+
+    row = get_chat_run(run_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    ensure_owner_access(request, row.get("owner_id"), detail="run owner mismatch")
+    if row.get("status") not in {"failed", "cancelled"}:
+        raise HTTPException(status_code=409, detail="Only failed or cancelled runs can be continued")
+    if body and body.get("session_id") not in {None, row["session_id"]}:
+        raise HTTPException(status_code=403, detail="session mismatch")
+    try:
+        pointers = await asyncio.to_thread(list_checkpoint_pointers, run_id)
+        pointer = next((item for item in pointers if item["checkpoint_key"].startswith("chat:")), None)
+        pointer = pointer or (pointers[0] if pointers else None)
+        checkpoint = await asyncio.to_thread(
+            StepLedger(run_id).load_checkpoint, checkpoint_key=pointer["checkpoint_key"],
+        ) if pointer else None
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=409, detail="The resumable checkpoint is unavailable") from exc
+    if checkpoint is None:
+        raise HTTPException(status_code=409, detail="This run has no resumable controller checkpoint")
+    try:
+        payload = json.loads(row["request_json"])
+        payload["session_id"] = row["session_id"]
+        payload["project_id"] = None  # rebind through the current trusted platform context
+        payload["user_id"] = None
+        payload["client_message_id"] = str((body or {}).get("client_message_id") or f"resume:{run_id}")
+        payload["context"] = {**(payload.get("context") or {}), "resume_from_run_id": run_id}
+        resumed_request = ChatRequest.model_validate(payload)
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(status_code=409, detail="The original request cannot be reconstructed") from exc
+    existing = get_chat_run_by_idempotency_key(row["session_id"], resumed_request.client_message_id)
+    if existing is not None:
+        try:
+            existing_source = (json.loads(existing.get("request_json") or "{}").get("context") or {}).get("resume_from_run_id")
+        except (ValueError, TypeError, AttributeError):
+            existing_source = None
+        if existing_source != run_id:
+            raise HTTPException(status_code=409, detail="This client_message_id belongs to another request")
+    resumed_request = bind_chat_request_to_principal(request, resumed_request)
+    child = start_background_chat_run(
+        resumed_request, session_id=row["session_id"], owner_id=get_request_owner_id(request),
+    )
+    child_row = get_chat_run(child)
+    child_source = (json.loads(child_row["request_json"]).get("context") or {}).get("resume_from_run_id")
+    if child_source != run_id:
+        raise HTTPException(status_code=409, detail="This client_message_id belongs to another request")
+    return {"run_id": child, "session_id": row["session_id"], "resume_from_run_id": run_id,
+            "events_stream_url": f"/chat/runs/{child}/events"}
+
+
 async def stream_run_events(
     run_id: str,
     request: Request,
@@ -342,6 +399,7 @@ def mount_run_routes(router: APIRouter) -> None:
         cancel_run,
         methods=["POST"],
     )
+    router.add_api_route("/runs/{run_id}/resume", resume_run, methods=["POST"])
     router.add_api_route(
         "/runs/{run_id}/events",
         stream_run_events,

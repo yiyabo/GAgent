@@ -105,6 +105,29 @@ async def test_a_caller_set_abort_event_still_interrupts(
     assert result["status"] == "interrupted"
 
 
+async def test_shared_deadline_interrupts_kernel_and_joins_teardown(kernel_context: ToolContext) -> None:
+    from app.services.run_budget import RunBudget, RunDeadlineExceeded, bind_run_budget, reset_run_budget, run_stage
+
+    token = CancelToken()
+    cancellation.set_cancel_token(token)
+    budget = RunBudget(2, 1, token)
+    handle = bind_run_budget(budget)
+    started = time.monotonic()
+    try:
+        with pytest.raises(RunDeadlineExceeded):
+            await run_stage(
+                execute_code_handler(code="from pathlib import Path; import time; Path('deadline-started.txt').write_text('started'); time.sleep(30)", tool_context=kernel_context),
+                stage="execute_code", timeout=420,
+            )
+        assert token.reason == "run_deadline_exceeded"
+        from pathlib import Path
+        assert (Path(kernel_context.work_dir) / "deadline-started.txt").exists()
+        assert all(kernel.dead() for kernel in kernel_module._KERNELS.values())
+        assert time.monotonic() - started < 5
+    finally:
+        reset_run_budget(handle)
+
+
 def test_is_cancelled_tracks_the_ambient_token() -> None:
     assert ToolContext().is_cancelled is False
 

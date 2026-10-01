@@ -25,6 +25,7 @@ from app.services.deep_think.models import ThinkingStep
 from app.services.deep_think.schema_disclosure import META_TOOL_NAME
 from app.services.execution.tool_executor import UnifiedToolExecutor
 from app.services.response_style import sanitize_professional_response_text
+from app.services.run_budget import RunDeadlineExceeded, run_stage
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from app.services.deep_think_agent import DeepThinkAgent
@@ -382,9 +383,10 @@ async def _execute_native_tool_call(
     while True:
         attempt += 1
         try:
-            tool_result = await asyncio.wait_for(
+            tool_result = await run_stage(
                 agent.tool_executor(tool_name, params_with_ctx),
-                timeout=timeout,
+                stage=f"deepthink-tool:{tool_name}", timeout=timeout,
+                cancel_event=agent.cancel_event,
             )
             
             if tool_name == "plan_operation" and isinstance(tool_result, dict):
@@ -448,6 +450,8 @@ async def _execute_native_tool_call(
                 "tool_result_text": tool_result_text,
                 "evidence": evidence,
             }
+        except RunDeadlineExceeded:
+            raise
         except asyncio.TimeoutError:
             timeout_payload = {
                 "success": False,

@@ -13,6 +13,7 @@ from .artifact_contracts import (
 )
 from .plan_models import PlanNode, PlanTree
 from .task_metadata_generator import is_inferred_task_spec
+from .output_spec import output_spec_from_metadata, spec_metadata_view
 
 _COMPLETED_LIKE = {"completed", "done", "success"}
 
@@ -260,6 +261,7 @@ class ArtifactPreflightService:
     ) -> Tuple[TaskArtifactContractSnapshot, List[ArtifactPreflightIssue]]:
         metadata = getattr(node, "metadata", None)
         metadata = metadata if isinstance(metadata, dict) else {}
+        metadata = spec_metadata_view(metadata, output_spec_from_metadata(metadata))
         task_id = int(getattr(node, "id", 0) or 0)
         display_name_getter = getattr(node, "display_name", None)
         if callable(display_name_getter):

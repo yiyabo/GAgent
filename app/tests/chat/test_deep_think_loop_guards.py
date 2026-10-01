@@ -108,7 +108,8 @@ def test_no_progress_endgame_breaks_after_verified_deliverable(deliverable_file)
     async def _executor(name: str, params: dict):
         call_count["n"] += 1
         if call_count["n"] <= 3:
-            return {"success": True, "artifact_paths": [str(deliverable)]}
+            deliverable.write_bytes(deliverable.read_bytes() + b"new output")
+            return {"success": True, "produced_files": [str(deliverable)]}
         return {"success": True, "summary": "still probing, nothing new"}
 
     llm = _LoopLLM(
@@ -817,7 +818,8 @@ class TestDeclarativeAcceptance:
         """Asked for a figure and it IS produced: normal break, zero gap."""
 
         async def _executor(name: str, params: dict):
-            return {"success": True, "artifact_paths": [str(deliverable_file)]}
+            deliverable_file.write_bytes(deliverable_file.read_bytes() + b"new output")
+            return {"success": True, "produced_files": [str(deliverable_file)]}
 
         llm = _LoopLLM(
             _tool_call_responses("file_operations", {"operation": "read", "path": "/x"}, 40)
@@ -895,19 +897,19 @@ class TestAcceptanceV2Parser:
         spec = parse_acceptance_spec(
             '{"required_outputs": ['
             '{"kind": "figure", "min_count": 99, "extensions": ["png", ".exe", ".md"],'
-            ' "target_path": "../escape.md"},'
+            ' "target_path": "results/exact.md"},'
             '{"kind": "hologram", "min_count": 1}'
             ']}'
         )
         assert spec is not None
         image, other = spec.required_outputs
         assert image.kind == "image"  # alias normalized
-        assert image.min_count == 10  # clamped
-        assert image.extensions == [".png", ".md"]  # dotted, filtered
-        assert image.target_path is None  # traversal rejected
+        assert image.min_count == 99  # requested count is preserved
+        assert image.extensions == [".png", ".exe", ".md"]  # declared extensions stay exact
+        assert image.target_path == "results/exact.md"
         assert other.kind == "other"
         # "other" kinds never drive deterministic blocking checks
-        assert spec_to_kind_requirements(spec) == {"image": 10}
+        assert spec_to_kind_requirements(spec) == {"image": 99}
 
 
 class TestAcceptanceV2Extraction:
@@ -939,6 +941,23 @@ class TestAcceptanceV2Extraction:
         assert asyncio.run(extract_acceptance_spec(_spec_agent(garbage), "画两张图")) is None
         failing = _SpecExtractLLM(exc=RuntimeError("upstream 504"))
         assert asyncio.run(extract_acceptance_spec(_spec_agent(failing), "画两张图")) is None
+
+
+def test_shared_longer_budget_is_not_shortened_by_legacy_local_time_fuse():
+    import time
+    from app.services.run_budget import RunBudget, bind_run_budget, reset_run_budget
+    agent = DeepThinkAgent(llm_client=_LoopLLM([]), available_tools=["file_operations"], tool_executor=_noop_tool_executor,
+        request_profile={"request_tier": "execute", "intent_type": "execute_task"})
+    guard = {"verified_deliverables": [], "failure_sig_counts": {}, "failure_sig_warned": set(),
+        "last_progress_iteration": 1, "no_progress_nudge_sent": False, "time_nudge_sent": False,
+        "started_at": time.monotonic() - 1000, "expected_outputs": [], "acceptance_spec": None}
+    messages = []
+    handle = bind_run_budget(RunBudget(3600))
+    try:
+        assert agent._apply_loop_guards(messages=messages, tool_results=[], iteration=1, guard_state=guard) is None
+        assert messages == []
+    finally:
+        reset_run_budget(handle)
 
 
 class TestAcceptanceV2MissingCounts:
@@ -1010,7 +1029,9 @@ def test_acceptance_v2_loop_extracts_spec_and_injects_prompt(monkeypatch) -> Non
 
     result = asyncio.run(agent.think("画两张柱状图并写一份研究报告"))
 
-    assert result.final_answer.startswith("完成")
+    assert "交付验收未通过" in result.final_answer
+    assert result.output_verification["status"] == "failed"
+    assert result.output_verification["matched_counts"] == [0, 0]
     assert llm.spec_calls == 1
     assert agent._acceptance_spec is not None
     assert spec_to_kind_requirements(agent._acceptance_spec) == {"image": 2, "document": 1}
@@ -1018,6 +1039,34 @@ def test_acceptance_v2_loop_extracts_spec_and_injects_prompt(monkeypatch) -> Non
     assert "DELIVERABLE SPEC (acceptance v2)" in system_prompt
     assert "image x2" in system_prompt
     assert "CJK axis labels" in system_prompt
+
+
+def test_acceptance_v2_native_loop_accepts_real_declared_outputs(monkeypatch, tmp_path) -> None:
+    from PIL import Image
+    monkeypatch.setenv("DEEP_THINK_ACCEPTANCE_V2_ENABLED", "1")
+    llm = _SpecLoopLLM(
+        _tool_call_responses("file_operations", {"operation": "write", "path": "deliverables/report.md", "content": "Report"}, 1)
+        + _submit_final_responses(),
+        [_SPEC_JSON],
+    )
+
+    async def produce_files(_name, _params):
+        output_dir = tmp_path / "deliverables"
+        output_dir.mkdir(exist_ok=True)
+        images = [output_dir / "a.png", output_dir / "b.png"]
+        for path in images:
+            Image.new("RGB", (2, 2), "red").save(path)
+        report = output_dir / "report.md"
+        report.write_text("Report", encoding="utf-8")
+        return {"success": True, "artifact_paths": [str(path) for path in [*images, report]]}
+
+    agent = DeepThinkAgent(llm_client=llm, available_tools=["file_operations"], tool_executor=produce_files,
+        max_iterations=5, request_profile={"request_tier": "execute", "intent_type": "execute_task"})
+    result = asyncio.run(agent.think("画两张柱状图并写一份研究报告", context={"output_spec_base_dir": str(tmp_path)}))
+    assert result.output_verification["status"] == "passed"
+    assert result.output_verification["matched_counts"] == [2, 1]
+    assert result.output_spec["schema_version"] == 1
+    assert "交付验收未通过" not in result.final_answer
 
 
 def test_acceptance_v2_disabled_loop_keeps_v1_only(monkeypatch) -> None:

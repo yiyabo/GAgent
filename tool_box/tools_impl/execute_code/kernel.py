@@ -17,6 +17,7 @@ at settle, so late RPC from a leaked cell thread is refused.
 from __future__ import annotations
 
 import atexit
+import contextvars
 import json
 import logging
 import os
@@ -220,6 +221,9 @@ class CellBinding:
 
     def __init__(self, tool_context: Optional[object]):
         self.tool_context = tool_context
+        # The RPC loop is persistent and belongs to another thread. Authority,
+        # budget, cancellation, usage, and ledger context all belong to a cell.
+        self.execution_context = contextvars.copy_context()
         self.active = True
 
     def retire(self) -> None:

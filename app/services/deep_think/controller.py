@@ -44,8 +44,10 @@ from app.services.deep_think.text_utils import (
 from app.services.execution.tool_executor import UnifiedToolExecutor
 from app.services.foundation.settings import get_settings
 from app.services.response_style import sanitize_professional_response_text
+from app.services.run_budget import RunDeadlineExceeded, iterate_stage, run_stage
 from app.services.tool_schemas import build_tool_schemas
 from app.services.deep_think.schema_disclosure import SchemaDisclosure
+from app.services.deep_think import checkpointing
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from app.services.deep_think_agent import DeepThinkAgent
@@ -235,6 +237,26 @@ async def _native_run_setup(
     from app.services.context.context_manager import ContextWindowManager
 
     context = dict(context or {})
+    from app.services.run_resume import current_resume_source
+
+    if "resume_from_run_id" not in context and (resume_source := current_resume_source()):
+        context["resume_from_run_id"] = resume_source
+    agent._checkpoint_namespace = checkpointing.namespace(agent, user_query, task_context)
+    agent._checkpoint_key = checkpointing.checkpoint_key(agent, user_query, task_context)
+    ledger = checkpointing.ledger_for(agent)
+    restored = await asyncio.to_thread(checkpointing.load_native_checkpoint, ledger, agent._checkpoint_key) if ledger is not None else None
+    if restored is None and context.get("resume_from_run_id") and getattr(task_context, "task_id", None) is not None:
+        context["_resume_new_scope_verified"] = await run_stage(
+            asyncio.to_thread(checkpointing.task_scope_start_allowed, agent, context),
+            stage="resume-scope-proof", cancel_event=agent.cancel_event,
+        )
+    restored = checkpointing.restore_checkpoint(agent, restored, user_query, task_context, context)
+    if restored is not None:
+        await checkpointing.restore_runtime_state(agent, restored.controller_state)
+        context["plan_id"] = agent._current_plan_id()
+        for key in ("output_spec", "output_input_snapshot", "output_spec_base_dir"):
+            if restored.controller_state.get(key) is not None:
+                context[key] = restored.controller_state[key]
     thinking_steps: List[ThinkingStep] = []
     tools_used: List[str] = []
     tool_schemas = build_tool_schemas(agent.available_tools)
@@ -243,16 +265,14 @@ async def _native_run_setup(
     agent._schema_disclosure = SchemaDisclosure(tool_schemas, agent.available_tools)
 
     expected_outputs = _derive_expected_outputs(user_query)
-    acceptance_spec = None
-    if expected_outputs:
-        from app.services.deep_think.acceptance import extract_acceptance_spec
+    from app.services.deep_think.acceptance import prepare_acceptance_spec
 
-        acceptance_spec = await extract_acceptance_spec(agent, user_query)
+    acceptance_spec = await prepare_acceptance_spec(agent, user_query, context, task_context)
     system_prompt = agent._build_native_system_prompt(context, task_context)
     if acceptance_spec is not None:
         from app.services.deep_think.acceptance import build_acceptance_spec_prompt_block
 
-        system_prompt += build_acceptance_spec_prompt_block(acceptance_spec)
+        system_prompt += build_acceptance_spec_prompt_block(acceptance_spec, agent._acceptance_base_dir)
     messages: List[Dict[str, Any]] = [
         {"role": "system", "content": system_prompt},
         *_extract_history_messages(context, current_user_query=user_query),
@@ -280,9 +300,32 @@ async def _native_run_setup(
     }
     agent._produced_deliverable_paths = []
     agent._produced_image_paths = []
+    agent._execution_issues = []
     agent._acceptance_missing: List[str] = []
     agent._acceptance_spec = acceptance_spec
     agent._expected_outputs_current = list(loop_guard_state["expected_outputs"])
+    if restored is not None:
+        messages = restored.messages
+        if messages and messages[0].get("role") == "system":
+            messages[0] = {"role": "system", "content": system_prompt}
+        messages.append({"role": "user", "content": (
+            "Continue the interrupted task from the restored observations. Do not resubmit completed work. "
+            "Reconcile uncertain mutations with existing files or remote job status before submitting them again."
+        )})
+        thinking_steps = checkpointing.restore_steps(restored.controller_state.get("thinking_steps") or [])
+        tools_used = list(restored.controller_state.get("tools_used") or [])
+        checkpointing.restore_guard(loop_guard_state, restored)
+        verified = restored.controller_state.get("guard", {}).get("verified_deliverables") or []
+        loop_guard_state["verified_deliverables"] = list(verified)
+        loop_guard_state["last_progress_iteration"] = restored.iteration
+        agent._produced_deliverable_paths = list(verified)
+        agent._produced_image_paths = list(restored.controller_state.get("produced_image_paths") or [])
+        agent._execution_issues = await asyncio.to_thread(
+            checkpointing.unresolved_execution_issues, agent, ledger,
+            list(restored.controller_state.get("execution_issues") or []),
+        )
+        for name in restored.controller_state.get("schema_loaded") or []:
+            agent._schema_disclosure.record_load(name)
     if loop_guard_state["expected_outputs"]:
         logger.info(
             "[DEEP_THINK][acceptance] expected deliverable types: %s",
@@ -299,6 +342,7 @@ async def _native_run_setup(
         messages=messages,
         ctx_mgr=ctx_mgr,
         loop_guard_state=loop_guard_state,
+        checkpoint=restored,
     )
 
 
@@ -440,12 +484,16 @@ async def _native_tool_cycle(
             current_step=current_step,
         )
 
-        loop_guard_break_reason = agent._apply_loop_guards(
+        loop_guard_break_reason = await run_stage(asyncio.to_thread(
+            agent._apply_loop_guards,
             messages=messages,
             tool_results=tool_results,
             iteration=iteration,
             guard_state=loop_guard_state,
-        )
+        ), stage="deepthink-output-verification", cancel_event=agent.cancel_event)
+        if getattr(agent, "_execution_issues", []):
+            current_step.self_correction = "step_reconciliation_required"
+            return "break", tool_results, None, ""
         if loop_guard_break_reason:
             current_step.self_correction = loop_guard_break_reason
             logger.warning(
@@ -514,13 +562,12 @@ async def _native_tool_cycle(
 
         if cycle.identical_tool_cycle_count >= agent.MAX_IDENTICAL_TOOL_CALL_CYCLES:
             repeated_cycles = cycle.identical_tool_cycle_count + 1
-            from app.services.deep_think.acceptance import (
-                spec_to_kind_requirements as _spec_requirements,
-            )
-            rep_missing = _missing_expectations_detailed(
+            from app.services.deep_think.acceptance import acceptance_missing
+            rep_missing = acceptance_missing(
+                agent,
                 loop_guard_state.get("expected_outputs") or [],
                 loop_guard_state.get("verified_deliverables") or [],
-                _spec_requirements(loop_guard_state.get("acceptance_spec")),
+                loop_guard_state.get("acceptance_spec"),
             )
             if rep_missing:
                 loop_guard_state["missing_expectations"] = rep_missing
@@ -672,6 +719,8 @@ async def _native_probe_only_cycle(
                             final_answer = synthesized
                         else:
                             final_answer = raw_fallback
+                    except RunDeadlineExceeded:
+                        raise
                     except Exception as synth_exc:
                         logger.warning(
                             "Post-execution probe-stop LLM synthesis failed, using raw fallback: %s",
@@ -1189,9 +1238,9 @@ async def _native_no_tool_call_cycle(
                 try:
                     from app.services.execution.tool_executor import UnifiedToolExecutor
                     timeout = UnifiedToolExecutor.TOOL_TIMEOUTS.get(pa_name, agent.tool_timeout)
-                    tool_result = await asyncio.wait_for(
+                    tool_result = await run_stage(
                         agent.tool_executor(pa_name, pa_params),
-                        timeout=timeout,
+                        stage="deepthink-forced-probe", timeout=timeout, cancel_event=agent.cancel_event,
                     )
                     try:
                         action_result_text = json.dumps(tool_result, ensure_ascii=False, default=str)
@@ -1200,6 +1249,8 @@ async def _native_no_tool_call_cycle(
                     current_step.action_result = action_result_text
                     messages.append({"role": "assistant", "content": result.content or ""})
                     messages.append({"role": "user", "content": f"Tool Output: {action_result_text}"})
+                except RunDeadlineExceeded:
+                    raise
                 except Exception as exc:
                     current_step.action_result = f"Error: {exc}"
                     messages.append({"role": "assistant", "content": result.content or ""})
@@ -1384,7 +1435,7 @@ async def _think_native(
 
     async def _summarize_for_compaction(text: str) -> str:
         prompt = build_summarization_prompt(text)
-        result = await stream_chat_collect_async(agent.llm_client, prompt)
+        result = await run_stage(stream_chat_collect_async(agent.llm_client, prompt), stage="deepthink-compaction", cancel_event=agent.cancel_event)
         return str(result or "").strip()
 
     cycle = _NativeCycleState(
@@ -1392,6 +1443,15 @@ async def _think_native(
         base_iteration_limit=agent.max_iterations,
     )
     iteration = 0
+    pending_result = None
+    if setup.checkpoint is not None:
+        restored = setup.checkpoint
+        checkpointing.restore_cycle(cycle, restored)
+        pending_raw = restored.controller_state.get("pending_result")
+        pending_result = checkpointing.unpack_result(pending_raw) if pending_raw else None
+        iteration = restored.iteration - 1 if pending_result is not None else restored.iteration
+        cycle.runtime_iteration_limit = restored.iteration + agent.max_iterations
+        cycle.base_iteration_limit = cycle.runtime_iteration_limit
     final_answer = ""
     fallback_used = False
     consecutive_llm_failures = 0
@@ -1399,7 +1459,7 @@ async def _think_native(
     llm_fatal_abort = False
 
     while iteration < cycle.runtime_iteration_limit:
-        await agent._get_pause_event().wait()
+        await run_stage(agent._get_pause_event().wait(), stage="deepthink-pause", cancel_event=agent.cancel_event)
         if agent.cancel_event and agent.cancel_event.is_set():
             logger.info("[DEEP_THINK_NATIVE] Cancelled by user")
             break
@@ -1448,16 +1508,27 @@ async def _think_native(
             if disclosure is not None
             else tool_schemas_full
         )
-        flow, result, consecutive_llm_failures, fatal_answer = await _native_llm_step(
-            agent,
-            messages=messages,
-            tool_schemas=tool_schemas,
-            iteration=iteration,
-            current_step=current_step,
-            thinking_steps=thinking_steps,
-            consecutive_llm_failures=consecutive_llm_failures,
-            max_consecutive_llm_failures=max_consecutive_llm_failures,
-        )
+        if pending_result is not None:
+            result = pending_result
+            pending_result = None
+            flow, fatal_answer = "ok", ""
+        else:
+            agent._replayed_python_state_lost = False
+            await checkpointing.save_native_checkpoint(
+                agent, phase="native_ready", iteration=iteration - 1,
+                messages=messages, steps=thinking_steps, tools_used=tools_used,
+                cycle=cycle, guard_state=loop_guard_state,
+            )
+            flow, result, consecutive_llm_failures, fatal_answer = await _native_llm_step(
+                agent,
+                messages=messages,
+                tool_schemas=tool_schemas,
+                iteration=iteration,
+                current_step=current_step,
+                thinking_steps=thinking_steps,
+                consecutive_llm_failures=consecutive_llm_failures,
+                max_consecutive_llm_failures=max_consecutive_llm_failures,
+            )
         if flow == "break":
             final_answer = fatal_answer
             fallback_used = True
@@ -1469,6 +1540,11 @@ async def _think_native(
         current_step.thought = result.content or ""
 
         if result.tool_calls:
+            await checkpointing.save_native_checkpoint(
+                agent, phase="native_tools_pending", iteration=iteration,
+                messages=messages, steps=thinking_steps, tools_used=tools_used,
+                cycle=cycle, guard_state=loop_guard_state, pending_result=result,
+            )
             flow, tool_results, final_call, new_final_answer = await _native_tool_cycle(
                 agent,
                 result=result,
@@ -1574,7 +1650,7 @@ async def _think_native(
                 ),
             })
 
-    return await _native_finalize(
+    finalized = await _native_finalize(
         agent,
         user_query=user_query,
         context=context,
@@ -1588,6 +1664,11 @@ async def _think_native(
         messages=messages,
         llm_fatal_abort=llm_fatal_abort,
     )
+    await checkpointing.save_native_checkpoint(
+        agent, phase="native_final", iteration=iteration, messages=messages,
+        steps=thinking_steps, tools_used=tools_used, cycle=cycle, guard_state=loop_guard_state,
+    )
+    return finalized
 
 
 def _pin_iteration_billing_context() -> None:
@@ -1638,7 +1719,7 @@ async def _native_llm_step(
                     pass
 
         _pin_iteration_billing_context()
-        result = await agent.llm_client.stream_chat_with_tools_async(
+        result = await run_stage(agent.llm_client.stream_chat_with_tools_async(
             messages=messages,
             tools=tool_schemas,
             tool_choice="auto",
@@ -1646,7 +1727,9 @@ async def _native_llm_step(
             on_reasoning_delta=_on_reasoning_delta,
             enable_thinking=agent.enable_thinking,
             thinking_budget=agent.thinking_budget,
-        )
+        ), stage="deepthink-llm", cancel_event=agent.cancel_event)
+    except RunDeadlineExceeded:
+        raise
     except Exception as exc:
         error_detail = _dta()._describe_exception(exc)
         logger.exception(
@@ -1836,6 +1919,7 @@ async def _native_finalize(
     except Exception:
         summary = _dta()._default_deepthink_summary(user_query)
 
+    final_answer, output_fields = await checkpointing.finalize_output_spec(agent, user_query, final_answer)
     return DeepThinkResult(
         final_answer=final_answer,
         thinking_steps=thinking_steps,
@@ -1853,6 +1937,7 @@ async def _native_finalize(
         structured_plan_plan_id=structured_plan_outcome.get("plan_id"),
         structured_plan_title=structured_plan_outcome.get("plan_title"),
         structured_plan_operation=structured_plan_outcome.get("operation"),
+        **output_fields,
     )
 
 
@@ -1863,10 +1948,20 @@ async def _think_prompt_based(
     task_context: Optional[TaskExecutionContext] = None,
 ) -> DeepThinkResult:
     context = dict(context or {})
+    from app.services.deep_think.acceptance import prepare_acceptance_spec
+
+    agent._acceptance_spec = await prepare_acceptance_spec(agent, user_query, context, task_context)
+    agent._expected_outputs_current = _derive_expected_outputs(user_query)
+    agent._produced_deliverable_paths = []
+    agent._execution_issues = []
     thinking_steps: List[ThinkingStep] = []
     tools_used: List[str] = []
 
     system_prompt = agent._build_system_prompt(context, task_context=task_context)
+    if agent._acceptance_spec is not None:
+        from app.services.deep_think.acceptance import build_acceptance_spec_prompt_block
+
+        system_prompt += build_acceptance_spec_prompt_block(agent._acceptance_spec, agent._acceptance_base_dir)
 
     messages = [
         {"role": "system", "content": system_prompt},
@@ -1884,7 +1979,7 @@ async def _think_prompt_based(
     logger.info(f"Starting DeepThink for query: {user_query[:50]}...")
 
     while iteration < agent.max_iterations:
-        await agent._get_pause_event().wait()
+        await run_stage(agent._get_pause_event().wait(), stage="deepthink-pause", cancel_event=agent.cancel_event)
         if agent.cancel_event and agent.cancel_event.is_set():
             logger.info("DeepThink cancelled by user")
             break
@@ -1913,7 +2008,7 @@ async def _think_prompt_based(
                 )
 
             logger.info("[DEEP_THINK] Using streaming LLM call")
-            async for delta in agent.llm_client.stream_chat_async(
+            async for delta in iterate_stage(agent.llm_client.stream_chat_async(
                 prompt="", messages=messages,
                 enable_thinking=agent.enable_thinking,
                 thinking_budget=agent.thinking_budget,
@@ -1921,7 +2016,7 @@ async def _think_prompt_based(
                     agent.on_reasoning_delta(iteration, chunk)
                     if agent.on_reasoning_delta else None
                 ),
-            ):
+            ), stage="deepthink-prompt-llm", cancel_event=agent.cancel_event):
                 response_text += delta
                 if agent.on_thinking_delta:
                     await agent._safe_delta_callback(iteration, delta)
@@ -2021,9 +2116,9 @@ async def _think_prompt_based(
                                     str(tool_name),
                                     dict(tool_params or {}),
                                 )
-                            result = await asyncio.wait_for(
+                            result = await run_stage(
                                 agent.tool_executor(tool_name, tool_params or {}),
-                                timeout=timeout
+                                stage=f"deepthink-tool:{tool_name}", timeout=timeout, cancel_event=agent.cancel_event,
                             )
                             try:
                                 current_step.action_result = json.dumps(
@@ -2064,6 +2159,8 @@ async def _think_prompt_based(
                                     )
                                 continue
                             break
+                        except RunDeadlineExceeded:
+                            raise
                         except asyncio.TimeoutError:
                             current_step.action_result = f"Error: Tool '{tool_name}' execution timed out after {timeout}s"
                             logger.warning(f"Tool {tool_name} timed out after {timeout}s")
@@ -2119,6 +2216,10 @@ async def _think_prompt_based(
                         "tool_result_text": current_step.action_result or "",
                     }
                 ]
+                for candidate in agent._extract_guard_candidates(cycle_results):
+                    confirmed = agent._verify_guard_path(candidate)
+                    if confirmed and confirmed not in agent._produced_deliverable_paths:
+                        agent._produced_deliverable_paths.append(confirmed)
                 tool_cycle_signature = agent._build_tool_cycle_signature(cycle_results)
                 if tool_cycle_signature and tool_cycle_signature == last_tool_cycle_signature:
                     identical_tool_cycle_count += 1
@@ -2140,14 +2241,13 @@ async def _think_prompt_based(
                     # flow derives expected kinds from the query when the agent
                     # mirror is unset; with no acceptance spec this degrades
                     # byte-identically to the v1 check.
-                    from app.services.deep_think.acceptance import (
-                        spec_to_kind_requirements as _spec_requirements,
-                    )
-                    rep_missing = _missing_expectations_detailed(
+                    from app.services.deep_think.acceptance import acceptance_missing
+                    rep_missing = acceptance_missing(
+                        agent,
                         getattr(agent, "_expected_outputs_current", None)
                         or _derive_expected_outputs(user_query),
                         getattr(agent, "_produced_deliverable_paths", None) or [],
-                        _spec_requirements(getattr(agent, "_acceptance_spec", None)),
+                        getattr(agent, "_acceptance_spec", None),
                     )
                     if rep_missing:
                         agent._acceptance_missing = list(rep_missing)
@@ -2190,6 +2290,8 @@ async def _think_prompt_based(
                 messages.append({"role": "assistant", "content": response_text})
                 messages.append({"role": "user", "content": agent._get_next_step_prompt(iteration)})
 
+        except RunDeadlineExceeded:
+            raise
         except Exception as e:
             logger.exception("Error in deep thinking loop")
             current_step.status = "error"
@@ -2236,7 +2338,7 @@ Respond with ONLY a JSON object:
                 )
 
             response_text = ""
-            async for delta in agent.llm_client.stream_chat_async(
+            async for delta in iterate_stage(agent.llm_client.stream_chat_async(
                 prompt="", messages=messages,
                 enable_thinking=agent.enable_thinking,
                 thinking_budget=agent.thinking_budget,
@@ -2244,7 +2346,7 @@ Respond with ONLY a JSON object:
                     agent.on_reasoning_delta(iteration + 1, chunk)
                     if agent.on_reasoning_delta else None
                 ),
-            ):
+            ), stage="deepthink-conclusion-llm", cancel_event=agent.cancel_event):
                 response_text += delta
                 if agent.on_thinking_delta:
                     await agent._safe_delta_callback(iteration + 1, delta)
@@ -2279,6 +2381,8 @@ Respond with ONLY a JSON object:
                 confidence = 0.5
                 if agent.on_final_delta and final_answer:
                     await agent._stream_final_answer(final_answer)
+        except RunDeadlineExceeded:
+            raise
         except Exception as e:
             logger.exception("Failed to generate strict forced conclusion")
             fallback_used = True
@@ -2345,6 +2449,7 @@ Respond with ONLY a JSON object:
     except Exception:
         summary = _dta()._default_deepthink_summary(user_query)
 
+    final_answer, output_fields = await checkpointing.finalize_output_spec(agent, user_query, final_answer)
     return DeepThinkResult(
         final_answer=final_answer,
         thinking_steps=thinking_steps,
@@ -2362,4 +2467,5 @@ Respond with ONLY a JSON object:
         structured_plan_plan_id=structured_plan_outcome.get("plan_id"),
         structured_plan_title=structured_plan_outcome.get("plan_title"),
         structured_plan_operation=structured_plan_outcome.get("operation"),
+        **output_fields,
     )

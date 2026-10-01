@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import logging
 import re
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
+from app.services.run_budget import RunDeadlineExceeded, current_run_budget, run_stage
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Tuple
@@ -651,10 +653,13 @@ def _invoke_evaluator_client(
     # Keep the async fallback for custom evaluator stubs used in tests or
     # alternative integrations that only expose async methods.
     with usage_context_override(call_purpose="plan_review", phase="plan"):
-        if isinstance(client, LLMClient):
+        budget = current_run_budget()
+        if isinstance(client, LLMClient) and budget is None:
             return "".join(client.stream_chat("", messages=messages, model=evaluator_model))
 
         async def _runner() -> str:
+            if isinstance(client, LLMClient):
+                return await asyncio.to_thread(lambda: "".join(client.stream_chat("", messages=messages, model=evaluator_model)))
             stream_chat_async = getattr(client, "stream_chat_async", None)
             if callable(stream_chat_async):
                 chunks: List[str] = []
@@ -669,19 +674,30 @@ def _invoke_evaluator_client(
             if callable(chat_async):
                 return await chat_async("", messages=messages, model=evaluator_model)
 
-            loop = asyncio.get_running_loop()
-            return await loop.run_in_executor(
-                None,
-                lambda: client.chat("", messages=messages, model=evaluator_model),
-            )
+            return await asyncio.to_thread(client.chat, "", messages=messages, model=evaluator_model)
+
+        if budget is not None:
+            runtime_context = contextvars.copy_context()
+            executor = ThreadPoolExecutor(max_workers=1)
+            future = executor.submit(runtime_context.run, lambda: asyncio.run(run_stage(_runner(), stage="plan-rubric-llm")))
+            try:
+                return future.result(timeout=budget.remaining_seconds(closeout=True))
+            except FutureTimeout as exc:
+                if future.done() and budget.remaining_seconds(closeout=True) > 0:
+                    raise
+                budget.expire()
+                raise RunDeadlineExceeded("Run deadline reached during plan rubric review.") from exc
+            finally:
+                executor.shutdown(wait=False, cancel_futures=True)
 
         try:
             asyncio.get_running_loop()
         except RuntimeError:
-            return asyncio.run(_runner())
+            return asyncio.run(run_stage(_runner(), stage="plan-rubric-llm"))
 
         with ThreadPoolExecutor(max_workers=1) as executor:
-            return executor.submit(lambda: asyncio.run(_runner())).result()
+            runtime_context = contextvars.copy_context()
+            return executor.submit(runtime_context.run, lambda: asyncio.run(run_stage(_runner(), stage="plan-rubric-llm"))).result()
 
 
 def _client_from_model_provider(
@@ -837,6 +853,8 @@ Your job is to score each subcriterion and provide concrete evidence.
         parsed = _extract_json_block(raw) or None
         if not isinstance(parsed, dict):
             eval_error_reason = "Evaluator returned invalid JSON; strict rubric scoring was aborted."
+    except RunDeadlineExceeded:
+        raise
     except Exception as exc:  # noqa: BLE001 - isolate evaluator failures
         logger.warning("Rubric evaluator call failed: %s", exc)
         parsed = None

@@ -8,6 +8,8 @@ from .artifact_contracts import canonical_artifact_path, load_artifact_manifest
 from .artifact_preflight import ArtifactPreflightIssue, ArtifactPreflightService
 from .plan_models import PlanTree
 from .task_verification import TaskVerificationService
+from .output_spec import output_spec_from_metadata, spec_metadata_view
+from .task_metadata_generator import is_inferred_task_spec
 
 _COMPLETED_LIKE = {"completed", "done", "success"}
 _FAILED_LIKE = {"failed", "failure", "error"}
@@ -136,6 +138,24 @@ class PlanStatusResolver:
     def __init__(self) -> None:
         self._artifact_preflight = ArtifactPreflightService()
 
+    @staticmethod
+    def _own_acceptance_requirements(node: Any, contract: Any) -> tuple[bool, bool]:
+        """A synthesis parent with its own explicit outputs is executable."""
+        metadata = getattr(node, "metadata", None) or {}
+        spec = output_spec_from_metadata(metadata)
+        view = spec_metadata_view(metadata, spec)
+        criteria = view.get("acceptance_criteria")
+        own_checks = bool(
+            isinstance(criteria, dict) and criteria.get("checks")
+            and criteria.get("blocking", True) and not is_inferred_task_spec(criteria)
+        )
+        own_files = bool(spec and spec.authoritative and spec.required_outputs)
+        own_publishes = bool(contract and contract.explicit_publishes)
+        _, _, result_metadata, _ = _parse_execution_result(getattr(node, "execution_result", None))
+        own_rejection = TaskVerificationService.has_authoritative_verification_failure(node, result_metadata)
+        own_runtime_issue = bool(result_metadata.get("execution_issues"))
+        return own_checks or own_files or own_publishes or own_rejection or own_runtime_issue, own_checks or own_files or own_rejection
+
     def resolve_plan_states(
         self,
         plan_id: int,
@@ -246,7 +266,8 @@ class PlanStatusResolver:
             # than from its own execution_result (composite parents are not
             # executed directly).
             child_ids = list(tree.children_ids(task_id))
-            if child_ids:
+            has_own_contract, needs_own_verification = self._own_acceptance_requirements(node, contract_by_task.get(task_id))
+            if child_ids and not has_own_contract:
                 child_states = [_resolve(cid) for cid in child_ids]
                 child_statuses = [
                     str(cs.get("effective_status") or "pending")
@@ -348,7 +369,10 @@ class PlanStatusResolver:
                     missing_publish_aliases.append(alias)
 
             incomplete_dependencies: List[int] = []
-            for dep_id in list(getattr(node, "dependencies", []) or []):
+            dependencies = list(getattr(node, "dependencies", []) or [])
+            if child_ids and has_own_contract:
+                dependencies.extend(child_id for child_id in child_ids if child_id not in dependencies)
+            for dep_id in dependencies:
                 if dep_id not in tree.nodes:
                     continue
                 dep_state = _resolve(dep_id)
@@ -362,6 +386,9 @@ class PlanStatusResolver:
                 blocked_meta = True
 
             verification = metadata.get("verification") if isinstance(metadata, dict) else None
+            own_spec = output_spec_from_metadata(getattr(node, "metadata", None))
+            output_report = metadata.get("output_verification")
+            output_report = output_report if isinstance(output_report, dict) else {}
             verification_status = None
             if isinstance(verification, dict) and verification.get("status") is not None:
                 verification_status = _normalize_status(verification.get("status"))
@@ -394,6 +421,10 @@ class PlanStatusResolver:
                 effective_status = "completed"
                 status_reason = manual_acceptance_reason or "Task was manually accepted after review."
                 reason_code = "manual_acceptance"
+            elif metadata.get("execution_issues"):
+                effective_status = "failed"
+                status_reason = "An execution step needs reconciliation before this result can be accepted."
+                reason_code = "step_reconciliation_required"
             elif authoritative_rejection:
                 effective_status = "failed"
                 status_reason = "Explicit acceptance or a hard verification check failed."
@@ -414,6 +445,13 @@ class PlanStatusResolver:
                 effective_status = "failed"
                 status_reason = _missing_publish_reason(task_id, missing_publish_aliases)
                 reason_code = "publish_contract_missing"
+            elif child_ids and needs_own_verification and (
+                verification_status != "passed"
+                or (own_spec and own_spec.required_outputs and output_report.get("status") != "passed")
+            ):
+                effective_status = "pending"
+                status_reason = "Child tasks completed; this parent's explicit output still needs its own acceptance."
+                reason_code = "parent_acceptance_pending"
             elif payload_status in _FAILED_LIKE and execution_status not in _COMPLETED_LIKE:
                 effective_status = "failed"
                 status_reason = _truncate_reason(content or raw_result_text) or "Task failed."

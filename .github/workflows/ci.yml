@@ -29,6 +29,7 @@ jobs:
           app/tests/tools/test_task_verification.py
           app/tests/tools/test_async_tool_executor.py
           app/tests/tools/test_execute_code_cancellation.py
+          app/tests/tools/test_execute_code_rpc.py
           app/tests/tools/test_delegation_cancellation.py
           -q -m "not external"
 

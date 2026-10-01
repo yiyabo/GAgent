@@ -14,6 +14,7 @@ from typing import Any, Dict, Iterable, List, Optional
 from app.services.resources.resource_registry import get_resource_spec, normalize_resource_id
 from .artifact_validation import artifact_entry_is_valid, validate_artifact
 from .task_metadata_generator import is_inferred_task_spec
+from .output_spec import output_spec_from_metadata, spec_metadata_view
 
 from pydantic import BaseModel, Field
 
@@ -773,6 +774,7 @@ def resolve_artifact_contract_with_provenance(
     on the returned object.
     """
     payload = metadata if isinstance(metadata, dict) else {}
+    payload = spec_metadata_view(payload, output_spec_from_metadata(payload))
     raw_contract = payload.get("artifact_contract")
     if not isinstance(raw_contract, dict):
         raw_contract = {}

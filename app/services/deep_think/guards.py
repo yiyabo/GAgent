@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from app.services.deep_think.text_utils import (
@@ -64,17 +65,33 @@ def _extract_guard_candidates(agent: "DeepThinkAgent", tool_results: List[Dict[s
         p = value.strip()
         if not p or ".." in p or "\\" in p:
             return
-        if not _GUARD_DELIVERABLE_EXT_RE.search(p):
+        from app.services.plans.output_spec import KIND_EXTENSIONS
+        spec = getattr(agent, "_acceptance_spec", None)
+        declared_match = bool(spec and any(
+            not (output.extensions or KIND_EXTENSIONS.get(output.kind))
+            or any(Path(p).name.lower().endswith(ext) for ext in (output.extensions or KIND_EXTENSIONS.get(output.kind, ())))
+            for output in spec.required_outputs
+        ))
+        if spec and spec.acceptance_criteria and not declared_match:
+            from app.services.plans.task_metadata_generator import is_inferred_task_spec
+            criteria = spec.acceptance_criteria
+            if not is_inferred_task_spec(criteria):
+                declared_match = any(
+                    isinstance(check, dict) and Path(str(check.get("path") or "")).suffix.lower() == Path(p).suffix.lower()
+                    for check in criteria.get("checks") or []
+                )
+        if not declared_match and not _GUARD_DELIVERABLE_EXT_RE.search(p):
             return
-        if _GUARD_SCRATCH_RE.search(p) or p.startswith("/tmp/"):
+        if not declared_match and (_GUARD_SCRATCH_RE.search(p) or p.startswith("/tmp/")):
             return
-        if not _GUARD_PRODUCTIVE_DIR_RE.search(p):
+        if not declared_match and not _GUARD_PRODUCTIVE_DIR_RE.search(p):
             return
         if p not in candidates:
             candidates.append(p)
 
-    def _harvest(payload: Dict[str, Any]) -> None:
-        for key in list_keys:
+    def _harvest(payload: Dict[str, Any], readonly: bool = False) -> None:
+        keys = ("produced_files", "output_files") if readonly else list_keys
+        for key in keys:
             values = payload.get(key)
             if isinstance(values, (list, tuple)):
                 for entry in values:
@@ -82,7 +99,7 @@ def _extract_guard_candidates(agent: "DeepThinkAgent", tool_results: List[Dict[s
                         _push(entry)
                     elif isinstance(entry, dict):
                         _push(entry.get("path") or entry.get("file_path"))
-        for key in str_keys:
+        for key in (("output_path", "saved_path") if readonly else str_keys):
             _push(payload.get(key))
 
     for item in tool_results:
@@ -91,10 +108,12 @@ def _extract_guard_candidates(agent: "DeepThinkAgent", tool_results: List[Dict[s
             payload = _guard_json_payload(item.get("tool_result_text"))
         if not isinstance(payload, dict) or payload.get("success") is False:
             continue
-        _harvest(payload)
+        from app.services.plans.output_spec import is_readonly_output_probe
+        readonly = is_readonly_output_probe(item.get("tool_name"), item.get("tool_params", {}))
+        _harvest(payload, readonly)
         inner = payload.get("result")
         if isinstance(inner, dict):
-            _harvest(inner)
+            _harvest(inner, readonly)
     return candidates
 
 
@@ -163,6 +182,9 @@ def _verify_guard_path(agent: "DeepThinkAgent", candidate: str) -> Optional[str]
     if os.path.isabs(p):
         attempts.append(p)
     else:
+        base_dir = getattr(agent, "_acceptance_base_dir", None)
+        if base_dir:
+            attempts.append(os.path.join(str(base_dir), p))
         runtime_root = str(os.getenv("APP_RUNTIME_ROOT") or "/app/runtime").strip()
         session_id = str(agent.request_profile.get("session_id") or "").strip()
         if session_id:
@@ -342,10 +364,12 @@ def _apply_loop_guards(
                 signature,
             )
         if count >= _failure_signature_break_count():
-            trap_missing = _missing_expectations_detailed(
+            from .acceptance import acceptance_missing
+            trap_missing = acceptance_missing(
+                agent,
                 guard_state.get("expected_outputs") or [],
                 verified,
-                _spec_kind_requirements(guard_state),
+                guard_state.get("acceptance_spec"),
             )
             if trap_missing:
                 guard_state["missing_expectations"] = trap_missing
@@ -356,13 +380,17 @@ def _apply_loop_guards(
             )
 
     if agent._loop_guard_endgame_armed():
-        missing = _missing_expectations_detailed(
+        from .acceptance import acceptance_missing
+        missing = acceptance_missing(
+            agent,
             guard_state.get("expected_outputs") or [],
             verified,
-            _spec_kind_requirements(guard_state),
+            guard_state.get("acceptance_spec"),
         )
         elapsed = time.monotonic() - float(guard_state["started_at"])
-        if elapsed >= _dta()._time_budget_break_seconds():
+        from app.services.run_budget import current_run_budget
+        shared_budget = current_run_budget()
+        if shared_budget is None and elapsed >= _dta()._time_budget_break_seconds():
             if missing:
                 guard_state["missing_expectations"] = missing
                 agent._acceptance_missing = list(missing)
@@ -371,7 +399,7 @@ def _apply_loop_guards(
                 f"(budget {_dta()._time_budget_break_seconds()}s); wrapping up with "
                 f"{len(verified)} verified deliverable(s)."
             )
-        if elapsed >= _dta()._time_budget_nudge_seconds() and not guard_state["time_nudge_sent"]:
+        if shared_budget is None and elapsed >= _dta()._time_budget_nudge_seconds() and not guard_state["time_nudge_sent"]:
             guard_state["time_nudge_sent"] = True
             if verified:
                 files_list = "\n".join(f"- {p}" for p in verified[:6])

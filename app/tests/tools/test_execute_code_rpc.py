@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import json
 from types import SimpleNamespace
 
@@ -28,6 +30,47 @@ def _fake_kernel(**overrides) -> SimpleNamespace:
     for key, value in overrides.items():
         setattr(kernel, key, value)
     return kernel
+
+
+@pytest.mark.asyncio()
+async def test_rpc_inherits_cell_deadline_token_and_claim(monkeypatch):
+    from app.services import cancellation
+    from app.services.cancellation import CancelToken
+    from app.services.chat_run_state import chat_run_claim
+    from app.services.run_budget import RunBudget, bind_run_budget, reset_run_budget, current_run_budget
+    from tool_box.tools_impl.execute_code.kernel import CellBinding
+
+    token = CancelToken()
+    budget = RunBudget(0.16, 0.04, token)
+    token_handle = cancellation.set_cancel_token(token)
+    budget_handle = bind_run_budget(budget)
+    claim_handle = chat_run_claim.set(("run-rpc", "attempt-a"))
+    try:
+        binding = CellBinding(None)
+    finally:
+        chat_run_claim.reset(claim_handle)
+        reset_run_budget(budget_handle)
+        cancellation.reset_cancel_token(token_handle)
+    # The persistent RPC serving loop has no ambient cell context of its own.
+    assert current_run_budget() is None
+    server = KernelRPCServer(_fake_kernel(authority=binding))
+    seen = []
+    settled = asyncio.Event()
+
+    async def dispatch(*args):
+        seen.append((current_run_budget(), cancellation.current_cancel_token(), chat_run_claim.get()))
+        try:
+            await asyncio.Event().wait()
+        finally:
+            settled.set()
+
+    monkeypatch.setattr(server, "_dispatch", dispatch)
+    response = _decode(await server._handle_request({"id": 1, "tool": "echo_fake", "args": {}, "token": "secret-token"}))
+    assert seen == [(budget, token, ("run-rpc", "attempt-a"))]
+    assert settled.is_set()
+    assert response["result"]["failure_kind"] == "deadline_exceeded"
+    assert token.reason == "run_deadline_exceeded"
+    assert current_run_budget() is None
 
 
 @pytest.fixture()

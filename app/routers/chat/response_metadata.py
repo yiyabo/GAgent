@@ -235,6 +235,23 @@ def _build_deep_think_response_metadata(
         **(structured_plan_meta or {}),
         **(plan_runtime_meta or {}),
     }
+    for key in ("output_spec", "output_input_snapshot", "output_spec_base_dir", "output_verification"):
+        value = getattr(result, key, None)
+        if value is not None:
+            metadata[key] = _sanitize_chat_metadata_value(value)
+    verification = getattr(result, "output_verification", None)
+    if isinstance(verification, dict) and verification.get("authoritative"):
+        rejected = verification.get("status") == "failed"
+        metadata["goal_status"] = "incomplete" if rejected else "outputs_verified"
+        if rejected:
+            metadata["status"] = "failed"
+            metadata["failure_kind"] = "output_contract_mismatch"
+    issues = getattr(result, "execution_issues", [])
+    if issues:
+        metadata["execution_issues"] = _sanitize_chat_metadata_value(issues)
+        metadata["status"] = "failed"
+        metadata["goal_status"] = "incomplete"
+        metadata["failure_kind"] = "step_reconciliation_required"
     normalized_display_text = str(display_text or "").strip()
     if normalized_display_text:
         metadata["analysis_text"] = normalized_display_text

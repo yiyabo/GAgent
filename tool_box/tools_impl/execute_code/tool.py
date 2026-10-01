@@ -110,7 +110,7 @@ async def execute_code_handler(
             tool_context is not None and getattr(tool_context, "is_cancelled", False)
         )
 
-    cell = asyncio.to_thread(
+    cell = asyncio.create_task(asyncio.to_thread(
         kernel_module.run_cell,
         code_text,
         session_id=session_id,
@@ -118,9 +118,9 @@ async def execute_code_handler(
         reset=bool(reset),
         tool_context=tool_context,
         abort_check=abort_check,
-    )
+    ))
     try:
-        return await cell
+        return await asyncio.shield(cell)
     except asyncio.CancelledError:
         # The orchestrator cancelled us: kill the process group (interrupt
         # contract), wait for the worker thread to finish the teardown, then

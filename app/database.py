@@ -257,6 +257,9 @@ def init_db() -> None:
         )
         _ensure_chat_run_columns(conn)
         _backfill_chat_run_owners(conn)
+        from .repository.run_steps import ensure_run_step_schema
+
+        ensure_run_step_schema(conn)
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_chat_runs_session_status "
             "ON chat_runs(session_id, status, created_at DESC)"
@@ -365,7 +368,14 @@ def close_db_pool() -> None:
 
 @contextmanager
 def plan_db_connection(plan_path: Path) -> Iterator:
-    """ plan fileconnection."""
+    """Commit plan mutations only while their inherited run is still writable.
+
+    Reads remain available after cancellation. The established lock order is
+    plan then main (PlanRepository.apply_changes already follows that order).
+    Hold the main claim lock through plan commit so a takeover cannot occur
+    between the ownership check and the commit. Main-only ledger writes never
+    acquire a plan connection while holding their transaction.
+    """
     import sqlite3
 
     conn = sqlite3.connect(plan_path, isolation_level="DEFERRED")
@@ -377,8 +387,36 @@ def plan_db_connection(plan_path: Path) -> Iterator:
 
     try:
         yield conn
-        conn.commit()
-    except Exception:
+        if conn.total_changes == 0:
+            conn.commit()
+        else:
+            import asyncio
+            from .services.cancellation import current_cancel_token
+            from .services.chat_run_state import chat_run_claim
+            from .services.run_budget import DEADLINE_REASON, RunDeadlineExceeded
+
+            def assert_context_writable() -> None:
+                token = current_cancel_token()
+                if token is not None and (token.closed or token.is_set()):
+                    if token.reason == DEADLINE_REASON:
+                        raise RunDeadlineExceeded("Plan write rejected after the run deadline.")
+                    raise asyncio.CancelledError("Plan write rejected after run cancellation/closure.")
+
+            assert_context_writable()
+            claim = chat_run_claim.get()
+            if claim is None:
+                conn.commit()
+            else:
+                from .repository.chat_runs import _owns_active_run, _write_transaction
+                from .repository.run_steps import StaleRunClaim
+
+                with get_db() as main_conn:
+                    with _write_transaction(main_conn):
+                        assert_context_writable()
+                        if not _owns_active_run(main_conn, claim[0], claim[1]):
+                            raise StaleRunClaim("Plan write rejected: parent run claim is no longer live.")
+                        conn.commit()
+    except BaseException:
         conn.rollback()
         raise
     finally:

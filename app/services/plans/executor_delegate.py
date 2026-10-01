@@ -214,7 +214,11 @@ class _DelegateMethods:
 
     @staticmethod
     def _build_output_contract_constraints(node_metadata: Dict[str, Any]) -> List[str]:
+        from .output_spec import output_spec_from_metadata, spec_metadata_view
+
         metadata = node_metadata if isinstance(node_metadata, dict) else {}
+        spec = output_spec_from_metadata(metadata)
+        metadata = spec_metadata_view(metadata, spec)
         acceptance = metadata.get("acceptance_criteria") if isinstance(metadata.get("acceptance_criteria"), dict) else {}
         contract = metadata.get("artifact_contract") if isinstance(metadata.get("artifact_contract"), dict) else {}
         required_paths: List[str] = []
@@ -231,6 +235,21 @@ class _DelegateMethods:
                     required_paths.append(path)
 
         lines: List[str] = []
+        if spec is not None and spec.required_outputs:
+            base = metadata.get("output_spec_base_dir")
+            if base:
+                lines.append(f"OUTPUT BASE DIRECTORY: resolve relative output targets against {base}.")
+            for output in spec.required_outputs:
+                description = f"OUTPUT REQUIREMENT: create at least {output.min_count} {output.kind} file(s)"
+                if output.extensions:
+                    description += " with extension(s) " + ", ".join(output.extensions)
+                if output.target_path:
+                    description += f" at exact target {output.target_path}"
+                if output.in_place:
+                    description += "; update the existing file content (an unchanged input does not satisfy this requirement)"
+                if output.constraints:
+                    description += f"; requested content: {output.constraints}"
+                lines.append(description + ".")
         if required_paths:
             lines.append(
                 "OUTPUT CONTRACT: before claiming completion, create these exact required file(s): "
