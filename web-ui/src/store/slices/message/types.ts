@@ -21,6 +21,8 @@ export interface StreamHandlerContext {
   assistantMessageId: string;
   mergedMetadata: Record<string, any>;
   currentSession: any;
+  sourceSessionScoped?: boolean;
+  isCurrentSession?: () => boolean;
   state: StreamMutableState;
   startActionStatusPolling: (
     trackingId: string | null | undefined,

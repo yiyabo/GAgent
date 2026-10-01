@@ -62,8 +62,8 @@ export interface ChatState {
     moveSessionToProject: (sessionId: string, projectId: number | null) => Promise<void>;
 
     // Message Actions
-    addMessage: (message: ChatMessage) => void;
-    updateMessage: (messageId: string, updates: Partial<ChatMessage>) => void;
+    addMessage: (message: ChatMessage, sessionId?: string) => void;
+    updateMessage: (messageId: string, updates: Partial<ChatMessage>, sessionId?: string) => void;
     removeMessage: (messageId: string) => void;
     clearMessages: () => void;
     loadChatHistory: (

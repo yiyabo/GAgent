@@ -47,6 +47,7 @@ import { resolveChatSessionProcessingKey } from '@/utils/chatSessionKeys';
 import { SessionStorage } from '@/utils/sessionStorage';
 import type { StreamHandlerContext } from './types';
 import { resolveThinkingDisplayMode } from './thinkingPresentation';
+import { scopeStreamContext } from './sessionState';
 
 function inferThinkingLanguage(ctx: StreamHandlerContext): 'zh' | 'en' {
   const messages = ctx.get().messages;
@@ -140,11 +141,13 @@ function normalizeProgressLabel(rawLabel: unknown, tool: string | null): string 
 }
 
 export function handleDelta(ctx: StreamHandlerContext, event: any): void {
+  ctx = scopeStreamContext(ctx);
   ctx.state.streamedContent += event.content ?? '';
   ctx.scheduleFlush();
 }
 
 export async function handleJobUpdate(ctx: StreamHandlerContext, event: any): Promise<void> {
+  ctx = scopeStreamContext(ctx);
   const payload = event.payload ?? {};
   const targetMessage = ctx.get().messages.find((msg: any) => msg.id === ctx.assistantMessageId);
   if (!targetMessage) return;
@@ -256,6 +259,7 @@ export async function handleJobUpdate(ctx: StreamHandlerContext, event: any): Pr
 
 /** Returns true if the loop should break (background dispatch). */
 export function handleFinal(ctx: StreamHandlerContext, event: any): boolean {
+  ctx = scopeStreamContext(ctx);
   ctx.state.finalPayload = event.payload;
 
   // ---- Background dispatch: detect long-running tasks ----
@@ -282,6 +286,7 @@ export function handleFinal(ctx: StreamHandlerContext, event: any): boolean {
     ctx.get().updateMessage(ctx.assistantMessageId, {
       content: bgContent,
       metadata: {
+        ...ctx.get().messages.find((message: any) => message.id === ctx.assistantMessageId)?.metadata,
         ...bgMeta,
         status: 'running' as ChatActionStatus,
         background_category: bgCategory,
@@ -341,6 +346,7 @@ export function handleFinal(ctx: StreamHandlerContext, event: any): boolean {
 }
 
 export function handleThinkingStep(ctx: StreamHandlerContext, event: any): void {
+  ctx = scopeStreamContext(ctx);
   flushPendingThinkingDeltas(ctx);
   const rawStep = event.step ?? {};
   const step = {
@@ -411,6 +417,11 @@ export function handleThinkingStep(ctx: StreamHandlerContext, event: any): void 
   if ((existingMetadata as any).thinking_visibility !== 'visible') {
     (existingMetadata as any).thinking_visibility = 'visible';
   }
+  existingMetadata.thinking_display_mode = resolveThinkingDisplayMode({
+    metadata: existingMetadata,
+    thinkingProcess: updatedProcess,
+    isStreaming: true,
+  });
 
   ctx.get().updateMessage(ctx.assistantMessageId, {
     metadata: existingMetadata,
@@ -490,6 +501,7 @@ function _flushThinkingDeltaBuffer(ctx: StreamHandlerContext, force: boolean = f
     if ((existingMetadata as any).thinking_visibility !== 'visible') {
       (existingMetadata as any).thinking_visibility = 'visible';
     }
+    existingMetadata.thinking_display_mode = 'full_thinking';
     ctx.get().updateMessage(ctx.assistantMessageId, {
       metadata: existingMetadata,
       thinking_process: {
@@ -511,6 +523,7 @@ function _flushThinkingDeltaBuffer(ctx: StreamHandlerContext, force: boolean = f
 }
 
 export function handleThinkingDelta(ctx: StreamHandlerContext, event: any): void {
+  ctx = scopeStreamContext(ctx);
   const { iteration, delta } = event;
   if (typeof iteration !== 'number' || !Number.isFinite(iteration)) return;
   if (typeof delta !== 'string' || delta.length === 0) return;
@@ -525,6 +538,7 @@ export function handleThinkingDelta(ctx: StreamHandlerContext, event: any): void
 }
 
 export function handleReasoningDelta(ctx: StreamHandlerContext, event: any): void {
+  ctx = scopeStreamContext(ctx);
   const delta = event?.delta;
   if (typeof delta !== 'string' || delta.length === 0) return;
 
@@ -540,6 +554,7 @@ export function handleReasoningDelta(ctx: StreamHandlerContext, event: any): voi
 }
 
 export function flushPendingThinkingDeltas(ctx: StreamHandlerContext): void {
+  ctx = scopeStreamContext(ctx);
   if (ctx.state.thinkingDeltaFlushHandle !== null) {
     window.clearTimeout(ctx.state.thinkingDeltaFlushHandle);
     ctx.state.thinkingDeltaFlushHandle = null;
@@ -595,6 +610,7 @@ function _resolveToolOutputStepIndex(steps: Array<Record<string, any>>, event: a
 }
 
 export function handleControlAck(ctx: StreamHandlerContext, event: any): void {
+  ctx = scopeStreamContext(ctx);
   const targetMessage = ctx.get().messages.find((msg: any) => msg.id === ctx.assistantMessageId);
   if (!targetMessage) return;
   const existingMetadata: ChatResponseMetadata = {
@@ -622,6 +638,7 @@ export function handleControlAck(ctx: StreamHandlerContext, event: any): void {
 }
 
 export function handleProgressStatus(ctx: StreamHandlerContext, event: any): void {
+  ctx = scopeStreamContext(ctx);
   const targetMessage = ctx.get().messages.find((msg: any) => msg.id === ctx.assistantMessageId);
   if (!targetMessage) return;
   const existingMetadata: ChatResponseMetadata = {
@@ -706,8 +723,12 @@ export function handleProgressStatus(ctx: StreamHandlerContext, event: any): voi
     history: trimmedHistory,
     updated_at: new Date().toISOString(),
   };
-  (existingMetadata as any).thinking_visibility = 'progress';
-  (existingMetadata as any).thinking_display_mode = 'full_thinking';
+  (existingMetadata as any).thinking_visibility = targetMessage.thinking_process?.steps?.length ? 'visible' : 'progress';
+  (existingMetadata as any).thinking_display_mode = resolveThinkingDisplayMode({
+    metadata: { ...existingMetadata, thinking_display_mode: undefined },
+    thinkingProcess: targetMessage.thinking_process,
+    isStreaming: true,
+  });
   (existingMetadata as any).unified_stream = true;
   if (!(existingMetadata as any).status || (existingMetadata as any).status === 'pending') {
     (existingMetadata as any).status = 'running';
@@ -720,6 +741,7 @@ export function handleProgressStatus(ctx: StreamHandlerContext, event: any): voi
 }
 
 export function handleToolOutput(ctx: StreamHandlerContext, event: any): void {
+  ctx = scopeStreamContext(ctx);
   const line = typeof event?.content === 'string' ? event.content : '';
   if (!line.trim()) return;
   const targetMessage = ctx.get().messages.find((msg: any) => msg.id === ctx.assistantMessageId);
@@ -758,6 +780,7 @@ export function handleToolOutput(ctx: StreamHandlerContext, event: any): void {
 }
 
 export function processBackgroundDispatch(ctx: StreamHandlerContext): void {
+  ctx = scopeStreamContext(ctx);
   ctx.get().setActiveRunId(resolveChatSessionProcessingKey(ctx.currentSession), null);
   ctx.get().setSessionProcessing(
     resolveChatSessionProcessingKey(ctx.currentSession),
@@ -780,18 +803,21 @@ export function processBackgroundDispatch(ctx: StreamHandlerContext): void {
 }
 
 export async function processFinalPayload(ctx: StreamHandlerContext): Promise<void> {
+  ctx = scopeStreamContext(ctx);
   const result: ChatResponsePayload = ctx.state.finalPayload!;
   const actions = (result.actions ?? []) as ChatActionSummary[];
   const currentMessage = ctx.get().messages.find((msg: any) => msg.id === ctx.assistantMessageId);
   const resolvedPlanId = (result.metadata?.plan_id !== undefined ? coercePlanId(result.metadata.plan_id) : undefined) ?? extractPlanIdFromActions(actions) ?? coercePlanId(ctx.mergedMetadata.plan_id) ?? ctx.get().currentPlanId ?? null;
   const resolvedPlanTitle = (result.metadata?.plan_title !== undefined ? coercePlanTitle(result.metadata.plan_title) : undefined) ?? extractPlanTitleFromActions(actions) ?? coercePlanTitle(ctx.mergedMetadata.plan_title) ?? ctx.get().currentPlanTitle ?? null;
   const resolvedTaskId = result.metadata?.task_id ?? ctx.mergedMetadata.task_id ?? ctx.get().currentTaskId ?? null;
-  const resolvedTaskName = ctx.mergedMetadata.task_name ?? ctx.get().currentTaskName ?? null;
+  const resolvedTaskName = result.metadata?.task_name ?? ctx.mergedMetadata.task_name ?? ctx.get().currentTaskName ?? null;
   const resolvedWorkflowId = result.metadata?.workflow_id ?? ctx.mergedMetadata.workflow_id ?? ctx.get().currentWorkflowId ?? null;
   const initialStatus = isActionStatus(result.metadata?.status) ? (result.metadata?.status as ChatActionStatus) : (actions.length > 0 ? 'pending' : 'completed');
 
   const assistantMetadata: ChatResponseMetadata = {
+    ...(currentMessage?.metadata ?? {}),
     ...(result.metadata ?? {}),
+    recovering: false,
     plan_id: resolvedPlanId ?? null,
     plan_title: resolvedPlanTitle ?? null,
     task_id: resolvedTaskId ?? null,
@@ -929,7 +955,7 @@ export async function processFinalPayload(ctx: StreamHandlerContext): Promise<vo
 
   if (resolvedWorkflowId !== ctx.get().currentWorkflowId) ctx.get().setCurrentWorkflowId(resolvedWorkflowId ?? null);
   if (assistantMetadata.agent_workflow) {
-    window.dispatchEvent(new CustomEvent('tasksUpdated', { detail: { type: 'agent_workflow_created', workflow_id: assistantMetadata.workflow_id, total_tasks: assistantMetadata.total_tasks, dag_structure: assistantMetadata.dag_structure, plan_id: resolvedPlanId ?? null } }));
+    window.dispatchEvent(new CustomEvent('tasksUpdated', { detail: { type: 'agent_workflow_created', session_id: ctx.get().currentSession?.session_id ?? null, workflow_id: assistantMetadata.workflow_id, total_tasks: assistantMetadata.total_tasks, dag_structure: assistantMetadata.dag_structure, plan_id: resolvedPlanId ?? null } }));
   }
   if (assistantMetadata.session_id) {
     const newSessionId = assistantMetadata.session_id as string;
@@ -937,7 +963,7 @@ export async function processFinalPayload(ctx: StreamHandlerContext): Promise<vo
       const current = state.currentSession ? { ...state.currentSession, session_id: newSessionId } : null;
       return { currentSession: current, sessions: state.sessions.map((s: any) => s.id === current?.id ? { ...s, session_id: newSessionId } : s) };
     });
-    SessionStorage.setCurrentSessionId(newSessionId);
+    if (ctx.isCurrentSession?.()) SessionStorage.setCurrentSessionId(newSessionId);
   }
 
   const trackingId = typeof assistantMetadata.tracking_id === 'string' ? assistantMetadata.tracking_id : undefined;

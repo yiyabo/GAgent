@@ -35,6 +35,10 @@ vi.mock('@store/tasks', () => ({
   },
 }));
 
+vi.mock('@store/auth', () => ({
+  useAuthStore: { getState: () => ({ projectId: null }) },
+}));
+
 vi.mock('@utils/planSyncEvents', () => ({
   dispatchPlanSyncEvent: vi.fn(),
 }));
@@ -56,6 +60,8 @@ function buildStore() {
     historyLoading: false,
     historyPageSize: 50,
     loadChatHistory: vi.fn().mockResolvedValue(undefined),
+    syncUploadedFilesFromServer: vi.fn().mockResolvedValue(undefined),
+    clearUploadedFiles: vi.fn(),
   };
 
   const set = (updater: any) => {

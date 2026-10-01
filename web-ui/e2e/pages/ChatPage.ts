@@ -1,5 +1,17 @@
 import { type Page } from '@playwright/test';
 
+/** Executed in the browser: a user row or optimistic assistant cannot satisfy this gate. */
+export function hasCompletedResponseForTurn({ clientMessageId }: { clientMessageId: string }): boolean {
+  const rows = Array.from(document.querySelectorAll<HTMLElement>('.message'));
+  const userIndex = rows.findIndex((row) => row.classList.contains('user') && row.dataset.clientMessageId === clientMessageId);
+  if (userIndex < 0) return false;
+  for (const row of rows.slice(userIndex + 1)) {
+    if (row.classList.contains('user')) return false;
+    if (row.classList.contains('assistant') && row.dataset.messageStatus === 'completed' && Number(row.dataset.responseLength) > 0) return true;
+  }
+  return false;
+}
+
 /**
  * Page object model for the chat panel.
  *
@@ -9,6 +21,7 @@ import { type Page } from '@playwright/test';
  * `.user`) with `.message-bubble` content inside a virtualized list.
  */
 export class ChatPage {
+  private clientMessageId: string | null = null;
   constructor(private page: Page) {}
 
   /** Navigate to the chat page. */
@@ -32,13 +45,15 @@ export class ChatPage {
    * The Send button stays disabled until the input has text.
    */
   async sendMessage(text: string): Promise<void> {
+    const previousIds = await this.page.locator('.message.user').evaluateAll((rows) => rows.map((row) => row.getAttribute('data-client-message-id')));
     const input = this.page.getByRole('textbox', { name: /输入消息/ });
     await input.fill(text);
     await this.page.locator('button', { hasText: 'Send' }).first().click();
-    await this.page
-      .locator('.message-bubble', { hasText: text })
-      .first()
-      .waitFor({ state: 'visible', timeout: 15000 });
+    await this.page.waitForFunction(({ text, previousIds }) =>
+      Array.from(document.querySelectorAll<HTMLElement>('.message.user')).some((row) =>
+        row.dataset.clientMessageId && !previousIds.includes(row.dataset.clientMessageId) && row.querySelector('.message-bubble')?.textContent?.includes(text)),
+    { text, previousIds }, { timeout: 15000 });
+    this.clientMessageId = await this.page.locator('.message.user', { hasText: text }).last().getAttribute('data-client-message-id');
   }
 
   /** Return text content of all rendered message bubbles. */
@@ -52,14 +67,10 @@ export class ChatPage {
   }
 
   /**
-   * Wait until more than `initialCount` message rows are rendered, up to
-   * `timeout` ms. Used to await the assistant's streamed reply.
+   * Wait for this turn's nonempty, completed assistant response.
    */
-  async waitForResponse(timeoutMs = 30000, initialCount = 0): Promise<void> {
-    await this.page.waitForFunction(
-      (start) => document.querySelectorAll('.message').length > start,
-      initialCount,
-      { timeout: timeoutMs },
-    );
+  async waitForResponse(timeoutMs = 30000): Promise<void> {
+    if (!this.clientMessageId) throw new Error('Send a message before waiting for its response.');
+    await this.page.waitForFunction(hasCompletedResponseForTurn, { clientMessageId: this.clientMessageId }, { timeout: timeoutMs });
   }
 }

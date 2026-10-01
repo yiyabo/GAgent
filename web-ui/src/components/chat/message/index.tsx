@@ -512,7 +512,14 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
   };
 
   return (
-    <div className={`message ${type}`}>
+    <div
+      className={`message ${type}`}
+      data-message-id={message.id}
+      data-client-message-id={metadata?.client_message_id}
+      data-chat-run-id={metadata?.chat_run_id ?? metadata?.deep_think_job_id}
+      data-message-status={metadata?.status ?? (type === 'assistant' && normalizedAssistantContent.trim() ? 'completed' : 'pending')}
+      data-response-length={type === 'assistant' ? Math.max(normalizedAssistantContent.trim().length, String(metadata?.final_summary ?? '').trim().length) : 0}
+    >
       <div className="message-content">
         {type === 'assistant' && <MessageAvatar type={type} />}
 

@@ -12,6 +12,7 @@ import {
   mergeArtifactGalleries,
 } from '@/utils/artifactGallery';
 import type { StoreGet, StoreSet, StreamMutableState } from './types';
+import { createSessionAccess } from './sessionState';
 
 export function startActionStatusPolling(
   get: StoreGet,
@@ -119,6 +120,8 @@ export async function retryActionRun(
   oldTrackingId: string,
   rawActionsOverride: any[] = [],
 ) {
+  const source = createSessionAccess(get, set, get().currentSession?.id);
+  get = source.get;
   const retrySessionKey = resolveChatSessionProcessingKey(get().currentSession);
   if (!oldTrackingId || get().processingSessionIds.has(retrySessionKey)) return;
   try {
@@ -156,7 +159,7 @@ export async function retryActionRun(
   } catch (error) {
   console.error('Retry failed:', error);
   const lastUser = [...get().messages].reverse().find((msg: any) => msg.type === 'user');
-  if (lastUser) await get().sendMessage(lastUser.content, lastUser.metadata);
+  if (lastUser && source.isCurrent()) await get().sendMessage(lastUser.content, lastUser.metadata);
   } finally {
   get().setSessionProcessing(retrySessionKey, false);
   }

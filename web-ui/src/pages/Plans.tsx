@@ -22,7 +22,7 @@ import { usePlanSummaries, usePlanTasks, usePlanExecutionSummary, usePlanResults
 import { useChatStore } from '@store/chat';
 import PlanDagVisualization from '@components/dag/PlanDagVisualization';
 import type { PlanResultItem, PlanSyncEventDetail, PlanTaskNode } from '@/types';
-import { isPlanSyncEventDetail } from '@utils/planSyncEvents';
+import { isPlanSyncEventDetail, matchesPlanEventSession } from '@utils/planSyncEvents';
 
 const { Title, Text, Paragraph } = Typography;
 const resolveDisplayStatus = (status?: string | null, effectiveStatus?: string | null) =>
@@ -83,6 +83,7 @@ const PlansPage: React.FC = () => {
   }));
 
   const sessionIdentifier = currentSession?.session_id ?? undefined;
+  const localSessionIdentifier = currentSession?.id;
 
   const {
   data: planSummaries = [],
@@ -270,6 +271,9 @@ const PlansPage: React.FC = () => {
   switch (detail.type) {
   case 'plan_created': {
   void refetchSummaries();
+  if (!matchesPlanEventSession(detail, [localSessionIdentifier, sessionIdentifier])) {
+  break;
+  }
   if (detail.plan_id) {
   setSelectedPlanId(detail.plan_id);
   setSelectedTask(null);
@@ -326,6 +330,8 @@ const PlansPage: React.FC = () => {
   refetchPlanResults,
   refetchSummaries,
   refetchTasks,
+  localSessionIdentifier,
+  sessionIdentifier,
   selectedPlanId,
   setChatContext,
   setSelectedResultTaskId,

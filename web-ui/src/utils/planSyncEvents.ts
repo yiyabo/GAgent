@@ -37,6 +37,14 @@ const PLAN_EVENT_DEBOUNCE_MS = 500;
 const RECENT_EVENT_TTL_MS = 10_000;
 const recentEventMap = new Map<string, number>();
 
+/** Scoped notifications may refresh lists, but must not bind another chat. */
+export function matchesPlanEventSession(
+  detail: PlanSyncEventDetail,
+  sessionIds: ReadonlyArray<string | null | undefined>,
+): boolean {
+  return !detail.session_id || sessionIds.some((id) => Boolean(id) && id === detail.session_id);
+}
+
 const hasOwn = (obj: Record<string, any> | undefined, key: string): boolean =>
   !!obj && Object.prototype.hasOwnProperty.call(obj, key);
 

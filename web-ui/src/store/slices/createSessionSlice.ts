@@ -18,6 +18,9 @@ export const createSessionSlice: ChatSliceCreator = (set, get) => ({
   sessions: [],
 
   setCurrentSession: (session) => {
+  // A sidebar/restore callback may hold an old snapshot while a run completed.
+  // Select the current entity so returning to that chat retains its completion.
+  session = session ? get().sessions.find((entry) => entry.id === session.id) ?? session : null;
   const sessionPlanId = session?.plan_id ?? null;
   const sessionPlanTitle = session?.plan_title ?? null;
   const sessionTaskId = session?.current_task_id ?? null;

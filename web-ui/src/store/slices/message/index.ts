@@ -21,7 +21,10 @@ import { resolveChatSessionProcessingKey } from '@/utils/chatSessionKeys';
 import { recoverPlanBindingFromMessages } from './planRecovery';
 import { hydratePersistedMessage } from './historyHydration';
 import { matchesResumeSession, selectActiveChatRun } from './runResume';
+import { createSessionAccess, findSession, matchesSession, sessionMessages, sessionPatch } from './sessionState';
 import { resolveRequestFailureMessage } from '@/components/chat/message/utils';
+import { recoverAfterStreamFailure } from './recovery';
+import { mergeUnpersistedTurns } from './turnCorrelation';
 
 /** Recent turns attached to each API request. Align with backend `CHAT_HISTORY_MAX_MESSAGES` (default 80, cap 200). */
 const CHAT_REQUEST_HISTORY_LIMIT = 80;
@@ -43,8 +46,6 @@ import {
 import type { StreamMutableState, StreamHandlerContext } from './types';
 import type { ChatStreamEvent } from '../../chatUtils';
 
-
-const _sleep = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms));
 
 const _looksLikeSubstantialAssistant = (content: unknown): boolean => {
   const text = typeof content === 'string' ? content.trim() : '';
@@ -70,132 +71,51 @@ const _recoverAfterStreamFailure = async (
     assistantMessageId: string;
     processingKey: string;
     runId?: string | null;
+    clientMessageId?: string | null;
     partialContent?: string;
     set: any;
     currentSession: any;
   },
 ): Promise<boolean> => {
-  const {
-    apiSessionId,
-    localSessionId,
-    assistantMessageId,
-    processingKey,
-    runId,
-    partialContent,
-    set,
-    currentSession,
-  } = opts;
-
-  const keepPending = (note: string) => {
-    const prev =
-      (get().messages.find((m: ChatMessage) => m.id === assistantMessageId)?.metadata ??
-        {}) as Record<string, any>;
-    get().updateMessage(assistantMessageId, {
-      content: (partialContent && String(partialContent).trim()) || note,
-      metadata: {
-        ...prev,
-        status: 'pending',
-        recovering: true,
-        errors: undefined,
-        chat_run_id: runId || prev.chat_run_id,
-      },
-    });
-    get().setSessionProcessing(processingKey, true);
-    if (runId) {
-      get().setActiveRunId(processingKey, runId);
-    }
-  };
-
-  // 1) Active run still on server → reconnect event stream
-  try {
-    const response = await chatApi.getActiveRun(apiSessionId);
-    const run = selectActiveChatRun(response.data);
-    const activeRunId = (run?.run_id as string | undefined) || undefined;
-    if (activeRunId) {
-      keepPending('连接中断，正在自动重连并继续接收结果…');
-      get().setActiveRunId(processingKey, activeRunId);
+  const source = createSessionAccess(get, opts.set, opts.localSessionId);
+  return recoverAfterStreamFailure({
+    ...opts,
+    get,
+    resumeRun: async (runId) => {
+      const target = source.get().messages.find((message: ChatMessage) => message.id === opts.assistantMessageId);
+      const metadata = { ...(target?.metadata ?? {}), status: 'pending', chat_run_id: runId, recovering: true };
+      // Replay starts at -1, so its accumulated text/thinking must start empty.
+      source.get().updateMessage(opts.assistantMessageId, {
+        thinking_process: undefined,
+        metadata: { ...metadata, analysis_text: '', deep_think_progress: undefined, thinking_process: undefined, thinking_display_mode: undefined },
+      });
       const state: StreamMutableState = {
-        streamedContent: partialContent || '',
-        lastFlushedContent: partialContent || '',
-        flushHandle: null,
-        thinkingDeltaFlushHandle: null,
-        pendingThinkingDeltas: {},
-        pendingThinkingDeltaStartedAt: {},
-        finalPayload: null,
-        jobFinalized: false,
-        isBackgroundDispatch: false,
+        streamedContent: '', lastFlushedContent: '', flushHandle: null,
+        thinkingDeltaFlushHandle: null, pendingThinkingDeltas: {},
+        pendingThinkingDeltaStartedAt: {}, finalPayload: null,
+        jobFinalized: false, isBackgroundDispatch: false,
       };
-      const targetMsg = get().messages.find((m: ChatMessage) => m.id === assistantMessageId);
-      const mergedMetadata = {
-        ...((targetMsg?.metadata as Record<string, unknown> | undefined) ?? {}),
-        status: 'pending',
-        chat_run_id: activeRunId,
-        recovering: true,
-      };
-      const boundFlush = (force: boolean = false) =>
-        flushAnalysisText(get, assistantMessageId, state, force);
-      const boundScheduleFlush = () => scheduleFlush(state, boundFlush);
-      const boundStartPolling = (
-        trackingId: string | null | undefined,
-        messageId: string,
-        initialStatus?: ChatActionStatus,
-        initialContent?: string | null,
-      ) => startActionStatusPolling(get, trackingId, messageId, initialStatus, initialContent);
+      const boundFlush = (force = false) => flushAnalysisText(source.get, opts.assistantMessageId, state, force);
       const ctx: StreamHandlerContext = {
-        get,
-        set,
-        assistantMessageId,
-        mergedMetadata,
-        currentSession,
-        state,
-        startActionStatusPolling: boundStartPolling,
+        get: source.get, set: source.set, assistantMessageId: opts.assistantMessageId,
+        mergedMetadata: metadata, currentSession: opts.currentSession, state,
+        sourceSessionScoped: true, isCurrentSession: source.isCurrent,
+        startActionStatusPolling: (trackingId, messageId, status, content) =>
+          startActionStatusPolling(source.get, trackingId, messageId, status, content),
         flushAnalysisText: boundFlush,
-        scheduleFlush: boundScheduleFlush,
+        scheduleFlush: () => scheduleFlush(state, boundFlush),
       };
-      await _consumeUnifiedStream(ctx, streamRunEvents(apiSessionId, activeRunId, -1));
+      await _consumeUnifiedStream(ctx, streamRunEvents(opts.apiSessionId, runId, -1));
       await _finalizeAfterUnifiedStream(ctx, state, boundFlush);
-      return true;
-    }
-  } catch (err) {
-    console.warn('[chat] stream recovery resume failed:', err);
-  }
-
-  // 2) Run already finished — poll history for persisted assistant reply
-  keepPending('连接中断，正在从服务端同步已完成的结果…');
-  for (let attempt = 0; attempt < 10; attempt += 1) {
-    if (attempt > 0) {
-      await _sleep(Math.min(1200 * attempt, 5000));
-    } else {
-      await _sleep(800);
-    }
-    try {
-      const response = await chatApi.getHistory(apiSessionId, { limit: 30 });
-      const data = response.data as any;
-      const rawMessages: any[] = Array.isArray(data?.messages) ? data.messages : [];
-      const lastAssistant = [...rawMessages]
-        .reverse()
-        .find(
-          (m) =>
-            (m?.role === 'assistant' || m?.type === 'assistant') &&
-            _looksLikeSubstantialAssistant(m?.content),
-        );
-      if (lastAssistant) {
-        await get().loadChatHistory(localSessionId);
-        get().setActiveRunId(processingKey, null);
-        get().setSessionProcessing(processingKey, false);
-        return true;
-      }
-    } catch (err) {
-      console.warn('[chat] stream recovery history poll failed:', err);
-    }
-  }
-  return false;
+    },
+  });
 };
 
 const _consumeUnifiedStream = async (
   ctx: StreamHandlerContext,
   source: AsyncIterable<{ seq: number | null; event: ChatStreamEvent }>
 ): Promise<void> => {
+  try {
   for await (const { event } of source) {
     if (event.type === 'start') {
       continue;
@@ -261,6 +181,17 @@ const _consumeUnifiedStream = async (
       throw new Error((event as { message?: string }).message || 'Stream error');
     }
   }
+  } catch (error) {
+    // A failed consumer leaves no frame/timer that can write old deltas into
+    // the same message after an authoritative replay has restarted it.
+    flushPendingThinkingDeltas(ctx);
+    ctx.flushAnalysisText(true);
+    if (ctx.state.flushHandle !== null) {
+      window.cancelAnimationFrame(ctx.state.flushHandle);
+      ctx.state.flushHandle = null;
+    }
+    throw error;
+  }
 };
 
 const _finalizeAfterUnifiedStream = async (
@@ -302,53 +233,33 @@ const _finalizeAfterUnifiedStream = async (
   await processFinalPayload(ctx);
 };
 
-export const createMessageSlice: ChatSliceCreator = (set, get) => ({
+export const createMessageSlice: ChatSliceCreator = (set, get) => {
+  const historyRequests = new Map<string, symbol>();
+  return ({
   messages: [],
   historyHasMore: false,
   historyBeforeId: null,
   historyLoading: false,
   historyPageSize: 100,
 
-  addMessage: (message) => set((state) => {
-  const newMessages = [...state.messages, message];
-  let updatedSession = state.currentSession;
-  if (updatedSession) {
-  updatedSession = {
-  ...updatedSession,
-  messages: newMessages,
-  updated_at: new Date(),
-  };
-  }
-  const updatedSessions = state.sessions.map(session =>
-  session.id === updatedSession?.id ? updatedSession : session
-  );
-  return {
-  messages: newMessages,
-  currentSession: updatedSession,
-  sessions: updatedSessions,
-  };
+  addMessage: (message, sessionId) => set((state) => {
+    const session = findSession(state, sessionId);
+    if (sessionId && !session) return {};
+    const messages = [...sessionMessages(state, sessionId), message];
+    return session
+      ? sessionPatch(state, { ...session, messages, updated_at: new Date() })
+      : { messages };
   }),
 
-  updateMessage: (messageId, updates) => set((state) => {
-  const updatedMessages = state.messages.map(msg =>
-  msg.id === messageId ? { ...msg, ...updates } : msg
-  );
-  let updatedSession = state.currentSession;
-  if (updatedSession) {
-  updatedSession = {
-  ...updatedSession,
-  messages: updatedMessages,
-  updated_at: new Date(),
-  };
-  }
-  const updatedSessions = state.sessions.map(session =>
-  session.id === updatedSession?.id ? updatedSession : session
-  );
-  return {
-  messages: updatedMessages,
-  currentSession: updatedSession,
-  sessions: updatedSessions,
-  };
+  updateMessage: (messageId, updates, sessionId) => set((state) => {
+    const session = findSession(state, sessionId);
+    if (sessionId && !session) return {};
+    const previous = sessionMessages(state, sessionId);
+    if (!previous.some((message) => message.id === messageId)) return {};
+    const messages = previous.map((message) => message.id === messageId ? { ...message, ...updates } : message);
+    return session
+      ? sessionPatch(state, { ...session, messages, updated_at: new Date() })
+      : { messages };
   }),
 
   removeMessage: (messageId) => set((state) => ({
@@ -364,137 +275,88 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   }),
 
   loadChatHistory: async (sessionId: string, options) => {
-  const { beforeId = null, append = false, pageSize } = options ?? {};
-  if (append && (beforeId === null || beforeId === undefined)) {
-  set({ historyHasMore: false });
-  return;
-  }
-  if (append && get().historyLoading) {
-  return;
-  }
-  const limit = pageSize ?? get().historyPageSize ?? 50;
-  try {
-    if (!append) {
-      set({ messages: [], historyBeforeId: null, historyHasMore: false });
+    const { beforeId = null, append = false, pageSize } = options ?? {};
+    const sourceId = findSession(get(), sessionId)?.id ?? sessionId;
+    const isCurrent = () => matchesSession(get().currentSession, sourceId);
+    if (append && beforeId == null) {
+      if (isCurrent()) set({ historyHasMore: false });
+      return;
     }
-    set({ historyLoading: true });
-  const query = new URLSearchParams({ limit: String(limit) });
-  if (beforeId !== null && beforeId !== undefined) {
-  query.set('before_id', String(beforeId));
-  }
-  let data: any;
-  try {
-  const response = await chatApi.getHistory(sessionId, Object.fromEntries(query.entries()));
-  data = response.data;
-  } catch (err: any) {
-  const status = err?.response?.status;
-  if (status === 404) {
-  const targetSession = get().sessions.find(
-  (session) => (session.session_id ?? session.id) === sessionId || session.id === sessionId
-  );
-  const isUnsyncedLocalSession = Boolean(
-  targetSession &&
-  targetSession.titleSource === 'local' &&
-  (targetSession.messages?.length ?? 0) === 0
-  );
-  if (isUnsyncedLocalSession) {
-  set({
-  messages: [],
-  historyBeforeId: null,
-  historyHasMore: false,
-  });
-  return;
-  }
-  }
-  throw err;
-  }
-  const hasMore =
-  typeof data.has_more === 'boolean'
-  ? data.has_more
-  : Array.isArray(data.messages) && data.messages.length >= limit;
-
-  if (data.success && data.messages && data.messages.length > 0) {
-  const existingMessages = get().messages;
-  const existingToolResults = buildToolResultsCache(existingMessages);
-
-  const newMessages: ChatMessage[] = data.messages.map((msg: any, index: number) =>
-  hydratePersistedMessage({
-  sessionId,
-  rawMessage: msg,
-  index,
-  fallbackToolResults: existingToolResults,
-  })
-  );
-
-  const merged = append ? [...newMessages, ...existingMessages] : newMessages;
-  const seen = new Set<string>();
-  const messages = merged.filter((msg) => {
-  if (seen.has(msg.id)) return false;
-  seen.add(msg.id);
-  return true;
-  });
-  const targetSessionBeforeUpdate = get().sessions.find((s) => s.id === sessionId) ?? null;
-  const recoveredPlanBinding =
-  targetSessionBeforeUpdate && targetSessionBeforeUpdate.plan_id == null
-  ? recoverPlanBindingFromMessages(messages)
-  : null;
-
-  set({ messages });
-
-  set((state) => {
-  const targetSession = state.sessions.find((s) => s.id === sessionId);
-  if (!targetSession) return {};
-  const lastMessage = messages[messages.length - 1];
-  const updatedSession: any = {
-  ...targetSession,
-  messages,
-  updated_at: new Date(),
-  last_message_at: lastMessage ? lastMessage.timestamp : targetSession.last_message_at ?? null,
-  };
-  if (targetSession.plan_id == null && recoveredPlanBinding?.planId != null) {
-  updatedSession.plan_id = recoveredPlanBinding.planId;
-  updatedSession.plan_title = recoveredPlanBinding.planTitle ?? targetSession.plan_title ?? null;
-  }
-  const sessions = state.sessions.map((s) => (s.id === sessionId ? updatedSession : s));
-  const isCurrent = state.currentSession?.id === sessionId;
-  return {
-  sessions,
-  currentSession: isCurrent ? updatedSession : state.currentSession,
-  currentPlanId: isCurrent ? (updatedSession.plan_id ?? state.currentPlanId) : state.currentPlanId,
-  currentPlanTitle: isCurrent ? (updatedSession.plan_title ?? state.currentPlanTitle) : state.currentPlanTitle,
-  };
-  });
-  if (recoveredPlanBinding?.planId != null) {
-  void chatApi.updateSession(sessionId, {
-  plan_id: recoveredPlanBinding.planId,
-  plan_title: recoveredPlanBinding.planTitle ?? null,
-  }).catch((error) => console.warn('Failed to persist recovered plan binding:', error));
-  }
-
-  const nextBeforeId =
-  typeof data.next_before_id === 'number'
-  ? data.next_before_id
-  : resolveHistoryCursor(messages);
-  set({
-  historyBeforeId: nextBeforeId ?? null,
-  historyHasMore: hasMore,
-  });
-  if (!append) {
-  void get().resumeActiveChatRunIfAny(sessionId);
-  }
-  } else {
-  set({ historyHasMore: false, historyBeforeId: null });
-  if (!append) {
-  set({ messages: [] });
-  void get().resumeActiveChatRunIfAny(sessionId);
-  }
-  }
-  } catch (error) {
-  console.error('loadfailed:', error);
-  throw error;
-  } finally {
-  set({ historyLoading: false });
-  }
+    if (append && isCurrent() && get().historyLoading) return;
+    const request = Symbol(sourceId);
+    historyRequests.set(sourceId, request);
+    const isLatest = () => historyRequests.get(sourceId) === request;
+    const limit = pageSize ?? get().historyPageSize ?? 50;
+    if (isCurrent()) set({ historyLoading: true });
+    try {
+      let data: any;
+      try {
+        const response = await chatApi.getHistory(sessionId, {
+          limit, ...(beforeId == null ? {} : { before_id: beforeId }),
+        });
+        data = response.data;
+      } catch (error: any) {
+        const target = findSession(get(), sourceId);
+        if (error?.response?.status === 404 && target?.titleSource === 'local' && target.messages.length === 0) {
+          if (isLatest() && isCurrent()) set({ messages: [], historyBeforeId: null, historyHasMore: false });
+          return;
+        }
+        throw error;
+      }
+      if (!isLatest()) return;
+      const existing = sessionMessages(get(), sourceId);
+      const toolResults = buildToolResultsCache(existing);
+      const persisted: ChatMessage[] = data.success && Array.isArray(data.messages)
+        ? data.messages.map((rawMessage: any, index: number) => hydratePersistedMessage({
+          sessionId, rawMessage, index, fallbackToolResults: toolResults,
+        })) : [];
+      const merged = append ? [...persisted, ...existing] : mergeUnpersistedTurns(persisted, existing);
+      const seen = new Set<string>();
+      const messages: ChatMessage[] = merged.filter((message) => {
+        if (seen.has(message.id)) return false;
+        seen.add(message.id);
+        return true;
+      });
+      const target = findSession(get(), sourceId);
+      if (!target) return;
+      const recoveredPlanBinding = target.plan_id == null ? recoverPlanBindingFromMessages(messages) : null;
+      set((state) => {
+        const currentTarget = findSession(state, sourceId);
+        if (!currentTarget || !isLatest()) return {};
+        const updated = {
+          ...currentTarget, messages, updated_at: new Date(),
+          last_message_at: messages[messages.length - 1]?.timestamp ?? currentTarget.last_message_at ?? null,
+          ...(currentTarget.plan_id == null && recoveredPlanBinding?.planId != null ? {
+            plan_id: recoveredPlanBinding.planId,
+            plan_title: recoveredPlanBinding.planTitle ?? currentTarget.plan_title ?? null,
+          } : {}),
+        };
+        const active = matchesSession(state.currentSession, sourceId);
+        return {
+          ...sessionPatch(state, updated),
+          ...(active ? {
+            currentPlanId: updated.plan_id ?? state.currentPlanId,
+            currentPlanTitle: updated.plan_title ?? state.currentPlanTitle,
+            historyBeforeId: typeof data.next_before_id === 'number' ? data.next_before_id : resolveHistoryCursor(persisted),
+            historyHasMore: typeof data.has_more === 'boolean' ? data.has_more : persisted.length >= limit,
+          } : {}),
+        };
+      });
+      if (recoveredPlanBinding?.planId != null) {
+        void chatApi.updateSession(target.session_id ?? target.id, {
+          plan_id: recoveredPlanBinding.planId, plan_title: recoveredPlanBinding.planTitle ?? null,
+        }).catch((error) => console.warn('Failed to persist recovered plan binding:', error));
+      }
+      if (!append && isCurrent()) void get().resumeActiveChatRunIfAny(sourceId);
+    } catch (error) {
+      console.error('load history failed:', error);
+      throw error;
+    } finally {
+      if (isLatest()) {
+        historyRequests.delete(sourceId);
+        if (isCurrent()) set({ historyLoading: false });
+      }
+    }
   },
 
   // Single-source pagination: fetch the next older page into the same store
@@ -524,6 +386,7 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   processingSessionIds,
   } = get();
 
+  const source = createSessionAccess(get, set, currentSession?.id);
   const processingKey = resolveChatSessionProcessingKey(currentSession);
   if (processingSessionIds.has(processingKey)) {
   return;
@@ -550,7 +413,7 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   const clientMessageId = `client_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 
   const userMessage: ChatMessage = {
-  id: `msg_${Date.now()}_user`,
+  id: `msg_${clientMessageId}_user`,
   type: 'user',
   content,
   timestamp: new Date(),
@@ -559,22 +422,22 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   client_message_id: clientMessageId,
   },
   };
-  get().addMessage(userMessage);
+  source.get().addMessage(userMessage);
 
   // Optimistic Assistant Message
-  const assistantMessageId = `msg_${Date.now()}_assistant`;
+  const assistantMessageId = `msg_${clientMessageId}_assistant`;
   const assistantMessage: ChatMessage = {
   id: assistantMessageId,
   type: 'assistant',
   content: '',
   timestamp: new Date(),
-  metadata: { status: 'pending', unified_stream: true, plan_message: null },
+  metadata: { status: 'pending', unified_stream: true, plan_message: null, client_message_id: clientMessageId },
   };
-  get().addMessage(assistantMessage);
+  source.get().addMessage(assistantMessage);
   let assistantMessageAdded = true;
 
   set({ inputText: '' });
-  get().setSessionProcessing(processingKey, true);
+  source.get().setSessionProcessing(processingKey, true);
 
   try {
   let memories: Memory[] = [];
@@ -582,13 +445,13 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   try {
   const memoryResult = await memoryApi.queryMemory({ search_text: content, limit: 3, min_similarity: 0.6 });
   memories = memoryResult.memories || [];
-  set({ relevantMemories: memories });
+  if (source.isCurrent()) set({ relevantMemories: memories });
   } catch (error) {
   console.error('Memory RAG failed:', error);
   }
   }
 
-  const recentMessages = get().messages.slice(-CHAT_REQUEST_HISTORY_LIMIT).map((msg) => ({
+  const recentMessages = source.get().messages.slice(-CHAT_REQUEST_HISTORY_LIMIT).map((msg) => ({
   role: msg.type,
   content: msg.content,
   timestamp: msg.timestamp.toISOString(),
@@ -625,14 +488,16 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   isBackgroundDispatch: false,
   };
 
-  const boundFlush = (force: boolean = false) => flushAnalysisText(get, assistantMessageId, state, force);
+  const boundFlush = (force: boolean = false) => flushAnalysisText(source.get, assistantMessageId, state, force);
   const boundScheduleFlush = () => scheduleFlush(state, boundFlush);
   const boundStartPolling = (trackingId: string | null | undefined, messageId: string, initialStatus?: ChatActionStatus, initialContent?: string | null) =>
-  startActionStatusPolling(get, trackingId, messageId, initialStatus, initialContent);
+  startActionStatusPolling(source.get, trackingId, messageId, initialStatus, initialContent);
 
   const ctx: StreamHandlerContext = {
-  get,
-  set,
+  get: source.get,
+  set: source.set,
+  sourceSessionScoped: true,
+  isCurrentSession: source.isCurrent,
   assistantMessageId,
   mergedMetadata,
   currentSession,
@@ -646,10 +511,10 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   let eventSource: AsyncIterable<{ seq: number | null; event: ChatStreamEvent }>;
   if (apiSessionId) {
   const { run_id } = await postChatRun(chatRequest);
-  get().setActiveRunId(processingKey, run_id);
+  source.get().setActiveRunId(processingKey, run_id);
   const prevMeta =
-  (get().messages.find((m) => m.id === assistantMessageId)?.metadata ?? {}) as Record<string, any>;
-  get().updateMessage(assistantMessageId, {
+  (source.get().messages.find((m) => m.id === assistantMessageId)?.metadata ?? {}) as Record<string, any>;
+  source.get().updateMessage(assistantMessageId, {
   metadata: {
   ...prevMeta,
   chat_run_id: run_id,
@@ -671,7 +536,7 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   // Keep composer chips in sync with server uploads (disk truth).
   // User can ✕ to delete; otherwise same files remain attached for follow-ups.
   try {
-    await get().syncUploadedFilesFromServer();
+    await source.get().syncUploadedFilesFromServer();
   } catch {
     /* keep current chips */
   }
@@ -680,11 +545,11 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   const apiSid = currentSession?.session_id ?? currentSession?.id ?? undefined;
   const localSid = currentSession?.id ?? apiSid;
   const runIdForRecovery =
-    (get().activeRunIds.get(processingKey) as string | undefined) ||
-    ((get().messages.find((m) => m.id === assistantMessageId)?.metadata as any)?.chat_run_id as string | undefined) ||
+    (source.get().activeRunIds.get(processingKey) as string | undefined) ||
+    ((source.get().messages.find((m) => m.id === assistantMessageId)?.metadata as any)?.chat_run_id as string | undefined) ||
     null;
   const partialContent =
-    (get().messages.find((m) => m.id === assistantMessageId)?.content as string | undefined) || '';
+    (source.get().messages.find((m) => m.id === assistantMessageId)?.content as string | undefined) || '';
   let recovered = false;
   if (assistantMessageAdded && apiSid && localSid) {
     try {
@@ -694,6 +559,7 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
         assistantMessageId,
         processingKey,
         runId: runIdForRecovery,
+        clientMessageId,
         partialContent,
         set,
         currentSession,
@@ -706,16 +572,16 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   if (recovered) {
     return;
   }
-  get().setActiveRunId(processingKey, null);
-  get().setSessionProcessing(processingKey, false);
+  source.get().setActiveRunId(processingKey, null);
+  source.get().setSessionProcessing(processingKey, false);
   const errorContent =
     resolveRequestFailureMessage(error) +
     '\n\n若任务较长，服务端可能仍在继续或已完成：请刷新页面查看最新结果，或稍后重试。';
   if (assistantMessageAdded) {
     const prev =
-      (get().messages.find((m) => m.id === assistantMessageId)?.metadata ?? {}) as Record<string, any>;
+      (source.get().messages.find((m) => m.id === assistantMessageId)?.metadata ?? {}) as Record<string, any>;
     const keepPartial = _looksLikeSubstantialAssistant(partialContent);
-    get().updateMessage(assistantMessageId, {
+    source.get().updateMessage(assistantMessageId, {
       content: keepPartial ? `${partialContent}\n\n---\n${errorContent}` : errorContent,
       metadata: {
         ...prev,
@@ -725,7 +591,7 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
       },
     });
   } else {
-    get().addMessage({
+    source.get().addMessage({
       id: `msg_${Date.now()}_assistant`,
       type: 'assistant',
       content: errorContent,
@@ -737,7 +603,8 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   },
 
   resumeActiveChatRunIfAny: async (sessionId: string) => {
-  const { processingSessionIds, currentSession, messages } = get();
+  const { currentSession } = get();
+  const source = createSessionAccess(get, set, currentSession?.id);
   if (!matchesResumeSession(currentSession, sessionId)) {
   return;
   }
@@ -753,19 +620,21 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   } catch {
   return;
   }
+  if (!matchesResumeSession(get().currentSession, sessionId)) return;
   if (!res) {
   return;
   }
-  const run = selectActiveChatRun(res);
+  const expectedRunId = source.get().activeRunIds.get(resumeKey) ?? null;
+  const run = selectActiveChatRun(res, expectedRunId);
   if (!run?.run_id) {
   // Server has no active run; client may still show "running" after backend restart.
-  if (processingSessionIds.has(resumeKey)) {
-  get().setActiveRunId(resumeKey, null);
-  get().setSessionProcessing(resumeKey, false);
-  const msgs = get().messages;
+  if (source.get().processingSessionIds.has(resumeKey)) {
+  source.get().setActiveRunId(resumeKey, null);
+  source.get().setSessionProcessing(resumeKey, false);
+  const msgs = source.get().messages;
   const last = msgs.length > 0 ? msgs[msgs.length - 1] : null;
   if (last?.type === 'assistant' && (last.metadata as any)?.status === 'pending') {
-  get().updateMessage(last.id, {
+  source.get().updateMessage(last.id, {
   content:
   (last.content && String(last.content).trim())
   ? last.content
@@ -781,12 +650,14 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   return;
   }
   const runId = run.run_id as string;
-  if (processingSessionIds.has(resumeKey)) {
-  const activeId = get().activeRunIds.get(resumeKey);
+  if (source.get().processingSessionIds.has(resumeKey)) {
+  const activeId = source.get().activeRunIds.get(resumeKey);
   if (activeId === runId) {
   return;
   }
   }
+  const messages = source.get().messages as ChatMessage[];
+  const lastUser = [...messages].reverse().find((message) => message.type === 'user');
   const last = messages[messages.length - 1];
   let assistantMessageId: string;
   if (
@@ -797,7 +668,7 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   assistantMessageId = last.id;
   } else {
   assistantMessageId = `msg_${Date.now()}_assistant_resume`;
-  get().addMessage({
+  source.get().addMessage({
   id: assistantMessageId,
   type: 'assistant',
   content: '',
@@ -807,12 +678,13 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   unified_stream: true,
   chat_run_id: runId,
   plan_message: null,
+  client_message_id: lastUser?.metadata?.client_message_id,
   },
   });
   }
 
-  get().setActiveRunId(resumeKey, runId);
-  get().setSessionProcessing(resumeKey, true);
+  source.get().setActiveRunId(resumeKey, runId);
+  source.get().setSessionProcessing(resumeKey, true);
 
   const state: StreamMutableState = {
   streamedContent: '',
@@ -826,21 +698,24 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   isBackgroundDispatch: false,
   };
 
-  const targetMsg = get().messages.find((m) => m.id === assistantMessageId);
+  const targetMsg = source.get().messages.find((m) => m.id === assistantMessageId);
   const mergedMetadata = { ...((targetMsg?.metadata as Record<string, unknown> | undefined) ?? {}) };
+  source.get().updateMessage(assistantMessageId, { thinking_process: undefined, metadata: { ...mergedMetadata, analysis_text: '', deep_think_progress: undefined, thinking_process: undefined, thinking_display_mode: undefined } });
 
-  const boundFlush = (force: boolean = false) => flushAnalysisText(get, assistantMessageId, state, force);
+  const boundFlush = (force: boolean = false) => flushAnalysisText(source.get, assistantMessageId, state, force);
   const boundScheduleFlush = () => scheduleFlush(state, boundFlush);
   const boundStartPolling = (
   trackingId: string | null | undefined,
   messageId: string,
   initialStatus?: ChatActionStatus,
   initialContent?: string | null
-  ) => startActionStatusPolling(get, trackingId, messageId, initialStatus, initialContent);
+  ) => startActionStatusPolling(source.get, trackingId, messageId, initialStatus, initialContent);
 
   const ctx: StreamHandlerContext = {
-  get,
-  set,
+  get: source.get,
+  set: source.set,
+  sourceSessionScoped: true,
+  isCurrentSession: source.isCurrent,
   assistantMessageId,
   mergedMetadata,
   currentSession,
@@ -856,7 +731,7 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   } catch (error) {
   console.error('Resume chat run failed:', error);
   const partialContent =
-    (get().messages.find((m) => m.id === assistantMessageId)?.content as string | undefined) || '';
+    (source.get().messages.find((m) => m.id === assistantMessageId)?.content as string | undefined) || '';
   let recovered = false;
   try {
     recovered = await _recoverAfterStreamFailure(get, {
@@ -865,6 +740,7 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
       assistantMessageId,
       processingKey: resumeKey,
       runId,
+      clientMessageId: lastUser?.metadata?.client_message_id,
       partialContent,
       set,
       currentSession,
@@ -875,9 +751,9 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   if (recovered) {
     return;
   }
-  get().setActiveRunId(resumeKey, null);
-  get().setSessionProcessing(resumeKey, false);
-  get().updateMessage(assistantMessageId, {
+  source.get().setActiveRunId(resumeKey, null);
+  source.get().setSessionProcessing(resumeKey, false);
+  source.get().updateMessage(assistantMessageId, {
   content:
   '连接中断且自动恢复失败。请刷新页面查看是否已有结果，或重新发送消息。\n\n' +
   (error instanceof Error ? error.message : String(error)),
@@ -907,4 +783,5 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => ({
   retryActionRun: async (oldTrackingId, rawActionsOverride = []) => {
   await retryActionRunHelper(get, set, oldTrackingId, rawActionsOverride);
   },
-});
+  });
+};

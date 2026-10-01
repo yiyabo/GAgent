@@ -1,4 +1,4 @@
-import { ChatSliceCreator } from './types';
+import { ChatSliceCreator, ChatState } from './types';
 import { uploadApi } from '@api/upload';
 import { UploadedFile } from '@/types';
 
@@ -63,7 +63,9 @@ function mapServerFileToUploaded(f: {
   };
 }
 
-export const createFileSlice: ChatSliceCreator = (set, get) => ({
+export const createFileSlice: ChatSliceCreator = (set, get) => {
+  let latestSyncRequest: symbol | null = null;
+  return ({
   uploadedFiles: [],
   uploadingFiles: [],
 
@@ -129,6 +131,8 @@ export const createFileSlice: ChatSliceCreator = (set, get) => ({
   },
 
   syncUploadedFilesFromServer: async () => {
+    const request = Symbol('upload-list');
+    latestSyncRequest = request;
     const session = get().currentSession;
     if (!session) {
       set({ uploadedFiles: [] });
@@ -140,8 +144,10 @@ export const createFileSlice: ChatSliceCreator = (set, get) => ({
       return;
     }
 
-    // Keep project/local refs that are not disk uploads.
-    const localRefs = get().uploadedFiles.filter((f) => isLocalAttachmentRef(f));
+    const canApply = (state: ChatState) =>
+      latestSyncRequest === request &&
+      state.currentSession?.id === session.id &&
+      (state.currentSession.session_id ?? state.currentSession.id) === sessionId;
 
     try {
       const res = await uploadApi.listFiles(sessionId);
@@ -153,15 +159,21 @@ export const createFileSlice: ChatSliceCreator = (set, get) => ({
       const serverNames = new Set(
         serverFiles.map((f) => f.original_name || f.file_name),
       );
-      const dedupedLocalRefs = localRefs.filter(
-        (f) => !serverNames.has(f.original_name || f.file_name),
-      );
-      set({ uploadedFiles: [...dedupedLocalRefs, ...serverFiles] });
+      set((state) => {
+        if (!canApply(state)) return {};
+        // Read refs at application time so a project reference added while
+        // this request was waiting is retained by the current session.
+        const localRefs = state.uploadedFiles.filter((f) => isLocalAttachmentRef(f));
+        const dedupedLocalRefs = localRefs.filter(
+          (f) => !serverNames.has(f.original_name || f.file_name),
+        );
+        return { uploadedFiles: [...dedupedLocalRefs, ...serverFiles] };
+      });
     } catch (error) {
+      if (!canApply(get())) return;
       console.warn('Failed to sync uploads from server:', error);
-      // On failure keep localRefs + any existing server-tagged chips.
-      const existingServer = get().uploadedFiles.filter((f) => !isLocalAttachmentRef(f));
-      set({ uploadedFiles: [...localRefs, ...existingServer] });
+      // Keep the current chips intact. Rebuilding them from a pre-await
+      // snapshot could reintroduce stale refs or drop newly added ones.
     }
   },
 
@@ -192,4 +204,5 @@ export const createFileSlice: ChatSliceCreator = (set, get) => ({
   clearUploadedFiles: () => {
     set({ uploadedFiles: [] });
   },
-});
+  });
+};
