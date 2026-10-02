@@ -218,3 +218,41 @@ def test_real_app_chat_session_routes_are_owner_scoped(app_client_factory) -> No
             headers=alice_headers,
         )
         assert alice_delete.status_code == 204
+
+
+@pytest.mark.integration
+def test_cancelled_chat_history_exposes_continuation_and_original_run_stays_terminal(app_client_factory, monkeypatch):
+    from app.repository import chat_runs
+    from app.routers.chat import run_routes
+    from app.routers.chat.models import ChatRequest
+    from app.services.execution.step_ledger import ControllerCheckpoint, StepLedger
+
+    session_id = 'continuation-history'
+    headers = {'X-Forwarded-User':'alice'}
+    spawned = []
+    monkeypatch.setattr(run_routes,'_spawn_chat_run_worker',spawned.append)
+    monkeypatch.setattr(run_routes,'_save_run_user_message',lambda *args,**kwargs:None)
+    with app_client_factory() as client:
+        assert client.patch(f'/chat/sessions/{session_id}',json={'name':'Continue'},headers=headers).status_code == 200
+        with get_db() as conn:
+            user_id = conn.execute('INSERT INTO chat_messages(session_id,role,content) VALUES(?,?,?)',(session_id,'user','Write a report')).lastrowid
+            conn.commit()
+        request = ChatRequest(message='Write a report',session_id=session_id,client_message_id='original-report')
+        chat_runs.create_chat_run('source-history',session_id,request.model_dump_json(),owner_id='alice',idempotency_key='original-report')
+        assert chat_runs.claim_chat_run_lease('source-history','source-worker',ttl_seconds=300)
+        assert chat_runs.mark_chat_run_started('source-history',worker_id='source-worker')
+        chat_runs.set_chat_run_user_message_id('source-history',user_id)
+        StepLedger('source-history',worker_id='source-worker').save_checkpoint(ControllerCheckpoint(run_id='source-history'))
+        assert chat_runs.mark_chat_run_finished('source-history','cancelled',worker_id='source-worker')
+        history = client.get(f'/chat/history/{session_id}',headers=headers)
+        assert history.status_code == 200
+        assert history.json()['messages'][0]['metadata']['resume_run_id'] == 'source-history'
+        info = client.get('/chat/runs/source-history/resume',params={'session_id':session_id},headers=headers)
+        assert info.status_code == 200 and info.json()['can_resume'] is True
+        assert info.json()['message'] == 'Write a report' and 'request_json' not in info.json()
+        child = client.post('/chat/runs/source-history/resume',json={'session_id':session_id,'client_message_id':'new-continuation','memory_enabled':False},headers=headers)
+        assert child.status_code == 200
+        child_id = child.json()['run_id']
+        assert spawned == [child_id]
+        assert chat_runs.get_chat_run('source-history')['status'] == 'cancelled'
+        assert child.json()['resume_from_run_id'] == 'source-history'

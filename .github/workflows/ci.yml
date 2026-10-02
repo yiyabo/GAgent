@@ -31,6 +31,8 @@ jobs:
           app/tests/tools/test_execute_code_cancellation.py
           app/tests/tools/test_execute_code_rpc.py
           app/tests/tools/test_delegation_cancellation.py
+          app/tests/integration/test_chat_message_pipeline.py
+          app/tests/integration/test_real_app_chat_sessions.py
           -q -m "not external"
 
   frontend-regressions:
