@@ -174,6 +174,18 @@ async def plan_operation_handler(
                 target_task_id=kwargs.get("target_task_id"),
                 expand_composites=kwargs.get("expand_composites", True),
             )
+        elif operation == "recompute":
+            from app.services.plans.artifact_recompute import preview,enqueue
+            from app.repository.plan_repository import PlanRepository
+            repo=PlanRepository();resolved=plan_id or getattr(tool_context,"plan_id",None)
+            owner=getattr(tool_context,"owner_id",None)
+            if not resolved or not owner or repo._get_plan_record(resolved)["owner"]!=owner:
+                return {"success":False,"error":"recompute_plan_scope_required","executed":False}
+            payload={k:kwargs[k] for k in ("changed_task_ids","changed_aliases","target_task_ids") if k in kwargs}
+            impact=preview(repo,resolved,payload)
+            if not impact["ordered_task_ids"]:return {"success":True,"operation":"recompute","message":"No stale outputs to recompute","executed":False}
+            request={**payload,"expected_manifest_revision":impact["manifest_revision"],"preview_fingerprint":impact["preview_fingerprint"],"idempotency_key":"chat-"+impact["preview_fingerprint"]}
+            return {"success":True,"operation":"recompute",**enqueue(repo,resolved,request,owner)}
         elif operation == "execute_all":
             return await _execute_all(plan_id, tool_context=tool_context)
         elif operation == "update_task":
@@ -1577,6 +1589,9 @@ plan_operation_tool = {
 Supports creating plans, reviewing them, optimizing, and executing all tasks.
 Use this tool to create well-structured plans with iterative improvement.
 
+RECOMPUTE:
+For explicitly requested updates of prior results, update changed task instructions then use recompute. It updates only the requested affected dependency closure. Do not use for status questions.
+
 CRITICAL — EXECUTE_ALL:
 When the user wants to execute the entire plan, run all tasks, or start the plan execution,
 you MUST use operation="execute_all". Do NOT attempt to execute tasks one by one yourself.
@@ -1629,7 +1644,7 @@ Legacy compatibility:
             "operation": {
                 "type": "string",
                 "description": "Operation type",
-                "enum": ["create", "bind", "review", "optimize", "get", "todo_list", "execute_all", "update_task"],
+                "enum": ["create", "bind", "review", "optimize", "get", "todo_list", "execute_all", "update_task", "recompute"],
             },
             "title": {
                 "type": "string",
@@ -1656,6 +1671,9 @@ Legacy compatibility:
                     "required": ["name"],
                 },
             },
+            "changed_task_ids": {"type":"array","items":{"type":"integer"}},
+            "changed_aliases": {"type":"array","items":{"type":"string"}},
+            "target_task_ids": {"type":"array","items":{"type":"integer"}},
             "plan_id": {
                 "type": "integer",
                 "description": "Plan ID (required for review, optimize, get, todo_list)",

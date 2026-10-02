@@ -7,7 +7,7 @@ from pathlib import Path
 def main():
     parser=argparse.ArgumentParser()
     parser.add_argument('--root',required=True);parser.add_argument('--baseline-root',required=True);parser.add_argument('--candidate-root',required=True)
-    parser.add_argument('--baseline-revision',required=True);parser.add_argument('--candidate-revision',required=True)
+    parser.add_argument('--start-block',type=int,default=0);parser.add_argument('--baseline-revision',required=True);parser.add_argument('--candidate-revision',required=True)
     args=parser.parse_args();repo=Path(__file__).resolve().parents[1];sys.path.insert(0,str(repo))
     from app.services.harness_eval.config import EvalSuiteConfig
     from app.services.harness_eval.supervisor import run_suite
@@ -17,6 +17,7 @@ def main():
     root=Path(args.root).resolve();root.mkdir(parents=True,exist_ok=True);blocks=[]
     for repetition in range(3):
         for half,cases in enumerate(groups):
+            if repetition*2+half<args.start_block:continue
             config=EvalSuiteConfig(cases=cases,variants=variants,order_seed=42+repetition)
             result=run_suite(root/f'block-{repetition}-{half}',config,str(repo/'app/services'))
             blocks.append({'repetition':repetition,'half':half,'report':str(root/f'block-{repetition}-{half}'/'report.json'),'started':result['started'],'total':result['total'],'stop_reason':result['stop_reason']})

@@ -161,6 +161,9 @@ class _DelegateMethods:
             execution_status = "failed"
         else:
             execution_status = "completed"
+        from app.services.deep_think.native_validation import enabled
+        if enabled():
+            payload=self._promote_workspace_artifacts_to_task_dir(node=node,payload=payload,session_context=config.session_context)
         finalization, _ = self._finalize_task_execution(
             plan_id,
             node,

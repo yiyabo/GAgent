@@ -75,5 +75,20 @@ def request_kwargs(agent,user_query,context,messages,iteration,tools_used):
     from app.llm import _default_max_tokens
     from app.services.skill_learning.context import format_skill_context
     schemas=agent._schema_disclosure.effective(iteration=iteration+1,tools_used=tools_used,plan_bound=agent._current_plan_id() is not None)
-    return {'tool_schemas':schemas,'output_reserve_tokens':getattr(agent,'_native_repair_cap',None) or _default_max_tokens(),
+    from app.services.memory.context_recall import format_recall_context
+    return {'component_texts':{'skills':format_skill_context(context),'recall':format_recall_context(context)},'tool_schemas':schemas,'output_reserve_tokens':getattr(agent,'_native_repair_cap',None) or _default_max_tokens(),
         'anchors':{'request':user_query,'output_spec':str(getattr(agent,'_output_spec',None)),'profile':agent.request_profile,'latest_user_turns':[m.get('content') for m in messages if m.get('role')=='user'][-2:]}}
+
+
+async def compact_strict(agent,messages,user_query):
+    if not enabled():return messages
+    from app.services.context.context_manager import ContextWindowManager
+    from app.services.run_budget import run_work_stage
+    from app.llm import _default_max_tokens
+    manager=getattr(agent,'_strict_context_manager',None)
+    if manager is None:
+        manager=ContextWindowManager(model=getattr(agent.llm_client,'model',''))
+        agent._strict_context_manager=manager
+    async def summarize(text):
+        return await run_work_stage(agent.llm_client.chat_async(prompt='Summarize execution facts and preserve source references:\n'+text,max_tokens=1200),stage='strict-compaction')
+    return await manager.compact_if_needed(messages,summarizer=summarize,output_reserve_tokens=_default_max_tokens(),anchors={'request':user_query,'profile':agent.request_profile,'latest_user_turns':[m.get('content') for m in messages if m.get('role')=='user'][-2:]})

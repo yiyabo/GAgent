@@ -21,8 +21,15 @@ def digest(value):return hashlib.sha256(json.dumps(value,sort_keys=True,ensure_a
 
 
 def definition(node):
-    meta=node.metadata or {}
-    return digest({'instruction':node.instruction or node.name,'dependencies':sorted(node.dependencies),'metadata':{k:meta.get(k) for k in ('artifact_contract','output_spec','required_outputs','acceptance_criteria','method_parameters','source_inputs')}})
+    from .output_spec import parse_output_spec
+    meta=node.metadata or {};raw=meta.get('output_spec') or {}
+    outputs=meta.get('required_outputs') or raw.get('required_outputs') or []
+    parsed=parse_output_spec({'required_outputs':outputs,'source':'explicit'})
+    contract=meta.get('artifact_contract') or raw.get('artifact_contract') or {}
+    canonical_contract={name:sorted(set(contract.get(name) or [])) for name in ('requires','publishes','required_resources')}
+    criteria=meta.get('acceptance_criteria') or raw.get('acceptance_criteria') or None
+    if meta.get('acceptance_criteria_source')=='inferred_text':criteria=None
+    return digest({'instruction':node.instruction or node.name,'dependencies':sorted(node.dependencies),'outputs':parsed.to_dict()['required_outputs'] if parsed else outputs,'contract':canonical_contract,'criteria':criteria,'method_parameters':meta.get('method_parameters'),'source_inputs':meta.get('source_inputs')})
 
 
 def content_hash(path:Path):
@@ -169,6 +176,18 @@ def bind(executor,plan_id,node,cfg):
 
 
 def execute_bound(executor,plan_id,node,tree,cfg,factory):
+    from .artifact_contracts import canonical_plan_root
+    session=(cfg.session_context or {}).get('session_id')
+    if not versioned(plan_id,session):return factory()
+    root=canonical_plan_root(plan_id,session);root.mkdir(parents=True,exist_ok=True)
+    with (root/f'.task-{node.id}.execution.lock').open('a+') as stream:
+        try:fcntl.flock(stream,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        except BlockingIOError:raise ArtifactRevisionConflict('task_already_running')
+        try:return _execute_bound(executor,plan_id,node,tree,cfg,factory)
+        finally:fcntl.flock(stream,fcntl.LOCK_UN)
+
+
+def _execute_bound(executor,plan_id,node,tree,cfg,factory):
     session=(cfg.session_context or {}).get('session_id')
     if not versioned(plan_id,session):return factory()
     recover(executor._repo,plan_id)
@@ -230,7 +249,7 @@ def commit_result(executor,binding,payload,status):
                 executor._repo._update_task_with_conn(con,binding.plan_id,binding.task_id,status=status,execution_result=json.dumps(payload,ensure_ascii=False))
             from app.services.chat_run_state import chat_run_claim
             claim=chat_run_claim.get()
-            receipt={'run_id':claim[0] if claim else None,'worker_id':claim[1] if claim else None,'publication_id':binding.publication_id,'task_id':binding.task_id,'payload':payload,'status':status,'stale':stale,'session_id':binding.session_id,'applied':False}
+            receipt={'prepared_binding':binding.to_dict(),'run_id':claim[0] if claim else None,'worker_id':claim[1] if claim else None,'publication_id':binding.publication_id,'task_id':binding.task_id,'payload':payload,'status':status,'stale':stale,'session_id':binding.session_id,'applied':False}
             proposed['revision']=current['revision']+1;proposed.setdefault('publications',{})[binding.publication_id]=receipt
             con.execute('CREATE TABLE IF NOT EXISTS artifact_publications(id TEXT PRIMARY KEY,receipt_json TEXT NOT NULL,created_at TEXT DEFAULT CURRENT_TIMESTAMP)')
             con.execute('INSERT OR IGNORE INTO artifact_publications(id,receipt_json) VALUES(?,?)',(binding.publication_id,json.dumps(receipt,ensure_ascii=False)))

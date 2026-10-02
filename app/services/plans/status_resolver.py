@@ -415,14 +415,14 @@ class PlanStatusResolver:
 
             from .artifact_versions import freshness
             artifact_freshness=freshness(node,manifest_payload)
-            if artifact_freshness["freshness"] in {"stale","reconciling"}:
-                effective_status = "pending" if artifact_freshness["freshness"]=="stale" else "blocked"
-                status_reason = "; ".join(artifact_freshness["stale_reasons"]) or "Publication reconciliation pending"
-                reason_code = "artifact_"+artifact_freshness["freshness"]
-            elif is_active_execution:
+            if is_active_execution:
                 effective_status = "running"
                 status_reason = "Currently executing in an active background job."
                 reason_code = "active_execution"
+            elif artifact_freshness["freshness"] in {"stale","reconciling"}:
+                effective_status = "pending" if artifact_freshness["freshness"]=="stale" else "blocked"
+                status_reason = "; ".join(artifact_freshness["stale_reasons"]) or "Publication reconciliation pending"
+                reason_code = "artifact_"+artifact_freshness["freshness"]
             elif manual_acceptance_active:
                 effective_status = "completed"
                 status_reason = manual_acceptance_reason or "Task was manually accepted after review."

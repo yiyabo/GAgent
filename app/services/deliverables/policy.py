@@ -306,6 +306,8 @@ class _PolicyMethods:
             return False
 
         lexical_abs = Path(os.path.abspath(str(path)))
+        if self._is_within(lexical_abs,self._runtime_dir) and self._is_within(path.resolve(),self._runtime_dir):
+            return True
         if self._is_within(lexical_abs, self._project_root):
             if self._is_in_blocked_project_dir(lexical_abs):
                 return False

@@ -71,3 +71,15 @@ def test_atomic_manifest_commit_can_recover_after_sql_rollback(version_db,monkey
     assert repo.get_plan_tree(tree.id).nodes[node.id].status=='completed'
     manifest=av._read(artifact_manifest_path(tree.id));assert len(manifest['versions'])==1 and manifest['publications'][binding.publication_id]['applied']
     av.recover(repo,tree.id);assert len(av._read(artifact_manifest_path(tree.id))['versions'])==1
+
+
+def test_runtime_output_spec_normalization_is_not_a_user_method_change():
+    from app.services.plans.plan_models import PlanNode
+    from app.services.plans.output_spec import OutputSpec,RequiredOutput
+    spec=OutputSpec(required_outputs=[RequiredOutput(kind='data',extensions=['.json'],target_path='/tmp/summary.json')],source='explicit').to_dict()
+    node=PlanNode(id=1,plan_id=1,name='summary',instruction='calculate',metadata={'output_spec':spec,'required_outputs':spec['required_outputs']})
+    original=av.definition(node)
+    node.metadata['output_spec']['artifact_contract']={'requires':[],'publishes':[]}
+    assert av.definition(node)==original
+    node.metadata['output_spec']['artifact_contract']['requires']=['stats.group_summary']
+    assert av.definition(node)!=original

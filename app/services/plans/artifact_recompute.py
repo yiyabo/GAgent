@@ -23,6 +23,7 @@ def versions(repo,plan_id,alias=None,cursor=0):
 
 
 def preview(repo,plan_id,request):
+    request=validate_request(request)
     tree=repo.get_plan_tree(plan_id);session=session_for(repo,plan_id);manifest=_read(artifact_manifest_path(plan_id,session))
     expected=request.get('expected_manifest_revision')
     if expected is not None and expected!=manifest['revision']:raise ArtifactRevisionConflict('manifest_revision_conflict')
@@ -62,3 +63,63 @@ def preview(repo,plan_id,request):
         ordered.extend(ready);remaining.difference_update(ready)
     fingerprint=digest({'revision':manifest['revision'],'definitions':{n:definition(tree.nodes[n]) for n in sorted(ancestors)},'inputs':manifest['artifacts'],'selected':ordered})
     return {'plan_id':plan_id,'manifest_revision':manifest['revision'],'preview_fingerprint':fingerprint,'ordered_task_ids':ordered,'affected_task_ids':sorted(affected),'blocked_task_ids':sorted(set(blocked)&selected),'stale_reasons':{str(n):freshness(tree.nodes[n],manifest)['stale_reasons'] for n in sorted(selected)},'session_id':session}
+
+
+def enqueue(repo,plan_id,payload,owner):
+    import threading
+    from fastapi import HTTPException
+    import app.routers.plan_routes as facade
+    _acquire_plan_execution_lock=facade._acquire_plan_execution_lock
+    _release_plan_execution_lock=facade._release_plan_execution_lock
+    _run_full_plan_job=facade._run_full_plan_job
+    plan_decomposition_jobs=facade.plan_decomposition_jobs
+    from app.services.plans.artifact_recompute import preview
+    from app.services.plans.artifact_versions import ArtifactRevisionConflict,digest
+    from app.database import get_db
+    from app.repository.chat_runs import _write_transaction
+    payload=validate_request(payload)
+    key=str(payload.get('idempotency_key') or '')
+    if not key or len(key)>128:raise HTTPException(422,'idempotency_key required')
+    request_hash=digest(payload)
+    with get_db() as con:
+        con.execute('CREATE TABLE IF NOT EXISTS artifact_recompute_requests(plan_id INTEGER,owner_id TEXT,key TEXT,fingerprint TEXT,job_id TEXT,PRIMARY KEY(plan_id,owner_id,key))')
+        row=con.execute('SELECT * FROM artifact_recompute_requests WHERE plan_id=? AND owner_id=? AND key=?',(plan_id,owner,key)).fetchone()
+        if row:
+            if row['fingerprint']!=request_hash:raise HTTPException(409,'idempotency_key_reused')
+            return {'job_id':row['job_id']}
+    try:impact=preview(repo,plan_id,payload)
+    except (ValueError,ArtifactRevisionConflict) as exc:raise HTTPException(409,str(exc)) from exc
+    if payload.get('preview_fingerprint')!=impact['preview_fingerprint']:raise HTTPException(409,'recompute_preview_changed')
+    if impact['blocked_task_ids']:raise HTTPException(409,'unresolved_artifact_producers')
+    execution_lock=_acquire_plan_execution_lock(plan_id,0)
+    if execution_lock is None:raise HTTPException(409,'plan_already_running')
+    job_id=digest({'plan':plan_id,'owner':owner,'key':key})[:32]
+    try:
+        with get_db() as con:
+            with _write_transaction(con):
+                n=con.execute('INSERT OR IGNORE INTO artifact_recompute_requests VALUES(?,?,?,?,?)',(plan_id,owner,key,request_hash,job_id)).rowcount
+                if not n:return {'job_id':job_id}
+        job=plan_decomposition_jobs.create_job(job_id=job_id,plan_id=plan_id,task_id=None,mode='recompute',job_type='plan_execute',owner_id=owner,session_id=impact['session_id'],params={'task_order':impact['ordered_task_ids']},metadata=impact)
+        def run():
+            try:_run_full_plan_job(job_id=job.job_id,plan_id=plan_id,task_order=impact['ordered_task_ids'],session_id=impact['session_id'],owner_id=owner,stop_on_failure=True,dependency_block_mode='block')
+            finally:_release_plan_execution_lock(plan_id,0,execution_lock)
+        threading.Thread(target=run,daemon=True).start()
+    except BaseException:
+        _release_plan_execution_lock(plan_id,0,execution_lock)
+        raise
+    return {'job_id':job.job_id,'ordered_task_ids':impact['ordered_task_ids']}
+
+
+def validate_request(payload):
+    from pydantic import BaseModel,Field,ConfigDict
+    class Request(BaseModel):
+        model_config=ConfigDict(extra='forbid')
+        changed_task_ids:list[int]=Field(default_factory=list,max_length=500)
+        changed_aliases:list[str]=Field(default_factory=list,max_length=500)
+        target_task_ids:list[int]=Field(default_factory=list,max_length=500)
+        expected_manifest_revision:int|None=Field(default=None,ge=0)
+        preview_fingerprint:str|None=Field(default=None,max_length=64)
+        idempotency_key:str|None=Field(default=None,max_length=128)
+    result=Request.model_validate(payload).model_dump(exclude_none=True)
+    if any(v<1 for k in ('changed_task_ids','target_task_ids') for v in result[k]):raise ValueError('task_ids_must_be_positive')
+    return result

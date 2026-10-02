@@ -938,7 +938,7 @@ NATIVE_TOOL_CONTENT: Dict[str, Dict[str, Any]] = {
         # native 有意收窄：impl 另有 expand_composites/new_status/note/target_task_id；impl 描述更长 —— 有意调优（参数面收窄）
         "description": (
             "Plan creation, optimization, and execution tool. "
-            "Operations: create, bind, review, optimize, get, execute_all, todo_list. "
+            "Operations: create, bind, review, optimize, get, execute_all, todo_list, recompute. Use recompute for explicitly requested updates of stale results after updating changed task instructions. "
             "CRITICAL: When the user wants to execute the entire plan or all tasks, "
             "you MUST use operation='execute_all'. Do NOT execute tasks one by one. "
             "execute_all launches a background job that handles all tasks automatically. "
@@ -955,11 +955,14 @@ NATIVE_TOOL_CONTENT: Dict[str, Dict[str, Any]] = {
             "properties": {
                 "operation": {
                     "type": "string",
-                    "enum": ["create", "bind", "review", "optimize", "get", "execute_all", "todo_list", "update_task"],
+                    "enum": ["create", "bind", "review", "optimize", "get", "execute_all", "todo_list", "update_task", "recompute"],
                     "description": "Plan operation to perform. Use execute_all to run all pending tasks in background. Use bind to switch to a different plan.",
                 },
                 "title": {"type": "string", "description": "Plan title (for create)."},
                 "description": {"type": "string", "description": "Plan goal description (for create)."},
+                "changed_task_ids": {"type":"array","items":{"type":"integer"}},
+                "changed_aliases": {"type":"array","items":{"type":"string"}},
+                "target_task_ids": {"type":"array","items":{"type":"integer"}},
                 "plan_id": {"type": "integer", "description": "Plan ID (for review/optimize/get)."},
                 "tasks": {
                     "type": "array",

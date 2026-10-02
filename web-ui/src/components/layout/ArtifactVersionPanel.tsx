@@ -5,24 +5,26 @@ import { buildArtifactFileUrl } from '@/api/artifacts';
 export function ArtifactVersionPanel({planId,sessionId}:{planId?:number;sessionId:string|null}) {
   const [data,setData]=React.useState<ArtifactVersions>();
   const [open,setOpen]=React.useState(false);const [busy,setBusy]=React.useState(false);
-  const [notice,setNotice]=React.useState('');const generation=React.useRef(0);
-  React.useEffect(()=>{const version=++generation.current;setData(undefined);setOpen(false);setNotice('');setBusy(false);
+  const [notice,setNotice]=React.useState('');const generation=React.useRef(0);const busyRef=React.useRef(false);const pending=React.useRef<{fingerprint:string;key:string}|null>(null);
+  React.useEffect(()=>{const version=++generation.current;setData(undefined);setOpen(false);setNotice('');setBusy(false);busyRef.current=false;pending.current=null;
     if(planId&&sessionId)void artifactVersionsApi.list(planId).then(value=>{if(version===generation.current)setData(value);}).catch(()=>{});
     return()=>{generation.current++;};
   },[planId,sessionId]);
   if(!planId||!sessionId||!data||data.schema_version<2)return null;
   const update=async()=>{
-    if(busy)return;const version=generation.current;setBusy(true);setNotice('');
+    if(busyRef.current)return;busyRef.current=true;const version=generation.current;setBusy(true);setNotice('');
     try {
       const payload={expected_manifest_revision:data.manifest_revision};
       const preview=await artifactVersionsApi.preview(planId,payload);
       if(version!==generation.current)return;
       if(preview.blocked_task_ids.length)throw new Error('部分输入来源尚未确定，请先检查任务依赖。');
       if(!preview.ordered_task_ids.length){setNotice('当前结果无需更新。');return;}
-      await artifactVersionsApi.execute(planId,{...payload,preview_fingerprint:preview.preview_fingerprint,idempotency_key:crypto.randomUUID()});
+      if(pending.current?.fingerprint!==preview.preview_fingerprint)pending.current={fingerprint:preview.preview_fingerprint,key:crypto.randomUUID()};
+      await artifactVersionsApi.execute(planId,{...payload,preview_fingerprint:preview.preview_fingerprint,idempotency_key:pending.current.key});
+      pending.current=null;
       if(version===generation.current)setNotice('更新已开始，可在任务列表查看进度。');
     } catch(error) {if(version===generation.current)setNotice(error instanceof Error?error.message:'更新失败，请刷新后重试。');}
-    finally {if(version===generation.current)setBusy(false);}
+    finally {if(version===generation.current){setBusy(false);busyRef.current=false;}}
   };
   return <>
     <Space style={{padding:'6px 12px'}}><Button size="small" onClick={()=>setOpen(true)}>历史与来源</Button><Button size="small" loading={busy} onClick={()=>void update()}>更新相关结果</Button></Space>

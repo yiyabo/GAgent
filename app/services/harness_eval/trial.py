@@ -28,12 +28,23 @@ async def run_trial(case_id,entry,root:Path,cfg:EvalSuiteConfig,external_remaini
     from app.services.plans.output_spec import OutputSpec,RequiredOutput
     from tool_box.tools_impl.execute_code.kernel import shutdown_kernels_for_session
     init_db();init_llm_usage_table()
+    # A trial is a virtual project: configure the existing publisher dependency
+    # identically for both revisions rather than weakening host path policies.
+    from app.services.deliverables import publisher as publisher_module
+    publisher_module._publisher=publisher_module.DeliverablePublisher(project_root=root,runtime_dir=root/"app_runtime_root")
     identity='eval-'+uuid4().hex;worker='worker-'+identity
     with get_db() as con:
         con.execute('INSERT INTO chat_sessions(id,owner_id,name) VALUES(?,?,?)',(identity,'harness-eval',case_id));con.commit()
     from app.services.path_router import get_path_router
     work=get_path_router().get_session_dir(identity,create=True)/'raw_files'/'inputs'
     case=prepare(case_id,work)
+    if cfg.skills_arm is not None:
+        from .skill_fixtures import seed
+        seed(identity)
+        if case_id=='skill_reuse':
+            (work/'SKILL.md').unlink(missing_ok=True)
+            case={**case,'prompt':CASES_NATURAL_CLEANING}
+
     query=case['prompt']+'\nUse only the provided local inputs. Deliver all required files and include their links in the answer. Work directory: '+str(work)+'\nJSON values must be numbers. Group summaries use {group: {count: number, mean/median: number}}.'
     chat_runs.create_chat_run(identity,identity,json.dumps({'message':query,'session_id':identity}),owner_id='harness-eval')
     chat_runs.claim_chat_run_lease(identity,worker,ttl_seconds=cfg.trial_wall_seconds+60);chat_runs.mark_chat_run_started(identity,worker_id=worker)
@@ -58,7 +69,7 @@ async def run_trial(case_id,entry,root:Path,cfg:EvalSuiteConfig,external_remaini
         events.append(event)
     oh=observer.set(observe)
     client=LLMClient(timeout=120,retries=0);started=time.monotonic();result=None;error=None;plan_id=task_id=None
-    context={'session_id':identity,'owner_id':'harness-eval','user_message':query,'output_spec_base_dir':str(work)}
+    context={'learned_skills_disabled':cfg.skills_arm=='none','session_id':identity,'owner_id':'harness-eval','user_message':query,'output_spec_base_dir':str(work)}
     def spec_for(directory):
         return OutputSpec(required_outputs=[RequiredOutput(kind='image' if n.endswith('.png') else 'document' if n.endswith('.md') else 'data',extensions=[Path(n).suffix],target_path=str(directory/n)) for n in case['outputs']],source='explicit').to_dict()
     try:
@@ -121,4 +132,12 @@ async def run_trial(case_id,entry,root:Path,cfg:EvalSuiteConfig,external_remaini
         for path in dict.fromkeys(candidates):
             if root not in path.resolve().parents:raise RuntimeError('artifact_outside_trial')
             artifacts.append({'name':name,'path':str(path),'sha256':hashlib.sha256(path.read_bytes()).hexdigest(),'size':path.stat().st_size})
-    return {'case':case_id,'entry':entry,'entry_implementation':'native-controller' if entry=='chat-native' else 'PlanExecutor.execute_task','session_id':identity,'chat_run_id':identity,'plan_id':plan_id,'task_id':task_id,'linked_run_ids':sorted({r['run_id'] for r in rows if r.get('run_id')}),'production_status':verdict.status,'termination_reason':verdict.reason or error,'declared_verification':report,'answer':answer,'answer_completion_passed':all(n in answer for n in case['outputs']) and verdict.completed,'duration_seconds':round(time.monotonic()-started,3),'external_launches':external_launches,'provider_attempts':len(attempts),'call_events':events,'artifacts':artifacts,'output_root':str(output_root),'usage_source':('estimated' if any(e.get('usage_source')=='estimated' for e in events) else 'provider' if rows else 'missing'),'prompt_tokens':sum(r['prompt_tokens'] for r in rows),'completion_tokens':sum(r['completion_tokens'] for r in rows),'total_tokens':sum(r['total_tokens'] for r in rows),'cost_usd':None,'error':error,'cleanup_status':{'run_status':chat_runs.get_chat_run(identity)['status'],'lease_released':not chat_runs.is_chat_run_lease_live(identity)},'revision':cfg.revision,'model':client._effective_model(),'provider':client.provider}
+    exposures=[];deliveries=[]
+    if cfg.skills_arm is not None:
+      with get_db() as con:
+        exposures=[dict(r) for r in con.execute('SELECT skill_id,version,rank,retrieval_mode FROM learned_skill_exposures WHERE run_id=?',(identity,))]
+        deliveries=[dict(r) for r in con.execute('SELECT skill_id,version,delivery,status FROM learned_skill_usage WHERE run_id=?',(identity,))]
+    return {'skill_exposures':exposures,'skill_deliveries':deliveries,'skills_arm':cfg.skills_arm,'case':case_id,'entry':entry,'entry_implementation':'native-controller' if entry=='chat-native' else 'PlanExecutor.execute_task','session_id':identity,'chat_run_id':identity,'plan_id':plan_id,'task_id':task_id,'linked_run_ids':sorted({r['run_id'] for r in rows if r.get('run_id')}),'production_status':verdict.status,'termination_reason':verdict.reason or error,'declared_verification':report,'answer':answer,'answer_completion_passed':all(n in answer for n in case['outputs']) and verdict.completed,'duration_seconds':round(time.monotonic()-started,3),'external_launches':external_launches,'provider_attempts':len(attempts),'call_events':events,'artifacts':artifacts,'output_root':str(output_root),'usage_source':('estimated' if any(e.get('usage_source')=='estimated' for e in events) else 'provider' if rows else 'missing'),'prompt_tokens':sum(r['prompt_tokens'] for r in rows),'completion_tokens':sum(r['completion_tokens'] for r in rows),'total_tokens':sum(r['total_tokens'] for r in rows),'cost_usd':None,'error':error,'cleanup_status':{'run_status':chat_runs.get_chat_run(identity)['status'],'lease_released':not chat_runs.is_chat_run_lease_live(identity)},'revision':cfg.revision,'model':client._effective_model(),'provider':client.provider}
+
+
+CASES_NATURAL_CLEANING="Read input.csv, discard missing or non-numeric scores and duplicate IDs keeping first. Write clean.csv and summary.json with group count and mean."

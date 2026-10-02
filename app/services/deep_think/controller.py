@@ -44,7 +44,7 @@ from app.services.deep_think.text_utils import (
 from app.services.execution.tool_executor import UnifiedToolExecutor
 from app.services.foundation.settings import get_settings
 from app.services.response_style import sanitize_professional_response_text
-from app.services.run_budget import RunDeadlineExceeded, SoftFinalize, iterate_stage, run_stage
+from app.services.run_budget import RunDeadlineExceeded, SoftFinalize, iterate_work_stage, iterate_stage, run_stage
 from app.services.tool_schemas import build_tool_schemas
 from app.services.deep_think.schema_disclosure import SchemaDisclosure
 from app.services.deep_think import checkpointing
@@ -2023,8 +2023,10 @@ async def _think_prompt_based(
                     "DeepThink requires LLM client support for stream_chat_async in strict mode."
                 )
 
+            from .native_validation import compact_strict
+            messages=await compact_strict(agent,messages,user_query)
             logger.info("[DEEP_THINK] Using streaming LLM call")
-            async for delta in iterate_stage(agent.llm_client.stream_chat_async(
+            async for delta in iterate_work_stage(agent.llm_client.stream_chat_async(
                 prompt="", messages=messages,
                 enable_thinking=agent.enable_thinking,
                 thinking_budget=agent.thinking_budget,
@@ -2306,6 +2308,8 @@ async def _think_prompt_based(
                 messages.append({"role": "assistant", "content": response_text})
                 messages.append({"role": "user", "content": agent._get_next_step_prompt(iteration)})
 
+        except SoftFinalize:
+            break
         except RunDeadlineExceeded:
             raise
         except Exception as e:
@@ -2353,6 +2357,7 @@ Respond with ONLY a JSON object:
                     "DeepThink requires stream_chat_async for forced conclusion in strict mode."
                 )
 
+            agent._synthesis_attempted=True
             response_text = ""
             async for delta in iterate_stage(agent.llm_client.stream_chat_async(
                 prompt="", messages=messages,

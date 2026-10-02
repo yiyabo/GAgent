@@ -1488,37 +1488,5 @@ def preview_artifact_recompute(plan_id:int,request:Request,payload:Dict[str,Any]
 @plan_router.post('/{plan_id}/recompute')
 def execute_artifact_recompute(plan_id:int,request:Request,payload:Dict[str,Any]=Body(...)):
     _load_authorized_plan_tree(plan_id,request)
-    from app.services.plans.artifact_recompute import preview
-    from app.services.plans.artifact_versions import ArtifactRevisionConflict,digest
-    from app.database import get_db
-    from app.repository.chat_runs import _write_transaction
-    key=str(payload.get('idempotency_key') or '')
-    if not key or len(key)>128:raise HTTPException(422,'idempotency_key required')
-    owner=get_request_owner_id(request);request_hash=digest(payload)
-    with get_db() as con:
-        con.execute('CREATE TABLE IF NOT EXISTS artifact_recompute_requests(plan_id INTEGER,owner_id TEXT,key TEXT,fingerprint TEXT,job_id TEXT,PRIMARY KEY(plan_id,owner_id,key))')
-        row=con.execute('SELECT * FROM artifact_recompute_requests WHERE plan_id=? AND owner_id=? AND key=?',(plan_id,owner,key)).fetchone()
-        if row:
-            if row['fingerprint']!=request_hash:raise HTTPException(409,'idempotency_key_reused')
-            return {'job_id':row['job_id']}
-    try:impact=preview(_plan_repo,plan_id,payload)
-    except (ValueError,ArtifactRevisionConflict) as exc:raise HTTPException(409,str(exc)) from exc
-    if payload.get('preview_fingerprint')!=impact['preview_fingerprint']:raise HTTPException(409,'recompute_preview_changed')
-    if impact['blocked_task_ids']:raise HTTPException(409,'unresolved_artifact_producers')
-    execution_lock=_acquire_plan_execution_lock(plan_id,0)
-    if execution_lock is None:raise HTTPException(409,'plan_already_running')
-    job_id=digest({'plan':plan_id,'owner':owner,'key':key})[:32]
-    try:
-        with get_db() as con:
-            with _write_transaction(con):
-                n=con.execute('INSERT OR IGNORE INTO artifact_recompute_requests VALUES(?,?,?,?,?)',(plan_id,owner,key,request_hash,job_id)).rowcount
-                if not n:return {'job_id':job_id}
-        job=plan_decomposition_jobs.create_job(job_id=job_id,plan_id=plan_id,task_id=None,mode='recompute',job_type='plan_execute',owner_id=owner,session_id=impact['session_id'],params={'task_order':impact['ordered_task_ids']},metadata=impact)
-        def run():
-            try:_run_full_plan_job(job_id=job.job_id,plan_id=plan_id,task_order=impact['ordered_task_ids'],session_id=impact['session_id'],owner_id=owner,stop_on_failure=True,dependency_block_mode='block')
-            finally:_release_plan_execution_lock(plan_id,0,execution_lock)
-        threading.Thread(target=run,daemon=True).start()
-    except BaseException:
-        _release_plan_execution_lock(plan_id,0,execution_lock)
-        raise
-    return {'job_id':job.job_id,'ordered_task_ids':impact['ordered_task_ids']}
+    from app.services.plans.artifact_recompute import enqueue
+    return enqueue(_plan_repo,plan_id,payload,get_request_owner_id(request))

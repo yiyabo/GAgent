@@ -22,7 +22,7 @@ def in_scope(skill: dict, scope: dict) -> bool:
 
 def _hydrate_context(context: dict, session_id: str | None, query: str, run_id: str | None = None) -> None:
     context.pop('learned_skill_context',None)
-    if not session_id:return
+    if context.get('learned_skills_disabled') or not session_id:return
     scope=session_scope(session_id)
     if not scope:return
     requested=context.get('learned_skill_ids') or []

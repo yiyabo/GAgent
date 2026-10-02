@@ -275,3 +275,13 @@ async def run_work_stage(awaitable,*,stage,cancel_event=None):
     except asyncio.TimeoutError:
         if budget and soft and budget.should_finalize():raise SoftFinalize('work_window_ended')
         raise
+
+
+async def iterate_work_stage(iterator,*,stage,cancel_event=None):
+    try:
+        while True:
+            try:yield await run_work_stage(iterator.__anext__(),stage=stage,cancel_event=cancel_event)
+            except StopAsyncIteration:return
+    finally:
+        close=getattr(iterator,'aclose',None)
+        if close and not getattr(iterator,'ag_running',False):await run_stage(close(),stage=stage+':close',timeout=5,closeout=True)

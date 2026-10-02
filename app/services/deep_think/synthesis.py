@@ -681,6 +681,10 @@ async def _generate_fallback_from_evidence(
 ) -> str:
     if not hasattr(agent.llm_client, "chat_async"):
         raise DeepThinkProtocolError("LLM client does not support chat_async")
+    from .native_validation import enabled
+    if enabled():
+        if getattr(agent,"_synthesis_attempted",False):return _build_structured_fallback(agent,steps,user_query)
+        agent._synthesis_attempted=True;max_retries=1
     if timeout is None:
         timeout = float(_default_fallback_timeout_seconds())
     n = len(steps)

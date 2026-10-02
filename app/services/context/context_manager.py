@@ -213,10 +213,10 @@ class ContextWindowManager:
         self.budget_tokens = budget if budget and budget > 0 else None
         self._compaction_count = 0
 
-    def check_usage(self, messages: List[Dict[str, Any]], *, tool_schemas=None, output_reserve_tokens=0) -> ContextUsage:
+    def check_usage(self, messages: List[Dict[str, Any]], *, tool_schemas=None, output_reserve_tokens=0,component_texts=None) -> ContextUsage:
         """Estimate token usage and return a usage snapshot."""
         from .request_budget import breakdown
-        parts=breakdown(messages,tool_schemas,output_reserve_tokens)
+        parts=breakdown(messages,tool_schemas,output_reserve_tokens,component_texts)
         used = sum(parts.values())
         ratio = used / self.max_context_tokens if self.max_context_tokens > 0 else 0.0
         warning_line = self.warning_ratio * self.max_context_tokens
@@ -237,7 +237,7 @@ class ContextWindowManager:
         *,
         summarizer: Callable[[str], Awaitable[str]],
         force: bool = False,
-        tool_schemas=None, output_reserve_tokens=0, anchors=None,
+        tool_schemas=None, output_reserve_tokens=0, anchors=None,component_texts=None,
     ) -> List[Dict[str, Any]]:
         """Compact messages if context usage exceeds the warning threshold.
 
@@ -253,7 +253,9 @@ class ContextWindowManager:
             The boundary never splits a tool call from its retained results.
         """
         from .request_budget import ContextBudgetExceeded,anchor_text
-        usage = self.check_usage(messages,tool_schemas=tool_schemas,output_reserve_tokens=output_reserve_tokens)
+        usage = self.check_usage(messages,tool_schemas=tool_schemas,output_reserve_tokens=output_reserve_tokens,component_texts=component_texts)
+        from app.services.execution.llm_observation import emit
+        emit("context_budget",estimated=True,parts=usage.breakdown,context_window=self.max_context_tokens)
         if len(messages) < self.MIN_MESSAGES_FOR_COMPACTION:
             if usage.used_tokens>self.max_context_tokens:raise ContextBudgetExceeded("context_budget_exceeded")
             return messages
@@ -314,7 +316,7 @@ class ContextWindowManager:
         result.append(summary_msg)
         result.extend(recent)
 
-        new_usage = self.check_usage(result,tool_schemas=tool_schemas,output_reserve_tokens=output_reserve_tokens)
+        new_usage = self.check_usage(result,tool_schemas=tool_schemas,output_reserve_tokens=output_reserve_tokens,component_texts=component_texts)
         if (tool_schemas is not None or anchors is not None) and new_usage.used_tokens>=usage.used_tokens:
             if usage.used_tokens>self.max_context_tokens:raise ContextBudgetExceeded("nonshrinking_context_summary")
             return messages

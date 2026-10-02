@@ -6,6 +6,7 @@ from .fixtures import CASES, CORPUS_VERSION
 
 @dataclass
 class EvalSuiteConfig:
+    skills_arm: str | None = None
     variants: dict[str,dict] = field(default_factory=dict)
     target_root: str | None = None
     feature_overrides: dict[str,str] = field(default_factory=dict)
@@ -28,6 +29,7 @@ class EvalSuiteConfig:
     corpus_version: str = CORPUS_VERSION
 
     def validate(self):
+        if self.skills_arm not in {None,'none','recommended'}:raise ValueError('unknown skill arm')
         if self.profile not in {'diagnostic','production-like'}:raise ValueError('unknown profile')
         if not self.cases or any(c not in CASES for c in self.cases):raise ValueError('unknown case')
         if not self.entries or any(e not in {'chat-native','plan-native','plan-external'} for e in self.entries):raise ValueError('unknown entry')

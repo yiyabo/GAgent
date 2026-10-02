@@ -1610,10 +1610,22 @@
     },
     {
       "function": {
-        "description": "Plan creation, optimization, and execution tool. Operations: create, bind, review, optimize, get, execute_all, todo_list. CRITICAL: When the user wants to execute the entire plan or all tasks, you MUST use operation='execute_all'. Do NOT execute tasks one by one. execute_all launches a background job that handles all tasks automatically. Use create for new structured plans, then prefer review to persist rubric metadata. Use bind to switch the current session to a different plan (e.g. '切换到 plan X', '绑定 plan X'). Use get/review/optimize for bound plans. Research with web_search first only when latest external evidence materially affects the plan. For optimize, use concrete change objects such as add_task, update_task, update_description, delete_task, or reorder_task; keep update_task fields at the top level. If changes are omitted, optimize may auto-generate them from the latest rubric review. Do not use this tool to mark the currently executing task completed or failed; current-task status is auto-synced from tool execution.",
+        "description": "Plan creation, optimization, and execution tool. Operations: create, bind, review, optimize, get, execute_all, todo_list, recompute. Use recompute for explicitly requested updates of stale results after updating changed task instructions. CRITICAL: When the user wants to execute the entire plan or all tasks, you MUST use operation='execute_all'. Do NOT execute tasks one by one. execute_all launches a background job that handles all tasks automatically. Use create for new structured plans, then prefer review to persist rubric metadata. Use bind to switch the current session to a different plan (e.g. '切换到 plan X', '绑定 plan X'). Use get/review/optimize for bound plans. Research with web_search first only when latest external evidence materially affects the plan. For optimize, use concrete change objects such as add_task, update_task, update_description, delete_task, or reorder_task; keep update_task fields at the top level. If changes are omitted, optimize may auto-generate them from the latest rubric review. Do not use this tool to mark the currently executing task completed or failed; current-task status is auto-synced from tool execution.",
         "name": "plan_operation",
         "parameters": {
           "properties": {
+            "changed_aliases": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "changed_task_ids": {
+              "items": {
+                "type": "integer"
+              },
+              "type": "array"
+            },
             "changes": {
               "description": "Optimization changes (for optimize).",
               "items": {
@@ -1635,13 +1647,20 @@
                 "get",
                 "execute_all",
                 "todo_list",
-                "update_task"
+                "update_task",
+                "recompute"
               ],
               "type": "string"
             },
             "plan_id": {
               "description": "Plan ID (for review/optimize/get).",
               "type": "integer"
+            },
+            "target_task_ids": {
+              "items": {
+                "type": "integer"
+              },
+              "type": "array"
             },
             "tasks": {
               "description": "Task list (for create).",

@@ -622,6 +622,12 @@ class PlanExecutor(_ArtifactMethods, _DelegateMethods, _DeepThinkMethods):
         session_id = None
         if isinstance(config.session_context, dict):
             session_id = config.session_context.get("session_id")
+        from app.services.foundation.settings import get_settings
+        if session_id and getattr(get_settings(),"skill_recommendation_v2_enabled",False) and isinstance(config.session_context,dict) and not config.session_context.get("learned_skill_context"):
+            from app.services.skill_learning.context import hydrate_context
+            from app.services.chat_run_state import chat_run_claim
+            claim=chat_run_claim.get()
+            hydrate_context(config.session_context,session_id,node.instruction or node.name,claim[0] if claim else None)
         usage_token = set_usage_context(
             session_id=session_id,
             plan_id=plan_id,
