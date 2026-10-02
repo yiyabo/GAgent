@@ -174,6 +174,10 @@ class ObservedGateway:
                      "tool_schema_chars": len(json.dumps(payload.get("tools") or [], ensure_ascii=False)),
                      "request_options": {key: payload[key] for key in ("temperature", "top_p", "reasoning_effort", "enable_thinking") if key in payload},
                      "stream": bool(payload.get("stream")), "started_at": time.time()}
+            event['request_metadata'] = {key: payload[key] for key in (
+                'model', 'max_tokens', 'max_completion_tokens', 'enable_thinking', 'thinking_budget',
+                'temperature', 'top_p', 'reasoning_effort', 'stream', 'tool_choice',
+            ) if key in payload}
             if self.event_hook:
                 try:
                     self.event_hook(dict(event))

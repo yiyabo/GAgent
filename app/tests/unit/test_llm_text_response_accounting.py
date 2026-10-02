@@ -30,14 +30,16 @@ async def test_reasoning_without_answer_preserves_usage_and_does_not_retry(monke
         service = LLMService(client=client)
         with pytest.raises(LLMProviderError) as caught:
             if asynchronous:
-                await service.chat_async('Summarize the delivered files.')
+                await service.chat_async('Summarize the delivered files.', max_tokens=500)
             else:
-                service.chat('Summarize the delivered files.')
+                service.chat('Summarize the delivered files.', max_tokens=500)
     finally:
         observer.reset(handle)
     assert caught.value.error_code == code
     assert caught.value.retryable is False
     assert transport.post.call_count == 1
+    assert events[0]['request_metadata']['max_tokens'] == 500
+    assert 'messages' not in events[0]['request_metadata']
     assert [row['total_tokens'] for row in logged] == [1090]
     receipts = [event for event in events if event['kind'] == 'attempt' and event.get('usage')]
     assert len(receipts) == 1 and receipts[0]['usage'] == usage

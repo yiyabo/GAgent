@@ -654,10 +654,12 @@ def _record_attempt_context(
     attempt_no: int,
     upstream_request_id: Optional[str] = None,
     usage: Optional[Dict[str, Any]] = None,
+    request_metadata: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Attach attempt-level ledger fields to the current usage context."""
     from app.services.execution.llm_observation import emit
-    emit("attempt", logical_call_id=logical_call_id, attempt_no=attempt_no, usage=usage, upstream_request_id=upstream_request_id)
+    details = {"request_metadata": request_metadata} if request_metadata is not None else {}
+    emit("attempt", logical_call_id=logical_call_id, attempt_no=attempt_no, usage=usage, upstream_request_id=upstream_request_id, **details)
     try:
         ctx = _usage_context.get()
         ctx = dict(ctx) if isinstance(ctx, dict) else {}
@@ -670,6 +672,14 @@ def _record_attempt_context(
         _usage_context.set(ctx)
     except Exception:
         pass
+
+
+def _request_metadata(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Effective inference controls, without prompts, tools, headers or credentials."""
+    return {key: payload[key] for key in (
+        "model", "max_tokens", "max_completion_tokens", "enable_thinking", "thinking_budget",
+        "temperature", "top_p", "reasoning_effort", "stream", "tool_choice",
+    ) if key in payload}
 
 
 def _billing_request_headers(logical_call_id: str, attempt_no: int) -> Dict[str, str]:
@@ -1044,7 +1054,7 @@ class LLMClient(LLMProvider):
                 _outbound_limiter.acquire()
                 attempt_headers = dict(headers)
                 attempt_headers.update(_billing_request_headers(logical_call_id, attempt + 1))
-                _record_attempt_context(logical_call_id, attempt + 1)
+                _record_attempt_context(logical_call_id, attempt + 1, request_metadata=_request_metadata(payload))
                 response = client.post(
                     self._effective_url(), headers=attempt_headers, json=payload,
                     timeout=timeout,
@@ -1196,7 +1206,7 @@ class LLMClient(LLMProvider):
                 _outbound_limiter.acquire()
                 attempt_headers = dict(headers)
                 attempt_headers.update(_billing_request_headers(logical_call_id, attempt + 1))
-                _record_attempt_context(logical_call_id, attempt + 1)
+                _record_attempt_context(logical_call_id, attempt + 1, request_metadata=_request_metadata(payload))
                 with client.stream(
                     "POST", self._effective_url(), headers=attempt_headers, json=payload,
                     timeout=timeout,
@@ -1343,7 +1353,7 @@ class LLMClient(LLMProvider):
                 await _outbound_limiter.acquire_async()
                 attempt_headers = dict(headers)
                 attempt_headers.update(_billing_request_headers(logical_call_id, attempt + 1))
-                _record_attempt_context(logical_call_id, attempt + 1)
+                _record_attempt_context(logical_call_id, attempt + 1, request_metadata=_request_metadata(payload))
                 response = await client.post(
                     self._effective_url(), headers=attempt_headers, json=payload,
                     timeout=timeout,
@@ -1485,12 +1495,12 @@ class LLMClient(LLMProvider):
         _stream_err: Optional[str] = None
         try:
             await _outbound_limiter.acquire_async()
-            _record_attempt_context(logical_call_id, 1)
+            _record_attempt_context(logical_call_id, 1, request_metadata=_request_metadata(payload))
             async with client.stream(
                 "POST", self._effective_url(), headers=headers, json=payload,
                 timeout=timeout,
             ) as resp:
-                _record_attempt_context(logical_call_id, 1)
+                _record_attempt_context(logical_call_id, 1, request_metadata=_request_metadata(payload))
                 if resp.status_code >= 400:
                     body = await _read_stream_error_body(resp)
                     try:
@@ -1705,7 +1715,7 @@ class LLMClient(LLMProvider):
         timeout = _make_request_timeout(self.stream_timeout)
         client = _get_shared_async_client()
         await _outbound_limiter.acquire_async()
-        _record_attempt_context(logical_call_id, 1)
+        _record_attempt_context(logical_call_id, 1, request_metadata=_request_metadata(payload))
         async with client.stream("POST", self._effective_url(), headers=headers, json=payload,
                                  timeout=timeout) as resp:
             if resp.status_code >= 400:
@@ -1834,7 +1844,7 @@ class LLMClient(LLMProvider):
         client = _get_shared_async_client()
         try:
             await _outbound_limiter.acquire_async()
-            _record_attempt_context(logical_call_id, 2)
+            _record_attempt_context(logical_call_id, 2, request_metadata=_request_metadata(body))
             resp = await client.post(
                 self._effective_url(), headers=headers, json=body, timeout=timeout,
             )
