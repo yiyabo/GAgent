@@ -46,7 +46,14 @@ def _hydrate_context(context: dict, session_id: str | None, query: str, run_id: 
         if identity in expected and skill['current_version']!=expected[identity]:raise ValueError('requested skill version changed')
         if skill['state'] in {'disabled','suspended'}:raise ValueError('requested skill is disabled or needs revision')
         selected.append(skill)
-    if not selected:
+    from app.services.foundation.settings import get_settings
+    hybrid=getattr(get_settings(),"skill_recommendation_v2_enabled",False)
+    progressive=getattr(get_settings(),"skill_context_progressive_enabled",False)
+    mode="explicit" if requested else "lexical"
+    if not selected and hybrid:
+        from .recommendations import recommend
+        result=recommend(scope,query);selected=result["skills"];mode=result["retrieval_mode"]
+    if not selected and not hybrid:
         candidates=repository.list_skills(scope,80)
         for skill in candidates:
             if not in_scope(skill,scope) or skill['state']!='stable':continue
@@ -60,6 +67,7 @@ def _hydrate_context(context: dict, session_id: str | None, query: str, run_id: 
     bodies=[]
     budget=12000
     for skill,item in zip(selected,index):
+        if progressive:continue
         body=SkillDraft.model_validate(skill['draft']).markdown(item['name'])
         if len(body)>budget:continue
         bodies.append({'name':item['name'],'body':body});budget-=len(body)
@@ -67,6 +75,8 @@ def _hydrate_context(context: dict, session_id: str | None, query: str, run_id: 
     if run_id:
         digest,basis=fingerprint_input(query,context)
         repository.save_run_context(run_id,digest,basis,index,scope=scope)
+        from .recommendations import record_exposure
+        record_exposure(run_id,index,mode)
         for item in index:
             if any(body['name']==item['name'] for body in bodies):
                 repository.record_loaded(item['id'],item['version'],run_id,delivery='prompt')
@@ -92,7 +102,7 @@ def format_skill_context(context: dict | None) -> str:
             +json.dumps(payload,ensure_ascii=False))
 
 
-def load_learned_skill(name: str, session_id: str | None):
+def load_learned_skill(name: str, session_id: str | None, *, record=True):
     match=re.fullmatch(r'learned:([0-9a-f]{32}):v([1-9][0-9]*)',name)
     if not match:return None
     claim=chat_run_claim.get()
@@ -110,7 +120,7 @@ def load_learned_skill(name: str, session_id: str | None):
         selected=json.loads(stored['selected_json']) if stored else []
         if not any(item['id']==skill['id'] and item['version']==skill['current_version'] for item in selected):
             raise ValueError('candidate and trial skills require an explicit trial request')
-    if run:
+    if run and record:
         from app.repository.run_steps import assert_run_owned
         assert_run_owned(run['run_id'])
         repository.record_loaded(skill['id'],skill['current_version'],run['run_id'])

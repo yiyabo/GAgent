@@ -34,7 +34,7 @@ def run_delegation(spec:Any,execute:Callable[[],Any],finalize:Callable[[Any],Any
     claim=chat_run_claim.get()
     if not claim:return finalize(execute())
     ledger=StepLedger(claim[0])
-    params={name:getattr(spec,name) for name in ('plan_id','task_id','task_instruction','executor_backend','session_id','owner_id','work_dir','artifact_contract','acceptance_criteria','resolved_input_artifacts')}
+    params={name:getattr(spec,name) for name in ('plan_id','task_id','task_instruction','executor_backend','session_id','owner_id','work_dir','artifact_contract','acceptance_criteria','resolved_input_artifacts','skill_refs')}
     fingerprint=params_fingerprint('delegate_task',params)
     query=(spec.task_instruction or spec.task_name).strip()
     key=checkpoint_key(spec.plan_id,spec.task_id,query)

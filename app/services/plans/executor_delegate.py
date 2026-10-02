@@ -90,6 +90,8 @@ class _DelegateMethods:
         backend = str(
             getattr(self._settings, "plan_task_agent_backend", "qwen_code") or "qwen_code"
         ).strip().lower()
+        from app.services.skill_learning.delivery import external_files
+        skill_refs=external_files(session_context,task_work_dir)
         spec = TaskDelegationSpec(
                 plan_id=plan_id,
                 task_id=node.id,
@@ -107,6 +109,7 @@ class _DelegateMethods:
                 resolved_input_artifacts=dict(resolved_input_artifacts or {}),
                 readable_dirs=readable_dirs,
                 resolved_resources=dict(resolved_resources or {}),
+                skill_refs=skill_refs,
         )
         from app.services.execution.delegate_ledger import run_delegation
         result = run_delegation(spec, lambda: self._task_delegate_executor.execute(spec),

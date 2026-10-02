@@ -22,6 +22,11 @@ class SkillLearningRunner:
     async def run(self):
         while not self.stop_event.is_set():
             try:
+                from app.services.plans.artifact_versions import reconcile_recent
+                await asyncio.to_thread(reconcile_recent)
+                if getattr(get_settings(),"skill_recommendation_v2_enabled",False):
+                    from .recommendations import index_one
+                    await asyncio.to_thread(index_one)
                 for usage_run in await asyncio.to_thread(repository.terminal_pending_usage_runs):
                     await asyncio.to_thread(get_skill_learning_service().complete_usages,usage_run)
                 for run_id in await asyncio.to_thread(repository.due_jobs,get_settings().skill_learning_enabled):

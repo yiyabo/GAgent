@@ -58,6 +58,8 @@ def ensure_schema(conn) -> None:
         'CREATE INDEX IF NOT EXISTS idx_learning_calls_time ON skill_learning_calls(created_at)',
     ]
     for sql in statements: conn.execute(sql)
+    from app.services.skill_learning.recommendations import ensure_schema as ensure_recommendation_schema
+    ensure_recommendation_schema(conn)
 
 
 def _event(conn, skill_id, version, actor, action, details) -> None:

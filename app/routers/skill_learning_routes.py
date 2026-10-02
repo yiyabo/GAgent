@@ -53,11 +53,14 @@ def scoped_skill(skill_id,session_id,request):
 
 
 @router.get('/sessions/{session_id}')
-async def list_session_skills(session_id:str,request:Request):
+async def list_session_skills(session_id:str,request:Request,query:str=Query("",max_length=2000)):
     scope=await asyncio.to_thread(session_scope,session_id)
     if not scope:raise HTTPException(404,'session not found')
     ensure_owner_access(request,scope['owner_id'],detail='session owner mismatch')
-    return {'skills':await asyncio.to_thread(repository.list_skills,scope)}
+    from app.services.skill_learning.recommendations import recommend
+    from app.services.foundation.settings import get_settings
+    result=await asyncio.to_thread(recommend,scope,query,semantic=getattr(get_settings(),'skill_recommendation_v2_enabled',False)) if query else {'recommendations':[],'retrieval_mode':'not_requested'}
+    return {'skills':await asyncio.to_thread(repository.list_skills,scope),'recommended_skills':result.get('skills',[]),**{k:v for k,v in result.items() if k!='skills'}}
 
 
 @router.get('/runs/{run_id}')
@@ -69,7 +72,7 @@ async def run_learning_info(run_id:str,request:Request,session_id:str=Query(...)
     skills=[skill for skill in skills if scope and in_scope(skill,scope)]
     return {'run_id':run_id,'session_id':session_id,'run_status':run['status'],
             'job':repository.job(run_id),'skills':skills,'feedback':repository.feedback(run_id),
-            'uses':repository.validation_runs_for_run(run_id)}
+            'uses':repository.validation_runs_for_run(run_id),'exposures':_run_exposures(run_id)}
 
 
 @router.post('/runs/{run_id}/capture')
@@ -89,12 +92,16 @@ async def feedback(run_id:str,body:Feedback,request:Request):
 
 
 @router.get('/skills/{skill_id}')
-async def skill_detail(skill_id:str,request:Request,session_id:str=Query(...)):
+async def skill_detail(skill_id:str,request:Request,session_id:str=Query(...),version:int|None=Query(None,ge=1)):
     skill=scoped_skill(skill_id,session_id,request)
-    usages=repository.validation_runs(skill_id,skill['current_version'])
+    if version is not None:
+        skill=repository.get_skill(skill_id,version)
+        if not skill:raise HTTPException(404,"skill version not found")
+    usages=repository.validation_runs(skill_id,skill['loaded_version'])
     for usage in usages:
         usage['feedback_rating']=(repository.feedback(usage['run_id']) or {}).get('rating')
-    return {**skill,'usage':usages,'events':repository.event_history(skill_id)}
+    from app.services.skill_learning.recommendations import stats,similar
+    return {**skill,'usage':usages,'events':repository.event_history(skill_id),'version_stats':stats(skill_id,skill['loaded_version']),'similar_skills':similar(skill,session_scope(session_id))}
 
 
 @router.get('/skills/{skill_id}/markdown')
@@ -118,3 +125,8 @@ async def edit_skill(skill_id:str,body:Edit,request:Request):
     try:await asyncio.to_thread(get_skill_learning_service().edit,skill_id,body.version,body.draft)
     except ValueError as exc:raise HTTPException(409,str(exc)) from exc
     return repository.get_skill(skill_id)
+
+
+def _run_exposures(run_id):
+    from app.database import get_db
+    with get_db() as con:return [dict(r) for r in con.execute('SELECT skill_id,version,rank,retrieval_mode FROM learned_skill_exposures WHERE run_id=? ORDER BY rank',(run_id,))]

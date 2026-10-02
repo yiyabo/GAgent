@@ -92,7 +92,7 @@ class SkillLearningService:
             passed=independent and matching and evidence['source_outputs_verified'] and required.issubset(observed)
             if evidence['run_status']!='succeeded' or evidence['hard_failure']:
                 status='failed' if required.intersection(observed) and evidence['hard_failure'] and not evidence['resumed'] else 'unverified'
-            elif passed:status='passed'
+            elif passed and usage.get('delivery')!='external_delivered':status='passed'
             else:status='unverified'
             summary={'delivery':usage.get('delivery','tool'),'independent':independent,'contract_matches':matching,'required_tools_observed':required.issubset(observed),
                      'input_digest':evidence['input_digest'],'input_basis':evidence['input_basis'],

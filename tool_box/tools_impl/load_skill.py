@@ -75,7 +75,7 @@ async def load_skill_handler(
     if skill_name.startswith("learned:"):
         from app.services.skill_learning.context import load_learned_skill
         try:
-            result = load_learned_skill(skill_name, getattr(tool_context, "session_id", None))
+            result = load_learned_skill(skill_name, getattr(tool_context, "session_id", None),record=False)
             if not result:
                 return {"success": False, "error": "invalid_learned_skill_name"}
             if section:
@@ -83,6 +83,10 @@ async def load_skill_handler(
                 if selected is None:
                     return {"success": False, "error": "section_not_found", "available_sections": headings}
                 result["content"] = selected
+            from app.services.chat_run_state import chat_run_claim
+            from app.repository import skill_learning as repository
+            claim=chat_run_claim.get()
+            if claim:repository.record_loaded(result["skill_id"],result["skill_version"],claim[0])
             return result
         except ValueError as exc:
             return {"success": False, "error": "learned_skill_unavailable", "summary": str(exc)}

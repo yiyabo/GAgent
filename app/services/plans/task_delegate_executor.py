@@ -39,6 +39,7 @@ class TaskDelegationSpec:
     resolved_input_artifacts: dict[str, str] = field(default_factory=dict)
     readable_dirs: list[str] = field(default_factory=list)
     resolved_resources: dict[str, object] = field(default_factory=dict)
+    skill_refs: list[dict] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -159,6 +160,8 @@ class CodeAgentTaskDelegateExecutor:
         lines.append(f"Task Name: {spec.task_name}")
         lines.append("")
         lines.append(spec.task_prompt)
+        if spec.skill_refs:
+            lines.append("Read these fixed-version procedures before executing: "+json.dumps(spec.skill_refs,ensure_ascii=False))
         if spec.resolved_input_artifacts:
             lines.append("\n=== RESOLVED INPUT ARTIFACTS ===")
             for alias, path in spec.resolved_input_artifacts.items():

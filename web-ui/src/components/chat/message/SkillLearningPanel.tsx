@@ -52,6 +52,7 @@ export default function SkillLearningPanel({runId,sessionId,status}:{runId?:stri
         message={info.job.status==='completed'?'候选提炼完成':info.job.status==='skipped'?'本次没有足够证据提炼通用技能':info.job.status==='failed'?'提炼失败，可查看任务记录': '正在排队或提炼候选技能'}
         description={info.job.error_code==='hourly_budget'?'本小时学习额度已用完，稍后自动重试。':undefined}/>}
       <div style={{margin:'12px 0'}}>本项目技能：候选不会自动用于普通任务，稳定技能按相关性推荐。</div>
+      <Input.Search placeholder="搜索方法：清洗数据、序列去重…" onSearch={query=>void perform(async()=>{const data=await skillLearningApi.list(sessionId,query);setSkills(query?data.recommended_skills??data.skills:data.skills);})} style={{marginBottom:12}}/>
       {skills.map(skill=><Card key={skill.id} size="small" style={{marginBottom:8}} title={<Space><span>{skill.draft.name}</span><Tag>{labels[skill.state]}</Tag><span>v{skill.current_version}</span></Space>}>
         <div>{skill.draft.description}</div>
         <div style={{fontSize:12,color:'#777',margin:'6px 0'}}>来源任务：{skill.evidence.run_status}；已检查：{skill.evidence.validated_dimensions.join('、')||'尚无程序验收'}{skill.evidence.requires_human_review&&skill.review_status!=='accepted'?'；方法或内容还需要用户确认':skill.review_status==='accepted'?'；方法已由用户确认':''}</div>
@@ -63,6 +64,8 @@ export default function SkillLearningPanel({runId,sessionId,status}:{runId?:stri
         <ol>{active.draft.steps.map((step,i)=><li key={i}>{step.instruction}</li>)}</ol>
         <div>验证方法：{active.draft.verification.join('；')}</div>
         <div>适用限制：{active.draft.limitations.join('；')}</div>
+        {active.version_stats&&<p>本版本：曝光 {active.version_stats.exposures} 次，正文交付 {active.version_stats.body_deliveries} 次，独立材料通过 {active.version_stats.independent_passed_materials} 份。{active.version_stats.co_used_run_tokens!=null?`相关任务共使用 ${active.version_stats.co_used_run_tokens} tokens（含共同使用的方法）。`:"相关任务消耗尚未完整记录。"}</p>}
+        {!!active.similar_skills?.length&&<p>可能相似的方法：{active.similar_skills.map(item=>`${item.name} v${item.version}`).join("、")}。各方法和验证记录分别保留。</p>}
         <div>独立使用记录：{(active.usage??[]).map(item=>`${item.status==='passed'?'程序检查通过':item.status==='failed'?'检查失败':item.feedback_rating==='useful'?'用户认可，程序未完全覆盖':'尚未验证'} (${item.run_id})`).join('；')||'尚无'}</div>
         <Space wrap style={{margin:'12px 0'}}>
           <Button disabled={busy} onClick={()=>void perform(async()=>{await skillLearningApi.review(active,sessionId,'accept');setActive(await skillLearningApi.detail(active.id,sessionId));})}>确认方法适用</Button>
