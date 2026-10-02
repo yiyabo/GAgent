@@ -728,7 +728,7 @@ def _log_usage(
             task_id=ctx.get("task_id"),
             call_purpose=ctx.get("call_purpose"),
             run_id=ctx.get("run_id"),
-            parent_run_id=_usage_parent_run(ctx),
+            **({"parent_run_id":_usage_parent_run(ctx)} if _usage_parent_run(ctx) else {}),
             phase=ctx.get("phase") or "uncategorized",
             tool_name=ctx.get("tool_name"),
             call_status=call_status or "ok",
