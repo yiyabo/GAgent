@@ -13,7 +13,7 @@ def configure(root:Path,cfg:EvalSuiteConfig,entry:str):
     os.environ.update(DATABASE_URL='sqlite:///'+str(root/'db_root/main/plan_registry.db'),SKILL_LEARNING_ENABLED='0',QUALITY_EVALUATION_ENABLED='0',CODE_MODE_ENABLED='1',CODE_MODE_CELL_TIMEOUT_SECONDS='60',LLM_MAX_TOKENS=str(cfg.output_max_tokens),DEEP_THINK_MAX_ITERATIONS=str(cfg.native_max_iterations),QC_MAX_SESSION_TURNS=str(cfg.external_max_session_turns),PLAN_TASK_EXECUTION_BACKEND='external_agent' if entry=='plan-external' else 'internal')
 
 
-async def run_trial(case_id,entry,root:Path,cfg:EvalSuiteConfig):
+async def run_trial(case_id,entry,root:Path,cfg:EvalSuiteConfig,external_remaining=None):
     from app.database import get_db,init_db
     from app.repository import chat_runs
     from app.repository.llm_usage import init_llm_usage_table
@@ -38,8 +38,12 @@ async def run_trial(case_id,entry,root:Path,cfg:EvalSuiteConfig):
     budget=RunBudget(cfg.trial_wall_seconds,cfg.close_reserve_seconds,token);bh=bind_run_budget(budget)
     uh=set_usage_context(session_id=identity,run_id=identity,phase='evaluation',call_purpose='harness_workflow_eval')
     signal.signal(signal.SIGTERM,lambda *_:token.set('evaluation_supervisor_cancel'))
-    attempts={};events=[]
+    attempts={};events=[];external_launches=0
     def observe(event):
+        nonlocal external_launches
+        if event['kind']=='external_launch':
+            if external_launches>=(cfg.external_launch_limit if external_remaining is None else external_remaining):raise RuntimeError('external_launch_limit')
+            external_launches+=1
         if event['kind']=='attempt':
             key=(event['logical_call_id'],event['attempt_no'])
             if key not in attempts and len(attempts)>=cfg.provider_attempt_limit:raise RuntimeError('provider_attempt_limit')
@@ -107,4 +111,4 @@ async def run_trial(case_id,entry,root:Path,cfg:EvalSuiteConfig):
         for path in dict.fromkeys(candidates):
             if root not in path.resolve().parents:raise RuntimeError('artifact_outside_trial')
             artifacts.append({'name':name,'path':str(path),'sha256':hashlib.sha256(path.read_bytes()).hexdigest(),'size':path.stat().st_size})
-    return {'case':case_id,'entry':entry,'entry_implementation':'native-controller' if entry=='chat-native' else 'PlanExecutor.execute_task','session_id':identity,'chat_run_id':identity,'plan_id':plan_id,'task_id':task_id,'linked_run_ids':sorted({r['run_id'] for r in rows if r.get('run_id')}),'production_status':verdict.status,'termination_reason':verdict.reason or error,'declared_verification':report,'answer':answer,'answer_completion_passed':all(n in answer for n in case['outputs']) and verdict.completed,'duration_seconds':round(time.monotonic()-started,3),'provider_attempts':len(attempts),'call_events':events,'artifacts':artifacts,'output_root':str(output_root),'usage_source':'provider' if rows else 'missing','prompt_tokens':sum(r['prompt_tokens'] for r in rows),'completion_tokens':sum(r['completion_tokens'] for r in rows),'total_tokens':sum(r['total_tokens'] for r in rows),'cost_usd':None,'error':error,'cleanup_status':{'run_status':chat_runs.get_chat_run(identity)['status'],'lease_released':not chat_runs.is_chat_run_lease_live(identity)},'model':client.model,'provider':client.provider}
+    return {'case':case_id,'entry':entry,'entry_implementation':'native-controller' if entry=='chat-native' else 'PlanExecutor.execute_task','session_id':identity,'chat_run_id':identity,'plan_id':plan_id,'task_id':task_id,'linked_run_ids':sorted({r['run_id'] for r in rows if r.get('run_id')}),'production_status':verdict.status,'termination_reason':verdict.reason or error,'declared_verification':report,'answer':answer,'answer_completion_passed':all(n in answer for n in case['outputs']) and verdict.completed,'duration_seconds':round(time.monotonic()-started,3),'external_launches':external_launches,'provider_attempts':len(attempts),'call_events':events,'artifacts':artifacts,'output_root':str(output_root),'usage_source':('estimated' if any(e.get('usage_source')=='estimated' for e in events) else 'provider' if rows else 'missing'),'prompt_tokens':sum(r['prompt_tokens'] for r in rows),'completion_tokens':sum(r['completion_tokens'] for r in rows),'total_tokens':sum(r['total_tokens'] for r in rows),'cost_usd':None,'error':error,'cleanup_status':{'run_status':chat_runs.get_chat_run(identity)['status'],'lease_released':not chat_runs.is_chat_run_lease_live(identity)},'model':client.model,'provider':client.provider}

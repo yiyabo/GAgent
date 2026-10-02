@@ -24,7 +24,7 @@ def main():
         request=Path(args.worker).resolve();data=json.loads(request.read_text());cfg=EvalSuiteConfig(**data['config']).validate()
         from app.services.harness_eval.trial import configure,run_trial
         configure(request.parent,cfg,data['entry'])
-        result=asyncio.run(run_trial(data['case'],data['entry'],request.parent,cfg))
+        result=asyncio.run(run_trial(data['case'],data['entry'],request.parent,cfg,data.get('external_remaining')))
         (request.parent/'result.json').write_text(json.dumps(result,ensure_ascii=False,indent=2)+'\n');return
     if not args.root:parser.error('--root required')
     fields=json.loads(Path(args.config).read_text()) if args.config else {}

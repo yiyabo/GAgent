@@ -32,7 +32,7 @@ def run_suite(root:Path,cfg:EvalSuiteConfig,module_root=None):
     if snapshot.exists() and json.loads(snapshot.read_text())!=payload:raise ValueError('suite configuration changed')
     snapshot.write_text(json.dumps(payload,indent=2)+'\n')
     journal=root/'trials.jsonl';rows=[json.loads(x) for x in journal.read_text().splitlines()] if journal.exists() else []
-    done={r['trial_id'] for r in rows};started=time.monotonic();tokens=sum(r.get('total_tokens',0) for r in rows);launches=sum(r['entry']=='plan-external' for r in rows);reason=None
+    done={r['trial_id'] for r in rows};started=time.monotonic();tokens=sum(r.get('total_tokens',0) for r in rows);launches=sum(r.get('external_launches',0) for r in rows);reason=None
     for i,item in enumerate(cfg.schedule()):
         identity=f'{i:03d}-{item["case"]}-{item["entry"]}-{item["repetition"]}'
         if identity in done:continue
@@ -44,7 +44,7 @@ def run_suite(root:Path,cfg:EvalSuiteConfig,module_root=None):
             # Never silently re-run an interrupted trial with possible effects.
             row={**item,'trial_id':identity,'error':'interrupted_trial_not_reexecuted','passed':False}
         else:
-            trial.mkdir();request=trial/'request.json';request.write_text(json.dumps({**item,'config':payload}))
+            trial.mkdir();request=trial/'request.json';request.write_text(json.dumps({**item,'config':payload,'external_remaining':cfg.external_launch_limit-launches}))
             args=[sys.executable,str(Path(__file__).resolve().parents[3]/'scripts/run_harness_workflow_eval.py'),'--worker',str(request)]
             if module_root:args+=['--module-root',module_root]
             with (trial/'worker.log').open('w') as log:
@@ -67,7 +67,7 @@ def run_suite(root:Path,cfg:EvalSuiteConfig,module_root=None):
             row['oracle']=check(item['case'],delivered)
             row['oracle_passed']=row['oracle']['passed'];row['passed']=bool(row['oracle_passed'] and row.get('answer_completion_passed') and not row.get('error'))
             row.update(item,trial_id=identity,config_hash=fingerprint)
-        tokens+=row.get('total_tokens',0);launches+=item['entry']=='plan-external';rows.append(row)
+        tokens+=row.get('total_tokens',0);launches+=row.get('external_launches',0);rows.append(row)
         with journal.open('a') as stream:stream.write(json.dumps(row,ensure_ascii=False)+'\n');stream.flush();os.fsync(stream.fileno())
     report={'schema_version':2,'config':payload,'config_hash':fingerprint,'oracle_version':ORACLE_VERSION,'results':rows,'total':len(cfg.schedule()),'started':len(rows),'passed':sum(r.get('passed',False) for r in rows),'stop_reason':reason,'token_limit_enforcement':'stop_before_next_trial','total_tokens':tokens,'cost_usd':None}
     (root/'report.json').write_text(json.dumps(report,ensure_ascii=False,indent=2)+'\n')

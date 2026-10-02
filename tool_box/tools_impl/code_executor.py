@@ -1066,6 +1066,8 @@ async def code_executor_handler(
                 if use_qwen_code_backend:
                     cli_prompt_tokens_accumulated += _estimate_cli_prompt_tokens(command)
 
+                from app.services.execution.llm_observation import emit
+                emit("external_launch", backend="qwen_code" if use_qwen_code_backend else "claude_code")
                 process = await asyncio.create_subprocess_exec(
                     *command,
                     cwd=str(task_work_dir),
@@ -1702,6 +1704,11 @@ async def code_executor_handler(
                     else "ok" if success else "error"
                 ),
             )
+
+        if use_qwen_code_backend and isinstance(cli_usage, dict):
+            cli_usage["usage_source"] = "provider" if real_usage else "estimated"
+            from app.services.execution.llm_observation import emit
+            emit("external_usage", usage_source=cli_usage["usage_source"], usage=cli_usage)
 
         # Build return result
         result_payload = {
