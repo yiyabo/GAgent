@@ -1356,7 +1356,9 @@ class DeepThinkAgent:
         context: Optional[Dict[str, Any]] = None,
         task_context: Optional[TaskExecutionContext] = None,
     ) -> DeepThinkResult:
-        return await _controller.think(self, user_query, context, task_context)
+        from app.services.execution.runtime import run_execution,repair_verified_delivery_answer
+        result=await run_execution(lambda: _controller.think(self, user_query, context, task_context),stage="agent-loop")
+        return repair_verified_delivery_answer(result,user_query)
 
     # ------------------------------------------------------------------ #
     #  Native tool calling path                                           #

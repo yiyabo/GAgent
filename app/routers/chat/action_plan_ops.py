@@ -249,6 +249,8 @@ async def handle_plan_action(agent: Any, action: LLMAction) -> AgentStep:
             "recent_tool_results": agent.extra_context.get("recent_tool_results", []),
             "paper_mode": paper_mode,
         }
+        from app.services.execution.runtime import execution_context
+        session_ctx=execution_context(agent,overrides=session_ctx)
         from app.services.memory.context_recall import inherit_recall_context
         session_ctx.update(inherit_recall_context(agent))
         exec_config = ExecutionConfig(session_context=session_ctx, paper_mode=paper_mode)
@@ -557,6 +559,8 @@ def _prepare_rerun_task_execution(
         "paper_mode": paper_mode,
         "explicit_execute_shortcut": is_explicit_execute_shortcut,
     }
+    from app.services.execution.runtime import execution_context
+    session_ctx=execution_context(agent,overrides=session_ctx)
     from app.services.memory.context_recall import inherit_recall_context
     session_ctx.update(inherit_recall_context(agent))
     exec_config = ExecutionConfig(

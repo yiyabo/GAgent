@@ -2487,6 +2487,8 @@ class StructuredChatAgent:
                                                     "recent_tool_results", []
                                                 ),
                                             }
+                                            from app.services.execution.runtime import execution_context
+                                            session_ctx=execution_context(self,overrides=session_ctx)
                                             from app.services.memory.context_recall import inherit_recall_context
                                             session_ctx.update(inherit_recall_context(self))
                                             if self.session_id:
@@ -3169,6 +3171,8 @@ class StructuredChatAgent:
             "paper_mode": bool(self.extra_context.get("paper_mode", False)),
             "model_provider": (self.extra_context or {}).get("model_provider"),
         }
+        from app.services.execution.runtime import execution_context
+        session_ctx=execution_context(self,overrides=session_ctx)
         from app.services.memory.context_recall import inherit_recall_context
         session_ctx.update(inherit_recall_context(self))
 

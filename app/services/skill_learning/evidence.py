@@ -49,6 +49,11 @@ def _calls(checkpoint):
         calls.extend(message.get('tool_calls') or [])
     calls.extend((checkpoint.controller_state.get('pending_result') or {}).get('tool_calls') or [])
     out={}
+    state=checkpoint.controller_state
+    if state.get('engine')=='delegate' and isinstance(state.get('delegation_parameters'),dict):
+        params=state['delegation_parameters']
+        fingerprint=params_fingerprint('delegate_task',params)
+        if fingerprint==state.get('params_fingerprint'):out[('delegate_task',fingerprint)]=params
     for call in calls:
         if not isinstance(call,dict):continue
         function=call.get('function') or call

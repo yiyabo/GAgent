@@ -90,8 +90,7 @@ class _DelegateMethods:
         backend = str(
             getattr(self._settings, "plan_task_agent_backend", "qwen_code") or "qwen_code"
         ).strip().lower()
-        delegation = self._task_delegate_executor.execute(
-            TaskDelegationSpec(
+        spec = TaskDelegationSpec(
                 plan_id=plan_id,
                 task_id=node.id,
                 task_name=node.display_name(),
@@ -108,8 +107,18 @@ class _DelegateMethods:
                 resolved_input_artifacts=dict(resolved_input_artifacts or {}),
                 readable_dirs=readable_dirs,
                 resolved_resources=dict(resolved_resources or {}),
-            )
         )
+        from app.services.execution.delegate_ledger import run_delegation
+        result = run_delegation(spec, lambda: self._task_delegate_executor.execute(spec),
+            lambda delegation: self._finalize_delegated_result(plan_id,node,parent,tree,config,delegation))
+        node.execution_result=result.raw_response
+        node.status=result.status
+        tree.nodes[node.id]=node
+        return result
+
+    def _finalize_delegated_result(self,plan_id,node,parent,tree,config,delegation):
+        from app.services.execution.runtime import assert_backend_completed
+        assert_backend_completed(delegation.status,delegation.metadata)
         metadata: Dict[str, Any] = {
             "delegated_task_execution": True,
             "executor": delegation.executor,
@@ -145,7 +154,7 @@ class _DelegateMethods:
             if execution_status == "completed":
                 payload["status"] = "skipped"
                 execution_status = "skipped"
-        elif delegation.status == "failed":
+        elif delegation.status in {"failed","cancelled"}:
             execution_status = "failed"
         else:
             execution_status = "completed"

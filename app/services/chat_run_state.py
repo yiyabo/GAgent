@@ -46,7 +46,9 @@ class ChatRunOutcome:
             return cls("cancelled", "cancelled")
         if status in {"failed", "error", "blocked"}:
             return cls("failed", str(metadata.get("error") or metadata.get("final_summary") or "task execution failed"))
-        return cls("succeeded")
+        from app.services.execution.runtime import execution_verdict
+        verdict=execution_verdict(status,metadata)
+        return cls(verdict.status,verdict.reason)
 
 ALLOWED_TRANSITIONS = {
     "queued": {"running", "failed", "cancelled"},

@@ -294,3 +294,12 @@ def test_delegate_prompt_serializes_contracts_as_json() -> None:
     assert '"publishes": [' in prompt
     assert '"checks": [' in prompt
     assert "{'publishes':" not in prompt
+
+
+def test_cancelled_delegate_cannot_complete_using_preexisting_files(tmp_path):
+    output=tmp_path/'answer.txt';output.write_text('old result')
+    node=PlanNode(id=1,plan_id=777,name='Cancel',instruction='Update answer',metadata={'acceptance_criteria':{'blocking':True,'checks':[{'type':'file_nonempty','path':str(output)}]}})
+    repo=_RepoStub(_make_tree(node))
+    executor=_make_executor(repo,_DelegateStub(TaskDelegationResult(status='cancelled',summary='cancelled',metadata={'cancelled':True})))
+    result=executor.execute_task(777,1,config=ExecutionConfig())
+    assert result.status!='completed' and result.metadata['delegation_status']=='cancelled'

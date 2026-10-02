@@ -449,3 +449,21 @@ def test_execute_chat_run_binds_the_run_cancel_token_into_the_tool_context(
     finally:
         hub.cleanup_run_signals(run_id)
         cancellation.set_cancel_token(None)
+
+
+def test_explicit_scope_rechecks_effective_acceptance_before_skipping(monkeypatch):
+    from types import SimpleNamespace
+    from app.services.chat_run_worker import _run_explicit_task_execution
+    node=PlanNode(id=8,plan_id=7,name='Lost output',status='completed')
+    tree=PlanTree(id=7,title='Plan',nodes={8:node},adjacency={None:[8]})
+    calls=[]
+    registry=object()
+    agent=SimpleNamespace(extra_context={'current_task_id':8,'owner_id':'alice','model_provider':{'model':'same-model'},'_artifact_registry':registry},
+        session_id=None,history=[],plan_session=SimpleNamespace(repo=SimpleNamespace(get_plan_tree=lambda _:tree)))
+    executor=SimpleNamespace(_status_resolver=SimpleNamespace(resolve_plan_states=lambda *_:{8:{'effective_status':'failed'}}),
+        execute_task=lambda *args,**kwargs: calls.append(kwargs['config']) or SimpleNamespace(status='failed',metadata={}))
+    emitter=_FakeEmitter()
+    result=asyncio.run(_run_explicit_task_execution(agent,executor,7,run_id='run',cancel_ev=asyncio.Event(),emitter=emitter))
+    assert result.status=='failed' and len(calls)==1
+    assert calls[0].enable_skills and calls[0].session_context['owner_id']=='alice'
+    assert calls[0].session_context['_artifact_registry'] is registry

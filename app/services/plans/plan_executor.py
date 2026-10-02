@@ -645,7 +645,11 @@ class PlanExecutor(_ArtifactMethods, _DelegateMethods, _DeepThinkMethods):
                     ):
                         raise ControllerRestoreError("This entered task cannot resume through a delegate/legacy controller; reconciliation is required.")
                     query = (node.instruction or node.display_name() or f"Execute task #{node.id}").strip()
-                    ensure_plan_resume_scope(plan_id, node.id, query, previously_entered=previously_entered)
+                    if self._should_delegate_plan_task(config):
+                        from app.services.execution.delegate_ledger import ensure_delegate_resume
+                        ensure_delegate_resume(plan_id,node.id,query,previously_entered=previously_entered)
+                    else:
+                        ensure_plan_resume_scope(plan_id, node.id, query, previously_entered=previously_entered)
                 check_run_active()
             parent = tree.nodes.get(node.parent_id) if node.parent_id else None
             dependencies = self._resolve_dependencies(tree, node)

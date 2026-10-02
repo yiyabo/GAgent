@@ -91,6 +91,8 @@ def restore_checkpoint(agent: Any, checkpoint: Any, user_query: str, task_contex
             raise ControllerRestoreError("The requested controller checkpoint is unavailable; reconciliation is required")
         return None
     state = checkpoint.controller_state
+    if state.get("engine")=="delegate":
+        raise ControllerRestoreError("Cannot restore a delegated operation into a native model loop")
     if context.get("resume_from_run_id"):
         if (state.get("query_sha256") != agent._checkpoint_query_sha256
                 or state.get("task_id") != agent._checkpoint_task_id):

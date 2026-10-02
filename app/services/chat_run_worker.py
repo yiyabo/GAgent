@@ -113,24 +113,16 @@ async def _run_explicit_task_execution(
         all_task_ids,
     )
 
-    session_ctx = {
-        "session_id": getattr(agent, "session_id", None),
-        "chat_history": getattr(agent, "history", []),
-        "paper_mode": False,
-    }
-    from app.services.memory.context_recall import inherit_recall_context
-    session_ctx.update(inherit_recall_context(agent))
-    exec_config = ExecutionConfig(
-        session_context=session_ctx,
-        enable_skills=False,
-        skill_trace_enabled=False,
-    )
+    from app.services.execution.runtime import execution_context
+    session_ctx=execution_context(agent)
+    exec_config = ExecutionConfig(session_context=session_ctx)
     completed_ids = []
     _ctx["completed_scope_task_ids"] = completed_ids
     failed_id = None
     skipped_ids: list[int] = []
     tools_used: list[str] = []
     tool_failures: list[str] = []
+    task_outcomes: list[dict] = []
 
     for idx, task_id in enumerate(all_task_ids):
         if cancel_ev.is_set():
@@ -166,7 +158,9 @@ async def _run_explicit_task_execution(
             if tree.has_node(task_id):
                 node = tree.get_node(task_id)
                 status = (node.status or "").strip().lower()
-                if status in ("completed", "done"):
+                effective=executor._status_resolver.resolve_plan_states(plan_id,tree).get(task_id) if hasattr(executor,"_status_resolver") else None
+                accepted=effective.get("effective_status")=="completed" if isinstance(effective,dict) else status in {"completed","done"}
+                if accepted:
                     logger.info(
                         "[EXPLICIT_EXEC] Task %d already completed, skipping",
                         task_id,
@@ -204,7 +198,10 @@ async def _run_explicit_task_execution(
                 if message and message not in tool_failures:
                     tool_failures.append(message)
 
-        task_status = (exec_result.status or "").strip().lower()
+        from app.services.execution.runtime import execution_verdict
+        verdict=execution_verdict(exec_result.status,result_metadata,default_success=False)
+        task_outcomes.append({"task_id":task_id,"backend_status":exec_result.status,"status":verdict.status,"verification":verdict.verification,"reason":verdict.reason})
+        task_status = "completed" if verdict.completed else verdict.status
         logger.info(
             "[EXPLICIT_EXEC] Task %d finished status=%s",
             task_id,
@@ -253,6 +250,7 @@ async def _run_explicit_task_execution(
         status="completed" if outcome.status == "succeeded" else outcome.status,
     )
 
+    final_payload["payload"]["metadata"]["task_outcomes"]=task_outcomes
     await emitter.emit(final_payload)
 
     session_id = getattr(agent, "session_id", None)
@@ -340,13 +338,8 @@ async def _run_cascade(
         except Exception:
             pass
 
-        session_ctx = {
-            "session_id": getattr(agent, "session_id", None),
-            "chat_history": getattr(agent, "history", []),
-            "paper_mode": False,
-        }
-        from app.services.memory.context_recall import inherit_recall_context
-        session_ctx.update(inherit_recall_context(agent))
+        from app.services.execution.runtime import execution_context
+        session_ctx=execution_context(agent)
         exec_config = ExecutionConfig(session_context=session_ctx)
 
         try:
