@@ -19,7 +19,7 @@ def evaluate(tmp_path, summary, case='table_clean'):
 
 @pytest.mark.parametrize('case', ['table_clean', 'skill_reuse'])
 def test_verified_row_count_is_allowed_without_changing_group_requirements(tmp_path, case):
-    assert ORACLE_VERSION == 'required-fields-v4'
+    assert ORACLE_VERSION == 'required-fields-v5'
     assert evaluate(tmp_path, {**MEANS, 'row_count': 4}, case)
     assert evaluate(tmp_path, MEANS, case)
 

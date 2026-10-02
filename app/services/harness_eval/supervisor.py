@@ -71,6 +71,14 @@ def score_result(trial, item, *, interrupted=False):
             (delivered / name).write_bytes(contents)
             copied.add(name)
     row['oracle'] = check(item['case'], delivered)
+    if item['case']=='correction_journey':
+        turns=row.get('turn_results') or []
+        preserved=delivered/'summary-v1.json'
+        if (len(turns)!=2 or any(t.get('status')!='succeeded' for t in turns)
+                or not preserved.is_file() or turns[0].get('files',{}).get('summary.json')!=hashlib.sha256(preserved.read_bytes()).hexdigest()
+                or not row.get('input_unchanged')):
+            row['oracle']['failures'].append('turn receipts, preserved first output or unchanged input could not be verified')
+            row['oracle']['passed']=False
     row['manual_review_required'] = row['oracle']['manual_review_required']
     row['manual_review_status'] = 'pending' if row['manual_review_required'] else 'not_required'
     row['oracle_passed'] = row['oracle']['passed']

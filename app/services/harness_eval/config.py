@@ -1,7 +1,7 @@
 """Explicit, frozen finite evaluation configurations."""
 from dataclasses import asdict, dataclass, field
 import hashlib, json, random, math
-from .fixtures import CASES, CORPUS_VERSION
+from .fixtures import CASES, BASE_CASES, CORPUS_VERSION
 
 
 @dataclass
@@ -12,7 +12,7 @@ class EvalSuiteConfig:
     feature_overrides: dict[str,str] = field(default_factory=dict)
     schema_version: int = 2
     profile: str = 'production-like'
-    cases: list[str] = field(default_factory=lambda:list(CASES))
+    cases: list[str] = field(default_factory=lambda:list(BASE_CASES))
     entries: list[str] = field(default_factory=lambda:['chat-native','plan-native','plan-external'])
     repetitions: int = 1
     order_seed: int = 42
@@ -41,6 +41,7 @@ class EvalSuiteConfig:
         if self.profile not in {'diagnostic','production-like'}:raise ValueError('unknown profile')
         if not self.cases or any(c not in CASES for c in self.cases):raise ValueError('unknown case')
         if not self.entries or any(e not in {'chat-native','plan-native','plan-external'} for e in self.entries):raise ValueError('unknown entry')
+        if 'correction_journey' in self.cases and self.entries!=['chat-native']:raise ValueError('multi-turn controller case requires chat-native entry')
         if not 1<=self.repetitions<=3:raise ValueError('repetitions must be 1..3')
         if not 10<=self.trial_wall_seconds<=3600 or not 10<=self.suite_wall_seconds<=21600:raise ValueError('invalid wall limit')
         if not 0<=self.close_reserve_seconds<self.trial_wall_seconds:raise ValueError('invalid reserve')
@@ -53,7 +54,7 @@ class EvalSuiteConfig:
         if self.campaign_root:
             from pathlib import Path
             if not Path(self.campaign_root).is_absolute():raise ValueError('campaign_root must be absolute')
-        allowed={'AGENT_RUNTIME_V2_ENABLED','ARTIFACT_VERSIONING_ENABLED','SKILL_RECOMMENDATION_V2_ENABLED','SKILL_CONTEXT_PROGRESSIVE_ENABLED','CHAT_RUN_SYNTHESIS_RESERVE_SECONDS'}
+        allowed={'AGENT_ARGUMENT_VALIDATION_ENABLED','AGENT_SCHEMA_DISCLOSURE_V2_ENABLED','AGENT_TOOL_RECEIPT_COMPACTION_ENABLED','AGENT_RUNTIME_V2_ENABLED','ARTIFACT_VERSIONING_ENABLED','SKILL_RECOMMENDATION_V2_ENABLED','SKILL_CONTEXT_PROGRESSIVE_ENABLED','CHAT_RUN_SYNTHESIS_RESERVE_SECONDS'}
         def validate_features(values):
             if not isinstance(values,dict) or set(values)-allowed:raise ValueError('unsupported feature override')
             for name,value in values.items():

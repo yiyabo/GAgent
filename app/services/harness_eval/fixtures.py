@@ -4,7 +4,7 @@ import csv
 import json
 from pathlib import Path
 
-CORPUS_VERSION='research-workflows-v1'
+CORPUS_VERSION='research-workflows-v2'
 CASES={
  'table_clean':{'prompt':'Read input.csv, discard missing or non-numeric scores and duplicate IDs (keep first). Write clean.csv with id,group,score and summary.json with count and mean for each group.','outputs':['clean.csv','summary.json']},
  'figure':{'prompt':'Read input.csv, ignore missing/non-numeric scores. Calculate mean score for each group. Write summary.json and a bar chart chart.png (at least 320x240 pixels).','outputs':['summary.json','chart.png']},
@@ -14,11 +14,19 @@ CASES={
  'skill_reuse':{'prompt':'Read the local SKILL.md and follow its data cleaning procedure on input.csv. Write clean.csv and summary.json with count and mean for each group.','outputs':['clean.csv','summary.json']},
 }
 ROWS=[['id','group','score'],['a','A','10'],['b','A','20'],['a','A','90'],['c','B','30'],['d','B','50'],['e','A',''],['f','B','bad']]
+BASE_CASES=tuple(CASES)
+CASES['correction_journey']={
+ 'prompt':'Read input.csv, ignore missing/non-numeric scores (do not deduplicate IDs). Write summary.json with count and mean for each group.',
+ 'outputs':['summary.json','summary-v1.json'],
+ 'turns':[
+  {'prompt':'Read input.csv, ignore missing/non-numeric scores (do not deduplicate IDs). Write summary.json with count and mean for each group.','outputs':['summary.json']},
+  {'prompt':'Change the previous statistics: first copy the exact bytes of summary.json to summary-v1.json, then replace summary.json with count and median for each group calculated from the same input.csv. Remove mean fields. Do not change input.csv. Link both output files.','outputs':['summary.json','summary-v1.json']},
+ ]}
 
 
 def prepare(case_id:str,root:Path)->dict:
     root.mkdir(parents=True,exist_ok=True)
-    if case_id in {'table_clean','figure','correction','skill_reuse'}:
+    if case_id in {'table_clean','figure','correction','skill_reuse','correction_journey'}:
         with (root/'input.csv').open('w',newline='') as handle:csv.writer(handle).writerows(ROWS)
     if case_id=='fasta':
         (root/'sequences.fasta').write_text('>short\nACG\n>one\nACGTACGT\n>bad\nACGTNNNN\n>two\nTTTTCCCC\n>duplicate\nacgtacgt\n')
@@ -30,5 +38,4 @@ def prepare(case_id:str,root:Path)->dict:
         (root/'SKILL.md').write_text('---\nname: clean-group-data\ndescription: Clean ID-based data before grouped statistics\n---\nRemove missing/non-numeric scores; deduplicate IDs keeping first; then compute group count and mean. Verify that output IDs are unique and counts match retained records.\n')
     if case_id=='correction':(root/'summary.json').write_text('{"A":{"mean":999},"B":{"mean":999}}')
     return CASES[case_id]
-
 

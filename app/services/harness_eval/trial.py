@@ -6,6 +6,7 @@ from dataclasses import replace
 from .config import EvalSuiteConfig
 from .fixtures import prepare
 from .accounting import TrialAccounting
+from .conversation import file_hash
 
 
 def configure(root:Path,cfg:EvalSuiteConfig,entry:str):
@@ -22,6 +23,9 @@ def configure(root:Path,cfg:EvalSuiteConfig,entry:str):
         os.environ[name]=str(root/name.lower())
     os.environ['CODE_MODE_ALLOWED_TOOLS']='file_operations,document_reader,load_skill,deliverable_submit'
     os.environ.update({key:'0' for key in ('AGENT_RUNTIME_V2_ENABLED','ARTIFACT_VERSIONING_ENABLED','SKILL_RECOMMENDATION_V2_ENABLED','SKILL_CONTEXT_PROGRESSIVE_ENABLED','CHAT_RUN_SYNTHESIS_RESERVE_SECONDS')})
+    for key in ('AGENT_ARGUMENT_VALIDATION_ENABLED','AGENT_SCHEMA_DISCLOSURE_V2_ENABLED'):
+        os.environ.pop(key, None)  # inherit the explicitly frozen umbrella unless overridden
+    os.environ['AGENT_TOOL_RECEIPT_COMPACTION_ENABLED']='0'
     os.environ.update(cfg.feature_overrides)
     os.environ.update(DATABASE_URL='sqlite:///'+str(root/'db_root/main/plan_registry.db'),SKILL_LEARNING_ENABLED='0',QUALITY_EVALUATION_ENABLED='0',CODE_MODE_ENABLED='1',CODE_MODE_CELL_TIMEOUT_SECONDS='60',LLM_MAX_TOKENS=str(cfg.output_max_tokens),DEEP_THINK_MAX_ITERATIONS=str(cfg.native_max_iterations),QC_MAX_SESSION_TURNS=str(cfg.external_max_session_turns),PLAN_TASK_EXECUTION_BACKEND='external_agent' if entry=='plan-external' else 'internal')
 
@@ -49,6 +53,7 @@ async def run_trial(case_id,entry,root:Path,cfg:EvalSuiteConfig,external_remaini
     from app.services.path_router import get_path_router
     work=get_path_router().get_session_dir(identity,create=True)/'raw_files'/'inputs'
     case=prepare(case_id,work)
+    input_hash_before=file_hash(work/'input.csv') if case.get('turns') else None
     if cfg.skills_arm is not None:
         from .skill_fixtures import seed
         seed(identity)
@@ -67,7 +72,7 @@ async def run_trial(case_id,entry,root:Path,cfg:EvalSuiteConfig,external_remaini
     accounting=TrialAccounting(root,cfg,external_remaining)
     accounting.observe({'kind':'trial_started','session_id':identity,'worker_id':worker})
     oh=observer.set(accounting.observe)
-    client=LLMClient(timeout=120,retries=0);started=time.monotonic();result=None;error=None;plan_id=task_id=None
+    client=LLMClient(timeout=120,retries=0);started=time.monotonic();result=None;error=None;plan_id=task_id=None;turn_results=[]
     context={'learned_skills_disabled':cfg.skills_arm=='none','session_id':identity,'owner_id':'harness-eval','user_message':query,'output_spec_base_dir':str(work)}
     def spec_for(directory):
         return OutputSpec(required_outputs=[RequiredOutput(kind='image' if n.endswith('.png') else 'document' if n.endswith('.md') else 'data',extensions=[Path(n).suffix],target_path=str(directory/n)) for n in case['outputs']],source='explicit').to_dict()
@@ -82,7 +87,10 @@ async def run_trial(case_id,entry,root:Path,cfg:EvalSuiteConfig,external_remaini
                 return await execute_code_handler(**{k:params[k] for k in ('code','reset') if k in params},tool_context=ToolContext(session_id=identity,owner_id='harness-eval',work_dir=str(work)))
             agent=DeepThinkAgent(client,['execute_code'],execute,max_iterations=cfg.native_max_iterations,tool_timeout=60,request_profile={'session_id':identity,'owner_id':'harness-eval'})
             agent.enable_thinking=False;agent.thinking_budget=0;context['output_spec']=spec_for(work)
-            result=await agent.think(query,context)
+            if case.get('turns'):
+                from .conversation import run_native_turns
+                result,turn_results=await run_native_turns(client,execute,context,cfg,query,case,work)
+            else:result=await agent.think(query,context)
             answer=result.final_answer;meta={'output_verification':result.output_verification,'execution_issues':result.execution_issues};status=None
             output_root=work
         else:
@@ -139,7 +147,7 @@ async def run_trial(case_id,entry,root:Path,cfg:EvalSuiteConfig,external_remaini
       with get_db() as con:
         exposures=[dict(r) for r in con.execute('SELECT skill_id,version,rank,retrieval_mode FROM learned_skill_exposures WHERE run_id=?',(identity,))]
         deliveries=[dict(r) for r in con.execute('SELECT skill_id,version,delivery,status FROM learned_skill_usage WHERE run_id=?',(identity,))]
-    return {'skill_exposures':exposures,'skill_deliveries':deliveries,'skills_arm':cfg.skills_arm,'case':case_id,'entry':entry,'entry_implementation':'native-controller' if entry=='chat-native' else 'PlanExecutor.execute_task','session_id':identity,'chat_run_id':identity,'plan_id':plan_id,'task_id':task_id,'linked_run_ids':sorted({r['run_id'] for r in rows if r.get('run_id')}),'production_status':verdict.status,'termination_reason':verdict.reason or error,'declared_verification':report,'answer':answer,'answer_completion_passed':all(n in answer for n in case['outputs']) and verdict.completed,'duration_seconds':round(time.monotonic()-started,3),'call_events':accounting.events,'artifacts':artifacts,'output_root':str(output_root),**metering,'cost_usd':None,'error':error,'cleanup_status':{'run_status':chat_runs.get_chat_run(identity)['status'],'lease_released':not chat_runs.is_chat_run_lease_live(identity)},'revision':cfg.revision,'model':client._effective_model(),'provider':client.provider}
+    return {'input_unchanged':file_hash(work/'input.csv')==input_hash_before if input_hash_before else None,'turn_results':turn_results or [e for e in events if e['kind']=='journey_turn'],'skill_exposures':exposures,'skill_deliveries':deliveries,'skills_arm':cfg.skills_arm,'case':case_id,'entry':entry,'entry_implementation':'native-controller' if entry=='chat-native' else 'PlanExecutor.execute_task','session_id':identity,'chat_run_id':identity,'plan_id':plan_id,'task_id':task_id,'linked_run_ids':sorted({r['run_id'] for r in rows if r.get('run_id')}),'production_status':verdict.status,'termination_reason':verdict.reason or error,'declared_verification':report,'answer':answer,'answer_completion_passed':all(n in answer for n in case['outputs']) and verdict.completed,'duration_seconds':round(time.monotonic()-started,3),'call_events':accounting.events,'artifacts':artifacts,'output_root':str(output_root),**metering,'cost_usd':None,'error':error,'cleanup_status':{'run_status':chat_runs.get_chat_run(identity)['status'],'lease_released':not chat_runs.is_chat_run_lease_live(identity)},'revision':cfg.revision,'model':client._effective_model(),'provider':client.provider}
 
 
 CASES_NATURAL_CLEANING="Read input.csv, discard missing or non-numeric scores and duplicate IDs keeping first. Write clean.csv and summary.json with group count and mean."

@@ -16,6 +16,7 @@ from uuid import uuid4
 
 from .fixtures import CORPUS_VERSION, prepare
 from .hermes_gateway import ObservedGateway
+from .conversation import file_hash
 from .hermes_recovery import identity, recover_hermes_processes, write_process_state
 
 PINNED_HERMES_REVISION = "663362680b6ffa4fbffeb58f6682564239a1953b"
@@ -244,6 +245,7 @@ def run_hermes_trial(case_id, root, cfg, hermes, *, api_key, event_hook=None):
     with (root / "hermes-started.json").open("x") as handle:
         json.dump({"started_at": time.time()}, handle)
     case = prepare(case_id, root / "workspace/inputs")
+    input_hash_before=file_hash(root/'workspace/inputs/input.csv') if case.get('turns') else None
     output = root / "workspace/deliverables"
     session = "harness-" + uuid4().hex
     prompt = (case["prompt"] + "\nUse only the provided local inputs. Deliver all required files and include their links in the answer. "
@@ -254,6 +256,10 @@ def run_hermes_trial(case_id, root, cfg, hermes, *, api_key, event_hook=None):
                "max_iterations": cfg.native_max_iterations, "max_tokens": cfg.output_max_tokens,
                "active_seconds": cfg.trial_wall_seconds if getattr(cfg, "campaign_root", None) else cfg.trial_wall_seconds - cfg.close_reserve_seconds,
                "workspace": str(root / "workspace")}
+    if case.get('turns'):
+        request['turns']=[{'prompt':prompt if i==0 else turn['prompt']+f'\nInputs: {root / "workspace/inputs"}\nOutputs: {output}',
+                          'outputs':turn['outputs']} for i,turn in enumerate(case['turns'])]
+        request['output_root']=str(output)
     request_path = root / "hermes-request.json"
     request_path.write_text(json.dumps(request, ensure_ascii=False, indent=2) + "\n")
     started = time.monotonic()
@@ -291,11 +297,12 @@ def run_hermes_trial(case_id, root, cfg, hermes, *, api_key, event_hook=None):
         completed = False
     status = "succeeded" if completed else "cancelled" if cleanup["supervisor_timeout"] or raw.get("interrupted") else "failed"
     report = {"case": case_id, "entry": "hermes-sdk", "entry_implementation": "AIAgent.run_conversation",
+              "input_unchanged": file_hash(root/'workspace/inputs/input.csv')==input_hash_before if input_hash_before else None,
               "session_id": session, "revision": hermes.expected_revision, "model": hermes.model, "provider": "custom",
               "production_status": status, "termination_reason": raw.get("turn_exit_reason") or error or ("supervisor_timeout" if cleanup["supervisor_timeout"] else None),
               "declared_verification": {"status": "unchecked", "source": "Hermes has no GAgent OutputSpec verdict"},
               "answer": answer, "answer_completion_passed": completed and all(n in answer for n in case["outputs"]) and len(artifacts) == len(case["outputs"]),
-              "artifacts": artifacts, "output_root": str(output), "duration_seconds": round(time.monotonic() - started, 3),
+              "artifacts": artifacts, "turn_results":raw.get('turn_results',[]), "output_root": str(output), "duration_seconds": round(time.monotonic() - started, 3),
               "external_launches": 0, "worker_process_launches": 1, "call_events": relay.events, **relay.accounting(), "cost_usd": None,
               "cleanup_status": cleanup, "error": error, "adapter_metadata": snapshot["installation"]}
     (root / "result.json").write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n")

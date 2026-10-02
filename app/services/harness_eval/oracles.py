@@ -1,7 +1,7 @@
 """Private answers: imported by the supervisor only after execution."""
 import csv,json
 from pathlib import Path
-ORACLE_VERSION="required-fields-v4"
+ORACLE_VERSION="required-fields-v5"
 
 def _required_statistics(actual,expected,*,forbidden=()):
     if not isinstance(actual,dict) or set(actual)-{'row_count'}!=set(expected):return False
@@ -29,6 +29,9 @@ def check(case_id:str,root:Path)->dict:
             require([(row['id'],row['group'],float(row['score'])) for row in rows]==[('a','A',10),('b','A',20),('c','B',30),('d','B',50)],'cleaned records must preserve the first valid input rows')
             expected={'A':{'count':2,'mean':15},'B':{'count':2,'mean':40}}
             require(_required_statistics(json.loads((root/'summary.json').read_text()),expected),'group statistics after deduplication do not match')
+        elif case_id=='correction_journey':
+            require(_required_statistics(json.loads((root/'summary-v1.json').read_text()),{'A':{'count':3,'mean':40},'B':{'count':2,'mean':40}}),'original means do not match')
+            require(_required_statistics(json.loads((root/'summary.json').read_text()),{'A':{'count':3,'median':20},'B':{'count':2,'median':40}},forbidden=('mean',)),'latest correction must replace means with medians')
         elif case_id=='figure':
             expected={'A':{'count':3,'mean':40},'B':{'count':2,'mean':40}}
             require(_required_statistics(json.loads((root/'summary.json').read_text()),expected),'figure data statistics do not match')

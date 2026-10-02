@@ -5,6 +5,7 @@ No GAgent application, corpus oracle or evaluator imports enter this process.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 from pathlib import Path
 import signal
@@ -30,6 +31,7 @@ def execute(request, *, agent_factory=None, db_factory=None, registry=None):
     cleanup = {"agent_closed": False, "session_db_closed": False, "registry_remaining": None}
     errors = []
     interrupted = False
+    turns = []
 
     def stop(*_):
         nonlocal interrupted
@@ -51,13 +53,28 @@ def execute(request, *, agent_factory=None, db_factory=None, registry=None):
             fallback_model=None, save_trajectories=False, platform="cli",
             clarify_callback=lambda questions: {"answers": {}, "outcome": "undelivered"},
         )
-        raw = agent.run_conversation(request["prompt"], task_id=request["session_id"])
+        history=None
+        for index,turn in enumerate(request.get('turns') or [{'prompt':request['prompt'],'outputs':[]}]):
+            options={'conversation_history':history} if index else {}
+            raw=agent.run_conversation(turn['prompt'],task_id=request['session_id'],**options)
+            if not isinstance(raw,dict):raise TypeError('Hermes result must be an object')
+            files={}
+            for name in turn['outputs']:
+                path=Path(request['output_root'])/name
+                if path.is_file():files[name]=hashlib.sha256(path.read_bytes()).hexdigest()
+            turns.append({'index':index,'status':'succeeded' if raw.get('completed') and not raw.get('failed') else 'failed',
+                          'answer':raw.get('final_response') or '', 'files':files})
+            if not raw.get('completed') or raw.get('failed') or raw.get('interrupted'):break
+            history=raw.get('messages')
+            if request.get('turns') and index+1<len(request['turns']) and not isinstance(history,list):
+                raise ValueError('Hermes history missing between turns')
         if not isinstance(raw, dict):
             raise TypeError("Hermes result must be an object")
         # Full messages remain inside Hermes' isolated store; the supervisor needs only
         # its declared outcome. Provider usage is accounted at the HTTP boundary.
         keys = ("final_response", "completed", "failed", "partial", "interrupted", "turn_exit_reason", "session_id")
         result = {key: raw.get(key) for key in keys}
+        if request.get('turns'):result['turn_results']=turns
     except BaseException as exc:
         result = {"failed": True, "completed": False, "error_type": type(exc).__name__}
     finally:
@@ -89,6 +106,7 @@ def execute(request, *, agent_factory=None, db_factory=None, registry=None):
                 errors.append("remaining:" + type(exc).__name__)
         signal.signal(signal.SIGTERM, previous)
     result["interrupted"] = bool(interrupted or result.get("interrupted"))
+    if request.get('turns'):result['turn_results']=turns
     result["cleanup"] = {**cleanup, "errors": errors}
     return result
 
