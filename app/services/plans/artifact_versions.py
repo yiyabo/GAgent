@@ -246,6 +246,7 @@ def commit_result(executor,binding,payload,status):
             else:
                 payload.setdefault('metadata',{})['artifact_binding']=binding.to_dict()
                 proposed.setdefault('bindings',{})[str(binding.task_id)]=binding.to_dict()
+            if not stale:
                 executor._repo._update_task_with_conn(con,binding.plan_id,binding.task_id,status=status,execution_result=json.dumps(payload,ensure_ascii=False))
             from app.services.chat_run_state import chat_run_claim
             claim=chat_run_claim.get()
@@ -265,7 +266,7 @@ def project(plan_id,path,publication_id):
     from app.services.artifacts.projector import get_registry_projector
     session=receipt.get('session_id')
     try:
-        if session:
+        if session and receipt.get('status') in {'completed','done'}:
             events=[ArtifactEvent(session_id=session,file_path=e['path'],alias=a,producer_kind='plan_task',producer_plan_id=plan_id,producer_task_id=receipt['task_id'],file_sha256=e['blob_id'],publish_requested=True) for a,e in data['artifacts'].items() if e.get('producer_task_id')==receipt['task_id']]
             get_registry_projector().consume_plan_events(session_id=session,events=events,plan_id=plan_id,task_id=receipt['task_id'],task_name='',task_instruction='')
         with locked(path):
@@ -307,10 +308,13 @@ def recover(repo,plan_id):
         with locked(path):
             manifest=_read(path);r=manifest['publications'].get(identity)
             if not r or r.get('applied'):continue
-            binding=(r['payload'].get('metadata') or {}).get('artifact_binding') or {}
-            if manifest.get('bindings',{}).get(str(r['task_id']),{}).get('publication_id')!=identity:continue
+            binding=(r['payload'].get('metadata') or {}).get('artifact_binding') or r.get('prepared_binding') or {}
+            completed=r.get('status') in {'completed','done'}
+            if completed and manifest.get('bindings',{}).get(str(r['task_id']),{}).get('publication_id')!=identity:continue
+            task_receipts=[item for item in manifest['publications'].values() if item.get('task_id')==r['task_id']]
+            if task_receipts and task_receipts[-1].get('publication_id')!=identity:continue
             parent=get_chat_run(r['run_id']) if r.get('run_id') else None
-            if parent and parent['status'] in {'failed','cancelled'}:continue
+            if completed and parent and parent['status'] in {'failed','cancelled'}:continue
             with plan_db_connection(get_plan_db_path(plan_id)) as con:
                 con.execute('BEGIN IMMEDIATE')
                 con.execute('CREATE TABLE IF NOT EXISTS artifact_publications(id TEXT PRIMARY KEY,receipt_json TEXT NOT NULL,created_at TEXT DEFAULT CURRENT_TIMESTAMP)')
@@ -351,7 +355,21 @@ def promote_delegate_outputs(executor,node,payload,context):
         if len(hashes)!=1:raise ArtifactRevisionConflict('ambiguous_delegate_output:'+name)
         checksum,source=next(iter(hashes.items()));target=task/name
         if target.exists() and content_hash(target)!=checksum:raise ArtifactRevisionConflict('delegate_target_conflict:'+name)
-        if not target.exists():task.mkdir(parents=True,exist_ok=True);shutil.copy2(source,target)
+        if not target.exists():
+            check_run_active();task.mkdir(parents=True,exist_ok=True)
+            fd,temporary=tempfile.mkstemp(prefix='.delegate-output-',dir=task);os.close(fd)
+            try:
+                shutil.copy2(source,temporary)
+                if content_hash(Path(temporary))!=checksum or content_hash(source)!=checksum:
+                    raise StaleArtifactInputs('delegate_source_changed:'+name)
+                check_run_active()
+                try:os.link(temporary,target)
+                except FileExistsError:
+                    if content_hash(target)!=checksum:raise ArtifactRevisionConflict('delegate_target_conflict:'+name)
+            finally:
+                Path(temporary).unlink(missing_ok=True)
+        if content_hash(source)!=checksum or content_hash(target)!=checksum:
+            raise StaleArtifactInputs('delegate_source_changed:'+name)
         promoted.append(str(target))
     if not promoted:return payload
     result=dict(payload);metadata=dict(payload.get('metadata') or {})

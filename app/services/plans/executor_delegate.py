@@ -16,6 +16,7 @@ messages are byte-identical.
 from __future__ import annotations
 
 import logging
+import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -161,11 +162,28 @@ class _DelegateMethods:
             execution_status = "failed"
         else:
             execution_status = "completed"
-        from app.services.deep_think.native_validation import enabled
-        if enabled():
-            from .artifact_versions import promote_delegate_outputs
-            payload=promote_delegate_outputs(self,node,payload,config.session_context)
-            payload=self._promote_workspace_artifacts_to_task_dir(node=node,payload=payload,session_context=config.session_context)
+        if delegation.status != "completed":
+            # Files can survive a failed/cancelled backend. They are partial
+            # evidence, not permission for the verifier to recover this run.
+            payload["status"] = execution_status
+            result_metadata = payload.setdefault("metadata", {})
+            result_metadata["execution_status"] = execution_status
+            result_metadata["verification_status"] = "not_run"
+            result_metadata.setdefault("failure_kind", "backend_cancelled" if delegation.status == "cancelled" else "external_backend_incomplete")
+            self._persist_execution(plan_id, node.id, payload, status=execution_status)
+            return ExecutionResult(
+                plan_id=plan_id, task_id=node.id, status=execution_status,
+                content=str(payload.get("content") or delegation.summary),
+                notes=list(payload.get("notes") or []), metadata=result_metadata,
+                raw_response=json.dumps(payload, ensure_ascii=False), attempts=1,
+            )
+
+        # The production CLI may already have copied these files to the formal
+        # task directory while reporting only scratch paths. Align verified
+        # source/mirror evidence before OutputSpec checks in every runtime mode.
+        from .artifact_versions import promote_delegate_outputs
+        payload=promote_delegate_outputs(self,node,payload,config.session_context)
+        payload=self._promote_workspace_artifacts_to_task_dir(node=node,payload=payload,session_context=config.session_context)
         finalization, _ = self._finalize_task_execution(
             plan_id,
             node,
