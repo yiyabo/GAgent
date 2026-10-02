@@ -27,6 +27,12 @@ native/strict model loops. It is not a replacement of every entry point or backe
   deterministic fallback lists checked files and states the output-check boundary;
   it never adds a scientific conclusion or upgrades rejected/uncertain results.
 
+Python kernel calls now report bounded file changes under their supplied working
+directory. Unchanged inputs, empty files, symlinks and kernel internals are not
+produced artifacts. This adds path observations, not acceptance or invented tool
+execution, and fixes correct outputs being rejected simply because a cell did not
+print their filenames.
+
 ## Evaluation corpus
 
 `research-workflows-v1` freezes small inputs for table cleaning, figure data,

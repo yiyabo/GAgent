@@ -74,7 +74,7 @@ async def run_case(case_id:str,root:Path,*,entry:str='chat-native',timeout:float
     with get_db() as conn:
         rows=conn.execute('SELECT prompt_tokens,completion_tokens,total_tokens FROM llm_usage_log WHERE run_id=?',(identity,)).fetchall()
     answer=str(getattr(result,'final_answer','') or '')
-    answer_completed=all(name in answer for name in case['outputs'])
+    answer_completed=all(name in answer for name in case['outputs']) and (getattr(result,'output_verification',None) or {}).get('status')=='passed'
     return {'case':case_id,'entry':entry,'corpus_version':CORPUS_VERSION,'passed':verdict['passed'] and error is None and answer_completed,'delivery_passed':verdict['passed'],'answer_completion_passed':answer_completed,
             'oracle':verdict,'duration_seconds':round(time.perf_counter()-started,3),'provider_calls':client.calls,
             'tool_calls':tool_calls,'prompt_tokens':sum(row[0] for row in rows),'completion_tokens':sum(row[1] for row in rows),
