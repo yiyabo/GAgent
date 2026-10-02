@@ -111,9 +111,11 @@ class _CleaningProvider:
                 ids=["native-baseline", "native-runtime-v2", "strict-baseline", "strict-runtime-v2"])
 def cleaning_provider(isolated_app_env, monkeypatch, request):
     from app.services.deliverables import publisher
-    from app.services import path_router
+    from app.services import path_router, tool_schemas
     from app.services.llm import llm_service
     from app.services.memory import chat_memory_middleware
+    from tool_box import integration, tools
+    from tool_box.tool_registry import register_all_tools
     from tool_box.tools_impl.execute_code.kernel import shutdown_kernels_for_session
 
     for flag in ("AGENT_RUNTIME_V2_ENABLED", "ARTIFACT_VERSIONING_ENABLED", "SKILL_RECOMMENDATION_V2_ENABLED", "SKILL_CONTEXT_PROGRESSIVE_ENABLED"):
@@ -127,6 +129,13 @@ def cleaning_provider(isolated_app_env, monkeypatch, request):
         "PLAN_TASK_EXECUTION_BACKEND": "internal", "LLM_RETRIES": "0",
     }.items():
         monkeypatch.setenv(name, value)
+    # The app fixture omits toolbox startup. Recreate its actual process-local
+    # registries after setting this profile's env, so a preceding CODE_MODE=0
+    # test cannot leave a native schema cache that hides the real Python tool.
+    monkeypatch.setattr(tools, "_tool_registry", tools.ToolRegistry())
+    monkeypatch.setattr(integration, "_toolbox_integration", integration.ToolBoxIntegration())
+    monkeypatch.setattr(tool_schemas, "_TOOL_REGISTRY_CACHE", None)
+    register_all_tools()
     provider = _CleaningProvider()
 
     async def native(client, **kwargs):
