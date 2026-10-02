@@ -114,6 +114,8 @@ class ExecutorPromptBuilder:
         from app.services.memory.context_recall import format_recall_context
         lines: List[str] = [self.SYSTEM_HEADER]
         recall_block = format_recall_context(session_context)
+        from app.services.skill_learning.context import format_skill_context
+        recall_block = "\n".join(block for block in (recall_block, format_skill_context(session_context)) if block)
         if recall_block:
             lines.append(recall_block)
 

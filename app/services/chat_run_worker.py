@@ -685,3 +685,8 @@ async def execute_chat_run(run_id: str) -> None:
                 logger.warning(
                     "usage context reset failed run=%s", run_id, exc_info=True
                 )
+        try:
+            from app.services.skill_learning.service import get_skill_learning_service
+            get_skill_learning_service().capture(run_id)
+        except Exception as exc:
+            logger.warning("Skill learning capture failed: %s", type(exc).__name__)

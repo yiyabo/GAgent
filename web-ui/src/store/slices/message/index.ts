@@ -11,6 +11,7 @@ import {
   resolveHistoryCursor,
 } from '../../chatUtils';
 import { chatApi } from '@api/chat';
+import { skillLearningApi } from '@api/skillLearning';
 import {
   collectArtifactGallery,
   mergeArtifactGalleries,
@@ -369,6 +370,21 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => {
   return;
   }
   await get().loadChatHistory(sessionId, { beforeId: historyBeforeId, append: true });
+  },
+
+  trialLearnedSkill: async (skillId: string, sessionId: string, query: string, expectedVersion?: number) => {
+    const captured = get().currentSession;
+    if ((captured?.session_id ?? captured?.id) !== sessionId) throw new Error('请切回原会话后试用。');
+    if (!query.trim()) throw new Error('请输入新任务或样例。');
+    const key = resolveChatSessionProcessingKey(captured);
+    if (get().processingSessionIds.has(key)) throw new Error('此会话已有任务正在运行。');
+    const skill = await skillLearningApi.detail(skillId, sessionId);
+    if (expectedVersion !== undefined && skill.current_version !== expectedVersion) throw new Error('技能版本已更新，请重新查看后试用。');
+    if (['disabled', 'suspended'].includes(skill.state)) throw new Error('此技能已停用或需要修订。');
+    const current = get().currentSession;
+    if ((current?.session_id ?? current?.id) !== sessionId) throw new Error('会话已切换，请回原会话试用。');
+    if (get().processingSessionIds.has(key)) throw new Error('此会话已有任务正在运行。');
+    await get().sendMessage(query, { learned_skill_ids: [skillId], learned_skill_versions: { [skillId]: skill.current_version }, skill_trial: true });
   },
 
   resumeChatRun: async (runId: string, sessionId: string) => {

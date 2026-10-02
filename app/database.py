@@ -260,6 +260,8 @@ def init_db() -> None:
         from .repository.run_steps import ensure_run_step_schema
 
         ensure_run_step_schema(conn)
+        from .repository.skill_learning import ensure_schema as ensure_skill_learning_schema
+        ensure_skill_learning_schema(conn)
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_chat_runs_session_status "
             "ON chat_runs(session_id, status, created_at DESC)"

@@ -112,7 +112,7 @@ def format_recall_context(context: dict | None) -> str:
 
 def inherit_recall_context(agent: Any) -> dict:
     extra = getattr(agent, "extra_context", None) or {}
-    return {key: extra[key] for key in ("recall_context", "memory_enabled") if key in extra}
+    return {key: extra[key] for key in ("recall_context", "memory_enabled", "learned_skill_context", "learned_skill_ids", "learned_skill_versions") if key in extra}
 
 
 def attach_recall_metadata(metadata: dict, context: dict | None) -> None:

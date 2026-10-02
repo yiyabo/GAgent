@@ -690,6 +690,8 @@ def _append_reference_context(
 
     from app.services.memory.context_recall import format_recall_context
     recall_block = format_recall_context(context)
+    from app.services.skill_learning.context import format_skill_context
+    recall_block = "\n".join(block for block in (recall_block, format_skill_context(context)) if block)
     blocks: List[str] = [recall_block] if recall_block else []
     brief_execute_followup = cls._is_brief_execute_followup_context(context)
 

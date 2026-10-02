@@ -73,6 +73,7 @@ export interface ChatState {
     loadMoreHistory: () => Promise<void>;
     sendMessage: (content: string, metadata?: ChatMessage['metadata']) => Promise<void>;
     resumeActiveChatRunIfAny: (sessionId: string) => Promise<void>;
+    trialLearnedSkill: (skillId: string, sessionId: string, query: string, expectedVersion?: number) => Promise<void>;
     resumeChatRun: (runId: string, sessionId: string) => Promise<void>;
     retryLastMessage: () => Promise<void>;
     retryActionRun: (trackingId: string, rawActions?: any[]) => Promise<void>;

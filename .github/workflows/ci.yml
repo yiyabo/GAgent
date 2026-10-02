@@ -33,6 +33,7 @@ jobs:
           app/tests/tools/test_delegation_cancellation.py
           app/tests/integration/test_chat_message_pipeline.py
           app/tests/integration/test_real_app_chat_sessions.py
+          app/tests/integration/test_skill_learning_api.py
           -q -m "not external"
 
   frontend-regressions:

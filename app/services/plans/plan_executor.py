@@ -681,6 +681,9 @@ class PlanExecutor(_ArtifactMethods, _DelegateMethods, _DeepThinkMethods):
                 tree=tree,
                 session_context=session_context,
             )
+            if "learned_skill_context" not in session_context:
+                from app.services.skill_learning.context import hydrate_context as hydrate_skills
+                hydrate_skills(session_context, session_context.get("session_id"), node.instruction or node.display_name())
             delegation_mode = self._should_delegate_plan_task(config)
             if missing_aliases and config.enforce_dependencies and not delegation_mode:
                 _log_job(

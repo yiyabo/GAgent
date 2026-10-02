@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import asyncio
 from typing import Any, Callable, Dict, Optional, Tuple
 
 from app.services.plans.plan_session import PlanSession
@@ -239,6 +240,9 @@ async def build_agent_for_chat_request(
     from app.services.memory.context_recall import hydrate_chat_context
     await hydrate_chat_context(context, request.session_id, request.message,
                                client_message_id=request.client_message_id)
+
+    from app.services.skill_learning.context import hydrate_context as hydrate_skills
+    await asyncio.to_thread(hydrate_skills, context, request.session_id, request.message, run_id)
 
     agent_cls = get_structured_chat_agent_cls()
     agent = agent_cls(

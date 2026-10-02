@@ -28,6 +28,7 @@ import MessageAvatar from './MessageAvatar';
 import ToolProgressCard, { BackgroundDispatchCard } from './ToolProgressCard';
 import MessageActions from './MessageActions';
 import ResumeRunAction from './ResumeRunAction';
+import SkillLearningPanel from './SkillLearningPanel';
 import RecallReferences from './RecallReferences';
 import ToolResultDrawer, { ToolStatusBar } from './ToolResultDrawer';
 import { extractLlmReplyMessage } from '@/utils/llmReplyDisplay';
@@ -595,6 +596,7 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
       </div>
 
       <MessageActions message={message} />
+      <SkillLearningPanel runId={chatRunIdFromMeta || (metadata as any)?.resume_run_id} sessionId={effectiveSessionId} status={status || (metadata as any)?.resume_run_status} />
       {!isPendingAction && (
         <ToolResultDrawer
           toolResults={toolResults}

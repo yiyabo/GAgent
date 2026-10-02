@@ -72,6 +72,21 @@ async def load_skill_handler(
             "summary": "load_skill requires a non-empty 'name'.",
         }
 
+    if skill_name.startswith("learned:"):
+        from app.services.skill_learning.context import load_learned_skill
+        try:
+            result = load_learned_skill(skill_name, getattr(tool_context, "session_id", None))
+            if not result:
+                return {"success": False, "error": "invalid_learned_skill_name"}
+            if section:
+                selected, headings = _extract_section(result["content"], section)
+                if selected is None:
+                    return {"success": False, "error": "section_not_found", "available_sections": headings}
+                result["content"] = selected
+            return result
+        except ValueError as exc:
+            return {"success": False, "error": "learned_skill_unavailable", "summary": str(exc)}
+
     loader = _resolve_loader()
     spec = loader.get_skill(skill_name)
     if spec is None:

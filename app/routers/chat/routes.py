@@ -455,6 +455,9 @@ async def chat_message(
         await hydrate_chat_context(context, request.session_id, request.message,
                                    client_message_id=request.client_message_id)
 
+        from app.services.skill_learning.context import hydrate_context as hydrate_skills
+        await asyncio.to_thread(hydrate_skills, context, request.session_id, request.message)
+
         agent_cls = get_structured_chat_agent_cls()
         agent = agent_cls(
             mode=request.mode,

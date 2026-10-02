@@ -242,6 +242,10 @@ async def lifespan(_fastapi_app: FastAPI):
             "Failed to clean up orphaned qwen/node processes: %s", e
         )
 
+    from .services.skill_learning.runner import SkillLearningRunner
+    skill_learning_runner = SkillLearningRunner()
+    await skill_learning_runner.start()
+
     quality_runner = None
     try:
         from .services.conversation_quality import (
@@ -270,6 +274,7 @@ async def lifespan(_fastapi_app: FastAPI):
             await chat_run_sweeper_task
         except (asyncio.CancelledError, Exception):
             pass
+        await skill_learning_runner.stop()
         if quality_runner is not None:
             await quality_runner.stop()
 

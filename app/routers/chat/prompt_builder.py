@@ -66,8 +66,10 @@ def build_prompt(agent: Any, user_message: str) -> str:
     # Extract memories from extra_context and format separately.
     from app.services.memory.context_recall import format_recall_context
     memory_section = format_recall_context(agent.extra_context)
+    from app.services.skill_learning.context import format_skill_context
+    memory_section = "\n".join(block for block in (memory_section, format_skill_context(agent.extra_context)) if block)
 
-    ctx_copy = {key: value for key, value in agent.extra_context.items() if key not in {"memories", "recall_context"}}
+    ctx_copy = {key: value for key, value in agent.extra_context.items() if key not in {"memories", "recall_context", "learned_skill_context"}}
     context_text = json.dumps(ctx_copy, ensure_ascii=False, indent=2)
     plan_outline = agent.plan_session.outline(max_depth=4, max_nodes=100)
     plan_status = compose_plan_status(agent, plan_bound)
@@ -136,8 +138,10 @@ def build_simple_stream_chat_prompt(agent: Any, user_message: str) -> str:
 
     from app.services.memory.context_recall import format_recall_context
     memory_section = format_recall_context(agent.extra_context)
+    from app.services.skill_learning.context import format_skill_context
+    memory_section = "\n".join(block for block in (memory_section, format_skill_context(agent.extra_context)) if block)
 
-    ctx_copy = {key: value for key, value in agent.extra_context.items() if key not in {"memories", "recall_context"}}
+    ctx_copy = {key: value for key, value in agent.extra_context.items() if key not in {"memories", "recall_context", "learned_skill_context"}}
     context_text = json.dumps(ctx_copy, ensure_ascii=False, indent=2)
 
     plan_outline = agent.plan_session.outline(max_depth=4, max_nodes=100)
