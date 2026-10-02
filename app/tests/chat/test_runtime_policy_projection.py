@@ -7,7 +7,7 @@ import pytest
 from app.services.deep_think import runtime_policy as policy
 from app.services.deep_think.receipt_projection import project_text
 from app.services.deep_think import dispatch, native_validation as nv
-from app.llm import NativeToolCall
+from app.llm import NativeToolCall, NativeStreamResult
 
 
 @pytest.mark.parametrize('umbrella,arguments,schemas,want', [(False,True,False,(True,False)),(True,False,None,(False,True)),(False,None,True,(False,True))])
@@ -33,6 +33,9 @@ def test_argument_barrier_does_not_enable_schema_policy(monkeypatch):
     rejected=nv.rejected_call(agent,NativeToolCall('a','write',{'_raw':'{'}),1,0)
     assert rejected['executed'] is False
     assert policy.policy_for(agent)['schemas'] is False
+    nv.observe_result(agent,NativeStreamResult(tool_calls=[NativeToolCall('typed','write',{'code':7})],finish_reason='length'))
+    assert nv.next_call_options(agent)=={}
+    assert nv.rejected_call(agent,NativeToolCall('typed','write',{'code':7}),1,0)['error']=='invalid_type'
     agent._native_repair_cap=8192
     assert nv.request_kwargs(agent,'query',{},[],1,[])=={'output_reserve_tokens':8192}
 

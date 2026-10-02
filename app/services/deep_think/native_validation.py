@@ -35,7 +35,8 @@ def rejected_call(agent,call,iteration,index):
     error=validate(call.arguments,schema_for(agent,call.name))
     if not error:return None
     finish=getattr(agent,'_last_native_finish_reason',None)
-    reason='output_truncated' if finish=='length' else 'stream_incomplete' if finish is None and getattr(agent,'_last_native_done_seen',True) is False else error['error_code']
+    incomplete=error['error_code'] in {'invalid_json','missing_required'}
+    reason='output_truncated' if finish=='length' and incomplete else 'stream_incomplete' if finish is None and getattr(agent,'_last_native_done_seen',True) is False else error['error_code']
     payload={'success':False,**error,'error_code':reason,'error':reason}
     params=call.arguments if isinstance(call.arguments,dict) else {'_raw':json.dumps(call.arguments,ensure_ascii=False)}
     return {'index':index,'tool_call_id':call.id or f'native_{iteration}_{index}','tool_name':call.name,
@@ -61,7 +62,7 @@ def observe_result(agent,result):
         raw=json.dumps(call.arguments,ensure_ascii=False)
         call.argument_chars=len(raw);call.argument_sha256=hashlib.sha256(raw.encode()).hexdigest()
         if error and not isinstance(call.arguments,dict):call.arguments={'_raw':raw}
-        invalid=invalid or bool(error)
+        invalid=invalid or bool(error and error['error_code'] in {'invalid_json','missing_required'})
     count=getattr(agent,'_native_cap_escalations',0)
     if invalid and getattr(result,'finish_reason',None)=='length' and count<2:
         agent._native_repair_cap=8192;agent._native_cap_escalations=count+1
