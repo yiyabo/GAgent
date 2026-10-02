@@ -45,3 +45,11 @@ def test_code_introspection_is_local_and_schema_driven():
     namespace={};exec(generate_stub_module(['file_operations']),namespace)
     assert namespace['list_tools']()==['file_operations']
     assert 'parameters' in namespace['describe']('file_operations')
+
+
+def test_plan_tool_offer_and_execution_sets_agree(monkeypatch):
+    from app.services.plans.executor_deepthink import _execution_tools
+    from app.services import tool_schemas
+    monkeypatch.setattr(nv,'get_settings',lambda:SimpleNamespace(agent_runtime_v2_enabled=True))
+    monkeypatch.setattr(tool_schemas,'code_mode_enabled',lambda:True)
+    assert {'execute_code','load_skill'}.issubset(_execution_tools(['file_operations']))

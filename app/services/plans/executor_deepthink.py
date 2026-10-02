@@ -459,7 +459,7 @@ class _DeepThinkMethods:
 
         deep_think_agent = _facade().DeepThinkAgent(
             llm_client=self._llm._llm,
-            available_tools=[
+            available_tools=_execution_tools([
                 "web_search",
                 "graph_rag",
                 "sequence_fetch",
@@ -476,7 +476,7 @@ class _DeepThinkMethods:
                 "manuscript_writer",
                 "terminal_session",
                 "deliverable_submit",
-            ],
+            ]),
             tool_executor=_tool_wrapper,
             max_iterations=getattr(self._settings, "deep_think_max_iterations", 16),
             tool_timeout=UnifiedToolExecutor.DEFAULT_TIMEOUT_SECONDS,
@@ -1116,3 +1116,10 @@ class _DeepThinkMethods:
                     return f"Working on: {active[0].get('content', 'task')}"
             return "Updating todo list"
         return f"Calling {tool_name}"
+
+
+def _execution_tools(names):
+    from app.services.tool_schemas import code_mode_enabled
+    names=list(names)+['load_skill']
+    if code_mode_enabled():names.append('execute_code')
+    return list(dict.fromkeys(names))

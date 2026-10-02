@@ -83,3 +83,31 @@ def test_runtime_output_spec_normalization_is_not_a_user_method_change():
     assert av.definition(node)==original
     node.metadata['output_spec']['artifact_contract']['requires']=['stats.group_summary']
     assert av.definition(node)!=original
+
+
+def test_actual_executor_verifies_promoted_files_before_version_commit(version_db,monkeypatch,tmp_path):
+    from dataclasses import replace
+    from app.config.executor_config import get_executor_settings
+    from app.services.plans.task_delegate_executor import TaskDelegationResult
+    from app.services.deep_think import native_validation
+    monkeypatch.setattr(av,'get_settings',lambda:SimpleNamespace(artifact_versioning_enabled=True))
+    monkeypatch.setattr(native_validation,'get_settings',lambda:SimpleNamespace(agent_runtime_v2_enabled=True))
+    repo=PlanRepository();tree=repo.create_plan('real delegate pipeline',owner='tester')
+    from app.database import get_db
+    from app.services.path_router import get_path_router
+    from app.services.plans.output_spec import OutputSpec,RequiredOutput
+    session='version-exec'
+    with get_db() as con:con.execute('INSERT INTO chat_sessions(id,owner_id,name) VALUES(?,?,?)',(session,'tester','executor'))
+    target=get_path_router().get_task_output_dir(session,1,[],create=True)/'answer.json'
+    spec=OutputSpec(required_outputs=[RequiredOutput(kind='data',extensions=['.json'],target_path=str(target))],source='explicit').to_dict()
+    node=repo.create_task(tree.id,name='answer',instruction='Write answer.json',metadata={'required_outputs':spec['required_outputs'],'output_spec':spec})
+    source=get_path_router().get_session_dir(session,create=True)/'_scratch'/'run'/'answer.json';source.parent.mkdir(parents=True);source.write_text('{"count":2}')
+    class Delegate:
+        def execute(self,spec):return TaskDelegationResult(status='completed',summary='answer.json produced',artifact_paths=[str(source)],executor='local',raw_result={'artifact_paths':[str(source)]})
+    executor=PlanExecutor(repo=repo,settings=replace(get_executor_settings(),plan_task_execution_backend='external_agent',plan_task_agent_backend='local'),task_delegate_executor=Delegate())
+    monkeypatch.setattr(executor,'_resolve_task_tool_workspace',lambda *args,**kwargs:([],str(target.parent)))
+    result=executor.execute_task(tree.id,node.id,config=ExecutionConfig(session_context={'session_id':session,'owner_id':'tester'}))
+    assert result.status=='completed',__import__('json').dumps(result.to_dict(),ensure_ascii=False,indent=2)
+    assert target.exists()
+    data=av._read(artifact_manifest_path(tree.id,session))
+    assert data['schema_version']==2 and data['bindings'][str(node.id)]['definition_hash']==av.definition(repo.get_plan_tree(tree.id).nodes[node.id])

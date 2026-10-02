@@ -331,3 +331,33 @@ def reconcile_recent():
     for identity in ids:
         try:recover(repo,identity)
         except (ValueError,ArtifactRevisionConflict,OSError):continue
+
+
+def promote_delegate_outputs(executor,node,payload,context):
+    """Resolve producer-scoped scratch outputs, not basename-only guesses."""
+    from app.services.session_paths import get_runtime_session_dir
+    session=(context or {}).get('session_id')
+    if not session:return payload
+    root=get_runtime_session_dir(session).resolve()
+    _,directory=executor._resolve_task_tool_workspace(node,session_id=session)
+    task=Path(directory).resolve();groups={}
+    for raw in executor._extract_path_like_values(payload):
+        path=Path(raw).resolve()
+        if not path.is_file() or root not in path.parents:continue
+        if path.parent==task:continue
+        groups.setdefault(path.name,{}).setdefault(content_hash(path),path)
+    promoted=[]
+    for name,hashes in groups.items():
+        if len(hashes)!=1:raise ArtifactRevisionConflict('ambiguous_delegate_output:'+name)
+        checksum,source=next(iter(hashes.items()));target=task/name
+        if target.exists() and content_hash(target)!=checksum:raise ArtifactRevisionConflict('delegate_target_conflict:'+name)
+        if not target.exists():task.mkdir(parents=True,exist_ok=True);shutil.copy2(source,target)
+        promoted.append(str(target))
+    if not promoted:return payload
+    result=dict(payload);metadata=dict(payload.get('metadata') or {})
+    metadata['source_artifact_paths']=list(payload.get('artifact_paths') or [])
+    canonical=[str(Path(p).resolve()) for p in payload.get('artifact_paths',[]) if Path(p).resolve().parent==task]
+    result['artifact_paths']=list(dict.fromkeys([*canonical,*promoted]))
+    metadata['artifact_paths']=list(result['artifact_paths'])
+    metadata['derived_mirrors']=[{'path':p,'source':str(next(iter(groups[Path(p).name].values()))),'sha256':content_hash(Path(p))} for p in promoted]
+    result['metadata']=metadata;return result
