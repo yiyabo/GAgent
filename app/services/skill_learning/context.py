@@ -8,7 +8,7 @@ import logging
 logger=logging.getLogger(__name__)
 from app.repository.context_recall import session_scope
 from app.repository import skill_learning as repository
-from app.repository.chat_runs import get_chat_run
+from app.repository.chat_runs import get_chat_run, is_chat_run_lease_live
 from app.services.chat_run_state import chat_run_claim
 from .evidence import fingerprint_input
 from .models import SkillDraft
@@ -27,7 +27,8 @@ def _hydrate_context(context: dict, session_id: str | None, query: str, run_id: 
     if not scope:return
     if run_id is None and (claim:=chat_run_claim.get()):
         active=get_chat_run(claim[0])
-        if active and active['session_id']==session_id and active['owner_id']==scope['owner_id']:
+        if (active and active['session_id']==session_id and active['owner_id']==scope['owner_id']
+                and active['status']=='running' and active['worker_id']==claim[1] and is_chat_run_lease_live(claim[0])):
             run_id=claim[0]
     requested=context.get('learned_skill_ids') or []
     if not isinstance(requested,list) or len(requested)>3 or not all(isinstance(x,str) for x in requested):

@@ -159,6 +159,13 @@ def test_natural_skill_index_then_body_then_verified_delivery(
     from app.repository import skill_learning as repo
     from app.services.skill_learning import recommendations
     from app.services.skill_learning.models import SkillDraft
+    from app.services import embeddings
+    from types import SimpleNamespace
+    # The app's real background indexer also runs when recommendation v2 is on.
+    # Script its provider boundary, not just the foreground query, so shutdown
+    # cannot leave a real embedding request running after fixture teardown.
+    embedding_client=SimpleNamespace(api_client=SimpleNamespace(model='offline-test'),get_single_embedding=lambda _:[1.0,0.0])
+    monkeypatch.setattr(embeddings,'get_embeddings_service',lambda:embedding_client)
     monkeypatch.setenv('SKILL_RECOMMENDATION_V2_ENABLED','1')
     monkeypatch.setenv('SKILL_CONTEXT_PROGRESSIVE_ENABLED','1')
     monkeypatch.setattr(recommendations,'query_vector',lambda _:('offline-test',None))

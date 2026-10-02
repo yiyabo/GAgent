@@ -28,6 +28,12 @@ def test_plan_lexical_path_records_exposure_from_matching_active_claim(isolated_
         hydrate_context({},'other','clean csv')
         with get_db() as con:
             assert con.execute("SELECT session_id FROM skill_run_contexts WHERE run_id='r'").fetchone()[0]=='s'
+            selected=con.execute("SELECT selected_json FROM skill_run_contexts WHERE run_id='r'").fetchone()[0]
+        chat_runs.mark_chat_run_finished('r','succeeded',worker_id='worker')
+        chat_runs.release_chat_run_lease('r','worker')
+        hydrate_context({},'s','report references')  # stale context token must not initiate a write
+        with get_db() as con:
+            assert con.execute("SELECT selected_json FROM skill_run_contexts WHERE run_id='r'").fetchone()[0]==selected
     finally:
         chat_run_claim.reset(token)
         chat_runs.mark_chat_run_finished('r','succeeded',worker_id='worker')
