@@ -63,3 +63,10 @@ uncertain mutation refusal, contract/workspace changes, modified outputs,
 cancellation with preexisting files, effective-status skipping, inherited context,
 common terminal truth and checked-delivery fallback. Corpus oracles deliberately
 reject incorrect statistics, stale means and invented citations.
+
+Pilot checks also exposed a grading defect: requested correct statistics were
+rejected when a harmless extra median was present. Required fields and numeric
+values are now checked independently; explicit correction still forbids stale
+mean fields. Both baseline and candidate raw files are regraded by this same
+rule. Generic execution-summary fallback is also replaced by checked file links
+when the authoritative output contract passed. Raw pilot records are retained.

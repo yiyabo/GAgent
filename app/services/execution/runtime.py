@@ -87,6 +87,9 @@ def repair_verified_delivery_answer(result:Any,query:str)->Any:
     text=str(getattr(result,'final_answer','') or '').strip()
     from app.services.deep_think_agent import is_process_only_answer
     process=is_process_only_answer(text) or (len(text)<160 and any(word in text.lower() for word in ('retrying','malformed','i will','开始检查','正在','稍等')))
+    process=process or text.startswith(('Here is what was observed during execution:',
+        'Here is the summary of tool execution results:', '以下是本轮执行中观察到的信息：',
+        '以下是本轮工具执行的结果摘要：'))
     if text and not process:return result
     from pathlib import Path
     paths=report.get('artifact_paths') or []

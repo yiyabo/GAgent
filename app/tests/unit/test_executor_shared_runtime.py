@@ -115,3 +115,14 @@ def test_checked_delivery_does_not_finish_with_retry_prose_or_upgrade_failed_out
     assert 'result.json' in result.final_answer and 'passed the declared output checks' in result.final_answer
     failed=SimpleNamespace(final_answer='retrying',output_verification={'authoritative':True,'status':'failed','artifact_paths':['/tmp/old.json']},execution_issues=[],tools_used=['execute_code'])
     assert repair_verified_delivery_answer(failed,'produce file').final_answer=='retrying'
+
+
+def test_checked_delivery_replaces_generic_execution_observations():
+    from app.services.execution.runtime import repair_verified_delivery_answer
+    for text in ('Here is what was observed during execution:\n\n- execute_code: completed',
+                 '以下是本轮工具执行的结果摘要：\n\n- execute_code：执行完成'):
+        result=SimpleNamespace(final_answer=text,output_verification={'authoritative':True,'status':'passed',
+            'artifact_paths':['/tmp/chart.png','/tmp/summary.json']},execution_issues=[],tools_used=['execute_code'])
+        repair_verified_delivery_answer(result,'produce chart')
+        assert 'chart.png' in result.final_answer and 'summary.json' in result.final_answer
+        assert 'passed the declared output checks' in result.final_answer

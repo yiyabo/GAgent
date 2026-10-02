@@ -39,3 +39,15 @@ async def test_evaluation_meter_respects_native_client_signature_and_call_cap():
         assert (await client.stream_chat_with_tools_async(messages=[],tools=[])).content=='ok'
     with pytest.raises(RuntimeError,match='call limit'):
         await client.stream_chat_with_tools_async(messages=[],tools=[])
+
+
+def test_oracle_checks_requested_values_without_rejecting_extra_correct_statistics(tmp_path):
+    prepare('table_clean',tmp_path)
+    (tmp_path/'clean.csv').write_text('id,group,score\na,A,10\nb,A,20\nc,B,30\nd,B,50\n')
+    (tmp_path/'summary.json').write_text('{"A":{"count":2,"mean":15,"median":15},"B":{"count":2,"mean":40,"median":40}}')
+    assert check('table_clean',tmp_path)['passed']
+    (tmp_path/'summary.json').write_text('{"A":{"count":2,"mean":"15"},"B":{"count":2,"mean":40}}')
+    assert not check('table_clean',tmp_path)['passed']
+    prepare('correction',tmp_path)
+    (tmp_path/'summary.json').write_text('{"A":{"count":3,"median":20,"mean":40},"B":{"count":2,"median":40}}')
+    assert not check('correction',tmp_path)['passed']
