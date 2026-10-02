@@ -29,7 +29,8 @@ async def run_trial(case_id,entry,root:Path,cfg:EvalSuiteConfig,external_remaini
     identity='eval-'+uuid4().hex;worker='worker-'+identity
     with get_db() as con:
         con.execute('INSERT INTO chat_sessions(id,owner_id,name) VALUES(?,?,?)',(identity,'harness-eval',case_id));con.commit()
-    work=root/'workspace'
+    from app.services.path_router import get_path_router
+    work=get_path_router().get_session_dir(identity,create=True)/'raw_files'/'inputs'
     case=prepare(case_id,work)
     query=case['prompt']+'\nUse only the provided local inputs. Deliver all required files and include their links in the answer. Work directory: '+str(work)+'\nJSON values must be numbers. Group summaries use {group: {count: number, mean/median: number}}.'
     chat_runs.create_chat_run(identity,identity,json.dumps({'message':query,'session_id':identity}),owner_id='harness-eval')
@@ -80,9 +81,9 @@ async def run_trial(case_id,entry,root:Path,cfg:EvalSuiteConfig,external_remaini
             repo=PlanRepository();tree=repo.create_plan('eval '+case_id,owner='harness-eval')
             plan_id=tree.id
             node=repo.create_task(plan_id,name=case_id,instruction=query)
-            task_id=node.id;output_root=get_path_router().get_task_output_dir(identity,task_id,[task_id],create=True)
+            task_id=node.id;output_root=get_path_router().get_task_output_dir_from_tree(identity,task_id,repo.get_plan_tree(plan_id),create=True)
             context['output_spec']=spec_for(output_root)
-            repo.update_task(plan_id,task_id,metadata={'required_outputs':context['output_spec']['required_outputs'],'output_spec':context['output_spec']})
+            repo.update_task(plan_id,task_id,metadata={'required_outputs':context['output_spec']['required_outputs'],'output_spec':context['output_spec'],'source_inputs':{p.name:str(p) for p in work.iterdir() if p.name not in case['outputs']}})
             with get_db() as con:con.execute('UPDATE chat_sessions SET plan_id=? WHERE id=?',(plan_id,identity));con.commit()
             settings=replace(get_executor_settings(),plan_task_execution_backend='external_agent' if entry=='plan-external' else 'internal',deep_think_max_iterations=cfg.native_max_iterations,qc_max_session_turns=cfg.external_max_session_turns)
             executor=PlanExecutor(repo=repo,settings=settings)
