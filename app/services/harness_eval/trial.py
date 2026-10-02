@@ -5,12 +5,14 @@ from uuid import uuid4
 from dataclasses import replace
 from .config import EvalSuiteConfig
 from .fixtures import prepare
+from .accounting import TrialAccounting
 
 
 def configure(root:Path,cfg:EvalSuiteConfig,entry:str):
     for name in ('DB_ROOT','APP_RUNTIME_ROOT','APP_INFO_SESSIONS_ROOT','EXECUTION_WORKSPACES_ROOT','TERMINAL_AUDIT_ROOT'):
         os.environ[name]=str(root/name.lower())
     os.environ['CODE_MODE_ALLOWED_TOOLS']='file_operations,document_reader,load_skill,deliverable_submit'
+    os.environ.update({key:'0' for key in ('AGENT_RUNTIME_V2_ENABLED','ARTIFACT_VERSIONING_ENABLED','SKILL_RECOMMENDATION_V2_ENABLED','SKILL_CONTEXT_PROGRESSIVE_ENABLED','CHAT_RUN_SYNTHESIS_RESERVE_SECONDS')})
     os.environ.update(cfg.feature_overrides)
     os.environ.update(DATABASE_URL='sqlite:///'+str(root/'db_root/main/plan_registry.db'),SKILL_LEARNING_ENABLED='0',QUALITY_EVALUATION_ENABLED='0',CODE_MODE_ENABLED='1',CODE_MODE_CELL_TIMEOUT_SECONDS='60',LLM_MAX_TOKENS=str(cfg.output_max_tokens),DEEP_THINK_MAX_ITERATIONS=str(cfg.native_max_iterations),QC_MAX_SESSION_TURNS=str(cfg.external_max_session_turns),PLAN_TASK_EXECUTION_BACKEND='external_agent' if entry=='plan-external' else 'internal')
 
@@ -49,25 +51,13 @@ async def run_trial(case_id,entry,root:Path,cfg:EvalSuiteConfig,external_remaini
     chat_runs.create_chat_run(identity,identity,json.dumps({'message':query,'session_id':identity}),owner_id='harness-eval')
     chat_runs.claim_chat_run_lease(identity,worker,ttl_seconds=cfg.trial_wall_seconds+60);chat_runs.mark_chat_run_started(identity,worker_id=worker)
     token=CancelToken();handles=[set_cancel_token(token),chat_run_claim.set((identity,worker))]
-    budget=RunBudget(cfg.trial_wall_seconds,cfg.close_reserve_seconds,token);bh=bind_run_budget(budget)
+    total_seconds=cfg.trial_wall_seconds+(cfg.close_reserve_seconds if cfg.campaign_root else 0)
+    budget=RunBudget(total_seconds,cfg.close_reserve_seconds,token);bh=bind_run_budget(budget)
     uh=set_usage_context(session_id=identity,run_id=identity,phase='evaluation',call_purpose='harness_workflow_eval')
     signal.signal(signal.SIGTERM,lambda *_:token.set('evaluation_supervisor_cancel'))
-    attempts={};events=[];external_launches=0
-    def observe(event):
-        nonlocal external_launches
-        if event['kind']=='external_launch':
-            if external_launches>=min(1,cfg.external_launch_limit if external_remaining is None else external_remaining):raise RuntimeError('external_launch_limit')
-            external_launches+=1
-        if event['kind']=='attempt':
-            key=(event['logical_call_id'],event['attempt_no'])
-            if key not in attempts and len(attempts)>=cfg.provider_attempt_limit:raise RuntimeError('provider_attempt_limit')
-            attempts[key]=event
-        if event['kind']=='native_result':
-            args=event.pop('arguments',[]);raw=json.dumps(args,ensure_ascii=False)
-            filename='arguments-'+str(len(events))+'.json';(root/filename).write_text(raw)
-            event['arguments_ref']=filename;event['arguments_sha256']=hashlib.sha256(raw.encode()).hexdigest();event['arguments_chars']=len(raw)
-        events.append(event)
-    oh=observer.set(observe)
+    accounting=TrialAccounting(root,cfg,external_remaining)
+    accounting.observe({'kind':'trial_started','session_id':identity,'worker_id':worker})
+    oh=observer.set(accounting.observe)
     client=LLMClient(timeout=120,retries=0);started=time.monotonic();result=None;error=None;plan_id=task_id=None
     context={'learned_skills_disabled':cfg.skills_arm=='none','session_id':identity,'owner_id':'harness-eval','user_message':query,'output_spec_base_dir':str(work)}
     def spec_for(directory):
@@ -122,6 +112,9 @@ async def run_trial(case_id,entry,root:Path,cfg:EvalSuiteConfig,external_remaini
             key=(row['logical_call_id'],row['attempt_no']) if row.get('logical_call_id') else ('row',row['id'])
             unique[key]=row
         rows=list(unique.values())
+    accounting.reconcile_rows(rows)
+    accounting.observe({'kind':'trial_finished','status':verdict.status,'error':error})
+    metering=accounting.summary()
     report=meta.get('output_verification') or {}
     paths=[str(p) for p in report.get('artifact_paths',[])]+list(meta.get('artifact_paths') or [])
     artifacts=[]
@@ -137,7 +130,7 @@ async def run_trial(case_id,entry,root:Path,cfg:EvalSuiteConfig,external_remaini
       with get_db() as con:
         exposures=[dict(r) for r in con.execute('SELECT skill_id,version,rank,retrieval_mode FROM learned_skill_exposures WHERE run_id=?',(identity,))]
         deliveries=[dict(r) for r in con.execute('SELECT skill_id,version,delivery,status FROM learned_skill_usage WHERE run_id=?',(identity,))]
-    return {'skill_exposures':exposures,'skill_deliveries':deliveries,'skills_arm':cfg.skills_arm,'case':case_id,'entry':entry,'entry_implementation':'native-controller' if entry=='chat-native' else 'PlanExecutor.execute_task','session_id':identity,'chat_run_id':identity,'plan_id':plan_id,'task_id':task_id,'linked_run_ids':sorted({r['run_id'] for r in rows if r.get('run_id')}),'production_status':verdict.status,'termination_reason':verdict.reason or error,'declared_verification':report,'answer':answer,'answer_completion_passed':all(n in answer for n in case['outputs']) and verdict.completed,'duration_seconds':round(time.monotonic()-started,3),'external_launches':external_launches,'provider_attempts':len(attempts),'call_events':events,'artifacts':artifacts,'output_root':str(output_root),'usage_source':('estimated' if any(e.get('usage_source')=='estimated' for e in events) else 'provider' if rows else 'missing'),'prompt_tokens':sum(r['prompt_tokens'] for r in rows),'completion_tokens':sum(r['completion_tokens'] for r in rows),'total_tokens':sum(r['total_tokens'] for r in rows),'cost_usd':None,'error':error,'cleanup_status':{'run_status':chat_runs.get_chat_run(identity)['status'],'lease_released':not chat_runs.is_chat_run_lease_live(identity)},'revision':cfg.revision,'model':client._effective_model(),'provider':client.provider}
+    return {'skill_exposures':exposures,'skill_deliveries':deliveries,'skills_arm':cfg.skills_arm,'case':case_id,'entry':entry,'entry_implementation':'native-controller' if entry=='chat-native' else 'PlanExecutor.execute_task','session_id':identity,'chat_run_id':identity,'plan_id':plan_id,'task_id':task_id,'linked_run_ids':sorted({r['run_id'] for r in rows if r.get('run_id')}),'production_status':verdict.status,'termination_reason':verdict.reason or error,'declared_verification':report,'answer':answer,'answer_completion_passed':all(n in answer for n in case['outputs']) and verdict.completed,'duration_seconds':round(time.monotonic()-started,3),'call_events':accounting.events,'artifacts':artifacts,'output_root':str(output_root),**metering,'cost_usd':None,'error':error,'cleanup_status':{'run_status':chat_runs.get_chat_run(identity)['status'],'lease_released':not chat_runs.is_chat_run_lease_live(identity)},'revision':cfg.revision,'model':client._effective_model(),'provider':client.provider}
 
 
 CASES_NATURAL_CLEANING="Read input.csv, discard missing or non-numeric scores and duplicate IDs keeping first. Write clean.csv and summary.json with group count and mean."
