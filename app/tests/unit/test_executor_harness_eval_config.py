@@ -26,3 +26,22 @@ def test_native_attempt_observer_sees_actual_attempts_and_usage():
         assert {(e['logical_call_id'],e['attempt_no']) for e in events}=={('call',1),('call',2)}
         assert events[1]['usage']['total_tokens']==8
     finally:observer.reset(handle)
+
+
+def test_campaign_worker_does_not_inherit_personal_cli_home(tmp_path):
+    import json
+    import os
+    import subprocess
+    import sys
+    previous = os.environ.get('HOME')
+    code = (
+        'import json,os; from pathlib import Path; '
+        'from app.services.harness_eval.config import EvalSuiteConfig; '
+        'from app.services.harness_eval.trial import configure; '
+        f'root=Path({str(tmp_path)!r}); '
+        'configure(root,EvalSuiteConfig(campaign_root=str(root / "campaign")),"plan-external"); '
+        'print(json.dumps({k:os.environ[k] for k in ("HOME","QWEN_RUNTIME_DIR")}))'
+    )
+    child = json.loads(subprocess.check_output([sys.executable, '-c', code], text=True))
+    assert child == {'HOME': str(tmp_path / 'home'), 'QWEN_RUNTIME_DIR': str(tmp_path / 'home/.qwen')}
+    assert os.environ.get('HOME') == previous

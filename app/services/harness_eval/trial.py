@@ -9,6 +9,15 @@ from .accounting import TrialAccounting
 
 
 def configure(root:Path,cfg:EvalSuiteConfig,entry:str):
+    if cfg.campaign_root:
+        # This function runs only inside a fresh trial worker. Give its CLI
+        # children a real isolated home so personal QWEN.md, plugins and saved
+        # sessions cannot change the comparison or receive evaluation writes.
+        trial_home = root / 'home'
+        trial_home.mkdir(parents=True, exist_ok=True)
+        os.environ.update(HOME=str(trial_home), XDG_CONFIG_HOME=str(trial_home / '.config'),
+                          XDG_CACHE_HOME=str(trial_home / '.cache'),
+                          QWEN_RUNTIME_DIR=str(trial_home / '.qwen'))
     for name in ('DB_ROOT','APP_RUNTIME_ROOT','APP_INFO_SESSIONS_ROOT','EXECUTION_WORKSPACES_ROOT','TERMINAL_AUDIT_ROOT'):
         os.environ[name]=str(root/name.lower())
     os.environ['CODE_MODE_ALLOWED_TOOLS']='file_operations,document_reader,load_skill,deliverable_submit'
