@@ -73,7 +73,9 @@ def invalid_call(agent,call):
 
 
 def request_kwargs(agent,user_query,context,messages,iteration,tools_used):
-    if not enabled():return {}
+    if not enabled():
+        cap=getattr(agent,'_native_repair_cap',None)
+        return {'output_reserve_tokens':cap} if cap else {}
     from app.llm import _default_max_tokens
     from app.services.skill_learning.context import format_skill_context
     schemas=agent._schema_disclosure.effective(iteration=iteration+1,tools_used=tools_used,plan_bound=agent._current_plan_id() is not None)

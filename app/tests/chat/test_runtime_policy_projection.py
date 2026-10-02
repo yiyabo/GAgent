@@ -33,6 +33,8 @@ def test_argument_barrier_does_not_enable_schema_policy(monkeypatch):
     rejected=nv.rejected_call(agent,NativeToolCall('a','write',{'_raw':'{'}),1,0)
     assert rejected['executed'] is False
     assert policy.policy_for(agent)['schemas'] is False
+    agent._native_repair_cap=8192
+    assert nv.request_kwargs(agent,'query',{},[],1,[])=={'output_reserve_tokens':8192}
 
 
 def test_projection_changes_model_messages_only_and_preserves_all_data():
