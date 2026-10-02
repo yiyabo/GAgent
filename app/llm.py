@@ -17,6 +17,7 @@ from typing import Any, AsyncIterator, Callable, Dict, Iterator, List, Optional
 import httpx
 
 from .interfaces import LLMProvider
+from .services.execution.llm_observation import ObserverRejected
 from .services.foundation.settings import get_settings
 from .services.foundation.llm_config import (
     is_production,
@@ -1042,6 +1043,7 @@ class LLMClient(LLMProvider):
                 _outbound_limiter.acquire()
                 attempt_headers = dict(headers)
                 attempt_headers.update(_billing_request_headers(logical_call_id, attempt + 1))
+                _record_attempt_context(logical_call_id, attempt + 1)
                 response = client.post(
                     self._effective_url(), headers=attempt_headers, json=payload,
                     timeout=timeout,
@@ -1113,6 +1115,8 @@ class LLMClient(LLMProvider):
                     attempts=attempt + 1, error=f"HTTPStatusError:{status_code}",
                 )
                 raise RuntimeError(_format_http_error(e, body=body) + _ra_suffix) from e
+            except ObserverRejected:
+                raise
             except Exception as e:
                 # Treat as transient (network) and retry
                 if attempt < request_retries:
@@ -1189,6 +1193,7 @@ class LLMClient(LLMProvider):
                 _outbound_limiter.acquire()
                 attempt_headers = dict(headers)
                 attempt_headers.update(_billing_request_headers(logical_call_id, attempt + 1))
+                _record_attempt_context(logical_call_id, attempt + 1)
                 with client.stream(
                     "POST", self._effective_url(), headers=attempt_headers, json=payload,
                     timeout=timeout,
@@ -1276,6 +1281,8 @@ class LLMClient(LLMProvider):
                     attempts=attempt + 1, error=f"HTTPStatusError:{status_code}",
                 )
                 raise RuntimeError(_format_http_error(e, body=body) + _ra_suffix) from e
+            except ObserverRejected:
+                raise
             except Exception as e:
                 # Treat as transient (network) and retry only before any content
                 if not emitted_any and attempt < request_retries:
@@ -1333,6 +1340,7 @@ class LLMClient(LLMProvider):
                 await _outbound_limiter.acquire_async()
                 attempt_headers = dict(headers)
                 attempt_headers.update(_billing_request_headers(logical_call_id, attempt + 1))
+                _record_attempt_context(logical_call_id, attempt + 1)
                 response = await client.post(
                     self._effective_url(), headers=attempt_headers, json=payload,
                     timeout=timeout,
@@ -1403,6 +1411,8 @@ class LLMClient(LLMProvider):
                     attempts=attempt + 1, error=f"HTTPStatusError:{status_code}",
                 )
                 raise RuntimeError(_format_http_error(e, body=body) + _ra_suffix) from e
+            except ObserverRejected:
+                raise
             except Exception as e:
                 if attempt < request_retries:
                     delay = max(0.0, self.backoff_base * (2**attempt) + random.uniform(0, self.backoff_base / 4.0))
@@ -1470,6 +1480,7 @@ class LLMClient(LLMProvider):
         _stream_err: Optional[str] = None
         try:
             await _outbound_limiter.acquire_async()
+            _record_attempt_context(logical_call_id, 1)
             async with client.stream(
                 "POST", self._effective_url(), headers=headers, json=payload,
                 timeout=timeout,
@@ -1595,6 +1606,8 @@ class LLMClient(LLMProvider):
                     attempts=attempt + 1, usage=result.usage,
                 )
                 return result
+            except ObserverRejected:
+                raise
             except Exception as e:
                 err_text = str(e).lower()
                 is_transient = (
@@ -1827,6 +1840,8 @@ class LLMClient(LLMProvider):
                 except httpx.HTTPStatusError as exc:
                     raise RuntimeError(_format_http_error(exc, body=text)) from exc
             data = resp.json()
+        except ObserverRejected:
+            raise
         except Exception as exc:
             logger.warning("[LLM] non-streaming tool-call repair failed: %s", exc)
             return []
