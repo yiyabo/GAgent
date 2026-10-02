@@ -1815,10 +1815,10 @@ class LLMClient(LLMProvider):
                     [tc.name for tc in repaired],
                 )
                 result.tool_calls = repaired
-                from app.services.deep_think.native_validation import enabled
                 replacement=getattr(repaired,"response",None)
-                if enabled() and replacement:
+                if replacement:
                     result.diagnostics["original_usage"]=result.usage
+                    result.diagnostics["repair_complete"]=True
                     result.content=replacement["content"];result.finish_reason=replacement["finish_reason"];result.usage=replacement["usage"]
 
         return result

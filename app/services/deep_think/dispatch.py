@@ -928,6 +928,7 @@ def _compact_file_operations_result_for_llm(
 
 def _append_tool_cycle_messages(
     *,
+    agent: Any = None,
     messages: List[Dict[str, Any]],
     tool_results: List[Dict[str, Any]],
     assistant_content: str,
@@ -947,12 +948,13 @@ def _append_tool_cycle_messages(
         for item in tool_results
     ]
     messages.append(assistant_msg)
+    from .receipt_projection import project_text
     for item in tool_results:
         messages.append(
             {
                 "role": "tool",
                 "tool_call_id": item["tool_call_id"],
-                "content": item["tool_result_text"],
+                "content": project_text(agent, item['tool_name'], item["tool_result_text"]),
             }
         )
     per_tool_text = [

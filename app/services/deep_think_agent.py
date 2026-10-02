@@ -1581,12 +1581,14 @@ class DeepThinkAgent:
     @staticmethod
     def _append_tool_cycle_messages(
         *,
+        agent: Any = None,
         messages: List[Dict[str, Any]],
         tool_results: List[Dict[str, Any]],
         assistant_content: str,
         current_step: "ThinkingStep",
     ) -> None:
         return _dispatch._append_tool_cycle_messages(
+            agent=agent,
             messages=messages,
             tool_results=tool_results,
             assistant_content=assistant_content,

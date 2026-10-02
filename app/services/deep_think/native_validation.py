@@ -1,6 +1,7 @@
 """Response checks never manufacture execution or guess incomplete arguments."""
 import hashlib,json
 from app.services.foundation.settings import get_settings
+from .runtime_policy import policy_for
 
 
 def enabled():return bool(getattr(get_settings(),'agent_runtime_v2_enabled',False))
@@ -30,7 +31,7 @@ def schema_for(agent,name):
 
 
 def rejected_call(agent,call,iteration,index):
-    if not enabled():return None
+    if not policy_for(agent, get_settings())['arguments']:return None
     error=validate(call.arguments,schema_for(agent,call.name))
     if not error:return None
     finish=getattr(agent,'_last_native_finish_reason',None)
@@ -45,8 +46,9 @@ def next_call_options(agent):
 
 def observe_result(agent,result):
     agent._last_native_finish_reason=getattr(result,"finish_reason",None)
-    agent._last_native_done_seen=(getattr(result,"diagnostics",None) or {}).get("done_seen",True)
-    if not enabled():return
+    diagnostics=getattr(result,"diagnostics",None) or {}
+    agent._last_native_done_seen=diagnostics.get("done_seen",True) or diagnostics.get('repair_complete',False)
+    if not policy_for(agent, get_settings())['arguments']:return
     invalid=False
     for call in result.tool_calls:
         error=validate(call.arguments,schema_for(agent,call.name))
@@ -67,7 +69,7 @@ class ToolCallRepair(list):
 
 
 def invalid_call(agent,call):
-    return enabled() and validate(call.arguments,schema_for(agent,call.name)) is not None
+    return policy_for(agent, get_settings())['arguments'] and validate(call.arguments,schema_for(agent,call.name)) is not None
 
 
 def request_kwargs(agent,user_query,context,messages,iteration,tools_used):

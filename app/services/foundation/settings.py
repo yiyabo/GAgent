@@ -203,6 +203,9 @@ if _USE_PYDANTIC:
         )
 
         agent_runtime_v2_enabled: bool = Field(default=False, env="AGENT_RUNTIME_V2_ENABLED")
+        agent_argument_validation_enabled: Optional[bool] = Field(default=None, env="AGENT_ARGUMENT_VALIDATION_ENABLED")
+        agent_schema_disclosure_v2_enabled: Optional[bool] = Field(default=None, env="AGENT_SCHEMA_DISCLOSURE_V2_ENABLED")
+        agent_tool_receipt_compaction_enabled: bool = Field(default=False, env="AGENT_TOOL_RECEIPT_COMPACTION_ENABLED")
         artifact_versioning_enabled: bool = Field(default=False, env="ARTIFACT_VERSIONING_ENABLED")
         skill_recommendation_v2_enabled: bool = Field(default=False, env="SKILL_RECOMMENDATION_V2_ENABLED")
         skill_context_progressive_enabled: bool = Field(default=False, env="SKILL_CONTEXT_PROGRESSIVE_ENABLED")
@@ -536,6 +539,10 @@ else:
             for attr,key in [('agent_runtime_v2_enabled','AGENT_RUNTIME_V2_ENABLED'),('artifact_versioning_enabled','ARTIFACT_VERSIONING_ENABLED'),('skill_recommendation_v2_enabled','SKILL_RECOMMENDATION_V2_ENABLED'),('skill_context_progressive_enabled','SKILL_CONTEXT_PROGRESSIVE_ENABLED')]:
                 setattr(self,attr,os.getenv(key,'0').lower() in {'1','true','yes','on'})
             self.chat_run_synthesis_reserve_seconds = max(0,min(300,float(os.getenv('CHAT_RUN_SYNTHESIS_RESERVE_SECONDS','0'))))
+            for attr, key in [('agent_argument_validation_enabled', 'AGENT_ARGUMENT_VALIDATION_ENABLED'), ('agent_schema_disclosure_v2_enabled', 'AGENT_SCHEMA_DISCLOSURE_V2_ENABLED')]:
+                value = os.getenv(key)
+                setattr(self, attr, None if value is None else value.lower() in {'1','true','yes','on'})
+            self.agent_tool_receipt_compaction_enabled = os.getenv('AGENT_TOOL_RECEIPT_COMPACTION_ENABLED','0').lower() in {'1','true','yes','on'}
 
             self.skill_learning_enabled = os.getenv("SKILL_LEARNING_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
             self.skill_learning_provider = os.getenv("SKILL_LEARNING_PROVIDER") or None

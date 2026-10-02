@@ -59,11 +59,13 @@ BASE_DESCRIPTION = (
 )
 
 
-def build_description(allowed: Optional[List[str]] = None) -> str:
+def build_description(allowed: Optional[List[str]] = None, *, progressive: Optional[bool] = None) -> str:
     """BASE_DESCRIPTION + the dynamic per-allowlist signature list."""
     names = list(allowed) if allowed is not None else config.allowed_tools()
-    from app.services.deep_think.native_validation import enabled
-    if enabled():return BASE_DESCRIPTION + "\nUse gagent_tools.list_tools() and gagent_tools.describe(name) to inspect signatures locally. Tools: " + ", ".join(names)
+    from app.services.deep_think.runtime_policy import configured_policy
+    use_progressive = configured_policy()['schemas'] if progressive is None else progressive
+    if use_progressive:
+        return BASE_DESCRIPTION + "\nUse gagent_tools.list_tools() and gagent_tools.describe(name) to inspect signatures locally. Tools: " + ", ".join(names)
     lines = signature_lines(names)
     if not lines:
         return BASE_DESCRIPTION + " (none resolved — check CODE_MODE_ALLOWED_TOOLS)"

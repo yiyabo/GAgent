@@ -325,6 +325,8 @@ async def _native_run_setup(
             list(restored.controller_state.get("execution_issues") or []),
         )
         agent._native_cap_escalations=restored.controller_state.get("native_cap_escalations",0)
+        from .runtime_policy import restore_disclosure_controls
+        restore_disclosure_controls(agent, restored.controller_state)
         agent._schema_disclosure.v2=restored.controller_state.get("schema_policy",1)==2
         agent._schema_disclosure._disclosed=set(restored.controller_state.get("schema_disclosed",[]))
         for name in restored.controller_state.get("schema_loaded") or []:
@@ -481,7 +483,7 @@ async def _native_tool_cycle(
             if tool_name and tool_name not in tools_used:
                 tools_used.append(tool_name)
 
-        agent._append_tool_cycle_messages(
+        agent._append_tool_cycle_messages(agent=agent,
             messages=messages,
             tool_results=tool_results,
             assistant_content=result.content or "",
@@ -667,7 +669,7 @@ async def _native_probe_only_cycle(
             forced_tool_name = str(forced_result.get("tool_name") or "")
             if forced_tool_name and forced_tool_name not in tools_used:
                 tools_used.append(forced_tool_name)
-            agent._append_tool_cycle_messages(
+            agent._append_tool_cycle_messages(agent=agent,
                 messages=messages,
                 tool_results=[forced_result],
                 assistant_content="",
@@ -1104,7 +1106,7 @@ async def _native_final_call_cycle(
                 status="calling_tool",
             )
             thinking_steps.append(forced_step)
-            agent._append_tool_cycle_messages(
+            agent._append_tool_cycle_messages(agent=agent,
                 messages=messages,
                 tool_results=[forced_result],
                 assistant_content="",
@@ -1165,7 +1167,7 @@ async def _native_final_call_cycle(
                 status="calling_tool",
             )
             thinking_steps.append(forced_step)
-            agent._append_tool_cycle_messages(
+            agent._append_tool_cycle_messages(agent=agent,
                 messages=messages,
                 tool_results=[forced_result],
                 assistant_content="",
@@ -1299,7 +1301,7 @@ async def _native_no_tool_call_cycle(
                 ensure_ascii=False,
             )
             current_step.action_result = forced_result.get("tool_result_text")
-            agent._append_tool_cycle_messages(
+            agent._append_tool_cycle_messages(agent=agent,
                 messages=messages,
                 tool_results=[forced_result],
                 assistant_content=result.content or "",
@@ -2225,7 +2227,8 @@ async def _think_prompt_based(
                             break
 
                 messages.append({"role": "assistant", "content": response_text})
-                messages.append({"role": "user", "content": f"Tool Output: {current_step.action_result}"})
+                from .receipt_projection import project_text
+                messages.append({"role": "user", "content": "Tool Output: " + project_text(agent, str(tool_name), current_step.action_result or '')})
 
                 cycle_results = [
                     {

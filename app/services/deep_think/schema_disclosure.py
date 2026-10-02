@@ -56,8 +56,8 @@ class SchemaDisclosure:
         self._available: Set[str] = {str(name) for name in (available_tools or [])}
         self._loaded: Set[str] = set()
         self._force_full = False
-        from .native_validation import enabled
-        self.v2 = enabled()
+        from .runtime_policy import configured_policy
+        self.v2 = configured_policy()['schemas']
         self._disclosed: Set[str] = set()
         self.enabled = progressive_enabled() and bool(self._full)
 
@@ -101,12 +101,12 @@ class SchemaDisclosure:
         keep = set(self._loaded)
         keep.update(str(tool) for tool in (tools_used or []) if tool)
         keep.update(CORE_KEEP_TOOLS)
+        if plan_bound:
+            keep.update(PLAN_BOUND_KEEP_TOOLS)
         if self.v2:
             keep.add("load_skill")
             self._disclosed.update(keep)
             keep.update(self._disclosed)
-        if plan_bound:
-            keep.update(PLAN_BOUND_KEEP_TOOLS)
         trimmed = [
             schema
             for schema in self._full
@@ -114,6 +114,13 @@ class SchemaDisclosure:
             or schema["function"]["name"] == SUBMIT_FINAL_ANSWER_NAME
         ]
         trimmed.append(self.meta_schema())
+        if self.v2:
+            from copy import deepcopy
+            from tool_box.tools_impl.execute_code.tool import build_description
+            trimmed=deepcopy(trimmed)
+            for schema in trimmed:
+                if schema['function']['name']=='execute_code':
+                    schema['function']['description']=build_description(progressive=True)
         logger.info(
             "[SCHEMA_DISCLOSURE] iteration=%s payload_tools=%d (full=%d) keep=%s",
             iteration,

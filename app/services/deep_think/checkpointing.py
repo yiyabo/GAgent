@@ -33,6 +33,8 @@ async def restore_runtime_state(agent: Any, state: dict) -> None:
     from app.services.run_budget import check_run_active
 
     check_run_active()
+    from .runtime_policy import restore_policy
+    restore_policy(agent, state)
     if 'created_plan_this_turn_id' in state:
         agent._created_plan_this_turn_id = state['created_plan_this_turn_id']
     callback = getattr(agent, 'on_runtime_restore', None)
@@ -300,6 +302,7 @@ async def save_native_checkpoint(
     if ledger is None:
         return
     from app.services.execution.step_ledger import ControllerCheckpoint, RemainingBudget
+    from .runtime_policy import policy_for
 
     budget = current_run_budget()
     guard = {key: value for key, value in guard_state.items() if key not in {"started_at", "acceptance_spec"}}
@@ -314,7 +317,11 @@ async def save_native_checkpoint(
         "cycle": json_value(cycle), "guard": json_value(guard),
         "thinking_steps": json_value(steps), "tools_used": list(tools_used),
         "native_cap_escalations": getattr(agent,"_native_cap_escalations",0),
+        "native_repair_cap": getattr(agent,"_native_repair_cap",None),
+        "runtime_policy": policy_for(agent),
         "schema_policy": 2 if getattr(agent._schema_disclosure,"v2",False) else 1,
+        "schema_enabled": bool(agent._schema_disclosure.enabled),
+        "schema_force_full": bool(agent._schema_disclosure.force_full_active),
         "schema_disclosed": sorted(getattr(agent._schema_disclosure,"_disclosed",set())),
         "schema_loaded": sorted(getattr(agent, "_schema_disclosure").loaded),
         "output_spec": spec.to_dict() if spec is not None else None,
