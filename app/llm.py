@@ -654,6 +654,8 @@ def _record_attempt_context(
     usage: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Attach attempt-level ledger fields to the current usage context."""
+    from app.services.execution.llm_observation import emit
+    emit("attempt", logical_call_id=logical_call_id, attempt_no=attempt_no, usage=usage, upstream_request_id=upstream_request_id)
     try:
         ctx = _usage_context.get()
         ctx = dict(ctx) if isinstance(ctx, dict) else {}
@@ -1577,6 +1579,8 @@ class LLMClient(LLMProvider):
                     enable_thinking=enable_thinking,
                     thinking_budget=thinking_budget,
                 )
+                from app.services.execution.llm_observation import emit
+                emit("native_result", provider=self.provider, model=model or self.model, finish_reason=result.finish_reason, usage=result.usage, arguments=[{"name":c.name,"arguments":c.arguments} for c in result.tool_calls])
                 _log_call_metrics(
                     method="stream_chat_with_tools", provider=self.provider,
                     model=model or self.model, status="ok",
