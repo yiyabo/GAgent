@@ -83,6 +83,8 @@ def _save_run_user_message(
         if request.client_message_id
         else None
     )
+    if (request.context or {}).get("resume_from_run_id"):
+        user_message_metadata = {**(user_message_metadata or {}), "resume_from_run_id": request.context["resume_from_run_id"]}
     user_message_id = _save_chat_message(
         session_id,
         "user",
@@ -296,6 +298,29 @@ async def cancel_run(run_id: str, request: Request) -> Dict[str, str]:
     return {"run_id": run_id, "status": "cancel_requested"}
 
 
+async def get_resume_info(run_id: str, request: Request, session_id: str = Query(...)) -> Dict[str, Any]:
+    from app.services.run_resume import resume_info
+
+    row = get_chat_run(run_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="run not found")
+    ensure_owner_access(request, row.get("owner_id"), detail="run owner mismatch")
+    if row["session_id"] != session_id:
+        raise HTTPException(status_code=403, detail="session mismatch")
+    return await asyncio.to_thread(resume_info, row)
+
+
+async def search_recall(session_id: str, request: Request, q: str = Query(..., min_length=1, max_length=1000)) -> Dict[str, Any]:
+    from app.repository.context_recall import session_scope
+    from app.services.memory.context_recall import recall
+
+    scope = await asyncio.to_thread(session_scope, session_id)
+    if scope is None:
+        raise HTTPException(status_code=404, detail="session not found")
+    ensure_owner_access(request, scope["owner_id"], detail="session owner mismatch")
+    return await asyncio.to_thread(recall, session_id, q, history=True)
+
+
 async def resume_run(
     run_id: str, request: Request, body: Optional[Dict[str, Any]] = Body(default=None),
 ) -> Dict[str, str]:
@@ -329,6 +354,8 @@ async def resume_run(
         payload["user_id"] = None
         payload["client_message_id"] = str((body or {}).get("client_message_id") or f"resume:{run_id}")
         payload["context"] = {**(payload.get("context") or {}), "resume_from_run_id": run_id}
+        if isinstance((body or {}).get("memory_enabled"), bool):
+            payload["context"]["memory_enabled"] = body["memory_enabled"]
         resumed_request = ChatRequest.model_validate(payload)
     except (ValueError, TypeError) as exc:
         raise HTTPException(status_code=409, detail="The original request cannot be reconstructed") from exc
@@ -399,7 +426,9 @@ def mount_run_routes(router: APIRouter) -> None:
         cancel_run,
         methods=["POST"],
     )
+    router.add_api_route("/runs/{run_id}/resume", get_resume_info, methods=["GET"])
     router.add_api_route("/runs/{run_id}/resume", resume_run, methods=["POST"])
+    router.add_api_route("/sessions/{session_id}/recall", search_recall, methods=["GET"])
     router.add_api_route(
         "/runs/{run_id}/events",
         stream_run_events,

@@ -450,6 +450,10 @@ async def chat_message(
                 context["default_llm_provider"] = session_llm_provider
         context.setdefault("owner_id", owner_id)
 
+        from app.services.memory.context_recall import hydrate_chat_context
+        await hydrate_chat_context(context, request.session_id, request.message,
+                                   client_message_id=request.client_message_id)
+
         agent_cls = get_structured_chat_agent_cls()
         agent = agent_cls(
             mode=request.mode,
@@ -538,7 +542,7 @@ async def chat_message(
                 response=agent_result.reply,
                 suggestions=agent_result.suggestions,
                 actions=[step.action_payload for step in agent_result.steps],
-                metadata=metadata_payload,
+                metadata={**metadata_payload, "recall_context": context.get("recall_context")},
             )
             return _save_assistant_response(
                 request.session_id,
@@ -1364,6 +1368,8 @@ async def get_chat_history(
             before_id,
             owner_id=owner_id,
         )
+        from app.services.run_resume import annotate_unanswered_turns
+        await asyncio.to_thread(annotate_unanswered_turns, messages, session_id, owner_id)
         next_before_id = messages[0].id if messages else None
         return {
             "success": True,

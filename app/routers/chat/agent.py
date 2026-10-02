@@ -2487,6 +2487,8 @@ class StructuredChatAgent:
                                                     "recent_tool_results", []
                                                 ),
                                             }
+                                            from app.services.memory.context_recall import inherit_recall_context
+                                            session_ctx.update(inherit_recall_context(self))
                                             if self.session_id:
                                                 session_ctx["session_id"] = self.session_id
                                             owner_id = str(
@@ -3030,6 +3032,8 @@ class StructuredChatAgent:
             "final_summary": display_text,
             **routing_decision.metadata(),
         }
+        from app.services.memory.context_recall import attach_recall_metadata
+        attach_recall_metadata(meta, self.extra_context)
         meta["thinking_display_mode"] = "final_answer"
         if thinking_process is not None:
             meta["thinking_process"] = thinking_process
@@ -3057,6 +3061,7 @@ class StructuredChatAgent:
                     "final_summary": display_text,
                     **routing_decision.metadata(),
                 }
+                attach_recall_metadata(save_meta, self.extra_context)
                 save_meta["thinking_display_mode"] = "final_answer"
                 if thinking_process is not None:
                     save_meta["thinking_process"] = thinking_process
@@ -3164,6 +3169,8 @@ class StructuredChatAgent:
             "paper_mode": bool(self.extra_context.get("paper_mode", False)),
             "model_provider": (self.extra_context or {}).get("model_provider"),
         }
+        from app.services.memory.context_recall import inherit_recall_context
+        session_ctx.update(inherit_recall_context(self))
 
         completed_ids: List[int] = []
         failed_ids: List[int] = []

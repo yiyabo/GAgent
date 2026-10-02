@@ -111,7 +111,11 @@ class ExecutorPromptBuilder:
         session_context: Optional[Dict[str, Any]] = None,
         include_tool_hints: bool = True,
     ) -> str:
+        from app.services.memory.context_recall import format_recall_context
         lines: List[str] = [self.SYSTEM_HEADER]
+        recall_block = format_recall_context(session_context)
+        if recall_block:
+            lines.append(recall_block)
 
         if session_context:
             user_message = session_context.get("user_message")

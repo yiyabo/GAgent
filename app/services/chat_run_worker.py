@@ -118,6 +118,8 @@ async def _run_explicit_task_execution(
         "chat_history": getattr(agent, "history", []),
         "paper_mode": False,
     }
+    from app.services.memory.context_recall import inherit_recall_context
+    session_ctx.update(inherit_recall_context(agent))
     exec_config = ExecutionConfig(
         session_context=session_ctx,
         enable_skills=False,
@@ -343,6 +345,8 @@ async def _run_cascade(
             "chat_history": getattr(agent, "history", []),
             "paper_mode": False,
         }
+        from app.services.memory.context_recall import inherit_recall_context
+        session_ctx.update(inherit_recall_context(agent))
         exec_config = ExecutionConfig(session_context=session_ctx)
 
         try:
@@ -446,6 +450,7 @@ async def execute_chat_run(run_id: str) -> None:
     emitter.terminal_committed = terminal_committed
     outcome: Optional[ChatRunOutcome] = None
     observed_artifacts: list[dict] = []
+    recall_context: dict = {}
 
     async def emit_run_event(payload: dict) -> bool:
         nonlocal outcome
@@ -456,6 +461,12 @@ async def execute_chat_run(run_id: str) -> None:
                 raise RunDeadlineExceeded("Run deadline reached before final completion.")
         if payload.get("type") == "artifact":
             observed_artifacts.append(dict(payload))
+        if payload.get("type") == "final" and recall_context:
+            from app.services.memory.context_recall import attach_recall_metadata
+            body = payload.setdefault("payload", {})
+            if not isinstance(body.get("metadata"), dict):
+                body["metadata"] = {}
+            attach_recall_metadata(body["metadata"], {"recall_context": recall_context})
         event_outcome = ChatRunOutcome.from_event(payload, cancelled=cancel_ev.is_set())
         accepted = await emitter.emit(payload)
         if accepted is not False and outcome is None and event_outcome is not None:
@@ -542,6 +553,7 @@ async def execute_chat_run(run_id: str) -> None:
             run_id=run_id,
             usage_token_sink=usage_context_tokens.append,
         )
+        recall_context = (getattr(agent, "extra_context", None) or {}).get("recall_context") or {}
         agent._current_user_message = message_to_send
         resume_source = (request.context or {}).get("resume_from_run_id")
         if resume_source:

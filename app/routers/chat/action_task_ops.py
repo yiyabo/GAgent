@@ -540,6 +540,8 @@ def handle_task_action(agent: Any, action: LLMAction) -> AgentStep:
             "chat_history_max_messages": getattr(agent, "max_history_messages", 80),
             "recent_tool_results": agent.extra_context.get("recent_tool_results", []),
         }
+        from app.services.memory.context_recall import inherit_recall_context
+        session_ctx.update(inherit_recall_context(agent))
         if task_id_raw is None:
             result = agent.plan_decomposer.run_plan(
                 tree.id,

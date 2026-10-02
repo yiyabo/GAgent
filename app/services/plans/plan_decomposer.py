@@ -102,6 +102,11 @@ class DecompositionPromptBuilder:
             f"Do NOT use paths from chat history or data source directories as output locations.",
         ]
 
+        from app.services.memory.context_recall import format_recall_context
+        recall_block = format_recall_context(session_context)
+        if recall_block:
+            prompt.append(recall_block)
+
         if session_context:
             user_message = session_context.get("user_message")
             if user_message:

@@ -805,6 +805,13 @@ export function processBackgroundDispatch(ctx: StreamHandlerContext): void {
 export async function processFinalPayload(ctx: StreamHandlerContext): Promise<void> {
   ctx = scopeStreamContext(ctx);
   const result: ChatResponsePayload = ctx.state.finalPayload!;
+  const recalled = (result.metadata as any)?.recall_context?.memories;
+  if (ctx.isCurrentSession?.() && Array.isArray(recalled)) {
+    ctx.get().setRelevantMemories?.(recalled.map((item: any) => ({
+      ...item, importance: item.importance || 'medium', keywords: [], tags: [],
+      context: item.scope || 'General', retrieval_count: 0,
+    })));
+  }
   const actions = (result.actions ?? []) as ChatActionSummary[];
   const currentMessage = ctx.get().messages.find((msg: any) => msg.id === ctx.assistantMessageId);
   const resolvedPlanId = (result.metadata?.plan_id !== undefined ? coercePlanId(result.metadata.plan_id) : undefined) ?? extractPlanIdFromActions(actions) ?? coercePlanId(ctx.mergedMetadata.plan_id) ?? ctx.get().currentPlanId ?? null;
@@ -812,7 +819,8 @@ export async function processFinalPayload(ctx: StreamHandlerContext): Promise<vo
   const resolvedTaskId = result.metadata?.task_id ?? ctx.mergedMetadata.task_id ?? ctx.get().currentTaskId ?? null;
   const resolvedTaskName = result.metadata?.task_name ?? ctx.mergedMetadata.task_name ?? ctx.get().currentTaskName ?? null;
   const resolvedWorkflowId = result.metadata?.workflow_id ?? ctx.mergedMetadata.workflow_id ?? ctx.get().currentWorkflowId ?? null;
-  const initialStatus = isActionStatus(result.metadata?.status) ? (result.metadata?.status as ChatActionStatus) : (actions.length > 0 ? 'pending' : 'completed');
+  const wasCancelled = ['cancelled', 'canceled'].includes(String(result.metadata?.status ?? ''));
+  const initialStatus = wasCancelled ? 'failed' : isActionStatus(result.metadata?.status) ? (result.metadata?.status as ChatActionStatus) : (actions.length > 0 ? 'pending' : 'completed');
 
   const assistantMetadata: ChatResponseMetadata = {
     ...(currentMessage?.metadata ?? {}),
@@ -825,6 +833,7 @@ export async function processFinalPayload(ctx: StreamHandlerContext): Promise<vo
     actions,
     action_list: actions,
     status: initialStatus,
+    ...(wasCancelled ? { runtime_failure_status: 'cancelled' } : {}),
     analysis_text: result.metadata?.analysis_text !== undefined ? (result.metadata?.analysis_text as string | null) : ctx.state.streamedContent || '',
     final_summary: (result.metadata?.final_summary as string | undefined) ?? (result.response ?? ctx.state.streamedContent ?? ''),
   };

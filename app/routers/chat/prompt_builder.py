@@ -64,10 +64,11 @@ def build_prompt(agent: Any, user_message: str) -> str:
     history_text = format_history(agent)
 
     # Extract memories from extra_context and format separately.
-    memories = agent.extra_context.pop("memories", None)
-    memory_section = format_memories(memories) if memories else ""
+    from app.services.memory.context_recall import format_recall_context
+    memory_section = format_recall_context(agent.extra_context)
 
-    context_text = json.dumps(agent.extra_context, ensure_ascii=False, indent=2)
+    ctx_copy = {key: value for key, value in agent.extra_context.items() if key not in {"memories", "recall_context"}}
+    context_text = json.dumps(ctx_copy, ensure_ascii=False, indent=2)
     plan_outline = agent.plan_session.outline(max_depth=4, max_nodes=100)
     plan_status = compose_plan_status(agent, plan_bound)
     plan_catalog = compose_plan_catalog(agent, plan_bound)
@@ -133,10 +134,10 @@ def build_simple_stream_chat_prompt(agent: Any, user_message: str) -> str:
     plan_bound = agent.plan_session.plan_id is not None
     history_text = format_history(agent)
 
-    memories = agent.extra_context.pop("memories", None)
-    memory_section = format_memories(memories) if memories else ""
+    from app.services.memory.context_recall import format_recall_context
+    memory_section = format_recall_context(agent.extra_context)
 
-    ctx_copy = dict(agent.extra_context)
+    ctx_copy = {key: value for key, value in agent.extra_context.items() if key not in {"memories", "recall_context"}}
     context_text = json.dumps(ctx_copy, ensure_ascii=False, indent=2)
 
     plan_outline = agent.plan_session.outline(max_depth=4, max_nodes=100)

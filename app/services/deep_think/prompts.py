@@ -688,7 +688,9 @@ def _append_reference_context(
     if not context:
         return prompt
 
-    blocks: List[str] = []
+    from app.services.memory.context_recall import format_recall_context
+    recall_block = format_recall_context(context)
+    blocks: List[str] = [recall_block] if recall_block else []
     brief_execute_followup = cls._is_brief_execute_followup_context(context)
 
     user_message = context.get("user_message")

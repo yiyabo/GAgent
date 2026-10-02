@@ -2,7 +2,6 @@ import { ChatSliceCreator } from '../types';
 import {
   ChatMessage,
   ChatActionStatus,
-  Memory,
 } from '@/types';
 import {
   streamChatEvents,
@@ -11,7 +10,6 @@ import {
   buildToolResultsCache,
   resolveHistoryCursor,
 } from '../../chatUtils';
-import { memoryApi } from '@api/memory';
 import { chatApi } from '@api/chat';
 import {
   collectArtifactGallery,
@@ -373,6 +371,22 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => {
   await get().loadChatHistory(sessionId, { beforeId: historyBeforeId, append: true });
   },
 
+  resumeChatRun: async (runId: string, sessionId: string) => {
+    const captured = get().currentSession;
+    const apiSessionId = captured?.session_id ?? captured?.id;
+    if (apiSessionId !== sessionId) throw new Error('请切回原会话后继续此任务。');
+    const key = resolveChatSessionProcessingKey(captured) ?? '__no_session__';
+    if (get().processingSessionIds.has(key)) throw new Error('此会话已有任务正在运行。');
+    const info = await chatApi.getResumeInfo(runId, sessionId);
+    if (!info.can_resume || !info.message) throw new Error(info.reason);
+    if (info.run_id !== runId || info.session_id !== sessionId) throw new Error('任务与当前会话不匹配。');
+    const current = get().currentSession;
+    if ((current?.session_id ?? current?.id) !== apiSessionId) throw new Error('会话已切换，请回原会话继续。');
+    // sendMessage establishes the processing fence synchronously before its first await.
+    if (get().processingSessionIds.has(key)) throw new Error('此会话已有任务正在运行。');
+    await get().sendMessage(info.message, { resume_from_run_id: runId });
+  },
+
   sendMessage: async (content, metadata) => {
   const {
   currentPlanTitle,
@@ -392,7 +406,7 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => {
   return;
   }
 
-  const attachments = uploadedFiles.length > 0
+  const attachments = !metadata?.resume_from_run_id && uploadedFiles.length > 0
   ? uploadedFiles.map((f) => ({
   type: (Boolean(f.file_type?.startsWith('image/') || /\.(png|jpe?g|gif|webp|bmp|tiff?)$/i.test(f.original_name || f.file_name)) ? 'image' : 'file') as 'image' | 'file',
   path: f.file_path,
@@ -431,39 +445,27 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => {
   type: 'assistant',
   content: '',
   timestamp: new Date(),
-  metadata: { status: 'pending', unified_stream: true, plan_message: null, client_message_id: clientMessageId },
+  metadata: { status: 'pending', unified_stream: true, plan_message: null, client_message_id: clientMessageId, ...(metadata?.resume_from_run_id ? { resume_from_run_id: metadata.resume_from_run_id } : {}) },
   };
   source.get().addMessage(assistantMessage);
   let assistantMessageAdded = true;
 
-  set({ inputText: '' });
+  if (metadata?.resume_from_run_id) set({ relevantMemories: [] });
+  else set({ inputText: '', relevantMemories: [] });
   source.get().setSessionProcessing(processingKey, true);
 
   try {
-  let memories: Memory[] = [];
-  if (memoryEnabled) {
-  try {
-  const memoryResult = await memoryApi.queryMemory({ search_text: content, limit: 3, min_similarity: 0.6 });
-  memories = memoryResult.memories || [];
-  if (source.isCurrent()) set({ relevantMemories: memories });
-  } catch (error) {
-  console.error('Memory RAG failed:', error);
-  }
-  }
-
   const recentMessages = source.get().messages.slice(-CHAT_REQUEST_HISTORY_LIMIT).map((msg) => ({
   role: msg.type,
   content: msg.content,
   timestamp: msg.timestamp.toISOString(),
   }));
 
-  const memoryContext = memories.length > 0 ? memories.map((m) => ({ content: m.content, similarity: m.similarity, memory_type: m.memory_type })) : undefined;
-
   const chatRequest: any = {
   message: content,
   mode: 'assistant' as const,
   history: recentMessages,
-  session_id: currentSession?.session_id,
+  session_id: currentSession?.session_id ?? currentSession?.id,
   client_message_id: clientMessageId,
   context: {
   plan_id: mergedMetadata.plan_id,
@@ -471,7 +473,7 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => {
   plan_title: mergedMetadata.plan_title,
   workflow_id: mergedMetadata.workflow_id,
   attachments,
-  memories: memoryContext,
+  memory_enabled: memoryEnabled,
   ...(metadata ?? {}),
   },
   };
@@ -510,7 +512,10 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => {
   const apiSessionId = currentSession?.session_id ?? currentSession?.id ?? undefined;
   let eventSource: AsyncIterable<{ seq: number | null; event: ChatStreamEvent }>;
   if (apiSessionId) {
-  const { run_id } = await postChatRun(chatRequest);
+  const resumeSource = typeof metadata?.resume_from_run_id === 'string' ? metadata.resume_from_run_id : null;
+  const { run_id } = resumeSource
+    ? await chatApi.resumeRun(resumeSource, { session_id: apiSessionId, client_message_id: clientMessageId, memory_enabled: memoryEnabled })
+    : await postChatRun(chatRequest);
   source.get().setActiveRunId(processingKey, run_id);
   const prevMeta =
   (source.get().messages.find((m) => m.id === assistantMessageId)?.metadata ?? {}) as Record<string, any>;

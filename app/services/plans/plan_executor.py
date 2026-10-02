@@ -671,6 +671,9 @@ class PlanExecutor(_ArtifactMethods, _DelegateMethods, _DeepThinkMethods):
             if config.session_context is None:
                 config.session_context = {}
             session_context = config.session_context if isinstance(config.session_context, dict) else {}
+            from app.services.memory.context_recall import hydrate_context
+            hydrate_context(session_context, session_context.get("session_id"),
+                            session_context.get("user_message") or node.instruction or node.display_name())
             artifact_contract, resolved_input_artifacts, missing_aliases, producer_map = self._resolve_required_artifacts(
                 plan_id,
                 node,

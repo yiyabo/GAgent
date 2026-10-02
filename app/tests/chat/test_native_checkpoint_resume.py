@@ -313,3 +313,60 @@ def test_resume_endpoint_creates_one_continuation_and_keeps_terminal_source(resu
         assert error.value.status_code == 409
 
     asyncio.run(scenario())
+
+
+def test_resume_info_reports_checkpoint_and_uncertain_mutation_without_fork(resumable_db):
+    from app.services.execution.step_ledger import ControllerCheckpoint
+    from app.services.run_resume import resume_info
+
+    _create('inspect')
+    ledger = StepLedger('inspect',worker_id='claim-inspect')
+    assert resume_info(chat_runs.get_chat_run('inspect'))['reason_code'] == 'not_terminal'
+    ledger.save_checkpoint(ControllerCheckpoint(run_id='inspect'))
+    decision = ledger.prepare('write','file_operations',{'operation':'write'},replay_policy='mutating')
+    assert ledger.claim(decision.step.key)
+    ledger.interrupt(decision.step.key)
+    assert chat_runs.mark_chat_run_finished('inspect','cancelled',worker_id='claim-inspect')
+    info = resume_info(chat_runs.get_chat_run('inspect'))
+    assert info['can_resume'] is False and info['reason_code'] == 'reconciliation_required'
+    assert chat_runs.get_chat_run('inspect')['status'] == 'cancelled'
+
+
+def test_resume_info_missing_and_available_checkpoint_scope(resumable_db, monkeypatch):
+    from app.services.execution.step_ledger import ControllerCheckpoint
+    from app.services.run_resume import resume_info
+
+    _create('inspect-ready')
+    ledger = StepLedger('inspect-ready',worker_id='claim-inspect-ready')
+    ledger.save_checkpoint(ControllerCheckpoint(run_id='inspect-ready'))
+    assert chat_runs.mark_chat_run_finished('inspect-ready','failed',worker_id='claim-inspect-ready')
+    _create('no-checkpoint')
+    assert chat_runs.mark_chat_run_finished('no-checkpoint','failed',worker_id='claim-no-checkpoint')
+    assert resume_info(chat_runs.get_chat_run('no-checkpoint'))['reason_code'] == 'checkpoint_missing'
+    info = resume_info(chat_runs.get_chat_run('inspect-ready'))
+    assert info['can_resume'] and info['message'] == 'Write the result'
+    monkeypatch.setattr(run_routes,'ensure_owner_access',lambda *args,**kwargs:None)
+    request = Request({'type':'http','headers':[]})
+    assert asyncio.run(run_routes.get_resume_info('inspect-ready',request,'resume-session')) == info
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(run_routes.get_resume_info('inspect-ready',request,'another-session'))
+    assert error.value.status_code == 403
+
+
+def test_cancelled_turn_without_answer_retains_resume_entry_on_history_refresh(resumable_db):
+    from app.routers.chat.models import ChatMessage
+    from app.services.run_resume import annotate_unanswered_turns
+    _create('cancel-no-answer')
+    with get_db() as conn:
+        cursor = conn.execute("INSERT INTO chat_messages(session_id,role,content) VALUES('resume-session','user','Write the result')")
+        message_id = cursor.lastrowid
+        conn.commit()
+    chat_runs.set_chat_run_user_message_id('cancel-no-answer',message_id)
+    assert chat_runs.mark_chat_run_finished('cancel-no-answer','cancelled',worker_id='claim-cancel-no-answer')
+    messages = [ChatMessage(id=message_id,role='user',content='Write the result')]
+    annotate_unanswered_turns(messages,'resume-session','resume-owner')
+    assert messages[0].metadata == {'resume_run_id':'cancel-no-answer','resume_run_status':'cancelled'}
+    other = [ChatMessage(id=message_id,role='user',content='Write the result')]
+    annotate_unanswered_turns(other,'resume-session','different-owner')
+    assert other[0].metadata is None
+    assert chat_runs.get_chat_run('cancel-no-answer')['status'] == 'cancelled'

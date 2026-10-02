@@ -455,6 +455,8 @@ async def _stream_direct_image_response(
     patched on the agent namespace by chat tests, so both are read through
     ``_ag()`` at call time.
     """
+    from app.services.memory.context_recall import attach_recall_metadata
+    attach_recall_metadata(response_metadata, agent.extra_context)
     if agent.session_id and response_text:
         try:
             _ag()._persist_runtime_context(agent)
@@ -609,6 +611,9 @@ async def _drain_unified_stream_events(
                 structured_plan_meta=structured_plan_meta,
                 plan_runtime_meta=plan_runtime_meta,
             )
+
+            from app.services.memory.context_recall import attach_recall_metadata
+            attach_recall_metadata(final_metadata, agent.extra_context)
 
             # 🚀 Emit final event to client FIRST (before DB save)
             payload = {

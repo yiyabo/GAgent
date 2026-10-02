@@ -236,6 +236,10 @@ async def build_agent_for_chat_request(
         if session_llm_provider:
             context["default_llm_provider"] = session_llm_provider
 
+    from app.services.memory.context_recall import hydrate_chat_context
+    await hydrate_chat_context(context, request.session_id, request.message,
+                               client_message_id=request.client_message_id)
+
     agent_cls = get_structured_chat_agent_cls()
     agent = agent_cls(
         mode=request.mode,

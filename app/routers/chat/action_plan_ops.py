@@ -70,6 +70,8 @@ def _build_plan_generation_session_context(agent: Any) -> Dict[str, Any]:
         "recent_tool_results": (getattr(agent, "extra_context", {}) or {}).get("recent_tool_results", []),
         "owner_id": (getattr(agent, "extra_context", {}) or {}).get("owner_id"),
     }
+    from app.services.memory.context_recall import inherit_recall_context
+    context.update(inherit_recall_context(agent))
     return {key: value for key, value in context.items() if value is not None}
 
 
@@ -247,6 +249,8 @@ async def handle_plan_action(agent: Any, action: LLMAction) -> AgentStep:
             "recent_tool_results": agent.extra_context.get("recent_tool_results", []),
             "paper_mode": paper_mode,
         }
+        from app.services.memory.context_recall import inherit_recall_context
+        session_ctx.update(inherit_recall_context(agent))
         exec_config = ExecutionConfig(session_context=session_ctx, paper_mode=paper_mode)
         summary = await asyncio.to_thread(agent.plan_executor.execute_plan, tree.id, config=exec_config)
         executed_count = len(summary.executed_task_ids)
@@ -553,6 +557,8 @@ def _prepare_rerun_task_execution(
         "paper_mode": paper_mode,
         "explicit_execute_shortcut": is_explicit_execute_shortcut,
     }
+    from app.services.memory.context_recall import inherit_recall_context
+    session_ctx.update(inherit_recall_context(agent))
     exec_config = ExecutionConfig(
         session_context=session_ctx,
         paper_mode=paper_mode,

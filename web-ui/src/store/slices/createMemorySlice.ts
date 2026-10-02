@@ -20,7 +20,7 @@ export const createMemorySlice: ChatSliceCreator = (set, get) => ({
   content: message.content,
   memory_type: memoryType as any,
   importance: importance as any,
-  tags: ['chat', 'manual_saved'],
+  tags: ['chat', 'manual_saved', ...((message.metadata?.session_id ?? get().currentSession?.session_id ?? get().currentSession?.id) ? [`session:${message.metadata?.session_id ?? get().currentSession?.session_id ?? get().currentSession?.id}`] : [])],
   context: `save ${new Date().toLocaleString()}`,
   related_task_id: message.metadata?.task_id
   });

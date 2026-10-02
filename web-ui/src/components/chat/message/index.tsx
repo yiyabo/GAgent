@@ -27,6 +27,8 @@ import {
 import MessageAvatar from './MessageAvatar';
 import ToolProgressCard, { BackgroundDispatchCard } from './ToolProgressCard';
 import MessageActions from './MessageActions';
+import ResumeRunAction from './ResumeRunAction';
+import RecallReferences from './RecallReferences';
 import ToolResultDrawer, { ToolStatusBar } from './ToolResultDrawer';
 import { extractLlmReplyMessage } from '@/utils/llmReplyDisplay';
 import { collectArtifactGallery, collectArtifactFiles, filterInlinedGalleryItems } from '@/utils/artifactGallery';
@@ -587,6 +589,8 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
               </>
             );
           })()}
+          {type === 'assistant' && <RecallReferences context={(metadata as any)?.recall_context} />}
+          <ResumeRunAction runId={type === 'assistant' ? chatRunIdFromMeta : (metadata as any)?.resume_run_id} sessionId={effectiveSessionId} status={type === 'assistant' ? status : (metadata as any)?.resume_run_status} />
         </div>
       </div>
 

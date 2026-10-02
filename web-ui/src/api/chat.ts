@@ -48,7 +48,26 @@ export interface AvailableModelsResponse {
   current_model: string;
 }
 
+export interface ChatRunResumeInfo {
+  run_id: string;
+  session_id: string;
+  status: string;
+  can_resume: boolean;
+  reason_code: string;
+  reason: string;
+  message?: string;
+}
+
 export class ChatApi extends BaseApi {
+  getResumeInfo = (runId: string, sessionId: string): Promise<ChatRunResumeInfo> =>
+    this.get(`/chat/runs/${encodeURIComponent(runId)}/resume`, { session_id: sessionId });
+
+  resumeRun = (runId: string, body: { session_id: string; client_message_id: string; memory_enabled?: boolean }): Promise<{run_id: string; session_id: string; resume_from_run_id: string}> =>
+    this.post(`/chat/runs/${encodeURIComponent(runId)}/resume`, body);
+
+  searchRecall = (sessionId: string, query: string): Promise<Record<string, any>> =>
+    this.get(`/chat/sessions/${encodeURIComponent(sessionId)}/recall`, { q: query });
+
   sendMessage = async (message: string, context?: {
   task_id?: number;
   plan_id?: number | null;

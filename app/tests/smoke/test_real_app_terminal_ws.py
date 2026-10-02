@@ -38,7 +38,15 @@ def test_real_app_terminal_http_and_websocket_roundtrip(
             assert hello["payload"]["terminal_id"] == terminal_id
 
             ws.send_json({"type": "ping", "payload": None})
-            assert ws.receive_json()["type"] == "pong"
+            # Shell output and control acknowledgements share the stream.
+            # A delayed shell banner can legitimately precede this ping's pong.
+            for _ in range(20):
+                event = ws.receive_json()
+                assert event["type"] in {"output", "pong"}
+                if event["type"] == "pong":
+                    break
+            else:
+                pytest.fail("No pong received after terminal ping")
 
             ws.send_json(
                 {
