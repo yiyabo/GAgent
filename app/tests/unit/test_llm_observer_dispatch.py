@@ -78,3 +78,24 @@ def test_network_failure_retains_attempt_before_receiving_headers(monkeypatch):
     assert transport.post.call_count == 1
     assert len(events) == 1
     assert events[0]['kind'] == 'attempt' and events[0]['usage'] is None
+
+
+@pytest.mark.asyncio
+async def test_nonstream_repair_reports_usage_before_the_next_call(monkeypatch):
+    monkeypatch.setattr(llm, 'is_production', lambda: False)
+    client = llm.LLMClient(provider='qwen', api_key='test-only', retries=0)
+    response = MagicMock(status_code=200)
+    response.json.return_value = {'usage': {'prompt_tokens': 20, 'completion_tokens': 5, 'total_tokens': 25},
+                                 'choices': [{'message': {'content': 'done'}, 'finish_reason': 'stop'}]}
+    transport = MagicMock()
+    transport.post = AsyncMock(return_value=response)
+    monkeypatch.setattr(llm, '_get_shared_async_client', lambda: transport)
+    monkeypatch.setattr(llm, '_log_usage', lambda **kwargs: None)
+    events = []
+    handle = observer.set(events.append)
+    try:
+        await client._repair_tool_calls_nonstream({'model': 'test-model', 'messages': []}, 'original-call')
+    finally:
+        observer.reset(handle)
+    assert [(e['logical_call_id'], e['attempt_no']) for e in events] == [('original-call', 2)] * 2
+    assert events[-1]['usage']['total_tokens'] == 25

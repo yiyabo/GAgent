@@ -1850,6 +1850,7 @@ class LLMClient(LLMProvider):
             return []
         usage = data.get("usage")
         if isinstance(usage, dict):
+            _record_attempt_context(logical_call_id, 2, usage=usage)
             _log_usage(
                 provider=self.provider,
                 model=body.get("model") or self.model,

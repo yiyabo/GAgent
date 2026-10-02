@@ -302,7 +302,7 @@ class TestRepairOnTheWire:
         monkeypatch.setattr(
             llm_mod,
             "_record_attempt_context",
-            lambda call_id, attempt_no, *a, **k: attempts.append((call_id, attempt_no)),
+            lambda call_id, attempt_no, *a, **k: attempts.append((call_id, attempt_no, k.get("usage"))),
         )
         fake = _FakeAsyncClient(
             [_tool_call_line("web_search", ""), _finish_line()],
@@ -334,8 +334,9 @@ class TestRepairOnTheWire:
         assert [kw["total_tokens"] for kw in logged] == [18]
         # The streamed attempt is 1, the repair is attempt 2 of the same
         # logical call — one logical call, two billed attempts.
-        assert [attempt for _, attempt in attempts] == [1, 2]
-        assert len({call_id for call_id, _ in attempts}) == 1
+        assert [attempt for _, attempt, usage in attempts if usage is None] == [1, 2]
+        assert len({call_id for call_id, _, _ in attempts}) == 1
+        assert [(attempt, usage["total_tokens"]) for _, attempt, usage in attempts if usage] == [(2, 18)]
 
     def test_a_healthy_stream_is_left_alone(self, monkeypatch: pytest.MonkeyPatch) -> None:
         fake = _FakeAsyncClient(
