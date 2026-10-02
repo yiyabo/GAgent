@@ -202,6 +202,11 @@ if _USE_PYDANTIC:
             default=10000, env="JOB_LOG_MAX_ROWS"
         )
 
+        skill_learning_enabled: bool = Field(default=False, env="SKILL_LEARNING_ENABLED")
+        skill_learning_provider: Optional[str] = Field(default=None, env="SKILL_LEARNING_PROVIDER")
+        skill_learning_model: Optional[str] = Field(default=None, env="SKILL_LEARNING_MODEL")
+        skill_learning_calls_per_hour: int = Field(default=8, ge=1, le=100, env="SKILL_LEARNING_CALLS_PER_HOUR")
+
         quality_evaluation_enabled: bool = Field(
             default=False, env="QUALITY_EVALUATION_ENABLED"
         )
@@ -522,6 +527,14 @@ else:
                 self.job_log_max_rows = int(os.getenv("JOB_LOG_MAX_ROWS", "10000"))
             except Exception:
                 self.job_log_max_rows = 10000
+
+            self.skill_learning_enabled = os.getenv("SKILL_LEARNING_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
+            self.skill_learning_provider = os.getenv("SKILL_LEARNING_PROVIDER") or None
+            self.skill_learning_model = os.getenv("SKILL_LEARNING_MODEL") or None
+            try:
+                self.skill_learning_calls_per_hour = max(1, min(100, int(os.getenv("SKILL_LEARNING_CALLS_PER_HOUR", "8"))))
+            except ValueError:
+                self.skill_learning_calls_per_hour = 8
 
             self.quality_evaluation_enabled = os.getenv(
                 "QUALITY_EVALUATION_ENABLED", "0"
