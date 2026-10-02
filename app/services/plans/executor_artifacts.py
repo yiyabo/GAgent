@@ -97,6 +97,11 @@ class _ArtifactMethods:
         *,
         status: Optional[str] = None,
     ) -> None:
+        from .artifact_versions import active_binding,commit_result
+        binding=active_binding.get()
+        if binding and binding.plan_id==plan_id and binding.task_id==task_id and status in {"completed","done","failed","skipped"}:
+            commit_result(self,binding,payload,status)
+            return
         serialized = json.dumps(payload, ensure_ascii=False)
         try:
             self._repo.update_task(
@@ -1162,6 +1167,8 @@ class _ArtifactMethods:
         session_context: Optional[Dict[str, Any]],
         manifest: Optional[Dict[str, Any]] = None,
     ) -> None:
+        from .artifact_versions import active_binding
+        if active_binding.get():return  # Only project after fenced manifest publication.
         session_id = session_context.get("session_id") if isinstance(session_context, dict) else None
         if not session_id:
             logger.debug(f"Plan {plan_id} task {node.id}: No session_id, skipping deliverable publish")

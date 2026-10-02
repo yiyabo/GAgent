@@ -6,6 +6,8 @@ export interface Task {
   name: string;
   status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped' | 'blocked';
   effective_status?: string | null;
+  freshness?: "fresh"|"stale"|"unknown"|"reconciling";
+  stale_reasons?: string[];
   status_reason?: string | null;
   blocked_by_dependencies?: boolean;
   incomplete_dependencies?: number[];
@@ -75,6 +77,8 @@ export interface PlanNodeResponse {
   name: string;
   status?: string;
   effective_status?: string | null;
+  freshness?: "fresh"|"stale"|"unknown"|"reconciling";
+  stale_reasons?: string[];
   status_reason?: string | null;
   blocked_by_dependencies?: boolean;
   incomplete_dependencies?: number[];
@@ -107,6 +111,8 @@ export interface PlanResultItem {
   name?: string | null;
   status?: Task['status'] | string | null;
   effective_status?: string | null;
+  freshness?: "fresh"|"stale"|"unknown"|"reconciling";
+  stale_reasons?: string[];
   status_reason?: string | null;
   blocked_by_dependencies?: boolean;
   incomplete_dependencies?: number[];
@@ -156,6 +162,8 @@ export interface DependencyNodeInfo {
   name: string;
   status: string;
   effective_status?: string | null;
+  freshness?: "fresh"|"stale"|"unknown"|"reconciling";
+  stale_reasons?: string[];
   status_reason?: string | null;
   blocked_by_dependencies?: boolean;
   incomplete_dependencies?: number[];
@@ -168,6 +176,8 @@ export interface ExecutionChecklistItem {
   name: string;
   status: string;
   effective_status?: string | null;
+  freshness?: "fresh"|"stale"|"unknown"|"reconciling";
+  stale_reasons?: string[];
   status_reason?: string | null;
   blocked_by_dependencies?: boolean;
   incomplete_dependencies?: number[];

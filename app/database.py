@@ -369,7 +369,7 @@ def close_db_pool() -> None:
 
 
 @contextmanager
-def plan_db_connection(plan_path: Path) -> Iterator:
+def plan_db_connection(plan_path: Path, *, before_commit=None) -> Iterator:
     """Commit plan mutations only while their inherited run is still writable.
 
     Reads remain available after cancellation. The established lock order is
@@ -390,6 +390,7 @@ def plan_db_connection(plan_path: Path) -> Iterator:
     try:
         yield conn
         if conn.total_changes == 0:
+            if before_commit is not None:before_commit()
             conn.commit()
         else:
             import asyncio
@@ -407,6 +408,7 @@ def plan_db_connection(plan_path: Path) -> Iterator:
             assert_context_writable()
             claim = chat_run_claim.get()
             if claim is None:
+                if before_commit is not None:before_commit()
                 conn.commit()
             else:
                 from .repository.chat_runs import _owns_active_run, _write_transaction
@@ -417,6 +419,7 @@ def plan_db_connection(plan_path: Path) -> Iterator:
                         assert_context_writable()
                         if not _owns_active_run(main_conn, claim[0], claim[1]):
                             raise StaleRunClaim("Plan write rejected: parent run claim is no longer live.")
+                        if before_commit is not None:before_commit()
                         conn.commit()
     except BaseException:
         conn.rollback()

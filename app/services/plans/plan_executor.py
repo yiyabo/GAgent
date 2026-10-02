@@ -606,7 +606,11 @@ class PlanExecutor(_ArtifactMethods, _DelegateMethods, _DeepThinkMethods):
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _run_task(
+    def _run_task(self,plan_id,node,tree,config):
+        from .artifact_versions import execute_bound
+        return execute_bound(self,plan_id,node,tree,config,lambda:self._run_task_unbound(plan_id,node,tree,config))
+
+    def _run_task_unbound(
         self,
         plan_id: int,
         node: PlanNode,
@@ -624,7 +628,7 @@ class PlanExecutor(_ArtifactMethods, _DelegateMethods, _DeepThinkMethods):
             task_id=node.id,
             call_purpose="plan_task_execution",
             phase="plan",
-            run_id=f"plan_{plan_id}_task_{node.id}",
+            run_id=_task_usage_id(plan_id,node.id),
             billing_lane="plan_task",
         )
         try:
@@ -835,7 +839,7 @@ class PlanExecutor(_ArtifactMethods, _DelegateMethods, _DeepThinkMethods):
             if resource_ids:
                 resolved_resources, missing_resources = resolve_resources(resource_ids)
             if session_context is not None:
-                session_context["resolved_input_artifacts"] = dict(resolved_input_artifacts)
+                session_context["resolved_input_artifacts"] = {**resolved_input_artifacts,**session_context.get("frozen_input_artifacts",{})}
                 session_context["resolved_resources"] = dict(resolved_resources)
                 session_context["required_resources"] = list(resource_ids)
             if missing_resources:
@@ -1827,3 +1831,10 @@ __all__ = [
     "PlanExecutor",
     "PlanExecutorLLMService",
 ]
+
+
+def _task_usage_id(plan_id,task_id):
+    from app.services.chat_run_state import chat_run_claim
+    from app.services.deep_think.native_validation import enabled
+    claim=chat_run_claim.get()
+    return f"plan_{plan_id}_task_{task_id}"+(":"+claim[0] if enabled() and claim else "")

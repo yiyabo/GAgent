@@ -1,3 +1,4 @@
+import { ArtifactVersionPanel } from "./ArtifactVersionPanel";
 import React from 'react';
 import { useQuery } from '@tanstack/react-query';
 import {
@@ -654,6 +655,7 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
         </div>
       </div>
 
+      <ArtifactVersionPanel planId={tasks[0]?.plan_id} sessionId={sessionId}/>
       {/* Main Content Area - Horizontal layout with file list and preview */}
       <div style={{ flex: 1, display: 'flex', overflow: 'hidden', minHeight: 0 }}>
         {/* File List */}

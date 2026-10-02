@@ -131,6 +131,8 @@ def _build_plan_execution_snapshot(
 
 def _lookup_session_id_for_plan(plan_id: int) -> Optional[str]:
     try:
+        store=_facade()._plan_repo.get_plan_tree(plan_id).metadata.get("artifact_store_ref")
+        if store:return store.get("session_id")
         with get_db() as conn:
             row = conn.execute(
                 "SELECT id FROM chat_sessions WHERE plan_id = ? LIMIT 1",
@@ -184,6 +186,7 @@ def _normalize_task_status(value: Optional[str]) -> str:
 def _effective_response_fields(state: Optional[Dict[str, Any]]) -> Dict[str, Any]:
     state = state or {}
     return {
+        **({"freshness":state["freshness"],"stale_reasons":state.get("stale_reasons",[])} if state.get("freshness") else {}),
         "effective_status": str(state.get("effective_status") or "pending"),
         "status_reason": state.get("status_reason"),
         "blocked_by_dependencies": bool(state.get("blocked_by_dependencies")),

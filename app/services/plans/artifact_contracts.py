@@ -256,6 +256,9 @@ def artifact_manifest_path(plan_id: int, session_id: Optional[str] = None) -> Pa
 
 
 def load_artifact_manifest(plan_id: int, session_id: Optional[str] = None) -> Dict[str, Any]:
+    from .artifact_versions import overlay
+    staged=overlay(plan_id,session_id)
+    if staged is not None:return staged
     path = artifact_manifest_path(plan_id, session_id)
     if path.exists():
         try:
@@ -272,6 +275,8 @@ def load_artifact_manifest(plan_id: int, session_id: Optional[str] = None) -> Di
 
 
 def save_artifact_manifest(plan_id: int, manifest: Dict[str, Any], session_id: Optional[str] = None) -> Path:
+    from .artifact_versions import active_binding,save
+    if manifest.get("schema_version")==2 or active_binding.get():return save(plan_id,manifest,session_id)
     path = artifact_manifest_path(plan_id, session_id)
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = path.with_suffix(path.suffix + ".lock")
@@ -909,6 +914,8 @@ def publish_artifact(
     manifest: Dict[str, Any],
     session_id: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
+    from .artifact_versions import active_binding,stage
+    if manifest.get("schema_version")==2 or active_binding.get():return stage(plan_id,canonicalize_artifact_alias(alias),source_path,producer_task_id,manifest,session_id)
     requested_alias = str(alias or "").strip()
     alias = canonicalize_artifact_alias(requested_alias)
     canonical = canonical_artifact_path(plan_id, alias, session_id)
