@@ -91,7 +91,8 @@ class DeliverablePublisher(
     ) -> None:
         self._settings = settings or get_deliverable_settings()
         self._project_root = (project_root or Path(__file__).resolve().parents[3]).resolve()
-        self._runtime_dir = (runtime_dir or (self._project_root / "runtime")).resolve()
+        from app.services.session_paths import get_runtime_root
+        self._runtime_dir = (runtime_dir or (self._project_root / "runtime" if project_root else get_runtime_root())).resolve()
         self._paper_builder = paper_builder or PaperBuilder()
 
     @property
