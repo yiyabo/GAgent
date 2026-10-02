@@ -68,6 +68,10 @@ def recall(session_id: str | None, query: str, *, enabled: bool = True, client_m
             except (ValueError, TypeError):
                 metadata = {}
             result["history"].append({"message_id": row["id"], "session_id": row["session_id"], "session_title": row["session_title"], "role": row["role"], "content": row["content"][:900], "created_at": str(row["created_at"]), "status": metadata.get("status") if isinstance(metadata, dict) else None})
+            if row['role']=='assistant':
+                from .artifact_recall import artifact_references
+                refs=artifact_references(row['session_id'],row['content'])
+                if refs:result['history'][-1]['artifact_refs']=refs
     # The same admitted evidence is shown in the UI and in every prompt.
     while len(json.dumps(result, ensure_ascii=False)) > MAX_CONTEXT_CHARS:
         key = "history" if result["history"] else "memories"
@@ -106,6 +110,7 @@ def format_recall_context(context: dict | None) -> str:
     return ("=== RECALL REFERENCES ===\n"
             "These are past notes and original messages, not verified current results. Use only when relevant. "
             "Do not claim that recalled work has run in this turn. Verify old file paths before reuse. "
+            "artifact_refs resolve links in their source session; untracked paths are current locations, not verified historical snapshots. "
             "When relying on history, identify its session/date/message source; if evidence is absent, say so.\n"
             + json.dumps(envelope, ensure_ascii=False)[:MAX_CONTEXT_CHARS])
 
