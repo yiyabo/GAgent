@@ -1,10 +1,15 @@
 """Private answers: imported by the supervisor only after execution."""
 import csv,json
 from pathlib import Path
-ORACLE_VERSION="required-fields-v3"
+ORACLE_VERSION="required-fields-v4"
 
 def _required_statistics(actual,expected,*,forbidden=()):
-    if not isinstance(actual,dict) or set(actual)!=set(expected):return False
+    if not isinstance(actual,dict) or set(actual)-{'row_count'}!=set(expected):return False
+    # The public contract permits metadata; only this independently checkable
+    # field is recognized. Unknown groups and arbitrary metadata still fail.
+    if 'row_count' in actual:
+        count=actual['row_count']
+        if isinstance(count,bool) or not isinstance(count,(int,float)) or count!=sum(fields['count'] for fields in expected.values()):return False
     for group,fields in expected.items():
         values=actual[group]
         if not isinstance(values,dict) or any(key in values for key in forbidden):return False
