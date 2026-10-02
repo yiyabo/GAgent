@@ -97,6 +97,11 @@ class _ManifestMethods:
         for file_path in sorted(latest_root.rglob("*")):
             if not file_path.is_file():
                 continue
+            # This JSON tracks name conflicts for the publisher itself. It must
+            # survive on disk, but is never a user deliverable, including when
+            # an older manifest mistakenly recorded it as a trusted item.
+            if file_path.name == SOURCE_OWNERSHIP_MAP:
+                continue
             rel_path = str(file_path.relative_to(latest_root)).replace("\\", "/")
             rel_parts = rel_path.split("/")
             module = rel_parts[0].strip().lower() if rel_parts else ""
@@ -119,8 +124,6 @@ class _ManifestMethods:
                 continue
 
             if not source and not self._file_belongs_in_deliverables(file_path, module):
-                if file_path.name == SOURCE_OWNERSHIP_MAP:
-                    continue
                 try:
                     file_path.unlink()
                 except Exception:

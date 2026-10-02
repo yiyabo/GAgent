@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import HTTPException, status
+from app.services.deliverables.policy import SOURCE_OWNERSHIP_MAP
 
 from .schemas import ArtifactItem, DeliverableItem, DeliverableVersionSummary
 from .session_dirs import (
@@ -26,6 +27,8 @@ from .session_dirs import (
     _deliverables_latest_dir,
     _deliverables_root,
 )
+
+_INTERNAL_FILE_NAMES = frozenset({SOURCE_OWNERSHIP_MAP, ".DS_Store", "Thumbs.db"})
 
 
 def _facade() -> Any:
@@ -219,7 +222,7 @@ def _scan_deliverable_files(files_root: Path, *, limit: int) -> List[Dict[str, A
 
     rows: List[Dict[str, Any]] = []
     for path in sorted(files_root.rglob("*")):
-        if not path.is_file():
+        if not path.is_file() or path.name in _INTERNAL_FILE_NAMES:
             continue
         rel = path.relative_to(files_root)
         module = rel.parts[0] if rel.parts else "docs"
@@ -271,6 +274,10 @@ def _materialize_deliverable_items(
             continue
 
         normalized_path = raw_path.lstrip("/").replace("\\", "/")
+        # Older manifests may include publisher bookkeeping. Filter on read as
+        # well, without requiring a republish or deleting the ownership map.
+        if Path(normalized_path).name in _INTERNAL_FILE_NAMES:
+            continue
         target = (files_root / normalized_path).resolve()
         try:
             target.relative_to(resolved_root)
@@ -338,7 +345,7 @@ def _iter_items(
 
     _SKIP_DIR_PREFIXES = ("run_",)
 
-    _SKIP_FILE_NAMES = {".source_owners.json", ".DS_Store", "Thumbs.db"}
+    _SKIP_FILE_NAMES = _INTERNAL_FILE_NAMES
 
     def _should_skip_dir(dir_path: Path) -> bool:
         name = dir_path.name
