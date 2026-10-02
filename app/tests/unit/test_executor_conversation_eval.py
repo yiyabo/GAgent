@@ -66,3 +66,22 @@ def test_hermes_second_turn_receives_real_first_turn_history(tmp_path,monkeypatc
     result=execute(request,agent_factory=Agent,db_factory=lambda:None)
     assert result['completed'] and len(result['turn_results'])==2
     assert 'conversation_history' not in calls[0] and calls[1]['conversation_history']==history
+
+
+@pytest.mark.asyncio
+async def test_single_turn_worker_finalizes_and_serializes_without_turn_events(isolated_app_env,monkeypatch):
+    from app.services import deep_think_agent,path_router
+    from app.services.harness_eval.trial import run_trial
+    monkeypatch.setattr(path_router,'_default_router',None)
+    class Agent:
+        def __init__(self,*args,**kwargs):pass
+        async def think(self,prompt,context):
+            from pathlib import Path
+            work=Path(context['output_spec_base_dir'])
+            (work/'clean.csv').write_text('id,group,score\na,A,10\nb,A,20\nc,B,30\nd,B,50\n')
+            (work/'summary.json').write_text('{"A":{"count":2,"mean":15},"B":{"count":2,"mean":40}}')
+            return SimpleNamespace(final_answer='clean.csv and summary.json',output_verification={'status':'passed','authoritative':True},execution_issues=[])
+    monkeypatch.setattr(deep_think_agent,'DeepThinkAgent',Agent)
+    result=await run_trial('table_clean','chat-native',isolated_app_env['runtime_root'].parent,EvalSuiteConfig())
+    assert result['turn_results']==[] and result['production_status']=='succeeded'
+    assert result['cleanup_status']['lease_released'] and len(result['artifacts'])==2

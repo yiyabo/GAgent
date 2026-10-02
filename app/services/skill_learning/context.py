@@ -25,6 +25,10 @@ def _hydrate_context(context: dict, session_id: str | None, query: str, run_id: 
     if context.get('learned_skills_disabled') or not session_id:return
     scope=session_scope(session_id)
     if not scope:return
+    if run_id is None and (claim:=chat_run_claim.get()):
+        active=get_chat_run(claim[0])
+        if active and active['session_id']==session_id and active['owner_id']==scope['owner_id']:
+            run_id=claim[0]
     requested=context.get('learned_skill_ids') or []
     if not isinstance(requested,list) or len(requested)>3 or not all(isinstance(x,str) for x in requested):
         raise ValueError('learned_skill_ids must contain at most three skill IDs')
