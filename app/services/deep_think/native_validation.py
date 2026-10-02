@@ -36,7 +36,12 @@ def rejected_call(agent,call,iteration,index):
     if not error:return None
     finish=getattr(agent,'_last_native_finish_reason',None)
     reason='output_truncated' if finish=='length' else 'stream_incomplete' if finish is None and getattr(agent,'_last_native_done_seen',True) is False else error['error_code']
-    return {'index':index,'tool_call_id':call.id or f'native_{iteration}_{index}','tool_name':call.name,'parameters':call.arguments,'success':False,'error':reason,'result':{'success':False,**error,'error_code':reason},'summary':reason,'executed':False}
+    payload={'success':False,**error,'error_code':reason,'error':reason}
+    params=call.arguments if isinstance(call.arguments,dict) else {'_raw':json.dumps(call.arguments,ensure_ascii=False)}
+    return {'index':index,'tool_call_id':call.id or f'native_{iteration}_{index}','tool_name':call.name,
+            'parameters':call.arguments,'tool_params':params,'success':False,'error':reason,'result':payload,
+            'tool_result':payload,'tool_result_text':json.dumps(payload,ensure_ascii=False),'evidence':[],
+            'summary':reason,'executed':False}
 
 
 def next_call_options(agent):

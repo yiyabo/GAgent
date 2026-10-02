@@ -76,6 +76,11 @@ async def test_independent_argument_flag_rejects_bad_calls_without_replaying_val
     calls=[NativeToolCall('bad','execute_code',{'_raw':'{'}),NativeToolCall('good','execute_code',{'code':'print(1)'})]
     results=await asyncio.gather(*(agent._execute_native_tool_call(call,1,i) for i,call in enumerate(calls)))
     assert results[0]['executed'] is False and handled==['print(1)']
+    messages=[];step=SimpleNamespace()
+    agent._append_tool_cycle_messages(agent=agent,messages=messages,tool_results=results,assistant_content='',current_step=step)
+    assert len(messages)==3 and messages[1]['tool_call_id']=='bad' and messages[2]['tool_call_id']=='good'
+    assert json.loads(messages[1]['content'])['executed'] is False
+    assert handled==['print(1)']
 
 
 def test_restored_disclosure_and_repair_allowance_do_not_follow_new_environment():
