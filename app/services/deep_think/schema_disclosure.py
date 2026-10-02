@@ -56,6 +56,9 @@ class SchemaDisclosure:
         self._available: Set[str] = {str(name) for name in (available_tools or [])}
         self._loaded: Set[str] = set()
         self._force_full = False
+        from .native_validation import enabled
+        self.v2 = enabled()
+        self._disclosed: Set[str] = set()
         self.enabled = progressive_enabled() and bool(self._full)
 
     @property
@@ -71,7 +74,7 @@ class SchemaDisclosure:
             "type": "function",
             "function": {
                 "name": META_TOOL_NAME,
-                "description": _META_DESCRIPTION,
+                "description": _META_DESCRIPTION + (" Available: " + "; ".join(s["function"]["name"]+": "+s["function"].get("description","")[:80] for s in sorted(self._full,key=lambda x:x["function"]["name"])) if self.v2 else ""),
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -93,11 +96,15 @@ class SchemaDisclosure:
         plan_bound: bool = False,
     ) -> List[Dict[str, Any]]:
         """The tools payload for this iteration (see module docstring)."""
-        if not self.enabled or self._force_full or iteration <= 1:
+        if not self.enabled or self._force_full or (iteration <= 1 and not self.v2):
             return list(self._full)
         keep = set(self._loaded)
         keep.update(str(tool) for tool in (tools_used or []) if tool)
         keep.update(CORE_KEEP_TOOLS)
+        if self.v2:
+            keep.add("load_skill")
+            self._disclosed.update(keep)
+            keep.update(self._disclosed)
         if plan_bound:
             keep.update(PLAN_BOUND_KEEP_TOOLS)
         trimmed = [
@@ -141,6 +148,7 @@ class SchemaDisclosure:
             "success": True,
             "tool": tool,
             "loaded": first_load,
+            "schema": next((s for s in self._full if s["function"]["name"]==tool),None),
             "summary": f"'{tool}' is now available; call it directly in your next step.",
         }
 

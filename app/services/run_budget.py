@@ -57,6 +57,15 @@ class RunBudget:
         reserve = 0.0 if closeout else self.close_reserve_seconds
         return max(0.0, self.deadline_at - reserve - time.monotonic())
 
+    def remaining_work_seconds(self) -> float:
+        from app.services.foundation.settings import get_settings
+        reserve=getattr(get_settings(),'chat_run_synthesis_reserve_seconds',0)
+        reserve=min(reserve,max(0,self.total_seconds-self.close_reserve_seconds)*.2)
+        return max(0,self.remaining_seconds()-reserve)
+
+    def should_finalize(self) -> bool:
+        return self.remaining_work_seconds()<=0
+
     def expire(self) -> None:
         self.cancel_token.set(DEADLINE_REASON)
 
@@ -247,3 +256,22 @@ async def iterate_stage(iterator: AsyncIterator[_T], *, stage: str, cancel_event
                 raise
             except Exception as exc:
                 logger.warning("Provider stream cleanup failed: %s", type(exc).__name__)
+
+
+class SoftFinalize(RuntimeError):pass
+
+
+def should_finalize():
+    budget=current_run_budget()
+    return bool(budget and budget.should_finalize())
+
+
+async def run_work_stage(awaitable,*,stage,cancel_event=None):
+    budget=current_run_budget()
+    from app.services.foundation.settings import get_settings
+    soft=getattr(get_settings(),'chat_run_synthesis_reserve_seconds',0)>0
+    try:
+        return await run_stage(awaitable,stage=stage,timeout=budget.remaining_work_seconds() if budget and soft else None,cancel_event=cancel_event)
+    except asyncio.TimeoutError:
+        if budget and soft and budget.should_finalize():raise SoftFinalize('work_window_ended')
+        raise

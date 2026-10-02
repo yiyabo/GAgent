@@ -795,6 +795,9 @@ class NativeToolCall:
     id: str
     name: str
     arguments: Dict[str, Any]
+    argument_status: str = "unknown"
+    argument_chars: int = 0
+    argument_sha256: str = ""
 
 
 @dataclass
@@ -805,6 +808,7 @@ class NativeStreamResult:
     tool_calls: List[NativeToolCall] = field(default_factory=list)
     finish_reason: Optional[str] = None
     usage: Optional[Dict[str, int]] = None
+    diagnostics: Dict[str, Any] = field(default_factory=dict)
 
 
 def _truthy(val: Optional[str]) -> bool:
@@ -1552,6 +1556,7 @@ class LLMClient(LLMProvider):
         on_reasoning_delta: Optional[Callable[[str], Any]] = None,
         enable_thinking: Optional[bool] = None,
         thinking_budget: Optional[int] = None,
+        max_tokens: Optional[int] = None,
     ) -> NativeStreamResult:
         """
         Stream a chat completion with native tool calling support.
@@ -1564,7 +1569,7 @@ class LLMClient(LLMProvider):
         Returns a ``NativeStreamResult`` with the full accumulated content,
         reasoning content, **and** any tool calls the model decided to make.
         """
-        max_retries = max(1, self.retries)
+        max_retries = max(0, self.retries)
         last_err: Optional[Exception] = None
         _t0 = time.perf_counter()
         for attempt in range(max_retries + 1):
@@ -1578,6 +1583,7 @@ class LLMClient(LLMProvider):
                     on_reasoning_delta=on_reasoning_delta,
                     enable_thinking=enable_thinking,
                     thinking_budget=thinking_budget,
+                    max_tokens=max_tokens,
                 )
                 from app.services.execution.llm_observation import emit
                 emit("native_result", provider=self.provider, model=model or self.model, finish_reason=result.finish_reason, usage=result.usage, arguments=[{"name":c.name,"arguments":c.arguments} for c in result.tool_calls])
@@ -1631,6 +1637,7 @@ class LLMClient(LLMProvider):
         on_reasoning_delta: Optional[Callable[[str], Any]] = None,
         enable_thinking: Optional[bool] = None,
         thinking_budget: Optional[int] = None,
+        max_tokens: Optional[int] = None,
     ) -> NativeStreamResult:
         if self.mock:
             mock_content = "This is a mock completion."
@@ -1648,6 +1655,7 @@ class LLMClient(LLMProvider):
                 finish_reason="stop",
             )
 
+        if max_tokens is not None and (isinstance(max_tokens,bool) or not isinstance(max_tokens,int) or max_tokens<1):raise ValueError("max_tokens must be a positive integer")
         if not self._effective_api_key():
             raise RuntimeError(f"{self.provider.upper()}_API_KEY is not set")
 
@@ -1657,7 +1665,7 @@ class LLMClient(LLMProvider):
             "tools": tools,
             "tool_choice": tool_choice,
             "stream": True,
-            "max_tokens": _default_max_tokens(),
+            "max_tokens": _default_max_tokens() if max_tokens is None else max_tokens,
         }
 
         # Inject thinking parameters (DashScope OpenAI-compatible endpoint
@@ -1763,7 +1771,7 @@ class LLMClient(LLMProvider):
         # leaves a named call nobody can answer. Re-ask once, non-streaming, and
         # take that answer only when it actually carries arguments.
         if _nonstream_toolcall_repair_enabled() and _tool_calls_lost_their_arguments(
-            result.tool_calls
+            [c for c in result.tool_calls if not __import__("app.services.deep_think.native_validation",fromlist=["enabled"]).enabled() or next((s.get("function",{}).get("parameters",{}).get("required",[]) for s in tools if s.get("function",{}).get("name")==c.name),[])]
         ):
             repaired = await self._repair_tool_calls_nonstream(
                 payload, logical_call_id,
@@ -1776,6 +1784,11 @@ class LLMClient(LLMProvider):
                     [tc.name for tc in repaired],
                 )
                 result.tool_calls = repaired
+                from app.services.deep_think.native_validation import enabled
+                replacement=getattr(repaired,"response",None)
+                if enabled() and replacement:
+                    result.diagnostics["original_usage"]=result.usage
+                    result.content=replacement["content"];result.finish_reason=replacement["finish_reason"];result.usage=replacement["usage"]
 
         return result
 
@@ -1836,7 +1849,8 @@ class LLMClient(LLMProvider):
         )
         if not calls or _tool_calls_lost_their_arguments(calls):
             return []
-        return calls
+        from app.services.deep_think.native_validation import ToolCallRepair
+        return ToolCallRepair(calls,{"content":message.get("content") or "","finish_reason":choices[0].get("finish_reason"),"usage":usage})
 
     def _extract_stream_delta(self, payload: Dict[str, Any]) -> Optional[str]:
         choices = payload.get("choices")

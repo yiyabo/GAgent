@@ -193,6 +193,8 @@ def pack_result(result: Any) -> dict:
     from app.services.execution.step_ledger import params_fingerprint
 
     return {
+        "finish_reason": getattr(result,"finish_reason",None),
+        "usage": getattr(result,"usage",None),
         "content": result.content or "",
         "tool_calls": [
             {
@@ -214,7 +216,7 @@ def unpack_result(raw: dict):
         if item.get("params_fingerprint") != params_fingerprint(item["name"], arguments):
             raise ControllerRestoreError("Checkpoint tool arguments changed; reconciliation is required")
         calls.append(NativeToolCall(id=item.get("id") or "", name=item["name"], arguments=arguments))
-    return NativeStreamResult(content=raw.get("content") or "", tool_calls=calls)
+    return NativeStreamResult(content=raw.get("content") or "", tool_calls=calls,finish_reason=raw.get("finish_reason"),usage=raw.get("usage"))
 
 
 def restore_steps(raw_steps: list[dict]) -> list[ThinkingStep]:
@@ -310,6 +312,8 @@ async def save_native_checkpoint(
         "created_plan_this_turn_id": getattr(agent, '_created_plan_this_turn_id', None),
         "cycle": json_value(cycle), "guard": json_value(guard),
         "thinking_steps": json_value(steps), "tools_used": list(tools_used),
+        "schema_policy": 2 if getattr(agent._schema_disclosure,"v2",False) else 1,
+        "schema_disclosed": sorted(getattr(agent._schema_disclosure,"_disclosed",set())),
         "schema_loaded": sorted(getattr(agent, "_schema_disclosure").loaded),
         "output_spec": spec.to_dict() if spec is not None else None,
         "output_input_snapshot": json_value(getattr(agent, "_output_input_snapshot", {})),

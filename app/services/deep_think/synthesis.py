@@ -949,6 +949,10 @@ async def _forced_synthesis_from_steps(
             synthesis_timeout,
             synthesis_max_tokens,
         )
+        from .native_validation import enabled
+        if enabled():
+            if getattr(agent,'_synthesis_attempted',False):return _build_structured_fallback(agent,steps,user_query)
+            agent._synthesis_attempted=True
         raw = await run_stage(
             agent._chat_text_streaming(prompt, max_tokens=synthesis_max_tokens),
             stage="deepthink-synthesis", timeout=synthesis_timeout,
@@ -980,6 +984,9 @@ async def _fallback_answer_from_steps(
     user_query: str = "",
     task_context: Optional[TaskExecutionContext] = None,
 ) -> str:
+    from .native_validation import enabled
+    if enabled() and getattr(agent,'_synthesis_attempted',False):
+        return _build_structured_fallback(agent,steps,user_query)
     language = _dta().detect_reasoning_language(user_query)
     if not steps:
         return _dta()._localized_text(

@@ -1510,6 +1510,9 @@ class DeepThinkAgent:
         index: int,
     ) -> Dict[str, Any]:
         from app.services.deep_think.checkpointing import execute_recorded_tool
+        from app.services.deep_think.native_validation import rejected_call
+        rejected = rejected_call(self, tc, iteration, index)
+        if rejected is not None:return rejected
 
         return await execute_recorded_tool(
             self, tc, iteration, index,

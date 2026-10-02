@@ -202,6 +202,11 @@ if _USE_PYDANTIC:
             default=10000, env="JOB_LOG_MAX_ROWS"
         )
 
+        agent_runtime_v2_enabled: bool = Field(default=False, env="AGENT_RUNTIME_V2_ENABLED")
+        artifact_versioning_enabled: bool = Field(default=False, env="ARTIFACT_VERSIONING_ENABLED")
+        skill_recommendation_v2_enabled: bool = Field(default=False, env="SKILL_RECOMMENDATION_V2_ENABLED")
+        skill_context_progressive_enabled: bool = Field(default=False, env="SKILL_CONTEXT_PROGRESSIVE_ENABLED")
+        chat_run_synthesis_reserve_seconds: float = Field(default=0, ge=0, le=300, env="CHAT_RUN_SYNTHESIS_RESERVE_SECONDS")
         skill_learning_enabled: bool = Field(default=False, env="SKILL_LEARNING_ENABLED")
         skill_learning_provider: Optional[str] = Field(default=None, env="SKILL_LEARNING_PROVIDER")
         skill_learning_model: Optional[str] = Field(default=None, env="SKILL_LEARNING_MODEL")
@@ -527,6 +532,10 @@ else:
                 self.job_log_max_rows = int(os.getenv("JOB_LOG_MAX_ROWS", "10000"))
             except Exception:
                 self.job_log_max_rows = 10000
+
+            for attr,key in [('agent_runtime_v2_enabled','AGENT_RUNTIME_V2_ENABLED'),('artifact_versioning_enabled','ARTIFACT_VERSIONING_ENABLED'),('skill_recommendation_v2_enabled','SKILL_RECOMMENDATION_V2_ENABLED'),('skill_context_progressive_enabled','SKILL_CONTEXT_PROGRESSIVE_ENABLED')]:
+                setattr(self,attr,os.getenv(key,'0').lower() in {'1','true','yes','on'})
+            self.chat_run_synthesis_reserve_seconds = max(0,min(300,float(os.getenv('CHAT_RUN_SYNTHESIS_RESERVE_SECONDS','0'))))
 
             self.skill_learning_enabled = os.getenv("SKILL_LEARNING_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
             self.skill_learning_provider = os.getenv("SKILL_LEARNING_PROVIDER") or None

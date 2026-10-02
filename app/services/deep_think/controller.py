@@ -324,6 +324,8 @@ async def _native_run_setup(
             checkpointing.unresolved_execution_issues, agent, ledger,
             list(restored.controller_state.get("execution_issues") or []),
         )
+        agent._schema_disclosure.v2=restored.controller_state.get("schema_policy",1)==2
+        agent._schema_disclosure._disclosed=set(restored.controller_state.get("schema_disclosed",[]))
         for name in restored.controller_state.get("schema_loaded") or []:
             agent._schema_disclosure.record_load(name)
     if loop_guard_state["expected_outputs"]:
@@ -1459,6 +1461,8 @@ async def _think_native(
     llm_fatal_abort = False
 
     while iteration < cycle.runtime_iteration_limit:
+        from app.services.run_budget import should_finalize
+        if should_finalize():break
         await run_stage(agent._get_pause_event().wait(), stage="deepthink-pause", cancel_event=agent.cancel_event)
         if agent.cancel_event and agent.cancel_event.is_set():
             logger.info("[DEEP_THINK_NATIVE] Cancelled by user")
@@ -1481,8 +1485,10 @@ async def _think_native(
                         agent.on_steer_ack, steer_text, iteration + 1
                     )
 
+        from app.services.deep_think.native_validation import enabled
         messages = await ctx_mgr.compact_if_needed(
             messages, summarizer=_summarize_for_compaction,
+            **({"tool_schemas":getattr(agent._schema_disclosure,"_full",[]),"output_reserve_tokens":getattr(agent.llm_client,"max_tokens",4096),"anchors":{"request":user_query,"output_spec":str(getattr(agent,"_output_spec",None)),"profile":agent.request_profile,"latest_user_turns":[m.get("content") for m in messages if m.get("role")=="user"][-2:]}} if enabled() else {}),
         )
 
         iteration += 1
@@ -1719,7 +1725,9 @@ async def _native_llm_step(
                     pass
 
         _pin_iteration_billing_context()
-        result = await run_stage(agent.llm_client.stream_chat_with_tools_async(
+        from app.services.deep_think.native_validation import next_call_options,observe_result
+        from app.services.run_budget import run_work_stage,SoftFinalize
+        result = await run_work_stage(agent.llm_client.stream_chat_with_tools_async(
             messages=messages,
             tools=tool_schemas,
             tool_choice="auto",
@@ -1727,7 +1735,11 @@ async def _native_llm_step(
             on_reasoning_delta=_on_reasoning_delta,
             enable_thinking=agent.enable_thinking,
             thinking_budget=agent.thinking_budget,
+            **next_call_options(agent),
         ), stage="deepthink-llm", cancel_event=agent.cancel_event)
+        observe_result(agent,result)
+    except SoftFinalize:
+        return "break",None,consecutive_llm_failures,""
     except RunDeadlineExceeded:
         raise
     except Exception as exc:
@@ -1979,6 +1991,8 @@ async def _think_prompt_based(
     logger.info(f"Starting DeepThink for query: {user_query[:50]}...")
 
     while iteration < agent.max_iterations:
+        from app.services.run_budget import should_finalize
+        if should_finalize():break
         await run_stage(agent._get_pause_event().wait(), stage="deepthink-pause", cancel_event=agent.cancel_event)
         if agent.cancel_event and agent.cancel_event.is_set():
             logger.info("DeepThink cancelled by user")

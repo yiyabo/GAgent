@@ -1,0 +1,64 @@
+"""Response checks never manufacture execution or guess incomplete arguments."""
+import hashlib,json
+from app.services.foundation.settings import get_settings
+
+
+def enabled():return bool(getattr(get_settings(),'agent_runtime_v2_enabled',False))
+
+
+def validate(arguments,schema):
+    if not isinstance(arguments,dict):return {'error_code':'non_object','executed':False}
+    if '_raw' in arguments and '_raw' not in schema.get('properties',{}):return {'error_code':'invalid_json','executed':False}
+    missing=[k for k in schema.get('required',[]) if k not in arguments]
+    if missing:return {'error_code':'missing_required','missing_fields':missing,'executed':False}
+    kinds={'string':str,'object':dict,'array':list,'boolean':bool,'integer':int,'number':(int,float)}
+    for name,value in arguments.items():
+        field=schema.get('properties',{}).get(name,{})
+        kind=field.get('type');expected=kinds.get(kind)
+        if expected and (not isinstance(value,expected) or (kind in {'integer','number'} and isinstance(value,bool))):return {'error_code':'invalid_type','field':name,'executed':False}
+        if field.get('enum') and value not in field['enum']:return {'error_code':'invalid_enum','field':name,'executed':False}
+    return None
+
+
+def schema_for(agent,name):
+    disclosure=getattr(agent,'_schema_disclosure',None)
+    schemas=list(getattr(disclosure,'_full',[]) or [])
+    if disclosure:schemas.append(disclosure.meta_schema())
+    for s in schemas:
+        if s.get('function',{}).get('name')==name:return s['function'].get('parameters',{})
+    return {}
+
+
+def rejected_call(agent,call,iteration,index):
+    if not enabled():return None
+    error=validate(call.arguments,schema_for(agent,call.name))
+    if not error:return None
+    reason='output_truncated' if getattr(agent,'_last_native_finish_reason',None)=='length' else error['error_code']
+    return {'index':index,'tool_call_id':call.id or f'native_{iteration}_{index}','tool_name':call.name,'parameters':call.arguments,'success':False,'error':reason,'result':{'success':False,**error,'error_code':reason},'summary':reason,'executed':False}
+
+
+def next_call_options(agent):
+    cap=getattr(agent,'_native_repair_cap',None)
+    return {'max_tokens':cap} if cap else {}
+
+
+def observe_result(agent,result):
+    agent._last_native_finish_reason=getattr(result,"finish_reason",None)
+    if not enabled():return
+    invalid=False
+    for call in result.tool_calls:
+        error=validate(call.arguments,schema_for(agent,call.name))
+        call.argument_status=error['error_code'] if error else 'valid'
+        raw=json.dumps(call.arguments,ensure_ascii=False)
+        call.argument_chars=len(raw);call.argument_sha256=hashlib.sha256(raw.encode()).hexdigest()
+        if error and not isinstance(call.arguments,dict):call.arguments={'_raw':raw}
+        invalid=invalid or bool(error)
+    count=getattr(agent,'_native_cap_escalations',0)
+    if invalid and getattr(result,'finish_reason',None)=='length' and count<2:
+        agent._native_repair_cap=8192;agent._native_cap_escalations=count+1
+    else:agent._native_repair_cap=None
+
+
+class ToolCallRepair(list):
+    def __init__(self,calls,response):
+        super().__init__(calls);self.response=response

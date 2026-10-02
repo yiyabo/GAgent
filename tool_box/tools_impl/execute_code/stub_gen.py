@@ -209,4 +209,7 @@ def generate_stub_module(tool_names: List[str]) -> str:
             f"    {_docstring(description)}\n"
             f"    return _call({name!r}, {args_expr})\n"
         )
+    docs={name:{"description":content[0],"parameters":content[1]} for name in sorted(set(tool_names)) if (content:=_load_tool_content(name)) is not None}
+    chunks.append("_TOOL_DOCS = " + repr(docs))
+    chunks.append("def list_tools():\n    return sorted(_TOOL_DOCS)\ndef describe(name):\n    return _TOOL_DOCS[name]\n")
     return "\n".join(chunks) + "\n"

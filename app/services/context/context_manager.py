@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Awaitable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -149,6 +149,7 @@ class ContextUsage:
     ratio: float
     warning: bool
     critical: bool
+    breakdown: Dict[str, int] = field(default_factory=dict)
 
     @property
     def remaining_tokens(self) -> int:
@@ -212,9 +213,11 @@ class ContextWindowManager:
         self.budget_tokens = budget if budget and budget > 0 else None
         self._compaction_count = 0
 
-    def check_usage(self, messages: List[Dict[str, Any]]) -> ContextUsage:
+    def check_usage(self, messages: List[Dict[str, Any]], *, tool_schemas=None, output_reserve_tokens=0) -> ContextUsage:
         """Estimate token usage and return a usage snapshot."""
-        used = estimate_messages_tokens(messages)
+        from .request_budget import breakdown
+        parts=breakdown(messages,tool_schemas,output_reserve_tokens)
+        used = sum(parts.values())
         ratio = used / self.max_context_tokens if self.max_context_tokens > 0 else 0.0
         warning_line = self.warning_ratio * self.max_context_tokens
         if self.budget_tokens:
@@ -225,6 +228,7 @@ class ContextWindowManager:
             ratio=ratio,
             warning=used >= warning_line,
             critical=ratio >= self.critical_ratio,
+            breakdown=parts,
         )
 
     async def compact_if_needed(
@@ -233,6 +237,7 @@ class ContextWindowManager:
         *,
         summarizer: Callable[[str], Awaitable[str]],
         force: bool = False,
+        tool_schemas=None, output_reserve_tokens=0, anchors=None,
     ) -> List[Dict[str, Any]]:
         """Compact messages if context usage exceeds the warning threshold.
 
@@ -247,10 +252,11 @@ class ContextWindowManager:
             prompt) and at least the last KEEP_RECENT messages are preserved.
             The boundary never splits a tool call from its retained results.
         """
+        from .request_budget import ContextBudgetExceeded,anchor_text
+        usage = self.check_usage(messages,tool_schemas=tool_schemas,output_reserve_tokens=output_reserve_tokens)
         if len(messages) < self.MIN_MESSAGES_FOR_COMPACTION:
+            if usage.used_tokens>self.max_context_tokens:raise ContextBudgetExceeded("context_budget_exceeded")
             return messages
-
-        usage = self.check_usage(messages)
         if not force and not usage.warning:
             return messages
 
@@ -298,7 +304,7 @@ class ContextWindowManager:
             "role": "system",
             "content": (
                 f"[Context Summary — compacted from {len(compactable)} earlier messages]\n\n"
-                f"{summary.strip()}"
+                f"{summary.strip()}\n\n{anchor_text(anchors)}"
             ),
         }
 
@@ -308,7 +314,11 @@ class ContextWindowManager:
         result.append(summary_msg)
         result.extend(recent)
 
-        new_usage = self.check_usage(result)
+        new_usage = self.check_usage(result,tool_schemas=tool_schemas,output_reserve_tokens=output_reserve_tokens)
+        if (tool_schemas is not None or anchors is not None) and new_usage.used_tokens>=usage.used_tokens:
+            if usage.used_tokens>self.max_context_tokens:raise ContextBudgetExceeded("nonshrinking_context_summary")
+            return messages
+        if (tool_schemas is not None or anchors is not None) and new_usage.used_tokens>self.max_context_tokens:raise ContextBudgetExceeded("context_budget_exceeded")
         logger.info(
             "[CONTEXT] Compaction done: %d→%d messages, %d→%d tokens (%.0f%%→%.0f%%)",
             len(messages),

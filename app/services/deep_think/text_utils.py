@@ -55,12 +55,9 @@ def _resolve_context_budget_tokens(model: str) -> int:
             return max(0, int(raw_override))
         except ValueError:
             pass  # fall through to model-aware resolution
-    window = _DEFAULT_CONTEXT_WINDOW
-    normalized = (model or "").strip().lower()
-    for prefix, tokens in _MODEL_CONTEXT_WINDOWS:
-        if normalized.startswith(prefix):
-            window = tokens
-            break
+    from app.services.context.context_manager import get_context_window
+    from .native_validation import enabled
+    window = get_context_window(model) if enabled() else next((tokens for prefix,tokens in _MODEL_CONTEXT_WINDOWS if (model or "").strip().lower().startswith(prefix)),_DEFAULT_CONTEXT_WINDOW)
     try:
         ratio = float(os.getenv("DEEP_THINK_CONTEXT_BUDGET_RATIO", "0.5") or "0.5")
     except (TypeError, ValueError):
