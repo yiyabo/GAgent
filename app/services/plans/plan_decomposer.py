@@ -155,6 +155,7 @@ class DecompositionPromptBuilder:
             '  "name": "<task name>",',
             '  "instruction": "<execution details>",',
             '  "metadata": {',
+            '  "required_outputs": [{"kind":"data|image|document", "min_count":1, "extensions":[".csv"], "target_path":"results/output.csv", "in_place":false}],',
             '  "paper_section": "<optional: abstract|introduction|method|experiment|result|discussion|conclusion|references>",',
             '  "paper_role": "<optional: evidence_collector|section_writer|manuscript_assembler|citation_validator>",',
             '  "paper_context_paths": ["<optional artifact path>", "..."],',
@@ -200,6 +201,7 @@ class DecompositionPromptBuilder:
             "  * CROSS-LINK RULE (MANDATORY): If this batch contains BOTH evidence/data-preparation tasks (e.g. extracting/organizing evidence, preparing references, gathering source material) AND downstream tasks that consume that output (e.g. drafting a section, writing a report, running analysis on the evidence), the downstream task's `dependencies` MUST include every evidence/preparation sibling it relies on. Do NOT leave downstream writing/analysis tasks with empty dependencies when evidence siblings exist — the executor runs tasks as soon as their direct deps are satisfied, so missing edges cause writers to start before evidence is ready.",
             "  * Keywords that signal evidence/preparation roles: 整理, 提取, 收集, 证据, 资料, 参考, evidence, extract, collect, gather, prepare, references.",
             "  * Keywords that signal downstream consumer roles: 撰写, 写作, 起草, 初稿, 章节, 报告, 分析, draft, write, author, section, report, analyze, synthesize.",
+            "- For tasks that deliver files, include metadata.required_outputs with user-requested type, minimum count, format and task-relative target_path. Do not invent expected scientific values. Non-mechanical requirements remain unchecked/human-reviewed.",
             "- For paper-writing tasks, include `metadata.paper_section`, `metadata.paper_role`, and `metadata.paper_context_paths` when known.",
             "- When a task consumes a canonical upstream artifact, include `metadata.artifact_contract.requires` using canonical aliases (for example `general.evidence_md`, `ai_dl.references_bib`, `nmr_cryo_msm.structured_evidence_json`).",
             "- When a task is expected to publish a canonical downstream artifact, include `metadata.artifact_contract.publishes` using canonical aliases. Prefer explicit contracts over leaving artifact intent implicit in free text.",
@@ -651,6 +653,10 @@ class PlanDecomposer:
 
     def _derive_paper_metadata(self, child: DecompositionChild) -> Dict[str, Any]:
         metadata = dict(child.metadata or {})
+        if metadata.get("required_outputs"):
+            from .output_spec import parse_output_spec
+            spec=parse_output_spec({"required_outputs":metadata["required_outputs"],"source":"planner","blocking":True,"artifact_contract":metadata.get("artifact_contract"),"acceptance_criteria":metadata.get("acceptance_criteria")},strict=True)
+            metadata["output_spec"]=spec.to_dict()
         section = metadata.get("paper_section")
         if not isinstance(section, str) or not section.strip():
             section = self._infer_paper_section(child.name or "", child.instruction or "")

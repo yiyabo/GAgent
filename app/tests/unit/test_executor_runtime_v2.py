@@ -53,3 +53,13 @@ def test_plan_tool_offer_and_execution_sets_agree(monkeypatch):
     monkeypatch.setattr(nv,'get_settings',lambda:SimpleNamespace(agent_runtime_v2_enabled=True))
     monkeypatch.setattr(tool_schemas,'code_mode_enabled',lambda:True)
     assert {'execute_code','load_skill'}.issubset(_execution_tools(['file_operations']))
+
+
+def test_planner_outputs_are_precise_declarations_not_inferred_success():
+    from app.services.plans.plan_decomposer import PlanDecomposer
+    from app.services.plans.output_spec import parse_output_spec
+    child=SimpleNamespace(context_meta={},name='Prepare a table',instruction='Write results/table.csv',metadata={'required_outputs':[{'kind':'data','extensions':['.csv'],'min_count':1,'target_path':'results/table.csv'}]})
+    planner=PlanDecomposer.__new__(PlanDecomposer)
+    metadata=planner._derive_paper_metadata(child)
+    spec=parse_output_spec(metadata['output_spec'],strict=True)
+    assert spec.authoritative and spec.required_outputs[0].target_path=='results/table.csv'
