@@ -36,7 +36,7 @@ def test_soft_window_does_not_cancel_or_extend(monkeypatch):
     deadline=budget.deadline_at
     budget.started_at-=500
     assert budget.should_finalize() and not token.cancelled
-    assert budget.deadline_at==deadline-500
+    assert budget.deadline_at==pytest.approx(deadline-500,rel=0,abs=1e-7)
     token.close()
 
 

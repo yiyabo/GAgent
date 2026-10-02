@@ -240,6 +240,8 @@ class TrialAccounting:
                 event['launch_id'] = event.get('launch_id') or self.last_launch or 'unattributed'
                 if valid_usage(event.get('usage')) is None:
                     self.explicit_missing = True
+            if (kind == 'text_result' or event.get('response_complete')) and valid_usage(event.get('usage')) is None:
+                self.explicit_missing = True
             if kind == 'native_result':
                 arguments = event.pop('arguments', [])
                 raw = json.dumps(arguments, ensure_ascii=False)

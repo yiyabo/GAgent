@@ -12,4 +12,11 @@ class ObserverRejected(RuntimeError):
 def emit(kind: str, **fields):
     callback = observer.get()
     if callback:
-        callback({'kind': kind, **fields})
+        try:
+            callback({'kind': kind, **fields})
+        except ObserverRejected:
+            raise
+        except Exception as exc:
+            # Losing the journal is not a provider network failure. Retrying
+            # inference here could spend without durable observation.
+            raise ObserverRejected('observation_failed:' + type(exc).__name__) from exc

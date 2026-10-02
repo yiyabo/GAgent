@@ -17,6 +17,8 @@ from ...llm import get_default_client, LLMClient
 from ...interfaces import LLMProvider
 from app.services.foundation.settings import get_settings
 from app.services.moderation import scan_llm_output
+from app.services.execution.llm_observation import ObserverRejected
+from app.services.execution.response_diagnostics import LLMResponseContentError
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +61,10 @@ def _classify_llm_exception(exc: Exception) -> Optional[LLMProviderError]:
     """
     raw = str(exc)
     lowered = raw.lower()
+    if isinstance(exc, (ObserverRejected, LLMResponseContentError)):
+        reason = getattr(exc, 'reason', 'observer_rejected')
+        return LLMProviderError(raw, error_code='llm_' + reason,
+                                category='llm_response', retryable=False, raw_error=raw)
 
     if "insufficient_quota" in lowered:
         return LLMProviderError(

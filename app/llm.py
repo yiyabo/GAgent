@@ -18,6 +18,7 @@ import httpx
 
 from .interfaces import LLMProvider
 from .services.execution.llm_observation import ObserverRejected
+from .services.execution.response_diagnostics import LLMResponseContentError, text_completion
 from .services.foundation.settings import get_settings
 from .services.foundation.llm_config import (
     is_production,
@@ -1057,8 +1058,7 @@ class LLMClient(LLMProvider):
                 response.raise_for_status()
                 obj = response.json()
                 try:
-                    content = obj["choices"][0]["message"]["content"]
-                    usage = obj.get("usage")
+                    usage = obj.get("usage") if isinstance(obj, dict) else None
                     if isinstance(usage, dict):
                         _record_attempt_context(
                             logical_call_id,
@@ -1076,6 +1076,7 @@ class LLMClient(LLMProvider):
                             call_status="ok",
                             duration_ms=(time.perf_counter() - _t0) * 1000,
                         )
+                    content = text_completion(obj, logical_call_id=logical_call_id, attempt_no=attempt + 1)
                     _log_call_metrics(
                         method="chat", provider=self.provider, model=model or self.model,
                         status="ok", latency_ms=(time.perf_counter() - _t0) * 1000,
@@ -1090,6 +1091,8 @@ class LLMClient(LLMProvider):
                         model=model or self.model,
                     )
                     return content
+                except (ObserverRejected, LLMResponseContentError):
+                    raise
                 except Exception:
                     raise RuntimeError(f"Unexpected LLM response: {obj}")
             except httpx.HTTPStatusError as e:
@@ -1115,7 +1118,7 @@ class LLMClient(LLMProvider):
                     attempts=attempt + 1, error=f"HTTPStatusError:{status_code}",
                 )
                 raise RuntimeError(_format_http_error(e, body=body) + _ra_suffix) from e
-            except ObserverRejected:
+            except (ObserverRejected, LLMResponseContentError):
                 raise
             except Exception as e:
                 # Treat as transient (network) and retry
@@ -1354,8 +1357,7 @@ class LLMClient(LLMProvider):
                 response.raise_for_status()
                 obj = response.json()
                 try:
-                    content = obj["choices"][0]["message"]["content"]
-                    usage = obj.get("usage")
+                    usage = obj.get("usage") if isinstance(obj, dict) else None
                     if isinstance(usage, dict):
                         _record_attempt_context(
                             logical_call_id,
@@ -1373,6 +1375,7 @@ class LLMClient(LLMProvider):
                             call_status="ok",
                             duration_ms=(time.perf_counter() - _t0) * 1000,
                         )
+                    content = text_completion(obj, logical_call_id=logical_call_id, attempt_no=attempt + 1)
                     _log_call_metrics(
                         method="chat_async", provider=self.provider, model=model or self.model,
                         status="ok", latency_ms=(time.perf_counter() - _t0) * 1000,
@@ -1387,6 +1390,8 @@ class LLMClient(LLMProvider):
                         model=model or self.model,
                     )
                     return content
+                except (ObserverRejected, LLMResponseContentError):
+                    raise
                 except Exception:
                     raise RuntimeError(f"Unexpected LLM response: {obj}")
             except httpx.HTTPStatusError as e:
@@ -1411,7 +1416,7 @@ class LLMClient(LLMProvider):
                     attempts=attempt + 1, error=f"HTTPStatusError:{status_code}",
                 )
                 raise RuntimeError(_format_http_error(e, body=body) + _ra_suffix) from e
-            except ObserverRejected:
+            except (ObserverRejected, LLMResponseContentError):
                 raise
             except Exception as e:
                 if attempt < request_retries:

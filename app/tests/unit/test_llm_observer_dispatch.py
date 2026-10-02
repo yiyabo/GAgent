@@ -99,3 +99,16 @@ async def test_nonstream_repair_reports_usage_before_the_next_call(monkeypatch):
         observer.reset(handle)
     assert [(e['logical_call_id'], e['attempt_no']) for e in events] == [('original-call', 2)] * 2
     assert events[-1]['usage']['total_tokens'] == 25
+
+
+def test_observation_write_failure_is_not_retried_as_transport(observed_client):
+    client, transport, _ = observed_client
+    def broken_journal(event):
+        raise OSError('journal unavailable')
+    handle = observer.set(broken_journal)
+    try:
+        with pytest.raises(ObserverRejected, match='observation_failed:OSError'):
+            client.chat('hello')
+    finally:
+        observer.reset(handle)
+    transport.post.assert_not_called()
