@@ -94,6 +94,7 @@ class _DeepThinkMethods:
         config: ExecutionConfig,
     ) -> ExecutionResult:
         check_run_active()
+        self._contract_repair_limit(config)
         try:
             self._repo.update_task(plan_id, node.id, status="running", execution_result="")
             node.status = "running"
@@ -187,7 +188,9 @@ class _DeepThinkMethods:
             "You are in TASK EXECUTION mode, not conversational chat. Complete the task using tools, then produce the output file/result.",
             "Produce actionable output for this task only.",
             "Honor dependency outputs and do not redo completed dependencies.",
-            "Do NOT call submit_final_answer — task completion is determined by producing the required output.",
+            "After producing and checking the required outputs, call submit_final_answer to deliver their paths and your result. "
+            "For the strict JSON protocol, use its final_answer field instead. "
+            "This submits your answer; PlanExecutor independently checks OutputSpec and determines task completion.",
         ]
         constraints.extend(output_contract_lines)
         # Extract tool names mentioned in the instruction and enforce priority
@@ -649,6 +652,7 @@ class _DeepThinkMethods:
                 deep_think_agent=deep_think_agent,
                 finalization=finalization,
                 tool_result_context=tool_result_context,
+                config=config,
             )
             finalization, raw_response = self._materialize_finalization(
                 plan_id,
@@ -840,6 +844,14 @@ class _DeepThinkMethods:
             logger.exception("Manuscript writer fallback error for task %s: %s", node.id, exc)
             return None
 
+    def _contract_repair_limit(self, config: Optional[ExecutionConfig] = None) -> int:
+        value = getattr(config, "contract_repair_attempts", None)
+        if value is None:
+            value = getattr(self._settings, "contract_repair_attempts", 1)
+        if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 3:
+            raise ValueError("contract_repair_attempts must be an integer from 0 to 3")
+        return value
+
     def _attempt_contract_repair_with_deep_think(
         self,
         *,
@@ -850,8 +862,9 @@ class _DeepThinkMethods:
         deep_think_agent: DeepThinkAgent,
         finalization: VerificationFinalization,
         tool_result_context: Dict[str, Any],
+        config: Optional[ExecutionConfig] = None,
     ) -> VerificationFinalization:
-        max_attempts = max(0, int(getattr(self._settings, "contract_repair_attempts", 1)))
+        max_attempts = self._contract_repair_limit(config)
         if max_attempts <= 0:
             return finalization
 

@@ -133,7 +133,8 @@ class ExecutionConfig:
     force_rerun: bool = False
     auto_recovery: bool = False
     max_recovery_attempts: int = 2
-    contract_repair_attempts: int = 1
+    # None inherits executor settings; explicit zero disables repair calls.
+    contract_repair_attempts: Optional[int] = None
     autonomous: bool = False
     on_task_complete: Optional[Callable[["ExecutionResult", int, int], None]] = None
     enable_skills: bool = True
@@ -144,6 +145,12 @@ class ExecutionConfig:
     skip_preflight: bool = False
 
     def __post_init__(self) -> None:
+        if self.contract_repair_attempts is not None and (
+            isinstance(self.contract_repair_attempts, bool)
+            or not isinstance(self.contract_repair_attempts, int)
+            or not 0 <= self.contract_repair_attempts <= 3
+        ):
+            raise ValueError("contract_repair_attempts must be an integer from 0 to 3, or None")
         if self.autonomous:
             self.auto_recovery = True
             self.dependency_throttle = False
