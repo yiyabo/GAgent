@@ -46,6 +46,7 @@ def isolated_app_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[st
         "DATABASE_URL",
         f"sqlite:///{(paths['db_root'] / 'main' / 'plan_registry.db').resolve()}",
     )
+    monkeypatch.setenv("SKILL_LEARNING_ENABLED", "0")
     monkeypatch.setenv("APP_RUNTIME_ROOT", str(paths["runtime_root"]))
     monkeypatch.setenv("APP_INFO_SESSIONS_ROOT", str(paths["info_root"]))
     monkeypatch.setenv("EXECUTION_WORKSPACES_ROOT", str(paths["workspace_root"]))
