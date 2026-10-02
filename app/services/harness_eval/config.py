@@ -6,6 +6,9 @@ from .fixtures import CASES, CORPUS_VERSION
 
 @dataclass
 class EvalSuiteConfig:
+    variants: dict[str,dict] = field(default_factory=dict)
+    target_root: str | None = None
+    feature_overrides: dict[str,str] = field(default_factory=dict)
     schema_version: int = 2
     profile: str = 'production-like'
     cases: list[str] = field(default_factory=lambda:list(CASES))
@@ -34,6 +37,10 @@ class EvalSuiteConfig:
         if not 1<=self.output_max_tokens<=32768 or not 1<=self.native_max_iterations<=64:raise ValueError('invalid generation limit')
         if not 1<=self.provider_attempt_limit<=256 or not 10<=self.external_max_session_turns<=500:raise ValueError('invalid call limit')
         if not 0<=self.external_launch_limit<=36 or self.token_stop_threshold<1:raise ValueError('invalid suite limit')
+        allowed={'AGENT_RUNTIME_V2_ENABLED','ARTIFACT_VERSIONING_ENABLED','SKILL_RECOMMENDATION_V2_ENABLED','SKILL_CONTEXT_PROGRESSIVE_ENABLED','CHAT_RUN_SYNTHESIS_RESERVE_SECONDS'}
+        if set(self.feature_overrides)-allowed:raise ValueError('unsupported feature override')
+        for variant in self.variants.values():
+            if set(variant.get('feature_overrides',{}))-allowed:raise ValueError('unsupported variant override')
         return self
 
     def to_dict(self):return asdict(self)
@@ -42,6 +49,7 @@ class EvalSuiteConfig:
 
     def schedule(self):
         rows=[{'case':c,'entry':e,'repetition':r} for r in range(self.repetitions) for c in self.cases for e in self.entries]
+        if self.variants:rows=[{**r,'variant':v} for r in rows for v in self.variants]
         random.Random(self.order_seed).shuffle(rows)
         return rows
 

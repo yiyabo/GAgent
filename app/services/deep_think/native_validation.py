@@ -33,7 +33,8 @@ def rejected_call(agent,call,iteration,index):
     if not enabled():return None
     error=validate(call.arguments,schema_for(agent,call.name))
     if not error:return None
-    reason='output_truncated' if getattr(agent,'_last_native_finish_reason',None)=='length' else error['error_code']
+    finish=getattr(agent,'_last_native_finish_reason',None)
+    reason='output_truncated' if finish=='length' else 'stream_incomplete' if finish is None and getattr(agent,'_last_native_done_seen',True) is False else error['error_code']
     return {'index':index,'tool_call_id':call.id or f'native_{iteration}_{index}','tool_name':call.name,'parameters':call.arguments,'success':False,'error':reason,'result':{'success':False,**error,'error_code':reason},'summary':reason,'executed':False}
 
 
@@ -44,6 +45,7 @@ def next_call_options(agent):
 
 def observe_result(agent,result):
     agent._last_native_finish_reason=getattr(result,"finish_reason",None)
+    agent._last_native_done_seen=(getattr(result,"diagnostics",None) or {}).get("done_seen",True)
     if not enabled():return
     invalid=False
     for call in result.tool_calls:
@@ -62,3 +64,16 @@ def observe_result(agent,result):
 class ToolCallRepair(list):
     def __init__(self,calls,response):
         super().__init__(calls);self.response=response
+
+
+def invalid_call(agent,call):
+    return enabled() and validate(call.arguments,schema_for(agent,call.name)) is not None
+
+
+def request_kwargs(agent,user_query,context,messages,iteration,tools_used):
+    if not enabled():return {}
+    from app.llm import _default_max_tokens
+    from app.services.skill_learning.context import format_skill_context
+    schemas=agent._schema_disclosure.effective(iteration=iteration+1,tools_used=tools_used,plan_bound=agent._current_plan_id() is not None)
+    return {'tool_schemas':schemas,'output_reserve_tokens':getattr(agent,'_native_repair_cap',None) or _default_max_tokens(),
+        'anchors':{'request':user_query,'output_spec':str(getattr(agent,'_output_spec',None)),'profile':agent.request_profile,'latest_user_turns':[m.get('content') for m in messages if m.get('role')=='user'][-2:]}}

@@ -44,7 +44,7 @@ from app.services.deep_think.text_utils import (
 from app.services.execution.tool_executor import UnifiedToolExecutor
 from app.services.foundation.settings import get_settings
 from app.services.response_style import sanitize_professional_response_text
-from app.services.run_budget import RunDeadlineExceeded, iterate_stage, run_stage
+from app.services.run_budget import RunDeadlineExceeded, SoftFinalize, iterate_stage, run_stage
 from app.services.tool_schemas import build_tool_schemas
 from app.services.deep_think.schema_disclosure import SchemaDisclosure
 from app.services.deep_think import checkpointing
@@ -324,6 +324,7 @@ async def _native_run_setup(
             checkpointing.unresolved_execution_issues, agent, ledger,
             list(restored.controller_state.get("execution_issues") or []),
         )
+        agent._native_cap_escalations=restored.controller_state.get("native_cap_escalations",0)
         agent._schema_disclosure.v2=restored.controller_state.get("schema_policy",1)==2
         agent._schema_disclosure._disclosed=set(restored.controller_state.get("schema_disclosed",[]))
         for name in restored.controller_state.get("schema_loaded") or []:
@@ -381,8 +382,9 @@ async def _native_tool_cycle(
     )
 
     tool_calls = list(result.tool_calls)
-    final_call = next((tc for tc in tool_calls if tc.name == "submit_final_answer"), None)
-    executable_calls = [tc for tc in tool_calls if tc.name != "submit_final_answer"]
+    from .native_validation import invalid_call
+    final_call = next((tc for tc in tool_calls if tc.name == "submit_final_answer" and not invalid_call(agent,tc)), None)
+    executable_calls = [tc for tc in tool_calls if tc.name != "submit_final_answer" or invalid_call(agent,tc)]
     replacement_task_id = agent._verification_only_cycle_replacement_task_id(
         executable_calls,
         task_context=task_context,
@@ -1485,10 +1487,10 @@ async def _think_native(
                         agent.on_steer_ack, steer_text, iteration + 1
                     )
 
-        from app.services.deep_think.native_validation import enabled
+        from app.services.deep_think.native_validation import request_kwargs
         messages = await ctx_mgr.compact_if_needed(
             messages, summarizer=_summarize_for_compaction,
-            **({"tool_schemas":getattr(agent._schema_disclosure,"_full",[]),"output_reserve_tokens":getattr(agent.llm_client,"max_tokens",4096),"anchors":{"request":user_query,"output_spec":str(getattr(agent,"_output_spec",None)),"profile":agent.request_profile,"latest_user_turns":[m.get("content") for m in messages if m.get("role")=="user"][-2:]}} if enabled() else {}),
+            **request_kwargs(agent,user_query,context,messages,iteration,tools_used),
         )
 
         iteration += 1

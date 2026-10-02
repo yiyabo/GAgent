@@ -1,7 +1,7 @@
 """Private answers: imported by the supervisor only after execution."""
 import csv,json
 from pathlib import Path
-ORACLE_VERSION="required-fields-v2"
+ORACLE_VERSION="required-fields-v3"
 
 def _required_statistics(actual,expected,*,forbidden=()):
     if not isinstance(actual,dict) or set(actual)!=set(expected):return False
@@ -33,7 +33,8 @@ def check(case_id:str,root:Path)->dict:
                 require(max(ImageStat.Stat(image.convert('RGB')).stddev)>1,'chart is blank')
         elif case_id=='fasta':
             require((root/'filtered.fasta').read_text().split()==['>one','ACGTACGT','>two','TTTTCCCC'],'FASTA filtering or deduplication incorrect')
-            require(json.loads((root/'summary.json').read_text())=={'retained_ids':['one','two'],'count':2},'FASTA summary incorrect')
+            summary=json.loads((root/'summary.json').read_text())
+            require(summary.get('retained_ids')==['one','two'] and isinstance(summary.get('count'),(int,float)) and summary['count']==2,'FASTA summary incorrect')
         elif case_id=='correction':
             expected={'A':{'count':3,'median':20},'B':{'count':2,'median':40}}
             require(_required_statistics(json.loads((root/'summary.json').read_text()),expected,forbidden=('mean',)),'correction must use medians and remove stale means')

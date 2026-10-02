@@ -7,7 +7,7 @@ from pathlib import Path
 def main():
     parser=argparse.ArgumentParser()
     parser.add_argument('--root');parser.add_argument('--config');parser.add_argument('--worker')
-    parser.add_argument('--module-root');parser.add_argument('--revision')
+    parser.add_argument('--target-root');parser.add_argument('--module-root');parser.add_argument('--revision')
     parser.add_argument('--profile',choices=['diagnostic','production-like'])
     parser.add_argument('--cases');parser.add_argument('--entry',choices=['chat-native','plan-native','plan-external'])
     parser.add_argument('--repetitions',type=int);parser.add_argument('--timeout',type=float)
@@ -15,10 +15,12 @@ def main():
     args=parser.parse_args()
     repo=Path(__file__).resolve().parents[1]
     if not (repo/'app').exists():repo=Path.cwd()
+    if args.target_root:repo=Path(args.target_root).resolve()
     sys.path.insert(0,str(repo))
     if args.module_root:
         import app.services
-        app.services.__path__.append(str(Path(args.module_root).resolve()))
+        import app.services.harness_eval as harness
+        harness.__path__=[str(Path(args.module_root).resolve()/"harness_eval")]
     from app.services.harness_eval.config import EvalSuiteConfig
     if args.worker:
         request=Path(args.worker).resolve();data=json.loads(request.read_text());cfg=EvalSuiteConfig(**data['config']).validate()
@@ -34,6 +36,7 @@ def main():
         if value is not None:fields[key]=value
     if args.cases:fields['cases']=args.cases.split(',')
     if args.entry:fields['entries']=[args.entry]
+    if args.target_root:fields['target_root']=str(repo)
     cfg=EvalSuiteConfig(**fields).validate()
     from app.services.harness_eval.supervisor import run_suite
     report=run_suite(Path(args.root).resolve(),cfg,args.module_root)

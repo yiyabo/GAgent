@@ -728,6 +728,7 @@ def _log_usage(
             task_id=ctx.get("task_id"),
             call_purpose=ctx.get("call_purpose"),
             run_id=ctx.get("run_id"),
+            parent_run_id=_usage_parent_run(ctx),
             phase=ctx.get("phase") or "uncategorized",
             tool_name=ctx.get("tool_name"),
             call_status=call_status or "ok",
@@ -1679,7 +1680,7 @@ class LLMClient(LLMProvider):
         logical_call_id = _new_logical_call_id()
         headers.update(_billing_request_headers(logical_call_id, 1))
 
-        result = NativeStreamResult()
+        result = NativeStreamResult(diagnostics={"requested_max_tokens":payload["max_tokens"],"done_seen":False})
         # Accumulator for streamed tool_calls keyed by index
         tc_accum: Dict[int, Dict[str, str]] = {}
 
@@ -1701,8 +1702,10 @@ class LLMClient(LLMProvider):
                 if not line or not line.startswith("data:"):
                     continue
                 data = line[len("data:"):].strip()
-                if not data or data == "[DONE]":
+                if data=="[DONE]":
+                    result.diagnostics["done_seen"]=True
                     continue
+                if not data:continue
                 try:
                     obj = json.loads(data)
                 except json.JSONDecodeError:
@@ -2210,3 +2213,9 @@ def reset_default_client() -> None:
         # Avoid turning cache reset into a hard dependency during import-time
         # teardown paths.
         pass
+
+
+def _usage_parent_run(ctx):
+    from app.services.chat_run_state import chat_run_claim
+    claim=chat_run_claim.get()
+    return claim[0] if claim and claim[0]!=ctx.get('run_id') else None
