@@ -49,6 +49,9 @@ def test_readonly_preview_selects_only_affected_dependency_closure(version_db):
 @pytest.fixture
 def version_db(isolated_app_env,tmp_path,monkeypatch):
     from app.database import init_db
+    import app.services.path_router as routing
+    monkeypatch.setenv("APP_RUNTIME_ROOT",str(tmp_path/"runtime"))
+    monkeypatch.setattr(routing,"_default_router",None)
     from app.services.plans import artifact_contracts
     monkeypatch.setattr(artifact_contracts,'_repo_root',lambda:tmp_path/'plan-artifacts')
     init_db()
