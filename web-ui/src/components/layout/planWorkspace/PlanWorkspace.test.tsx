@@ -52,6 +52,7 @@ describe('plan workspace navigation and async isolation', () => {
     expect(useChatStore.getState().currentPlanId).toBe(1);
     expect(screen.getByText('1 / 2 个执行任务已完成')).toBeInTheDocument();
   });
+  // Real AntD visibility queries and two task mounts can exceed 5s on shared CI runners.
   it('selects dependency inline and preserves drawer actions', async () => {
     mount();
     await screen.findByRole('heading', { name: '筛选 1' });
@@ -63,7 +64,7 @@ describe('plan workspace navigation and async isolation', () => {
     fireEvent.click(screen.getByRole('button', { name: /完整详情/ }));
     expect(useTasksStore.getState().isTaskDrawerOpen).toBe(true);
     expect(useTasksStore.getState().selectedTaskId).toBe(3);
-  });
+  }, 10_000);
   it('ignores late previous-plan result when task IDs collide', async () => {
     let finishOld!: (value: PlanResultItem) => void;
     api.getTaskResult.mockImplementation((id, taskId) => id === 1 ? new Promise((resolve) => { finishOld = resolve; })
