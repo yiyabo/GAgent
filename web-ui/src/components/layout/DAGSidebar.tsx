@@ -23,6 +23,7 @@ import { shouldHandlePlanSyncEvent } from '@utils/planSyncEvents';
 import { computePlanDecomposeProgress } from '@utils/jobProgress';
 import { planTreeApi } from '@api/planTree';
 import ExecutorPanel from './ExecutorPanel';
+import PlanWorkspace from './planWorkspace/PlanWorkspace';
 import ArtifactsPanel from './ArtifactsPanel';
 import TodoListPanel from '@components/tasks/detail/TodoListPanel';
 import { ENV } from '@/config/env';
@@ -31,7 +32,7 @@ const { Title, Text } = Typography;
 
 const FINAL_JOB_STATUSES = new Set(['succeeded', 'failed', 'completed']);
 
-const DAGSidebar: React.FC = () => {
+export const LegacyDAGSidebar: React.FC = () => {
   const { setCurrentPlan, setTasks, openTaskDrawer, openTaskDrawerById, closeTaskDrawer, selectedTaskId } = useTasksStore((state) => ({
   setCurrentPlan: state.setCurrentPlan,
   setTasks: state.setTasks,
@@ -596,6 +597,11 @@ const DAGSidebar: React.FC = () => {
   />
   </>
   );
+};
+
+const DAGSidebar: React.FC = () => {
+  const mode = useLayoutStore((state) => state.workspaceMode);
+  return mode === 'classic' ? <LegacyDAGSidebar /> : <PlanWorkspace />;
 };
 
 export default DAGSidebar;

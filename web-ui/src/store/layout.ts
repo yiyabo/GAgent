@@ -1,7 +1,12 @@
 import { create } from 'zustand';
 import { subscribeWithSelector } from 'zustand/middleware';
+import { readWorkspaceMode, saveWorkspaceMode, type WorkspaceMode } from './workspacePreference';
 
 interface LayoutState {
+  workspaceMode: WorkspaceMode;
+  workspacePlanWidth: number | null;
+  setWorkspaceMode: (mode: WorkspaceMode) => void;
+  setWorkspacePlanWidth: (width: number) => void;
   appSiderVisible: boolean;
   chatListVisible: boolean;
   chatListWidth: number;
@@ -19,6 +24,13 @@ interface LayoutState {
 
 export const useLayoutStore = create<LayoutState>()(
   subscribeWithSelector((set) => ({
+    workspaceMode: readWorkspaceMode(),
+    workspacePlanWidth: null,
+    setWorkspaceMode: (mode) => {
+      saveWorkspaceMode(mode);
+      set({ workspaceMode: mode, dagSidebarFullscreen: false });
+    },
+    setWorkspacePlanWidth: (width) => set({ workspacePlanWidth: width }),
     appSiderVisible: true,
     chatListVisible: true,
     chatListWidth: 280,

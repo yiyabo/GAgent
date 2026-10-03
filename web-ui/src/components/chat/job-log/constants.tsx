@@ -32,37 +32,37 @@ export const statusMeta: Record<
 > = {
   queued: {
     color: 'default',
-    label: 'Queued',
+    label: '排队中',
     icon: <PauseCircleOutlined />,
   },
   pending: {
     color: 'default',
-    label: 'Queued',
+    label: '排队中',
     icon: <PauseCircleOutlined />,
   },
   awaiting_confirmation: {
     color: 'default',
-    label: 'Awaiting confirmation',
+    label: '等待确认',
     icon: <PauseCircleOutlined />,
   },
   running: {
     color: 'processing',
-    label: 'Running',
+    label: '执行中',
     icon: <SyncOutlined spin />,
   },
   succeeded: {
     color: 'success',
-    label: 'Completed',
+    label: '已完成',
     icon: <CheckCircleOutlined />,
   },
   completed: {
     color: 'success',
-    label: 'Completed',
+    label: '已完成',
     icon: <CheckCircleOutlined />,
   },
   failed: {
     color: 'error',
-    label: 'Failed',
+    label: '失败',
     icon: <CloseCircleOutlined />,
   },
 };
@@ -92,19 +92,19 @@ export const jobTypeMeta: Record<
   }
 > = {
   plan_decompose: {
-    label: 'Task decomposition log',
+    label: '任务拆解记录',
     color: 'blue',
   },
   plan_execute: {
-    label: 'Plan execution log',
+    label: '计划执行记录',
     color: 'green',
   },
   chat_action: {
-    label: 'Action execution log',
+    label: '操作执行记录',
     color: 'purple',
   },
   default: {
-    label: 'Background task log',
+    label: '后台任务记录',
     color: 'geekblue',
   },
 };
@@ -150,6 +150,7 @@ export const parseStreamData = (raw: MessageEvent<any>): StreamMessage | null =>
 
 export interface JobLogPanelProps {
   jobId: string;
+  defaultExpanded?: boolean;
   initialJob?: DecompositionJobStatus | null;
   targetTaskName?: string | null;
   planId?: number | null;

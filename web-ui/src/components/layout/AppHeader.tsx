@@ -1,11 +1,13 @@
 import React from 'react';
-import { App, Layout, Button, Badge, Tooltip, Space, Typography, Modal, Form, Input, Tag } from 'antd';
+import { App, Layout, Button, Badge, Tooltip, Space, Typography, Modal, Form, Input, Tag, Dropdown } from 'antd';
 import {
   BellOutlined,
   LogoutOutlined,
   KeyOutlined,
   SettingOutlined,
   UnorderedListOutlined,
+  AppstoreOutlined,
+  ExperimentOutlined,
 } from '@ant-design/icons';
 import { useSystemStore } from '@store/system';
 import { useLayoutStore } from '@store/layout';
@@ -19,7 +21,7 @@ const { Text } = Typography;
 const AppHeader: React.FC = () => {
   const { message } = App.useApp();
   const { apiConnected } = useSystemStore();
-  const { chatListVisible, toggleChatList } = useLayoutStore();
+  const { chatListVisible, toggleChatList, workspaceMode, setWorkspaceMode } = useLayoutStore();
   const { user, logout, changePassword, loading, projectLabel } = useAuthStore();
   const location = useLocation();
   const navigate = useNavigate();
@@ -50,9 +52,10 @@ const AppHeader: React.FC = () => {
 
   return (
     <>
-      <Header className="app-header">
+      <Header className={`app-header ${isChatRoute && workspaceMode === 'plan' ? 'workspace-header' : ''}`}>
         <div className="app-logo">
-          <span style={{ fontWeight: 500, fontSize: 14, color: 'var(--text-primary)' }}>AI Task Orchestration</span>
+          <ExperimentOutlined className="logo-icon" />
+          <span style={{ fontWeight: 650, fontSize: 18, color: 'var(--text-primary)' }}>GAgent</span>
         </div>
 
         <div className="app-header-actions">
@@ -69,7 +72,13 @@ const AppHeader: React.FC = () => {
           </Space>
 
           <Space size="small">
-            <Text style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+            {isChatRoute && <Dropdown trigger={['click']} menu={{ selectedKeys: [workspaceMode], items: [
+              { key: 'plan', label: '计划工作区' },
+              { key: 'classic', label: '经典布局' },
+            ], onClick: ({ key }) => setWorkspaceMode(key as 'plan' | 'classic') }}>
+              <Button type="text" icon={<AppstoreOutlined />} aria-label="切换界面布局">布局</Button>
+            </Dropdown>}
+            <Text className="workspace-account-email" style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
               {user?.email || 'anonymous'}
             </Text>
             {projectLabel ? <Tag color="blue">{projectLabel}</Tag> : null}

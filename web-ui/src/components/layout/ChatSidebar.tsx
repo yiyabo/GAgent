@@ -53,7 +53,7 @@ function formatTimeAgo(dateInput?: Date | string | null): string {
   return `${Math.floor(diffDays / 30)}mo ago`;
 }
 
-export const ChatSidebar: React.FC = () => {
+export const ChatSidebar: React.FC<{ onSessionSelected?: () => void; onCollapse?: () => void }> = ({ onSessionSelected, onCollapse }) => {
   const {
     sessions,
     currentSession,
@@ -133,9 +133,11 @@ export const ChatSidebar: React.FC = () => {
 
   const handleNewChat = () => {
     startNewSession();
+    onSessionSelected?.();
   };
 
   const handleSelectSession = async (session: ChatSession) => {
+    onSessionSelected?.();
     if (currentSession?.id === session.id && session.messages.length > 0) {
       return;
     }
@@ -350,6 +352,15 @@ export const ChatSidebar: React.FC = () => {
       <div
         key={session.id}
         className={`biomni-session-item ${isSelected ? 'selected' : ''}`}
+        role="button"
+        tabIndex={0}
+        aria-current={isSelected ? 'page' : undefined}
+        onKeyDown={(event) => {
+          if (event.target === event.currentTarget && (event.key === 'Enter' || event.key === ' ')) {
+            event.preventDefault();
+            void handleSelectSession(session);
+          }
+        }}
         onClick={() => handleSelectSession(session)}
       >
         <div className="biomni-session-bullet">
@@ -391,7 +402,7 @@ export const ChatSidebar: React.FC = () => {
       {/* 1. Top Project Header */}
       <div className="biomni-sidebar-project-header">
         <div className="biomni-project-meta">
-          <span className="biomni-project-tag">PROJECT</span>
+          <span className="biomni-project-tag">当前项目</span>
           <div className="biomni-project-title-row">
             <span className="biomni-project-name">{projectName}</span>
           </div>
@@ -403,7 +414,7 @@ export const ChatSidebar: React.FC = () => {
               size="small"
               icon={<MenuFoldOutlined />}
               className="biomni-icon-btn"
-              onClick={toggleChatList}
+              onClick={onCollapse ?? toggleChatList}
             />
           </Tooltip>
         </div>
@@ -412,7 +423,7 @@ export const ChatSidebar: React.FC = () => {
       {/* 2. Tasks / Sessions Section Header */}
       <div className="biomni-section-header">
         <div className="biomni-section-title">
-          <span>任务</span>
+          <span>研究对话</span>
         </div>
         <div className="biomni-section-actions">
           <Tooltip title="搜索对话">

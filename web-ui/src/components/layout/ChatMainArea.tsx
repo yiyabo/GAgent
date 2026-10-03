@@ -225,6 +225,7 @@ const ChatMessageList: React.FC<ChatMessageListProps> = React.memo(
 
     return (
       <VirtualList
+        className="workspace-message-list"
         ref={listRef}
         data={listData}
         height={resolvedHeight}
@@ -518,6 +519,7 @@ const ChatMainArea: React.FC = () => {
 
   return (
     <div
+      className="workspace-chat-main"
       style={{
         height: '100%',
         display: 'flex',
@@ -547,7 +549,7 @@ const ChatMainArea: React.FC = () => {
 
       {/* Header - only show session title bar if we have active chat messages */}
       {!showWelcomeState && (
-        <div style={{
+        <div className="workspace-chat-header" style={{
           padding: '12px 20px',
           borderBottom: '1px solid var(--border-color)',
           background: 'var(--bg-primary)',
@@ -565,13 +567,13 @@ const ChatMainArea: React.FC = () => {
                 borderRadius: 6,
               }}
             />
-            <div>
+            <div className="workspace-chat-heading">
               <Text strong style={{ fontSize: 14, color: 'var(--text-primary)' }}>
-                {currentSession?.title || 'Phage-Agent Assistant'}
+                {currentSession?.title || '研究对话'}
               </Text>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 2 }}>
                 <Text type="secondary" style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
-                  Online
+                  {isProcessing ? '正在处理' : '研究对话'}
                 </Text>
               </div>
             </div>
@@ -579,8 +581,9 @@ const ChatMainArea: React.FC = () => {
 
           {/* Controls */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            <Tooltip title={memoryEnabled ? "Memory enabled" : "Memory disabled"}>
+            <Tooltip title={memoryEnabled ? "已启用记忆" : "记忆已关闭"}>
               <Switch
+                aria-label="启用记忆"
                 checked={memoryEnabled}
                 onChange={toggleMemory}
                 size="small"
@@ -624,7 +627,7 @@ const ChatMainArea: React.FC = () => {
 
       {/* Bottom Sticky Input area - only rendered once chat messages are active */}
       {!showWelcomeState && (
-        <div style={{
+        <div className="workspace-composer" style={{
           padding: '16px 24px 20px',
           background: 'var(--bg-primary)',
           borderTop: '1px solid var(--border-color)',
@@ -643,6 +646,7 @@ const ChatMainArea: React.FC = () => {
             )}
 
             <div
+              className="workspace-composer-row"
               style={{
                 display: 'flex',
                 gap: 12,
@@ -650,7 +654,7 @@ const ChatMainArea: React.FC = () => {
               }}
             >
               {/* Left-side upload controls */}
-              <div style={{
+              <div className="workspace-upload-control" style={{
                 display: 'flex',
                 flexDirection: 'row',
                 gap: 8,
@@ -663,7 +667,7 @@ const ChatMainArea: React.FC = () => {
               </div>
 
               {/* Input box */}
-              <div style={{
+              <div className="workspace-input-box" style={{
                 flex: 1,
                 background: '#FFFFFF',
                 borderRadius: 'var(--radius-xl)',
@@ -712,7 +716,7 @@ const ChatMainArea: React.FC = () => {
                     border: 'none',
                   }}
                 >
-                  {isProcessing && activeRunId ? '发送引导' : 'Send'}
+                  {isProcessing && activeRunId ? '发送引导' : '发送'}
                 </Button>
               </div>
             </div>

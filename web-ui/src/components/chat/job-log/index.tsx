@@ -9,6 +9,7 @@ import {
 } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
+import 'dayjs/locale/zh-cn';
 
 import { statusMeta, jobTypeMeta, FINAL_STATUSES } from './constants';
 import type { JobLogPanelProps } from './constants';
@@ -21,7 +22,7 @@ dayjs.extend(relativeTime);
 
 const { Text, Paragraph } = Typography;
 
-const JobLogPanel: React.FC<JobLogPanelProps> = ({ jobId, initialJob, targetTaskName, planId, jobType: initialJobType }) => {
+const JobLogPanel: React.FC<JobLogPanelProps> = ({ jobId, initialJob, targetTaskName, planId, jobType: initialJobType, defaultExpanded = false }) => {
   const { message } = AntdApp.useApp();
   const {
     logs,
@@ -58,6 +59,10 @@ const JobLogPanel: React.FC<JobLogPanelProps> = ({ jobId, initialJob, targetTask
     skipCurrentStep,
   } = useJobLogStream({ jobId, initialJob, planId, jobType: initialJobType });
 
+  React.useEffect(() => {
+    if (defaultExpanded) setExpanded(true);
+  }, [jobId, defaultExpanded, setExpanded]);
+
   const statusInfo = statusMeta[status] || statusMeta.queued;
 
   const jobTypeInfo = React.useMemo(() => jobTypeMeta[jobType] ?? jobTypeMeta.default, [jobType]);
@@ -83,18 +88,18 @@ const JobLogPanel: React.FC<JobLogPanelProps> = ({ jobId, initialJob, targetTask
 
   const lastUpdatedText = React.useMemo(() => {
     if (!lastUpdatedAt) return null;
-    return dayjs(lastUpdatedAt).fromNow();
+    return dayjs(lastUpdatedAt).locale('zh-cn').fromNow();
   }, [lastUpdatedAt]);
 
   const lastControlText = React.useMemo(() => {
     if (!lastRuntimeControlAction || !lastRuntimeControlAt) return null;
     const actionLabel =
       lastRuntimeControlAction === 'pause'
-        ? 'Paused'
+        ? '已暂停'
         : lastRuntimeControlAction === 'resume'
-        ? 'Resumed'
-        : 'Skipped step';
-    return `${actionLabel} ${dayjs(lastRuntimeControlAt).fromNow()}`;
+        ? '已恢复'
+        : '已跳过当前步骤';
+    return `${actionLabel} ${dayjs(lastRuntimeControlAt).locale('zh-cn').fromNow()}`;
   }, [lastRuntimeControlAction, lastRuntimeControlAt]);
 
   return (
@@ -105,17 +110,17 @@ const JobLogPanel: React.FC<JobLogPanelProps> = ({ jobId, initialJob, targetTask
         title={headerTitle}
         extra={
           <Space size="small">
-            <Tooltip title={isStreaming ? 'Real-time sync active' : 'Using polling'}>
+            <Tooltip title={isStreaming ? '正在实时同步' : '定时刷新中'}>
               {isStreaming ? <PlayCircleOutlined /> : <PauseCircleOutlined />}
             </Tooltip>
-            <Tooltip title="View Claude Code logs">
+            <Tooltip title="查看执行器原始日志">
               <Button
                 type="link"
                 size="small"
                 icon={<FileTextOutlined />}
                 onClick={() => setCliLogVisible(true)}
               >
-                CLI Logs
+                原始日志
               </Button>
             </Tooltip>
             <Button
@@ -124,7 +129,7 @@ const JobLogPanel: React.FC<JobLogPanelProps> = ({ jobId, initialJob, targetTask
               icon={expanded ? <UpOutlined /> : <DownOutlined />}
               onClick={() => setExpanded((prev) => !prev)}
             >
-              {expanded ? 'Collapse' : 'Expand'}
+              {expanded ? '收起' : '展开'}
             </Button>
           </Space>
         }
@@ -139,27 +144,27 @@ const JobLogPanel: React.FC<JobLogPanelProps> = ({ jobId, initialJob, targetTask
             <Space direction="vertical" size={4} style={{ width: '100%' }}>
               <Space size="small">
                 <Text type="secondary" style={{ fontSize: 12 }}>
-                  Target task:
+                  当前任务：
                 </Text>
                 <Text>{targetTaskName ?? '-'}</Text>
               </Space>
               {resolvedPlanId !== null && resolvedPlanId !== undefined ? (
                 <Text type="secondary" style={{ fontSize: 12 }}>
-                  Plan ID: {resolvedPlanId}
+                  计划编号： {resolvedPlanId}
                 </Text>
               ) : planId !== undefined && planId !== null ? (
                 <Text type="secondary" style={{ fontSize: 12 }}>
-                  Plan ID: {planId}
+                  计划编号： {planId}
                 </Text>
               ) : null}
               {jobMetadata?.session_id && (
                 <Text type="secondary" style={{ fontSize: 12 }}>
-                  Session ID: {jobMetadata.session_id}
+                  会话编号： {jobMetadata.session_id}
                 </Text>
               )}
               {lastUpdatedText && (
                 <Text type="secondary" style={{ fontSize: 12 }}>
-                  Last updated: {lastUpdatedText}
+                  最近更新： {lastUpdatedText}
                 </Text>
               )}
             </Space>
@@ -167,13 +172,13 @@ const JobLogPanel: React.FC<JobLogPanelProps> = ({ jobId, initialJob, targetTask
             {error && (
               <Alert
                 type="error"
-                message="Background execution failed"
+                message="后台执行失败"
                 description={error}
                 showIcon
               />
             )}
 
-            {!error && thinkingProcess.steps.length > 0 && (
+            {!error && !FINAL_STATUSES.has(status) && thinkingProcess.steps.length > 0 && (
               <Alert
                 type={
                   streamPaused
@@ -184,24 +189,24 @@ const JobLogPanel: React.FC<JobLogPanelProps> = ({ jobId, initialJob, targetTask
                 }
                 message={
                   streamPaused
-                    ? 'Execution paused'
+                    ? '执行已暂停'
                     : lastRuntimeControlAction === 'skip_step'
-                    ? 'Current step skipped'
-                    : 'Execution running'
+                    ? '已跳过当前步骤'
+                    : '正在执行'
                 }
                 description={
                   streamPaused
-                    ? 'Deep Think is paused. Click Resume to continue.'
+                    ? '深度思考已暂停，点击恢复继续执行。'
                     : lastRuntimeControlAction === 'skip_step'
-                    ? 'The agent skipped the current reasoning branch and moved to the next step.'
-                    : 'Deep Think is processing and streaming structured steps in real time.'
+                    ? 'Agent 已跳过当前推理分支，继续执行下一步。'
+                    : '正在处理任务，执行步骤会实时更新。'
                 }
                 showIcon
               />
             )}
             {!error && lastControlText && (
               <Text type="secondary" style={{ fontSize: 12 }}>
-                Last control action: {lastControlText}
+                最近操作： {lastControlText}
               </Text>
             )}
 
@@ -218,25 +223,25 @@ const JobLogPanel: React.FC<JobLogPanelProps> = ({ jobId, initialJob, targetTask
                 onPause={async () => {
                   const resp = await pauseExecution();
                   if (!resp.success) {
-                    message.warning(resp.message || 'Pause not available');
+                    message.warning(resp.message || '暂时无法暂停');
                   } else {
-                    message.success('Execution paused');
+                    message.success('执行已暂停');
                   }
                 }}
                 onResume={async () => {
                   const resp = await resumeExecution();
                   if (!resp.success) {
-                    message.warning(resp.message || 'Resume not available');
+                    message.warning(resp.message || '暂时无法恢复');
                   } else {
-                    message.success('Execution resumed');
+                    message.success('执行已恢复');
                   }
                 }}
                 onSkipStep={async () => {
                   const resp = await skipCurrentStep();
                   if (!resp.success) {
-                    message.warning(resp.message || 'Skip step not available');
+                    message.warning(resp.message || '暂时无法跳过此步骤');
                   } else {
-                    message.success('Current step skipped');
+                    message.success('已跳过当前步骤');
                   }
                 }}
               />
@@ -248,7 +253,7 @@ const JobLogPanel: React.FC<JobLogPanelProps> = ({ jobId, initialJob, targetTask
             {Object.keys(stats || {}).length > 0 && (
               <div style={{ fontSize: 12, color: '#999' }}>
                 <Divider plain style={{ margin: '12px 0' }}>
-                  Statistics
+                  运行统计
                 </Divider>
                 <Paragraph
                   copyable={{
@@ -267,25 +272,25 @@ const JobLogPanel: React.FC<JobLogPanelProps> = ({ jobId, initialJob, targetTask
       <Modal
         open={cliLogVisible}
         onCancel={() => setCliLogVisible(false)}
-        title="Claude Code CLI Logs"
+        title="执行器原始日志"
         footer={
           <Space size="small">
-            <Button onClick={() => setCliLogVisible(false)}>Close</Button>
+            <Button onClick={() => setCliLogVisible(false)}>关闭</Button>
             <Button type="primary" onClick={fetchCliLog} disabled={cliLogLoading}>
-              Refresh
+              刷新
             </Button>
           </Space>
         }
       >
         {cliLogPath && (
           <Text type="secondary" style={{ fontSize: 12 }}>
-            Log path: {cliLogPath}
+            日志路径： {cliLogPath}
           </Text>
         )}
         {cliLogError && (
           <Alert
             type="warning"
-            message="Unable to load CLI logs"
+            message="暂时无法读取执行器日志"
             description={cliLogError}
             showIcon
             style={{ marginTop: 12 }}
@@ -310,12 +315,12 @@ const JobLogPanel: React.FC<JobLogPanelProps> = ({ jobId, initialJob, targetTask
               wordBreak: 'break-word',
             }}
           >
-            {cliLogLines.length ? cliLogLines.join('\n') : 'No CLI log output yet.'}
+            {cliLogLines.length ? cliLogLines.join('\n') : '尚无执行器日志输出。'}
           </pre>
         )}
         {cliLogTruncated && (
           <Text type="secondary" style={{ fontSize: 12 }}>
-            Showing only the latest 200 lines.
+            仅展示最新的 200 行日志。
           </Text>
         )}
       </Modal>

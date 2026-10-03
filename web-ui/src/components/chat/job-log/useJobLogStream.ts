@@ -277,6 +277,10 @@ export function useJobLogStream({ jobId, initialJob, planId, jobType: initialJob
   const [runtimeControlBusy, setRuntimeControlBusy] = React.useState(false);
   const [runtimeControlBusyAction, setRuntimeControlBusyAction] = React.useState<'pause' | 'resume' | 'skip_step' | null>(null);
 
+  // Rendered snapshots must not change connection callback identities. In particular,
+  // metadata is a freshly parsed object on each request/heartbeat.
+  const snapshotContextRef = React.useRef({ result, jobMetadata, jobType, resolvedPlanId });
+  snapshotContextRef.current = { result, jobMetadata, jobType, resolvedPlanId };
   const sourceRef = React.useRef<EventSource | null>(null);
   const pollerRef = React.useRef<number | null>(null);
   const autoCollapsedRef = React.useRef(false);
@@ -301,13 +305,14 @@ export function useJobLogStream({ jobId, initialJob, planId, jobType: initialJob
   }, []);
 
   const getFallbackThinkingLanguage = React.useCallback((): 'zh' | 'en' => {
+    const context = snapshotContextRef.current;
     return inferThinkingLanguage(
       thinkingProcessRef.current.summary ??
-        result?.content ??
-        jobMetadata?.message_preview ??
+        context.result?.content ??
+        context.jobMetadata?.message_preview ??
         ''
     );
-  }, [jobMetadata?.message_preview, result?.content]);
+  }, []);
 
   const flushPendingThinkingDeltas = React.useCallback((force: boolean = false) => {
     const pendingEntries = Object.entries(pendingThinkingDeltasRef.current);
@@ -534,16 +539,17 @@ export function useJobLogStream({ jobId, initialJob, planId, jobType: initialJob
       }
       progressSyncAtRef.current = now;
 
-      const metadata = payload?.metadata ?? jobMetadata;
+      const context = snapshotContextRef.current;
+      const metadata = payload?.metadata ?? context.jobMetadata;
       const planIdForEvent =
         payload?.planId ??
-        resolvedPlanId ??
+        context.resolvedPlanId ??
         (typeof metadata?.plan_id === 'number' ? metadata.plan_id : null) ??
         null;
       const planTitle =
         typeof metadata?.plan_title === 'string' ? metadata.plan_title : null;
       const statusForEvent = payload?.status ?? statusRef.current ?? null;
-      const jobTypeForEvent = payload?.jobType ?? jobType ?? null;
+      const jobTypeForEvent = payload?.jobType ?? context.jobType ?? null;
 
       dispatchPlanSyncEvent(
         {
@@ -562,7 +568,7 @@ export function useJobLogStream({ jobId, initialJob, planId, jobType: initialJob
         }
       );
     },
-    [jobId, jobMetadata, jobType, resolvedPlanId]
+    [jobId]
   );
 
   const closeStream = React.useCallback(() => {
@@ -574,8 +580,12 @@ export function useJobLogStream({ jobId, initialJob, planId, jobType: initialJob
   }, []);
 
   const pollStartRef = React.useRef<number | null>(null);
+  const pollGenerationRef = React.useRef(0);
+  const pollingActiveRef = React.useRef(false);
 
   const stopPolling = React.useCallback(() => {
+    pollGenerationRef.current += 1;
+    pollingActiveRef.current = false;
     if (pollerRef.current !== null) {
       window.clearTimeout(pollerRef.current);
       pollerRef.current = null;
@@ -584,14 +594,18 @@ export function useJobLogStream({ jobId, initialJob, planId, jobType: initialJob
   }, []);
 
   const startPolling = React.useCallback(() => {
-    if (pollerRef.current !== null) return;
+    if (pollingActiveRef.current) return;
+    pollingActiveRef.current = true;
+    const generation = pollGenerationRef.current;
     if (pollStartRef.current === null) {
       pollStartRef.current = Date.now();
     }
     const tick = async () => {
+      if (generation !== pollGenerationRef.current) return;
       pollerRef.current = null;
       try {
         const snapshot = await planTreeApi.getJobStatus(jobId);
+        if (generation !== pollGenerationRef.current) return;
         applySnapshot(snapshot);
         if (!FINAL_STATUSES.has(snapshot.status)) {
           emitPlanProgressSync({
@@ -609,6 +623,7 @@ export function useJobLogStream({ jobId, initialJob, planId, jobType: initialJob
           return;
         }
       } catch (err) {
+        if (generation !== pollGenerationRef.current) return;
         const isNotFoundError = err instanceof Error && /not found/i.test(err.message || '');
         if (isNotFoundError) {
           setMissingJob(true);
@@ -617,6 +632,7 @@ export function useJobLogStream({ jobId, initialJob, planId, jobType: initialJob
         }
         console.error('Failed to poll job status:', err);
       }
+      if (generation !== pollGenerationRef.current) return;
       // Backoff: first 30s poll every 5s, then every 15s.
       const elapsed = Date.now() - (pollStartRef.current ?? Date.now());
       const delay = elapsed < 30_000 ? 5_000 : 15_000;
@@ -826,6 +842,7 @@ export function useJobLogStream({ jobId, initialJob, planId, jobType: initialJob
         // Fallback to polling.
       }
 
+      if (cancelled || FINAL_STATUSES.has(statusRef.current)) return;
       const streamUrl = `${ENV.API_BASE_URL}/jobs/${jobId}/stream`;
       try {
         const source = new EventSource(streamUrl, { withCredentials: true });
@@ -833,11 +850,13 @@ export function useJobLogStream({ jobId, initialJob, planId, jobType: initialJob
         setIsStreaming(true);
 
         source.onmessage = (event) => {
+          if (cancelled || sourceRef.current !== source) return;
           const parsed = parseStreamData(event);
           if (!parsed) return;
 
           if (parsed.type === 'snapshot') {
             applySnapshot(parsed.job);
+            if (FINAL_STATUSES.has(parsed.job.status)) { closeStream(); stopPolling(); }
             if (!FINAL_STATUSES.has(parsed.job.status)) {
               emitPlanProgressSync({
                 status: parsed.job.status,
@@ -855,6 +874,7 @@ export function useJobLogStream({ jobId, initialJob, planId, jobType: initialJob
           if (parsed.type === 'heartbeat') {
             setStatus(parsed.job.status);
             statusRef.current = parsed.job.status;
+            if (FINAL_STATUSES.has(parsed.job.status)) { closeStream(); stopPolling(); }
             setStats(parsed.job.stats ?? {});
             if (parsed.job.job_type) {
               setJobType(parsed.job.job_type || 'plan_decompose');
@@ -964,6 +984,7 @@ export function useJobLogStream({ jobId, initialJob, planId, jobType: initialJob
         };
 
         source.onerror = () => {
+          if (cancelled || sourceRef.current !== source) return;
           if (FINAL_STATUSES.has(statusRef.current)) {
             closeStream();
             return;

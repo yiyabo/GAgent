@@ -14,6 +14,7 @@ import JobLogPanel from '@components/chat/JobLogPanel';
 import type { DependencyPlanResponse, PlanTaskNode } from '@/types';
 import { statusColorMap, statusLabelMap } from './constants';
 import { resolveTaskName, resolveTaskStatus } from './TaskDetailSections';
+import { useCallbackScope } from './useCallbackScope';
 
 const { Text } = Typography;
 const executionStateColorMap: Record<string, string> = {
@@ -68,6 +69,7 @@ const TaskExecuteModal: React.FC<TaskExecuteModalProps> = ({
   const [executeLoading, setExecuteLoading] = useState(false);
   const [executeJobId, setExecuteJobId] = useState<string | null>(null);
   const [executeError, setExecuteError] = useState<string | null>(null);
+  const captureScope = useCallbackScope(`${currentSessionId}:${currentPlanId}:${selectedTaskId}:${open}`);
 
   useEffect(() => {
   onLoadingChange?.(dependencyPlanLoading || executeLoading);
@@ -75,19 +77,21 @@ const TaskExecuteModal: React.FC<TaskExecuteModalProps> = ({
 
   useEffect(() => {
   if (open && currentPlanId && selectedTaskId) {
+  const isCurrentScope = captureScope();
   setExecuteJobId(null);
   setExecuteError(null);
+  setExecuteLoading(false);
   setDependencyPlan(null);
   setDependencyPlanLoading(true);
   planTreeApi.getTaskDependencyPlan(currentPlanId, selectedTaskId, {
   include_dependencies: true,
   include_subtasks: true,
   })
-  .then((plan) => setDependencyPlan(plan))
-  .catch((err: any) => setExecuteError(err?.message || 'Failed to load dependency plan'))
-  .finally(() => setDependencyPlanLoading(false));
+  .then((plan) => { if (isCurrentScope()) setDependencyPlan(plan); })
+  .catch((err: any) => { if (isCurrentScope()) setExecuteError(err?.message || 'Failed to load dependency plan'); })
+  .finally(() => { if (isCurrentScope()) setDependencyPlanLoading(false); });
   }
-  }, [open, currentPlanId, selectedTaskId]);
+  }, [open, currentPlanId, selectedTaskId, currentSessionId, captureScope]);
 
   const handleClose = useCallback(() => {
   setExecuteJobId(null);
@@ -117,6 +121,7 @@ const TaskExecuteModal: React.FC<TaskExecuteModalProps> = ({
   return;
   }
 
+  const isCurrentScope = captureScope();
   setExecuteLoading(true);
   setExecuteError(null);
   try {
@@ -127,6 +132,7 @@ const TaskExecuteModal: React.FC<TaskExecuteModalProps> = ({
   async_mode: true,
   session_id: currentSessionId ?? undefined,
   });
+  if (!isCurrentScope()) return;
   if (!resp.success) {
   setExecuteError(resp.message || 'Execution failed');
   setDependencyPlan(resp.dependency_plan ?? dependencyPlan);
@@ -143,9 +149,9 @@ const TaskExecuteModal: React.FC<TaskExecuteModalProps> = ({
   void refetchPlanTasks();
   void refetchTaskResult();
   } catch (err: any) {
-  setExecuteError(err?.message || 'Execution failed');
+  if (isCurrentScope()) setExecuteError(err?.message || 'Execution failed');
   } finally {
-  setExecuteLoading(false);
+  if (isCurrentScope()) setExecuteLoading(false);
   }
   }, [
   currentPlanId,
@@ -156,6 +162,7 @@ const TaskExecuteModal: React.FC<TaskExecuteModalProps> = ({
   refetchTaskResult,
   selectedTaskId,
   onExecutionStarted,
+  captureScope,
   ]);
 
   const executionItems = dependencyPlan?.execution_items ?? [];

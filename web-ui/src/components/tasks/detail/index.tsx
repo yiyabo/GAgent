@@ -30,6 +30,7 @@ import { dispatchPlanSyncEvent, shouldHandlePlanSyncEvent } from '@utils/planSyn
 import JobLogPanel from '@components/chat/JobLogPanel';
 import { TaskDrawerContent } from './TaskDetailSections';
 import TaskExecuteModal from './TaskExecuteModal';
+import { useCallbackScope } from './useCallbackScope';
 
 const { Text, Title } = Typography;
 
@@ -92,6 +93,17 @@ const TaskDetailDrawer: React.FC = () => {
     refetch: refetchPlanTasks,
   } = usePlanTasks({ planId: currentPlanId ?? undefined });
 
+  const captureCallbackScope = useCallbackScope(`${currentSessionId}:${currentPlanId}:${selectedTaskId}`);
+  const captureTaskScope = useCallback(() => {
+    const sameGeneration = captureCallbackScope();
+    return () => {
+      const chat = useChatStore.getState();
+      const session = chat.currentSession?.session_id ?? chat.currentSession?.id ?? null;
+      return sameGeneration() && chat.currentPlanId === currentPlanId && session === currentSessionId
+        && useTasksStore.getState().selectedTaskId === selectedTaskId;
+    };
+  }, [captureCallbackScope, currentPlanId, currentSessionId, selectedTaskId]);
+
   const taskMap = useMemo(() => {
     return new Map<number, PlanTaskNode>(planTasks.map((task) => [task.id, task]));
   }, [planTasks]);
@@ -104,7 +116,8 @@ const TaskDetailDrawer: React.FC = () => {
   }, [selectedTaskId, selectedTask, taskMap]);
 
   const cachedResult =
-    selectedTaskId != null ? taskResultCache[selectedTaskId] ?? undefined : undefined;
+    selectedTaskId != null && selectedTask?.plan_id === currentPlanId
+      ? taskResultCache[selectedTaskId] ?? undefined : undefined;
 
   const {
     data: taskResult,
@@ -123,7 +136,7 @@ const TaskDetailDrawer: React.FC = () => {
       return planTreeApi.getTaskResult(currentPlanId, selectedTaskId);
     },
     onSuccess: (result) => {
-      if (selectedTaskId != null) {
+      if (selectedTaskId != null && result.task_id === selectedTaskId && captureTaskScope()()) {
         setTaskResult(selectedTaskId, result);
       }
     },
@@ -157,6 +170,16 @@ const TaskDetailDrawer: React.FC = () => {
     taskId: number;
     planId: number | null;
   } | null>(null);
+
+  useEffect(() => {
+    setVerifyLoading(false);
+    setManualAcceptLoading(false);
+    setExecuteButtonLoading(false);
+    setExecuteModalOpen(false);
+    setManualAcceptOpen(false);
+    setManualAcceptReason('');
+    setLatestExecution(null);
+  }, [currentPlanId, currentSessionId, selectedTaskId]);
 
   const activeExecutionJobId = useMemo(() => {
     if (!latestExecution) {
@@ -295,9 +318,11 @@ const TaskDetailDrawer: React.FC = () => {
       message.error('Missing plan or task information; cannot verify task');
       return;
     }
+    const isCurrentScope = captureTaskScope();
     setVerifyLoading(true);
     try {
       const response: VerifyTaskResponse = await planTreeApi.verifyTask(currentPlanId, selectedTaskId);
+      if (!isCurrentScope()) return;
       setTaskResult(selectedTaskId, response.result);
       message.success(response.message || 'Task verification completed');
       dispatchPlanSyncEvent({
@@ -314,9 +339,9 @@ const TaskDetailDrawer: React.FC = () => {
       void refetchPlanTasks();
       void refetchTaskResult();
     } catch (error: any) {
-      message.error(error?.message || 'Task verification failed');
+      if (isCurrentScope()) message.error(error?.message || 'Task verification failed');
     } finally {
-      setVerifyLoading(false);
+      if (isCurrentScope()) setVerifyLoading(false);
     }
   }, [
     currentPlanId,
@@ -326,6 +351,7 @@ const TaskDetailDrawer: React.FC = () => {
     refetchTaskResult,
     selectedTaskId,
     setTaskResult,
+    captureTaskScope,
   ]);
 
   const handleOpenManualAccept = useCallback(() => {
@@ -349,11 +375,13 @@ const TaskDetailDrawer: React.FC = () => {
       return;
     }
 
+    const isCurrentScope = captureTaskScope();
     setManualAcceptLoading(true);
     try {
       const response: AcceptTaskResponse = await planTreeApi.acceptTask(currentPlanId, selectedTaskId, {
         reason,
       });
+      if (!isCurrentScope()) return;
       setTaskResult(selectedTaskId, response.result);
       setManualAcceptOpen(false);
       message.success(response.message || 'Task accepted after manual review');
@@ -371,9 +399,9 @@ const TaskDetailDrawer: React.FC = () => {
       void refetchPlanTasks();
       void refetchTaskResult();
     } catch (error: any) {
-      message.error(error?.message || 'Failed to accept task');
+      if (isCurrentScope()) message.error(error?.message || 'Failed to accept task');
     } finally {
-      setManualAcceptLoading(false);
+      if (isCurrentScope()) setManualAcceptLoading(false);
     }
   }, [
     currentPlanId,
@@ -384,6 +412,7 @@ const TaskDetailDrawer: React.FC = () => {
     refetchTaskResult,
     selectedTaskId,
     setTaskResult,
+    captureTaskScope,
   ]);
 
   return (
