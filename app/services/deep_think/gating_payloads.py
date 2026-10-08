@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Sequence
 
 from app.services.deep_think.models import TaskExecutionContext, ThinkingStep
+from app.services.deep_think.text_utils import _answer_discloses_limitation
 from app.services.response_style import sanitize_professional_response_text
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -484,8 +485,12 @@ def _search_verified_from_steps(agent: "DeepThinkAgent", steps: List[ThinkingSte
     return True if not seen_external else successful_external
 
 
-# See _apply_external_search_notice: the notice is currently disarmed.
-_EXTERNAL_SEARCH_NOTICE_ENABLED = False
+# Re-armed 2026-10-09 (user decision after the geo case): the notice fires
+# whenever external retrieval tools failed and the answer is not
+# search-verified — a flat-loop truth barrier, no tier gate. Answers that
+# already disclose the limitation in their own words are skipped
+# (text_utils._answer_discloses_limitation).
+_EXTERNAL_SEARCH_NOTICE_ENABLED = True
 
 
 def _apply_external_search_notice(
@@ -497,11 +502,9 @@ def _apply_external_search_notice(
     search_verified: bool,
 ) -> str:
     text = str(answer or "").strip()
-    # Disarmed since the 2026-10 tier removal: the notice used to fire for
-    # research/execute tiers only, and the flat loop has no tiers. Re-arming
-    # (for everyone, or keyed on execute intent) is a product decision — see
-    # LOCAL_INFRA §98. Kept intact so a one-line flip re-enables it.
     if not text or search_verified or not _EXTERNAL_SEARCH_NOTICE_ENABLED:
+        return text
+    if _answer_discloses_limitation(text):
         return text
 
     failed_external = [

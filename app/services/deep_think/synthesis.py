@@ -998,6 +998,34 @@ async def _fallback_answer_from_steps(
             "已完成思考，但暂未形成结构化结论。",
             "DeepThink finished without a structured final answer.",
         )
+    evidence = agent._collect_evidence_snippets(steps)
+    uq = (user_query or "").strip()
+    # Execute-intent turns get one LLM evidence-synthesis attempt before the
+    # snippet/structured fallbacks (restored 2026-10-09: the legacy execute
+    # tier had this path; the tier removal keys it off intent instead).
+    if agent._is_execute_task_request() and evidence.strip() and uq:
+        try:
+            fallback_kwargs: Dict[str, Any] = {}
+            if task_context is not None:
+                fallback_kwargs["task_context"] = task_context
+            generated = await agent._generate_fallback_from_evidence(
+                uq,
+                evidence,
+                steps,
+                **fallback_kwargs,
+            )
+            if generated and not agent._should_reject_missing_task_definition_answer(
+                generated,
+                task_context=task_context,
+            ):
+                return generated
+        except RunDeadlineExceeded:
+            raise
+        except Exception:
+            logger.warning(
+                "DeepThink fallback synthesis from tool evidence failed; using structured fallback.",
+                exc_info=True,
+            )
     useful = [
         s.thought
         for s in steps
@@ -1005,7 +1033,7 @@ async def _fallback_answer_from_steps(
         and s.thought.strip()
         and not _dta().is_process_only_answer(s.thought, user_query=user_query)
     ]
-    if useful:
+    if useful and not agent._is_execute_task_request():
         return sanitize_professional_response_text(
             _dta().sanitize_reasoning_text(
                 useful[-1].strip(),

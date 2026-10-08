@@ -36,6 +36,7 @@ from .subject_identity import (
     canonicalize_subject_ref,
     subject_identity_matches,
 )
+from app.services.deep_think.text_utils import _answer_discloses_limitation
 
 
 _TRACEBACK_MARKER = "Traceback (most recent call last)"
@@ -81,6 +82,27 @@ def _humanize_failure_message(message: str, *, limit: int = 240) -> str:
         # the user's failing line.
         summary = f"{summary}（cell 第 {cell_frames[-1]} 行）"
     return summary if len(summary) <= limit else summary[: limit - 1] + "…"
+
+
+_NO_OUTPUT_PATH_RE = re.compile(r"/[^\s,，;；]+")
+
+
+def _failure_is_scratch_only(message: str) -> bool:
+    """NO_OUTPUT contract failures whose referenced paths all live in scratch
+    areas (raw_files/, /tmp/, /scratch/). Scratch intermediates are not
+    deliverables and must never brand the user-facing answer (2026-10-08 geo
+    case: a timed-out code cell's guessed contract files under raw_files/
+    branded an otherwise successful, self-disclosed answer)."""
+    text = str(message or "")
+    if "NO_OUTPUT" not in text:
+        return False
+    paths = _NO_OUTPUT_PATH_RE.findall(text)
+    if not paths:
+        return False
+    return all(
+        ("raw_files/" in path) or path.startswith("/tmp/") or ("/scratch/" in path)
+        for path in paths
+    )
 
 
 def _seed_active_subject_from_routing(
@@ -144,6 +166,12 @@ def _apply_grounded_local_answer(
     Phase 2 removed the full intent-type-driven grounding. This version only
     appends a caveat when there is concrete failure evidence that contradicts
     the LLM's answer, regardless of intent_type.
+
+    Caveat grading (2026-10-09): scratch-only NO_OUTPUT contract failures
+    (missing files under raw_files//tmp/scratch — intermediates, not
+    deliverables) never brand the answer, and neither does a failure the
+    answer already disclosed in its own words (see
+    text_utils._answer_discloses_limitation).
     """
     text = str(answer or "").strip()
     if not text:
@@ -160,14 +188,18 @@ def _apply_grounded_local_answer(
             if isinstance(verified_facts, list) and verified_facts:
                 return text
 
+    already_disclosed = _answer_discloses_limitation(text)
+
     if isinstance(failure_state, dict) and str(failure_state.get("error_message") or "").strip():
-        message = _humanize_failure_message(str(failure_state.get("error_message") or ""))
-        if message and message.lower() not in text.lower():
-            return f"{text}\n\n⚠️ 本次操作未被验证成功：{message}"
+        raw_message = str(failure_state.get("error_message") or "")
+        if not _failure_is_scratch_only(raw_message) and not already_disclosed:
+            message = _humanize_failure_message(raw_message)
+            if message and message.lower() not in text.lower():
+                return f"{text}\n\n⚠️ 本次操作未被验证成功：{message}"
 
     if isinstance(evidence_state, dict) and str(evidence_state.get("status") or "").strip().lower() == "failed":
         unresolved = evidence_state.get("unresolved")
-        if isinstance(unresolved, list):
+        if isinstance(unresolved, list) and not already_disclosed:
             details = "；".join(str(item).strip() for item in unresolved if str(item).strip())
             details = _humanize_failure_message(details)
             if details and details.lower() not in text.lower():

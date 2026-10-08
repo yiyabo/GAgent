@@ -33,6 +33,45 @@ def _default_max_consecutive_llm_failures() -> int:
 _DEEP_THINK_THINKING_BUDGET = 8000
 
 
+# Phrases meaning the answer itself already disclosed a verification/retrieval
+# limitation. When any of these is present, failure caveats must not be
+# re-branded onto the answer (2026-10-08 geo case: the answer said
+# "数值全部是记忆值…未经核验" in its own words and still got a scary
+# NO_OUTPUT banner with container paths). Shared by
+# routers.chat.subject_grounding and deep_think.gating_payloads.
+_DISCLOSURE_MARKERS: Tuple[str, ...] = (
+    "未经核验",
+    "未核验",
+    "未能核验",
+    "未经核实",
+    "未核实",
+    "未经确认",
+    "未经验证",
+    "未能验证",
+    "未经在线检索验证",
+    "未经过本轮在线检索验证",
+    "全部失败",
+    "均失败",
+    "网络受限",
+    "出站受限",
+    "网络出站",
+    "not verified",
+    "unverified",
+    "could not be verified",
+    "could not verify",
+    "not been verified",
+)
+
+
+def _answer_discloses_limitation(text: str) -> bool:
+    """True when the answer prose already discloses a verification/retrieval
+    limitation, so caveat appenders should not repeat it."""
+    haystack = str(text or "").lower()
+    if not haystack:
+        return False
+    return any(marker.lower() in haystack for marker in _DISCLOSURE_MARKERS)
+
+
 # Model context-window table (prefix-matched; only confirmed values, extend
 # conservatively). Used to size the compaction budget relative to the model's
 # real window instead of the historical fixed 32k.

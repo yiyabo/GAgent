@@ -245,7 +245,10 @@ def test_native_multi_tool_calls_execute_concurrently_and_append_results() -> No
     )
 
     result = asyncio.run(agent.think("run native tools"))
-    assert result.final_answer == "done"
+    # The web_search failure re-arms the external-search notice (2026-10-09):
+    # it is prepended to the submitted answer, which itself is unchanged.
+    assert result.final_answer.endswith("done")
+    assert "not verified by live search during this run" in result.final_answer
     assert set(started) == {"file_operations", "web_search"}
     assert result.total_iterations >= 2
     assert result.thinking_steps
@@ -4271,10 +4274,155 @@ def test_bound_execute_task_rejects_forced_synthesis_that_asks_for_task_definiti
 
     assert "请提供 Task 9" not in result.final_answer
     assert "plan68_task9" not in result.final_answer
-    # Rejected forced synthesis → grounded fallback from the observed step.
-    assert result.final_answer == "Inspect task outputs first"
+    # Rejected forced synthesis → execute-intent fallback chain; the re-armed
+    # LLM evidence synthesis (④ 2026-10-09) answers from the observed step
+    # instead of parroting the process sentence.
+    assert result.final_answer.strip()
     assert result.fallback_used is True
     assert result.total_iterations == 1
+
+
+# ---------- Execute-intent evidence synthesis (re-armed 2026-10-09) ----------
+
+
+def _task48_steps() -> list[ThinkingStep]:
+    return [
+        ThinkingStep(
+            iteration=1,
+            thought="先列出任务输出目录。",
+            action='{"tool":"file_operations","params":{"operation":"list","path":"/tmp/task48"}}',
+            action_result='{"success": true, "summary": "listed /tmp/task48: output.txt"}',
+            self_correction=None,
+        )
+    ]
+
+
+def test_execute_intent_fallback_prefers_evidence_synthesis() -> None:
+    """Re-armed 2026-10-09: execute-intent forced synthesis tries the LLM
+    evidence synthesis before the structured fallback (the legacy execute
+    tier's path, now keyed off intent instead of tier)."""
+    agent = DeepThinkAgent(
+        llm_client=_DummyLLM([]),
+        available_tools=["file_operations"],
+        tool_executor=_noop_tool_executor,
+        max_iterations=1,
+        request_profile={"intent_type": "execute_task", "current_task_id": 48},
+    )
+
+    async def _fake_synthesis(user_query: str, evidence_snippets: str, _steps: list[ThinkingStep]) -> str:
+        assert "output.txt" in evidence_snippets
+        return "当前绑定任务已产出 output.txt，核验通过。"
+
+    agent._generate_fallback_from_evidence = _fake_synthesis  # type: ignore[method-assign]
+
+    answer = asyncio.run(agent._fallback_answer_from_steps(_task48_steps(), "继续执行 Task 48"))
+    assert "output.txt" in answer
+
+
+def test_execute_intent_fallback_rejects_missing_task_definition_answer() -> None:
+    """The evidence-synthesis answer is still passed through
+    `_should_reject_missing_task_definition_answer` before use."""
+    agent = DeepThinkAgent(
+        llm_client=_DummyLLM([]),
+        available_tools=["file_operations"],
+        tool_executor=_noop_tool_executor,
+        max_iterations=1,
+        request_profile={
+            "intent_type": "execute_task",
+            "current_task_id": 48,
+            "explicit_task_override": True,
+        },
+    )
+
+    async def _bad_fallback(*_args, **_kwargs) -> str:
+        return "请提供 Task 9 的具体内容，并确认是否存在 plan68_task9 目录。"
+
+    agent._generate_fallback_from_evidence = _bad_fallback  # type: ignore[method-assign]
+
+    answer = asyncio.run(
+        agent._fallback_answer_from_steps(
+            _task48_steps(),
+            "继续执行 Task 48",
+            task_context=TaskExecutionContext(
+                task_id=48,
+                task_name="Task 48",
+                task_instruction="继续执行 Task 48。",
+                explicit_task_ids=[9],
+                explicit_task_override=True,
+            ),
+        )
+    )
+    assert "请提供 Task 9" not in answer
+    assert "plan68_task9" not in answer
+    assert answer.strip()
+
+
+def test_chat_intent_fallback_keeps_thought_snippet_path() -> None:
+    """Chat intent is unchanged: no LLM evidence synthesis, the sanitized
+    last-useful-thought snippet answers."""
+    agent = DeepThinkAgent(
+        llm_client=_DummyLLM([]),
+        available_tools=["file_operations"],
+        tool_executor=_noop_tool_executor,
+        max_iterations=1,
+        request_profile={"intent_type": "chat"},
+    )
+    steps = [
+        ThinkingStep(
+            iteration=1,
+            thought="已确认 output.txt 存在且非空，可直接使用。",
+            action='{"tool":"file_operations","params":{"operation":"list","path":"/tmp/task48"}}',
+            action_result='{"success": true, "summary": "listed /tmp/task48: output.txt"}',
+            self_correction=None,
+        )
+    ]
+    called = False
+
+    async def _spy(*_args, **_kwargs) -> str:
+        nonlocal called
+        called = True
+        return "不应走到这里"
+
+    agent._generate_fallback_from_evidence = _spy  # type: ignore[method-assign]
+
+    answer = asyncio.run(agent._fallback_answer_from_steps(steps, "结果怎么样"))
+    assert not called
+    assert "output.txt" in answer
+
+
+# ---------- External search notice (re-armed 2026-10-09) ----------
+
+
+def test_external_search_notice_fires_on_failed_retrieval() -> None:
+    agent = DeepThinkAgent(
+        llm_client=_DummyLLM([]),
+        available_tools=["web_search"],
+        tool_executor=_noop_tool_executor,
+        max_iterations=1,
+    )
+    out = agent._apply_external_search_notice(
+        "基于已有知识，噬菌体疗法在耐药菌感染上前景良好。",
+        user_query="噬菌体疗法最新进展",
+        tool_failures=[{"tool": "web_search", "error": "request_failed"}],
+        search_verified=False,
+    )
+    assert "未经过本轮在线检索验证" in out
+
+
+def test_external_search_notice_skipped_when_answer_self_discloses() -> None:
+    agent = DeepThinkAgent(
+        llm_client=_DummyLLM([]),
+        available_tools=["web_search"],
+        tool_executor=_noop_tool_executor,
+        max_iterations=1,
+    )
+    out = agent._apply_external_search_notice(
+        "检索工具均失败，以下内容为已有知识整理，未经核验，仅供参考。",
+        user_query="噬菌体疗法最新进展",
+        tool_failures=[{"tool": "web_search", "error": "request_failed"}],
+        search_verified=False,
+    )
+    assert "未经过本轮在线检索验证" not in out
 
 
 # ---------- Early stop for standard tier ----------

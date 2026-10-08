@@ -82,3 +82,60 @@ def test_banner_carries_summary_not_the_stack_wall() -> None:
     assert "⚠️ 本次操作未被验证成功：IntCastingNaNError: Cannot convert non-finite values" in out
     assert "Traceback" not in out
     assert "site-packages" not in out
+
+
+_NO_OUTPUT_SCRATCH = (
+    "NO_OUTPUT: Missing required deliverables: "
+    "/app/runtime/session_x/raw_files/geo_search_simple.json, "
+    "/app/runtime/session_x/raw_files/geo_datasets.json"
+)
+
+_NO_OUTPUT_CORE = (
+    "NO_OUTPUT: Missing required deliverables: "
+    "/app/runtime/session_x/results/forest_plot_hr.png"
+)
+
+
+def test_scratch_only_no_output_failure_never_banners() -> None:
+    """2026-10-08 geo case: a timed-out cell's guessed contract files under
+    raw_files/ (scratch) must not brand an otherwise successful answer."""
+    agent = SimpleNamespace(
+        history=[],
+        extra_context={"last_failure_state": {"error_message": _NO_OUTPUT_SCRATCH}},
+    )
+    out = _apply_grounded_local_answer(agent, "图已画好并已发布。", SimpleNamespace())
+    assert "未被验证成功" not in out
+
+
+def test_core_deliverable_no_output_failure_still_banners() -> None:
+    """Missing files under results/ are real deliverables — banner stands."""
+    agent = SimpleNamespace(
+        history=[],
+        extra_context={"last_failure_state": {"error_message": _NO_OUTPUT_CORE}},
+    )
+    out = _apply_grounded_local_answer(agent, "分析完成，结论如下。", SimpleNamespace())
+    assert "未被验证成功" in out
+
+
+def test_self_disclosed_limitation_is_not_rebranded() -> None:
+    """The answer already told the user the values are unverified — repeating
+    it as a scary banner only confuses (same geo case)."""
+    answer = "图已生成。注意：数值全部是记忆值，未经核验，不能直接进论文。"
+    agent = SimpleNamespace(
+        history=[],
+        extra_context={"last_failure_state": {"error_message": _NO_OUTPUT_CORE}},
+    )
+    out = _apply_grounded_local_answer(agent, answer, SimpleNamespace())
+    assert "未被验证成功" not in out
+
+
+def test_evidence_failed_branch_respects_disclosure_markers() -> None:
+    answer = "检索工具均失败，以下为已有知识整理，未经核验。"
+    agent = SimpleNamespace(
+        history=[],
+        extra_context={
+            "last_evidence_state": {"status": "failed", "unresolved": ["web_search 超时"]}
+        },
+    )
+    out = _apply_grounded_local_answer(agent, answer, SimpleNamespace())
+    assert "未被验证成功" not in out
