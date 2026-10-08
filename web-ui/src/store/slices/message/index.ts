@@ -107,6 +107,27 @@ const _recoverAfterStreamFailure = async (
       await _consumeUnifiedStream(ctx, streamRunEvents(opts.apiSessionId, runId, -1));
       await _finalizeAfterUnifiedStream(ctx, state, boundFlush);
     },
+    autoResumeFromCheckpoint: async (runId: string) => {
+      // Release the failed turn's processing fence before resumeChatRun
+      // re-sends the message (it re-fences synchronously inside sendMessage).
+      get().setSessionProcessing(opts.processingKey, false);
+      const target = source.get().messages.find((m: ChatMessage) => m.id === opts.assistantMessageId);
+      const prev = (target?.metadata ?? {}) as Record<string, any>;
+      const prior = typeof target?.content === 'string' ? target.content.trim() : '';
+      const isRecoveryNote = prior.startsWith('连接中断') || prior.startsWith('服务端');
+      const base = prior && !isRecoveryNote ? `${prior}\n\n` : '';
+      source.get().updateMessage(opts.assistantMessageId, {
+        content: `${base}（连接中断，已从断点自动续跑，最新结果见下方新一轮）`,
+        metadata: { ...prev, status: 'interrupted', recovering: false, auto_resumed_from: runId },
+      });
+      try {
+        await get().resumeChatRun(runId, opts.apiSessionId);
+        return true;
+      } catch (err) {
+        console.warn('[chat] auto resume from checkpoint failed:', err);
+        return false;
+      }
+    },
   });
 };
 
