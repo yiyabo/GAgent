@@ -6,6 +6,8 @@ This module is the active router entrypoint for chat APIs.
 from __future__ import annotations
 
 import asyncio
+import copy
+import json
 import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -90,6 +92,131 @@ from .stream import chat_stream
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/chat", tags=["chat"])
+
+_HISTORY_METADATA_MAX_BYTES = 200_000
+_HISTORY_TEXT_FIELD_MAX_CHARS = 8_000
+_HISTORY_COLLECTION_PREVIEW_ITEMS = 20
+_HISTORY_LARGE_METADATA_KEYS = {
+    "analysis_text",
+    "final_summary",
+    "job",
+    "raw_output",
+    "result",
+    "stdout",
+    "stderr",
+    "thinking_process",
+    "tool_results",
+    "transcript",
+}
+
+
+def _json_size_bytes(value: Any) -> int:
+    try:
+        return len(json.dumps(value, ensure_ascii=False, default=str).encode("utf-8"))
+    except Exception:
+        return 0
+
+
+def _summarize_history_value(value: Any) -> Any:
+    if isinstance(value, str):
+        if len(value) <= _HISTORY_TEXT_FIELD_MAX_CHARS:
+            return value
+        return {
+            "truncated": True,
+            "original_chars": len(value),
+            "preview": value[:_HISTORY_TEXT_FIELD_MAX_CHARS],
+        }
+    if isinstance(value, list):
+        return {
+            "truncated": True,
+            "original_count": len(value),
+            "preview": [
+                _summarize_history_value(item)
+                for item in value[:_HISTORY_COLLECTION_PREVIEW_ITEMS]
+            ],
+        }
+    if isinstance(value, dict):
+        return {
+            "truncated": True,
+            "original_keys": sorted(str(key) for key in value.keys()),
+            "preview": {
+                str(key): _summarize_history_value(item)
+                for key, item in list(value.items())[:_HISTORY_COLLECTION_PREVIEW_ITEMS]
+            },
+        }
+    return value
+
+
+def _compact_history_metadata(
+    metadata: Optional[Dict[str, Any]],
+    *,
+    max_bytes: int = _HISTORY_METADATA_MAX_BYTES,
+) -> Optional[Dict[str, Any]]:
+    """Return a history-safe metadata payload without mutating stored metadata.
+
+    Chat history is a list endpoint. Large execution transcripts can make a single
+    session response tens of MB and freeze the frontend during JSON parsing. Keep
+    routing/status fields intact, but summarize heavyweight fields for list loads.
+    """
+    if not isinstance(metadata, dict) or not metadata:
+        return metadata
+
+    compacted = copy.deepcopy(metadata)
+    original_size = _json_size_bytes(compacted)
+    if original_size <= max_bytes:
+        return compacted
+
+    removed_fields: Dict[str, Dict[str, Any]] = {}
+    for key in list(compacted.keys()):
+        value = compacted.get(key)
+        value_size = _json_size_bytes(value)
+        if key in _HISTORY_LARGE_METADATA_KEYS or value_size > max_bytes // 2:
+            removed_fields[key] = {
+                "original_bytes": value_size,
+                "summary": _summarize_history_value(value),
+            }
+            compacted.pop(key, None)
+
+    if removed_fields:
+        compacted["history_metadata_compacted"] = {
+            "reason": "metadata exceeded chat history response size budget",
+            "max_bytes": max_bytes,
+            "original_bytes": original_size,
+            "fields": removed_fields,
+        }
+
+    compacted_size = _json_size_bytes(compacted)
+    if compacted_size <= max_bytes:
+        return compacted
+
+    safe_keys = {
+        "actions_summary",
+        "artifact_gallery",
+        "backend_id",
+        "error",
+        "error_type",
+        "errors",
+        "intent",
+        "job_id",
+        "job_status",
+        "job_type",
+        "plan_id",
+        "plan_persisted",
+        "status",
+        "success",
+        "tracking_id",
+        "verification_status",
+    }
+    minimal = {key: compacted[key] for key in safe_keys if key in compacted}
+    minimal["history_metadata_compacted"] = {
+        "reason": "metadata exceeded chat history response size budget",
+        "max_bytes": max_bytes,
+        "original_bytes": original_size,
+        "compacted_bytes": compacted_size,
+        "field_count": len(metadata),
+    }
+    return minimal
+
 
 register_router(
     namespace="chat",
@@ -1384,7 +1511,7 @@ async def get_chat_history(
                     "role": msg.role,
                     "content": msg.content,
                     "timestamp": msg.timestamp,
-                    "metadata": msg.metadata,
+                    "metadata": _compact_history_metadata(msg.metadata),
                 }
                 for msg in messages
             ],

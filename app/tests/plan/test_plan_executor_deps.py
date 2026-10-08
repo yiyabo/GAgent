@@ -11,6 +11,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from app.config.executor_config import ExecutorSettings, get_executor_settings
+from app.services.plans.dependency_enrichment import check_artifact_readiness
 from app.services.plans.plan_executor import ExecutionConfig, ExecutionResponse, ExecutionResult, PlanExecutor
 from app.services.plans.artifact_contracts import canonical_artifact_path, infer_artifact_namespace, load_artifact_manifest, resolve_manifest_aliases, save_artifact_manifest
 from app.services.plans.dependency_validation import normalize_plan_dependencies
@@ -2161,3 +2162,46 @@ def test_plan_executor_no_manuscript_writer_fallback_for_non_leaf_task(monkeypat
 
     assert result.status == "completed"
     assert len(fallback_calls) == 0
+
+
+def test_artifact_readiness_ignores_composite_container_inferred_publish():
+    """Root/container goal text should not override the real leaf producer."""
+    root = PlanNode(
+        id=1,
+        plan_id=89,
+        name="Create PhageScope manuscript plan",
+        status="pending",
+        instruction="Build a plan-tree and produce manuscript.md as the primary deliverable.",
+        path="/1",
+    )
+    real_producer = PlanNode(
+        id=8,
+        plan_id=89,
+        name="Draft publishable manuscript",
+        status="completed",
+        instruction="Write manuscript.md as the primary Markdown paper.",
+        parent_id=1,
+        position=6,
+        path="/1/8",
+        metadata={
+            "acceptance_criteria": {
+                "checks": [{"type": "file_nonempty", "path": "manuscript.md"}],
+            }
+        },
+    )
+    consumer = PlanNode(
+        id=10,
+        plan_id=89,
+        name="Submit verified report deliverables",
+        status="pending",
+        parent_id=1,
+        position=8,
+        path="/1/10",
+        metadata={"artifact_contract": {"requires": ["manuscript.md"]}},
+        dependencies=[8],
+    )
+    tree = _make_tree(89, [root, real_producer, consumer])
+
+    block = check_artifact_readiness(consumer, tree)
+
+    assert block is None

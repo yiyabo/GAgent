@@ -1062,7 +1062,7 @@ class TaskVerificationService(_CueMethods, _PathMethods, _CheckMethods, _Discove
                 continue
             if str(dep_node.status or "").strip().lower() != "skipped":
                 continue
-            repo.update_task(plan_id, dep_node.id, status="pending")
+            repo.update_task(plan_id, dep_node.id, status="pending", execution_result="")
             reset_count += 1
         return reset_count
 
@@ -1292,7 +1292,12 @@ class TaskVerificationService(_CueMethods, _PathMethods, _CheckMethods, _Discove
                         "key_path": segments[1].strip(),
                         "min_value": float(segments[2].strip()),
                     })
-            elif check_type in {"pdf_valid", "model_metrics_valid", "manuscript_markdown_quality"}:
+            elif check_type in {
+                "pdf_valid",
+                "model_metrics_valid",
+                "manuscript_markdown_quality",
+                "figure_manifest_quality",
+            }:
                 if rest:
                     checks.append({"type": check_type, "path": rest, "hard": True})
             elif check_type == "pdb_residue_present":

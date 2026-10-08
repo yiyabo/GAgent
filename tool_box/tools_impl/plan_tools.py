@@ -20,6 +20,7 @@ from app.services.plans.artifact_preflight import ArtifactPreflightService
 from app.services.plans.plan_optimizer import (
     auto_optimize_plan,
     capture_plan_optimization_outcome,
+    materialize_root_executable_steps,
     resolve_plan_review_result,
 )
 from app.services.plans.task_metadata_generator import ensure_task_metadata
@@ -964,9 +965,22 @@ async def _optimize_plan(
                     "change": change,
                     "error": str(e),
                 })
-        
+
+        materialized_changes: List[Dict[str, Any]] = []
+        if applied_changes:
+            try:
+                materialized_changes = materialize_root_executable_steps(plan_id, repo)
+            except Exception as exc:
+                logger.warning(
+                    "materialize_root_executable_steps failed for plan %s: %s",
+                    plan_id,
+                    exc,
+                )
+
         # Refresh plan tree
         plan_tree = repo.get_plan_tree(plan_id)
+        if materialized_changes:
+            applied_changes.extend(materialized_changes)
         
         if not applied_changes and not failed_changes:
             failed_changes.append(

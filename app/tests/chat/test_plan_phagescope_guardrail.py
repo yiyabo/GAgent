@@ -159,6 +159,9 @@ def test_phagescope_research_paper_goal_gets_strict_seed_plan():
         "model_metrics.json",
         "manuscript.md",
         "MESM/BMC Biology-style",
+        "publication-quality figure set",
+        "chart types adaptively",
+        "source_csv",
         "PDF is a later rendering target",
         "report_quality_audit.json",
     ):
@@ -171,6 +174,13 @@ def test_phagescope_research_paper_goal_gets_strict_seed_plan():
         for check in figure_checks
     )
     assert any(check["type"] == "file_nonempty" and check["path"] == "results/model_comparison.csv" for check in figure_checks)
+    assert any(check["type"] == "file_nonempty" and check["path"] == "results/split_statistics.csv" for check in figure_checks)
+    assert any(
+        check["type"] == "figure_manifest_quality"
+        and check["min_figures"] >= 3
+        and check["require_source_data"] is True
+        for check in figure_checks
+    )
     assert any(
         check["type"] == "manuscript_markdown_quality" and check["min_text_chars"] >= 12000
         for check in tasks[6]["metadata"]["acceptance_criteria"]["checks"]

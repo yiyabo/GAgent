@@ -6,6 +6,8 @@ LLM calls are mocked; everything else (routing, middleware, DB, session mgmt) is
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from app.database_pool import get_db
@@ -142,3 +144,60 @@ def test_chat_message_response_includes_metadata(
         meta = payload["metadata"]
         assert "status" in meta
         assert meta["status"] == "completed"
+
+
+@pytest.mark.integration
+def test_chat_history_compacts_large_metadata(
+    app_client_factory,
+) -> None:
+    large_tool_result = {
+        "name": "code_executor",
+        "result": {
+            "transcript": "x" * 350_000,
+            "stdout": "y" * 50_000,
+        },
+    }
+    metadata = {
+        "status": "completed",
+        "success": True,
+        "plan_id": 92,
+        "job_id": "job-large",
+        "job_status": "succeeded",
+        "tool_results": [large_tool_result],
+        "thinking_process": {"steps": [{"thought": "z" * 250_000}]},
+        "artifact_gallery": [{"path": "results/output.json"}],
+    }
+
+    with app_client_factory() as client:
+        client.patch(
+            "/chat/sessions/large-meta-001",
+            json={"name": "Large Metadata Test"},
+        )
+        with get_db() as conn:
+            conn.execute(
+                """
+                INSERT INTO chat_messages (session_id, role, content, metadata)
+                VALUES (?, ?, ?, ?)
+                """,
+                (
+                    "large-meta-001",
+                    "assistant",
+                    "Finished heavy execution.",
+                    json.dumps(metadata),
+                ),
+            )
+            conn.commit()
+
+        history_resp = client.get("/chat/history/large-meta-001")
+
+    assert history_resp.status_code == 200
+    payload = history_resp.json()
+    [message] = payload["messages"]
+    compacted = message["metadata"]
+    assert compacted["plan_id"] == 92
+    assert compacted["job_status"] == "succeeded"
+    assert compacted["artifact_gallery"] == [{"path": "results/output.json"}]
+    assert "tool_results" not in compacted
+    assert "thinking_process" not in compacted
+    assert compacted["history_metadata_compacted"]["original_bytes"] > 600_000
+    assert len(json.dumps(compacted)) < 200_000

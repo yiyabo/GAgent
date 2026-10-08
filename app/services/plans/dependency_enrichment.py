@@ -133,6 +133,29 @@ def _extract_artifacts_for_node(node: PlanNode) -> Tuple[List[str], List[str]]:
     return requires, publishes
 
 
+def _has_explicit_publishes(node: PlanNode) -> bool:
+    metadata = node.metadata if isinstance(node.metadata, dict) else {}
+    contract = metadata.get("artifact_contract")
+    if not isinstance(contract, dict):
+        return False
+    publishes = contract.get("publishes") or contract.get("produces") or []
+    return isinstance(publishes, list) and any(str(item).strip() for item in publishes)
+
+
+def _can_infer_artifact_publishes(node: PlanNode, tree: PlanTree) -> bool:
+    """Return whether instruction-derived publishes should count for readiness.
+
+    Composite/container nodes often repeat the overall goal (for example,
+    "produce manuscript.md") while their leaf children do the real file work.
+    Treating that free text as a producer makes downstream tasks wait on the
+    root container instead of the completed leaf.  Explicit publish contracts
+    remain authoritative for any node, including composites.
+    """
+    if _has_explicit_publishes(node):
+        return True
+    return not bool(tree.children_ids(node.id))
+
+
 def _extract_artifacts_from_instruction(text: str) -> Tuple[List[str], List[str]]:
     """Extract file references from instruction text using regex + keyword heuristics."""
     if not text:
@@ -862,6 +885,8 @@ def _check_readiness_impl(
     producer_map: Dict[str, int] = {}
     for other_node in tree.iter_nodes():
         if other_node.id == node.id:
+            continue
+        if not _can_infer_artifact_publishes(other_node, tree):
             continue
         try:
             _, publishes = _extract_artifacts_for_node(other_node)

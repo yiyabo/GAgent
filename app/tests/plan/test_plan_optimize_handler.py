@@ -11,10 +11,15 @@ class _OptimizeRepoStub:
         self.created_tasks = []
         self.updated_tasks = []
         self.upsert_notes = []
+        self.metadata_updates = []
 
     def get_plan_tree(self, plan_id: int) -> PlanTree:
         assert plan_id == self.tree.id
         return self.tree
+
+    def get_node(self, plan_id: int, task_id: int) -> PlanNode | None:
+        assert plan_id == self.tree.id
+        return self.tree.nodes.get(task_id)
 
     def create_task(
         self,
@@ -68,6 +73,11 @@ class _OptimizeRepoStub:
         self.tree = tree
         self.upsert_notes.append(note)
 
+    def update_plan_metadata(self, plan_id: int, metadata) -> None:
+        assert plan_id == self.tree.id
+        self.tree.metadata.update(dict(metadata or {}))
+        self.metadata_updates.append(dict(metadata or {}))
+
 
 def _build_tree() -> PlanTree:
     root = PlanNode(
@@ -88,6 +98,7 @@ def _build_tree() -> PlanTree:
         id=1,
         title="Demo Plan",
         description="Original description",
+        metadata={"plan_generation": {"decomposition_status": "completed"}},
         nodes=nodes,
     )
     tree.rebuild_adjacency()
@@ -252,3 +263,70 @@ def test_explicit_optimize_skips_live_evaluation_when_no_cached_review(monkeypat
         f"evaluate_plan_rubric was called {len(evaluator_calls)} time(s) "
         f"but should not be called when skip_evaluation=True"
     )
+
+
+def test_optimize_materializes_executable_root_description(monkeypatch) -> None:
+    repo = _OptimizeRepoStub(_build_tree())
+    monkeypatch.setattr("app.repository.plan_repository.PlanRepository", lambda: repo)
+    _stub_optimize_reviews(monkeypatch)
+
+    executable_description = (
+        "从PhageScope数据集提取噬菌体基因组序列和宿主标签。"
+        "使用k-mer (k=6) 和基因组特征作为输入特征。"
+        "输出：特征矩阵.npy和标签.npy"
+    )
+
+    result = asyncio.run(
+        _optimize_plan(
+            1,
+            [
+                {
+                    "action": "update_description",
+                    "description": executable_description,
+                }
+            ],
+        )
+    )
+
+    materialized = [
+        change
+        for change in result["changes_detail"]["applied"]
+        if change.get("action") == "materialize_root_executable_step"
+    ]
+    assert result["success"] is True
+    assert materialized
+    created = repo.created_tasks[-1]
+    assert created.parent_id == 1
+    assert created.instruction == executable_description
+    assert created.metadata["source"] == "root_executable_materialization"
+    assert "特征矩阵.npy" in created.instruction
+
+
+def test_optimize_does_not_duplicate_existing_child_for_root_outputs(monkeypatch) -> None:
+    tree = _build_tree()
+    tree.nodes[2].name = "数据准备与特征提取"
+    tree.nodes[2].instruction = "提取k-mer特征并输出：特征矩阵.npy和标签.npy"
+    repo = _OptimizeRepoStub(tree)
+    monkeypatch.setattr("app.repository.plan_repository.PlanRepository", lambda: repo)
+    _stub_optimize_reviews(monkeypatch)
+
+    result = asyncio.run(
+        _optimize_plan(
+            1,
+            [
+                {
+                    "action": "update_description",
+                    "description": "提取k-mer特征并输出：特征矩阵.npy和标签.npy",
+                }
+            ],
+        )
+    )
+
+    materialized = [
+        change
+        for change in result["changes_detail"]["applied"]
+        if change.get("action") == "materialize_root_executable_step"
+    ]
+    assert result["success"] is True
+    assert not materialized
+    assert repo.created_tasks == []

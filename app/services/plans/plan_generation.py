@@ -701,7 +701,7 @@ async def ensure_plan_generation_ready(
 
     tree = repo.get_plan_tree(plan_id)
     status = _plan_generation_status(tree)
-    if status == "completed":
+    if status in {"completed", "skipped_seeded"}:
         return PlanGenerationOutcome(
             plan_tree=tree,
             root_task_id=None,

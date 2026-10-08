@@ -8,7 +8,7 @@ from app.config.decomposer_config import DecomposerSettings
 from app.repository.plan_repository import PlanRepository
 from app.services.plans.artifact_preflight import ArtifactPreflightIssue, ArtifactPreflightResult
 from app.services.plans.plan_decomposer import PlanDecomposer
-from app.services.plans.plan_generation import create_plan_and_generate
+from app.services.plans.plan_generation import create_plan_and_generate, ensure_plan_generation_ready
 from app.services.plans.plan_models import PlanNode, PlanTree
 from app.services.llm.structured_response import LLMAction
 from app.services.plans.plan_rubric_evaluator import PlanRubricResult
@@ -463,6 +463,20 @@ def test_create_plan_and_generate_skips_decomposition_for_seeded_plan(monkeypatc
     assert outcome.auto_review["status"] == "completed"
     assert outcome.seeded_tasks[0].metadata["source"] == "phagescope_research_seed_plan"
     assert outcome.seeded_tasks[1].dependencies == [outcome.seeded_tasks[0].id]
+
+    ready = asyncio.run(
+        ensure_plan_generation_ready(
+            plan_id=outcome.plan_tree.id,
+            repo=repo,
+            decomposer=_FailingDecomposerStub(),
+            session_context={"session_id": "strict-seed-review"},
+        )
+    )
+
+    assert ready.decomposition is None
+    assert ready.decomposition_status == "skipped_seeded"
+    assert ready.plan_tree.node_count() == 3
+    assert ready.auto_completed_generation is False
 
 
 def test_review_plan_ensures_generation_ready_before_scoring(monkeypatch) -> None:

@@ -109,13 +109,31 @@ def _build_phagescope_research_seed_tasks(goal: Any) -> List[Dict[str, Any]]:
         {
             "name": "Task 5: Generate figures and result tables",
             "instruction": (
-                "Generate publication-ready class distribution, model comparison, top-k performance, and confusion "
-                "or error-analysis figures/tables. Save at least four figures or tables plus figure_manifest.json."
+                "Generate a flexible publication-quality figure set, not default matplotlib screenshots. Choose chart types "
+                "adaptively from the available data, but the set must support the paper argument: dataset/split design, "
+                "held-out model performance, generalization or class-imbalance interpretation, and candidate-ranking/top-k "
+                "utility when top-k data are available. Prefer multi-panel paper figures, restrained typography, consistent "
+                "low-saturation colors, direct labels, and minimal chartjunk. Save PNG figures under figures/, SVG or PDF "
+                "vector companions when possible, source tables under results/ (including model_comparison.csv, split_statistics.csv, "
+                "and topk_performance.csv if top-k curves are drawn), and a rich figure_manifest.json. Each manifest figure entry "
+                "should include filename/path, chart_type, caption/title, source_data/source_csv, argument or interpretation, "
+                "and available formats. Do not hard-code this exact four-figure prototype if the data support a better design."
             ),
             "criteria": [
                 {"type": "glob_count_at_least", "path": "figures/*.png", "count": 3},
                 {"type": "file_nonempty", "path": "results/model_comparison.csv"},
+                {"type": "file_nonempty", "path": "results/split_statistics.csv"},
                 {"type": "file_nonempty", "path": "figure_manifest.json"},
+                {
+                    "type": "figure_manifest_quality",
+                    "path": "figure_manifest.json",
+                    "min_figures": 3,
+                    "min_tables": 2,
+                    "require_source_data": True,
+                    "require_captions": True,
+                    "require_arguments": True,
+                    "hard": True,
+                },
             ],
         },
         {
@@ -135,9 +153,14 @@ def _build_phagescope_research_seed_tasks(goal: Any) -> List[Dict[str, Any]]:
                 f"Write {output_md} as the primary publishable-paper-quality manuscript in Markdown before any PDF rendering. "
                 "Use a MESM/BMC Biology-style structure: structured abstract, long Background, multi-subsection Results, "
                 "Discussion, Conclusions, Methods, and Evidence boundary. The Results must integrate figure/table callouts "
+                "with at least three third-level Results subsections (for example ### Dataset and split audit, "
+                "### Baseline and ablation performance, ### Error patterns and top-k utility). Mention Table 1 and Table 2 "
+                "explicitly in prose and include compact Markdown tables for model metrics and split statistics. "
                 "with long-form analysis, include feature-leakage or ablation analysis, class-wise/error analysis, class "
                 "imbalance interpretation, split leakage controls, metrics, limitations, and reproducibility. Avoid report-style "
-                "bullet lists; write prose-first paragraphs. PDF is a later rendering target, not the source manuscript."
+                "bullet lists and numbered outlines; write prose-first paragraphs. Embed the generated PNG figures using Markdown image syntax "
+                "such as ![Figure 1 ...](figures/class_distribution.png) or the correct relative image_tabular path, so "
+                "readers see plots directly in Markdown preview. PDF is a later rendering target, not the source manuscript."
             ),
             "criteria": [
                 {"type": "file_nonempty", "path": output_md},
@@ -149,6 +172,7 @@ def _build_phagescope_research_seed_tasks(goal: Any) -> List[Dict[str, Any]]:
                     "min_long_paragraphs": 8,
                     "max_bullet_ratio": 0.12,
                     "min_figure_callouts": 4,
+                    "min_embedded_figures": 3,
                     "min_table_callouts": 2,
                     "min_results_subsections": 3,
                     "required_terms": [
@@ -195,6 +219,7 @@ def _build_phagescope_research_seed_tasks(goal: Any) -> List[Dict[str, Any]]:
                     "min_long_paragraphs": 8,
                     "max_bullet_ratio": 0.12,
                     "min_figure_callouts": 4,
+                    "min_embedded_figures": 3,
                     "min_table_callouts": 2,
                     "min_results_subsections": 3,
                     "required_terms": ["Results", "Discussion", "Methods", "ablation", "class-wise", "Evidence boundary"],

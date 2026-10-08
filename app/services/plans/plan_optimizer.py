@@ -3,9 +3,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from app.llm import LLMClient, usage_context_override
 from app.repository.plan_repository import PlanRepository
@@ -26,6 +27,21 @@ DEFAULT_AUTO_OPTIMIZE_DIMENSION_THRESHOLD = 70.0
 DEFAULT_AUTO_OPTIMIZE_MAX_CHANGES = 8
 DEFAULT_OPTIMIZER_PROVIDER = "qwen"
 DEFAULT_OPTIMIZER_MODEL = "qwen3.7-max"
+
+_EXECUTABLE_OUTPUT_RE = re.compile(
+    r"(?:输出|生成|保存|produce|generate|save|write|export).{0,120}"
+    r"(?:\.npy|\.npz|\.pth|\.pt|\.pkl|\.json|\.csv|\.tsv|\.txt|\.md|\.png|\.pdf|矩阵|标签|模型|报告)",
+    flags=re.IGNORECASE | re.DOTALL,
+)
+_EXECUTABLE_ACTION_RE = re.compile(
+    r"(?:提取|训练|评估|划分|生成|构建|保存|输出|extract|train|evaluate|split|build|generate|save|produce)",
+    flags=re.IGNORECASE,
+)
+_OUTPUT_TOKEN_RE = re.compile(
+    r"[A-Za-z0-9_./-]+\.(?:npy|npz|pth|pt|pkl|json|csv|tsv|txt|md|png|pdf)"
+    r"|(?:特征矩阵|标签|模型文件|训练历史|评估报告|混淆矩阵)",
+    flags=re.IGNORECASE,
+)
 
 _ALLOWED_AUTO_ACTIONS = frozenset(
     {
@@ -167,6 +183,105 @@ def _root_task_id(tree: PlanTree) -> Optional[int]:
         if node.parent_id is None:
             return node.id
     return None
+
+
+def _is_root_node(node: Any) -> bool:
+    metadata = getattr(node, "metadata", None)
+    return (
+        getattr(node, "parent_id", None) is None
+        or (isinstance(metadata, dict) and (metadata.get("is_root") is True or metadata.get("task_type") == "root"))
+    )
+
+
+def _instruction_contains_executable_outputs(text: Any) -> bool:
+    instruction = str(text or "").strip()
+    if not instruction:
+        return False
+    return bool(_EXECUTABLE_OUTPUT_RE.search(instruction) and _EXECUTABLE_ACTION_RE.search(instruction))
+
+
+def _output_tokens(text: Any) -> List[str]:
+    instruction = str(text or "")
+    tokens: List[str] = []
+    for match in _OUTPUT_TOKEN_RE.finditer(instruction):
+        token = match.group(0).strip().lower()
+        if token and token not in tokens:
+            tokens.append(token)
+    return tokens
+
+
+def _child_covers_root_executable_instruction(root_instruction: str, children: Sequence[Any]) -> bool:
+    root_tokens = _output_tokens(root_instruction)
+    if not root_tokens:
+        return False
+    for child in children:
+        child_text = f"{getattr(child, 'name', '')}\n{getattr(child, 'instruction', '')}".lower()
+        if all(token in child_text for token in root_tokens[:4]):
+            return True
+        if any(token in child_text for token in root_tokens) and _EXECUTABLE_ACTION_RE.search(child_text):
+            return True
+    return False
+
+
+def materialize_root_executable_steps(plan_id: int, repo: Any) -> List[Dict[str, Any]]:
+    """Ensure deliverable-producing root instructions also exist as child tasks.
+
+    Root nodes are containers in the execution UI. If optimization rewrites a root
+    instruction into an executable step (e.g. "extract k-mer features; output
+    features.npy and labels.npy"), downstream tasks can silently miss that output.
+    This guard creates a pending child task that carries the executable instruction.
+    """
+    tree = repo.get_plan_tree(plan_id)
+    tree.rebuild_adjacency()
+    applied: List[Dict[str, Any]] = []
+    for root in list(tree.nodes.values()):
+        if not _is_root_node(root):
+            continue
+        instruction = str(root.instruction or "").strip()
+        if not _instruction_contains_executable_outputs(instruction):
+            continue
+        children = [tree.nodes[child_id] for child_id in tree.children_ids(root.id) if child_id in tree.nodes]
+        if _child_covers_root_executable_instruction(instruction, children):
+            continue
+        task_name = str(root.name or "").strip() or "Root executable step"
+        if not task_name.lower().startswith(("execute ", "执行")):
+            task_name = f"执行：{task_name}"
+        metadata = {
+            "task_type": "composite",
+            "source": "root_executable_materialization",
+            "root_task_id": root.id,
+        }
+        try:
+            node = repo.create_task(
+                plan_id,
+                name=task_name,
+                status="pending",
+                instruction=instruction,
+                parent_id=root.id,
+                dependencies=[],
+                metadata=metadata,
+                position=0,
+            )
+        except TypeError:
+            node = repo.create_task(
+                plan_id,
+                name=task_name,
+                status="pending",
+                instruction=instruction,
+                parent_id=root.id,
+                dependencies=[],
+            )
+        applied.append(
+            {
+                "action": "materialize_root_executable_step",
+                "task_id": getattr(node, "id", None),
+                "root_task_id": root.id,
+                "name": getattr(node, "name", task_name),
+            }
+        )
+        tree = repo.get_plan_tree(plan_id)
+        tree.rebuild_adjacency()
+    return applied
 
 
 def _as_float(value: Any) -> Optional[float]:
@@ -369,6 +484,7 @@ def _build_plan_optimizer_prompt(
             "- For update_task, include only fields that should change. Provide concrete, actionable improvements.",
             "- For add_task, only add tasks that fill genuine gaps (e.g., missing validation steps, missing data preprocessing). Provide a concrete executable instruction and choose a parent_id.",
             "- If the current plan description is vague, use update_description to make it more explicit and execution-ready.",
+            "- Do NOT put deliverable-producing work only in the root/description. If a root-level goal requires outputs (e.g. .npy, .json, model files), add or update a non-root child task that performs that work.",
             "- If no meaningful optimization is needed, return an empty changes array and explain why in summary.",
             "",
             "=== JSON SCHEMA ===",
@@ -901,6 +1017,9 @@ async def auto_optimize_plan(
             summary="No optimization changes could be applied.",
             optimization_needed=True,
         )
+    materialized_changes = materialize_root_executable_steps(plan_id, repo)
+    if materialized_changes:
+        applied_changes = [*applied_changes, *materialized_changes]
     # Reindex positions after bulk changes to keep them contiguous.
     try:
         repo.reindex_all_positions(plan_id)

@@ -248,6 +248,15 @@ class _CheckMethods:
                     if fallback:
                         path = fallback
                 return self._manuscript_markdown_quality_result(path, raw_check)
+            if check_type == "figure_manifest_quality":
+                if not self._has_nonempty_string(raw_check.get("path")):
+                    return self._verification_config_error(check_type, "Check is missing a valid `path`.")
+                path = self._select_path_for_check(raw_check.get("path"), base_dir, artifact_paths, mode="exists")
+                if not path.exists() and artifact_paths:
+                    fallback = self._fallback_artifact_match(path, artifact_paths, lenient=False)
+                    if fallback:
+                        path = fallback
+                return self._figure_manifest_quality_result(path, raw_check)
         except Exception as exc:
             logger.warning("Verification check %s failed with exception: %s", check_type, exc)
             return {
@@ -629,6 +638,7 @@ class _CheckMethods:
         raw_max_bullet_ratio = raw_check.get("max_bullet_ratio")
         max_bullet_ratio = float(raw_max_bullet_ratio if raw_max_bullet_ratio is not None else 1.0)
         min_figure_callouts = int(raw_check.get("min_figure_callouts") or 0)
+        min_embedded_figures = int(raw_check.get("min_embedded_figures") or 0)
         min_table_callouts = int(raw_check.get("min_table_callouts") or 0)
         min_results_subsections = int(raw_check.get("min_results_subsections") or 0)
         required_terms = raw_check.get("required_terms") or []
@@ -652,6 +662,7 @@ class _CheckMethods:
             text,
             flags=re.IGNORECASE,
         )
+        embedded_figures = re.findall(r"!\[[^\]]*\]\([^\)]*\)", text)
         table_callouts = re.findall(
             r"\btable\s*\d+|^\|.+\|$",
             text,
@@ -679,6 +690,8 @@ class _CheckMethods:
             failures.append(f"bullet_ratio {bullet_ratio:.3f} > {max_bullet_ratio:.3f}")
         if len(figure_callouts) < min_figure_callouts:
             failures.append(f"figure_callouts {len(figure_callouts)} < {min_figure_callouts}")
+        if len(embedded_figures) < min_embedded_figures:
+            failures.append(f"embedded_figures {len(embedded_figures)} < {min_embedded_figures}")
         if len(table_callouts) < min_table_callouts:
             failures.append(f"table_callouts {len(table_callouts)} < {min_table_callouts}")
         if results_subsections < min_results_subsections:
@@ -698,8 +711,117 @@ class _CheckMethods:
                 "long_paragraphs": len(long_paragraphs),
                 "bullet_ratio": round(bullet_ratio, 4),
                 "figure_callouts": len(figure_callouts),
+                "embedded_figures": len(embedded_figures),
                 "table_callouts": len(table_callouts),
                 "results_subsections": results_subsections,
                 "missing_terms": missing_terms,
+            },
+        )
+
+    @staticmethod
+    def _figure_manifest_quality_result(path: Path, raw_check: Dict[str, Any]) -> Dict[str, Any]:
+        TaskVerificationService = _facade().TaskVerificationService
+        if not path.exists() or not path.is_file() or path.stat().st_size <= 0:
+            return TaskVerificationService._check_result(
+                "figure_manifest_quality",
+                False,
+                path=path,
+                message="Figure manifest is missing or empty.",
+            )
+
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        figures = payload.get("figures") if isinstance(payload, dict) else None
+        tables = payload.get("tables") if isinstance(payload, dict) else None
+        metadata = payload.get("metadata") if isinstance(payload, dict) else None
+        quality = payload.get("figure_manifest_quality") if isinstance(payload, dict) else None
+        if not isinstance(figures, list):
+            figures = []
+        if not isinstance(tables, list):
+            tables = []
+        if not isinstance(metadata, dict):
+            metadata = {}
+        if not isinstance(quality, dict):
+            quality = {}
+
+        min_figures = int(raw_check.get("min_figures") or 0)
+        min_tables = int(raw_check.get("min_tables") or 0)
+        require_source_data = bool(raw_check.get("require_source_data", True))
+        require_captions = bool(raw_check.get("require_captions", True))
+        require_arguments = bool(raw_check.get("require_arguments", True))
+        require_formats = raw_check.get("require_formats") or []
+        if isinstance(require_formats, str):
+            require_formats = [item.strip() for item in require_formats.split(",") if item.strip()]
+        require_manifest_metadata = bool(raw_check.get("require_manifest_metadata", True))
+
+        failures: List[str] = []
+        if len(figures) < min_figures:
+            failures.append(f"figures {len(figures)} < {min_figures}")
+        if len(tables) < min_tables:
+            failures.append(f"tables {len(tables)} < {min_tables}")
+        manifest_descriptors = [
+            metadata.get(key)
+            for key in ("description", "design_system", "style", "generated_on")
+        ]
+        manifest_descriptors.extend(
+            payload.get(key)
+            for key in ("description", "design_system", "style", "generated_on")
+            if isinstance(payload, dict)
+        )
+        if quality.get("meets_requirements") is True:
+            manifest_descriptors.append("figure_manifest_quality.meets_requirements")
+        if require_manifest_metadata and not any(str(item or "").strip() for item in manifest_descriptors):
+            failures.append("manifest metadata must describe the figure set or design system")
+
+        missing_source_data = 0
+        missing_captions = 0
+        missing_arguments = 0
+        missing_formats = 0
+        required_format_set = {str(item).strip().lower().lstrip(".") for item in require_formats if str(item).strip()}
+        for entry in figures:
+            if not isinstance(entry, dict):
+                missing_source_data += 1
+                missing_captions += 1
+                missing_arguments += 1
+                missing_formats += 1 if required_format_set else 0
+                continue
+            if require_source_data and not any(entry.get(key) for key in ("source_data", "source_table", "data", "source_csv")):
+                missing_source_data += 1
+            if require_captions and not str(entry.get("caption") or entry.get("title") or entry.get("description") or "").strip():
+                missing_captions += 1
+            if require_arguments and not str(entry.get("argument") or entry.get("interpretation") or entry.get("purpose") or entry.get("description") or "").strip():
+                missing_arguments += 1
+            if required_format_set:
+                formats = entry.get("formats") or entry.get("outputs") or []
+                if isinstance(formats, str):
+                    formats = [formats]
+                normalized_formats = {str(item).strip().lower().lstrip(".") for item in formats if str(item).strip()}
+                path_suffix = Path(str(entry.get("path") or entry.get("filename") or "")).suffix.lower().lstrip(".")
+                if path_suffix:
+                    normalized_formats.add(path_suffix)
+                if not required_format_set.issubset(normalized_formats):
+                    missing_formats += 1
+
+        if missing_source_data:
+            failures.append(f"figures missing source data links: {missing_source_data}")
+        if missing_captions:
+            failures.append(f"figures missing captions/titles: {missing_captions}")
+        if missing_arguments:
+            failures.append(f"figures missing purpose/interpretation: {missing_arguments}")
+        if missing_formats:
+            failures.append(f"figures missing required formats {sorted(required_format_set)}: {missing_formats}")
+
+        success = not failures
+        return TaskVerificationService._check_result(
+            "figure_manifest_quality",
+            success,
+            path=path,
+            message=None if success else "; ".join(failures),
+            extra={
+                "figures": len(figures),
+                "tables": len(tables),
+                "missing_source_data": missing_source_data,
+                "missing_captions": missing_captions,
+                "missing_arguments": missing_arguments,
+                "missing_formats": missing_formats,
             },
         )

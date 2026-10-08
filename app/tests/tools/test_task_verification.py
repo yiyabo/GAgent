@@ -3976,3 +3976,274 @@ class TestFallbackOutputDiscovery:
         assert finalization.verification.get("status") != "skipped"
         assert len(finalization.artifact_paths) > 0
         assert any("report.md" in p for p in finalization.artifact_paths)
+
+
+def test_figure_manifest_quality_accepts_flexible_rich_manifest(tmp_path):
+    manifest = tmp_path / "figure_manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "metadata": {
+                    "description": "Publication-style PhageScope figure set",
+                    "design_system": "low-saturation paper figures with source tables",
+                },
+                "figures": [
+                    {
+                        "filename": "figure1_dataset_split_overview.png",
+                        "path": "figures/figure1_dataset_split_overview.png",
+                        "chart_type": "multi_panel_split_overview",
+                        "caption": "Dataset partitioning and host-genus coverage.",
+                        "source_csv": "results/split_statistics.csv",
+                        "argument": "All splits preserve host-genus coverage under leakage-aware partitioning.",
+                        "formats": ["png", "svg"],
+                    },
+                    {
+                        "filename": "figure2_performance_matrix.png",
+                        "path": "figures/figure2_performance_matrix.png",
+                        "chart_type": "heatmap",
+                        "caption": "Held-out performance matrix.",
+                        "source_data": "results/model_comparison.csv",
+                        "interpretation": "Macro-F1 collapse exposes long-tail class imbalance.",
+                        "formats": ["png", "svg"],
+                    },
+                    {
+                        "filename": "figure3_generalization_gap.png",
+                        "path": "figures/figure3_generalization_gap.png",
+                        "chart_type": "gap_bar",
+                        "title": "Generalization loss",
+                        "source_table": "results/model_comparison.csv",
+                        "purpose": "Quantify train-to-test degradation without prescribing a fixed chart template.",
+                        "formats": ["png"],
+                    },
+                ],
+                "tables": [
+                    {"filename": "model_comparison.csv", "path": "results/model_comparison.csv"},
+                    {"filename": "split_statistics.csv", "path": "results/split_statistics.csv"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    verifier = TaskVerificationService()
+    node = PlanNode(
+        id=6,
+        plan_id=85,
+        name="Generate figures and result tables",
+        metadata={
+            "acceptance_criteria": {
+                "category": "file_data",
+                "blocking": True,
+                "checks": [
+                    {
+                        "type": "figure_manifest_quality",
+                        "path": "figure_manifest.json",
+                        "min_figures": 3,
+                        "min_tables": 2,
+                        "require_source_data": True,
+                        "require_captions": True,
+                        "require_arguments": True,
+                    }
+                ],
+            }
+        },
+    )
+
+    finalization = verifier.finalize_payload(
+        node,
+        {"status": "completed", "metadata": {"run_directory": str(tmp_path), "artifact_paths": [str(manifest)]}},
+        execution_status="completed",
+    )
+
+    assert finalization.final_status == "completed"
+    assert finalization.verification is not None
+    assert finalization.verification["status"] == "passed"
+    assert finalization.verification["checks_passed"] == 1
+
+
+def test_figure_manifest_quality_accepts_top_level_description_manifest(tmp_path):
+    manifest = tmp_path / "figure_manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "description": "Publication figure set for PhageScope model and dataset diagnostics.",
+                "figures": [
+                    {
+                        "filename": "model_performance_comparison.png",
+                        "description": "Bar charts comparing model metrics.",
+                        "source_data": "model_comparison.csv",
+                        "arguments": {"figsize": [15, 5], "dpi": 300},
+                    },
+                    {
+                        "filename": "topk_accuracy_curves.png",
+                        "description": "Top-k accuracy curves for ensemble models.",
+                        "source_data": "topk_accuracy.csv",
+                        "arguments": {"figsize": [10, 6], "dpi": 300},
+                    },
+                    {
+                        "filename": "class_distribution_histogram.png",
+                        "description": "Host-genus class imbalance overview.",
+                        "source_data": "class_distribution.csv",
+                        "arguments": {"figsize": [12, 6], "dpi": 300},
+                    },
+                ],
+                "tables": [
+                    {"filename": "model_comparison.csv", "description": "Model metrics."},
+                    {"filename": "split_statistics.csv", "description": "Split counts."},
+                ],
+                "figure_manifest_quality": {"meets_requirements": True},
+            }
+        ),
+        encoding="utf-8",
+    )
+    verifier = TaskVerificationService()
+    node = PlanNode(
+        id=6,
+        plan_id=89,
+        name="Generate figures and result tables",
+        metadata={
+            "acceptance_criteria": {
+                "category": "file_data",
+                "blocking": True,
+                "checks": [
+                    {
+                        "type": "figure_manifest_quality",
+                        "path": "figure_manifest.json",
+                        "min_figures": 3,
+                        "min_tables": 2,
+                        "require_source_data": True,
+                        "require_captions": True,
+                        "require_arguments": True,
+                    }
+                ],
+            }
+        },
+    )
+
+    finalization = verifier.finalize_payload(
+        node,
+        {"status": "completed", "metadata": {"run_directory": str(tmp_path), "artifact_paths": [str(manifest)]}},
+        execution_status="completed",
+    )
+
+    assert finalization.final_status == "completed"
+    assert finalization.verification is not None
+    assert finalization.verification["status"] == "passed"
+
+
+def test_figure_manifest_quality_rejects_bare_file_list(tmp_path):
+    manifest = tmp_path / "figure_manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "figures": [
+                    {"filename": "class_distribution.png", "path": "figures/class_distribution.png"},
+                    {"filename": "model_accuracy_comparison.png", "path": "figures/model_accuracy_comparison.png"},
+                    {"filename": "topk_performance.png", "path": "figures/topk_performance.png"},
+                ],
+                "tables": [{"filename": "model_comparison.csv", "path": "results/model_comparison.csv"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    verifier = TaskVerificationService()
+    node = PlanNode(
+        id=6,
+        plan_id=85,
+        name="Generate figures and result tables",
+        metadata={
+            "acceptance_criteria": {
+                "category": "file_data",
+                "blocking": True,
+                "checks": [
+                    {
+                        "type": "figure_manifest_quality",
+                        "path": "figure_manifest.json",
+                        "min_figures": 3,
+                        "min_tables": 2,
+                        "require_source_data": True,
+                        "require_captions": True,
+                        "require_arguments": True,
+                        "hard": True,
+                    }
+                ],
+            }
+        },
+    )
+
+    finalization = verifier.finalize_payload(
+        node,
+        {"status": "completed", "metadata": {"run_directory": str(tmp_path), "artifact_paths": [str(manifest)]}},
+        execution_status="completed",
+    )
+
+    assert finalization.final_status == "failed"
+    assert finalization.verification is not None
+    assert finalization.verification["status"] == "failed"
+    failure = finalization.verification["failures"][0]
+    assert failure["type"] == "figure_manifest_quality"
+    assert "source data" in failure["message"]
+    assert "captions" in failure["message"]
+
+
+def test_manuscript_markdown_quality_rejects_textual_figures_without_embeds(tmp_path):
+    manuscript = tmp_path / "manuscript.md"
+    long_para = (
+        "This manuscript-like paragraph interprets the experiment with enough prose to satisfy the length gate. "
+        "It mentions leakage controls, ablation design, class-wise behavior, Results, Discussion, Methods, and "
+        "Evidence boundary while deliberately omitting image embeds. "
+    ) * 4
+    manuscript.write_text(
+        "\n\n".join(
+            [
+                "# Manuscript without embedded plots",
+                "## Background\n\n" + long_para,
+                "## Results\n\n### Benchmark construction\n\n" + long_para + "\n\nFigure 1 shows the data and Table 1 summarizes splits.",
+                "### Ablation analysis\n\n" + long_para + "\n\nFigure 2 compares leakage controls.",
+                "### Class-wise analysis\n\n" + long_para + "\n\nFigure 3 and Table 2 report class-wise behavior.",
+                "## Discussion\n\n" + long_para,
+                "## Methods\n\n" + long_para,
+                "## Evidence boundary\n\n" + long_para,
+            ]
+        ),
+        encoding="utf-8",
+    )
+    verifier = TaskVerificationService()
+    node = PlanNode(
+        id=7,
+        plan_id=85,
+        name="Draft manuscript",
+        metadata={
+            "acceptance_criteria": {
+                "category": "file_data",
+                "blocking": True,
+                "checks": [
+                    {
+                        "type": "manuscript_markdown_quality",
+                        "path": "manuscript.md",
+                        "min_text_chars": 4000,
+                        "min_sections": 6,
+                        "min_long_paragraphs": 5,
+                        "max_bullet_ratio": 0.12,
+                        "min_figure_callouts": 3,
+                        "min_embedded_figures": 3,
+                        "min_table_callouts": 2,
+                        "min_results_subsections": 3,
+                        "required_terms": ["Results", "Discussion", "Methods", "ablation", "class-wise", "Evidence boundary"],
+                    }
+                ],
+            }
+        },
+    )
+
+    finalization = verifier.finalize_payload(
+        node,
+        {"status": "completed", "metadata": {"run_directory": str(tmp_path), "artifact_paths": [str(manuscript)]}},
+        execution_status="completed",
+    )
+
+    assert finalization.final_status == "failed"
+    assert finalization.verification is not None
+    assert finalization.verification["status"] == "failed"
+    failure = finalization.verification["failures"][0]
+    assert failure["type"] == "manuscript_markdown_quality"
+    assert "embedded_figures" in failure["message"]
