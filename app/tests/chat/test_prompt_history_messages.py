@@ -89,6 +89,7 @@ def test_extract_history_messages_brief_followup_policy() -> None:
     context = _ctx(
         history,
         request_tier="execute",
+        intent_type="execute_task",
         brevity_hint=True,
     )
     messages = _extract_history_messages(context)

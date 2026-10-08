@@ -271,8 +271,9 @@ class TestFeatureFlag:
         decision = resolve_request_routing(message="你好呀")
         assert decision.request_tier == "standard"
 
-    def test_research_cue_still_routes_to_research_tier(self) -> None:
-        """Research keywords must still route to research request_tier."""
+    def test_research_cue_still_routes_to_research_tier(self, monkeypatch) -> None:
+        """Research keywords must still route to research request_tier (legacy mode)."""
+        monkeypatch.setenv("TIER_FLATTEN_ENABLED", "0")
         from app.routers.chat.request_routing import resolve_request_routing
 
         # Phase 2: resolve_intent_type no longer returns "research";

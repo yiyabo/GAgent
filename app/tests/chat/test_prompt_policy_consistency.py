@@ -45,7 +45,8 @@ def _build_deep_think_agent(request_profile: dict[str, Any] | None = None) -> De
     )
 
 
-def test_deep_think_research_tier_requires_reading_fetched_literature_artifacts() -> None:
+def test_deep_think_research_tier_requires_reading_fetched_literature_artifacts(monkeypatch) -> None:
+    monkeypatch.setenv("TIER_FLATTEN_ENABLED", "0")
     agent = _build_deep_think_agent({"request_tier": "research"})
     native_prompt = agent._build_native_system_prompt()
     legacy_prompt = agent._build_system_prompt()
@@ -62,7 +63,8 @@ def test_deep_think_research_tier_requires_reading_fetched_literature_artifacts(
     assert "never invent findings to fill a gap" in native_prompt
 
 
-def test_deep_think_non_research_tiers_do_not_get_literature_reading_rule() -> None:
+def test_deep_think_non_research_tiers_do_not_get_literature_reading_rule(monkeypatch) -> None:
+    monkeypatch.setenv("TIER_FLATTEN_ENABLED", "0")
     standard_agent = _build_deep_think_agent({"request_tier": "standard"})
     execute_agent = _build_deep_think_agent({"request_tier": "execute", "intent_type": "execute_task"})
 
@@ -469,7 +471,8 @@ def test_execute_tier_prompt_warns_against_progress_recaps_for_brief_followups()
         assert "continue from that anchor instead of restarting broad workspace discovery" in prompt
 
 
-def test_execute_tier_prompt_enforces_execute_or_blocked_dependency() -> None:
+def test_execute_tier_prompt_enforces_execute_or_blocked_dependency(monkeypatch) -> None:
+    monkeypatch.setenv("TIER_FLATTEN_ENABLED", "0")
     agent = DeepThinkAgent(
         llm_client=SimpleNamespace(),
         available_tools=["file_operations", "document_reader", "code_executor"],
@@ -486,6 +489,37 @@ def test_execute_tier_prompt_enforces_execute_or_blocked_dependency() -> None:
     for prompt in (native_prompt, legacy_prompt):
         assert "After one observation-only cycle, move to real execution or report BLOCKED_DEPENDENCY" in prompt
         assert "Do not silently rewrite the current task into an upstream preprocessing task" in prompt
+
+
+def test_flat_mode_unified_efficiency_contract(monkeypatch) -> None:
+    monkeypatch.setenv("TIER_FLATTEN_ENABLED", "1")
+
+    chat_agent = _build_deep_think_agent({"request_tier": "standard", "intent_type": "chat"})
+    task_agent = _build_deep_think_agent({"request_tier": "standard", "intent_type": "execute_task"})
+
+    for agent in (chat_agent, task_agent):
+        native_prompt = agent._build_native_system_prompt()
+        assert "=== EFFICIENCY CONTRACT ===" in native_prompt
+        assert "Be targeted and efficient" in native_prompt
+        assert "small, direct fixes" in native_prompt
+        # The literature reading rule survives flattening for every turn.
+        assert "study_cards.jsonl" in native_prompt
+        assert "library.jsonl" in native_prompt
+        assert "never invent findings to fill a gap" in native_prompt
+        next_step = agent._get_next_step_prompt(1)
+        assert "study_cards.jsonl" in next_step
+
+    # execute_task intent keeps the probe-then-execute contract; chat does not.
+    task_native = task_agent._build_native_system_prompt()
+    assert "After one observation-only cycle, move to real execution or report BLOCKED_DEPENDENCY" in task_native
+    assert "Do not silently rewrite the current task into an upstream preprocessing task" in task_native
+    chat_native = chat_agent._build_native_system_prompt()
+    assert "After one observation-only cycle, move to real execution" not in chat_native
+    assert "Do not silently rewrite the current task into an upstream preprocessing task" not in chat_native
+
+    # Legacy tier vocabulary is gone in flat mode.
+    assert "=== REQUEST TIER:" not in chat_native
+    assert "=== REQUEST TIER:" not in task_native
 
 
 def test_brief_execute_continuation_summary_extracts_path_anchors_from_older_history() -> None:

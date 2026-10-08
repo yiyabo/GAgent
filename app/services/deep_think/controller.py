@@ -1379,11 +1379,9 @@ async def _native_no_tool_call_cycle(
         # any tool calls on a low-effort request, treat the content
         # as the final answer immediately instead of forcing
         # additional (empty) iterations + synthesis.
-        _tier_for_early_stop = agent._request_tier()
         _content_for_early_stop = (result.content or "").strip()
         if (
-            _tier_for_early_stop == "standard"
-            and _content_for_early_stop
+            _content_for_early_stop
             and len(_content_for_early_stop) >= 20
             and not agent._is_execute_task_request()
             and not agent._PROCESS_NARRATION_RE.match(_content_for_early_stop)
@@ -1397,9 +1395,8 @@ async def _native_no_tool_call_cycle(
             if agent.on_thinking:
                 await agent._safe_callback(current_step)
             logger.info(
-                "[DEEP_THINK_NATIVE] Early stop: tier=%s iteration=%s content_len=%d — "
+                "[DEEP_THINK_NATIVE] Early stop: iteration=%s content_len=%d — "
                 "treating direct text as final answer",
-                _tier_for_early_stop,
                 iteration,
                 len(_content_for_early_stop),
             )

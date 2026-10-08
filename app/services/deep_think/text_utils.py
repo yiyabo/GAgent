@@ -26,6 +26,17 @@ def _default_max_consecutive_llm_failures() -> int:
         return 5
 
 
+# Flat-loop mode (Hermes-pure): one thinking budget for every turn; loop depth
+# is the model's call, not the router's. Set TIER_FLATTEN_ENABLED=0 to restore
+# the legacy three-tier routing (standard/research/execute budgets + keyword
+# escalation). Shared by routers.chat.request_routing and the prompt family.
+_FLAT_THINKING_BUDGET = 8000
+
+
+def tier_flatten_enabled() -> bool:
+    return os.getenv("TIER_FLATTEN_ENABLED", "1").strip() != "0"
+
+
 # Model context-window table (prefix-matched; only confirmed values, extend
 # conservatively). Used to size the compaction budget relative to the model's
 # real window instead of the historical fixed 32k.

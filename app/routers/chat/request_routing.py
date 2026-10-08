@@ -29,6 +29,11 @@ ThinkingDisplayMode = Literal["full_thinking", "compact_progress", "final_answer
 IntentType = Literal["chat", "execute_task"]
 SubjectKind = Literal["none", "file", "directory", "workspace"]
 
+from app.services.deep_think.text_utils import (  # noqa: E402
+    _FLAT_THINKING_BUDGET,
+    tier_flatten_enabled as _tier_flatten_enabled,
+)
+
 
 @dataclass(frozen=True)
 class PlanLifecycleIntent:
@@ -1188,7 +1193,7 @@ def resolve_request_routing(
     if plan_intent.conflict_requires_confirmation:
         combined_reasons.append("plan_conflict_confirmation")
     if plan_intent.create_requested or plan_intent.review_requested or plan_intent.optimize_requested:
-        if request_tier != "execute":
+        if not _tier_flatten_enabled() and request_tier != "execute":
             request_tier = "execute"
             combined_reasons.append("tier_elevated_plan_lifecycle")
     if confidence < 0.5 and effective_plan_bound and "greeting_or_social" not in combined_reasons:
@@ -1208,7 +1213,7 @@ def resolve_request_routing(
             if llm_is_plan_mod and not plan_intent.optimize_requested:
                 combined_reasons.append("llm_detected_plan_modification")
     if plan_intent.execute_requested:
-        if request_tier != "execute":
+        if not _tier_flatten_enabled() and request_tier != "execute":
             request_tier = "execute"
             combined_reasons.append("tier_elevated_plan_execute")
         if intent_type == "chat":
@@ -1232,7 +1237,7 @@ def resolve_request_routing(
         if intent_type == "chat":
             intent_type = "execute_task"
             combined_reasons.append("intent_execute_task")
-        if request_tier != "execute":
+        if not _tier_flatten_enabled() and request_tier != "execute":
             request_tier = "execute"
             combined_reasons.append("tier_elevated_explicit_task")
 
@@ -1247,7 +1252,7 @@ def resolve_request_routing(
     )
     if _execution_keywords_detected:
         combined_reasons.append("plan_execution_hint")
-        if request_tier != "execute":
+        if not _tier_flatten_enabled() and request_tier != "execute":
             request_tier = "execute"
             combined_reasons.append("tier_elevated_full_plan")
         if intent_type == "chat":
@@ -1267,6 +1272,7 @@ def resolve_request_routing(
         )
         and not _directory_positively_lacks_phagescope_meta_data(subject_ref_raw)
         and request_tier == "standard"
+        and not _tier_flatten_enabled()
         and _contains_any_lowered(
             effective_user_message.lower(),
             (
@@ -1410,6 +1416,32 @@ def classify_request_tier(
     is_direct_followup = bool(recent_assistant_turn) and collapsed in _DIRECT_REQUEST_TOKENS
     if is_direct_followup:
         reasons.append("direct_followup")
+
+    if _tier_flatten_enabled():
+        # Flat mode: one budget for every turn; depth is the model's call, not
+        # the router's. Keep the structural reason codes (telemetry + intent
+        # resolution) but never escalate tiers. Confidence is pinned high so
+        # the caller never spends an LLM fallback call on tier classification.
+        # Pure social tokens still get the brevity marker; action requests are
+        # never greetings, even when they contain social phrasing.
+        is_greeting_flat = collapsed in {
+            _NON_WORD_RE.sub("", token.lower()) for token in _GREETING_TOKENS_EXACT
+        }
+        is_social_flat = _contains_any(lowered, _SOCIAL_PHRASES)
+        has_action_cue = (
+            intent_type == "execute_task"
+            or has_execute_keyword
+            or followthrough_implies_execute
+            or has_compound_image_action
+            or has_plan_request
+            or has_plan_review
+            or has_plan_optimize
+        )
+        reasons.append("tier_flattened")
+        if (is_greeting_flat or is_social_flat) and not has_action_cue:
+            reasons.append("greeting_or_social")
+            return "standard", reasons, True, 1.0
+        return "standard", reasons, is_direct_followup, 1.0
 
     # ── Tier decision ─────────────────────────────────────────────
     # 1. Execute tier: structural signals or keyword heuristics that
@@ -1680,6 +1712,18 @@ def build_request_tier_profile(
         plan_new_requested=decision.plan_new_requested,
         plan_conflict_requires_confirmation=decision.plan_conflict_requires_confirmation,
     )
+    if _tier_flatten_enabled():
+        # Flat mode: identical budget for every turn; the tier label stays
+        # "standard" (informational only — downstream behavior keys off
+        # intent_type, not the tier).
+        flat_cap = 10 if decision.plan_conflict_requires_confirmation else 100
+        return RequestTierProfile(
+            request_tier="standard",
+            thinking_budget=_FLAT_THINKING_BUDGET,
+            max_iterations=max(3, min(default_max_iterations, flat_cap)),
+            output_bias="task_completion",
+            **common,
+        )
     if decision.request_tier == "standard":
         return RequestTierProfile(
             request_tier="standard",

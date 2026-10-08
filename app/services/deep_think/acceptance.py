@@ -73,7 +73,10 @@ async def extract_acceptance_spec(
         return None
     tier_fn = getattr(agent, "_request_tier", None)
     tier = str(tier_fn() if callable(tier_fn) else "").strip().lower()
-    if tier not in _ALLOWED_TIERS:
+    intent_fn = getattr(agent, "_is_execute_task_request", None)
+    # Flat-tier mode pins the tier label to "standard", so execute-task intent
+    # also arms acceptance v2 (in legacy mode tier=execute covered it).
+    if tier not in _ALLOWED_TIERS and not (callable(intent_fn) and intent_fn()):
         return None
     if not _has_file_deliverable_intent(user_query):
         return None

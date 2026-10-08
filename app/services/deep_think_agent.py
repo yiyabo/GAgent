@@ -514,15 +514,14 @@ class DeepThinkAgent:
         return self._request_tier() in {"research", "execute"}
 
     def _is_brief_execute_followup(self) -> bool:
-        tier = self._request_tier()
         brevity_hint = bool(self.request_profile.get("brevity_hint"))
-        return tier == "execute" and brevity_hint
+        return self._is_execute_task_request() and brevity_hint
 
     def _is_execute_task_request(self) -> bool:
-        return (
-            self._request_tier() == "execute"
-            and str(self.request_profile.get("intent_type") or "").strip().lower() == "execute_task"
-        )
+        # Intent-only: under flat-tier mode the tier label is a constant, and in
+        # legacy routing intent=execute_task always co-occurred with tier=execute,
+        # so dropping the tier conjunct changes nothing in either mode.
+        return str(self.request_profile.get("intent_type") or "").strip().lower() == "execute_task"
 
     def _plan_contract_flags(self) -> Dict[str, bool]:
         return {

@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from app.routers.chat.agent import StructuredChatAgent
 from app.routers.chat.agent import _rewrite_phagescope_dataset_understanding_plan_to_deep_profile
 from app.routers.chat.action_execution import build_phagescope_deep_profile_analysis
@@ -17,6 +19,13 @@ from app.routers.chat.request_routing import (
 )
 from app.services.llm.structured_response import LLMAction, LLMReply, LLMStructuredResponse
 from app.services.deep_think_agent import DeepThinkAgent
+
+
+@pytest.fixture(autouse=True)
+def _legacy_tier_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin legacy three-tier routing for this file; the flatten-contract tests
+    in TestTierFlattenMode override it per class."""
+    monkeypatch.setenv("TIER_FLATTEN_ENABLED", "0")
 
 
 def test_request_tier_routes_greeting_to_standard_with_brevity_hint() -> None:
@@ -1430,3 +1439,95 @@ def test_greeting_routes_to_standard_with_brevity_hint_via_resolve() -> None:
     assert decision.request_tier == "standard"
     assert decision.brevity_hint is True
     assert "greeting_or_social" in decision.route_reason_codes
+
+
+class TestTierFlattenMode:
+    """Hermes-pure flat loop: one budget for every turn; depth is the model's
+    call. Tier never escalates; intent and plan semantics are preserved."""
+
+    @pytest.fixture(autouse=True)
+    def _flat_mode(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("TIER_FLATTEN_ENABLED", "1")
+
+    def test_attachments_never_elevate_tier_but_intent_still_execute(self) -> None:
+        decision = resolve_request_routing(
+            message="这个图不需要 scatter，改一下",
+            context={
+                "attachments": [{"type": "file", "path": "results/mAP_bar.svg", "name": "mAP_bar.svg"}],
+            },
+        )
+        assert decision.request_tier == "standard"
+        assert "tier_flattened" in decision.route_reason_codes
+        assert decision.intent_type == "execute_task"
+
+    def test_execute_keywords_do_not_elevate_tier(self) -> None:
+        decision = resolve_request_routing(message="帮我分析这份数据并生成图表和报告")
+        assert decision.request_tier == "standard"
+        assert "tier_flattened" in decision.route_reason_codes
+
+    def test_full_plan_imperative_keeps_intent_and_plan_semantics(self) -> None:
+        decision = resolve_request_routing(message="请执行整个计划", context={"plan_id": 42})
+        assert decision.intent_type == "execute_task"
+        assert decision.plan_execute_required is True
+        assert decision.request_tier == "standard"
+
+    def test_explicit_task_ids_keep_intent_elevation(self) -> None:
+        decision = resolve_request_routing(message="执行任务 3", context={"plan_id": 42})
+        assert decision.intent_type == "execute_task"
+        assert decision.explicit_task_override is True
+        assert decision.request_tier == "standard"
+
+    def test_plan_create_semantics_preserved(self) -> None:
+        decision = resolve_request_routing(
+            message="/think 新建一个plan，和刚才那个分开",
+            plan_id=42,
+        )
+        assert decision.plan_create_required is True
+        assert decision.request_tier == "standard"
+
+    def test_llm_fallback_never_fires(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        calls: list[str] = []
+
+        def _recorder(message: str, **kwargs):
+            calls.append(message)
+            return ("execute", False, ["stub"])
+
+        monkeypatch.setattr(
+            "app.routers.chat.request_routing._llm_routing_fallback", _recorder
+        )
+        decision = resolve_request_routing(message="嗯", context={"plan_id": 42})
+        assert calls == []
+        assert decision.request_tier == "standard"
+
+    def test_greeting_keeps_brevity_but_action_plus_social_is_not_greeting(self) -> None:
+        greeting = resolve_request_routing(message="hello")
+        assert greeting.brevity_hint is True
+        assert "greeting_or_social" in greeting.route_reason_codes
+
+        action = resolve_request_routing(message="谢谢，帮我跑一下这个分析并出图")
+        assert action.brevity_hint is False
+        assert "greeting_or_social" not in action.route_reason_codes
+
+    def test_profile_is_unified(self) -> None:
+        decision = resolve_request_routing(message="你好呀")
+        profile = build_request_tier_profile(
+            decision,
+            default_thinking_budget=10000,
+            simple_thinking_budget=900,
+            default_max_iterations=100,
+        )
+        assert profile.thinking_budget == 8000
+        assert profile.output_bias == "task_completion"
+        assert profile.max_iterations == 100
+
+    def test_profile_keeps_plan_conflict_cap(self) -> None:
+        decision = resolve_request_routing(message="优化一下计划", context={"plan_id": 42})
+        object.__setattr__(decision, "plan_conflict_requires_confirmation", True)
+        profile = build_request_tier_profile(
+            decision,
+            default_thinking_budget=10000,
+            simple_thinking_budget=900,
+            default_max_iterations=100,
+        )
+        assert profile.max_iterations == 10
+        assert profile.thinking_budget == 8000

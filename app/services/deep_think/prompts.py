@@ -276,6 +276,36 @@ def _get_structured_plan_retry_prompt(agent: "DeepThinkAgent") -> str:
 
 def _build_request_tier_block(agent: "DeepThinkAgent") -> str:
     tier = agent._request_tier()
+    from .text_utils import tier_flatten_enabled
+
+    if tier_flatten_enabled():
+        brief_note = ""
+        if agent._is_brief_execute_followup():
+            brief_note = (
+                "- This is a short execution follow-up: focus the final answer on the current task outcome.\n"
+                "- Do not recap prior project milestones, older test rounds, or historical status tables unless the user explicitly asks.\n"
+                "- Do not append next-step menus or optional directions unless the user asks what to do next.\n"
+                "- If continuation context already identifies the target file, path, task, or blocker, continue from that anchor instead of restarting broad workspace discovery.\n"
+            )
+        execute_note = ""
+        if agent._is_execute_task_request():
+            execute_note = (
+                "- For a bound execute_task request, observation-only probing is only a short precursor. After one observation-only cycle, move to real execution or report BLOCKED_DEPENDENCY.\n"
+                "- Do not silently rewrite the current task into an upstream preprocessing task just because prerequisite deliverables are missing.\n"
+            )
+        return (
+            "=== EFFICIENCY CONTRACT ===\n"
+            "- Be targeted and efficient: spend exactly as much effort as the request needs, no more.\n"
+            "- Simple questions get direct answers; small edits to existing deliverables get small, direct fixes (edit the parameter, re-run the script, deliver). Do not rebuild the world for a tweak.\n"
+            "- For multi-step work, organize yourself (plan/todo) instead of wandering; stop as soon as the request is actually satisfied.\n"
+            "- If the answer depends on file/workspace/remote state, call the relevant tool now; a no-tool guess is not an acceptable substitute for a check you could run.\n"
+            "- Use web_search only to fill a concrete factual gap, and cite verifiable sources for time-sensitive claims.\n"
+            "- When a successful tool result already produced evidence files (for example `literature_pipeline`'s `study_cards.jsonl`, `library.jsonl`, `evidence.md`, `study_matrix.md`, or a coverage report), read the relevant records with `file_operations` before claiming evidence is missing or unconfirmed; never invent findings to fill a gap.\n"
+            "- For local structured-data overview/schema/count/sample-value requests, prefer result_interpreter profile; drop to execute_code only for custom logic it cannot express.\n"
+            "- Keep the tone professional and plain; avoid decorative emojis or hype.\n"
+            + brief_note
+            + execute_note
+        )
     if tier == "standard":
         return (
             "=== REQUEST TIER: STANDARD ===\n"
@@ -577,9 +607,9 @@ def _build_protocol_boundary_block(agent: "DeepThinkAgent", mode: str) -> str:
 def _is_brief_execute_followup_context(context: Optional[Dict[str, Any]]) -> bool:
     if not isinstance(context, dict):
         return False
-    tier = str(context.get("request_tier") or "").strip().lower()
+    intent_type = str(context.get("intent_type") or "").strip().lower()
     brevity_hint = bool(context.get("brevity_hint"))
-    return tier == "execute" and brevity_hint
+    return intent_type == "execute_task" and brevity_hint
 
 
 def _select_recent_history(
@@ -1263,6 +1293,16 @@ When ready to answer:
 def _get_next_step_prompt(agent: "DeepThinkAgent", iteration: int) -> str:
     """Generate prompt for the next step, encouraging completion if steps are getting long."""
     tier = agent._request_tier()
+    from .text_utils import tier_flatten_enabled
+
+    if tier_flatten_enabled():
+        return (
+            'If the request is already satisfied, call submit_final_answer now. If you still need file or '
+            'tool evidence, call the tool now — do not output transitional narration as a standalone response. '
+            'And if a successful literature_pipeline earlier in this run already produced study_cards.jsonl, '
+            'library.jsonl, evidence.md, study_matrix.md, or a coverage report, read the relevant records with '
+            'file_operations before claiming insufficient or unconfirmed evidence.'
+        )
     if tier == "standard":
         return (
             'Prefer answering now. If you still need file or tool evidence, call the tool now; '

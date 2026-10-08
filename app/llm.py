@@ -667,7 +667,9 @@ def _record_attempt_context(
         ctx["attempt_no"] = attempt_no
         ctx["upstream_request_id"] = upstream_request_id
         usage_dict = usage if isinstance(usage, dict) else {}
-        ctx["cache_read_tokens"] = usage_dict.get("cache_read_tokens", 0) or 0
+        # Anthropic-style cache_read_tokens, falling back to DashScope's
+        # prompt_tokens_details.cached_tokens (same semantics: prefix-cache hits).
+        ctx["cache_read_tokens"] = usage_dict.get("cache_read_tokens", 0) or _cached_tokens_of(usage_dict)
         ctx["cache_creation_tokens"] = usage_dict.get("cache_creation_tokens", 0) or 0
         _usage_context.set(ctx)
     except Exception:
@@ -715,6 +717,19 @@ def _billing_request_headers(logical_call_id: str, attempt_no: int) -> Dict[str,
     if plan_header and ctx.get("plan_id"):
         headers[plan_header] = str(ctx.get("plan_id"))
     return headers
+
+
+def _cached_tokens_of(usage: Optional[Dict[str, Any]]) -> int:
+    """Extract prompt-cache hit tokens from an upstream usage dict (0 when absent)."""
+    if not isinstance(usage, dict):
+        return 0
+    details = usage.get("prompt_tokens_details")
+    if not isinstance(details, dict):
+        return 0
+    try:
+        return max(0, int(details.get("cached_tokens") or 0))
+    except (TypeError, ValueError):
+        return 0
 
 
 def _log_usage(
@@ -780,7 +795,7 @@ def _log_call_metrics(
         usage_dict = usage if isinstance(usage, dict) else {}
         logger.info(
             "[LLM][metrics] method=%s provider=%s model=%s status=%s latency_ms=%.0f "
-            "ttft_ms=%s attempts=%d prompt_tokens=%s completion_tokens=%s total_tokens=%s "
+            "ttft_ms=%s attempts=%d prompt_tokens=%s completion_tokens=%s total_tokens=%s cached_tokens=%s "
             "session_id=%s plan_id=%s task_id=%s call_purpose=%s error=%s",
             method,
             provider,
@@ -792,6 +807,7 @@ def _log_call_metrics(
             usage_dict.get("prompt_tokens", "-"),
             usage_dict.get("completion_tokens", "-"),
             usage_dict.get("total_tokens", "-"),
+            _cached_tokens_of(usage_dict),
             ctx.get("session_id") if ctx else "-",
             ctx.get("plan_id") if ctx else "-",
             ctx.get("task_id") if ctx else "-",

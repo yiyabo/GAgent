@@ -442,7 +442,7 @@ class StructuredChatAgent:
     ) -> Optional[LLMStructuredResponse]:
         request_tier = str(self.extra_context.get("request_tier") or "").strip().lower()
         intent_type = str(self.extra_context.get("intent_type") or "").strip().lower()
-        if request_tier != "execute" or intent_type != "execute_task":
+        if intent_type != "execute_task":
             return None
         if self.plan_session.plan_id is None:
             return None
@@ -549,7 +549,7 @@ class StructuredChatAgent:
             pass
         request_tier = str(self.extra_context.get("request_tier") or "").strip().lower()
         intent_type = str(self.extra_context.get("intent_type") or "").strip().lower()
-        if request_tier != "execute" or intent_type != "execute_task":
+        if intent_type != "execute_task":
             return None
         if not bool(self.extra_context.get("explicit_task_override")):
             return None
