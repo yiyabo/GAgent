@@ -484,6 +484,10 @@ def _search_verified_from_steps(agent: "DeepThinkAgent", steps: List[ThinkingSte
     return True if not seen_external else successful_external
 
 
+# See _apply_external_search_notice: the notice is currently disarmed.
+_EXTERNAL_SEARCH_NOTICE_ENABLED = False
+
+
 def _apply_external_search_notice(
     agent: "DeepThinkAgent",
     answer: str,
@@ -493,7 +497,11 @@ def _apply_external_search_notice(
     search_verified: bool,
 ) -> str:
     text = str(answer or "").strip()
-    if not text or search_verified or not agent._is_research_or_execute():
+    # Disarmed since the 2026-10 tier removal: the notice used to fire for
+    # research/execute tiers only, and the flat loop has no tiers. Re-arming
+    # (for everyone, or keyed on execute intent) is a product decision — see
+    # LOCAL_INFRA §98. Kept intact so a one-line flip re-enables it.
+    if not text or search_verified or not _EXTERNAL_SEARCH_NOTICE_ENABLED:
         return text
 
     failed_external = [

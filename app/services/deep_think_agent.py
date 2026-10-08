@@ -510,9 +510,6 @@ class DeepThinkAgent:
         title = str(self.request_profile.get("current_plan_title") or "").strip()
         return title or None
 
-    def _is_research_or_execute(self) -> bool:
-        return self._request_tier() in {"research", "execute"}
-
     def _is_brief_execute_followup(self) -> bool:
         brevity_hint = bool(self.request_profile.get("brevity_hint"))
         return self._is_execute_task_request() and brevity_hint

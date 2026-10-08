@@ -186,25 +186,6 @@ class TestOptimizerPin:
         assert current_usage_context() == {}
 
 
-class TestRoutingPin:
-    def test_llm_routing_fallback_pins_chat_routing(self, monkeypatch) -> None:
-        from app.routers.chat import request_routing as rr
-
-        captured = []
-
-        class _FakeClient:
-            def chat(self, prompt=None, messages=None, **kwargs):
-                captured.append(current_usage_context())
-                return '{"tier": "standard", "is_plan_modification": false, "reason": "x"}'
-
-        monkeypatch.setattr(rr, "get_default_client", lambda: _FakeClient())
-        result = rr._llm_routing_fallback("an ambiguous message")
-        assert result is not None and result[0] == "standard"
-        assert captured and captured[0]["call_purpose"] == "request_routing"
-        assert captured[0]["billing_key"] == "chat.routing"
-        assert current_usage_context() == {}
-
-
 class TestInvocationMeter:
     def test_records_zero_token_fee_row(self, monkeypatch) -> None:
         from tool_box.tools_impl import invocation_meter as meter

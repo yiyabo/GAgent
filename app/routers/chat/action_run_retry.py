@@ -20,8 +20,9 @@ namespace-patch semantics hold if it is ever patched there; the pre-existing
 ``compat_chat_routes.DeepThinkAgent`` dynamic lookup below is untouched.
 
 No logger is used in this cluster; every message, tool list, env default and
-retry parameter (max_iterations 12, tool_timeout 120, THINKING_BUDGET 10000) is
-unchanged.
+retry parameter (max_iterations 12, tool_timeout 120) is unchanged. The retry
+agent's thinking budget follows the single flat-loop budget
+(``_DEEP_THINK_THINKING_BUDGET``) since the 2026-10 tier removal.
 """
 
 from __future__ import annotations
@@ -31,6 +32,7 @@ import json
 import os
 from typing import Any, Dict, List
 
+from app.services.deep_think.text_utils import _DEEP_THINK_THINKING_BUDGET
 from app.services.llm.structured_response import LLMAction
 
 _AUTO_DEEP_THINK_RETRY_ENV = "CHAT_AUTO_DEEP_THINK_RETRY_ON_BLOCKING_FAILURE"
@@ -306,7 +308,7 @@ async def _run_blocking_failure_deep_think_retry_once(
         max_iterations=max_iterations,
         tool_timeout=tool_timeout,
         enable_thinking=True,
-        thinking_budget=int(os.getenv("THINKING_BUDGET", "10000")),
+        thinking_budget=_DEEP_THINK_THINKING_BUDGET,
     )
     result = await dt_agent.think(retry_prompt, retry_context)
     final_answer = str(getattr(result, "final_answer", "") or "").strip()

@@ -261,10 +261,11 @@ def _failure_signature_for_result(agent: "DeepThinkAgent", item: Dict[str, Any])
 
 
 def _loop_guard_endgame_armed(agent: "DeepThinkAgent") -> bool:
-    # The no-progress endgame only arms for execute-tier work, where a
-    # deliverable is expected. Research/standard tiers keep the existing
-    # iteration-position nudge ladder.
-    return agent._request_tier() == "execute" or agent._is_execute_task_request()
+    # The no-progress endgame only arms for execute-intent work, where a
+    # deliverable is expected; plain chat turns exit via the normal
+    # submit/early-stop paths. (Tier check removed in the 2026-10 tier
+    # removal; the execute-tier nudge ladder it referred to is gone too.)
+    return agent._is_execute_task_request()
 
 
 def _spec_kind_requirements(guard_state: Dict[str, Any]) -> Optional[Dict[str, int]]:

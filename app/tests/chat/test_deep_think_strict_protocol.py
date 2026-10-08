@@ -2267,35 +2267,6 @@ def test_process_only_answer_detection_passes_substantive_answer_with_preface() 
     assert not is_process_only_answer(long_en)
 
 
-def test_research_fallback_prefers_evidence_synthesis_over_process_sentence() -> None:
-    agent = DeepThinkAgent(
-        llm_client=_DummyLLM([]),
-        available_tools=["web_search"],
-        tool_executor=_noop_tool_executor,
-        max_iterations=1,
-        request_profile={"request_tier": "research"},
-    )
-    steps = [
-        ThinkingStep(
-            iteration=1,
-            thought="我来帮您系统梳理近期噬菌体研究的热点方向。让我先收集最新的文献证据。",
-            action='{"tool":"web_search","params":{"query":"recent bacteriophage research 2025 2026"}}',
-            action_result='{"success": true, "summary": "宿主范围预测、鸡尾酒优化、递送稳定性和快速检测是近期高频方向。"}',
-            self_correction=None,
-        )
-    ]
-
-    async def _fake_synthesis(user_query: str, evidence_snippets: str, _steps: list[ThinkingStep]) -> str:
-        assert "宿主范围预测" in evidence_snippets
-        return "综合现有证据，更值得优先关注的方向是宿主范围预测和鸡尾酒优化。"
-
-    agent._generate_fallback_from_evidence = _fake_synthesis  # type: ignore[method-assign]
-
-    answer = asyncio.run(agent._fallback_answer_from_steps(steps, "帮我选一个方向"))
-    assert "更值得优先关注的方向" in answer
-    assert "让我先收集" not in answer
-
-
 def test_structured_fallback_uses_user_facing_evidence_format() -> None:
     agent = DeepThinkAgent(
         llm_client=_DummyLLM([]),
@@ -2367,47 +2338,6 @@ def test_structured_fallback_humanizes_code_executor_success() -> None:
     assert "以下是本轮工具执行的结果摘要" in answer
     # Noise-only terminal_session should be filtered out
     assert "terminal_session" not in answer
-
-
-def test_research_failure_marks_answer_as_unverified_when_external_search_fails() -> None:
-    async def _tool_executor(_name: str, _params: dict):
-        return {
-            "success": False,
-            "error": "request_failed",
-            "summary": "web search timed out",
-        }
-
-    llm = _NativeDummyLLM(
-        [
-            NativeStreamResult(
-                content="Need recent search",
-                tool_calls=[
-                    NativeToolCall(id="tc1", name="web_search", arguments={"query": "AnewSampling 2025"}),
-                ],
-            )
-        ]
-    )
-
-    agent = DeepThinkAgent(
-        llm_client=llm,
-        available_tools=["web_search"],
-        tool_executor=_tool_executor,
-        max_iterations=1,
-        request_profile={"request_tier": "research"},
-    )
-
-    async def _fake_synthesis(_user_query: str, evidence_snippets: str, _steps: list[ThinkingStep]) -> str:
-        assert "request_failed" in evidence_snippets
-        return "基于现有信息，AnewSampling 更像是生成式全原子采样方向中的新方法，但最新外部检索未拿到可验证来源。"
-
-    agent._generate_fallback_from_evidence = _fake_synthesis  # type: ignore[method-assign]
-
-    result = asyncio.run(agent.think("搜索 AnewSampling 最近的论文并比较方法差异"))
-    assert result.search_verified is False
-    assert result.fallback_used is True
-    assert result.tool_failures
-    assert result.tool_failures[0]["tool"] == "web_search"
-    assert "未经过本轮在线检索验证" in result.final_answer
 
 
 def test_native_retries_external_search_tool_once_before_succeeding() -> None:
@@ -4251,13 +4181,80 @@ def test_bound_execute_task_fallback_never_asks_for_missing_task_definition() ->
         tool_executor=_tool_executor,
         max_iterations=1,
         request_profile={
-            "request_tier": "execute",
             "intent_type": "execute_task",
             "current_task_id": 48,
             "explicit_task_override": True,
         },
     )
+    # Tripwire: _fallback_answer_from_steps no longer calls
+    # _generate_fallback_from_evidence (the tier-gated evidence-synthesis branch
+    # was removed), so this patch is unreachable on the flat path. It stays as a
+    # tripwire: if that call is ever re-wired, the assertions below must still
+    # hold. The bound-task guarantee now lives at the end of the controller
+    # (controller.py:1860, _should_reject_missing_task_definition_answer), which
+    # rejects a forced synthesis that asks the user for a task definition.
     agent._generate_fallback_from_evidence = _bad_fallback  # type: ignore[method-assign]
+
+    result = asyncio.run(
+        agent.think(
+            "继续执行 Task 9",
+            task_context=TaskExecutionContext(
+                task_id=48,
+                task_name="Task 48",
+                task_instruction="继续执行 Task 48。",
+                explicit_task_ids=[9],
+                explicit_task_override=True,
+            ),
+        )
+    )
+
+    assert result.final_answer.strip()
+    assert "请提供 Task 9" not in result.final_answer
+    assert "plan68_task9" not in result.final_answer
+
+
+def test_bound_execute_task_rejects_forced_synthesis_that_asks_for_task_definition() -> None:
+    """Same bound-task identity, enforced where it actually lives now: a forced
+    synthesis that asks the user for the task definition is rejected at the end
+    of the controller (controller.py:1860) and the turn falls back to the
+    observed tool evidence instead of asking the user."""
+    llm = _NativeDummyLLM(
+        [
+            NativeStreamResult(
+                content="Inspect task outputs first",
+                tool_calls=[
+                    NativeToolCall(
+                        id="tc1",
+                        name="file_operations",
+                        arguments={"operation": "list", "path": "/tmp/task48"},
+                    )
+                ],
+            ),
+        ]
+    )
+
+    async def _tool_executor(_name: str, _params: dict):
+        return {
+            "success": True,
+            "summary": "listed /tmp/task48",
+            "produced_files": ["/tmp/task48/output.txt"],
+        }
+
+    async def _bad_forced_synthesis(*_args, **_kwargs):
+        return "请提供 Task 9 的具体内容，并确认是否存在 plan68_task9 目录。"
+
+    agent = DeepThinkAgent(
+        llm_client=llm,
+        available_tools=["file_operations"],
+        tool_executor=_tool_executor,
+        max_iterations=1,
+        request_profile={
+            "intent_type": "execute_task",
+            "current_task_id": 48,
+            "explicit_task_override": True,
+        },
+    )
+    agent._forced_synthesis_from_steps = _bad_forced_synthesis  # type: ignore[method-assign]
 
     result = asyncio.run(
         agent.think(
@@ -4274,7 +4271,10 @@ def test_bound_execute_task_fallback_never_asks_for_missing_task_definition() ->
 
     assert "请提供 Task 9" not in result.final_answer
     assert "plan68_task9" not in result.final_answer
-    assert "当前绑定任务" in result.final_answer
+    # Rejected forced synthesis → grounded fallback from the observed step.
+    assert result.final_answer == "Inspect task outputs first"
+    assert result.fallback_used is True
+    assert result.total_iterations == 1
 
 
 # ---------- Early stop for standard tier ----------

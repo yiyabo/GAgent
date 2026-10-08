@@ -275,82 +275,34 @@ def _get_structured_plan_retry_prompt(agent: "DeepThinkAgent") -> str:
 
 
 def _build_request_tier_block(agent: "DeepThinkAgent") -> str:
-    tier = agent._request_tier()
-    from .text_utils import tier_flatten_enabled
-
-    if tier_flatten_enabled():
-        brief_note = ""
-        if agent._is_brief_execute_followup():
-            brief_note = (
-                "- This is a short execution follow-up: focus the final answer on the current task outcome.\n"
-                "- Do not recap prior project milestones, older test rounds, or historical status tables unless the user explicitly asks.\n"
-                "- Do not append next-step menus or optional directions unless the user asks what to do next.\n"
-                "- If continuation context already identifies the target file, path, task, or blocker, continue from that anchor instead of restarting broad workspace discovery.\n"
-            )
-        execute_note = ""
-        if agent._is_execute_task_request():
-            execute_note = (
-                "- For a bound execute_task request, observation-only probing is only a short precursor. After one observation-only cycle, move to real execution or report BLOCKED_DEPENDENCY.\n"
-                "- Do not silently rewrite the current task into an upstream preprocessing task just because prerequisite deliverables are missing.\n"
-            )
-        return (
-            "=== EFFICIENCY CONTRACT ===\n"
-            "- Be targeted and efficient: spend exactly as much effort as the request needs, no more.\n"
-            "- Simple questions get direct answers; small edits to existing deliverables get small, direct fixes (edit the parameter, re-run the script, deliver). Do not rebuild the world for a tweak.\n"
-            "- For multi-step work, organize yourself (plan/todo) instead of wandering; stop as soon as the request is actually satisfied.\n"
-            "- If the answer depends on file/workspace/remote state, call the relevant tool now; a no-tool guess is not an acceptable substitute for a check you could run.\n"
-            "- Use web_search only to fill a concrete factual gap, and cite verifiable sources for time-sensitive claims.\n"
-            "- When a successful tool result already produced evidence files (for example `literature_pipeline`'s `study_cards.jsonl`, `library.jsonl`, `evidence.md`, `study_matrix.md`, or a coverage report), read the relevant records with `file_operations` before claiming evidence is missing or unconfirmed; never invent findings to fill a gap.\n"
-            "- For local structured-data overview/schema/count/sample-value requests, prefer result_interpreter profile; drop to execute_code only for custom logic it cannot express.\n"
-            "- Keep the tone professional and plain; avoid decorative emojis or hype.\n"
-            + brief_note
-            + execute_note
+    """Single efficiency contract for every turn (tier-free flat loop)."""
+    brief_note = ""
+    if agent._is_brief_execute_followup():
+        brief_note = (
+            "- This is a short execution follow-up: focus the final answer on the current task outcome.\n"
+            "- Do not recap prior project milestones, older test rounds, or historical status tables unless the user explicitly asks.\n"
+            "- Do not append next-step menus or optional directions unless the user asks what to do next.\n"
+            "- If continuation context already identifies the target file, path, task, or blocker, continue from that anchor instead of restarting broad workspace discovery.\n"
         )
-    if tier == "standard":
-        return (
-            "=== REQUEST TIER: STANDARD ===\n"
-            "- Give a concise but complete direct answer.\n"
-            "- Avoid research style output unless the user explicitly asks for sources or latest information.\n"
-            "- Keep the tone professional and plain; avoid decorative emojis or hype.\n"
-            "- Prefer low-overhead execution, but do not ignore required evidence.\n"
-            "- Prioritize tool-backed facts over stylistic completeness.\n"
-            "- Prefer finishing in one short reasoning pass; do not output transitional narration (e.g. 'Let me search...', '接下来让我...') as a standalone response.\n"
-            "- If the answer depends on file/workspace/remote state, call the relevant tool now; otherwise call submit_final_answer. A no-tool guess is not an acceptable substitute for a check you could run.\n"
-        )
-    if tier == "research":
-        return (
-            "=== REQUEST TIER: RESEARCH ===\n"
-            "- Use targeted evidence gathering when it improves correctness.\n"
-            "- Cite verifiable sources for time-sensitive or factual claims.\n"
-            "- Keep the writing professional and restrained; avoid decorative emojis in headings or labels.\n"
-            "- Keep research focused on the exact user question; avoid unrelated survey padding.\n"
-            "- When a successful `literature_pipeline` result provides `study_cards.jsonl`, `library.jsonl`, `evidence.md`, `study_matrix.md`, or a coverage report, those paths are evidence waiting to be read, not evidence that is absent.\n"
-            "- Read the relevant portions of those existing artifacts with `file_operations` before saying the evidence is insufficient or that the findings cannot be confirmed. Do not treat a filename, count, or tool summary as a substitute for reading the records.\n"
-            "- After reading, state precisely what the records support and what fields or full text remain unavailable; never invent findings to fill a gap.\n"
-        )
-    if tier == "execute":
-        execute_focus_note = ""
-        if agent._is_brief_execute_followup():
-            execute_focus_note = (
-                "- This is a short execution follow-up: focus the final answer on the current task outcome.\n"
-                "- Do not recap prior project milestones, older test rounds, or historical status tables unless the user explicitly asks.\n"
-                "- Do not append next-step menus or optional directions unless the user asks what to do next.\n"
-                "- If continuation context already identifies the target file, path, task, or blocker, continue from that anchor instead of restarting broad workspace discovery.\n"
-            )
-        return (
-            "=== REQUEST TIER: EXECUTE ===\n"
-            "- Prioritize finishing the requested task over broad background research.\n"
-            "- Use file/code/task tools as needed.\n"
-            "- Keep the tone professional and execution-focused; avoid decorative emojis or cheerleading.\n"
-            "- Use web_search only to fill a concrete factual gap that blocks execution quality.\n"
+    execute_note = ""
+    if agent._is_execute_task_request():
+        execute_note = (
             "- For a bound execute_task request, observation-only probing is only a short precursor. After one observation-only cycle, move to real execution or report BLOCKED_DEPENDENCY.\n"
-            "- For local structured-data overview/schema/count/sample-value requests, prefer result_interpreter profile; drop to execute_code only for custom logic it cannot express.\n"
             "- Do not silently rewrite the current task into an upstream preprocessing task just because prerequisite deliverables are missing.\n"
-            "- For immutable source inputs, prefer canonical data-directory paths over same-named session-root `results/` copies, especially when the session copy is empty or malformed.\n"
-            "- For single-cell integration tasks, fewer than 2 valid upstream samples means the preconditions are not met; do not claim integration succeeded.\n"
-            + execute_focus_note
         )
-    return ""
+    return (
+        "=== EFFICIENCY CONTRACT ===\n"
+        "- Be targeted and efficient: spend exactly as much effort as the request needs, no more.\n"
+        "- Simple questions get direct answers; small edits to existing deliverables get small, direct fixes (edit the parameter, re-run the script, deliver). Do not rebuild the world for a tweak.\n"
+        "- For multi-step work, organize yourself (plan/todo) instead of wandering; stop as soon as the request is actually satisfied.\n"
+        "- If the answer depends on file/workspace/remote state, call the relevant tool now; a no-tool guess is not an acceptable substitute for a check you could run.\n"
+        "- Use web_search only to fill a concrete factual gap, and cite verifiable sources for time-sensitive claims.\n"
+        "- When a successful tool result already produced evidence files (for example `literature_pipeline`'s `study_cards.jsonl`, `library.jsonl`, `evidence.md`, `study_matrix.md`, or a coverage report), read the relevant records with `file_operations` before claiming evidence is missing or unconfirmed; never invent findings to fill a gap.\n"
+        "- For local structured-data overview/schema/count/sample-value requests, prefer result_interpreter profile; drop to execute_code only for custom logic it cannot express.\n"
+        "- Keep the tone professional and plain; avoid decorative emojis or hype.\n"
+        + brief_note
+        + execute_note
+    )
 
 
 def _build_tool_access_block(agent: "DeepThinkAgent") -> str:
@@ -1291,46 +1243,13 @@ When ready to answer:
 
 
 def _get_next_step_prompt(agent: "DeepThinkAgent", iteration: int) -> str:
-    """Generate prompt for the next step, encouraging completion if steps are getting long."""
-    tier = agent._request_tier()
-    from .text_utils import tier_flatten_enabled
-
-    if tier_flatten_enabled():
-        return (
-            'If the request is already satisfied, call submit_final_answer now. If you still need file or '
-            'tool evidence, call the tool now — do not output transitional narration as a standalone response. '
-            'And if a successful literature_pipeline earlier in this run already produced study_cards.jsonl, '
-            'library.jsonl, evidence.md, study_matrix.md, or a coverage report, read the relevant records with '
-            'file_operations before claiming insufficient or unconfirmed evidence.'
-        )
-    if tier == "standard":
-        return (
-            'Prefer answering now. If you still need file or tool evidence, call the tool now; '
-            'otherwise call submit_final_answer. Do not output transitional narration as a standalone response.'
-        )
-    if tier == "research":
-        return (
-            'Before concluding research, check whether a successful literature_pipeline already produced '
-            'study_cards.jsonl, library.jsonl, evidence.md, study_matrix.md, or a coverage report. '
-            'If so, read the relevant records with file_operations before claiming insufficient or unconfirmed evidence; '
-            'then call submit_final_answer with only what those records support.'
-        )
-    if iteration >= agent.max_iterations - 1:
-        return (
-            'CRITICAL: This is your LAST step. You MUST call submit_final_answer NOW with the best answer '
-            'you can provide based on all evidence gathered. Do NOT call any more tools — synthesize and submit.'
-        )
-    gentle_nudge = agent.max_iterations // 2
-    strong_nudge = int(agent.max_iterations * 0.75)
-    if iteration > strong_nudge:
-        return (
-            'You have taken many steps. Consolidate what you already know and call submit_final_answer NOW. '
-            'Do NOT continue researching unless one more targeted tool call is absolutely essential.'
-        )
-    elif iteration > gentle_nudge:
-        return (
-            'Check whether the user is already adequately answered. If yes, call submit_final_answer now. '
-            'Continue only if another step materially improves accuracy.'
-        )
-    else:
-        return 'Before continuing, ask whether another step or tool call is truly needed. If the current information is enough, call submit_final_answer now.'
+    """Generate the next-step prompt (tier-free flat loop): one uniform
+    completion nudge; the endgame is owned by the loop guards, not by a
+    tier-specific prompt ladder."""
+    return (
+        'If the request is already satisfied, call submit_final_answer now. If you still need file or '
+        'tool evidence, call the tool now — do not output transitional narration as a standalone response. '
+        'And if a successful literature_pipeline earlier in this run already produced study_cards.jsonl, '
+        'library.jsonl, evidence.md, study_matrix.md, or a coverage report, read the relevant records with '
+        'file_operations before claiming insufficient or unconfirmed evidence.'
+    )

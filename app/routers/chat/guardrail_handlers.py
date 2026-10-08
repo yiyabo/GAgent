@@ -580,12 +580,8 @@ def apply_task_execution_followthrough_guardrail(
         reply_text = structured.llm_reply.message.strip()
 
     lowered_user = user_message.lower()
-    request_tier = str(agent.extra_context.get("request_tier") or "").strip().lower()
     intent_type = str(agent.extra_context.get("intent_type") or "").strip().lower()
-    routed_execute_intent = (
-        request_tier == "execute" or intent_type == "execute_task"
-    )
-    user_requests_execution = routed_execute_intent or any(
+    user_requests_execution = intent_type == "execute_task" or any(
         token in lowered_user for token in _FOLLOWTHROUGH_EXECUTE_TOKENS
     )
     reply_promises = reply_promises_execution(reply_text)

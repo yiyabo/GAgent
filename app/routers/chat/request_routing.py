@@ -1,15 +1,10 @@
-"""Deterministic request-tier routing for chat and DeepThink."""
+"""Deterministic request routing for chat and DeepThink (flat, tier-free)."""
 
 from __future__ import annotations
 
-import json
-import logging
-import os
 import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Literal, Mapping, Optional, Sequence
-
-from app.llm import get_default_client, usage_context_override
 
 from .guardrails import (
     extract_task_ids_from_text,
@@ -20,9 +15,10 @@ from .subject_identity import (
     subject_identity_matches,
 )
 
-logger = logging.getLogger(__name__)
-
-RequestTier = Literal["standard", "research", "execute"]
+# The tier system was removed in 2026-10 (Hermes-pure flat loop): every turn
+# gets the same budget, so the only tier value left is the "standard" label,
+# kept for telemetry/log-schema continuity.
+RequestTier = Literal["standard"]
 RequestRouteMode = Literal["manual_deepthink", "auto_simple", "auto_deepthink"]
 ThinkingVisibility = Literal["visible", "progress", "hidden"]
 ThinkingDisplayMode = Literal["full_thinking", "compact_progress", "final_answer", "hidden"]
@@ -30,8 +26,7 @@ IntentType = Literal["chat", "execute_task"]
 SubjectKind = Literal["none", "file", "directory", "workspace"]
 
 from app.services.deep_think.text_utils import (  # noqa: E402
-    _FLAT_THINKING_BUDGET,
-    tier_flatten_enabled as _tier_flatten_enabled,
+    _DEEP_THINK_THINKING_BUDGET,
 )
 
 
@@ -46,24 +41,6 @@ class PlanLifecycleIntent:
 
 _MANUAL_DEEP_RE = re.compile(r"^\s*/(?:think|deep)\b", re.IGNORECASE)
 _NON_WORD_RE = re.compile(r"[\s\W_]+", re.UNICODE)
-_NON_PHAGESCOPE_TABULAR_FILE_EXTS = (
-    ".xlsx",
-    ".xls",
-    ".xlsm",
-    ".csv",
-    ".parquet",
-    ".feather",
-)
-
-
-def _directory_positively_lacks_phagescope_meta_data(value: str) -> bool:
-    text = str(value or "").strip().strip("`'\"").rstrip(".,;:)]}>，。；：）】》")
-    if not text:
-        return False
-    try:
-        return os.path.isdir(text) and not os.path.isdir(os.path.join(text, "meta_data"))
-    except OSError:
-        return False
 
 _PATH_RE = re.compile(
     r"(?P<path>(?:~?/|\.{1,2}/|/)?(?:[\w\-.一-龥]+/)+[\w\-.一-龥]+(?:\.[\w-]+)?)"
@@ -1192,30 +1169,7 @@ def resolve_request_routing(
         combined_reasons.append("plan_new_request")
     if plan_intent.conflict_requires_confirmation:
         combined_reasons.append("plan_conflict_confirmation")
-    if plan_intent.create_requested or plan_intent.review_requested or plan_intent.optimize_requested:
-        if not _tier_flatten_enabled() and request_tier != "execute":
-            request_tier = "execute"
-            combined_reasons.append("tier_elevated_plan_lifecycle")
-    if confidence < 0.5 and effective_plan_bound and "greeting_or_social" not in combined_reasons:
-        llm_result = _llm_routing_fallback(
-            effective_user_message,
-            plan_bound=effective_plan_bound,
-            task_bound=current_task_id is not None or (context or {}).get("current_task_id") is not None,
-        )
-        if llm_result is not None:
-            llm_tier, llm_is_plan_mod, llm_reasons = llm_result
-            if llm_tier in ("research", "execute") and request_tier == "standard":
-                request_tier = llm_tier
-                combined_reasons.append("llm_routing_elevated")
-                for r in llm_reasons:
-                    if r not in combined_reasons:
-                        combined_reasons.append(r)
-            if llm_is_plan_mod and not plan_intent.optimize_requested:
-                combined_reasons.append("llm_detected_plan_modification")
     if plan_intent.execute_requested:
-        if not _tier_flatten_enabled() and request_tier != "execute":
-            request_tier = "execute"
-            combined_reasons.append("tier_elevated_plan_execute")
         if intent_type == "chat":
             intent_type = "execute_task"
             combined_reasons.append("intent_execute_task")
@@ -1237,13 +1191,9 @@ def resolve_request_routing(
         if intent_type == "chat":
             intent_type = "execute_task"
             combined_reasons.append("intent_execute_task")
-        if not _tier_flatten_enabled() and request_tier != "execute":
-            request_tier = "execute"
-            combined_reasons.append("tier_elevated_explicit_task")
 
     # Detect imperative full-plan execution requests ("执行整个计划",
-    # "execute all tasks", etc.).  Tier-elevate to execute so DeepThink
-    # has enough budget.  plan_execute_required (set via plan_intent)
+    # "execute all tasks", etc.).  plan_execute_required (set via plan_intent)
     # injects [REQUIREMENT] into DeepThink's system prompt to ensure
     # it calls plan_operation(execute_all).
     full_plan_execution = False
@@ -1252,50 +1202,9 @@ def resolve_request_routing(
     )
     if _execution_keywords_detected:
         combined_reasons.append("plan_execution_hint")
-        if not _tier_flatten_enabled() and request_tier != "execute":
-            request_tier = "execute"
-            combined_reasons.append("tier_elevated_full_plan")
         if intent_type == "chat":
             intent_type = "execute_task"
             combined_reasons.append("intent_execute_task")
-
-    subject_ref_raw = str(
-        subject_resolution.get("display_ref")
-        or subject_resolution.get("canonical_ref")
-        or ""
-    )
-    subject_ref_text = subject_ref_raw.lower()
-    if (
-        "phagescope" in subject_ref_text
-        and not subject_ref_text.rstrip(".,;:)]}>，。；：）】》").endswith(
-            _NON_PHAGESCOPE_TABULAR_FILE_EXTS
-        )
-        and not _directory_positively_lacks_phagescope_meta_data(subject_ref_raw)
-        and request_tier == "standard"
-        and not _tier_flatten_enabled()
-        and _contains_any_lowered(
-            effective_user_message.lower(),
-            (
-                "analyze",
-                "analyse",
-                "inspect",
-                "audit",
-                "review",
-                "look",
-                "explore",
-                "start",
-                "分析",
-                "查看",
-                "看看",
-                "检查",
-                "探索",
-            ),
-        )
-    ):
-        request_tier = "research"
-        combined_reasons.append("phagescope_dataset_analysis")
-        if "research_cue" not in combined_reasons:
-            combined_reasons.append("research_cue")
 
     if manual:
         combined_reasons = ["manual_deepthink"] + [
@@ -1354,10 +1263,13 @@ def classify_request_tier(
     current_task_id: Optional[int] = None,
     intent_type: IntentType = "chat",
 ) -> tuple[RequestTier, List[str], bool, float]:
-    """Classify the request into a tier that controls thinking budget and iterations.
+    """Return the (single, flat) tier label plus structural routing signals.
 
-    This function uses keyword heuristics to decide how much resource to
-    allocate (thinking budget, max iterations, thinking visibility).  It does
+    There is nothing to classify since the 2026-10 tier removal: every turn
+    gets the same budget and iteration cap, so this always returns
+    "standard" with confidence 1.0. What remains useful is the by-product —
+    the structural reason codes (attachments, task/plan binding, cues,
+    greeting markers) that drive telemetry and intent resolution. It does
     NOT decide intent — the LLM decides what tools to call.
     """
     text = str(message or "").strip()
@@ -1367,7 +1279,7 @@ def classify_request_tier(
     context_dict = dict(context or {})
     if _is_internal_contract_repair_request(text):
         reasons.append("internal_contract_repair")
-        return "execute", reasons, False, 0.9
+        return "standard", reasons, False, 1.0
 
     # ── Structural signals ────────────────────────────────────────
     attachments = context_dict.get("attachments")
@@ -1417,138 +1329,29 @@ def classify_request_tier(
     if is_direct_followup:
         reasons.append("direct_followup")
 
-    if _tier_flatten_enabled():
-        # Flat mode: one budget for every turn; depth is the model's call, not
-        # the router's. Keep the structural reason codes (telemetry + intent
-        # resolution) but never escalate tiers. Confidence is pinned high so
-        # the caller never spends an LLM fallback call on tier classification.
-        # Pure social tokens still get the brevity marker; action requests are
-        # never greetings, even when they contain social phrasing.
-        is_greeting_flat = collapsed in {
-            _NON_WORD_RE.sub("", token.lower()) for token in _GREETING_TOKENS_EXACT
-        }
-        is_social_flat = _contains_any(lowered, _SOCIAL_PHRASES)
-        has_action_cue = (
-            intent_type == "execute_task"
-            or has_execute_keyword
-            or followthrough_implies_execute
-            or has_compound_image_action
-            or has_plan_request
-            or has_plan_review
-            or has_plan_optimize
-        )
-        reasons.append("tier_flattened")
-        if (is_greeting_flat or is_social_flat) and not has_action_cue:
-            reasons.append("greeting_or_social")
-            return "standard", reasons, True, 1.0
-        return "standard", reasons, is_direct_followup, 1.0
-
-    # ── Tier decision ─────────────────────────────────────────────
-    # 1. Execute tier: structural signals or keyword heuristics that
-    #    indicate the user wants the LLM to take action (more iterations,
-    #    progress display).  This does NOT set intent_type — the LLM
-    #    decides what tools to call.
-    if intent_type == "execute_task":
-        reasons.append("intent_execution")
-        return "execute", reasons, is_direct_followup, 0.9
-
-    if has_attachments:
-        reasons.append("execution_keyword")
-        return "execute", reasons, is_direct_followup, 0.9
-
-    if has_plan_request or has_plan_review or has_plan_optimize:
-        if has_plan_request:
-            reasons.append("plan_request")
-        if has_plan_review:
-            reasons.append("plan_review")
-        if has_plan_optimize:
-            reasons.append("plan_optimize")
-        return "execute", reasons, is_direct_followup, 0.9
-
-    if has_execute_keyword or followthrough_implies_execute or has_compound_image_action:
-        reasons.append("execution_keyword")
-        return "execute", reasons, is_direct_followup, 0.9
-
-    if plan_bound and has_followthrough_cue and not is_chat_continuation:
-        reasons.append("plan_followthrough")
-        return "execute", reasons, is_direct_followup, 0.9
-
-    # 2. Research: literature / time-sensitive cues
-    if has_research_cue or has_time_sensitive_cue:
-        return "research", reasons, is_direct_followup, 0.6
-
-    # 2b. Remote status queries
-    _REMOTE_STATUS_WORDS = ("状态", "进度", "在跑", "运行", "完成", "status", "running", "progress")
-    if (
-        re.search(r"(<?!\d)\d{5,}(?!\d)", lowered)
-        and _contains_any(lowered, _REMOTE_STATUS_WORDS)
-    ):
-        reasons.append("remote_status_query")
-        return "standard", reasons, is_direct_followup, 0.3
-
-    # 3. Greetings / thanks: brief social tokens no longer downgrade to
-    #    a deprecated "light" tier — they now route to standard tier with
-    #    brevity_hint=True so the LLM still keeps the answer short.
+    # Flat routing (Hermes-pure): one budget for every turn; depth is the
+    # model's call, not the router's. The structural reason codes above stay
+    # for telemetry + intent resolution; there is no tier to classify, so no
+    # LLM fallback call is ever spent here. Pure social tokens still get the
+    # brevity marker; action requests are never greetings, even when they
+    # contain social phrasing.
     is_greeting = collapsed in {
         _NON_WORD_RE.sub("", token.lower()) for token in _GREETING_TOKENS_EXACT
     }
     is_social_phrase = _contains_any(lowered, _SOCIAL_PHRASES)
-
-    if is_greeting or is_social_phrase:
-        reasons.append("greeting_or_social")
-        return "standard", reasons, True, 0.3
-
-    # 4. Default: standard
-    reasons.append("default_standard")
-    return "standard", reasons, is_direct_followup, 0.3
-
-
-def _llm_routing_fallback(
-    message: str,
-    *,
-    plan_bound: bool = False,
-    task_bound: bool = False,
-) -> Optional[tuple[RequestTier, bool, List[str]]]:
-    """Use LLM to classify request tier when keyword routing confidence is low.
-
-    Returns (tier, is_plan_modification, reasons) or None if LLM call fails.
-    """
-    prompt = (
-        "You are a request classifier for an AI research assistant. Classify the user's message.\n\n"
-        f"Context:\n"
-        f"- plan_bound: {plan_bound} (user is interacting with an existing research plan)\n"
-        f"- task_bound: {task_bound} (a specific task is selected)\n\n"
-        f"User message: {message}\n\n"
-        "Respond in JSON with exactly these fields:\n"
-        '- "tier": one of "standard", "research", "execute"\n'
-        '  - "standard": general questions, status queries, simple follow-ups, greetings\n'
-        '  - "research": literature search, deep analysis requests, time-sensitive queries\n'
-        '  - "execute": user wants the AI to take action (run code, modify plan, create deliverables, deepen analysis)\n'
-        '- "is_plan_modification": true/false (user wants to change/improve/deepen the existing plan)\n'
-        '- "reason": brief explanation (one sentence)\n'
+    has_action_cue = (
+        intent_type == "execute_task"
+        or has_execute_keyword
+        or followthrough_implies_execute
+        or has_compound_image_action
+        or has_plan_request
+        or has_plan_review
+        or has_plan_optimize
     )
-
-    try:
-        client = get_default_client()
-        with usage_context_override(call_purpose="request_routing", phase="routing"):
-            response = client.chat(
-                prompt=prompt,
-                messages=[],
-                max_tokens=256,
-                timeout=8.0,
-                response_format={"type": "json_object"},
-            )
-        if not isinstance(response, str):
-            return None
-        data = json.loads(response)
-        tier = data.get("tier")
-        is_plan_modification = bool(data.get("is_plan_modification", False))
-        reason = str(data.get("reason", ""))
-        reasons = [reason] if reason else []
-        logger.info("LLM routing fallback chose tier=%s is_plan_modification=%s", tier, is_plan_modification)
-        return tier, is_plan_modification, reasons
-    except Exception:
-        return None
+    if (is_greeting or is_social_phrase) and not has_action_cue:
+        reasons.append("greeting_or_social")
+        return "standard", reasons, True, 1.0
+    return "standard", reasons, is_direct_followup, 1.0
 
 
 def resolve_subject_resolution(
@@ -1663,41 +1466,16 @@ def resolve_subject_resolution(
     )
 
 
-def _max_iterations_standard(decision: RequestRoutingDecision) -> int:
-    return 100
-
-
-def _max_iterations_execute(
-    decision: RequestRoutingDecision,
-    *,
-    default_max_iterations: int,
-) -> int:
-    execute_cap = 100
-    if decision.plan_conflict_requires_confirmation:
-        execute_cap = 10
-    elif (
-        decision.full_plan_execution
-        or decision.explicit_task_override
-        or decision.plan_execute_required
-        or decision.plan_execute_after_create_required
-    ):
-        execute_cap = 100
-    elif (
-        decision.plan_create_required
-        or decision.plan_review_required
-        or decision.plan_optimize_required
-    ):
-        execute_cap = 100
-    return max(3, min(default_max_iterations, execute_cap))
-
-
 def build_request_tier_profile(
     decision: RequestRoutingDecision,
     *,
-    default_thinking_budget: int,
-    simple_thinking_budget: int,
     default_max_iterations: int,
 ) -> RequestTierProfile:
+    """One flat profile for every turn (Hermes-pure): identical budget and
+    iteration cap; depth is the model's call, not the router's. The tier
+    label stays "standard" as inert telemetry — downstream behavior keys off
+    intent_type, not the tier. plan_conflict keeps its short cap: that is an
+    intent-level guard, not a tier."""
     common = dict(
         available_tools=get_all_tools(),
         intent_type=decision.intent_type,
@@ -1712,42 +1490,11 @@ def build_request_tier_profile(
         plan_new_requested=decision.plan_new_requested,
         plan_conflict_requires_confirmation=decision.plan_conflict_requires_confirmation,
     )
-    if _tier_flatten_enabled():
-        # Flat mode: identical budget for every turn; the tier label stays
-        # "standard" (informational only — downstream behavior keys off
-        # intent_type, not the tier).
-        flat_cap = 10 if decision.plan_conflict_requires_confirmation else 100
-        return RequestTierProfile(
-            request_tier="standard",
-            thinking_budget=_FLAT_THINKING_BUDGET,
-            max_iterations=max(3, min(default_max_iterations, flat_cap)),
-            output_bias="task_completion",
-            **common,
-        )
-    if decision.request_tier == "standard":
-        return RequestTierProfile(
-            request_tier="standard",
-            thinking_budget=max(120, min(simple_thinking_budget, 900)),
-            max_iterations=_max_iterations_standard(decision),
-            output_bias="concise_complete",
-            **common,
-        )
-    if decision.request_tier == "research":
-        research_cap = min(default_max_iterations, 100)
-        return RequestTierProfile(
-            request_tier="research",
-            thinking_budget=max(simple_thinking_budget, min(default_thinking_budget, 10000)),
-            max_iterations=max(3, research_cap),
-            output_bias="evidence_backed",
-            **common,
-        )
+    flat_cap = 10 if decision.plan_conflict_requires_confirmation else 100
     return RequestTierProfile(
-        request_tier="execute",
-        thinking_budget=max(200, min(default_thinking_budget, 7000)),
-        max_iterations=_max_iterations_execute(
-            decision,
-            default_max_iterations=default_max_iterations,
-        ),
+        request_tier="standard",
+        thinking_budget=_DEEP_THINK_THINKING_BUDGET,
+        max_iterations=max(3, min(default_max_iterations, flat_cap)),
         output_bias="task_completion",
         **common,
     )
@@ -2109,8 +1856,9 @@ def resolve_intent_type(
     Only structural signals (attachments, explicit task IDs, bound-task
     execution cues, full plan execution) produce ``execute_task``.
     General keyword-based classification has been removed — the LLM decides
-    what to do via tool descriptions.  ``classify_request_tier`` still uses
-    keyword heuristics to control thinking budget and iterations independently.
+    what to do via tool descriptions. Budget and iteration caps are flat for
+    every turn; ``classify_request_tier`` only contributes structural reason
+    codes.
     """
     context_dict = dict(context or {})
     reasons: List[str] = []
@@ -2138,8 +1886,7 @@ def resolve_intent_type(
 
     # Everything else → chat.  The LLM will call plan_operation,
     # manuscript_writer, code_executor, etc. as needed based on tool
-    # descriptions.  classify_request_tier still elevates the tier
-    # (and thus iterations/budget) when it detects execute-like keywords.
+    # descriptions. Budget/iterations stay flat regardless.
     reasons.append("intent_chat")
     return "chat", reasons
 

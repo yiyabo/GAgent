@@ -16,7 +16,7 @@ Chat routing converts user turns into `chat` or `execute_task`, builds task/sess
 
 ## CONVENTIONS
 - `intent_type` is only `chat` or `execute_task`; do not add more intent buckets.
-- `request_tier` controls depth and max iterations: `light`, `standard`, `research`, `execute`.
+- Request tiers were removed in 2026-10 (Hermes-pure flat loop): every turn gets one flat thinking budget (`_DEEP_THINK_THINKING_BUDGET` in `app/services/deep_think/text_utils.py`) and the same iteration cap (100; plan_conflict 10). `request_tier` survives only as the inert `"standard"` label for telemetry; never branch behavior on it — depth is the model's call, intent routes via `intent_type`.
 - Explicit numeric task mentions set `explicit_task_ids` / `explicit_task_override` and suppress plan optimize/review heuristics for that turn.
 - Execute-task flows may include `plan_operation`, but true execution claims must be grounded in real tool results.
 - Use logs to verify routing: `intent_type`, `request_tier`, `route_reason_codes`, `tools_used`.

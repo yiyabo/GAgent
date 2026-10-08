@@ -273,10 +273,11 @@ if _USE_PYDANTIC:
             default=100000, env="DEEP_THINK_MAX_USER_QUERY_CHARS"
         )
 
-        # Extended Thinking (enable_thinking) configuration
+        # Extended Thinking (enable_thinking) configuration. The per-tier
+        # thinking budgets (THINKING_BUDGET / THINKING_BUDGET_SIMPLE) were
+        # removed in 2026-10; the loop uses one flat budget
+        # (_DEEP_THINK_THINKING_BUDGET in deep_think.text_utils).
         thinking_enabled: bool = Field(default=True, env="THINKING_ENABLED")
-        thinking_budget: int = Field(default=10000, env="THINKING_BUDGET")
-        thinking_budget_simple: int = Field(default=2000, env="THINKING_BUDGET_SIMPLE")
 
         enable_skills: bool = Field(default=True, env="ENABLE_SKILLS")
         skill_budget_chars: int = Field(default=6000, env="SKILL_BUDGET_CHARS")
@@ -646,14 +647,6 @@ else:
             self.thinking_enabled = os.getenv("THINKING_ENABLED", "1").strip().lower() in {
                 "1", "true", "yes", "on",
             }
-            try:
-                self.thinking_budget = int(os.getenv("THINKING_BUDGET", "10000"))
-            except Exception:
-                self.thinking_budget = 10000
-            try:
-                self.thinking_budget_simple = int(os.getenv("THINKING_BUDGET_SIMPLE", "2000"))
-            except Exception:
-                self.thinking_budget_simple = 2000
 
             self.enable_skills = os.getenv("ENABLE_SKILLS", "1").strip().lower() in {
                 "1",

@@ -5,8 +5,6 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
-import pytest
-
 from app.routers.chat.agent import StructuredChatAgent
 from app.routers.chat.agent import _rewrite_phagescope_dataset_understanding_plan_to_deep_profile
 from app.routers.chat.action_execution import build_phagescope_deep_profile_analysis
@@ -21,13 +19,6 @@ from app.services.llm.structured_response import LLMAction, LLMReply, LLMStructu
 from app.services.deep_think_agent import DeepThinkAgent
 
 
-@pytest.fixture(autouse=True)
-def _legacy_tier_mode(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Pin legacy three-tier routing for this file; the flatten-contract tests
-    in TestTierFlattenMode override it per class."""
-    monkeypatch.setenv("TIER_FLATTEN_ENABLED", "0")
-
-
 def test_request_tier_routes_greeting_to_standard_with_brevity_hint() -> None:
     decision = resolve_request_routing(message="你好呀")
 
@@ -40,20 +31,6 @@ def test_request_tier_routes_greeting_to_standard_with_brevity_hint() -> None:
     assert decision.manual_deep_think is False
 
 
-def test_request_tier_routes_latest_sources_request_to_research_auto_deepthink() -> None:
-    decision = resolve_request_routing(
-        message="给我 2025-2026 最新文献和来源，最好附上引用",
-    )
-
-    assert decision.request_tier == "research"
-    assert decision.request_route_mode == "auto_deepthink"
-    # Phase 1: thinking is always visible.
-    assert decision.thinking_visibility == "visible"
-    assert decision.metadata()["thinking_display_mode"] == "full_thinking"
-    assert "research_cue" in decision.route_reason_codes
-    assert "time_sensitive_cue" in decision.route_reason_codes
-
-
 def test_bound_local_manuscript_assembly_routes_to_execute_not_research() -> None:
     decision = resolve_request_routing(
         message="请基于已完成任务整合生成最终论文草稿，不要查文献，也不要重新分析。",
@@ -61,12 +38,11 @@ def test_bound_local_manuscript_assembly_routes_to_execute_not_research() -> Non
         current_task_id=66,
     )
 
-    # After intent classification refactor: resolve_intent_type returns chat
-    # for keyword-based messages; classify_request_tier independently detects tier.
-    # The message mentions "文献" which triggers research_cue in classify_request_tier;
-    # without an execute keyword, the tier is research (not execute).
+    # resolve_intent_type returns chat for keyword-based messages. The message
+    # mentions "文献" so the structural research_cue code is still emitted, but
+    # the flat router keeps the single "standard" label for every turn.
     assert decision.intent_type == "chat"
-    assert decision.request_tier == "research"
+    assert decision.request_tier == "standard"
     assert "intent_manuscript_assembly" not in decision.route_reason_codes
     assert "research_cue" in decision.route_reason_codes
 
@@ -77,7 +53,10 @@ def test_request_tier_routes_attachment_request_to_execute_auto_deepthink() -> N
         context={"attachments": [{"type": "document", "path": "/tmp/a.pdf"}]},
     )
 
-    assert decision.request_tier == "execute"
+    assert decision.request_tier == "standard"
+    # Attachments still elevate the intent (tool iterations are needed to read
+    # the file); the flat router no longer changes the budget label for them.
+    assert decision.intent_type == "execute_task"
     assert decision.request_route_mode == "auto_deepthink"
     # Phase 1: thinking is always visible.
     assert decision.thinking_visibility == "visible"
@@ -85,11 +64,9 @@ def test_request_tier_routes_attachment_request_to_execute_auto_deepthink() -> N
 
     profile = build_request_tier_profile(
         decision,
-        default_thinking_budget=10000,
-        simple_thinking_budget=2000,
         default_max_iterations=64,
     )
-    assert profile.max_iterations == 64  # min(default_max_iterations=64, execute_cap=100)
+    assert profile.max_iterations == 64  # min(default_max_iterations=64, flat_cap=100)
 
 
 def test_request_tier_keeps_manual_deepthink_visible_for_standard_request() -> None:
@@ -106,12 +83,10 @@ def test_request_tier_keeps_manual_deepthink_visible_for_standard_request() -> N
 
     profile = build_request_tier_profile(
         decision,
-        default_thinking_budget=10000,
-        simple_thinking_budget=2000,
         default_max_iterations=64,
     )
     assert len(profile.available_tools) > 0  # tools always available now
-    assert profile.max_iterations == 100  # standard tier uses 100 iterations
+    assert profile.max_iterations == 64  # min(default=64, flat_cap=100)
 
 
 def test_request_tier_promotes_depth_cue_out_of_light_bucket() -> None:
@@ -124,14 +99,12 @@ def test_request_tier_promotes_depth_cue_out_of_light_bucket() -> None:
 def test_manual_deepthink_search_request_routes_to_research_with_tools() -> None:
     decision = resolve_request_routing(message="/think 你得仔细搜索一下！不要随便回复给我")
 
-    assert decision.request_tier == "research"
+    assert decision.request_tier == "standard"
     assert decision.request_route_mode == "manual_deepthink"
     assert decision.thinking_visibility == "visible"
 
     profile = build_request_tier_profile(
         decision,
-        default_thinking_budget=10000,
-        simple_thinking_budget=2000,
         default_max_iterations=64,
     )
     assert "web_search" in profile.available_tools
@@ -143,15 +116,13 @@ def test_manual_deepthink_mixed_plan_request_routes_to_execute_with_plan_tool() 
     decision = resolve_request_routing(message="/think 很好啊，那你针对于这个，制作一个plan来看看吧")
 
     assert decision.intent_type == "chat"
-    assert decision.request_tier == "execute"
+    assert decision.request_tier == "standard"
     assert decision.request_route_mode == "manual_deepthink"
     assert "intent_plan_request" not in decision.route_reason_codes
-    assert "plan_request" in decision.route_reason_codes
+    assert "plan_create_request" in decision.route_reason_codes
 
     profile = build_request_tier_profile(
         decision,
-        default_thinking_budget=10000,
-        simple_thinking_budget=2000,
         default_max_iterations=64,
     )
     assert "plan_operation" in profile.available_tools
@@ -163,15 +134,13 @@ def test_manual_deepthink_research_then_plan_request_still_routes_to_execute() -
     )
 
     assert decision.intent_type == "chat"
-    assert decision.request_tier == "execute"
+    assert decision.request_tier == "standard"
     assert decision.request_route_mode == "manual_deepthink"
     assert "intent_plan_request" not in decision.route_reason_codes
-    assert "plan_request" in decision.route_reason_codes
+    assert "plan_create_request" in decision.route_reason_codes
 
     profile = build_request_tier_profile(
         decision,
-        default_thinking_budget=10000,
-        simple_thinking_budget=2000,
         default_max_iterations=64,
     )
     assert "plan_operation" in profile.available_tools
@@ -202,18 +171,16 @@ def test_unbound_create_plan_only_requires_create_not_execute() -> None:
         message="Create an executable plan for the ovarian cancer scRNA analysis",
     )
 
-    assert decision.request_tier == "execute"
+    assert decision.request_tier == "standard"
     assert decision.plan_create_required is True
     assert decision.plan_execute_required is False
     assert decision.plan_execute_after_create_required is False
 
     profile = build_request_tier_profile(
         decision,
-        default_thinking_budget=10000,
-        simple_thinking_budget=2000,
         default_max_iterations=64,
     )
-    assert profile.max_iterations == 64  # min(default=64, execute_cap=100)
+    assert profile.max_iterations == 64  # min(default=64, flat_cap=100)
 
 
 def test_phagescope_dataset_understanding_routes_to_research_without_plan_create() -> None:
@@ -225,7 +192,7 @@ def test_phagescope_dataset_understanding_routes_to_research_without_plan_create
         ),
     )
 
-    assert decision.request_tier == "research"
+    assert decision.request_tier == "standard"
     assert decision.intent_type == "chat"
     assert decision.plan_create_required is False
     assert "phagescope" in decision.subject_resolution["display_ref"].lower()
@@ -239,10 +206,11 @@ def test_vague_phagescope_path_analysis_routes_to_research_without_plan_create()
         ),
     )
 
-    assert decision.request_tier == "research"
+    assert decision.request_tier == "standard"
     assert decision.intent_type == "chat"
     assert decision.plan_create_required is False
-    assert "phagescope_dataset_analysis" in decision.route_reason_codes
+    # The tier-escalation reason code (phagescope_dataset_analysis) was removed
+    # with the tier system; the subject still resolves to the directory path.
     assert "phagescope" in decision.subject_resolution["display_ref"].lower()
     assert decision.subject_resolution["display_ref"] == "/home/zczhao/Phage-Agent/phagescope"
 
@@ -280,7 +248,11 @@ def test_phagescope_directory_with_meta_data_keeps_dataset_routing(tmp_path) -> 
         message=f"again analyze this data. {data_dir}. I will tell you later, start!",
     )
 
-    assert "phagescope_dataset_analysis" in decision.route_reason_codes
+    # The router's tier-escalation reason code is gone (flat label stays
+    # "standard"), but the DeepThink-side dataset gate — still consumed by
+    # deep_think.gating_plans — must keep recognising a phagescope directory
+    # that carries meta_data/.
+    assert decision.request_tier == "standard"
     assert DeepThinkAgent._phagescope_dataset_analysis_requested(
         f"again analyze this data. {data_dir}. start!"
     ) is True
@@ -441,7 +413,7 @@ def test_unbound_create_and_execute_plan_requires_create_then_execute_all() -> N
         ),
     )
 
-    assert decision.request_tier == "execute"
+    assert decision.request_tier == "standard"
     assert decision.intent_type == "execute_task"
     assert decision.plan_create_required is True
     assert decision.plan_execute_required is True
@@ -449,11 +421,9 @@ def test_unbound_create_and_execute_plan_requires_create_then_execute_all() -> N
 
     profile = build_request_tier_profile(
         decision,
-        default_thinking_budget=10000,
-        simple_thinking_budget=2000,
         default_max_iterations=64,
     )
-    assert profile.max_iterations == 64  # min(default=64, execute_cap=100)
+    assert profile.max_iterations == 64  # min(default=64, flat_cap=100)
 
 
 def test_bound_plan_new_subject_requires_confirmation_without_new_plan_language() -> None:
@@ -476,12 +446,10 @@ def test_bound_plan_review_request_requires_review_operation() -> None:
     )
 
     assert decision.intent_type == "chat"
-    assert decision.request_tier == "execute"
+    assert decision.request_tier == "standard"
 
     profile = build_request_tier_profile(
         decision,
-        default_thinking_budget=10000,
-        simple_thinking_budget=2000,
         default_max_iterations=64,
     )
     assert "plan_operation" in profile.available_tools
@@ -494,7 +462,7 @@ def test_bound_plan_review_and_optimize_request_requires_both_operations() -> No
     )
 
     assert decision.intent_type == "chat"
-    assert decision.request_tier == "execute"
+    assert decision.request_tier == "standard"
     assert decision.plan_review_required is True
     assert decision.plan_optimize_required is True
 
@@ -506,7 +474,7 @@ def test_bound_plan_english_review_request_requires_review_operation() -> None:
     )
 
     assert decision.intent_type == "chat"
-    assert decision.request_tier == "execute"
+    assert decision.request_tier == "standard"
     assert decision.plan_review_required is True
 
 
@@ -526,7 +494,7 @@ def test_internal_contract_repair_does_not_trigger_plan_review_contract() -> Non
     )
 
     assert decision.intent_type == "execute_task"
-    assert decision.request_tier == "execute"
+    assert decision.request_tier == "standard"
     assert decision.plan_review_required is False
     assert "plan_review" not in decision.route_reason_codes
     assert "internal_contract_repair" in decision.route_reason_codes
@@ -610,8 +578,6 @@ def test_file_followup_inherits_active_subject_and_keeps_local_inspect_tools() -
 
     profile = build_request_tier_profile(
         decision,
-        default_thinking_budget=10000,
-        simple_thinking_budget=2000,
         default_max_iterations=64,
     )
     assert "file_operations" in profile.available_tools
@@ -620,7 +586,7 @@ def test_file_followup_inherits_active_subject_and_keeps_local_inspect_tools() -
     # local inspect floor itself is unaffected.
     assert "code_executor" not in profile.available_tools
     assert "deliverable_submit" in profile.available_tools
-    assert profile.max_iterations == 100
+    assert profile.max_iterations == 64  # min(default=64, flat_cap=100)
 
 
 def test_followthrough_data_analysis_followup_routes_to_execute_task() -> None:
@@ -642,10 +608,10 @@ def test_followthrough_data_analysis_followup_routes_to_execute_task() -> None:
         ],
     )
 
-    # After intent classification refactor: resolve_intent_type returns chat;
-    # classify_request_tier independently detects execute tier via "分析" keyword.
+    # resolve_intent_type returns chat for this follow-up; the flat router keeps
+    # the single "standard" label instead of detecting an execute tier.
     assert decision.intent_type == "chat"
-    assert decision.request_tier == "execute"
+    assert decision.request_tier == "standard"
     assert "intent_execute_task" not in decision.route_reason_codes
 
 
@@ -673,8 +639,6 @@ def test_manual_deepthink_followup_keeps_local_inspect_floor() -> None:
 
     profile = build_request_tier_profile(
         decision,
-        default_thinking_budget=10000,
-        simple_thinking_budget=2000,
         default_max_iterations=64,
     )
     assert "file_operations" in profile.available_tools
@@ -682,7 +646,7 @@ def test_manual_deepthink_followup_keeps_local_inspect_floor() -> None:
     # code_executor left the default pool (offer-gated off, 2026-09-27); the
     # local inspect floor itself is unaffected.
     assert "code_executor" not in profile.available_tools
-    assert profile.max_iterations == 100
+    assert profile.max_iterations == 64  # min(default=64, flat_cap=100)
 
 
 def test_phagescope_remote_verify_elevates_to_research_with_phagescope_tool() -> None:
@@ -704,15 +668,13 @@ def test_phagescope_remote_verify_elevates_to_research_with_phagescope_tool() ->
         ],
     )
 
-    # After intent classification refactor: resolve_intent_type returns chat;
-    # classify_request_tier independently detects execute tier via "测试" keyword.
+    # resolve_intent_type returns chat for this remote-verify request; the flat
+    # router no longer detects an execute tier from the "测试" keyword.
     assert decision.intent_type == "chat"
     assert decision.request_route_mode == "auto_deepthink"
 
     profile = build_request_tier_profile(
         decision,
-        default_thinking_budget=10000,
-        simple_thinking_budget=2000,
         default_max_iterations=64,
     )
     assert "phagescope" in profile.available_tools
@@ -730,8 +692,6 @@ def test_phagescope_task_download_outputs_elevates_to_research_without_anchor() 
     assert decision.intent_type == "execute_task"
     profile = build_request_tier_profile(
         decision,
-        default_thinking_budget=10000,
-        simple_thinking_budget=2000,
         default_max_iterations=64,
     )
     assert "phagescope" in profile.available_tools
@@ -778,8 +738,6 @@ def test_phagescope_task_status_followup_elevates_to_research_without_saying_pha
     assert decision.intent_type == "chat"
     profile = build_request_tier_profile(
         decision,
-        default_thinking_budget=10000,
-        simple_thinking_budget=2000,
         default_max_iterations=64,
     )
     # All tools always available — phagescope included
@@ -807,8 +765,6 @@ def test_inherited_subject_data_inquiry_does_not_include_phagescope_without_remo
 
     profile = build_request_tier_profile(
         decision,
-        default_thinking_budget=10000,
-        simple_thinking_budget=2000,
         default_max_iterations=64,
     )
     assert "phagescope" in profile.available_tools
@@ -860,17 +816,15 @@ def test_local_mutation_followup_routes_to_execute_with_inherited_subject() -> N
         ],
     )
 
-    # After intent classification refactor: resolve_intent_type returns chat;
-    # classify_request_tier independently detects execute tier via "解压" keyword.
+    # resolve_intent_type returns chat for this unzip request; the flat router
+    # keeps the single "standard" label instead of detecting an execute tier.
     assert decision.intent_type == "chat"
-    assert decision.request_tier == "execute"
+    assert decision.request_tier == "standard"
     assert decision.request_route_mode == "auto_deepthink"
     assert decision.subject_resolution["source"] == "inherited"
 
     profile = build_request_tier_profile(
         decision,
-        default_thinking_budget=10000,
-        simple_thinking_budget=2000,
         default_max_iterations=64,
     )
     assert "terminal_session" in profile.available_tools
@@ -886,10 +840,10 @@ def test_reunzip_short_followup_routes_without_active_subject_in_context() -> No
             {"role": "assistant", "content": "目录里有很多 zip 文件。"},
         ],
     )
-    # After intent classification refactor: resolve_intent_type returns chat;
-    # classify_request_tier independently detects execute tier via "重新解压" keyword.
+    # resolve_intent_type returns chat for this short follow-up; the flat router
+    # keeps the single "standard" label instead of detecting an execute tier.
     assert decision.intent_type == "chat"
-    assert decision.request_tier == "execute"
+    assert decision.request_tier == "standard"
 
 
 def test_archive_followups_promote_to_local_mutation() -> None:
@@ -918,13 +872,13 @@ def test_archive_followups_promote_to_local_mutation() -> None:
                 {"role": "assistant", "content": "我看到了几个 zip 压缩包。"},
             ],
         )
-        # After intent classification refactor: resolve_intent_type returns chat;
-        # classify_request_tier independently detects execute tier via keywords.
-        # Messages with clear execute keywords (解压) get request_tier == execute;
-        # ambiguous verbs like "展开" may route to chat tier — the LLM handles tool selection.
+        # resolve_intent_type returns chat for these archive verbs; the flat
+        # router keeps the single "standard" label for every turn, so the tier
+        # no longer distinguishes clear execute keywords ("解压") from
+        # ambiguous verbs like "展开" — the LLM picks the tool.
+        assert decision.request_tier == "standard", f"Expected standard tier for '{message}'"
         if "解压" in message:
             assert decision.intent_type == "chat", f"Expected chat for '{message}'"
-            assert decision.request_tier == "execute", f"Expected execute tier for '{message}'"
         else:
             assert decision.intent_type in ("execute_task", "chat"), f"Unexpected intent for '{message}'"
 
@@ -961,12 +915,10 @@ def test_execute_tier_profile_includes_deliverable_submit() -> None:
 
     profile = build_request_tier_profile(
         decision,
-        default_thinking_budget=10000,
-        simple_thinking_budget=2000,
         default_max_iterations=64,
     )
 
-    assert decision.request_tier == "execute"
+    assert decision.request_tier == "standard"
     assert "deliverable_submit" in profile.available_tools
 
 
@@ -988,11 +940,11 @@ def test_start_task_followup_routes_to_execute() -> None:
         ],
     )
 
-    # After intent classification refactor: resolve_intent_type returns chat;
-    # classify_request_tier independently detects execute tier via "完成任务" keyword.
+    # resolve_intent_type returns chat for this follow-up; the flat router keeps
+    # the single "standard" label for every turn.
     assert decision.intent_type == "chat"
     assert decision.request_route_mode == "auto_deepthink"
-    assert decision.request_tier == "execute"
+    assert decision.request_tier == "standard"
 
 
 def test_compound_report_and_image_edit_does_not_take_image_display_shortcut() -> None:
@@ -1010,7 +962,7 @@ def test_compound_report_and_image_edit_does_not_take_image_display_shortcut() -
     )
     assert requests_existing_image_display(message, context) is False
     decision = resolve_request_routing(message=message, context=context)
-    assert decision.request_tier == "execute"
+    assert decision.request_tier == "standard"
 
 
 def test_english_compound_report_and_image_edit_does_not_take_image_display_shortcut() -> None:
@@ -1053,10 +1005,10 @@ def test_existing_image_display_with_repair_context_still_routes_to_local_read()
         },
     )
 
-    # After intent classification refactor: resolve_intent_type returns chat;
-    # "修复" is an execute keyword detected by classify_request_tier.
+    # resolve_intent_type returns chat for this repair follow-up; the flat
+    # router keeps the single "standard" label.
     assert decision.intent_type == "chat"
-    assert decision.request_tier == "execute"
+    assert decision.request_tier == "standard"
 
 
 def test_explicit_execution_still_overrides_existing_image_display() -> None:
@@ -1073,10 +1025,10 @@ def test_explicit_execution_still_overrides_existing_image_display() -> None:
         },
     )
 
-    # After intent classification refactor: resolve_intent_type returns chat;
-    # classify_request_tier independently detects execute tier via "执行" keyword.
+    # resolve_intent_type returns chat here; the flat router keeps the single
+    # "standard" label instead of detecting an execute tier from "执行".
     assert decision.intent_type == "chat"
-    assert decision.request_tier == "execute"
+    assert decision.request_tier == "standard"
     decision = resolve_request_routing(
         message="重新生成那张图，换个风格",
         context={
@@ -1090,10 +1042,10 @@ def test_explicit_execution_still_overrides_existing_image_display() -> None:
         },
     )
 
-    # After intent classification refactor: resolve_intent_type returns chat;
-    # "重新生成" is detected by classify_request_tier as execute tier.
+    # resolve_intent_type returns chat for this regeneration request; the flat
+    # router keeps the single "standard" label.
     assert decision.intent_type == "chat"
-    assert decision.request_tier == "execute"
+    assert decision.request_tier == "standard"
     assert decision.request_route_mode == "auto_deepthink"
 
 
@@ -1171,8 +1123,8 @@ def test_process_unified_stream_asks_for_clarification_when_multiple_recent_imag
 # ---------------------------------------------------------------------------
 
 def test_followthrough_plus_action_verb_routes_to_execute() -> None:
-    """After intent classification refactor: resolve_intent_type returns chat;
-    classify_request_tier independently detects execute tier via followthrough + action verb."""
+    """resolve_intent_type stays chat for followthrough + action verb; the flat
+    router no longer classifies a tier from that keyword pattern."""
     intent, reasons = resolve_intent_type(message="继续用这五个进行尝试")
     assert intent == "chat"
 
@@ -1198,8 +1150,8 @@ def test_chat_continuation_stays_chat() -> None:
 
 
 def test_english_followthrough_plus_action_routes_to_execute() -> None:
-    """After intent classification refactor: resolve_intent_type returns chat;
-    classify_request_tier independently detects execute tier."""
+    """resolve_intent_type stays chat for English followthrough + action; the
+    flat router no longer classifies a tier from that keyword pattern."""
     intent, _ = resolve_intent_type(message="continue trying with those five")
     assert intent == "chat"
 
@@ -1240,21 +1192,7 @@ def test_explicit_task_id_with_continue_elevates_to_execute() -> None:
     decision = resolve_request_routing(message="继续做任务13、14")
     assert decision.intent_type == "execute_task"
     assert decision.explicit_task_ids == [13, 14]
-    assert decision.request_tier in ("execute", "standard")
-
-
-def test_explicit_task_override_execute_profile_gets_more_iterations() -> None:
-    decision = resolve_request_routing(message="执行任务9")
-    assert decision.request_tier == "execute"
-    assert decision.explicit_task_override is True
-
-    profile = build_request_tier_profile(
-        decision,
-        default_thinking_budget=10000,
-        simple_thinking_budget=2000,
-        default_max_iterations=64,
-    )
-    assert profile.max_iterations == 64  # min(default=64, execute_cap=100)
+    assert decision.request_tier == "standard"
 
 
 def test_explicit_task_id_does_not_override_genuine_execute() -> None:
@@ -1313,55 +1251,8 @@ def test_classify_request_tier_high_confidence_for_plan_request() -> None:
         plan_id=122,
         intent_type="chat",
     )
-    assert tier == "execute"
+    assert tier == "standard"
     assert confidence >= 0.8
-
-
-def test_classify_request_tier_low_confidence_for_default_standard() -> None:
-    from app.routers.chat.request_routing import classify_request_tier
-    tier, reasons, brevity, confidence = classify_request_tier(
-        message="现在分析的很浅，跟最开始我给的最初的计划很不一样，我需要深层次的分析，现在太简单了，分析的不够深入，增加分析到计划里面",
-        plan_id=122,
-        intent_type="chat",
-    )
-    assert confidence < 0.5
-    assert "default_standard" in reasons
-
-
-def test_llm_routing_fallback_returns_none_on_failure(monkeypatch) -> None:
-    from app.routers.chat import request_routing as _rr
-    from app.routers.chat.request_routing import _llm_routing_fallback
-
-    class FakeClient:
-        def chat(self, *args, **kwargs):
-            raise RuntimeError("LLM unavailable")
-
-    monkeypatch.setattr(_rr, "get_default_client", lambda: FakeClient())
-    result = _llm_routing_fallback("test message", plan_bound=True)
-    assert result is None
-
-
-def test_resolve_request_routing_uses_llm_fallback_for_plan_bound_low_confidence(monkeypatch) -> None:
-    import json as _json
-    from app.routers.chat import request_routing as _rr
-    from app.routers.chat.request_routing import resolve_request_routing
-
-    class FakeClient:
-        def chat(self, *args, **kwargs):
-            return _json.dumps({
-                "tier": "execute",
-                "is_plan_modification": True,
-                "reason": "User wants to deepen analysis in the plan"
-            })
-
-    monkeypatch.setattr(_rr, "get_default_client", lambda: FakeClient())
-
-    decision = resolve_request_routing(
-        message="现在分析的很浅，跟最开始我给的最初的计划很不一样，我需要深层次的分析，现在太简单了，分析的不够深入，增加分析到计划里面",
-        plan_id=122,
-    )
-    assert decision.request_tier in ("standard", "research", "execute")
-    assert "llm_routing_elevated" in decision.route_reason_codes or "llm_detected_plan_modification" in decision.route_reason_codes
 
 
 def test_score_like_rubric_numbers_do_not_trigger_explicit_task_override() -> None:
@@ -1392,10 +1283,10 @@ def test_full_plan_status_question_does_not_trigger_execution() -> None:
 
 
 def test_full_plan_imperative_request_triggers_execution() -> None:
-    """Full-plan execution keywords elevate intent and tier but do not set
-    full_plan_execution — execution flows through DeepThink →
-    plan_operation(execute_all) tool path instead of direct PlanExecutor
-    delegation.
+    """Full-plan execution keywords elevate the intent (there is no tier to
+    elevate) but do not set full_plan_execution — execution flows through
+    DeepThink → plan_operation(execute_all) tool path instead of direct
+    PlanExecutor delegation.
     """
     decision = resolve_request_routing(
         message="请执行整个计划",
@@ -1404,7 +1295,7 @@ def test_full_plan_imperative_request_triggers_execution() -> None:
 
     assert decision.full_plan_execution is False
     assert decision.intent_type == "execute_task"
-    assert decision.request_tier == "execute"
+    assert decision.request_tier == "standard"
 
 
 def test_short_affirmation_no_longer_downgrades_to_light() -> None:
@@ -1442,12 +1333,8 @@ def test_greeting_routes_to_standard_with_brevity_hint_via_resolve() -> None:
 
 
 class TestTierFlattenMode:
-    """Hermes-pure flat loop: one budget for every turn; depth is the model's
-    call. Tier never escalates; intent and plan semantics are preserved."""
-
-    @pytest.fixture(autouse=True)
-    def _flat_mode(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setenv("TIER_FLATTEN_ENABLED", "1")
+    """Flat-loop routing: one budget for every turn; depth is the model's call.
+    The tier never escalates; intent and plan semantics are preserved."""
 
     def test_attachments_never_elevate_tier_but_intent_still_execute(self) -> None:
         decision = resolve_request_routing(
@@ -1457,13 +1344,11 @@ class TestTierFlattenMode:
             },
         )
         assert decision.request_tier == "standard"
-        assert "tier_flattened" in decision.route_reason_codes
         assert decision.intent_type == "execute_task"
 
     def test_execute_keywords_do_not_elevate_tier(self) -> None:
         decision = resolve_request_routing(message="帮我分析这份数据并生成图表和报告")
         assert decision.request_tier == "standard"
-        assert "tier_flattened" in decision.route_reason_codes
 
     def test_full_plan_imperative_keeps_intent_and_plan_semantics(self) -> None:
         decision = resolve_request_routing(message="请执行整个计划", context={"plan_id": 42})
@@ -1485,20 +1370,6 @@ class TestTierFlattenMode:
         assert decision.plan_create_required is True
         assert decision.request_tier == "standard"
 
-    def test_llm_fallback_never_fires(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        calls: list[str] = []
-
-        def _recorder(message: str, **kwargs):
-            calls.append(message)
-            return ("execute", False, ["stub"])
-
-        monkeypatch.setattr(
-            "app.routers.chat.request_routing._llm_routing_fallback", _recorder
-        )
-        decision = resolve_request_routing(message="嗯", context={"plan_id": 42})
-        assert calls == []
-        assert decision.request_tier == "standard"
-
     def test_greeting_keeps_brevity_but_action_plus_social_is_not_greeting(self) -> None:
         greeting = resolve_request_routing(message="hello")
         assert greeting.brevity_hint is True
@@ -1512,10 +1383,9 @@ class TestTierFlattenMode:
         decision = resolve_request_routing(message="你好呀")
         profile = build_request_tier_profile(
             decision,
-            default_thinking_budget=10000,
-            simple_thinking_budget=900,
             default_max_iterations=100,
         )
+        assert profile.request_tier == "standard"
         assert profile.thinking_budget == 8000
         assert profile.output_bias == "task_completion"
         assert profile.max_iterations == 100
@@ -1525,8 +1395,6 @@ class TestTierFlattenMode:
         object.__setattr__(decision, "plan_conflict_requires_confirmation", True)
         profile = build_request_tier_profile(
             decision,
-            default_thinking_budget=10000,
-            simple_thinking_budget=900,
             default_max_iterations=100,
         )
         assert profile.max_iterations == 10
