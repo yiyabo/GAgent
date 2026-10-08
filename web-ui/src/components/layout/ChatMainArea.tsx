@@ -176,10 +176,22 @@ const ChatMessageList: React.FC<ChatMessageListProps> = React.memo(
 
     useEffect(() => () => scrollTimersRef.current.forEach(clearTimeout), []);
 
+    const prevCountRef = useRef(0);
+
     useEffect(() => {
       if (!listRef.current || listData.length === 0) return;
+      const prevCount = prevCountRef.current;
+      prevCountRef.current = listData.length;
       if (pendingAdjustRef.current || isHistoryLoading) return;
-      stickyBottomRef.current = true;
+      // Only a message the user just sent may reclaim the scroll position;
+      // streaming updates follow along only while the user stays at the bottom.
+      const appended = listData.length > prevCount;
+      const lastItem = listData[listData.length - 1];
+      const lastIsUser = !isMemoryNoticeItem(lastItem) && lastItem.type === 'user';
+      if (appended && lastIsUser) {
+        stickyBottomRef.current = true;
+      }
+      if (!stickyBottomRef.current) return;
       forceScrollToBottom();
     }, [listData, isProcessing, isHistoryLoading, forceScrollToBottom]);
 

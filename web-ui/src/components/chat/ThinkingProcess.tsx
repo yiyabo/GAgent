@@ -754,11 +754,29 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
     }
   }, [process.steps.length, isFinished, process.status]);
 
-  // Auto-scroll to latest step during active thinking
+  // Auto-scroll to latest step during active thinking, but only while the
+  // user is already near the bottom of the enclosing scroll container —
+  // otherwise a user scrolling up to read gets yanked back down.
   useEffect(() => {
-    if (isActive && isExpanded && stepsEndRef.current) {
-      stepsEndRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    if (!isActive || !isExpanded || !stepsEndRef.current) return;
+    const target = stepsEndRef.current;
+    let scroller = target.parentElement;
+    while (scroller) {
+      const overflowY = getComputedStyle(scroller).overflowY;
+      if (
+        (overflowY === 'auto' || overflowY === 'scroll') &&
+        scroller.scrollHeight > scroller.clientHeight
+      ) {
+        break;
+      }
+      scroller = scroller.parentElement;
     }
+    if (scroller) {
+      const distanceToBottom =
+        scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
+      if (distanceToBottom > 150) return;
+    }
+    target.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }, [visibleSteps.length, isActive, isExpanded]);
 
   return (
