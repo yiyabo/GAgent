@@ -305,7 +305,10 @@ def _ensure_inline_images(text: str, image_relpaths: List[str]) -> str:
     endpoint, so `![caption](deliverables/x.png)` renders the actual figure.
     For each produced image: keep an existing inline reference, upgrade a
     plain markdown link, convert a bare filename line, or — only when no
-    anchor exists at all — append the image at the end.
+    anchor exists at all — append the image at the end. Coverage is tracked
+    per figure, not per file: once any format of a figure is inlined (say the
+    png), sibling formats (the svg/pdf of the same stem) are not embedded
+    again, and a no-anchor figure falls back to its raster variant.
 
     Anchors inside fenced code blocks never count: a reference there renders
     as literal text (the 2026-09-27 code-mode E2E case — the model's only
@@ -314,11 +317,45 @@ def _ensure_inline_images(text: str, image_relpaths: List[str]) -> str:
     mention, or at the end when there is none.
     """
     out = text or ""
-    for rel in image_relpaths or []:
-        rel = str(rel or "").strip().lstrip("/")
+
+    def _inline_image_names_and_stems() -> Tuple[set, set]:
+        """Basenames and extension-less stems of images already inlined in prose.
+
+        Fence-internal references render as literal text, so they never count
+        (same rule as the exact-filename anchor check below).
+        """
+        names: set = set()
+        stems: set = set()
+        fenced_ranges = _fenced_line_ranges(out)
+        for match in re.finditer(r"!\[[^\]\n]*\]\(([^)\n]+)\)", out):
+            if _pos_in_ranges(fenced_ranges, out.count("\n", 0, match.start())):
+                continue
+            base = match.group(1).strip().rsplit("/", 1)[-1]
+            if not base:
+                continue
+            names.add(base)
+            stem = base.rsplit(".", 1)[0] if "." in base else ""
+            if stem:
+                stems.add(stem)
+        return names, stems
+
+    # Raster first: when no anchor exists at all, the appended fallback should
+    # be the png/jpg, not the svg sibling of the same figure.
+    ordered = sorted(
+        (str(rel or "") for rel in image_relpaths or []),
+        key=lambda r: 1 if r.lower().endswith(".svg") else 0,
+    )
+    for rel in ordered:
+        rel = rel.strip().lstrip("/")
         if not rel or ".." in rel or "\\" in rel:
             continue
         name = rel.rsplit("/", 1)[-1]
+        stem = name.rsplit(".", 1)[0] if "." in name else ""
+        inline_names, inline_stems = _inline_image_names_and_stems()
+        # The same figure is already inlined in another format (e.g. the model
+        # embedded the png mid-answer) — one inline rendering per figure.
+        if stem and name not in inline_names and stem in inline_stems:
+            continue
         fenced = _fenced_line_ranges(out)
 
         def _inside(pos: int) -> bool:

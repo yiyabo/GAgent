@@ -382,6 +382,55 @@ class TestInlineImages:
         assert out.startswith(text)
         assert "![score_pie.png](deliverables/score_pie.png)" in out
 
+    def test_sibling_format_already_inline_skips_append(self) -> None:
+        """2026-10-08 微调此图 case: the model inlined the png mid-answer; the
+        svg sibling of the same figure must not be appended at the end."""
+        from app.services.deep_think_agent import _ensure_inline_images
+
+        text = (
+            "微调后主图：\n\n![高亮版](results/lung_cancer_retrieval_overview.png)"
+            "\n\n交付文件如上。"
+        )
+        out = _ensure_inline_images(
+            text,
+            [
+                "deliverables/latest/image_tabular/lung_cancer_retrieval_overview.svg",
+                "deliverables/latest/image_tabular/lung_cancer_retrieval_overview.png",
+            ],
+        )
+        assert out == text
+
+    def test_multi_format_append_prefers_raster_over_svg(self) -> None:
+        from app.services.deep_think_agent import _ensure_inline_images
+
+        text = "图已生成。"
+        for rels in (
+            ["deliverables/chart.svg", "deliverables/chart.png"],
+            ["deliverables/chart.png", "deliverables/chart.svg"],
+        ):
+            out = _ensure_inline_images(text, list(rels))
+            assert "![chart.png](deliverables/chart.png)" in out
+            assert "chart.svg" not in out
+
+    def test_svg_only_still_appended(self) -> None:
+        from app.services.deep_think_agent import _ensure_inline_images
+
+        out = _ensure_inline_images("图已生成。", ["deliverables/chart.svg"])
+        assert "![chart.svg](deliverables/chart.svg)" in out
+
+    def test_absolute_path_rewrite_still_applies_when_stem_covered(self) -> None:
+        """Stem coverage must not skip the exact-file branch: an inline ref to
+        the same filename via a container-absolute path is still rewritten."""
+        from app.services.deep_think_agent import _ensure_inline_images
+
+        text = "如图：\n\n![图](/app/runtime/session_x/results/chart.png)\n\n完。"
+        out = _ensure_inline_images(
+            text, ["results/chart.png", "deliverables/chart.svg"]
+        )
+        assert "![图](results/chart.png)" in out
+        assert "/app/runtime" not in out
+        assert "chart.svg" not in out
+
     def test_midline_mention_inserts_image_right_after_the_line(self) -> None:
         """The 2026-09-20 screenshot case: filename backticked inside a
         composite bullet — the image must appear right under that bullet, not

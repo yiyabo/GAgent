@@ -123,7 +123,6 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
       ),
     [metadata, displayTextForUi],
   );
-  const showInlineArtifactGallery = artifactGallery.length > 0;
   const artifactFiles = useMemo(
     () => collectArtifactFiles((metadata as any)?.artifact_files),
     [metadata],
@@ -140,6 +139,14 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
   const isBackgroundDispatch = isBackgroundDispatchCategory(bgCategory);
   const isStreaming =
     unifiedStream && (status === 'pending' || status === 'running');
+  // Deliverable figure cards stay hidden while the run is still in flight:
+  // mid-run cards showed unfinished figures before the final answer (and the
+  // first render can still be corrected later in the run). Settled messages
+  // render only figures not already inlined in the reply text.
+  const showInlineArtifactGallery =
+    artifactGallery.length > 0 &&
+    !isStreaming &&
+    message.thinking_process?.status !== 'active';
   const showStreamCursor = shouldShowStreamingCursor({
     unifiedStream,
     status,
