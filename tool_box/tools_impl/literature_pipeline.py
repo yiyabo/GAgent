@@ -1364,6 +1364,17 @@ def _is_within_root(path: Path, root: Path) -> bool:
         return False
 
 
+def _runtime_root() -> Path:
+    """Configured runtime root (``APP_RUNTIME_ROOT``) or the in-tree runtime dir."""
+    raw = str(os.getenv("APP_RUNTIME_ROOT") or "").strip()
+    return Path(raw).resolve() if raw else _RUNTIME_DIR.resolve()
+
+
+def _is_allowed_output_dir(path: Path) -> bool:
+    """Output must stay inside the project tree or the configured runtime root."""
+    return _is_within_root(path, _PROJECT_ROOT) or _is_within_root(path, _runtime_root())
+
+
 def _safe_relative_to(path: Path, root: Path) -> str:
     """Return a relative path string when *path* is under *root*, else absolute."""
     try:
@@ -1455,8 +1466,13 @@ async def _literature_pipeline_handler_impl(
                 "error": f"session_output_dir_unavailable: {exc}",
             }
         output_dir = _normalize_output_dir(out_dir, default_dir=default_dir)
-    # Ensure under project root for safety (skip for PathRouter-managed paths)
-    if unified_output_dir is None and not _is_within_root(output_dir, _PROJECT_ROOT):
+    # Ensure the directory is under a root we own — the project tree or the
+    # configured runtime root. In production APP_RUNTIME_ROOT is mounted
+    # outside /app, so the session default dir is NOT under _PROJECT_ROOT and
+    # the old project-only check rejected every chat-lane call with
+    # out_dir_outside_project (LOCAL_INFRA §116). PathRouter-managed task
+    # paths are already scoped and skip the check.
+    if unified_output_dir is None and not _is_allowed_output_dir(output_dir):
         return {"tool": "literature_pipeline", "success": False, "error": "out_dir_outside_project"}
     output_dir.mkdir(parents=True, exist_ok=True)
 

@@ -78,3 +78,29 @@ def test_registered_handler_survives_the_executor_hop(_impl_spy) -> None:
     )
     assert result["success"] is True
     assert calls[-1] == {"query": "phage depolymerase", "max_results": 2}
+
+
+# ---------------------------------------------------------------------------
+# Output-root guard: production mounts APP_RUNTIME_ROOT outside /app, so the
+# session default dir is not under the project tree. The guard must accept the
+# configured runtime root or every chat-lane call dies with
+# out_dir_outside_project (observed 2026-09-26 and 2026-10-10).
+# ---------------------------------------------------------------------------
+
+
+def test_runtime_root_outside_project_is_an_allowed_output_dir(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    runtime_root = tmp_path / "mounted_runtime"
+    runtime_root.mkdir()
+    monkeypatch.setenv("APP_RUNTIME_ROOT", str(runtime_root))
+    assert lp._runtime_root() == runtime_root.resolve()
+    assert lp._is_allowed_output_dir(runtime_root / "session_x" / "tool_outputs" / "lit")
+    assert lp._is_allowed_output_dir(lp._PROJECT_ROOT / "runtime" / "lit_reviews" / "x")
+    assert not lp._is_allowed_output_dir(tmp_path / "elsewhere")
+
+
+def test_runtime_root_falls_back_to_in_tree_dir(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("APP_RUNTIME_ROOT", raising=False)
+    assert lp._runtime_root() == lp._RUNTIME_DIR.resolve()
+    assert lp._is_allowed_output_dir(lp._RUNTIME_DIR / "lit_reviews" / "pack")
