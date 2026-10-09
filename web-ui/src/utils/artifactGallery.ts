@@ -12,6 +12,12 @@ const IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp|svg)$/i;
 const isNonEmptyString = (value: unknown): value is string =>
   typeof value === 'string' && value.trim().length > 0;
 
+/** True for session uploads (user inputs) — never rendered as reply artifacts. */
+export const isUserUploadPath = (path: string | null | undefined): boolean => {
+  const clean = (path || '').replace(/^\/+/, '').replace(/^raw_files\//, '');
+  return clean.startsWith('uploads/');
+};
+
 export const normalizeArtifactGalleryItem = (raw: any): ArtifactGalleryItem | null => {
   if (!raw || typeof raw !== 'object') {
     return null;
@@ -41,6 +47,13 @@ export const collectArtifactGallery = (value: any): ArtifactGalleryItem[] => {
   for (const item of items) {
     const normalized = normalizeArtifactGalleryItem(item);
     if (!normalized) {
+      continue;
+    }
+    // User uploads are inputs, not produced artifacts: the user's own message
+    // already carries them. Excluding them here also cleans messages stored
+    // before the backend gate existed (2026-10-09 duplicate-figure incident,
+    // LOCAL_INFRA §112).
+    if (isUserUploadPath(normalized.path)) {
       continue;
     }
     // Normalize path to prevent duplicate raw_files vs root duplicates

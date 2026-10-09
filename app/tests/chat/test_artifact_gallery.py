@@ -1,4 +1,8 @@
-from app.routers.chat.artifact_gallery import extract_artifact_gallery_from_result
+from app.routers.chat.artifact_gallery import (
+    extract_artifact_gallery_from_result,
+    filter_user_uploads_out,
+    is_user_upload_path,
+)
 
 
 def test_extract_artifact_gallery_accepts_saved_image_path(tmp_path, monkeypatch) -> None:
@@ -27,3 +31,32 @@ def test_extract_artifact_gallery_accepts_saved_image_path(tmp_path, monkeypatch
             "tracking_id": "track_demo",
         }
     ]
+
+
+class TestUserUploadExclusion:
+    """Uploads are user inputs, never reply-gallery artifacts (LOCAL_INFRA §112)."""
+
+    def test_upload_paths_are_recognized(self) -> None:
+        assert is_user_upload_path("uploads/8609_pasted.png")
+        assert is_user_upload_path("/uploads/8609_pasted.png")
+        assert is_user_upload_path("raw_files/uploads/8609_pasted.png")
+
+    def test_non_upload_paths_are_not_uploads(self) -> None:
+        assert not is_user_upload_path("results/DKD_dataset_overview.png")
+        assert not is_user_upload_path("uploads_extra/x.png")
+        assert not is_user_upload_path("work/uploads/x.png")
+        assert not is_user_upload_path("")
+        assert not is_user_upload_path(None)
+
+    def test_filter_drops_uploads_and_keeps_produced_images(self) -> None:
+        gallery = [
+            {"path": "uploads/8609_pasted.png", "origin": "artifact"},
+            {"path": "results/DKD_dataset_overview.png", "origin": "artifact"},
+            "not-a-dict",
+        ]
+        kept = filter_user_uploads_out(gallery)
+        assert [item["path"] for item in kept] == ["results/DKD_dataset_overview.png"]
+
+    def test_filter_handles_empty_input(self) -> None:
+        assert filter_user_uploads_out(None) == []
+        assert filter_user_uploads_out([]) == []

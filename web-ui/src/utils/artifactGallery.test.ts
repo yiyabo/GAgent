@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  collectArtifactGallery,
   collectInlineImageKeys,
   filterInlinedGalleryItems,
+  isUserUploadPath,
   type ArtifactGalleryItem,
 } from './artifactGallery';
 
@@ -55,5 +57,22 @@ describe('filterInlinedGalleryItems', () => {
     const items = [item('results/run_2/figures/sensitivity_forest.png')];
     expect(filterInlinedGalleryItems(items, '没有图片的回复')).toEqual(items);
     expect(filterInlinedGalleryItems(items, null)).toEqual(items);
+  });
+});
+
+describe('collectArtifactGallery upload exclusion', () => {
+  it('drops user uploads and keeps produced images', () => {
+    const collected = collectArtifactGallery([
+      { path: 'uploads/8609ba8df2d1_pasted-image.png', mime_family: 'image' },
+      { path: 'results/DKD_dataset_overview.png', mime_family: 'image' },
+    ]);
+    expect(collected.map((i) => i.path)).toEqual(['results/DKD_dataset_overview.png']);
+  });
+
+  it('recognizes raw_files-prefixed and slash-prefixed upload paths', () => {
+    expect(isUserUploadPath('raw_files/uploads/x.png')).toBe(true);
+    expect(isUserUploadPath('/uploads/x.png')).toBe(true);
+    expect(isUserUploadPath('uploads_extra/x.png')).toBe(false);
+    expect(isUserUploadPath('results/uploads/x.png')).toBe(false);
   });
 });

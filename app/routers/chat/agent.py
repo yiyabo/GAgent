@@ -2610,7 +2610,10 @@ class StructuredChatAgent:
                         origin=artifact_meta.get("origin"),
                     )
                     if gallery_item is not None:
-                        from .artifact_gallery import filter_gallery_new_images_only
+                        from .artifact_gallery import (
+                            filter_gallery_new_images_only,
+                            is_user_upload_path,
+                        )
 
                         merged = merge_artifact_gallery(
                             current_turn_artifact_gallery,
@@ -2623,20 +2626,29 @@ class StructuredChatAgent:
                             merged,
                             session_id=self.session_id,
                         )
-                        if len(filtered) == len(merged):
-                            current_turn_artifact_gallery[:] = merged
+                        accepted = len(filtered) == len(merged)
+                        # User uploads are inputs, not produced artifacts:
+                        # they may join the recent-image pool (so "上一张"
+                        # still resolves to them) but must never render as a
+                        # reply gallery card — the user's own message already
+                        # carries them (2026-10-09 duplicate-figure incident,
+                        # LOCAL_INFRA §112).
+                        displayable = accepted and not is_user_upload_path(
+                            gallery_item["path"]
+                        )
+                        if accepted:
                             update_recent_image_artifacts(self.extra_context, [gallery_item])
-                        else:
-                            artifact_meta["path"] = ""
+                        if displayable:
+                            current_turn_artifact_gallery[:] = merged
                         artifact_meta = {
                             **artifact_meta,
-                            "path": gallery_item["path"],
+                            "path": gallery_item["path"] if displayable else "",
                             "display_name": gallery_item["display_name"],
                             "mime_family": gallery_item["mime_family"],
                             "origin": gallery_item["origin"],
                             "tracking_id": gallery_item["tracking_id"],
                         }
-                        if len(filtered) == len(merged):
+                        if displayable:
                             await queue.put({"type": "artifact", **artifact_meta})
 
                 async def on_reasoning_delta(iteration: int, delta: str) -> None:

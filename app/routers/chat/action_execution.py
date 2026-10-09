@@ -1231,11 +1231,19 @@ async def _execute_action_run(run_id: str) -> None:
                 tracking_id=run_id,
             )
             if artifact_gallery_payload:
-                from .artifact_gallery import filter_gallery_new_images_only
+                from .artifact_gallery import (
+                    filter_gallery_new_images_only,
+                    filter_user_uploads_out,
+                )
 
                 artifact_gallery_payload = filter_gallery_new_images_only(
                     artifact_gallery_payload,
                     session_id=record.get("session_id"),
+                )
+                # User uploads are inputs, not produced artifacts: never
+                # render them as reply gallery cards (LOCAL_INFRA §112).
+                artifact_gallery_payload = filter_user_uploads_out(
+                    artifact_gallery_payload
                 )
             if artifact_gallery_payload:
                 result_dict["artifact_gallery"] = artifact_gallery_payload

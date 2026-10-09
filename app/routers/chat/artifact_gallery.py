@@ -574,3 +574,29 @@ def filter_gallery_new_images_only(
         kept.append(item)
     return kept
 
+
+def is_user_upload_path(path: Any) -> bool:
+    """True when a session-relative path points at a user upload.
+
+    Uploads (``uploads/`` under the session root) are the user's own inputs.
+    They may stay in the recent-image reference pool so follow-ups like
+    "上一张" still resolve to them, but they must never render as reply
+    gallery cards — the user's message already carries them, and echoing
+    one produced a duplicate-figure card (2026-10-09, LOCAL_INFRA §112).
+    """
+    text = str(path or "").strip().replace("\\", "/").lstrip("/")
+    if text.startswith("raw_files/"):
+        text = text[len("raw_files/"):]
+    return text.startswith("uploads/")
+
+
+def filter_user_uploads_out(
+    gallery: Optional[Sequence[Dict[str, Any]]],
+) -> List[Dict[str, Any]]:
+    """Drop user-upload entries from a message-gallery payload."""
+    return [
+        item
+        for item in gallery or []
+        if isinstance(item, dict) and not is_user_upload_path(item.get("path"))
+    ]
+
