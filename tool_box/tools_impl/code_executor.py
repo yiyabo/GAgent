@@ -358,6 +358,7 @@ from .code_executor_promotion import (
     _collect_non_semantic_run_files,
     _collect_run_artifacts,
     _collapse_rooted_rel_path,
+    _dedupe_output_dir_suffix_overlap,
     _has_hidden_path_component,
     _iter_promotable_run_files,
     _prune_stale_session_root_results,

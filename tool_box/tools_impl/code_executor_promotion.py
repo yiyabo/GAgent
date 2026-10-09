@@ -153,11 +153,38 @@ def _iter_promotable_run_files(*, scratch_dir: Path, subdirs: Sequence[str]) -> 
     return results
 
 
+def _dedupe_output_dir_suffix_overlap(*, rel: Path, output_dir: Path) -> Path:
+    """Drop leading *rel* segments that duplicate the tail of *output_dir*.
+
+    Root-independent backstop for paths whose output directory already carries
+    the trailing segments the relative path leads with (e.g. an output dir
+    ending in ``raw_files/tmp/run_A`` for a rel of
+    ``raw_files/tmp/run_A/chart.png``).  Only the longest suffix/prefix overlap
+    is removed: interior segments are never rewritten, and a rel that shares no
+    leading segment with the output-dir tail is returned verbatim.
+    """
+    try:
+        out_parts = tuple(output_dir.resolve().parts)
+    except OSError:
+        out_parts = tuple(output_dir.parts)
+    rel_parts = tuple(rel.parts)
+    if not out_parts or not rel_parts:
+        return rel
+    for size in range(min(len(out_parts), len(rel_parts)), 0, -1):
+        if out_parts[-size:] != rel_parts[:size]:
+            continue
+        remainder = rel_parts[size:]
+        if not remainder:
+            return Path(rel_parts[-1])
+        return Path(*remainder)
+    return rel
+
+
 def _collapse_rooted_rel_path(*, rel: Path, output_dir: Path, session_dir: Path) -> Path:
     try:
         prefix = output_dir.resolve().relative_to(session_dir.resolve())
     except (ValueError, OSError):
-        return rel
+        return _dedupe_output_dir_suffix_overlap(rel=rel, output_dir=output_dir)
     try:
         return rel.relative_to(prefix)
     except ValueError:
@@ -195,7 +222,9 @@ def _collapse_rooted_rel_path(*, rel: Path, output_dir: Path, session_dir: Path)
             break
         if not dropped:
             break
-    if not changed or not parts:
+    if not changed:
+        return _dedupe_output_dir_suffix_overlap(rel=rel, output_dir=output_dir)
+    if not parts:
         return rel
     return Path(*parts)
 
@@ -390,6 +419,7 @@ def _promote_project_level_strays(
         except ValueError:
             pass
         sub_rel = Path(*rel.parts[1:]) if len(rel.parts) > 1 else Path(rel.name)
+        sub_rel = _dedupe_output_dir_suffix_overlap(rel=sub_rel, output_dir=workspace_resolved)
         dest = unified_output_dir / sub_rel
         if dest.exists():
             continue
