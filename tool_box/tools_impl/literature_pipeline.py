@@ -1833,6 +1833,9 @@ async def literature_pipeline_handler(query: str, **kwargs: Any) -> Dict[str, An
     # "unexpected keyword argument 'tool_context'" on every call since this
     # wrapper landed (2026-09-29; first real hit 2026-10-09, LOCAL_INFRA §116).
     kwargs.pop("tool_context", None)
+    # Code-mode stubs (and any JSON caller) may send ``null`` for arguments
+    # they did not set; omitted means omitted, so the impl defaults apply.
+    kwargs = {key: value for key, value in kwargs.items() if value is not None}
 
     started = time.monotonic()
     call_status = "ok"

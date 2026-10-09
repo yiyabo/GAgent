@@ -54,6 +54,17 @@ def test_wrapper_drops_tool_context_and_forwards_the_rest(_impl_spy) -> None:
     assert metered[0]["call_status"] == "ok"
 
 
+def test_wrapper_drops_null_arguments_so_impl_defaults_apply(_impl_spy) -> None:
+    """Code-mode stubs forward every schema property, unset ones as ``None``."""
+    calls, _ = _impl_spy
+    asyncio.run(
+        lp.literature_pipeline_handler(
+            "q", max_results=None, download_pdfs=None, max_pdfs=3, proxy=None
+        )
+    )
+    assert calls == [{"query": "q", "max_pdfs": 3}]
+
+
 def test_prepare_handler_kwargs_cannot_strip_it_for_a_kwargs_wrapper() -> None:
     """Pin the routing fact the wrapper has to compensate for."""
     kwargs = {"query": "q", "tool_context": ToolContext()}

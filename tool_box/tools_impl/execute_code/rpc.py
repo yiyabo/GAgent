@@ -193,12 +193,20 @@ class KernelRPCServer:
     async def _dispatch(
         self, tool_name: str, tool_args: Dict[str, Any], tool_context: Any
     ) -> Any:
-        """Canonical tool path: async handler + prepare_handler_kwargs + ToolContext."""
+        """Canonical tool path: async handler + prepare_handler_kwargs + ToolContext.
+
+        The generated stubs forward every schema property, so an argument the
+        cell left unset arrives as ``None``. Omitted means omitted: drop those
+        so the handler's own defaults apply — a strict handler such as
+        literature_pipeline (``int(max_results)``) crashed on the explicit
+        ``None`` (LOCAL_INFRA §116).
+        """
         from tool_box import execute_tool  # lazy: avoids tool_box import cycle
 
         if not isinstance(tool_args, dict):
             raise TypeError("tool args must be a JSON object")
-        return await execute_tool(tool_name, tool_context=tool_context, **tool_args)
+        args = {key: value for key, value in tool_args.items() if value is not None}
+        return await execute_tool(tool_name, tool_context=tool_context, **args)
 
     @staticmethod
     def _encode(request_id: Any, result: Any = None, error: Optional[str] = None) -> bytes:
