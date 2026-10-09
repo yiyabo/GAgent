@@ -116,10 +116,13 @@ def get_search_settings() -> SearchSettings:
     tavily_include_raw = _env("TAVILY_INCLUDE_RAW_CONTENT", "false")
     tavily_auto_parameters = _env("TAVILY_AUTO_PARAMETERS", "false")
 
+    # Platform agentic search measured at 212–516s per call on 2026-10-10
+    # (LOCAL_INFRA §116); the executor envelope in
+    # UnifiedToolExecutor.TOOL_TIMEOUTS ("web_search": 600) must stay above it.
     try:
-        builtin_timeout = float(_env("WEB_SEARCH_BUILTIN_TIMEOUT", "300.0"))
+        builtin_timeout = float(_env("WEB_SEARCH_BUILTIN_TIMEOUT", "540.0"))
     except Exception:
-        builtin_timeout = 300.0
+        builtin_timeout = 540.0
 
     try:
         builtin_connect_timeout = float(_env("WEB_SEARCH_BUILTIN_CONNECT_TIMEOUT", "20.0"))

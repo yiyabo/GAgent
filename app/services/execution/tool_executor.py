@@ -61,14 +61,16 @@ class UnifiedToolExecutor:
         # A delegated long-horizon workflow runs a code-agent CLI inside: same
         # envelope as the code_executor call it drives.
         "delegate_task": 7200,
-        # The builtin provider is one server-side search on the gateway, measured
-        # 2026-09-26 at ~190s to answer (and still running at 45s). At 180 this
-        # knife fell ~10s short of every answer, so each call burned the full
-        # budget and was cancelled, then the loop retried it: three of those are
-        # the ten-minute turn. Keep it above WEB_SEARCH_BUILTIN_TIMEOUT (300
-        # default) so the handler's own deadline fires first and returns a
-        # structured error instead of a bare CancelledError.
-        "web_search": 300,
+        # The builtin provider is one server-side agentic search on the platform
+        # gateway. Measured 2026-09-26 at ~190s; re-measured 2026-10-10 on the
+        # sub2api access log at 212–516s per search (median ~370s), so the old
+        # 240s client cap sat in the middle of that distribution and timed out
+        # roughly every other call while the gateway kept running the search to
+        # completion (LOCAL_INFRA §116). Keep this envelope above
+        # WEB_SEARCH_BUILTIN_TIMEOUT (540 default) so the handler's own deadline
+        # fires first and returns a structured error instead of a bare
+        # CancelledError.
+        "web_search": 600,
         "sequence_fetch": 120,
         "url_fetch": 180,
         "document_reader": 200,

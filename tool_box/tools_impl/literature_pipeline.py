@@ -1810,6 +1810,14 @@ async def literature_pipeline_handler(query: str, **kwargs: Any) -> Dict[str, An
     """
     from .invocation_meter import record_tool_invocation
 
+    # The executor hands every handler the framework ``tool_context`` object.
+    # ``prepare_handler_kwargs`` cannot strip it from a ``**kwargs`` signature,
+    # and the impl takes its scope as explicit session_id / task_id /
+    # ancestor_chain instead — forwarding it blindly raised
+    # "unexpected keyword argument 'tool_context'" on every call since this
+    # wrapper landed (2026-09-29; first real hit 2026-10-09, LOCAL_INFRA §116).
+    kwargs.pop("tool_context", None)
+
     started = time.monotonic()
     call_status = "ok"
     try:

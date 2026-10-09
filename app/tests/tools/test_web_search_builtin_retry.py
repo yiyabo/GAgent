@@ -226,3 +226,27 @@ def test_duck_typed_settings_without_new_fields_fall_back_to_defaults() -> None:
 
     retries, backoff_base, connect_timeout = builtin_provider._retry_tuning(_LegacySettings())
     assert (retries, backoff_base, connect_timeout) == (2, 2.0, 20.0)
+
+
+def test_executor_envelope_stays_above_builtin_default_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The handler's own deadline must fire before the executor cancels it.
+
+    Platform agentic searches were measured at 212–516s on 2026-10-10
+    (LOCAL_INFRA §116): the builtin cap covers that distribution and the
+    executor envelope stays above it so a slow search returns a structured
+    error, never a bare CancelledError.
+    """
+    from app.config.search_config import get_search_settings, reset_search_settings_cache
+    from app.services.execution.tool_executor import UnifiedToolExecutor
+
+    monkeypatch.delenv("WEB_SEARCH_BUILTIN_TIMEOUT", raising=False)
+    reset_search_settings_cache()
+    try:
+        builtin_default = get_search_settings().builtin_request_timeout
+    finally:
+        reset_search_settings_cache()
+    assert builtin_default == 540.0
+    assert UnifiedToolExecutor.TOOL_TIMEOUTS["web_search"] == 600
+    assert UnifiedToolExecutor.TOOL_TIMEOUTS["web_search"] > builtin_default
