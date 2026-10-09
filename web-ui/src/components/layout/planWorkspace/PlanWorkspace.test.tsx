@@ -52,6 +52,13 @@ describe('plan workspace navigation and async isolation', () => {
     expect(useChatStore.getState().currentPlanId).toBe(1);
     expect(screen.getByText('1 / 2 个执行任务已完成')).toBeInTheDocument();
   });
+  it('shows the bound plan read-only and never offers a plan switcher', async () => {
+    mount();
+    expect(await screen.findByRole('heading', { name: '计划 1' })).toBeInTheDocument();
+    expect(screen.queryByRole('combobox')).not.toBeInTheDocument();
+    expect(api.listPlans).not.toHaveBeenCalled();
+    expect(useChatStore.getState().currentPlanId).toBe(1);
+  });
   // Real AntD visibility queries and two task mounts can exceed 5s on shared CI runners.
   it('selects dependency inline and preserves drawer actions', async () => {
     mount();

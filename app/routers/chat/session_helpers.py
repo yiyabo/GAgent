@@ -948,7 +948,11 @@ def _ensure_session_exists(
             project_id,
         )
 
-    if plan_id is not None and current_plan_id != plan_id:
+    if plan_id is not None and current_plan_id is None:
+        # First binding only. A session that already has a plan keeps it:
+        # one session, one plan. Re-binding is reserved for the server-side
+        # lifecycle paths (plan created / replaced in this conversation) that
+        # call ``_set_session_plan_id`` explicitly (LOCAL_INFRA §113).
         plan_title = _lookup_plan_title(conn, plan_id)
         cursor.execute(
             """
@@ -967,6 +971,13 @@ def _ensure_session_exists(
             current_plan_id,
         )
         return plan_id
+    if plan_id is not None and current_plan_id != plan_id:
+        logger.info(
+            "[CHAT][PLAN] Keeping session %s bound to plan %s; ignored request plan_id=%s",
+            session_id,
+            current_plan_id,
+            plan_id,
+        )
     return current_plan_id
 
 

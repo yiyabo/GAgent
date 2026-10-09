@@ -1,9 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Alert, Button, Drawer, Empty, Select, Space, Spin, Tabs, Tooltip } from 'antd';
+import { Alert, Button, Drawer, Empty, Space, Spin, Tabs, Tooltip } from 'antd';
 import { AppstoreOutlined, ApartmentOutlined, FolderOpenOutlined, FullscreenExitOutlined, FullscreenOutlined,
   HistoryOutlined, NodeIndexOutlined, ReloadOutlined } from '@ant-design/icons';
-import { usePlanSummaries, usePlanTasks, usePlanTree } from '@hooks/usePlans';
+import { usePlanTasks, usePlanTree } from '@hooks/usePlans';
 import { useChatStore } from '@store/chat';
 import { useTasksStore } from '@store/tasks';
 import { useLayoutStore } from '@store/layout';
@@ -35,7 +35,6 @@ const ScopedPlanWorkspace: React.FC<{ planId: number | null; sessionId: string |
   const setChatContext = useChatStore((state) => state.setChatContext);
   const fullscreen = useLayoutStore((state) => state.dagSidebarFullscreen);
   const toggleFullscreen = useLayoutStore((state) => state.toggleDagSidebarFullscreen);
-  const { data: summaries = [], isLoading: plansLoading, isError: plansError } = usePlanSummaries();
   const taskQuery = usePlanTasks({ planId });
   const treeQuery = usePlanTree(planId);
   const tasks = useMemo(() => taskQuery.data.map((task) => {
@@ -64,14 +63,12 @@ const ScopedPlanWorkspace: React.FC<{ planId: number | null; sessionId: string |
   const executionTasks = tasks.filter((task) => task.task_type === 'atomic');
   const completed = executionTasks.filter((task) => taskStatus(task) === 'completed').length;
   const failures = executionTasks.filter((task) => taskStatus(task) === 'failed').length;
-  const planTitle = treeQuery.data?.title || summaries.find((plan) => plan.id === planId)?.title || currentPlanTitle || '选择一个研究计划';
-  const pickerOptions = summaries.map((plan) => ({ value: plan.id, label: plan.title }));
-  if (planId != null && !pickerOptions.some((option) => option.value === planId)) pickerOptions.unshift({ value: planId, label: planTitle });
+  const planTitle = treeQuery.data?.title || currentPlanTitle || (planId != null ? `Plan #${planId}` : '尚未创建计划');
   const artifactSessionId = artifactSourceSession(treeQuery.data) ?? undefined;
   const foreignSource = Boolean(artifactSessionId && artifactSessionId !== sessionId);
   const sourceGuard = usePlanSourceGuard(planId, sessionId);
-  const sourceNotice = sourceGuard.notice ?? (foreignSource && planId != null
-    ? {planId, title: planTitle, sessionId: artifactSessionId!} : null);
+  const sourceNotice = foreignSource && planId != null
+    ? {planId, title: planTitle, sessionId: artifactSessionId!} : null;
   useEffect(() => {
     if (foreignSource) { setTodoOpen(false); useTasksStore.getState().closeTaskDrawer(); }
   }, [foreignSource]);
@@ -123,7 +120,6 @@ const ScopedPlanWorkspace: React.FC<{ planId: number | null; sessionId: string |
     setChatContext({ taskId: id, taskName: task.name });
     setActiveTab('plan');
   };
-  const selectPlan = sourceGuard.select;
 
   return <div className="plan-workspace">
     <header className="pw-header">
@@ -134,10 +130,11 @@ const ScopedPlanWorkspace: React.FC<{ planId: number | null; sessionId: string |
           <Tooltip title={fullscreen ? '退出专注模式' : '展开工作台'}><Button aria-label={fullscreen ? '退出专注模式' : '展开工作台'} type="text" size="small"
             icon={fullscreen ? <FullscreenExitOutlined /> : <FullscreenOutlined />} onClick={toggleFullscreen} /></Tooltip></Space>
       </div>
-      <Select className="pw-plan-picker" aria-label="选择当前对话计划" title="切换计划会改变后续对话的任务上下文" value={planId ?? undefined} options={pickerOptions}
-        onChange={selectPlan} loading={plansLoading || sourceGuard.busy} placeholder="选择一个研究计划" showSearch optionFilterProp="label"
-        variant="borderless" popupMatchSelectWidth={false} />
-      <div className="pw-plan-meta"><span>{planId == null ? '在对话中创建计划，或选择已有计划' : `Plan #${planId}`}</span>
+      {/* One session, one plan: the bound plan is shown read-only. Plans are created,
+          reviewed or replaced inside the conversation itself and are never picked from
+          another session's list (2026-10-09, LOCAL_INFRA §113). */}
+      <h2 className="pw-plan-title" title={planTitle}>{planTitle}</h2>
+      <div className="pw-plan-meta"><span>{planId == null ? '在对话中创建计划' : `Plan #${planId}`}</span>
         {planId != null && <><span className="pw-separator">·</span><span>{completed} / {executionTasks.length} 个执行任务已完成</span>
           {activeJobs.length > 0 && <span className="pw-live-indicator">执行中</span>}
           {failures > 0 && <span className="pw-error-text">{failures} 个失败</span>}</>}
@@ -146,10 +143,8 @@ const ScopedPlanWorkspace: React.FC<{ planId: number | null; sessionId: string |
     {sourceNotice && <Alert className="pw-alert" type="info" showIcon
       message={`“${sourceNotice.title}”的产物属于另一会话`}
       description="打开来源会话后可继续执行。当前会话与计划绑定保持不变。"
-      action={<Space><Button size="small" type="primary" loading={sourceGuard.busy} onClick={() => void sourceGuard.openSource(sourceNotice)}>打开来源会话</Button>
-        {!foreignSource && <Button size="small" onClick={sourceGuard.dismiss}>取消</Button>}</Space>} />}
+      action={<Button size="small" type="primary" loading={sourceGuard.busy} onClick={() => void sourceGuard.openSource(sourceNotice)}>打开来源会话</Button>} />}
     {sourceGuard.error && <Alert className="pw-alert" type="warning" showIcon message={sourceGuard.error} closable onClose={sourceGuard.dismiss} />}
-    {plansError && <Alert className="pw-alert" type="warning" showIcon message="计划列表暂时无法读取，当前计划仍可查看" />}
     <Tabs className="pw-tabs" activeKey={activeTab} onChange={setActiveTab} destroyOnHidden
       tabBarExtraContent={planId != null ? <Tooltip title="查看执行顺序及运行整个计划"><Button type="text" size="small" icon={<AppstoreOutlined />} disabled={foreignSource} onClick={() => setTodoOpen(true)}>执行清单</Button></Tooltip> : undefined}
       items={[

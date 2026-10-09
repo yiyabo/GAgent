@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Typography,
   Card,
@@ -95,10 +95,17 @@ const PlansPage: React.FC = () => {
   const [onlyWithOutput, setOnlyWithOutput] = useState(true);
   const [selectedResultTaskId, setSelectedResultTaskId] = useState<number | null>(null);
 
+  const lastBoundPlanId = useRef<number | null>(currentPlanId ?? null);
   useEffect(() => {
-  if (currentPlanId && currentPlanId !== selectedPlanId) {
+  // Follow the chat session's bound plan only when that binding changes;
+  // otherwise the page selection is local browsing (one session, one plan —
+  // 2026-10-09, LOCAL_INFRA §113).
+  if (lastBoundPlanId.current !== (currentPlanId ?? null)) {
+  lastBoundPlanId.current = currentPlanId ?? null;
+  if (currentPlanId) {
   setSelectedPlanId(currentPlanId);
   return;
+  }
   }
   if (!selectedPlanId && planSummaries.length > 0) {
   setSelectedPlanId(planSummaries[0]?.id);
@@ -291,6 +298,8 @@ const PlansPage: React.FC = () => {
   setSelectedPlanId(undefined);
   setSelectedTask(null);
   setSelectedResultTaskId(null);
+  }
+  if (detail.plan_id != null && detail.plan_id === currentPlanId) {
   setChatContext({
   planId: null,
   planTitle: null,
@@ -333,6 +342,7 @@ const PlansPage: React.FC = () => {
   localSessionIdentifier,
   sessionIdentifier,
   selectedPlanId,
+  currentPlanId,
   setChatContext,
   setSelectedResultTaskId,
   setSelectedTask,
@@ -340,27 +350,13 @@ const PlansPage: React.FC = () => {
   triggerPlanRefresh,
   ]);
 
+  // Page-local browsing only. The chat session keeps its own bound plan
+  // (one session, one plan — 2026-10-09, LOCAL_INFRA §113).
   const handlePlanChange = (value: number) => {
   setSelectedPlanId(value);
   setSelectedTask(null);
   setSelectedResultTaskId(null);
-
-  const picked = planSummaries.find((plan) => plan.id === value);
-  setChatContext({
-  planId: value,
-  planTitle: picked?.title ?? null,
-  });
   };
-
-  useEffect(() => {
-  if (selectedPlanId && planSummaries.length > 0) {
-  const summary = planSummaries.find((plan) => plan.id === selectedPlanId);
-  setChatContext({
-  planId: selectedPlanId,
-  planTitle: summary?.title ?? null,
-  });
-  }
-  }, [selectedPlanId, planSummaries, setChatContext]);
 
   const handleRefresh = () => {
   void refetchSummaries();

@@ -64,3 +64,16 @@ browser tabs, then atomically replaces the entry HTML. No backend restart or
 database migration is needed. Server rollback runs the saved script and restores
 the old entry last. Source and bundle hashes, CI URL and final test counts are
 recorded in the release handoff and task outputs.
+
+## Revision 2026-10-09: one session, one plan
+
+The plan picker ("Selecting another plan explicitly changes the target for
+subsequent conversation") is withdrawn. A session shows its bound plan
+read-only; plans are created, reviewed, optimised or replaced inside the
+conversation itself and are never picked from another session's list. The Plans
+page selection is page-local browsing and no longer retargets the chat. The
+backend keeps `chat_sessions.plan_id` once set: `_ensure_session_exists` binds
+only an empty slot, and request `plan_id` values that differ are ignored and
+logged, while the explicit lifecycle paths still rebind through
+`_set_session_plan_id`. Production logs showed zero cross-plan rebinds in the
+25 days before this change. Record: LOCAL_INFRA §113.

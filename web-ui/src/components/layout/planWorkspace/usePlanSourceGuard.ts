@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { planTreeApi } from '@api/planTree';
 import { useChatStore } from '@store/chat';
 import { useTasksStore } from '@store/tasks';
 import type { PlanTreeResponse } from '@/types';
@@ -45,8 +44,14 @@ export async function restorePlanSource(notice: SourceNotice, isOriginCurrent: (
   } finally { unsubscribe(); }
 }
 
+/**
+ * Guards the "artifacts belong to another session" notice for the session's own
+ * bound plan. One session, one plan (2026-10-09, LOCAL_INFRA §113): the former
+ * `select` entry that let a session adopt another plan is gone; the only
+ * navigation left is opening the plan's source session, which then shows the
+ * plan it produced.
+ */
 export function usePlanSourceGuard(planId: number | null, sessionId: string | null) {
-  const [notice, setNotice] = useState<SourceNotice | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const generation = useRef(0);
@@ -54,24 +59,7 @@ export function usePlanSourceGuard(planId: number | null, sessionId: string | nu
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; generation.current += 1; }; }, []);
   const isCurrent = useCallback((ticket: number) => mounted.current && generation.current === ticket
     && viewingSession() === sessionId && useChatStore.getState().currentPlanId === planId, [planId, sessionId]);
-  const dismiss = useCallback(() => { navigationGeneration += 1; generation.current += 1; setNotice(null); setError(null); setBusy(false); }, []);
-
-  const select = useCallback(async (id: number) => {
-    if (id === planId) { dismiss(); return; }
-    navigationGeneration += 1;
-    const ticket = ++generation.current;
-    setNotice(null); setError(null); setBusy(true);
-    try {
-      const tree = await planTreeApi.getPlanTree(id);
-      if (!isCurrent(ticket)) return;
-      if (tree.id !== id) throw new Error('返回的计划与所选计划不一致，请刷新后重试。');
-      const source = artifactSourceSession(tree);
-      if (source && source !== sessionId) setNotice({planId: id, title: tree.title, sessionId: source});
-      else bindPlan(id, tree.title);
-    } catch (failure) {
-      if (isCurrent(ticket)) setError(failure instanceof Error ? failure.message : '暂时无法核对计划来源，请重试。');
-    } finally { if (isCurrent(ticket)) setBusy(false); }
-  }, [dismiss, isCurrent, planId, sessionId]);
+  const dismiss = useCallback(() => { navigationGeneration += 1; generation.current += 1; setError(null); setBusy(false); }, []);
 
   const openSource = useCallback(async (target: SourceNotice) => {
     const navigation = ++navigationGeneration;
@@ -81,5 +69,5 @@ export function usePlanSourceGuard(planId: number | null, sessionId: string | nu
     catch (failure) { if (isCurrent(ticket)) setError(failure instanceof Error ? failure.message : '无法打开来源会话。'); }
     finally { if (isCurrent(ticket)) setBusy(false); }
   }, [isCurrent]);
-  return {notice, error, busy, select, dismiss, openSource};
+  return {error, busy, dismiss, openSource};
 }

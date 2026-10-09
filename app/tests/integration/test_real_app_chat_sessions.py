@@ -5,7 +5,16 @@ import json
 import pytest
 
 from app.database_pool import get_db
-from app.routers.chat.session_helpers import _ensure_session_exists
+from app.routers.chat.session_helpers import _ensure_session_exists, _set_session_plan_id
+
+
+def _seed_plans(conn, *plan_ids: int) -> None:
+    """chat_sessions.plan_id is a real FK (foreign_keys=ON): parents must exist."""
+    for plan_id in plan_ids:
+        conn.execute(
+            "INSERT OR IGNORE INTO plans (id, title, owner) VALUES (?, ?, ?)",
+            (plan_id, f"Plan {plan_id}", "plan-owner"),
+        )
 
 
 @pytest.mark.integration
@@ -151,6 +160,74 @@ def test_existing_session_project_binding_is_not_overwritten(
 
     assert row is not None
     assert row["project_id"] == 15
+
+
+@pytest.mark.integration
+def test_existing_session_plan_binding_is_not_overwritten_by_request(
+    app_client_factory,
+) -> None:
+    """One session, one plan: a request carrying another plan_id is ignored (§113)."""
+    session_id = "integration-session-plan-sticky-001"
+
+    with app_client_factory():
+        with get_db() as conn:
+            _seed_plans(conn, 15, 16)
+            first = _ensure_session_exists(session_id, conn, 15, owner_id="plan-owner")
+            second = _ensure_session_exists(session_id, conn, 16, owner_id="plan-owner")
+            conn.commit()
+            row = conn.execute(
+                "SELECT plan_id FROM chat_sessions WHERE id=?",
+                (session_id,),
+            ).fetchone()
+
+    assert first == 15
+    assert second == 15
+    assert row is not None
+    assert row["plan_id"] == 15
+
+
+@pytest.mark.integration
+def test_unbound_session_binds_plan_on_first_request(app_client_factory) -> None:
+    session_id = "integration-session-plan-firstbind-001"
+
+    with app_client_factory():
+        with get_db() as conn:
+            _seed_plans(conn, 21)
+            unbound = _ensure_session_exists(session_id, conn, owner_id="plan-owner")
+            bound = _ensure_session_exists(session_id, conn, 21, owner_id="plan-owner")
+            conn.commit()
+            row = conn.execute(
+                "SELECT plan_id FROM chat_sessions WHERE id=?",
+                (session_id,),
+            ).fetchone()
+
+    assert unbound is None
+    assert bound == 21
+    assert row is not None
+    assert row["plan_id"] == 21
+
+
+@pytest.mark.integration
+def test_explicit_lifecycle_rebind_still_replaces_plan(app_client_factory) -> None:
+    """``_set_session_plan_id`` (plan created/replaced in-conversation) still rebinds."""
+    session_id = "integration-session-plan-lifecycle-001"
+
+    with app_client_factory():
+        with get_db() as conn:
+            _seed_plans(conn, 31, 32)
+            _ensure_session_exists(session_id, conn, 31, owner_id="plan-owner")
+            conn.commit()
+        _set_session_plan_id(session_id, 32, owner_id="plan-owner")
+        with get_db() as conn:
+            row = conn.execute(
+                "SELECT plan_id FROM chat_sessions WHERE id=?",
+                (session_id,),
+            ).fetchone()
+            kept = _ensure_session_exists(session_id, conn, 31, owner_id="plan-owner")
+
+    assert row is not None
+    assert row["plan_id"] == 32
+    assert kept == 32
 
 
 @pytest.mark.integration
