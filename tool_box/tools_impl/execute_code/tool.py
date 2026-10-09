@@ -59,17 +59,43 @@ BASE_DESCRIPTION = (
 )
 
 
+# The delegate_task pointer inside BASE_DESCRIPTION. Every *built* description
+# swaps it out while the delegation surface is offer-gated off
+# (DELEGATE_TASK_ENABLED != 1, LOCAL_INFRA §115) so the model is never pointed
+# at a tool it cannot call. The static text keeps the pointer as the
+# enabled-state source of truth: the native mirror and its drift lock are
+# untouched, and the swap is a plain text replace pinned by
+# app/tests/tools/test_execute_code_delegation_gate.py.
+DELEGATE_POINTER = (
+    "; hand a long self-contained GOAL (multi-file refactors, "
+    "end-to-end dataset production) to delegate_task instead. "
+)
+DELEGATE_POINTER_OFF = (
+    "; a long self-contained GOAL (multi-file refactors, end-to-end dataset "
+    "production) is yours too: drive it here in stages, keeping state in the kernel. "
+)
+
+
+def apply_delegation_gate(text: str, *, enabled: Optional[bool] = None) -> str:
+    """Return ``text`` with the delegate_task pointer swapped out while the tool is not offered."""
+    offered = config.delegate_task_offered() if enabled is None else bool(enabled)
+    if offered:
+        return text
+    return text.replace(DELEGATE_POINTER, DELEGATE_POINTER_OFF)
+
+
 def build_description(allowed: Optional[List[str]] = None, *, progressive: Optional[bool] = None) -> str:
-    """BASE_DESCRIPTION + the dynamic per-allowlist signature list."""
+    """BASE_DESCRIPTION (delegation pointer gated) + the dynamic per-allowlist signature list."""
+    base = apply_delegation_gate(BASE_DESCRIPTION)
     names = list(allowed) if allowed is not None else config.allowed_tools()
     from app.services.deep_think.runtime_policy import configured_policy
     use_progressive = configured_policy()['schemas'] if progressive is None else progressive
     if use_progressive:
-        return BASE_DESCRIPTION + "\nUse gagent_tools.list_tools() and gagent_tools.describe(name) to inspect signatures locally. Tools: " + ", ".join(names)
+        return base + "\nUse gagent_tools.list_tools() and gagent_tools.describe(name) to inspect signatures locally. Tools: " + ", ".join(names)
     lines = signature_lines(names)
     if not lines:
-        return BASE_DESCRIPTION + " (none resolved — check CODE_MODE_ALLOWED_TOOLS)"
-    return BASE_DESCRIPTION + "\n" + "\n".join(f"  {line}" for line in lines)
+        return base + " (none resolved — check CODE_MODE_ALLOWED_TOOLS)"
+    return base + "\n" + "\n".join(f"  {line}" for line in lines)
 
 
 async def execute_code_handler(

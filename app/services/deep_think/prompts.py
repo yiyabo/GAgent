@@ -883,6 +883,42 @@ def _build_native_system_prompt(
     return agent._append_reference_context(prompt, context)
 
 
+def _execute_code_catalog_entry() -> str:
+    """Legacy-catalog copy for execute_code.
+
+    The escalation pointer to ``delegate_task`` is written only while that tool
+    is offered (``DELEGATE_TASK_ENABLED=1``). With the delegation lane closed
+    (LOCAL_INFRA §115) the long-goal case is routed back to execute_code itself,
+    so the model is never pointed at a tool it cannot call.
+    """
+    if delegate_task_enabled():
+        long_goal = "hand a long self-contained GOAL to delegate_task instead. "
+    else:
+        long_goal = (
+            "a long self-contained GOAL is yours too: drive it here in stages, "
+            "keeping state in the kernel. "
+        )
+    return (
+        "Run Python that calls GAgent tools programmatically in a PERSISTENT kernel. "
+        "This is YOUR default way to run code: one script (reading or filtering a file, "
+        "one-off statistics, a single plot, a loop over many tool calls) belongs here; "
+        + long_goal
+        + "Use when you need 3+ tool calls with logic between them: loops over pages/files/accessions, "
+        "filtering or reducing large tool outputs BEFORE they enter your context, branching, or retries; "
+        "use a normal tool call for a single call or results you must reason over in full. "
+        "The kernel keeps variables, imports, and loaded data across execute_code calls "
+        "(pass reset=true to start fresh); a timed-out or interrupted call kills the kernel and loses that state. "
+        "Tools are importable Python functions, e.g. `from gagent_tools import web_search`; "
+        "each returns an ALREADY-PARSED dict — never json.loads() it. "
+        "The cell starts in your session workspace: save output files under results/ "
+        "(e.g. plt.savefig('results/chart.png')); files you create are reported back as "
+        "produced_files, images under results/ are inlined into the final answer, and "
+        "deliverable_submit publishes them into Deliverables. "
+        "Params: {\"code\": \"from gagent_tools import web_search\\nrows = web_search(query='phage lysin')\\nprint(rows)\", "
+        "optional \"reset\": true|false}."
+    )
+
+
 def _build_system_prompt(
     agent: "DeepThinkAgent",
     context: Optional[Dict[str, Any]] = None,
@@ -1071,25 +1107,7 @@ IMPORTANT: data must end with \\n to execute the command.""",
         # Code mode joins the legacy prompt catalog only when explicitly
         # enabled — same gate as get_all_tools()/tool_schemas, so the entry is
         # invisible (and code mode undiscoverable) when disabled.
-        tool_descriptions["execute_code"] = (
-            "Run Python that calls GAgent tools programmatically in a PERSISTENT kernel. "
-            "This is YOUR default way to run code: one script (reading or filtering a file, "
-            "one-off statistics, a single plot, a loop over many tool calls) belongs here; "
-            "hand a long self-contained GOAL to delegate_task instead. "
-            "Use when you need 3+ tool calls with logic between them: loops over pages/files/accessions, "
-            "filtering or reducing large tool outputs BEFORE they enter your context, branching, or retries; "
-            "use a normal tool call for a single call or results you must reason over in full. "
-            "The kernel keeps variables, imports, and loaded data across execute_code calls "
-            "(pass reset=true to start fresh); a timed-out or interrupted call kills the kernel and loses that state. "
-            "Tools are importable Python functions, e.g. `from gagent_tools import web_search`; "
-            "each returns an ALREADY-PARSED dict — never json.loads() it. "
-            "The cell starts in your session workspace: save output files under results/ "
-            "(e.g. plt.savefig('results/chart.png')); files you create are reported back as "
-            "produced_files, images under results/ are inlined into the final answer, and "
-            "deliverable_submit publishes them into Deliverables. "
-            "Params: {\"code\": \"from gagent_tools import web_search\\nrows = web_search(query='phage lysin')\\nprint(rows)\", "
-            "optional \"reset\": true|false}."
-        )
+        tool_descriptions["execute_code"] = _execute_code_catalog_entry()
     if delegate_task_enabled():
         # General sub-agent delegation: same gate as get_all_tools()/tool_schemas
         # so the entry is invisible (and the tool undiscoverable) when disabled.

@@ -55,6 +55,21 @@ def code_mode_enabled() -> bool:
     return os.environ.get(ENV_ENABLED, "").strip() == "1"
 
 
+# Offer flag of the *other* lane. The execute_code copy points long goals at
+# delegate_task only while that tool is actually offered (LOCAL_INFRA §115).
+ENV_DELEGATE_ENABLED = "DELEGATE_TASK_ENABLED"
+
+
+def delegate_task_offered() -> bool:
+    """Whether ``delegate_task`` is offered to the LLM.
+
+    Mirrors ``tool_box/tools_impl/delegate_task.py::delegate_task_enabled``;
+    read from env here so the description builder never imports the delegation
+    module at tool_box import time (``build_description()`` runs at import).
+    """
+    return os.environ.get(ENV_DELEGATE_ENABLED, "").strip() == "1"
+
+
 def allowed_tools() -> List[str]:
     raw = os.environ.get(ENV_ALLOWED_TOOLS, "").strip()
     if not raw:

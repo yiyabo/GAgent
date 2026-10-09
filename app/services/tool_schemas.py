@@ -57,8 +57,16 @@ def code_executor_enabled() -> bool:
 
 
 def _build_execute_code_description(content: Dict[str, Any]) -> str:
-    """Static base + the dynamic per-allowlist signature list (teaching surface)."""
+    """Static base (delegation pointer gated) + the dynamic per-allowlist signature list."""
     base = str(content["description"])
+    try:
+        # Same swap as the impl builder: the delegate_task pointer is written
+        # only while that tool is offered (LOCAL_INFRA §115).
+        from tool_box.tools_impl.execute_code.tool import apply_delegation_gate
+
+        base = apply_delegation_gate(base)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("execute_code delegation gate unavailable: %s", exc)
     try:
         from tool_box.tools_impl.execute_code.config import allowed_tools
         from tool_box.tools_impl.execute_code.stub_gen import signature_lines
