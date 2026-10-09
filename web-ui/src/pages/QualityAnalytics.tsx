@@ -182,7 +182,7 @@ const QualityAnalytics = () => {
             <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
               <Col xs={24} lg={8}><Breakdown title="Failure modes" data={summary?.failure_modes || []} /></Col>
               <Col xs={24} lg={8}><Breakdown title="Responsible stages" data={summary?.responsible_stages || []} /></Col>
-              <Col xs={24} lg={8}><Breakdown title="Request tiers" data={summary?.request_tiers || []} /></Col>
+              <Col xs={24} lg={8}><Breakdown title="Intents" data={summary?.intents || []} /></Col>
             </Row>
             <Card title="Recent assessments">
               <Table<QualityCase>

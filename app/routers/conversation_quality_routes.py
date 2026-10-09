@@ -37,7 +37,7 @@ class QualitySummaryResponse(BaseModel):
     by_satisfaction_level: List[QualityBreakdownItem]
     failure_modes: List[QualityBreakdownItem]
     responsible_stages: List[QualityBreakdownItem]
-    request_tiers: List[QualityBreakdownItem]
+    intents: List[QualityBreakdownItem]
     tools: List[QualityBreakdownItem]
 
 

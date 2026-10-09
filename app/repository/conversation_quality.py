@@ -433,7 +433,7 @@ def get_quality_summary(
 
     failure_modes: Dict[str, int] = {}
     responsible_stages: Dict[str, int] = {}
-    request_tiers: Dict[str, int] = {}
+    intents: Dict[str, int] = {}
     tools: Dict[str, int] = {}
     for row in samples:
         result = _from_json(row["evaluation_json"], {})
@@ -445,9 +445,12 @@ def get_quality_summary(
             if isinstance(value, str):
                 responsible_stages[value] = responsible_stages.get(value, 0) + 1
         routing = snapshot.get("routing", {}) if isinstance(snapshot, dict) else {}
-        tier = routing.get("request_tier") if isinstance(routing, dict) else None
-        if isinstance(tier, str) and tier:
-            request_tiers[tier] = request_tiers.get(tier, 0) + 1
+        raw_intent = routing.get("intent_type") if isinstance(routing, dict) else None
+        # Rows captured before intent was recorded (or with no routing at all)
+        # fall into "unknown" instead of disappearing from the breakdown.
+        intent = raw_intent.strip() if isinstance(raw_intent, str) else ""
+        intent = intent or "unknown"
+        intents[intent] = intents.get(intent, 0) + 1
         for tool in snapshot.get("tools_used", []) if isinstance(snapshot, dict) else []:
             if isinstance(tool, str):
                 tools[tool] = tools.get(tool, 0) + 1
@@ -469,6 +472,6 @@ def get_quality_summary(
         ],
         "failure_modes": _ordered(failure_modes),
         "responsible_stages": _ordered(responsible_stages),
-        "request_tiers": _ordered(request_tiers),
+        "intents": _ordered(intents),
         "tools": _ordered(tools),
     }

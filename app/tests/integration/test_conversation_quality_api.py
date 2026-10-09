@@ -34,7 +34,7 @@ def test_quality_api_returns_global_analytics_to_configured_operator(
             "by_satisfaction_level": [{"name": "negative", "count": 1}],
             "failure_modes": [],
             "responsible_stages": [],
-            "request_tiers": [],
+            "intents": [],
             "tools": [],
         }
 
@@ -72,6 +72,7 @@ def test_quality_api_returns_global_analytics_to_configured_operator(
 
     assert summary.status_code == 200
     assert summary.json()["total"] == 2
+    assert summary.json()["intents"] == []
     assert cases.status_code == 200
     assert cases.json()[0]["failure_modes"] == ["tool_not_invoked"]
     assert detail.status_code == 200

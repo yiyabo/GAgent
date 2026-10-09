@@ -65,7 +65,7 @@ def _create_pending(quality_db: sqlite3.Connection, *, run_id: str = "run-1", ow
         target_run_id=run_id,
         session_id="session-1",
         owner_id=owner_id,
-        snapshot={"user_goal": "analyze data", "routing": {"request_tier": "execute"}},
+        snapshot={"user_goal": "analyze data", "routing": {"intent_type": "execute_task"}},
         observed_until=datetime.now(timezone.utc) + timedelta(hours=1),
     )
     assert created is True
@@ -268,3 +268,40 @@ def test_summary_counts_all_evaluations_not_only_first_500(quality_db: sqlite3.C
     assert summary["evaluated"] == 501
     assert summary["failure_modes"] == [{"name": "tool_not_invoked", "count": 501}]
     assert summary["tools"] == [{"name": "code_executor", "count": 501}]
+    # Snapshots that predate intent capture (tier-only routing) fall back to
+    # "unknown" instead of silently dropping out of the breakdown.
+    assert summary["intents"] == [{"name": "unknown", "count": 501}]
+
+
+def test_summary_buckets_samples_by_intent(quality_db: sqlite3.Connection) -> None:
+    rows = (
+        ("intent-execute-a", '{"routing":{"intent_type":"execute_task"}}'),
+        ("intent-execute-b", '{"routing":{"intent_type":"execute_task"}}'),
+        ("intent-chat", '{"routing":{"intent_type":"chat"}}'),
+        ("legacy-tier-only", '{"routing":{"request_tier":"execute"}}'),
+        ("no-routing", "{}"),
+    )
+    for run_id, snapshot_json in rows:
+        quality_db.execute(
+            """
+            INSERT INTO conversation_quality_evaluations (
+                target_run_id, session_id, owner_id, status, observed_until,
+                snapshot_json, evaluation_json, satisfaction_level, confidence
+            ) VALUES (?, 'session-1', 'owner-a', 'final', '2026-01-01', ?, ?, 'acceptable', 0.5)
+            """,
+            (
+                run_id,
+                snapshot_json,
+                '{"failure_modes":[],"responsible_stages":[]}',
+            ),
+        )
+    quality_db.commit()
+
+    summary = repository.get_quality_summary(owner_id="owner-a")
+
+    assert summary["total"] == 5
+    assert summary["intents"] == [
+        {"name": "execute_task", "count": 2},
+        {"name": "unknown", "count": 2},
+        {"name": "chat", "count": 1},
+    ]

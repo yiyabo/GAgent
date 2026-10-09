@@ -30,7 +30,7 @@ describe('QualityAnalytics', () => {
       ],
       failure_modes: [{ name: 'tool_not_invoked', count: 1 }],
       responsible_stages: [{ name: 'tool_selection', count: 1 }],
-      request_tiers: [{ name: 'execute', count: 2 }],
+      intents: [{ name: 'execute_task', count: 2 }],
       tools: [],
     });
     mockedQualityApi.getCases.mockResolvedValue([{
@@ -55,6 +55,8 @@ describe('QualityAnalytics', () => {
     await waitFor(() => expect(mockedQualityApi.getSummary).toHaveBeenCalledWith(168));
     expect(screen.getByText('Observation-only mode')).toBeInTheDocument();
     expect(screen.getByText('tool not invoked')).toBeInTheDocument();
+    expect(screen.getByText('Intents')).toBeInTheDocument();
+    expect(screen.getByText('execute task')).toBeInTheDocument();
     expect(screen.getByText('Run a real analysis')).toBeInTheDocument();
     expect(screen.getByText('90% confidence')).toBeInTheDocument();
   });

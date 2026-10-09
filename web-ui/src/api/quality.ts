@@ -15,7 +15,7 @@ export interface QualitySummary {
   by_satisfaction_level: QualityBreakdownItem[];
   failure_modes: QualityBreakdownItem[];
   responsible_stages: QualityBreakdownItem[];
-  request_tiers: QualityBreakdownItem[];
+  intents: QualityBreakdownItem[];
   tools: QualityBreakdownItem[];
 }
 

@@ -149,6 +149,8 @@ export interface ChatResponseMetadata {
   tool_results?: ToolResultPayload[] | null;
   artifact_gallery?: ArtifactGalleryItem[] | null;
   artifact_files?: ArtifactFileItem[] | null;
+  // Legacy metadata: only "standard" is produced since the 2026-10 tier
+  // removal; historical messages may still carry the old tier values.
   request_tier?: RequestTier;
   request_route_mode?: RequestRouteMode;
   route_reason_codes?: string[];
@@ -227,6 +229,8 @@ export interface ChatMessage {
     tool_results?: ToolResultPayload[] | null;
     artifact_gallery?: ArtifactGalleryItem[] | null;
   artifact_files?: ArtifactFileItem[] | null;
+    // Legacy metadata: only "standard" is produced since the 2026-10 tier
+    // removal; historical messages may still carry the old tier values.
     request_tier?: RequestTier;
     request_route_mode?: RequestRouteMode;
     route_reason_codes?: string[];

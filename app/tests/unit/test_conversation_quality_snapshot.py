@@ -37,6 +37,7 @@ def test_snapshot_uses_durable_facts_and_bounds_text(monkeypatch) -> None:
     snapshot = build_run_snapshot("run-1", max_chars=2000)
     assert snapshot is not None
     assert snapshot["routing"]["request_tier"] == "execute"
+    assert snapshot["routing"]["intent_type"] == "execute_task"
     assert snapshot["tools_used"] == ["code_executor"]
     assert snapshot["tool_failures"] == ["timeout"]
     assert len(snapshot["assistant_response"]) <= 2500
