@@ -20,7 +20,6 @@ from app.services.response_style import sanitize_professional_response_text
 from app.services.deep_think.prompts import _extract_history_messages
 from app.services.deep_think_agent import DeepThinkAgent, ThinkingStep
 from app.services import tool_schemas
-from app.routers.chat.agent import _build_brief_execute_continuation_summary
 
 
 async def _noop_tool_executor(_name: str, _params: dict[str, Any]) -> dict[str, bool]:
@@ -487,81 +486,6 @@ def test_flat_mode_unified_efficiency_contract(monkeypatch) -> None:
     # Legacy tier vocabulary is gone in flat mode.
     assert "=== REQUEST TIER:" not in chat_native
     assert "=== REQUEST TIER:" not in task_native
-
-
-def test_brief_execute_continuation_summary_extracts_path_anchors_from_older_history() -> None:
-    agent = SimpleNamespace(
-        history=[
-            {
-                "role": "assistant",
-                "content": "较早说明里提到源文件在 /Users/apple/LLM/agent/phagescope/gvd_phage_meta_data.tsv",
-            },
-            {"role": "user", "content": "再跑一轮完整的吧"},
-            {
-                "role": "assistant",
-                "content": "code_executor 400 已修复，下一步直接继续宿主筛选，不要回到路径排查。",
-            },
-        ],
-        extra_context={
-            "recent_tool_results": [
-                {
-                    "tool": "result_interpreter",
-                    "summary": "当前筛选已产出 10071 条结果",
-                    "result": {"work_dir": "/Users/apple/LLM/agent/runtime/session_demo"},
-                }
-            ]
-        },
-    )
-    routing_decision = SimpleNamespace(
-        request_tier="execute",
-        intent_type="execute_task",
-        brevity_hint=True,
-    )
-
-    summary = _build_brief_execute_continuation_summary(agent, routing_decision)
-
-    assert summary is not None
-    assert summary["previous_user_request"] == "再跑一轮完整的吧"
-    assert "宿主筛选" in summary["previous_assistant_summary"]
-    assert "/Users/apple/LLM/agent/phagescope/gvd_phage_meta_data.tsv" in summary["known_paths"]
-    assert "gvd_phage_meta_data.tsv" in summary["known_filenames"]
-    assert summary["latest_tool_result"].startswith("result_interpreter:")
-
-
-def test_brief_execute_continuation_summary_includes_recent_image_anchors() -> None:
-    agent = SimpleNamespace(
-        history=[
-            {"role": "user", "content": "把图重新整理一下"},
-            {"role": "assistant", "content": "上一轮已经产出封面图和摘要图。"},
-        ],
-        extra_context={
-            "recent_image_artifacts": [
-                {
-                    "path": "tool_outputs/run_2/cover.png",
-                    "display_name": "cover.png",
-                    "source_tool": "code_executor",
-                },
-                {
-                    "path": "tool_outputs/run_2/summary.png",
-                    "display_name": "summary.png",
-                    "source_tool": "code_executor",
-                },
-            ]
-        },
-    )
-    routing_decision = SimpleNamespace(
-        request_tier="execute",
-        intent_type="execute_task",
-        brevity_hint=True,
-    )
-
-    summary = _build_brief_execute_continuation_summary(agent, routing_decision)
-
-    assert summary is not None
-    assert summary["recent_image_artifacts"] == [
-        "cover.png (code_executor)",
-        "summary.png (code_executor)",
-    ]
 
 
 def test_plain_chat_execution_claims_are_rewritten_to_non_committal_text() -> None:

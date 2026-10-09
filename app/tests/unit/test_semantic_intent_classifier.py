@@ -258,7 +258,8 @@ class TestFeatureFlag:
 
         # After the intent classification refactor, resolve_intent_type no longer
         # uses keyword heuristics — it returns "chat" for all non-structural signals.
-        # classify_request_tier independently detects execute tier via keywords.
+        # classify_request_signals independently surfaces the structural
+        # research/execute cues as reason codes.
         intent, reasons = resolve_intent_type(message="帮我执行这个任务")
         assert intent == "chat"
         # No semantic reason codes should be present

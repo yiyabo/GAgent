@@ -59,10 +59,6 @@ def _explicitly_requests_completed_task_rerun(agent: Any) -> bool:
     message = str(getattr(agent, "_current_user_message", "") or "")
     if _FORCE_RERUN_COMPLETED_RE.search(message):
         return True
-    intent = str(context.get("intent_type") or "").strip().lower()
-    tier = str(context.get("request_tier") or "").strip().lower()
-    if intent == "execute_task" and tier == "execute" and re.search(r"\b(?:re[-\s]?(?:run|execute)|rerun|reexecute|retry)\b", message, re.IGNORECASE):
-        return True
     return False
 
 # ---------------------------------------------------------------------------

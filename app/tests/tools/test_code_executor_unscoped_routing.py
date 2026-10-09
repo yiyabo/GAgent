@@ -264,7 +264,6 @@ def test_resolve_code_executor_task_context_allows_explicit_completed_force_reru
     agent.extra_context = {
         "explicit_task_ids": [22],
         "explicit_task_override": True,
-        "request_tier": "execute",
         "intent_type": "execute_task",
     }
     agent._current_user_message = "I explicitly want to re-run completed Task 22. Force re-run it."
@@ -300,7 +299,6 @@ def test_resolve_code_executor_task_context_allows_re_execute_patterns(message: 
     agent.extra_context = {
         "explicit_task_ids": [22],
         "explicit_task_override": True,
-        "request_tier": "execute",
         "intent_type": "execute_task",
     }
     agent._current_user_message = message
@@ -391,7 +389,6 @@ def test_prepare_code_executor_params_allows_explicit_completed_force_rerun() ->
     agent.extra_context = {
         "explicit_task_ids": [22],
         "explicit_task_override": True,
-        "request_tier": "execute",
         "intent_type": "execute_task",
     }
     agent._current_user_message = "Force re-run completed Task 22 using code_executor."

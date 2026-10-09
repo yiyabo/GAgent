@@ -214,19 +214,7 @@ from .image_display import (
     _build_recent_image_display_response,
     _select_recent_image_artifacts,
 )
-from .continuation_hints import (
-    _CONTINUATION_FILENAME_RE,
-    _LOW_SIGNAL_CONTINUATION_FILENAMES,
-    _REAL_ABSOLUTE_PATH_PREFIXES,
-    _append_unique_hint,
-    _build_brief_execute_continuation_summary,
-    _clip_continuation_text,
-    _current_user_turn_index_from_history,
-    _extract_recent_path_and_filename_hints,
-    _is_brief_execute_followup_request,
-    _looks_like_real_absolute_path,
-    _path_hint_priority,
-)
+from .continuation_hints import _current_user_turn_index_from_history
 from .subject_grounding import (
     _apply_grounded_local_answer,
     _seed_active_subject_from_routing,
@@ -2745,12 +2733,6 @@ class StructuredChatAgent:
                     **routing_decision.metadata(),
                     **route_profile.prompt_metadata(),
                 }
-                continuation_summary = _build_brief_execute_continuation_summary(
-                    self,
-                    routing_decision,
-                )
-                if continuation_summary:
-                    think_context["continuation_summary"] = continuation_summary
                 deep_think_task_context = _build_deep_think_task_context(
                     self,
                     user_message=effective_user_message,

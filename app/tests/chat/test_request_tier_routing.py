@@ -1232,9 +1232,9 @@ def test_extract_task_ids_ignores_completed_and_artifact_references() -> None:
     assert decision.explicit_task_ids == [39, 40]
 
 
-def test_classify_request_tier_returns_confidence() -> None:
-    from app.routers.chat.request_routing import classify_request_tier
-    tier, reasons, brevity, confidence = classify_request_tier(
+def test_classify_request_signals_returns_confidence() -> None:
+    from app.routers.chat.request_routing import classify_request_signals
+    tier, reasons, brevity, confidence = classify_request_signals(
         message="你好",
         intent_type="chat",
     )
@@ -1244,9 +1244,9 @@ def test_classify_request_tier_returns_confidence() -> None:
     assert 0.0 <= confidence <= 1.0
 
 
-def test_classify_request_tier_high_confidence_for_plan_request() -> None:
-    from app.routers.chat.request_routing import classify_request_tier
-    tier, reasons, brevity, confidence = classify_request_tier(
+def test_classify_request_signals_high_confidence_for_plan_request() -> None:
+    from app.routers.chat.request_routing import classify_request_signals
+    tier, reasons, brevity, confidence = classify_request_signals(
         message="优化这个计划",
         plan_id=122,
         intent_type="chat",
@@ -1299,10 +1299,10 @@ def test_full_plan_imperative_request_triggers_execution() -> None:
 
 
 def test_short_affirmation_no_longer_downgrades_to_light() -> None:
-    from app.routers.chat.request_routing import classify_request_tier
+    from app.routers.chat.request_routing import classify_request_signals
 
     for msg in ("好的", "收到", "明白", "可以", "ok", "okay"):
-        tier, reasons, brevity, confidence = classify_request_tier(
+        tier, reasons, brevity, confidence = classify_request_signals(
             message=msg,
             intent_type="chat",
         )
@@ -1311,11 +1311,11 @@ def test_short_affirmation_no_longer_downgrades_to_light() -> None:
 
 
 def test_short_direct_request_token_triggers_brevity_hint() -> None:
-    from app.routers.chat.request_routing import classify_request_tier
+    from app.routers.chat.request_routing import classify_request_signals
 
     history = [{"role": "assistant", "content": "分析完成。"}]
     for msg in ("继续", "然后呢", "接下来", "next"):
-        tier, reasons, brevity, confidence = classify_request_tier(
+        tier, reasons, brevity, confidence = classify_request_signals(
             message=msg,
             intent_type="chat",
             history=history,

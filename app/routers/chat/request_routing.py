@@ -1138,7 +1138,7 @@ def resolve_request_routing(
         plan_id=plan_id,
         current_task_id=current_task_id,
     )
-    request_tier, reasons, brevity_hint, confidence = classify_request_tier(
+    request_tier, reasons, brevity_hint, confidence = classify_request_signals(
         message=effective_user_message,
         history=history,
         context=context,
@@ -1254,7 +1254,7 @@ def resolve_request_routing(
     )
 
 
-def classify_request_tier(
+def classify_request_signals(
     *,
     message: str,
     history: Optional[Sequence[Mapping[str, Any]]] = None,
@@ -1263,14 +1263,16 @@ def classify_request_tier(
     current_task_id: Optional[int] = None,
     intent_type: IntentType = "chat",
 ) -> tuple[RequestTier, List[str], bool, float]:
-    """Return the (single, flat) tier label plus structural routing signals.
+    """Return the flat tier label plus the structural routing signals.
 
-    There is nothing to classify since the 2026-10 tier removal: every turn
-    gets the same budget and iteration cap, so this always returns
-    "standard" with confidence 1.0. What remains useful is the by-product —
-    the structural reason codes (attachments, task/plan binding, cues,
-    greeting markers) that drive telemetry and intent resolution. It does
-    NOT decide intent — the LLM decides what tools to call.
+    There is no tier left to classify since the 2026-10 tier removal: every
+    turn gets the same budget and iteration cap, so the leading label is
+    always "standard" with confidence 1.0 — inert telemetry kept so the
+    ``request_tier`` column keeps its history. What this function really
+    produces is the by-product: the structural reason codes (attachments,
+    task/plan binding, cues, greeting markers) and the brevity hint that
+    drive telemetry, prompt shaping and intent resolution. It does NOT
+    decide intent — the LLM decides what tools to call.
     """
     text = str(message or "").strip()
     lowered = text.lower()
@@ -1857,7 +1859,7 @@ def resolve_intent_type(
     execution cues, full plan execution) produce ``execute_task``.
     General keyword-based classification has been removed — the LLM decides
     what to do via tool descriptions. Budget and iteration caps are flat for
-    every turn; ``classify_request_tier`` only contributes structural reason
+    every turn; ``classify_request_signals`` only contributes structural reason
     codes.
     """
     context_dict = dict(context or {})
