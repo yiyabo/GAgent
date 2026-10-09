@@ -644,7 +644,21 @@ def _build_tool_result_text_for_llm(
 
     compact_result = cls._compact_tool_result_for_llm(tool_name, result)
     if compact_result is None:
-        return raw_text
+        # No per-tool compactor. Returning raw_text handed an unbounded blob to
+        # the prompt; bound it with head/tail + a marker instead.
+        bounded_text = _bound_tool_result_text_for_llm(
+            cls,
+            payload=payload,
+            result=result,
+            spill_path=_tool_result_spill_path(result),
+        )
+        logger.info(
+            "[DEEP_THINK_NATIVE] Truncated tool result for llm context: tool=%s raw_chars=%s bounded_chars=%s",
+            tool_name,
+            len(raw_text),
+            len(bounded_text),
+        )
+        return bounded_text
 
     compact_payload = {
         "success": success,
@@ -674,6 +688,108 @@ def _compact_tool_result_for_llm(
     if str(tool_name or "").strip().lower() == "execute_code":
         return cls._compact_execute_code_result_for_llm(result)
     return None
+
+
+# Head/tail split for the generic truncation, matching tools/read semantics:
+# 40% head (status, ids, early errors) / 60% tail (the freshest output lines).
+_TOOL_RESULT_HEAD_RATIO = 0.4
+
+
+def _tool_result_spill_path(result: Any) -> Optional[str]:
+    """Path of the persisted full result, when the tool result carries one.
+
+    ``handle_tool_action`` attaches a ``storage`` payload (see
+    ``services/tool_output_storage.py``) holding the session-relative and
+    absolute paths of the ``result.json`` written for the step. Paths that do
+    not exist in the current call chain (plan-executor tool wrapper) simply
+    yield ``None`` and the marker degrades.
+    """
+    if not isinstance(result, dict):
+        return None
+    storage = result.get("storage")
+    if not isinstance(storage, dict):
+        return None
+    candidates: List[Any] = [
+        storage.get("result_path"),
+        storage.get("preview_path"),
+    ]
+    relative = storage.get("relative")
+    if isinstance(relative, dict):
+        candidates.extend([relative.get("result_path"), relative.get("preview_path")])
+    for value in candidates:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _tool_result_truncation_marker(
+    omitted: int, total: int, spill_path: Optional[str]
+) -> str:
+    if spill_path:
+        recovery = (
+            f"full output persisted at {spill_path} — read it with "
+            'file_operations (operation="read") instead of re-running the tool'
+        )
+    else:
+        recovery = (
+            "full output not persisted — narrow the request (smaller range/limit) or "
+            "read the session tool-output directory instead of re-running the tool"
+        )
+    return f"[middle {omitted} chars of {total} truncated; {recovery}]"
+
+
+def _head_tail_text(text: str, budget: int, spill_path: Optional[str]) -> str:
+    """``text`` head(40%) + marker + tail(60%), the whole result within ``budget``."""
+    if budget <= 0 or not text:
+        return ""
+    if len(text) <= budget:
+        return text
+    # Two passes so the reported omission matches the kept head/tail and the
+    # marker itself is charged against the budget.
+    marker = _tool_result_truncation_marker(len(text) - budget, len(text), spill_path)
+    keep = budget - len(marker)
+    if keep <= 0:
+        return text[:budget]
+    marker = _tool_result_truncation_marker(len(text) - keep, len(text), spill_path)
+    keep = max(0, budget - len(marker))
+    if keep <= 0:
+        return text[:budget]
+    head = int(keep * _TOOL_RESULT_HEAD_RATIO)
+    tail = keep - head
+    return text[:head] + marker + text[-tail:]
+
+
+def _bound_tool_result_text_for_llm(
+    cls: Any, *, payload: Dict[str, Any], result: Any, spill_path: Optional[str]
+) -> str:
+    """Bound an oversized tool result with no dedicated compactor.
+
+    Keeps the envelope (``success``/``tool``/``error``) so downstream receipt
+    projection and truth barriers still parse the payload, and clips only the
+    serialized ``result`` body to a head/tail window around a marker naming how
+    much was dropped and where the full output can be read.
+    """
+    limit = cls.MAX_TOOL_RESULT_TEXT_CHARS
+    result_text = json.dumps(result, ensure_ascii=False, default=str)
+    # Length of the envelope with a zero-length string value (the two quotes are
+    # the cost of the ``result`` slot itself, not the body).
+    envelope = len(json.dumps({**payload, "result": ""}, ensure_ascii=False, default=str)) - 2
+    budget = limit - envelope
+    while budget > 0:
+        body = _head_tail_text(result_text, budget, spill_path)
+        text = json.dumps({**payload, "result": body}, ensure_ascii=False, default=str)
+        if len(text) <= limit:
+            return text
+        # JSON escaping grew the body past its raw budget; shrink and retry.
+        shrink = len(text) - limit
+        if budget <= shrink:
+            break
+        budget -= shrink
+    # The envelope alone (e.g. a multi-megabyte ``error``) can fill the budget;
+    # bound the whole serialized payload as a last resort.
+    full_text = json.dumps({**payload, "result": result_text}, ensure_ascii=False, default=str)
+    return _head_tail_text(full_text, limit, spill_path)
+
 
 
 def _compact_code_executor_result_for_llm(
