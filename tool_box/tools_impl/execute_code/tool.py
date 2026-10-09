@@ -73,11 +73,16 @@ def build_description(allowed: Optional[List[str]] = None, *, progressive: Optio
 
 
 async def execute_code_handler(
-    code: str,
+    code: str = "",
     reset: bool = False,
     tool_context: Optional[ToolContext] = None,
 ) -> Dict[str, Any]:
-    """Run one Python cell in the caller's session kernel."""
+    """Run one Python cell in the caller's session kernel.
+
+    ``code`` defaults to empty so a call whose arguments arrived truncated
+    (no ``code`` at all) is answered by the ``empty_code`` branch below instead
+    of a raw TypeError leaking to the model and the user (LOCAL_INFRA §109).
+    """
     if not config.code_mode_enabled():
         return {
             "success": False,

@@ -1466,6 +1466,7 @@ class LLMClient(LLMProvider):
         enable_thinking: Optional[bool] = None,
         thinking_budget: Optional[int] = None,
         on_reasoning_delta: Optional[Callable[[str], Any]] = None,
+        max_tokens: Optional[int] = None,
         **_: Any,
     ) -> AsyncIterator[str]:
         """Stream a chat completion, optionally with thinking enabled.
@@ -1487,11 +1488,14 @@ class LLMClient(LLMProvider):
         else:
             payload_messages = [{"role": "user", "content": prompt}]
 
+        # ``max_tokens`` used to fall into ``**_`` and vanish (LOCAL_INFRA §109):
+        # forced synthesis asked for 6000 and every call went out at LLM_MAX_TOKENS.
+        if max_tokens is not None and (isinstance(max_tokens,bool) or not isinstance(max_tokens,int) or max_tokens<1):raise ValueError("max_tokens must be a positive integer")
         payload: Dict[str, Any] = {
             "model": model or self._effective_model(),
             "messages": payload_messages,
             "stream": True,
-            "max_tokens": _default_max_tokens(),
+            "max_tokens": _default_max_tokens() if max_tokens is None else max_tokens,
         }
         if enable_thinking is not None:
             payload["enable_thinking"] = enable_thinking

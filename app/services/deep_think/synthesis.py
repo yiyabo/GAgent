@@ -36,6 +36,7 @@ from app.services.deep_think.text_utils import (
     _strip_cli_noise_from_multiline,
     _strip_cli_stream_noise,
 )
+from app.services.foundation.settings import get_settings
 from app.services.response_style import (
     PROFESSIONAL_STYLE_INSTRUCTION,
     sanitize_professional_response_text,
@@ -651,6 +652,17 @@ def _build_structured_fallback(agent: "DeepThinkAgent", steps: List[ThinkingStep
     )
 
 
+def _synthesis_thinking_enabled() -> bool:
+    """The loop's switch (`THINKING_ENABLED`), sent explicitly on synthesis calls too.
+
+    Left unset, the provider default decided (observed 2026-10-09, LOCAL_INFRA
+    §109): qwen3.8-flash reasoned through the whole output budget and yielded
+    0 visible chars, so forced synthesis and its three retries all fell through
+    to the structured fallback template.
+    """
+    return bool(getattr(get_settings(), "thinking_enabled", True))
+
+
 async def _chat_text_streaming(agent: "DeepThinkAgent", prompt: str, *, max_tokens: int) -> str:
     """Collect a complete synthesis response via streaming.
 
@@ -658,11 +670,12 @@ async def _chat_text_streaming(agent: "DeepThinkAgent", prompt: str, *, max_toke
     get cut by upstream gateways with 504s (observed 2026-09-19: forced
     synthesis died with HTTPStatusError:504 after 4 attempts); streaming
     keeps bytes flowing and survives multi-minute generations.
+    ``max_tokens`` and the thinking switch are both sent explicitly (§109).
     """
     stream_fn = getattr(agent.llm_client, "stream_chat_async", None)
     if callable(stream_fn):
         chunks: List[str] = []
-        async for chunk in iterate_stage(stream_fn(prompt=prompt, max_tokens=max_tokens), stage="deepthink-synthesis-llm", cancel_event=getattr(agent, "cancel_event", None)):
+        async for chunk in iterate_stage(stream_fn(prompt=prompt, max_tokens=max_tokens, enable_thinking=_synthesis_thinking_enabled()), stage="deepthink-synthesis-llm", cancel_event=getattr(agent, "cancel_event", None)):
             chunks.append(str(chunk))
         return "".join(chunks)
     return await run_stage(agent.llm_client.chat_async(prompt=prompt, max_tokens=max_tokens), stage="deepthink-synthesis-llm", cancel_event=getattr(agent, "cancel_event", None))

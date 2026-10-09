@@ -93,6 +93,73 @@ def _client() -> LLMClient:
     return client
 
 
+class _FakeAsyncStreamResponse:
+    def __init__(self, lines: List[str]) -> None:
+        self.status_code = 200
+        self._lines = list(lines)
+        self.headers: Dict[str, str] = {}
+
+    async def __aenter__(self) -> "_FakeAsyncStreamResponse":
+        return self
+
+    async def __aexit__(self, *exc: Any) -> bool:
+        return False
+
+    async def aiter_lines(self):
+        for line in self._lines:
+            yield line
+
+
+class _FakeAsyncClient:
+    def __init__(self, responses: List[_FakeAsyncStreamResponse]) -> None:
+        self._responses = list(responses)
+        self.calls: List[Dict[str, Any]] = []
+
+    def stream(self, method: str, url: str, headers: Any = None, json: Any = None, timeout: Any = None) -> _FakeAsyncStreamResponse:
+        self.calls.append({"method": method, "url": url, "json": json})
+        return self._responses.pop(0)
+
+
+class TestLLMClientStreamChatAsync:
+    """`stream_chat_async` used to swallow `max_tokens` via `**_` (LOCAL_INFRA §109):
+    forced synthesis asked for 6000 and every call went out at LLM_MAX_TOKENS."""
+
+    @pytest.mark.asyncio()
+    async def test_explicit_max_tokens_is_sent(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("LLM_MAX_TOKENS", "4096")
+        fake = _FakeAsyncClient([_FakeAsyncStreamResponse(_sse_lines(["ok"]))])
+        monkeypatch.setattr(llm_mod, "_get_shared_async_client", lambda: fake)
+        monkeypatch.setattr(llm_mod, "_outbound_limiter", _NoopLimiter())
+
+        out = "".join([chunk async for chunk in _client().stream_chat_async("ping", max_tokens=6000)])
+
+        assert out == "ok"
+        assert fake.calls[0]["json"]["max_tokens"] == 6000
+
+    @pytest.mark.asyncio()
+    async def test_defaulted_call_keeps_the_env_ceiling(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("LLM_MAX_TOKENS", "4096")
+        fake = _FakeAsyncClient([_FakeAsyncStreamResponse(_sse_lines(["ok"]))])
+        monkeypatch.setattr(llm_mod, "_get_shared_async_client", lambda: fake)
+        monkeypatch.setattr(llm_mod, "_outbound_limiter", _NoopLimiter())
+
+        "".join([chunk async for chunk in _client().stream_chat_async("ping")])
+
+        assert fake.calls[0]["json"]["max_tokens"] == 4096
+
+    @pytest.mark.asyncio()
+    async def test_rejects_non_positive_max_tokens(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake = _FakeAsyncClient([_FakeAsyncStreamResponse(_sse_lines(["ok"]))])
+        monkeypatch.setattr(llm_mod, "_get_shared_async_client", lambda: fake)
+        monkeypatch.setattr(llm_mod, "_outbound_limiter", _NoopLimiter())
+
+        with pytest.raises(ValueError):
+            async for _ in _client().stream_chat_async("ping", max_tokens=0):
+                pass
+
+        assert fake.calls == []
+
+
 class TestLLMClientStreamChat:
     def test_env_lowers_the_default_output_ceiling(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """`LLM_MAX_TOKENS` caps every defaulted call (measured: 16k ≈ 280s)."""

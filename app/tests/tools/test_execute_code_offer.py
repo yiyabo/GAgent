@@ -79,6 +79,15 @@ async def test_off_handler_refuses_execution(_code_mode_off):
 # --- ON: schema appears with dynamic signature list ------------------------------
 
 
+@pytest.mark.asyncio()
+async def test_on_handler_without_code_reports_empty_code(_code_mode_on):
+    # A truncated tool call arrives with no `code` at all (LOCAL_INFRA §109):
+    # the handler must answer with its own error payload, not a TypeError.
+    result = await execute_code_handler()
+    assert result["success"] is False
+    assert result["error"] == "empty_code"
+
+
 def test_on_execute_code_present_on_every_offer_surface(_code_mode_on):
     registry = tool_schemas._get_tool_registry()
     assert "execute_code" in registry
