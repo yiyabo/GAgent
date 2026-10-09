@@ -1,7 +1,8 @@
-"""Wall-clock accounting for the qwen_code CLI delegation in code_executor.
+"""Accounting for the qwen_code CLI delegation in code_executor.
 
 Covers the `llm_usage_log` fields added for sub-agent cost governance:
-`duration_ms` (CLI wall clock), `tool_name`, and `call_status` — on both the
+`duration_ms` (CLI wall clock), `tool_name`, `call_status`, and the
+`cache_read_tokens`/`cache_creation_tokens` counters — on both the
 successful and the failing CLI path.
 """
 from __future__ import annotations
@@ -351,3 +352,110 @@ def test_cli_delegation_duration_recorded_on_no_output_timeout(
     assert row["duration_ms"] is not None
     assert row["duration_ms"] > 0.0
     assert row["duration_ms"] < 60_000.0
+
+
+def test_record_external_cli_usage_forwards_cache_fields(monkeypatch: pytest.MonkeyPatch) -> None:
+    from tool_box.tools_impl import code_executor as code_executor_module
+
+    captured: dict = {}
+
+    def _fake_log_llm_usage(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr("app.repository.llm_usage.log_llm_usage", _fake_log_llm_usage)
+
+    usage = code_executor_module._record_external_cli_usage(
+        provider="qwen_code_cli",
+        model="qwen3.7-max",
+        prompt_tokens=100,
+        completion_tokens=25,
+        session_id="session_x",
+        plan_id=122,
+        task_id=14,
+        call_purpose="qwen_code_cli_execution",
+        cache_read_tokens=1024,
+        cache_creation_tokens=128,
+    )
+
+    assert captured["cache_read_tokens"] == 1024
+    assert captured["cache_creation_tokens"] == 128
+    assert usage["cache_read_tokens"] == 1024
+    assert usage["cache_creation_tokens"] == 128
+
+    captured.clear()
+    usage = code_executor_module._record_external_cli_usage(
+        provider="qwen_code_cli",
+        model="qwen3.7-max",
+        prompt_tokens=1,
+        completion_tokens=1,
+        session_id="session_x",
+        plan_id=122,
+        task_id=14,
+        call_purpose="qwen_code_cli_execution",
+    )
+
+    assert captured["cache_read_tokens"] == 0
+    assert captured["cache_creation_tokens"] == 0
+    assert usage["cache_read_tokens"] == 0
+    assert usage["cache_creation_tokens"] == 0
+
+
+def test_parse_cli_usage_from_jsonl_reads_cache_tokens() -> None:
+    from tool_box.tools_impl import code_executor_backend as backend_module
+
+    stdout = "\n".join([
+        '{"type":"assistant","message":{"content":"working"}}',
+        (
+            '{"type":"result","result":"done","usage":{"input_tokens":100,"output_tokens":20,'
+            '"total_tokens":120,"cache_read_tokens":64,"cache_creation_tokens":8}}'
+        ),
+    ])
+
+    assert backend_module._parse_cli_usage_from_jsonl(stdout) == {
+        "prompt_tokens": 100,
+        "completion_tokens": 20,
+        "total_tokens": 120,
+        "cache_read_tokens": 64,
+        "cache_creation_tokens": 8,
+    }
+
+    assert backend_module._parse_cli_usage_from_jsonl(
+        '{"type":"result","usage":{"input_tokens":10,"output_tokens":2}}'
+    ) == {
+        "prompt_tokens": 10,
+        "completion_tokens": 2,
+        "total_tokens": 12,
+        "cache_read_tokens": 0,
+        "cache_creation_tokens": 0,
+    }
+
+
+def test_cli_delegation_cache_tokens_recorded(
+    monkeypatch: pytest.MonkeyPatch,
+    isolated_usage_db: Path,
+    tmp_path: Path,
+) -> None:
+    stdout = (
+        b'{"ok": true}\n'
+        b'{"type":"result","result":"done","usage":{"input_tokens":100,"output_tokens":20,'
+        b'"total_tokens":120,"cache_read_tokens":64,"cache_creation_tokens":8}}'
+    )
+    created = _install_qwen_cli_stubs(monkeypatch, tmp_path, returncode=0, stdout=stdout)
+    _init_usage_table()
+
+    result = _run_handler()
+
+    assert created, "the fake CLI process must have been spawned"
+    assert result["success"] is True
+    assert result["cli_usage"]["usage_source"] == "provider"
+    assert result["cli_usage"]["cache_read_tokens"] == 64
+    assert result["cli_usage"]["cache_creation_tokens"] == 8
+
+    rows = _read_usage_rows("session-x")
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["prompt_tokens"] == 100
+    assert row["completion_tokens"] == 20
+    assert row["total_tokens"] == 120
+    assert row["cache_read_tokens"] == 64
+    assert row["cache_creation_tokens"] == 8

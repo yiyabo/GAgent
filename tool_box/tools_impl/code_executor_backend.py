@@ -702,7 +702,13 @@ def _parse_cli_usage_from_jsonl(stdout: str) -> Optional[Dict[str, int]]:
             completion = int(usage.get("output_tokens") or usage.get("completion_tokens") or 0)
             total = int(usage.get("total_tokens") or (prompt + completion))
             if prompt > 0 or completion > 0:
-                return {"prompt_tokens": prompt, "completion_tokens": completion, "total_tokens": total}
+                return {
+                    "prompt_tokens": prompt,
+                    "completion_tokens": completion,
+                    "total_tokens": total,
+                    "cache_read_tokens": max(0, int(usage.get("cache_read_tokens") or 0)),
+                    "cache_creation_tokens": max(0, int(usage.get("cache_creation_tokens") or 0)),
+                }
     return None
 
 
@@ -722,16 +728,18 @@ def _resolve_delegation_parent_run_id(child_run_id: Optional[str]) -> Optional[s
         return None
 
 
-def _record_external_cli_usage(*, provider: str, model: Optional[str], prompt_tokens: int, completion_tokens: int, session_id: Optional[str], plan_id: Optional[int], task_id: Optional[int], call_purpose: str, duration_ms: Optional[float] = None, run_id: Optional[str] = None, tool_name: Optional[str] = None, call_status: Optional[str] = None, parent_run_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+def _record_external_cli_usage(*, provider: str, model: Optional[str], prompt_tokens: int, completion_tokens: int, session_id: Optional[str], plan_id: Optional[int], task_id: Optional[int], call_purpose: str, duration_ms: Optional[float] = None, run_id: Optional[str] = None, tool_name: Optional[str] = None, call_status: Optional[str] = None, parent_run_id: Optional[str] = None, cache_read_tokens: int = 0, cache_creation_tokens: int = 0) -> Optional[Dict[str, Any]]:
     try:
         from app.repository.llm_usage import estimate_llm_cost, log_llm_usage
         model_name = str(model or "unknown").strip() or "unknown"
         total_tokens = max(0, int(prompt_tokens or 0)) + max(0, int(completion_tokens or 0))
+        cache_read = max(0, int(cache_read_tokens or 0))
+        cache_creation = max(0, int(cache_creation_tokens or 0))
         if parent_run_id is None:
             parent_run_id = _ce()._resolve_delegation_parent_run_id(run_id)
         cost = estimate_llm_cost(provider=provider, model=model_name, prompt_tokens=prompt_tokens, completion_tokens=completion_tokens)
-        log_llm_usage(provider=provider, model=model_name, prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, total_tokens=total_tokens, session_id=session_id, plan_id=plan_id, task_id=task_id, call_purpose=call_purpose, duration_ms=duration_ms, run_id=run_id, parent_run_id=parent_run_id, tool_name=tool_name, call_status=call_status, input_cost=cost["input_cost"], output_cost=cost["output_cost"], estimated_cost=cost["estimated_cost"], cost_currency=cost["cost_currency"])
-        return {"provider": provider, "model": model_name, "prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens, "total_tokens": total_tokens, **cost}
+        log_llm_usage(provider=provider, model=model_name, prompt_tokens=prompt_tokens, completion_tokens=completion_tokens, total_tokens=total_tokens, session_id=session_id, plan_id=plan_id, task_id=task_id, call_purpose=call_purpose, duration_ms=duration_ms, run_id=run_id, parent_run_id=parent_run_id, tool_name=tool_name, call_status=call_status, cache_read_tokens=cache_read, cache_creation_tokens=cache_creation, input_cost=cost["input_cost"], output_cost=cost["output_cost"], estimated_cost=cost["estimated_cost"], cost_currency=cost["cost_currency"])
+        return {"provider": provider, "model": model_name, "prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens, "total_tokens": total_tokens, "cache_read_tokens": cache_read, "cache_creation_tokens": cache_creation, **cost}
     except Exception as exc:
         logger.warning("[CODE_EXECUTOR] Failed to record external CLI usage: %s", exc)
         return None

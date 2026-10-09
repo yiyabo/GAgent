@@ -1692,6 +1692,8 @@ async def code_executor_handler(
                 model=effective_model or os.getenv("QWEN_CODE_MODEL") or os.getenv("QWEN_MODEL") or "unknown",
                 prompt_tokens=real_usage["prompt_tokens"] if real_usage else cli_prompt_tokens_accumulated,
                 completion_tokens=real_usage["completion_tokens"] if real_usage else _estimate_cli_completion_tokens(stdout, stderr),
+                cache_read_tokens=real_usage["cache_read_tokens"] if real_usage else 0,
+                cache_creation_tokens=real_usage["cache_creation_tokens"] if real_usage else 0,
                 session_id=effective_session_id,
                 plan_id=resolved_plan_id,
                 task_id=resolved_task_id,
