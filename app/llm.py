@@ -29,6 +29,31 @@ from .services.foundation.llm_config import (
 logger = logging.getLogger(__name__)
 
 
+_REASONING_EFFORT_LEVELS = ("none", "low", "medium", "high")
+
+
+def _thinking_off_reasoning_effort() -> Optional[str]:
+    """``reasoning_effort`` to send when a caller asks for ``enable_thinking=False``.
+
+    Probed 2026-10-09 against the production gateway (sub2api → qwen3.8-flash,
+    LOCAL_INFRA §114): ``enable_thinking=false``, ``thinking_budget``,
+    ``extra_body`` and ``thinking.type=disabled`` are all ignored — reasoning
+    tokens keep flowing and keep eating ``max_tokens`` (39 iterations of one
+    run came back as 4096 reasoning tokens with no content and no tool call).
+    ``reasoning_effort`` is the one switch that gateway honours, and it is
+    graded: on the same prompt default/high ≈ 1272/1194 reasoning tokens,
+    medium 419, low 255, none 0. ``LLM_THINKING_OFF_REASONING_EFFORT`` picks
+    the grade (default ``low``: keep light planning, stop the burn); ``off``
+    disables the mapping so only ``enable_thinking`` goes out.
+    """
+    raw = str(os.getenv("LLM_THINKING_OFF_REASONING_EFFORT", "low")).strip().lower()
+    if raw in ("off", "disabled", "0"):
+        return None
+    if raw in _REASONING_EFFORT_LEVELS:
+        return raw
+    return "low"
+
+
 def _default_max_tokens() -> int:
     """Output ceiling for a call that does not pass ``max_tokens``.
 
@@ -1501,6 +1526,12 @@ class LLMClient(LLMProvider):
             payload["enable_thinking"] = enable_thinking
         if thinking_budget is not None:
             payload["thinking_budget"] = thinking_budget
+        if enable_thinking is False:
+            # The gateway ignores enable_thinking (LOCAL_INFRA §114);
+            # reasoning_effort is what actually bounds thinking here.
+            effort = _thinking_off_reasoning_effort()
+            if effort:
+                payload["reasoning_effort"] = effort
 
         headers = self._build_headers()
         logical_call_id = _new_logical_call_id()
@@ -1723,6 +1754,12 @@ class LLMClient(LLMProvider):
             payload["enable_thinking"] = enable_thinking
         if thinking_budget is not None:
             payload["thinking_budget"] = thinking_budget
+        if enable_thinking is False:
+            # The gateway ignores enable_thinking (LOCAL_INFRA §114);
+            # reasoning_effort is what actually bounds thinking here.
+            effort = _thinking_off_reasoning_effort()
+            if effort:
+                payload["reasoning_effort"] = effort
 
         headers = self._build_headers()
         logical_call_id = _new_logical_call_id()

@@ -159,6 +159,86 @@ class TestLLMClientStreamChatAsync:
 
         assert fake.calls == []
 
+    @pytest.mark.asyncio()
+    async def test_thinking_off_maps_to_reasoning_effort_low_by_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The gateway ignores enable_thinking=false; reasoning_effort is the real switch (§114)."""
+        monkeypatch.delenv("LLM_THINKING_OFF_REASONING_EFFORT", raising=False)
+        fake = _FakeAsyncClient([_FakeAsyncStreamResponse(_sse_lines(["ok"]))])
+        monkeypatch.setattr(llm_mod, "_get_shared_async_client", lambda: fake)
+        monkeypatch.setattr(llm_mod, "_outbound_limiter", _NoopLimiter())
+
+        "".join([chunk async for chunk in _client().stream_chat_async("ping", enable_thinking=False)])
+
+        sent = fake.calls[0]["json"]
+        assert sent["enable_thinking"] is False
+        assert sent["reasoning_effort"] == "low"
+
+    @pytest.mark.asyncio()
+    async def test_thinking_off_grade_is_tunable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("LLM_THINKING_OFF_REASONING_EFFORT", "none")
+        fake = _FakeAsyncClient([_FakeAsyncStreamResponse(_sse_lines(["ok"]))])
+        monkeypatch.setattr(llm_mod, "_get_shared_async_client", lambda: fake)
+        monkeypatch.setattr(llm_mod, "_outbound_limiter", _NoopLimiter())
+
+        "".join([chunk async for chunk in _client().stream_chat_async("ping", enable_thinking=False)])
+
+        assert fake.calls[0]["json"]["reasoning_effort"] == "none"
+
+    @pytest.mark.asyncio()
+    async def test_thinking_on_or_unset_sends_no_reasoning_effort(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake = _FakeAsyncClient([
+            _FakeAsyncStreamResponse(_sse_lines(["ok"])),
+            _FakeAsyncStreamResponse(_sse_lines(["ok"])),
+        ])
+        monkeypatch.setattr(llm_mod, "_get_shared_async_client", lambda: fake)
+        monkeypatch.setattr(llm_mod, "_outbound_limiter", _NoopLimiter())
+
+        "".join([chunk async for chunk in _client().stream_chat_async("ping", enable_thinking=True)])
+        "".join([chunk async for chunk in _client().stream_chat_async("ping")])
+
+        assert "reasoning_effort" not in fake.calls[0]["json"]
+        assert fake.calls[0]["json"]["enable_thinking"] is True
+        assert "reasoning_effort" not in fake.calls[1]["json"]
+        assert "enable_thinking" not in fake.calls[1]["json"]
+
+    @pytest.mark.asyncio()
+    async def test_thinking_off_mapping_also_covers_native_tool_streams(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The deep-think loop goes out through stream_chat_with_tools_async."""
+        monkeypatch.delenv("LLM_THINKING_OFF_REASONING_EFFORT", raising=False)
+        fake = _FakeAsyncClient([_FakeAsyncStreamResponse(_sse_lines(["ok"]))])
+        monkeypatch.setattr(llm_mod, "_get_shared_async_client", lambda: fake)
+        monkeypatch.setattr(llm_mod, "_outbound_limiter", _NoopLimiter())
+
+        await _client().stream_chat_with_tools_async(
+            messages=[{"role": "user", "content": "ping"}],
+            tools=[],
+            enable_thinking=False,
+        )
+
+        sent = fake.calls[0]["json"]
+        assert sent["enable_thinking"] is False
+        assert sent["reasoning_effort"] == "low"
+
+
+class TestThinkingOffReasoningEffort:
+    def test_default_is_low(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("LLM_THINKING_OFF_REASONING_EFFORT", raising=False)
+        assert llm_mod._thinking_off_reasoning_effort() == "low"
+
+    def test_grades_are_accepted_case_insensitively(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("LLM_THINKING_OFF_REASONING_EFFORT", "NONE")
+        assert llm_mod._thinking_off_reasoning_effort() == "none"
+        monkeypatch.setenv("LLM_THINKING_OFF_REASONING_EFFORT", " Medium ")
+        assert llm_mod._thinking_off_reasoning_effort() == "medium"
+
+    def test_off_disables_the_mapping(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("LLM_THINKING_OFF_REASONING_EFFORT", "off")
+        assert llm_mod._thinking_off_reasoning_effort() is None
+
+    def test_garbage_falls_back_to_low(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("LLM_THINKING_OFF_REASONING_EFFORT", "turbo")
+        assert llm_mod._thinking_off_reasoning_effort() == "low"
+
 
 class TestLLMClientStreamChat:
     def test_env_lowers_the_default_output_ceiling(self, monkeypatch: pytest.MonkeyPatch) -> None:
