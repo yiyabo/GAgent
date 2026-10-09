@@ -52,10 +52,14 @@ class TestWebSearchBatchingSteer:
         assert QUERIES["minItems"] == 2
         assert QUERIES["maxItems"] == 6
 
-    def test_query_stays_required_so_a_lone_search_still_works(self) -> None:
-        """Deliberate: this change steers, it does not change the contract.
+    def test_query_is_offered_but_not_required_so_batched_calls_validate(self) -> None:
+        """The steer and argument validation only agree if `query` is optional.
 
-        Dropping `query` from `required` would let an argument-less call through
-        on a gateway that already loses tool arguments intermittently.
+        Replay of 571 production checkpoints (2026-10-09, LOCAL_INFRA §111): 18 of
+        21 real web_search calls were `queries`-only — exactly what the steer asks
+        for — and `required: ["query"]` would have made argument validation reject
+        them. An argument-less call is still caught, by the handler's own
+        `missing_query` answer (handler.py, added 2026-09-26), not by the schema.
         """
-        assert PARAMS["required"] == ["query"]
+        assert "query" in PARAMS["properties"]
+        assert PARAMS["required"] == []

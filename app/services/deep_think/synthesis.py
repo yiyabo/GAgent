@@ -580,7 +580,10 @@ def _build_structured_fallback(agent: "DeepThinkAgent", steps: List[ThinkingStep
     # If we have substantial evidence or thoughts, build a content-rich fallback
     if evidence.strip() and len(evidence.strip()) > 20:
         # Check if we have successful tool execution evidence
-        has_success = "代码执行成功" in evidence or "已写入文件" in evidence or "产出文件" in evidence
+        # "执行完成" is the generic per-tool success bullet this module emits for
+        # tool results; without it a run of successful tools read as mere
+        # "observed information" (§109/§111).
+        has_success = "代码执行成功" in evidence or "执行完成" in evidence or "已写入文件" in evidence or "产出文件" in evidence
         artifact_hint = ""
         if output_files:
             if language == "zh":

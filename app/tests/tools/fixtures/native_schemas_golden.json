@@ -36,9 +36,7 @@
               "type": "string"
             }
           },
-          "required": [
-            "query"
-          ],
+          "required": [],
           "type": "object"
         }
       },
@@ -2178,9 +2176,7 @@
               "type": "string"
             }
           },
-          "required": [
-            "query"
-          ],
+          "required": [],
           "type": "object"
         }
       },

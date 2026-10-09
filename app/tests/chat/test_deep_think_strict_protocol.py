@@ -2343,6 +2343,38 @@ def test_structured_fallback_humanizes_code_executor_success() -> None:
     assert "terminal_session" not in answer
 
 
+def test_structured_fallback_treats_generic_tool_success_as_success() -> None:
+    """A run of plain `执行完成` bullets is tool success, not mere "observed information".
+
+    Production 2026-10-09 (LOCAL_INFRA §109/§111): twelve successful execute_code
+    cells rendered as the generic bullet, the success markers did not include it,
+    and the user was handed the "observed information" template with the
+    "ask for more detail" footer.
+    """
+    agent = DeepThinkAgent(
+        llm_client=_DummyLLM([]),
+        available_tools=["execute_code"],
+        tool_executor=_noop_tool_executor,
+        max_iterations=1,
+    )
+    steps = [
+        ThinkingStep(
+            iteration=i,
+            thought="跑单元格",
+            action='{"tool":"execute_code"}',
+            action_result='[execute_code] {"success": true, "tool": "execute_code", "result": {"stdout": "ok"}}',
+            self_correction=None,
+        )
+        for i in (1, 2, 3)
+    ]
+
+    answer = agent._build_structured_fallback(steps, "把表格补齐")
+
+    assert "execute_code：执行完成" in answer
+    assert "以下是本轮工具执行的结果摘要" in answer
+    assert "如需更详细的分析" not in answer
+
+
 def test_native_retries_external_search_tool_once_before_succeeding() -> None:
     attempts: list[str] = []
 

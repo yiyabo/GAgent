@@ -41,7 +41,9 @@ web_search_tool = {
                 "maximum": 20,
             },
         },
-        "required": ["query"],
+        # `queries`-only is a valid call (handler enforces "at least one of
+        # query/queries" and answers `missing_query`); see LOCAL_INFRA §111.
+        "required": [],
     },
     "handler": web_search_handler,
     "tags": [

@@ -56,7 +56,11 @@ NATIVE_TOOL_CONTENT: Dict[str, Dict[str, Any]] = {
                     "maximum": 20,
                 },
             },
-            "required": ["query"],
+            # `queries`-only calls are the batched form the description asks for and
+            # the handler accepts (it answers `missing_query` when both are empty);
+            # keeping `query` required made argument validation reject 18/21 real
+            # calls in the 2026-10-09 checkpoint replay (LOCAL_INFRA §111).
+            "required": [],
         },
     },
     "sequence_fetch": {
