@@ -167,12 +167,15 @@ class TestCompaction:
 
         result = await mgr.compact_if_needed(msgs, summarizer=fake_summarizer)
 
-        # System message preserved
+        # The one and only system message is the untouched system prompt.
         assert result[0]["role"] == "system"
         assert "helpful assistant" in result[0]["content"]
+        assert [m["role"] for m in result].count("system") == 1
 
-        # Summary message inserted
-        assert result[1]["role"] == "system"
+        # Summary inserted; role alternates against the retained tail (whose
+        # first message here is a user turn), never a second "system".
+        assert result[1]["role"] == "assistant"
+        assert result[2]["role"] == "user"
         assert "Summary" in result[1]["content"]
         assert "Context Summary" in result[1]["content"]
 

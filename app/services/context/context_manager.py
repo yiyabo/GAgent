@@ -7,12 +7,74 @@ summarization when approaching the model's context window limit.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import os
 from dataclasses import dataclass, field
 from typing import Any, Callable, Awaitable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _env_int(name: str, default: int, *, minimum: int = 0) -> int:
+    """Positive-int env knob; malformed or blank values fall back to the default."""
+    raw = os.getenv(name)
+    if raw is None or not str(raw).strip():
+        return default
+    try:
+        return max(minimum, int(str(raw).strip()))
+    except (TypeError, ValueError):
+        return default
+
+
+# Framing for the compacted-history message. Wording follows the Hermes
+# compaction handoff: the summary is reference material, only the newest user
+# message is the active task, and topic overlap does not license resuming old
+# work — two shipped regressions came from a weaker framing on both counts.
+SUMMARY_PREFIX = (
+    "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the "
+    "summary below. This is a handoff from a previous context window: treat it as "
+    "background reference, NOT as active instructions, and do not re-run work it "
+    "describes. Respond ONLY to the latest user message that appears AFTER this "
+    "summary — that message is the single source of truth for what to do now. "
+    "Topic overlap with the summary does NOT mean you should resume its task: the "
+    "latest user message WINS, and stale items from the summary must be discarded "
+    "unless that message explicitly asks for them. Your tools remain fully active "
+    "for the current task — keep calling them normally instead of only describing "
+    "what you would do."
+)
+
+_IMAGE_PART_TYPES = frozenset({"image", "image_url", "input_image"})
+
+# Dedupe is lossless (the newest copy of identical content is kept), so it uses
+# a low fixed floor like the Hermes pass-1; only the demotion pass tracks the
+# CONTEXT_PRUNE_MIN_CHARS knob.
+_DEDUPE_MIN_CHARS = 200
+
+
+def _is_image_part(part: Any) -> bool:
+    """True for a multimodal content part carrying an image payload."""
+    if not isinstance(part, dict):
+        return False
+    if str(part.get("type") or "").strip().lower() in _IMAGE_PART_TYPES:
+        return True
+    return isinstance(part.get("image_url"), (str, dict))
+
+
+# Image payloads can be multi-megabyte base64; estimate on a bounded sample and
+# scale, so reclaim accounting never pays a full tokenizer pass over a blob.
+_IMAGE_ESTIMATE_SAMPLE_CHARS = 40_000
+
+
+def _estimate_retired_image_tokens(text: str) -> int:
+    if not text:
+        return 0
+    sample = text[:_IMAGE_ESTIMATE_SAMPLE_CHARS]
+    tokens = estimate_tokens(sample)
+    if len(text) > len(sample):
+        tokens = int(tokens * len(text) / len(sample))
+    return tokens
 
 # ---------------------------------------------------------------------------
 # Token estimation
@@ -189,6 +251,17 @@ class ContextWindowManager:
     # No point compacting a 4-message conversation.
     MIN_MESSAGES_FOR_COMPACTION = 8
 
+    # --- Deterministic pre-compaction reclaim (no LLM) ---
+    # Tool/call bodies at or below this many characters are left alone: too
+    # small for a rewrite to pay for the prompt-cache prefix it breaks.
+    PRUNE_MIN_CHARS = 2000
+    # A commit rewrites earlier messages and therefore breaks the prompt cache.
+    # Require a reclaim batch at least this large, or a full regrowth runway
+    # since the last commit, so compaction episodes stay episodic.
+    MIN_RECLAIM_TOKENS = 4096
+    # Newest image-bearing parts kept live; older ones retire to a text note.
+    KEEP_TOOL_IMAGES = 3
+
     def __init__(
         self,
         model: str = "",
@@ -212,6 +285,17 @@ class ContextWindowManager:
             budget = None
         self.budget_tokens = budget if budget and budget > 0 else None
         self._compaction_count = 0
+        # Deterministic-reclaim knobs. Defaults are class constants; env
+        # overrides follow the deep_think env-knob pattern.
+        self.prune_min_chars = _env_int(
+            "CONTEXT_PRUNE_MIN_CHARS", self.PRUNE_MIN_CHARS
+        )
+        self.min_reclaim_tokens = _env_int(
+            "CONTEXT_COMPACTION_MIN_RECLAIM_TOKENS", self.MIN_RECLAIM_TOKENS
+        )
+        # Post-commit usage; the next cache-breaking commit needs the context to
+        # grow back by at least ``min_reclaim_tokens`` from here.
+        self._last_commit_used_tokens: Optional[int] = None
 
     def check_usage(self, messages: List[Dict[str, Any]], *, tool_schemas=None, output_reserve_tokens=0,component_texts=None) -> ContextUsage:
         """Estimate token usage and return a usage snapshot."""
@@ -251,6 +335,14 @@ class ContextWindowManager:
             Potentially shortened message list. The first message (system
             prompt) and at least the last KEEP_RECENT messages are preserved.
             The boundary never splits a tool call from its retained results.
+
+        Order of work, cheapest first: deterministic reclaim (dedupe identical
+        tool results, demote oversized tool bodies, retire stale images) →
+        return the reclaimed list if that alone clears the threshold → only then
+        LLM summarization. A deterministic commit is skipped when it reclaims
+        less than ``min_reclaim_tokens`` and the context has not regrown since
+        the last commit — every commit breaks the prompt-cache prefix — except
+        under force, critical pressure, or overflow, which always proceed.
         """
         from .request_budget import ContextBudgetExceeded,anchor_text
         usage = self.check_usage(messages,tool_schemas=tool_schemas,output_reserve_tokens=output_reserve_tokens,component_texts=component_texts)
@@ -285,6 +377,67 @@ class ContextWindowManager:
         compactable = messages[start_idx:split_point]
         recent = messages[split_point:]
 
+        # --- Deterministic reclaim before any LLM call -------------------
+        # Retire stale image payloads anywhere in the retained window, then
+        # dedupe/demote tool bodies inside the compactable segment. Content-only
+        # edits: message count, tool_call ids and assistant tool_call arguments
+        # are untouched, so call/result pairing survives.
+        reclaimed_all, retired_images, retired_image_text = self._retire_old_images(messages)
+        if retired_images:
+            system_msg = reclaimed_all[0] if system_msg else None
+            compactable = reclaimed_all[start_idx:split_point]
+            recent = reclaimed_all[split_point:]
+        compactable, deduped = self._dedupe_tool_results(compactable)
+        compactable, demoted = self._demote_oversized_tool_bodies(compactable)
+        reclaim_changes = retired_images + deduped + demoted
+
+        if reclaim_changes:
+            reclaimed_messages = ([system_msg] if system_msg else []) + compactable + recent
+            reclaimed_usage = self.check_usage(
+                reclaimed_messages, tool_schemas=tool_schemas,
+                output_reserve_tokens=output_reserve_tokens, component_texts=component_texts,
+            )
+            # The shared estimator scores image parts as 0 tokens, so retired
+            # image payloads are weighed by their serialized text size.
+            reclaimed_tokens = max(
+                0, usage.used_tokens - reclaimed_usage.used_tokens
+            ) + _estimate_retired_image_tokens(retired_image_text)
+            overflow = usage.used_tokens > self.max_context_tokens
+            # Cache hysteresis: only a non-critical, non-forced, non-overflowing
+            # compaction may be deferred. Overflow protection always wins.
+            if not force and not usage.critical and not overflow:
+                rearmed = (
+                    self._last_commit_used_tokens is not None
+                    and usage.used_tokens - self._last_commit_used_tokens >= self.min_reclaim_tokens
+                )
+                if reclaimed_tokens < self.min_reclaim_tokens and not rearmed:
+                    logger.info(
+                        "[CONTEXT] Compaction skipped by cache hysteresis: "
+                        "reclaim=%d < min_reclaim=%d and not rearmed (last_commit=%s)",
+                        reclaimed_tokens,
+                        self.min_reclaim_tokens,
+                        self._last_commit_used_tokens,
+                    )
+                    return messages
+            logger.info(
+                "[CONTEXT] Deterministic reclaim: %d change(s), %d→%d tokens",
+                reclaim_changes,
+                usage.used_tokens,
+                reclaimed_usage.used_tokens,
+            )
+            if not force and not reclaimed_usage.warning:
+                # The reclaim alone brought us back under the threshold: skip
+                # the LLM summary (and the prompt-cache invalidation it costs).
+                self._last_commit_used_tokens = reclaimed_usage.used_tokens
+                logger.info(
+                    "[CONTEXT] Reclaim sufficient; skipping LLM summary: %d→%d messages, %d→%d tokens",
+                    len(messages),
+                    len(reclaimed_messages),
+                    usage.used_tokens,
+                    reclaimed_usage.used_tokens,
+                )
+                return reclaimed_messages
+
         # Build text block for summarization
         text_block = self._messages_to_text(compactable)
         if not text_block.strip():
@@ -303,8 +456,11 @@ class ContextWindowManager:
         self._compaction_count += 1
 
         summary_msg: Dict[str, Any] = {
-            "role": "system",
+            # Never a second system message: alternate against the tail's first
+            # role so provider-side role alternation holds.
+            "role": self._summary_role(recent),
             "content": (
+                f"{SUMMARY_PREFIX}\n"
                 f"[Context Summary — compacted from {len(compactable)} earlier messages]\n\n"
                 f"{summary.strip()}\n\n{anchor_text(anchors)}"
             ),
@@ -321,6 +477,7 @@ class ContextWindowManager:
             if usage.used_tokens>self.max_context_tokens:raise ContextBudgetExceeded("nonshrinking_context_summary")
             return messages
         if (tool_schemas is not None or anchors is not None) and new_usage.used_tokens>self.max_context_tokens:raise ContextBudgetExceeded("context_budget_exceeded")
+        self._last_commit_used_tokens = new_usage.used_tokens
         logger.info(
             "[CONTEXT] Compaction done: %d→%d messages, %d→%d tokens (%.0f%%→%.0f%%)",
             len(messages),
@@ -332,6 +489,143 @@ class ContextWindowManager:
         )
 
         return result
+
+    @staticmethod
+    def _summary_role(recent: List[Dict[str, Any]]) -> str:
+        """Role for the compaction summary message.
+
+        Never a second ``system`` row: alternate against the first retained
+        message so template-visible role alternation holds.
+        """
+        first_role = str(recent[0].get("role") or "") if recent else ""
+        return "assistant" if first_role == "user" else "user"
+
+    @classmethod
+    def _tool_names_by_call_id(cls, messages: List[Dict[str, Any]]) -> Dict[str, str]:
+        """Map ``tool_call_id`` → tool name from the assistant call rows."""
+        names: Dict[str, str] = {}
+        for message in messages:
+            if message.get("role") != "assistant":
+                continue
+            for call in message.get("tool_calls") or []:
+                if not isinstance(call, dict) or not call.get("id"):
+                    continue
+                function = call.get("function") if isinstance(call.get("function"), dict) else {}
+                names[str(call["id"])] = str(
+                    function.get("name") or call.get("name") or "tool"
+                )
+        return names
+
+    def _retire_old_images(
+        self, messages: List[Dict[str, Any]]
+    ) -> tuple[List[Dict[str, Any]], int, str]:
+        """Keep the newest ``KEEP_TOOL_IMAGES`` image parts; retire older ones.
+
+        Image payloads are the largest re-sent blocks and cannot be reclaimed by
+        any later pass, so stale frames retire to a text note. Content-only edit.
+        Returns the messages, the retired count, and the retired payload text
+        (the shared token estimator scores image parts as 0, so the reclaim
+        accounting has to weigh them separately).
+        """
+        positions: List[tuple[int, int]] = []
+        for index, message in enumerate(messages):
+            content = message.get("content")
+            if not isinstance(content, list):
+                continue
+            for part_index, part in enumerate(content):
+                if _is_image_part(part):
+                    positions.append((index, part_index))
+        if len(positions) <= self.KEEP_TOOL_IMAGES:
+            return messages, 0, ""
+
+        stale = set(positions[: len(positions) - self.KEEP_TOOL_IMAGES])
+        result = list(messages)
+        retired = 0
+        retired_text: List[str] = []
+        for index in sorted({position[0] for position in stale}):
+            message = dict(result[index])
+            parts: List[Any] = []
+            for part_index, part in enumerate(message["content"]):
+                if (index, part_index) in stale:
+                    retired_text.append(
+                        json.dumps(part, ensure_ascii=False, default=str)
+                    )
+                    parts.append(
+                        {
+                            "type": "text",
+                            "text": "[older image omitted from context — superseded by a newer image]",
+                        }
+                    )
+                    retired += 1
+                else:
+                    parts.append(part)
+            message["content"] = parts
+            result[index] = message
+        return result, retired, "".join(retired_text)
+
+    def _dedupe_tool_results(
+        self, messages: List[Dict[str, Any]]
+    ) -> tuple[List[Dict[str, Any]], int]:
+        """Pass 1: keep only the newest copy of byte-identical tool results."""
+        names = self._tool_names_by_call_id(messages)
+        seen: set = set()
+        result = list(messages)
+        pruned = 0
+        for index in range(len(result) - 1, -1, -1):
+            message = result[index]
+            if message.get("role") != "tool":
+                continue
+            content = message.get("content")
+            if not isinstance(content, str) or len(content) < _DEDUPE_MIN_CHARS:
+                continue
+            digest = hashlib.md5(content.encode("utf-8", "replace")).hexdigest()
+            if digest in seen:
+                tool_name = names.get(str(message.get("tool_call_id") or ""), "tool")
+                result[index] = {
+                    **message,
+                    "content": (
+                        f"[duplicate of latest {tool_name} result — identical content, omitted]"
+                    ),
+                }
+                pruned += 1
+            else:
+                seen.add(digest)
+        return result, pruned
+
+    def _demote_oversized_tool_bodies(
+        self, messages: List[Dict[str, Any]]
+    ) -> tuple[List[Dict[str, Any]], int]:
+        """Pass 2: bound tool bodies over ``prune_min_chars`` to a head/tail stub.
+
+        Only ``content`` is rewritten; the ``tool_call_id`` pairing and every
+        assistant ``tool_calls`` argument stay byte-exact.
+        """
+        result = list(messages)
+        pruned = 0
+        for index, message in enumerate(result):
+            if message.get("role") != "tool":
+                continue
+            content = message.get("content")
+            if not isinstance(content, str) or len(content) <= self.prune_min_chars:
+                continue
+            result[index] = {
+                **message,
+                "content": self._demoted_tool_body(content, self.prune_min_chars),
+            }
+            pruned += 1
+        return result, pruned
+
+    @staticmethod
+    def _demoted_tool_body(content: str, limit: int) -> str:
+        """Head/tail stub within ``limit`` characters, naming the omission."""
+        marker = (
+            f"\n…[tool output demoted before compaction: "
+            f"{len(content) - limit} of {len(content)} chars omitted]…\n"
+        )
+        keep = max(0, limit - len(marker))
+        head = int(keep * 0.4)
+        tail = keep - head
+        return content[:head] + marker + (content[-tail:] if tail else "")
 
     @staticmethod
     def _tool_safe_split_point(
