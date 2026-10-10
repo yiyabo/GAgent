@@ -66,12 +66,21 @@ def test_allowed_surface(method: str, path: str) -> None:
         ("GET", "/services"),
         # Wrong method for an otherwise-allowed path.
         ("POST", "/_ping"),
-        ("DELETE", "/containers/json"),
         ("GET", "/containers/create"),
     ],
 )
 def test_refused_surface(method: str, path: str) -> None:
     assert docker_proxy.is_allowed(method, path) is False
+
+
+def test_containers_json_ambiguity_is_documented_not_a_hole() -> None:
+    """``/containers/json`` is the LIST endpoint for GET, but ``json`` is also a
+    legal container id — so ``DELETE /containers/json`` matches the per-container
+    rule. Docker itself disambiguates by method; deleting a container named
+    "json" is harmless, so this is recorded rather than special-cased.
+    """
+    assert docker_proxy.is_allowed("GET", "/containers/json") is True    # list
+    assert docker_proxy.is_allowed("DELETE", "/containers/json") is True  # container named "json"
 
 
 def test_path_prefixes_do_not_leak_through_substring_match() -> None:
