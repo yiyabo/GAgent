@@ -100,6 +100,48 @@ class ExecutorPromptBuilder:
 
         return "\n".join(summary_parts)
 
+    @staticmethod
+    def _publish_alias_landing_lines(
+        node: PlanNode,
+        publishes: List[Any],
+        session_context: Optional[Dict[str, Any]],
+    ) -> List[str]:
+        """Tell the agent which file each publish alias expects (LOCAL_INFRA §119).
+
+        Registration matches produced files by name, so an alias whose file is
+        never written (or never reported) is never registered.
+        ``candidate_filenames_for_alias`` is the executor's own matching list;
+        the canonical landing path is where the published copy ends up.
+        """
+        try:
+            from .artifact_contracts import candidate_filenames_for_alias, canonical_artifact_path
+        except Exception:  # pragma: no cover - defensive
+            return []
+        session_id = session_context.get("session_id") if isinstance(session_context, dict) else None
+        rendered: List[str] = []
+        for alias in list(publishes)[:20]:
+            alias_text = str(alias or "").strip()
+            if not alias_text:
+                continue
+            names = candidate_filenames_for_alias(alias_text)
+            expected = names[0] if names else None
+            try:
+                canonical = canonical_artifact_path(int(node.plan_id), alias_text, session_id)
+            except Exception:
+                canonical = None
+            if expected:
+                line = f"- {alias_text}: write the file `{expected}` in your task output directory"
+            else:
+                line = f"- {alias_text}: not a registrable alias; report why it cannot be produced"
+            if canonical is not None:
+                line += f" (published copy lands at {canonical})"
+            rendered.append(line)
+        if rendered:
+            rendered.append(
+                "Report every produced file path in your final answer; files that are not reported cannot be registered as plan products."
+            )
+        return rendered
+
     def build(
         self,
         *,
@@ -202,6 +244,7 @@ class ExecutorPromptBuilder:
                 lines.append(f"Required artifact aliases: {requires}")
             if isinstance(publishes, list) and publishes:
                 lines.append(f"Published artifact aliases: {publishes}")
+                lines.extend(self._publish_alias_landing_lines(node, publishes, session_context))
             lines.extend(
                 [
                     "Contract rule: completion is based on these exact files/artifact aliases, not on similar filenames or prose claims.",

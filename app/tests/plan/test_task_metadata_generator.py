@@ -135,8 +135,25 @@ class TestGenerateArtifactContract:
         assert contract is not None
         assert "publishes" in contract
         assert len(contract["publishes"]) == 2
-        assert "output.report.md" in contract["publishes"]
-        assert "output.data.csv" in contract["publishes"]
+        # Registrable dynamic form (LOCAL_INFRA §119): the old ``output.report.md``
+        # carried a second dot and was dropped by ``_extract_explicit_aliases``.
+        assert "output.report_md" in contract["publishes"]
+        assert "output.data_csv" in contract["publishes"]
+
+    def test_required_outputs_target_path_drives_the_contract(self):
+        contract = generate_artifact_contract(
+            task_name="文献检索",
+            instruction="检索并去重",
+            acceptance_criteria=None,
+            required_outputs=[
+                {"kind": "data", "min_count": 1, "extensions": [".jsonl"], "target_path": "results/search_corpus.jsonl"},
+                {"kind": "image", "min_count": 1, "extensions": [".png"], "target_path": "figures/Fig 1-Schematic.PNG"},
+                {"kind": "other", "min_count": 1, "target_path": "bin/tool.exe"},
+            ],
+        )
+        assert contract is not None
+        assert contract["publishes"] == ["output.search_corpus_jsonl", "output.fig_1_schematic_png"]
+        assert contract["source"] == "inferred_text"
 
     def test_without_acceptance_criteria(self):
         contract = generate_artifact_contract(
@@ -231,7 +248,21 @@ class TestEnsureTaskMetadata:
             instruction="保存到 output/report.md",
         )
         assert "artifact_contract" in result
-        assert "output.report.md" in result["artifact_contract"]["publishes"]
+        assert "output.report_md" in result["artifact_contract"]["publishes"]
+        assert result["artifact_contract"]["source"] == "inferred_text"
+
+    def test_planner_required_outputs_feed_the_fallback_contract(self):
+        metadata = {
+            "required_outputs": [
+                {"kind": "data", "min_count": 1, "extensions": [".csv"], "target_path": "results/extraction_matrix.csv"}
+            ]
+        }
+        result = ensure_task_metadata(
+            metadata=metadata,
+            task_name="数据提取",
+            instruction="构建分类矩阵",
+        )
+        assert result["artifact_contract"]["publishes"] == ["output.extraction_matrix_csv"]
         assert result["artifact_contract"]["source"] == "inferred_text"
 
     def test_preserves_inferred_source_when_metadata_is_reused(self):

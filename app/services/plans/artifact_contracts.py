@@ -106,10 +106,22 @@ _DYNAMIC_DIRECTORY_ARTIFACT_SLOTS: Dict[str, str] = {
 }
 # Free-form slots: LLM-generated decomposer contracts freely invent aliases
 # like "shrimp_phage.raw_literature_md".  Accept any reasonable file-style
-# slot and map it 1:1 to a canonical file named after the slot, so contract
+# slot and map it to a canonical file named after the slot, so contract
 # publish aliases always have a canonical landing path.
-_DYNAMIC_FILE_SLOT_RE = r"[a-z][a-z0-9_]*(?:_md|_json|_bib|_parquet|_csv|_jsonl|_txt|_yaml|_html)".replace(
-    "_DYNAMIC_DIRECTORY_SLOT", ""
+# 2026-10-10 (LOCAL_INFRA §119): the slot's trailing ``_<ext>`` now maps to a
+# real ``.<ext>`` filename (``search_corpus_jsonl`` -> ``search_corpus.jsonl``)
+# so the file an agent naturally writes matches its alias, and the extension
+# list covers figures/tables/archives, not only text formats.
+DYNAMIC_FILE_EXTENSIONS: tuple[str, ...] = (
+    "md", "json", "bib", "parquet", "csv", "jsonl", "txt", "yaml", "yml", "html",
+    "tsv", "xlsx", "docx", "pptx", "pdf", "png", "svg", "jpg", "jpeg", "tex",
+    "ipynb", "npz", "npy", "pkl", "h5", "zip", "tar", "fasta", "fa", "gb",
+)
+_DYNAMIC_FILE_SLOT_RE = (
+    r"[a-z][a-z0-9_]*(?:_(?:" + "|".join(DYNAMIC_FILE_EXTENSIONS) + r"))"
+)
+_DYNAMIC_FILE_SLOT_SUFFIX_RE = re.compile(
+    r"^(.+)_(" + "|".join(DYNAMIC_FILE_EXTENSIONS) + r")$"
 )
 _DYNAMIC_ARTIFACT_ALIAS_RE = re.compile(
     r"^[a-z][a-z0-9_]*(?:_[a-z0-9]+)*\."
@@ -118,15 +130,49 @@ _DYNAMIC_ARTIFACT_ALIAS_RE = re.compile(
 )
 
 
+def _dynamic_slot_filename(slot: str) -> str:
+    """``search_corpus_jsonl`` -> ``search_corpus.jsonl``; unknown shapes stay as-is."""
+    match = _DYNAMIC_FILE_SLOT_SUFFIX_RE.fullmatch(str(slot or ""))
+    if not match:
+        return str(slot or "")
+    return f"{match.group(1)}.{match.group(2)}"
+
+
 def _dynamic_artifact_spec(alias: str) -> Optional[tuple[str, str]]:
     text = str(alias or "").strip()
     if not _DYNAMIC_ARTIFACT_ALIAS_RE.fullmatch(text):
         return None
     namespace, slot = text.split(".", 1)
     # Registered directory slots keep their canonical directory names;
-    # free-form slots map 1:1 to a file named after the slot.
+    # free-form file slots map to a file named after the slot with a real
+    # extension.
     directory_slot = _DYNAMIC_DIRECTORY_ARTIFACT_SLOTS.get(slot)
-    return namespace, directory_slot if directory_slot is not None else slot
+    return namespace, directory_slot if directory_slot is not None else _dynamic_slot_filename(slot)
+
+
+def dynamic_artifact_alias(namespace: str, path_text: str) -> Optional[str]:
+    """Build a registrable dynamic alias for a file path.
+
+    ``("output", "results/Extraction Matrix.csv")`` -> ``"output.extraction_matrix_csv"``.
+    Returns ``None`` when the namespace or extension cannot form a valid alias;
+    callers must not invent an unregistered alias, because
+    ``_extract_explicit_aliases`` silently drops those (LOCAL_INFRA §119).
+    """
+    ns = re.sub(r"[^a-z0-9_]+", "_", str(namespace or "").strip().lower()).strip("_")
+    name = Path(str(path_text or "").strip().replace("\\", "/")).name
+    if not ns or not name or "." not in name:
+        return None
+    stem, ext = name.rsplit(".", 1)
+    ext = ext.lower()
+    if ext not in DYNAMIC_FILE_EXTENSIONS:
+        return None
+    stem_slug = re.sub(r"[^a-z0-9]+", "_", stem.lower()).strip("_")
+    if stem_slug and not stem_slug[0].isalpha():
+        stem_slug = f"f_{stem_slug}"
+    if not stem_slug:
+        return None
+    alias = f"{ns}.{stem_slug}_{ext}"
+    return alias if _DYNAMIC_ARTIFACT_ALIAS_RE.fullmatch(alias) else None
 
 
 def _artifact_spec_for_alias(alias: str) -> Optional[tuple[str, str]]:

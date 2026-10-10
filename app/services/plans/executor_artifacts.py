@@ -1046,6 +1046,11 @@ class _ArtifactMethods:
                         if inferred not in inferred_aliases:
                             inferred_aliases.append(inferred)
                     for canonical_alias in inferred_aliases:
+                        if canonical_alias in published:
+                            # Already published by the backfill pass above
+                            # (dynamic aliases now match naturally named
+                            # files, LOCAL_INFRA §119); do not publish twice.
+                            continue
                         published_entry = publish_artifact(
                             plan_id=plan_id,
                             alias=canonical_alias,

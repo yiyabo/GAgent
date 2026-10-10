@@ -19,6 +19,7 @@ from ..llm.decomposer_service import (
     PlanDecomposerLLMService,
 )
 from .task_metadata_generator import ensure_task_metadata
+from .artifact_contracts import DYNAMIC_FILE_EXTENSIONS
 
 logger = logging.getLogger(__name__)
 
@@ -160,8 +161,8 @@ class DecompositionPromptBuilder:
             '  "paper_role": "<optional: evidence_collector|section_writer|manuscript_assembler|citation_validator>",',
             '  "paper_context_paths": ["<optional artifact path>", "..."],',
             '  "artifact_contract": {',
-            '    "requires": ["<optional canonical alias like ai_dl.evidence_md>"],',
-            '    "publishes": ["<optional canonical alias like ai_dl.references_bib>"]',
+            '    "requires": ["<alias of an upstream artifact this task consumes, e.g. lit_review.search_corpus_jsonl>"],',
+            '    "publishes": ["<alias of each file this task produces, e.g. lit_review.extraction_matrix_csv>"]',
             '  },',
             '  "acceptance_criteria": {',
             '    "category": "<optional: file_data>",',
@@ -203,8 +204,14 @@ class DecompositionPromptBuilder:
             "  * Keywords that signal downstream consumer roles: 撰写, 写作, 起草, 初稿, 章节, 报告, 分析, draft, write, author, section, report, analyze, synthesize.",
             "- For tasks that deliver files, include metadata.required_outputs with user-requested type, minimum count, format and task-relative target_path. Do not invent expected scientific values. Non-mechanical requirements remain unchecked/human-reviewed.",
             "- For paper-writing tasks, include `metadata.paper_section`, `metadata.paper_role`, and `metadata.paper_context_paths` when known.",
-            "- When a task consumes a canonical upstream artifact, include `metadata.artifact_contract.requires` using canonical aliases (for example `general.evidence_md`, `ai_dl.references_bib`, `nmr_cryo_msm.structured_evidence_json`).",
-            "- When a task is expected to publish a canonical downstream artifact, include `metadata.artifact_contract.publishes` using canonical aliases. Prefer explicit contracts over leaving artifact intent implicit in free text.",
+            "- ARTIFACT CONTRACT RULES (MANDATORY — this is how products get registered on the plan):",
+            "  * Every leaf task that writes a file MUST declare `metadata.artifact_contract.publishes` with one alias per deliverable file, AND a matching `metadata.required_outputs` entry whose `target_path` is that file (task-relative, e.g. `results/extraction_matrix.csv`).",
+            "  * Alias grammar: `<namespace>.<file_stem>_<ext>` — lowercase snake_case, exactly one dot. The slot is the file name with its extension joined by an underscore: `results/search_corpus.jsonl` -> `<namespace>.search_corpus_jsonl`, `figures/fig1_schematic.png` -> `<namespace>.fig1_schematic_png`.",
+            f"  * Supported extensions: {', '.join(DYNAMIC_FILE_EXTENSIONS)}. Directory deliverables use the slots evidence_tables, summary_tables, evidence_dataframes, intermediate_data_dir.",
+            "  * Pick ONE `<namespace>` for the whole plan (short snake_case ASCII derived from the topic, e.g. `lit_review`, `phage_depolymerase`) and reuse it in every task.",
+            "  * A task that consumes another task's file lists that alias in `requires` (and the producer in `dependencies`). Fixed canonical aliases such as `general.evidence_md`, `ai_dl.references_bib`, `nmr_cryo_msm.structured_evidence_json` are still accepted when they fit.",
+            "  * Example (literature review): the search task publishes [`lit_review.search_corpus_jsonl`]; the extraction task requires [`lit_review.search_corpus_jsonl`] and publishes [`lit_review.extraction_matrix_csv`]; the drafting task requires the matrix and publishes [`lit_review.manuscript_draft_md`].",
+            "  * Tasks that produce no file (pure analysis or decisions) may leave `publishes` empty — never invent an alias for a file that will not be written.",
             "- SINGLE-PRODUCER RULE (critical): each artifact alias must have exactly ONE producing task in the plan. A task that only VERIFIES, validates, checks, summarizes, or reads an upstream task's output (e.g. an acceptance/verification task depending on the producer) must NOT list that alias in `publishes` — it should list it in `requires` instead (or simply keep the `dependencies` edge and its acceptance checks). Duplicate `publishes` across producer and verifier tasks blocks plan execution.",
             "- For file/data tasks that download files, generate datasets, or write reports/artifacts, include `metadata.acceptance_criteria` when possible. Use deterministic checks only; prefer `file_exists`, `file_nonempty`, `glob_count_at_least`, `text_contains`, `json_field_equals`, `json_field_at_least`, or `pdb_residue_present`.",
             "- `context.sections` must be an array of JSON objects, never strings. Every object must provide `title` and `content` keys.",
@@ -654,9 +661,17 @@ class PlanDecomposer:
     def _derive_paper_metadata(self, child: DecompositionChild) -> Dict[str, Any]:
         metadata = dict(child.metadata or {})
         if metadata.get("required_outputs"):
-            from .output_spec import parse_output_spec
-            spec=parse_output_spec({"required_outputs":metadata["required_outputs"],"source":"planner","blocking":True,"artifact_contract":metadata.get("artifact_contract"),"acceptance_criteria":metadata.get("acceptance_criteria")},strict=True)
-            metadata["output_spec"]=spec.to_dict()
+            from .output_spec import InvalidOutputSpec, parse_output_spec
+            try:
+                spec=parse_output_spec({"required_outputs":metadata["required_outputs"],"source":"planner","blocking":True,"artifact_contract":metadata.get("artifact_contract"),"acceptance_criteria":metadata.get("acceptance_criteria")},strict=True)
+            except InvalidOutputSpec as exc:
+                # LOCAL_INFRA §119: a malformed LLM declaration must not abort
+                # the whole decomposition; drop the declaration, keep the task
+                # (contract/criteria fallbacks still apply).
+                logger.warning("Dropping invalid required_outputs for task %r: %s", child.name, exc)
+                metadata.pop("required_outputs", None)
+            else:
+                metadata["output_spec"]=spec.to_dict()
         section = metadata.get("paper_section")
         if not isinstance(section, str) or not section.strip():
             section = self._infer_paper_section(child.name or "", child.instruction or "")

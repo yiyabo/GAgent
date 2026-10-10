@@ -194,11 +194,15 @@ def test_enrich_completed_status_contract_artifacts_golden(tmp_path, fake_publis
         },
     }
 
-    # Boundary call contract: one publish (contract loop; backfill found no
-    # alias-compatible candidate), one manifest save carrying both entries,
-    # one deliverable publish pass with both entries.
+    # Boundary call contract: one publish (the backfill pass now matches the
+    # naturally named report.md, LOCAL_INFRA §119, and the contract loop skips
+    # the alias it already published), two manifest saves (backfill, then the
+    # enrichment finale carrying both entries), one deliverable publish pass.
     assert fake_publish_boundary["publish"] == ["general.report_md"]
-    assert fake_publish_boundary["save"] == [(1, ["contract:report.md", "general.report_md"])]
+    assert fake_publish_boundary["save"] == [
+        (1, ["general.report_md"]),
+        (1, ["contract:report.md", "general.report_md"]),
+    ]
     assert len(delivered) == 1
     assert sorted(delivered[0]["published"].keys()) == ["contract:report.md", "general.report_md"]
     assert sorted(manifest["artifacts"].keys()) == ["contract:report.md", "general.report_md"]

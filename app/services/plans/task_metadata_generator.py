@@ -131,38 +131,70 @@ def generate_artifact_contract(
     task_name: str,
     instruction: str,
     acceptance_criteria: Optional[Dict[str, Any]] = None,
+    required_outputs: Optional[List[Dict[str, Any]]] = None,
 ) -> Optional[Dict[str, Any]]:
     """
-    Generate artifact_contract based on task name and acceptance_criteria.
-    
+    Generate artifact_contract from the task's declared output paths.
+
+    Aliases come from ``required_outputs[].target_path`` and from
+    ``acceptance_criteria.checks`` file paths, in the registrable dynamic form
+    ``output.<stem>_<ext>`` (LOCAL_INFRA §119). The previous ``output.<file.ext>``
+    form carried a second dot, never matched the alias grammar, and was silently
+    dropped by ``_extract_explicit_aliases`` — so text-derived contracts could
+    never register a product. The contract stays ``source=inferred_text``:
+    it registers the file when it is produced but does not fail the task when
+    it is not (only explicit decomposer declarations are authoritative).
+
     Args:
         task_name: The task's display name
         instruction: The task's detailed instruction
         acceptance_criteria: Optional acceptance_criteria dict (if already generated)
-        
+        required_outputs: Optional ``required_outputs`` declarations from the planner
+
     Returns:
-        A dict with 'requires' and/or 'publishes' keys, or None if no
-        clear contract can be determined.
+        A dict with 'requires' and 'publishes' keys, or None if no
+        registrable output path is declared.
     """
-    contract = {
+    from .artifact_contracts import dynamic_artifact_alias  # lazy: artifact_contracts imports this module
+
+    contract: Dict[str, Any] = {
         "requires": [],
         "publishes": [],
         "source": INFERRED_TEXT_SOURCE,
     }
-    
+    seen: set = set()
+
+    def _add(path: Any) -> None:
+        alias = dynamic_artifact_alias("output", str(path or ""))
+        if alias and alias not in seen:
+            seen.add(alias)
+            contract["publishes"].append(alias)
+
+    if isinstance(required_outputs, list):
+        for item in required_outputs:
+            if isinstance(item, dict) and item.get("target_path"):
+                _add(item.get("target_path"))
+
     if acceptance_criteria and "checks" in acceptance_criteria:
         for check in acceptance_criteria["checks"]:
-            if check.get("type") in ("file_exists", "file_nonempty"):
-                path = check.get("path", "")
-                if path:
-                    filename = path.split("/")[-1] if "/" in path else path
-                    alias = f"output.{filename}"
-                    contract["publishes"].append(alias)
-    
+            if isinstance(check, dict) and check.get("type") in ("file_exists", "file_nonempty"):
+                _add(check.get("path", ""))
+
     if not contract["publishes"]:
         return None
-    
+
     return contract
+
+
+def _declared_required_outputs(metadata: Dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
+    """Planner ``required_outputs`` live at the top level or inside ``output_spec``."""
+    direct = metadata.get("required_outputs")
+    if isinstance(direct, list):
+        return direct
+    spec = metadata.get("output_spec")
+    if isinstance(spec, dict) and isinstance(spec.get("required_outputs"), list):
+        return spec["required_outputs"]
+    return None
 
 
 def ensure_task_metadata(
@@ -213,6 +245,7 @@ def ensure_task_metadata(
             task_name,
             instruction,
             acceptance_criteria=metadata.get("acceptance_criteria"),
+            required_outputs=_declared_required_outputs(metadata),
         )
         if contract:
             metadata["artifact_contract"] = contract
