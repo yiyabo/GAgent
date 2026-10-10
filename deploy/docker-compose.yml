@@ -134,6 +134,18 @@ services:
     read_only: true
     tmpfs:
       - /tmp
+    healthcheck:
+      # Docker inherits an image's HEALTHCHECK into every container started from
+      # it, and this image carries the app's HTTP readiness probe. The forwarder
+      # serves no HTTP, so without this override it is marked unhealthy forever
+      # (observed on .8 after the P2 cutover: health=unhealthy, FailingStreak 6).
+      # Probe the first configured bind:port instead — the exact socket the app
+      # dials — so a genuinely dead forwarder still fails here.
+      test: ["CMD", "python", "-c", "import os,socket;b=os.getenv('FORWARD_BIND','127.0.0.1').split(',')[0].strip();p=os.getenv('FORWARD_SPECS','').split(',')[0].split(':')[0].strip();socket.create_connection((b,int(p)),3).close()"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
     logging: *logging
 
   redis:
