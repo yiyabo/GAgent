@@ -86,6 +86,10 @@ services:
     image: gagent-app:${GAGENT_TAG:-latest}
     command: ["python", "-m", "app.ops.docker_proxy"]
     restart: unless-stopped
+    # The daemon socket is root-group-owned on typical hosts, so the process that
+    # opens it must be root; the allowlist is the control, not the uid. (The app
+    # image defaults to uid 1001 and would get EACCES on the socket.)
+    user: "0:0"
     environment:
       DOCKER_PROXY_SOCKET: /var/run/docker.sock
       DOCKER_PROXY_PORT: "2375"

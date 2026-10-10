@@ -18,6 +18,8 @@ from app.ops import docker_proxy
     "method,path",
     [
         ("GET", "/_ping"),
+        ("HEAD", "/_ping"),
+        ("HEAD", "/v1.41/_ping"),
         ("GET", "/version"),
         ("GET", "/info"),
         ("GET", "/containers/json"),
@@ -97,5 +99,41 @@ def test_container_id_charset_is_restricted() -> None:
 
 
 def test_deny_by_default_for_unknown_paths() -> None:
-    for path in ("/", "/anything", "/v1.41/containers/json", "/containers"):
+    for path in ("/", "/anything", "/containers"):
         assert docker_proxy.is_allowed("GET", path) is False
+
+
+@pytest.mark.parametrize(
+    "method,path",
+    [
+        ("GET", "/v1.41/version"),
+        ("GET", "/v1.41/containers/json"),
+        ("GET", "/v1.52/containers/abc/json"),
+        ("POST", "/v1.41/containers/create"),
+        ("DELETE", "/v1.41/containers/abc"),
+        ("GET", "/v1.41/images/json"),
+    ],
+)
+def test_versioned_cli_paths_are_allowed(method: str, path: str) -> None:
+    """The Docker CLI prefixes every path with its API version."""
+    assert docker_proxy.is_allowed(method, path) is True
+
+
+@pytest.mark.parametrize(
+    "method,path",
+    [
+        ("POST", "/v1.41/build"),
+        ("POST", "/v1.41/containers/abc/exec"),
+        ("GET", "/v1.41/volumes"),
+        ("GET", "/v1.41/secrets"),
+        ("POST", "/v1.41/swarm/init"),
+    ],
+)
+def test_version_prefix_does_not_widen_the_surface(method: str, path: str) -> None:
+    assert docker_proxy.is_allowed(method, path) is False
+
+
+def test_version_stripping_does_not_accept_junk() -> None:
+    # Only a well-formed /v<digits>[.<digits>] prefix is stripped.
+    assert docker_proxy.is_allowed("GET", "/vX/version") is False
+    assert docker_proxy.is_allowed("GET", "/version/extra") is False

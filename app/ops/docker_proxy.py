@@ -12,6 +12,13 @@ image and runs as the ``proxy`` service. No extra artifact, no external image.
 SECURITY PROPERTIES
 - **Deny by default.** Only the (method, path) pairs in ``_ALLOW`` are
   forwarded; everything else is 403 and logged with the offending request line.
+  The Docker CLI prefixes paths with its API version (``/v1.41/...``), so the
+  version segment is stripped for MATCHING only — the request is forwarded
+  verbatim — which keeps the CLI working without widening the surface.
+- **Runs as root.** ``/var/run/docker.sock`` is root-group-owned on typical
+  hosts (observed ``srw-rw---- root docker``) and this process must open it; uid
+  1001 gets EACCES. The allowlist, plus the fact that the socket is mounted into
+  this container only, is the control — not the uid.
 - **No hijacked streams.** ``exec``/``attach`` need a protocol upgrade this
   proxy deliberately does not implement; they are refused. Interactive exec is
   what the P3 sandbox-manager will own, with a narrower contract.
@@ -45,9 +52,18 @@ _HOST = os.getenv("DOCKER_PROXY_HOST", "0.0.0.0")
 _ID = r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}"
 _NAME = r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,200}"
 
+# The Docker CLI always prefixes API paths with its API version, e.g.
+# /v1.41/containers/json — so matching only the unversioned form made the CLI
+# get 403 on endpoints that are allowed (observed: `docker version` was refused).
+# Strip the prefix for MATCHING only; the request is forwarded verbatim, since
+# the daemon accepts versioned paths.
+_VERSION_PREFIX = re.compile(r"^/v\d+(?:\.\d+)?")
+
 # (method, compiled path regex) — everything not listed is refused.
 _ALLOW: List[Tuple[str, Pattern[str]]] = [
     ("GET", re.compile(r"^/_ping$")),
+    # Docker CLI 26 probes reachability with HEAD /_ping before real calls.
+    ("HEAD", re.compile(r"^/_ping$")),
     ("GET", re.compile(r"^/version$")),
     ("GET", re.compile(r"^/info$")),
     ("GET", re.compile(r"^/containers/json$")),
@@ -67,8 +83,15 @@ _DROP_REQUEST_HEADERS = {"host", "connection", "keep-alive", "transfer-encoding"
 _DROP_RESPONSE_HEADERS = {"connection", "keep-alive", "transfer-encoding", "upgrade", "trailer"}
 
 
+def _strip_version(path: str) -> str:
+    """Drop a leading /v<api> segment so the CLI's versioned paths match."""
+    stripped = _VERSION_PREFIX.sub("", path, count=1)
+    return stripped or "/"
+
+
 def is_allowed(method: str, path: str) -> bool:
-    return any(method == m and rx.match(path) for m, rx in _ALLOW)
+    normalized = _strip_version(path)
+    return any(method == m and rx.match(normalized) for m, rx in _ALLOW)
 
 
 def _client() -> httpx.AsyncClient:
