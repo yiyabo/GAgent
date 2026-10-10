@@ -66,6 +66,13 @@ services:
     volumes:
       - ${GAGENT_RUNTIME_DIR}:/app/runtime
       - gagent-data:/app/data
+      # Read-only reference data, at the SAME container path the old container
+      # used. Three things resolve under /data and would silently break without
+      # it: the file_operations allowlist (FILE_OPERATIONS_ALLOWED_BASE_PATHS),
+      # the CJK font candidate (tool_box/figure_style.py) and any /data-based
+      # reference corpora. The old container had this exact read-only mount, so
+      # keeping it preserves behaviour rather than adding capability.
+      - ${GAGENT_REFDATA_DIR:-/data}:/data:ro
     extra_hosts:
       # Host services the app must reach: LLM gateway (sub2api), platform API,
       # and the host-side SOCKS/HTTP egress tunnels.
@@ -109,6 +116,26 @@ services:
     networks: [sandbox]
     logging: *logging
 
+  forwarder:
+    # Runs in the HOST network namespace so 127.0.0.1 is the host's loopback, and
+    # re-publishes the host's loopback-only tunnels on the bridge gateway. The
+    # old container could reach them because it used host networking; a bridge
+    # container cannot (measured: ConnectionRefusedError). See
+    # app/ops/port_forward.py. No host config change, no extra image.
+    image: gagent-app:${GAGENT_TAG:-latest}
+    command: ["python", "-m", "app.ops.port_forward"]
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      FORWARD_SPECS: ${FORWARD_SPECS:-11080:127.0.0.1:1080,17890:127.0.0.1:7890}
+      # Explicit addresses only: never bind the host's LAN interfaces.
+      FORWARD_BIND: ${FORWARD_BIND:-172.17.0.1}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    read_only: true
+    tmpfs:
+      - /tmp
+    logging: *logging
+
   redis:
     image: redis:7-alpine
     profiles: ["ha"]
@@ -122,9 +149,18 @@ volumes:
     name: gagent-data
 
 networks:
+  # Explicit subnets: the forwarder must bind the exact gateway address that
+  # `host.docker.internal` resolves to inside the app container, so the address
+  # cannot be left to the daemon's allocation pool.
   front:
     name: gagent-front
     internal: false   # the gateway is published here
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24
   sandbox:
     name: gagent-sandbox
     internal: true
+    ipam:
+      config:
+        - subnet: 172.29.0.0/24

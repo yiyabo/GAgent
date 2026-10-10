@@ -29,6 +29,11 @@ COMPOSE=(docker compose -f "${HERE}/docker-compose.yml")
 OLD_CONTAINER="phage-agent"
 DB_SRC="/data/phage-agent/data/databases/"
 DB_VOL_MOUNT="/data/docker/volumes/gagent-data/_data/"
+# The volume mirrors the host tree, so the DBs live under a `databases/`
+# subdirectory — the stack sets DB_ROOT=/app/data/databases. Syncing into the
+# volume ROOT instead would leave the app looking one level above its data and
+# starting on an empty database.
+DB_VOL_DB_DIR="${DB_VOL_MOUNT}databases/"
 RUNTIME_DIR="/data/phage-agent/runtime"
 APP_UID_GID="1001:1001"
 AUDIT_LOG="/data/logs/restarts.log"
@@ -117,7 +122,8 @@ gate || die "gate not clear — nothing done"
 log "step 1/6 stop old container"
 docker stop "${OLD_CONTAINER}" >>"${LOG}" 2>&1 || die "could not stop ${OLD_CONTAINER}"
 log "step 2/6 rsync delta into the volume"
-rsync -a --delete "${DB_SRC}" "${DB_VOL_MOUNT}" >>"${LOG}" 2>&1 || die "rsync delta failed"
+[ -d "${DB_VOL_DB_DIR}" ] || die "volume layout wrong: ${DB_VOL_DB_DIR} missing (expected a databases/ subdir)"
+rsync -a --delete "${DB_SRC}" "${DB_VOL_DB_DIR}" >>"${LOG}" 2>&1 || die "rsync delta failed"
 log "step 3/6 chown volume + runtime tree to ${APP_UID_GID}"
 chown -R "${APP_UID_GID}" "${DB_VOL_MOUNT}" >>"${LOG}" 2>&1 || die "volume chown failed"
 chown -R "${APP_UID_GID}" "${RUNTIME_DIR}" >>"${LOG}" 2>&1 || die "runtime chown failed"
