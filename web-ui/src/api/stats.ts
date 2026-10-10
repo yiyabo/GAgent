@@ -38,10 +38,6 @@ class StatsApi extends BaseApi {
     return this.get<TokenUsageResponse>('/system/stats/token-usage', { hours });
   }
 
-  async getSessionTokenUsage(sessionId: string): Promise<TokenUsageResponse> {
-    return this.get<TokenUsageResponse>(`/system/stats/token-usage/session/${sessionId}`);
-  }
-
   async getPlanTaskTokenUsage(planId: number): Promise<PlanTasksTokenUsageResponse> {
     return this.get<PlanTasksTokenUsageResponse>(`/system/stats/token-usage/plan/${planId}`);
   }
