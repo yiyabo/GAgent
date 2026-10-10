@@ -61,7 +61,10 @@ fi
 if "${COMPOSE[@]}" exec -T app sh -lc 'printf "DOCKER_HOST=%s\n" "$DOCKER_HOST"'; then :; fi
 
 echo "== in-container test suite is runnable (app/tests present in the image) =="
-if "${COMPOSE[@]}" exec -T app sh -lc 'test -d /app/app/tests && python -c "import app.main"'; then
+# Use the venv interpreter explicitly: `sh -lc` is a LOGIN shell, so /etc/profile
+# re-initialises PATH and `python` resolves to the system interpreter, which has
+# none of the app's dependencies.
+if "${COMPOSE[@]}" exec -T app sh -c 'test -d /app/app/tests && /opt/venv/bin/python -c "import app.main"'; then
   pass "image contains app/tests and imports"
 else
   fail "image missing app/tests or import failed"

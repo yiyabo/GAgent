@@ -56,6 +56,10 @@ services:
       HOST_RUNTIME_ROOT: ${GAGENT_RUNTIME_DIR}
       # All Docker access goes through the socket proxy, never a raw socket.
       DOCKER_HOST: tcp://proxy:2375
+      # The daemon here is Docker 20.10 (API 1.41) while the image's docker CLI is
+      # far newer; without pinning, every CLI call fails with "client version 1.52
+      # is too new" — the same mismatch that breaks `docker compose build`.
+      DOCKER_API_VERSION: "1.41"
       SERVE_SPA: "0"          # the gateway owns the frontend
       TERMINAL_ENABLED: "0"   # stays off until the P3 sandbox exists
       APP_ENV: ${APP_ENV:-production}
