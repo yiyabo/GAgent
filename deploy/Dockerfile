@@ -24,11 +24,19 @@ WORKDIR /app
 # proxy in the stack; a raw socket is never mounted into this container).
 # procps: orphan-process cleanup at startup. sqlite3: the ops container reuses
 # this image to VACUUM INTO backups.
-RUN apt-get update \
+# Mirrors: CN hosts (the .8 reality) cannot reach deb.debian.org / pypi.org.
+# Defaults point at TUNA; override with --build-arg for a networked builder.
+ARG APT_MIRROR_HOST=mirrors.tuna.tsinghua.edu.cn
+RUN if [ -n "${APT_MIRROR_HOST}" ]; then \
+      sed -i "s|deb.debian.org|${APT_MIRROR_HOST}|g" /etc/apt/sources.list.d/*.sources 2>/dev/null || true; \
+      sed -i "s|deb.debian.org|${APT_MIRROR_HOST}|g" /etc/apt/sources.list 2>/dev/null || true; \
+    fi \
+    && apt-get update \
     && apt-get install -y --no-install-recommends docker-cli procps sqlite3 \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir uv
+ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+RUN pip install --no-cache-dir -i "${PIP_INDEX_URL}" uv
 
 # Dependency layer first so source edits do not re-resolve the environment.
 # --no-dev keeps black out; pytest stays in (main deps) for in-container smoke.

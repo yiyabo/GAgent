@@ -24,6 +24,10 @@ services:
       dockerfile: deploy/Dockerfile.gateway
       args:
         NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmmirror.com}
+        # Overridable because hosts without Docker Hub access get these images
+        # shipped in (gagentctl import-images) under whatever tag they arrived.
+        NODE_BASE_IMAGE: ${NODE_BASE_IMAGE:-node:22-alpine}
+        GATEWAY_BASE_IMAGE: ${GATEWAY_BASE_IMAGE:-nginx:1.27-alpine}
     restart: unless-stopped
     ports:
       - "${GATEWAY_PORT:-40003}:80"
