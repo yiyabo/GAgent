@@ -975,7 +975,10 @@ def _run_full_plan_job(
             current_step=total_steps,
             current_task_id=task_order[-1] if task_order else None,
         )
-        if failed or skipped:
+        # Dependency-blocked skips are not failures (2026-10-10, LOCAL_INFRA
+        # §117): a run that executed everything runnable and left tasks
+        # blocked succeeds, with the skip list kept in the result.
+        if failed:
             _facade().plan_decomposition_jobs.mark_failure(
                 job_id,
                 f"Full plan execution finished with {len(failed)} failed and {len(skipped)} skipped task(s).",

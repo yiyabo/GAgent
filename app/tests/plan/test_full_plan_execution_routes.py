@@ -841,9 +841,10 @@ def test_run_full_plan_job_blocks_downstream_tasks_with_failed_dependencies(
     )
 
     assert execution_order == [3]
-    assert store.success_calls == []
-    assert len(store.failure_calls) == 1
-    result = store.failure_calls[0]["result"]
+    # Dependency-blocked skips no longer fail the job (LOCAL_INFRA §117).
+    assert store.failure_calls == []
+    assert len(store.success_calls) == 1
+    result = store.success_calls[0]["result"]
     assert result["executed_task_ids"] == [3]
     assert result["failed_task_ids"] == []
     assert result["skipped_task_ids"] == [2]
@@ -1103,9 +1104,10 @@ def test_get_plan_execution_summary_handles_locked_plan_database(monkeypatch) ->
     assert summary.running == 2
 
 
-def test_execute_full_plan_reruns_false_completed_tasks_with_retry_text(
+def test_execute_full_plan_reruns_false_completed_tasks_with_failed_verification_and_retry_text(
     monkeypatch,
 ) -> None:
+    """A completed payload is demoted on retry prose only when verification failed (LOCAL_INFRA §117)."""
     tree = PlanTree(
         id=7,
         title="Plan 7",
@@ -1119,6 +1121,7 @@ def test_execute_full_plan_reruns_false_completed_tasks_with_retry_text(
                     {
                         "status": "completed",
                         "content": "Let me create the structured evidence file first, then retry with the proper context files",
+                        "metadata": {"verification_status": "failed"},
                     }
                 ),
             ),
@@ -1156,6 +1159,62 @@ def test_execute_full_plan_reruns_false_completed_tasks_with_retry_text(
     assert response.success is True
     assert executed == [1, 2]
     assert response.result["executed_task_ids"] == [1, 2]
+
+
+def test_execute_full_plan_keeps_completed_tasks_whose_report_merely_mentions_failures(
+    monkeypatch,
+) -> None:
+    """verification_status=skipped plus prose like "query failed" must not trigger a rerun (LOCAL_INFRA §117)."""
+    tree = PlanTree(
+        id=7,
+        title="Plan 7",
+        nodes={
+            1: PlanNode(
+                id=1,
+                plan_id=7,
+                name="Step 1",
+                status="completed",
+                execution_result=json.dumps(
+                    {
+                        "status": "completed",
+                        "content": "Corpus built (3,627 records). RCSB PDB query failed (timeout); skipped that check.",
+                        "metadata": {"verification_status": "skipped"},
+                    }
+                ),
+            ),
+            2: PlanNode(id=2, plan_id=7, name="Step 2", status="pending", dependencies=[1]),
+        },
+    )
+    tree.rebuild_adjacency()
+    executed: list[int] = []
+
+    def _execute_task(_plan_id: int, task_id: int, **_kwargs):
+        executed.append(task_id)
+        tree.nodes[task_id].status = "completed"
+        tree.nodes[task_id].execution_result = json.dumps({"status": "completed", "content": "ok"})
+        return SimpleNamespace(status="completed", duration_sec=0.1, content="ok")
+
+    monkeypatch.setattr(
+        plan_routes,
+        "_load_authorized_plan_tree",
+        lambda _plan_id, _request: tree,
+    )
+    monkeypatch.setattr(plan_routes._plan_repo, "get_plan_tree", lambda _plan_id: tree)
+    monkeypatch.setattr(plan_routes._plan_executor, "execute_task", _execute_task)
+    monkeypatch.setattr(
+        plan_routes,
+        "_build_plan_execution_snapshot",
+        lambda _plan_id: {"active_task_ids": set(), "active_jobs": []},
+    )
+
+    response = plan_routes.execute_full_plan(
+        7,
+        _build_request("alice"),
+        plan_routes.ExecuteFullPlanRequest(async_mode=False, stop_on_failure=False),
+    )
+
+    assert response.success is True
+    assert executed == [2]
 
 
 def test_execute_full_plan_reruns_false_completed_tasks_with_missing_publish_contract(

@@ -170,7 +170,14 @@ def _resolve_effective_task_states(
             continue
         payload_status = _normalize_task_status(raw_payload.get("status")) if isinstance(raw_payload, dict) else ""
         verification_status = _normalize_task_status(metadata.get("verification_status"))
-        if payload_status == "completed" and verification_status == "passed":
+        # A structured ``completed`` payload is authoritative (2026-10-10,
+        # LOCAL_INFRA §117).  Demote on report prose only when verification
+        # actually failed: ``verification_status: skipped`` is the normal state
+        # for tasks without acceptance criteria, and treating it as "not
+        # passed" demoted finished tasks whose reports merely mention failures
+        # ("RCSB query failed (timeout)"), which then dependency-blocked every
+        # downstream task.  Legacy plain-text results keep the prose heuristic.
+        if payload_status == "completed" and verification_status != "failed":
             continue
         if _looks_like_retry_or_blocked_failure_text(content or getattr(node, "execution_result", None)):
             state["effective_status"] = "failed"
