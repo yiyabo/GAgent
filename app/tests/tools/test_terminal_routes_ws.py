@@ -10,7 +10,16 @@ from fastapi.testclient import TestClient
 from app.routers import terminal_routes
 
 
-def _build_client() -> TestClient:
+def _build_client(monkeypatch) -> TestClient:
+    # This router is mounted on a bare app without the auth middleware; the
+    # handler still authenticates the handshake itself, so opt into the
+    # single-tenant proxy fallback the way the real test app does.
+    from app.services.foundation.settings import get_settings
+
+    monkeypatch.setenv("AUTH_MODE", "proxy")
+    monkeypatch.delenv("PROXY_AUTH_REQUIRED", raising=False)
+    monkeypatch.setenv("APP_ENV", "development")
+    get_settings.cache_clear()
     app = FastAPI()
     app.include_router(terminal_routes.router)
     return TestClient(app)
@@ -25,7 +34,7 @@ def _cleanup_reaper() -> None:
 
 def test_terminal_websocket_roundtrip(monkeypatch) -> None:
     monkeypatch.setenv("TERMINAL_ENABLED", "true")
-    client = _build_client()
+    client = _build_client(monkeypatch)
 
     terminal_id = None
     try:
@@ -49,7 +58,7 @@ def test_terminal_websocket_roundtrip(monkeypatch) -> None:
 
 def test_terminal_websocket_mode_mismatch_reuses_chat_session_with_requested_mode(monkeypatch) -> None:
     monkeypatch.setenv("TERMINAL_ENABLED", "true")
-    client = _build_client()
+    client = _build_client(monkeypatch)
 
     sandbox_session = SimpleNamespace(
         terminal_id="sandbox-tid",

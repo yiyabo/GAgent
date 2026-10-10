@@ -10,6 +10,17 @@ from app.routers import terminal_routes
 
 
 def _build_client() -> TestClient:
+    # Bare app without the auth middleware: handlers authenticate themselves,
+    # so opt into the single-tenant proxy fallback explicitly instead of
+    # inheriting whatever settings cache a neighbouring test left behind.
+    import os
+
+    from app.services.foundation.settings import get_settings
+
+    os.environ["AUTH_MODE"] = "proxy"
+    os.environ.pop("PROXY_AUTH_REQUIRED", None)
+    os.environ.setdefault("APP_ENV", "development")
+    get_settings.cache_clear()
     app = FastAPI()
     app.include_router(terminal_routes.router)
     return TestClient(app)

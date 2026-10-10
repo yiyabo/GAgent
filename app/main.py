@@ -471,6 +471,7 @@ def _register_spa(app: "FastAPI") -> None:
         "api/", "auth/", "chat/", "health", "docs", "openapi.json", "mcp/",
         "plans", "jobs", "upload", "artifacts", "project", "execution",
         "interpreter", "sso", "system", "quality", "terminal", "models",
+        "tools", "usage", "tasks", "skill-learning", "ws/",
     )
 
     @app.get("/{full_path:path}", include_in_schema=False)

@@ -5,10 +5,11 @@ from __future__ import annotations
 import logging
 from typing import Dict, List, Literal, Optional, Sequence, Union
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, Field, validator
 
 from ..services.execution import command_runner, workspace_manager
+from ..services.request_principal import get_request_owner_id
 from . import register_router
 
 logger = logging.getLogger(__name__)
@@ -17,7 +18,10 @@ router = APIRouter(prefix="/execution", tags=["execution"])
 
 
 class ShellCommandRequest(BaseModel):
-    owner: str = Field(..., min_length=1, max_length=128)
+    # Accepted for backwards compatibility but IGNORED: the workspace owner is
+    # always the authenticated principal (LOCAL_INFRA §120 — a caller used to
+    # be able to name any owner and run commands in their workspace).
+    owner: Optional[str] = Field(default=None, max_length=128)
     command: Union[str, Sequence[str]]
     timeout: Optional[int] = Field(default=None, gt=0, le=600)
     reset_workspace: bool = False
@@ -67,15 +71,24 @@ class OperationStatusResponse(BaseModel):
 
 
 class WriteFileRequest(BaseModel):
-    owner: str = Field(..., min_length=1, max_length=128)
+    owner: Optional[str] = Field(default=None, max_length=128)
     relative_path: str = Field(..., min_length=1)
     content: str = Field(default="")
     reset_workspace: bool = False
 
 
+def _require_own_workspace(request: Request, owner: Optional[str]) -> str:
+    """The only workspace a caller may touch is the one named by its principal."""
+    principal_owner = get_request_owner_id(request)
+    if owner is not None and str(owner).strip() and str(owner).strip() != principal_owner:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="workspace owner mismatch")
+    return principal_owner
+
+
 @router.post("/shell", response_model=ShellCommandResponse)
-async def execute_shell_command(payload: ShellCommandRequest) -> ShellCommandResponse:
-    workspace = await workspace_manager.prepare_workspace(payload.owner, reset=payload.reset_workspace)
+async def execute_shell_command(request: Request, payload: ShellCommandRequest) -> ShellCommandResponse:
+    owner = _require_own_workspace(request, payload.owner)
+    workspace = await workspace_manager.prepare_workspace(owner, reset=payload.reset_workspace)
     try:
         argv = command_runner.parse_command(payload.command)
         result = await command_runner.run_shell_command(
@@ -88,14 +101,15 @@ async def execute_shell_command(payload: ShellCommandRequest) -> ShellCommandRes
         logger.warning("Shell execution rejected: %s", exc)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except Exception as exc:  # pragma: no cover - defensive
-        logger.exception("Shell execution failed for owner=%s", payload.owner)
+        logger.exception("Shell execution failed for owner=%s", owner)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Command execution failed") from exc
 
     return ShellCommandResponse(**result.to_dict())
 
 
 @router.get("/workspaces/{owner}", response_model=WorkspaceContentsResponse)
-async def list_workspace(owner: str) -> WorkspaceContentsResponse:
+async def list_workspace(request: Request, owner: str) -> WorkspaceContentsResponse:
+    owner = _require_own_workspace(request, owner)
     workspace = await workspace_manager.prepare_workspace(owner, reset=False)
     listing = await workspace_manager.list_workspace(owner)
     if not listing.get("success"):
@@ -119,7 +133,8 @@ async def list_workspace(owner: str) -> WorkspaceContentsResponse:
 
 
 @router.delete("/workspaces/{owner}", response_model=OperationStatusResponse)
-async def delete_workspace(owner: str) -> OperationStatusResponse:
+async def delete_workspace(request: Request, owner: str) -> OperationStatusResponse:
+    owner = _require_own_workspace(request, owner)
     response = await workspace_manager.cleanup_workspace(owner)
     success = response.get("success", False)
     message = response.get("error") or response.get("message")
@@ -129,8 +144,9 @@ async def delete_workspace(owner: str) -> OperationStatusResponse:
 
 
 @router.post("/workspaces/{owner}/files", response_model=OperationStatusResponse)
-async def write_workspace_file(owner: str, payload: WriteFileRequest) -> OperationStatusResponse:
-    if owner != payload.owner:
+async def write_workspace_file(request: Request, owner: str, payload: WriteFileRequest) -> OperationStatusResponse:
+    owner = _require_own_workspace(request, owner)
+    if payload.owner is not None and str(payload.owner).strip() and str(payload.owner).strip() != owner:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Owner mismatch")
 
     workspace = await workspace_manager.prepare_workspace(owner, reset=payload.reset_workspace)

@@ -515,6 +515,7 @@ def _usage_where_clause(
     purpose: Optional[str] = None,
     start: Optional[str] = None,
     end: Optional[str] = None,
+    owner_id: Optional[str] = None,
 ) -> tuple[str, List[Any]]:
     clauses: List[str] = []
     params: List[Any] = []
@@ -522,6 +523,12 @@ def _usage_where_clause(
     if cutoff:
         clauses.append("created_at >= ?")
         params.append(cutoff)
+    if owner_id:
+        # Tenant scoping: usage rows attribute to a chat session; only rows whose
+        # session belongs to the caller are visible (rows without a session —
+        # background/plan calls — are operator-only).
+        clauses.append("session_id IN (SELECT id FROM chat_sessions WHERE owner_id = ?)")
+        params.append(owner_id)
     if start:
         clauses.append("created_at >= ?")
         params.append(start)
@@ -550,10 +557,11 @@ def get_usage_overview(
     session_id: Optional[str] = None,
     start: Optional[str] = None,
     end: Optional[str] = None,
+    owner_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Aggregate token/cost totals with breakdowns by day, phase, purpose, model."""
     where_sql, params = _usage_where_clause(
-        hours=hours, session_id=session_id, start=start, end=end,
+        hours=hours, session_id=session_id, start=start, end=end, owner_id=owner_id,
     )
     with get_db() as conn:
         totals_row = dict(conn.execute(
@@ -626,9 +634,10 @@ def get_top_sessions(
     *,
     limit: int = 10,
     hours: Optional[int] = None,
+    owner_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Rank sessions by token consumption to spot the expensive ones."""
-    where_sql, params = _usage_where_clause(hours=hours)
+    where_sql, params = _usage_where_clause(hours=hours, owner_id=owner_id)
     with get_db() as conn:
         rows = conn.execute(
             f"""
@@ -679,9 +688,10 @@ def get_session_run_breakdown(
     *,
     limit: int = 20,
     hours: Optional[int] = None,
+    owner_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Per-run (per conversation turn) token totals for one session."""
-    where_sql, params = _usage_where_clause(session_id=session_id, hours=hours)
+    where_sql, params = _usage_where_clause(session_id=session_id, hours=hours, owner_id=owner_id)
     with get_db() as conn:
         rows = conn.execute(
             f"""
@@ -725,10 +735,11 @@ def get_usage_calls(
     purpose: Optional[str] = None,
     status: Optional[str] = None,
     limit: int = 200,
+    owner_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Raw per-call rows for drill-down ('why did this session cost so much')."""
     where_sql, params = _usage_where_clause(
-        session_id=session_id, run_id=run_id, phase=phase, purpose=purpose,
+        session_id=session_id, run_id=run_id, phase=phase, purpose=purpose, owner_id=owner_id,
     )
     if status:
         where_sql = (where_sql + " AND call_status = ?") if where_sql else "WHERE call_status = ?"

@@ -3,14 +3,24 @@
 Answers "where did the tokens go": platform-wide or per-session overview,
 top-consumer sessions, per-run (per conversation turn) breakdown, and raw
 per-call drill-down for root-causing an expensive session or turn.
+
+Access (LOCAL_INFRA §120): every endpoint requires an authenticated principal.
+Regular users only see usage attributed to their own chat sessions; operators
+listed in ``QUALITY_ANALYTICS_ADMIN_IDS`` (or role ``admin``) see everything.
 """
 
 from __future__ import annotations
 
 from typing import List, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 
+from ..services.auth import legacy_proxy_access_allowed
+from ..services.request_principal import (
+    _quality_analytics_admin_ids,
+    get_request_principal,
+    require_authenticated_principal,
+)
 from . import register_router
 
 router = APIRouter(prefix="/usage", tags=["usage"])
@@ -25,43 +35,61 @@ register_router(
 )
 
 
+def _usage_owner_filter(request: Request) -> Optional[str]:
+    """Owner to scope usage queries by; ``None`` means unrestricted (operator)."""
+    principal = get_request_principal(request)
+    if not principal.is_authenticated and legacy_proxy_access_allowed(principal):
+        # Single-tenant legacy deployments have no ownership model.
+        return None
+    principal = require_authenticated_principal(request)
+    if principal.role == "admin" or principal.user_id in _quality_analytics_admin_ids():
+        return None
+    return principal.owner_id
+
+
 @router.get("/overview", summary="Aggregate token/cost totals with breakdowns")
 async def get_usage_overview_endpoint(
+    request: Request,
     hours: Optional[int] = Query(default=None, description="Look back N hours (alternative to start/end)"),
     session_id: Optional[str] = Query(default=None),
     start: Optional[str] = Query(default=None, description="ISO timestamp lower bound (created_at)"),
     end: Optional[str] = Query(default=None, description="ISO timestamp upper bound (created_at)"),
 ):
+    owner_id = _usage_owner_filter(request)
     try:
         from ..repository.llm_usage import get_usage_overview
-        return get_usage_overview(hours=hours, session_id=session_id, start=start, end=end)
+        return get_usage_overview(hours=hours, session_id=session_id, start=start, end=end, owner_id=owner_id)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to get usage overview: {exc}")
 
 
 @router.get("/top/sessions", summary="Rank sessions by token consumption")
 async def get_top_sessions_endpoint(
+    request: Request,
     limit: int = Query(default=10, ge=1, le=100),
     hours: Optional[int] = Query(default=None),
 ):
+    owner_id = _usage_owner_filter(request)
     try:
         from ..repository.llm_usage import get_top_sessions
-        return {"sessions": get_top_sessions(limit=limit, hours=hours)}
+        return {"sessions": get_top_sessions(limit=limit, hours=hours, owner_id=owner_id)}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to get top sessions: {exc}")
 
 
 @router.get("/runs", summary="Per-run (per conversation turn) breakdown for a session")
 async def get_session_runs_endpoint(
+    request: Request,
     session_id: str = Query(...),
     limit: int = Query(default=20, ge=1, le=200),
     hours: Optional[int] = Query(default=None),
 ):
+    owner_id = _usage_owner_filter(request)
     try:
         from ..repository.llm_usage import get_session_run_breakdown
         return {
             "session_id": session_id,
-            "runs": get_session_run_breakdown(session_id, limit=limit, hours=hours),
+            "runs": get_session_run_breakdown(session_id, limit=limit, hours=hours, owner_id=owner_id),
         }
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to get run breakdown: {exc}")
@@ -69,6 +97,7 @@ async def get_session_runs_endpoint(
 
 @router.get("/calls", summary="Raw per-call drill-down")
 async def get_usage_calls_endpoint(
+    request: Request,
     session_id: Optional[str] = Query(default=None),
     run_id: Optional[str] = Query(default=None),
     phase: Optional[str] = Query(default=None, description="chat/plan/execution/audit/..."),
@@ -76,6 +105,7 @@ async def get_usage_calls_endpoint(
     status: Optional[str] = Query(default=None, description="ok/error filter"),
     limit: int = Query(default=200, ge=1, le=1000),
 ):
+    owner_id = _usage_owner_filter(request)
     if not any([session_id, run_id, phase, purpose, status]):
         raise HTTPException(
             status_code=422,
@@ -85,7 +115,7 @@ async def get_usage_calls_endpoint(
         from ..repository.llm_usage import get_usage_calls
         return {"calls": get_usage_calls(
             session_id=session_id, run_id=run_id, phase=phase,
-            purpose=purpose, status=status, limit=limit,
+            purpose=purpose, status=status, limit=limit, owner_id=owner_id,
         )}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to get usage calls: {exc}")

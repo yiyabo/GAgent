@@ -9,7 +9,15 @@ from fastapi.testclient import TestClient
 from app.routers import terminal_routes
 
 
-def _build_client() -> TestClient:
+def _build_client(monkeypatch) -> TestClient:
+    # Bare app without the auth middleware: the WS handler authenticates the
+    # handshake itself, so opt into the single-tenant proxy fallback.
+    from app.services.foundation.settings import get_settings
+
+    monkeypatch.setenv("AUTH_MODE", "proxy")
+    monkeypatch.delenv("PROXY_AUTH_REQUIRED", raising=False)
+    monkeypatch.setenv("APP_ENV", "development")
+    get_settings.cache_clear()
     app = FastAPI()
     app.include_router(terminal_routes.router)
     return TestClient(app)
@@ -17,7 +25,7 @@ def _build_client() -> TestClient:
 
 def test_forbidden_command_path_smoke(monkeypatch) -> None:
     monkeypatch.setenv("TERMINAL_ENABLED", "true")
-    client = _build_client()
+    client = _build_client(monkeypatch)
 
     terminal_id = None
     try:
