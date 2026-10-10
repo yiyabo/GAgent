@@ -69,6 +69,35 @@ smoke() {
   log "smoke OK (ready=200, tracebacks=0)"
 }
 
+# Build with plain `docker build`, NOT `docker compose build`.
+# Reason (measured 2026-10-10 on .8): the host runs docker 20.10.24 (API 1.41)
+# while its buildx *plugin* speaks API 1.52, so the compose build path dies with
+# "client version 1.52 is too new. Maximum supported API version is 1.41" and the
+# default builder shows STATUS=error. `DOCKER_BUILDKIT=1 docker build` uses the
+# daemon's own BuildKit and works, and it still honours the per-Dockerfile
+# dockerignore, so the build args have to be passed explicitly here.
+build() {
+  local tag="${GAGENT_TAG:-latest}"
+  log "building gagent-app:${tag}"
+  DOCKER_BUILDKIT=1 docker build \
+    -f "${DEPLOY_DIR}/Dockerfile" \
+    -t "gagent-app:${tag}" \
+    --build-arg "BASE_IMAGE=${APP_BASE_IMAGE:-python:3.12-slim}" \
+    --build-arg "APP_UID=${APP_UID:-1001}" \
+    --build-arg "APP_GID=${APP_GID:-1001}" \
+    "${ROOT_DIR}" || die "app image build failed"
+
+  log "building gagent-gateway:${tag}"
+  DOCKER_BUILDKIT=1 docker build \
+    -f "${DEPLOY_DIR}/Dockerfile.gateway" \
+    -t "gagent-gateway:${tag}" \
+    --build-arg "NPM_REGISTRY=${NPM_REGISTRY:-https://registry.npmmirror.com}" \
+    --build-arg "NODE_BASE_IMAGE=${NODE_BASE_IMAGE:-node:22-alpine}" \
+    --build-arg "GATEWAY_BASE_IMAGE=${GATEWAY_BASE_IMAGE:-nginx:1.27-alpine}" \
+    "${ROOT_DIR}" || die "gateway image build failed"
+  log "images built"
+}
+
 reprobe() {
   local base="${1:-https://agent.medicalheart.cn}"
   log "security re-probe against ${base} (expect 401 for protected paths)"
@@ -86,13 +115,15 @@ reprobe() {
 
 cmd="${1:-}"; shift || true
 case "${cmd}" in
-  build)   "${COMPOSE[@]}" build "$@" ;;
-  up)      gate enforce; "${COMPOSE[@]}" up -d "$@"; smoke ;;
+  build)   build ;;
+  # --no-build everywhere: images are built by `build` (plain docker build);
+  # letting compose build here would hit the buildx/daemon mismatch above.
+  up)      gate enforce; "${COMPOSE[@]}" up -d --no-build "$@"; smoke ;;
   down)    "${COMPOSE[@]}" down "$@" ;;
   gate)    gate "${1:-enforce}" ;;
   smoke)   smoke ;;
   reprobe) reprobe "$@" ;;
-  deploy)  gate "${1:-enforce}"; "${COMPOSE[@]}" up -d; smoke ;;
+  deploy)  gate "${1:-enforce}"; "${COMPOSE[@]}" up -d --no-build; smoke ;;
   logs)    "${COMPOSE[@]}" logs -f --tail=200 app ;;
   ps)      "${COMPOSE[@]}" ps ;;
   # Image transport for hosts that cannot pull (the .8 reality): save on a
