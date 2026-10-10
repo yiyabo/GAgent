@@ -1,3 +1,13 @@
+# DEPLOYMENT: byoryn platform (docker.byoryn.cn/ms/biomedical, port 9000).
+#
+# There are TWO dev overlays in this directory and they belong to DIFFERENT
+# deployments — do not mix them up:
+#   * THIS file          -> the byoryn platform compose (deploy/docker-compose.yml
+#                           in its pre-2026-10 form, image ms/biomedical).
+#   * compose.dev.yml    -> the standalone stack (deploy/docker-compose.yml, our
+#                           gagent-app/gagent-gateway images, port 40003). Use
+#                           that one for anything described in LOCAL_INFRA §121+.
+#
 # bioagent 开发 overlay：与正式部署同一镜像同一入口，只加开发定制。
 # 用法：docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
 # 差异只有三点：挂源码、uvicorn --reload 热重启、docker.sock（code_executor sidecar 用）。
