@@ -1,4 +1,8 @@
 #!/usr/bin/env python3
+# DEPRECATED for production (2026-10-10, LOCAL_INFRA §121): the containerized
+# stack serves the built web-ui from the gateway image (deploy/Dockerfile.gateway
+# -> nginx), so this script no longer has a production role. It is kept as a
+# zero-dependency way to serve web-ui/dist locally (e.g. checking a build).
 
 from __future__ import annotations
 

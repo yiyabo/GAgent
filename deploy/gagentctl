@@ -24,6 +24,13 @@ die() { printf '[gagentctl] ERROR: %s\n' "$*" >&2; exit 1; }
 # decomposition jobs across every plan shard. Non-zero => refuse to restart.
 gate() {
   local mode="${1:-enforce}"
+  # On a FRESH stack there is no app container, so the probe below would fail and
+  # abort `up` before anything starts. Nothing can be interrupted if nothing is
+  # running, so treat "app not running" as an automatically clear gate.
+  if ! "${COMPOSE[@]}" ps --status running --services 2>/dev/null | grep -qx app; then
+    log "gate: app service is not running — nothing to interrupt, gate clear"
+    return 0
+  fi
   "${COMPOSE[@]}" exec -T app python - <<'PY'
 import glob, os, sqlite3, sys
 main = os.path.join(os.getenv("DB_ROOT", "/app/data/databases"), "main", "plan_registry.db")
@@ -138,9 +145,20 @@ case "${cmd}" in
   ps)      "${COMPOSE[@]}" ps ;;
   # Image transport for hosts that cannot pull (the .8 reality): save on a
   # networked machine, load here.
-  export-images) docker save gagent-app:"${GAGENT_TAG:-latest}" gagent-gateway:"${GAGENT_TAG:-latest}" \
-                   gagent-sandbox-python:"${GAGENT_TAG:-latest}" gagent-sandbox-qwen:"${GAGENT_TAG:-latest}" \
-                   | gzip > "${1:-/tmp/gagent-images.tgz}"; log "wrote ${1:-/tmp/gagent-images.tgz}" ;;
+  # Export only what is actually built: the sandbox images arrive in P3, and
+  # `docker save` fails the whole command if any named image is absent.
+  export-images)
+    local tag="${GAGENT_TAG:-latest}" out="${1:-/tmp/gagent-images.tgz}" imgs=()
+    for img in gagent-app gagent-gateway gagent-sandbox-python gagent-sandbox-qwen; do
+      if docker image inspect "${img}:${tag}" >/dev/null 2>&1; then
+        imgs+=("${img}:${tag}")
+      else
+        log "export: skipping ${img}:${tag} (not built on this host)"
+      fi
+    done
+    [ "${#imgs[@]}" -gt 0 ] || die "nothing to export (no stack images built)"
+    docker save "${imgs[@]}" | gzip > "${out}"
+    log "wrote ${out} (${#imgs[@]} image(s))" ;;
   import-images) gunzip -c "${1:-/tmp/gagent-images.tgz}" | docker load ;;
   *) cat <<EOF
 gagentctl commands:
