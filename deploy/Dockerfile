@@ -55,7 +55,12 @@ ARG APP_GID=1001
 RUN groupadd -g "${APP_GID}" gagent 2>/dev/null || true \
     && useradd -u "${APP_UID}" -g "${APP_GID}" -d /app/home -s /usr/sbin/nologin gagent 2>/dev/null || true \
     && mkdir -p /app/home /app/runtime /app/data \
-    && chown -R "${APP_UID}:${APP_GID}" /app/home
+    && chown -R "${APP_UID}:${APP_GID}" /app/home /app/runtime /app/data
+# /app/data and /app/runtime must be app-owned IN THE IMAGE: Docker initialises a
+# fresh empty named volume from the image's directory, ownership included, so a
+# root-owned /app/data would leave the app (uid 1001) unable to create its
+# databases and the container permanently unhealthy. (The runtime bind mount is
+# owned on the host, but the same rule keeps a volume-based install working.)
 USER ${APP_UID}:${APP_GID}
 
 EXPOSE 9000
