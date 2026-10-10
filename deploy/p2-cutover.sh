@@ -115,6 +115,15 @@ esac
 [ -f "${HERE}/.env" ] || die "missing ${HERE}/.env"
 # shellcheck disable=SC1091
 set -a; source "${HERE}/.env"; set +a
+# .env is the *container* contract, not a host-shell contract: it carries
+# DOCKER_HOST=tcp://proxy:2375, and `proxy` is a compose service name the host
+# CLI cannot resolve. Every docker invocation in this script runs on the HOST
+# (gate/smoke/reprobe/stop/up), so drop it — otherwise the gate dies with
+# "lookup proxy: Temporary failure in name resolution" before it ever queries
+# the database, and the cutover aborts for a reason that is not the gate.
+# `docker compose` reads .env itself for the app service's environment, so
+# unsetting it here does not change the stack's config.
+unset DOCKER_HOST
 PORT="${GATEWAY_PORT:-40003}"
 
 log "=== P2 cutover ${STAMP} (port ${PORT}) ==="
