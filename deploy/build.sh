@@ -1,4 +1,9 @@
 #!/bin/bash
+# DEPRECATED (2026-10-10): superseded by ./deploy/gagentctl build, which builds
+# app + gateway + sandbox images from the compose file. Kept only for the
+# byoryn-platform image (docker.byoryn.cn/ms/biomedical) this script targets;
+# the standalone stack no longer uses it.
+#
 # bioagent 镜像构建脚本（与 bioapi/tgrpc 的构建方式一致）。
 # docker build 自带层缓存：依赖清单没变时 uv sync 层直接命中，只有源码层重算，天然增量。
 # 用法：./build.sh [--push]

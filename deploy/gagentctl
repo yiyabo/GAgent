@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+# gagentctl — one entrypoint for the GAgent compose stack (LOCAL_INFRA §120+).
+#
+# Replaces the ad-hoc start_all.sh / phage-safe-restart pair for the container
+# stack. Every mutating command goes through the restart gate first, so a
+# deploy can never kill an in-flight chat run or plan job.
+#
+# Usage: ./deploy/gagentctl <command> [args]
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DEPLOY_DIR="${ROOT_DIR}/deploy"
+COMPOSE=(docker compose -f "${DEPLOY_DIR}/docker-compose.yml")
+[ -f "${DEPLOY_DIR}/.env" ] || { echo "missing ${DEPLOY_DIR}/.env (copy .env.template)"; exit 1; }
+# shellcheck disable=SC1091
+set -a; source "${DEPLOY_DIR}/.env"; set +a
+APP_CONTAINER="gagent-app-1"
+GATE_LOG="${GAGENT_RUNTIME_DIR:-/tmp}/../restarts.log"
+
+log() { printf '[gagentctl] %s\n' "$*"; }
+die() { printf '[gagentctl] ERROR: %s\n' "$*" >&2; exit 1; }
+
+# Active chat runs (same criteria as reap_expired_chat_runs) + queued/running
+# decomposition jobs across every plan shard. Non-zero => refuse to restart.
+gate() {
+  local mode="${1:-enforce}"
+  "${COMPOSE[@]}" exec -T app python - <<'PY'
+import glob, os, sqlite3, sys
+main = os.path.join(os.getenv("DB_ROOT", "/app/data/databases"), "main", "plan_registry.db")
+active = 0
+try:
+    c = sqlite3.connect(f"file:{main}?mode=ro", uri=True)
+    active = c.execute(
+        "SELECT COUNT(*) FROM chat_runs WHERE status IN ('running','queued')"
+    ).fetchone()[0]
+except Exception as exc:
+    print(f"gate: chat_runs probe failed: {exc}", file=sys.stderr)
+jobs = 0
+for path in glob.glob(os.path.join(os.getenv("DB_ROOT", "/app/data/databases"), "plans", "*.sqlite")):
+    try:
+        c = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        jobs += c.execute(
+            "SELECT COUNT(*) FROM decomposition_jobs WHERE status IN ('queued','running')"
+        ).fetchone()[0]
+    except Exception:
+        pass
+print(f"gate: active_chat_runs={active} active_plan_jobs={jobs}")
+sys.exit(1 if (active or jobs) else 0)
+PY
+  local rc=$?
+  if [ "${rc}" -ne 0 ]; then
+    if [ "${mode}" = "force" ]; then
+      log "WARNING: gate is not clear (rc=${rc}) but --force given; proceeding"
+    else
+      die "restart gate not clear (active work in progress); use --force to override"
+    fi
+  fi
+}
+
+smoke() {
+  log "smoke: import + readiness + tracebacks"
+  "${COMPOSE[@]}" exec -T app python -c "import app.main; print('IMPORT_OK')"
+  local code
+  code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${GATEWAY_PORT:-40003}/health/ready")
+  [ "${code}" = "200" ] || die "gateway /health/ready returned ${code}"
+  local tb
+  tb=$("${COMPOSE[@]}" logs --since 4m app 2>&1 | grep -ci traceback || true)
+  [ "${tb}" = "0" ] || die "found ${tb} traceback(s) in app logs"
+  log "smoke OK (ready=200, tracebacks=0)"
+}
+
+reprobe() {
+  local base="${1:-https://agent.medicalheart.cn}"
+  log "security re-probe against ${base} (expect 401 for protected paths)"
+  local rc=0
+  for p in /tools/available /usage/overview /tasks/1/result /skill-learning/skills/x /plans/1/results; do
+    local code; code=$(curl -s -o /dev/null -w '%{http_code}' -m 12 "${base}${p}")
+    printf '  %-28s -> %s\n' "${p}" "${code}"
+    [ "${code}" = "401" ] || rc=1
+  done
+  local h; h=$(curl -s -o /dev/null -w '%{http_code}' -m 12 "${base}/health")
+  printf '  %-28s -> %s\n' /health "${h}"; [ "${h}" = "200" ] || rc=1
+  [ "${rc}" -eq 0 ] || die "re-probe failed: a protected path is not 401"
+  log "re-probe OK"
+}
+
+cmd="${1:-}"; shift || true
+case "${cmd}" in
+  build)   "${COMPOSE[@]}" build "$@" ;;
+  up)      gate enforce; "${COMPOSE[@]}" up -d "$@"; smoke ;;
+  down)    "${COMPOSE[@]}" down "$@" ;;
+  gate)    gate "${1:-enforce}" ;;
+  smoke)   smoke ;;
+  reprobe) reprobe "$@" ;;
+  deploy)  gate "${1:-enforce}"; "${COMPOSE[@]}" up -d; smoke ;;
+  logs)    "${COMPOSE[@]}" logs -f --tail=200 app ;;
+  ps)      "${COMPOSE[@]}" ps ;;
+  # Image transport for hosts that cannot pull (the .8 reality): save on a
+  # networked machine, load here.
+  export-images) docker save gagent-app:"${GAGENT_TAG:-latest}" gagent-gateway:"${GAGENT_TAG:-latest}" \
+                   gagent-sandbox-python:"${GAGENT_TAG:-latest}" gagent-sandbox-qwen:"${GAGENT_TAG:-latest}" \
+                   | gzip > "${1:-/tmp/gagent-images.tgz}"; log "wrote ${1:-/tmp/gagent-images.tgz}" ;;
+  import-images) gunzip -c "${1:-/tmp/gagent-images.tgz}" | docker load ;;
+  *) cat <<EOF
+gagentctl commands:
+  build            build app + gateway images
+  up               gate, start the stack, smoke
+  down             stop the stack
+  deploy           gate, (re)start, smoke
+  gate [force]     print active work; non-zero if a restart would interrupt it
+  smoke            import + /health/ready + traceback check
+  reprobe [base]   assert protected paths 401 from outside
+  export-images    docker save the stack images to a tarball
+  import-images    docker load the tarball
+  logs | ps
+(backup / restore land with the ops service in P4)
+EOF
+     exit 2 ;;
+esac

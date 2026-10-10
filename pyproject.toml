@@ -79,17 +79,42 @@ dependencies = [
     # 判断何时压缩上下文。缺失时退化为 CJK 字符估算，压缩时机会不准。
     # 原 requirements.txt 遗漏。
     "tiktoken>=0.7.0",
-    # --- 本地嵌入（EMBEDDING_PROVIDER=local 时才会加载）---
-    # sentence-transformers / torch 在
-    # app/services/embeddings/local_embedding_client.py:52 惰性导入，
-    # 默认 provider 为 qwen，实际用不到。约 2.5GB，容器化时应拆为可选依赖。
-    "sentence-transformers>=2.7.0",
-    "torch>=2.0.0",
-    # --- 测试（原 requirements.txt 混在主依赖里，此处保持原样）---
+    # --- 此前"只装在运行容器里、镜像里没有"的功能性依赖（deploy/runtime-container-requirements.txt）---
+    # 2026-10-10 容器化：这 12 个包历史上是直接 pip install 进 .8 生产容器的
+    # （本项目"能不重建镜像就不重建"的惯例），一旦改用镜像重建容器就会静默丢失，
+    # 其中 pyarrow 管 parquet、scikit-learn 管 ML 任务、mplfonts 管 matplotlib 的
+    # CJK 字体。现在并入正式清单，让 uv.lock 成为唯一真相；容器内验证要用的
+    # pytest 保留在主依赖（镜像需要能跑容器内冒烟），只有格式化工具 black 下沉到 dev。
+    "pyarrow>=18.0.0",
+    "scikit-learn>=1.5.0",
+    "joblib>=1.4.0",
+    "threadpoolctl>=3.5.0",
+    "cloudpickle>=3.0.0",
+    "mplfonts>=0.0.11",
+    "fontmeta>=1.6.0",
+    "fire>=0.7.0",
+    "termcolor>=2.4.0",
+    "Pygments>=2.18.0",
+    "tomli>=2.0.0",
+    "backports-asyncio-runner>=1.2.0",
+    # --- 测试（容器内验证纪律依赖它们，因此保留在主依赖）---
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
-    "black>=26.5.1",
 ]
+
+# 本地嵌入栈约 2.5GB，只有 EMBEDDING_PROVIDER=local 才用
+# （app/services/embeddings/local_embedding_client.py:52 惰性导入），
+# 默认 provider 是 qwen。容器化后科学计算栈属于沙箱镜像，app 镜像默认不装：
+#   uv sync --extra local-embeddings
+[project.optional-dependencies]
+local-embeddings = [
+    "sentence-transformers>=2.7.0",
+    "torch>=2.0.0",
+]
+
+[dependency-groups]
+dev = ["black>=26.5.1"]
+
 
 # 后端以 `uvicorn app.main:app` 方式从仓库根直接运行，不需要把 bioagent
 # 自身构建成可安装包，因此声明为非 package 项目（仅管理依赖与虚拟环境）。

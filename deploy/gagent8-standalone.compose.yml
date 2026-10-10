@@ -1,3 +1,9 @@
+# DEPRECATED (2026-10-10, LOCAL_INFRA §120+): this file records the ad-hoc
+# `docker run` shape production used until the containerized stack lands. It is
+# kept ONLY as the rollback reference and the provenance record for the opaque
+# base image. The stack that replaces it is deploy/docker-compose.yml; delete
+# this file once the cutover (P2) has soaked.
+#
 # GAgent standalone shape — the ad-hoc `docker run` that .8 has been running.
 #
 # Provenance: recovered 2026-09-26 from the live container

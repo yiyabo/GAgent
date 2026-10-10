@@ -1,0 +1,38 @@
+# Dev overlay: same images, but source is bind-mounted and uvicorn reloads.
+#   ./deploy/gagentctl build && docker compose \
+#     -f deploy/docker-compose.yml -f deploy/compose.dev.yml up -d
+#
+# Differences from the base file, and nothing else:
+#   - source mounted so edits take effect without a rebuild
+#   - uvicorn --reload
+#   - runtime/data on host directories (so dev data is inspectable and the
+#     production volume is never touched)
+services:
+  app:
+    volumes:
+      - ../app:/app/app
+      - ../tool_box:/app/tool_box
+      - ../skills:/app/skills
+      - ../scripts:/app/scripts
+      - ${GAGENT_RUNTIME_DIR}:/app/runtime
+      - gagent-data:/app/data
+    environment:
+      SERVE_SPA: "1"        # dev can use the app's own catch-all
+      APP_ENV: development
+    command:
+      - uvicorn
+      - app.main:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "9000"
+      - --reload
+      - --reload-dir
+      - /app/app
+      - --reload-dir
+      - /app/tool_box
+
+  gateway:
+    # Dev usually hits the API directly; keep the gateway but publish it too.
+    ports:
+      - "${GATEWAY_PORT:-40003}:80"

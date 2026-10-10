@@ -33,6 +33,31 @@ logger = logging.getLogger(__name__)
 _MAX_LINE_BYTES = 16 * 1024 * 1024
 
 
+def _bind_host() -> str:
+    """Interface the RPC server listens on.
+
+    Loopback by default (host/local kernels). The containerized stack sets
+    ``CODE_MODE_RPC_BIND=0.0.0.0`` so a *sandbox* container can dial back in;
+    ``CODE_MODE_RPC_ADVERTISE`` then names the host the sandbox should use
+    (the compose service name, e.g. ``app``).
+    """
+    import os
+
+    return str(os.getenv("CODE_MODE_RPC_BIND") or "127.0.0.1").strip() or "127.0.0.1"
+
+
+def _advertise_host(bind: str) -> str:
+    import os
+
+    explicit = str(os.getenv("CODE_MODE_RPC_ADVERTISE") or "").strip()
+    if explicit:
+        return explicit
+    if bind in {"0.0.0.0", "::", ""}:
+        # Wildcard bind with no advertised name: only reachable on loopback.
+        return "127.0.0.1"
+    return bind
+
+
 def _token_ok(request_token: Any, rpc_token: str) -> bool:
     """Constant-time check; an empty server token fails closed."""
     return bool(rpc_token) and secrets.compare_digest(
@@ -49,11 +74,12 @@ class KernelRPCServer:
         self._server: Optional[asyncio.AbstractServer] = None
         self._thread: Optional[threading.Thread] = None
         self._port = 0
+        self._bind = "127.0.0.1"
 
     # -- lifecycle -----------------------------------------------------------
 
     def start(self) -> str:
-        """Spawn the serving thread; returns the ``tcp://127.0.0.1:<port>`` endpoint."""
+        """Spawn the serving thread; returns the ``tcp://<advertise>:<port>`` endpoint."""
         ready = threading.Event()
         self._thread = threading.Thread(
             target=self._run, args=(ready,), daemon=True, name="gagent-code-mode-rpc"
@@ -61,16 +87,18 @@ class KernelRPCServer:
         self._thread.start()
         if not ready.wait(timeout=10):
             raise RuntimeError("code-mode RPC server failed to start")
-        return f"tcp://127.0.0.1:{self._port}"
+        host = _advertise_host(self._bind)
+        return f"tcp://{host}:{self._port}"
 
     def _run(self, ready: threading.Event) -> None:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         self._loop = loop
+        self._bind = _bind_host()
         try:
             self._server = loop.run_until_complete(
                 asyncio.start_server(
-                    self._handle_connection, "127.0.0.1", 0, limit=_MAX_LINE_BYTES
+                    self._handle_connection, self._bind, 0, limit=_MAX_LINE_BYTES
                 )
             )
             self._port = int(self._server.sockets[0].getsockname()[1])

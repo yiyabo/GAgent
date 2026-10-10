@@ -59,6 +59,38 @@ def get_runtime_root() -> Path:
     return _RUNTIME_ROOT
 
 
+def get_host_runtime_root() -> str:
+    """Host path that corresponds to the container's runtime root, if known.
+
+    Sandboxes are created as *sibling* containers, so the daemon resolves bind
+    sources on the HOST, not inside this container (Docker-outside-of-Docker).
+    ``HOST_RUNTIME_ROOT`` names the same directory as seen by the host; when it
+    is unset we are either on host networking with a real bind or running the
+    local (non-sandbox) execution path, and container paths are already correct.
+    """
+    return str(os.getenv("HOST_RUNTIME_ROOT") or "").strip()
+
+
+def host_path_for(container_path) -> str:
+    """Translate an in-container runtime path into the host path to mount.
+
+    ``runtime/session_x/...`` inside the app container is, on the host,
+    ``$HOST_RUNTIME_ROOT/session_x/...``. Anything outside the runtime root is
+    returned unchanged (callers must not mount it anyway).
+    """
+    host_root = get_host_runtime_root()
+    text = str(container_path)
+    if not host_root:
+        return text
+    container_root = str(get_runtime_root())
+    if text == container_root:
+        return host_root
+    prefix = container_root + os.sep
+    if text.startswith(prefix):
+        return os.path.join(host_root, text[len(prefix):])
+    return text
+
+
 def get_legacy_info_sessions_root() -> Path:
     override = os.getenv("APP_INFO_SESSIONS_ROOT")
     if override:
@@ -191,6 +223,7 @@ def get_session_storage_candidates(session_id: str, *, include_legacy: bool = Tr
 
 
 __all__ = [
+    "get_host_runtime_root",
     "get_legacy_info_sessions_root",
     "get_runtime_root",
     "get_runtime_session_dir",
@@ -198,5 +231,6 @@ __all__ = [
     "get_session_storage_candidates",
     "get_session_tool_outputs_dir",
     "get_session_upload_dir",
+    "host_path_for",
     "normalize_session_base",
 ]

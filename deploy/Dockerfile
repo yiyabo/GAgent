@@ -1,24 +1,37 @@
-# bioagent 主应用镜像
-# 基础环境用 uv 按 pyproject.toml + uv.lock 精确还原依赖；
-# 依赖装到 /opt/venv（UV_PROJECT_ENVIRONMENT），开发期把源码挂到 /app 不会遮住虚拟环境。
-FROM docker.byoryn.cn/library/python:3.12-slim
+# GAgent app image (FastAPI backend). Self-contained: no source bind mounts.
+#
+# Dependencies come from pyproject.toml + uv.lock (single source of truth).
+# The historical "patch layer" (deploy/Dockerfile.runtime-overlay) existed only
+# because the old production image was built from an opaque digest; with this
+# recipe that crutch is gone — its 19 hand-installed packages now live in
+# pyproject.toml.
+#
+# Build: docker build -f deploy/Dockerfile -t gagent-app:<tag> .
+# Context: repo root (BuildKit uses deploy/Dockerfile.dockerignore).
 
-# 容器以 root 运行：接入项目文件空间后需要 CAP_CHOWN 做写后属主修正
+ARG BASE_IMAGE=python:3.12-slim
+FROM ${BASE_IMAGE}
+
 ENV UV_PROJECT_ENVIRONMENT=/opt/venv \
     PATH="/opt/venv/bin:$PATH" \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    HOME=/app/home
 
 WORKDIR /app
 
-# docker-cli：容器内经挂载的 docker.sock 管理 code_executor 等 sidecar；
-# procps：孤儿进程清理要用的 ps
+# docker-cli: creates sibling sandbox containers via DOCKER_HOST (the socket
+# proxy in the stack; a raw socket is never mounted into this container).
+# procps: orphan-process cleanup at startup. sqlite3: the ops container reuses
+# this image to VACUUM INTO backups.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends docker-cli procps \
+    && apt-get install -y --no-install-recommends docker-cli procps sqlite3 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN pip install --no-cache-dir uv
 
-# 先只拷依赖清单，利用层缓存：源码改动不触发重新装依赖
+# Dependency layer first so source edits do not re-resolve the environment.
+# --no-dev keeps black out; pytest stays in (main deps) for in-container smoke.
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev
 
@@ -27,10 +40,20 @@ COPY tool_box ./tool_box
 COPY skills ./skills
 COPY scripts ./scripts
 
+# Non-root runtime user. APP_UID/APP_GID must match the owner of the runtime
+# bind mount so session dirs stay writable (LOCAL_INFRA §120).
+ARG APP_UID=1001
+ARG APP_GID=1001
+RUN groupadd -g "${APP_GID}" gagent 2>/dev/null || true \
+    && useradd -u "${APP_UID}" -g "${APP_GID}" -d /app/home -s /usr/sbin/nologin gagent 2>/dev/null || true \
+    && mkdir -p /app/home /app/runtime /app/data \
+    && chown -R "${APP_UID}:${APP_GID}" /app/home
+USER ${APP_UID}:${APP_GID}
+
 EXPOSE 9000
 
-# 探活用 python 标准库（slim 镜像没有 curl）
-HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
-    CMD ["python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:9000/health', timeout=3)"]
+# Readiness (DB + runtime writable), not the static liveness endpoint.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+    CMD ["python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:9000/health/ready', timeout=4)"]
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "9000"]

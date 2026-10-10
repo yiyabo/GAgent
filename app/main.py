@@ -370,7 +370,11 @@ async def general_exception_handler(request: Request, exc: Exception):
         or os.environ.get("APP_DEBUG")
         or os.environ.get("DEBUG")
     )
-    include_debug = parse_bool(debug_env, default=False)
+    # Debug payloads leak internals; only honour the switch outside production.
+    include_debug = (
+        parse_bool(debug_env, default=False)
+        and str(os.getenv("APP_ENV") or "").strip().lower() not in {"prod", "production"}
+    )
     error_response = handle_api_error(system_error, include_debug=include_debug)
     return JSONResponse(status_code=500, content=error_response)
 
@@ -399,8 +403,45 @@ def _map_error_to_http_status(error: BaseError) -> int:
 
 
 def health_check():
-    """System health check"""
+    """Liveness: the process is up and serving."""
     return {"status": "healthy", "service": "AI-Driven Task Orchestration System"}
+
+
+def readiness_check():
+    """Readiness: the things that make this instance able to serve work.
+
+    Checks the main DB answers a trivial query and the runtime root is
+    writable. Returns 503 when either fails so a container orchestrator stops
+    routing traffic here instead of silently 500-ing every request.
+    """
+    from fastapi.responses import JSONResponse as _JSONResponse
+
+    problems: list[str] = []
+    try:
+        with get_db() as conn:
+            conn.execute("SELECT 1").fetchone()
+    except Exception as exc:  # pragma: no cover - depends on runtime state
+        problems.append(f"db: {type(exc).__name__}")
+
+    try:
+        from .services.session_paths import get_runtime_root
+
+        root = get_runtime_root()
+        root.mkdir(parents=True, exist_ok=True)
+        probe = root / ".ready-probe"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink()
+    except Exception as exc:  # pragma: no cover - depends on runtime state
+        problems.append(f"runtime: {type(exc).__name__}")
+
+    payload = {
+        "status": "ready" if not problems else "degraded",
+        "service": "AI-Driven Task Orchestration System",
+        "problems": problems,
+    }
+    if problems:
+        return _JSONResponse(status_code=503, content=payload)
+    return payload
 
 
 _LLM_PING_TTL_SECONDS = float(os.getenv("LLM_HEALTH_PING_TTL", "60") or 60)
@@ -454,6 +495,7 @@ def _register_routes(app: FastAPI) -> None:
     for router in get_all_routers():
         app.include_router(router)
     app.add_api_route("/health", health_check, methods=["GET"])
+    app.add_api_route("/health/ready", readiness_check, methods=["GET"])
     app.add_api_route("/health/llm", llm_health, methods=["GET"])
 
 
@@ -462,6 +504,12 @@ def _register_spa(app: "FastAPI") -> None:
     from pathlib import Path as _Path
     from fastapi.responses import FileResponse
     from starlette.exceptions import HTTPException as _HTTP
+
+    # When the stack ships a dedicated ingress (deploy/Dockerfile.gateway),
+    # nginx serves the built assets and this catch-all must stay off so the
+    # API surface is not shadowed by index.html.
+    if not parse_bool(os.getenv("SERVE_SPA", "1"), default=True):
+        return
 
     dist = _Path(__file__).resolve().parent.parent / "web-ui" / "dist"
     if not dist.exists():
