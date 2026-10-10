@@ -1,52 +1,40 @@
-# GAgent gateway image: builds the web-ui and serves it with nginx, which is
-# the stack's single entrypoint (see deploy/nginx/gagent.conf).
+# GAgent gateway image: nginx serving the built web-ui — the stack's single
+# entrypoint (see deploy/nginx/gagent.conf).
 #
-# The two frontend build variables are HARD-CODED empty on purpose: with a
-# non-empty base the bundle bakes an absolute `:9000` origin and every request
-# from the browser goes to the wrong host (LOCAL_INFRA §3 blood lesson). The
-# grep gate below fails the build if that ever regresses.
+# WHY THERE IS NO node STAGE
+# Hosts in this deployment cannot pull Docker Hub images. Measured 2026-10-10:
+# registry-1.docker.io times out from .8, the daemon's dockerproxy.net mirror is
+# dead, the docker.1ms.run mirror answers on /v2/ but times out for real pulls,
+# and the byoryn registry carries python/alpine but no node. So the SPA is built
+# where node exists (the Mac, which is also how this project has always shipped
+# its frontend) and the resulting web-ui/dist is baked in from the build context.
+# `gagentctl build` runs that frontend build first and fails loudly if dist is
+# missing or if a backend origin leaked into the bundle.
 #
-# Build: docker build -f deploy/Dockerfile.gateway -t gagent-gateway:<tag> .
-# Context: repo root (BuildKit picks up deploy/Dockerfile.gateway.dockerignore).
-
-# ---------- stage 1: build the SPA ----------
-# Base images are ARGs because not every host can reach Docker Hub: .8 has no
-# route to registry-1.docker.io and the byoryn registry carries python/alpine
-# only, so the stack ships nginx + node images in via gagentctl import-images
-# and builds against whatever tags those arrive as.
-ARG NODE_BASE_IMAGE=node:22-alpine
-FROM ${NODE_BASE_IMAGE} AS web
-WORKDIR /build/web-ui
-
-# npm registry mirror for CN networks; overridable.
-ARG NPM_REGISTRY=https://registry.npmmirror.com
-RUN npm config set registry "${NPM_REGISTRY}"
-
-# Dependency layer: package.json + lockfile only, so source edits reuse it.
-# `npm ci` runs the postinstall (patch-package), which is required.
-COPY web-ui/package.json web-ui/package-lock.json ./
-RUN npm ci
-
-COPY web-ui/ ./
-# tsc + vite build, with the base URLs forced empty.
-RUN VITE_API_BASE_URL='' VITE_WS_BASE_URL='' npm run build
-
-# Hard gate: no baked-in backend origin may survive into the bundle.
-RUN set -e; \
-    hits=$(grep -rl ":9000" dist/ 2>/dev/null | wc -l); \
-    echo "':9000' hits in dist: ${hits}"; \
-    test "${hits}" -eq 0
-
-# ---------- stage 2: nginx ----------
-ARG GATEWAY_BASE_IMAGE=nginx:1.27-alpine
+# The nginx base is the byoryn-maintained nginx image already present on .8
+# (nginx 1.29.6). Override GATEWAY_BASE_IMAGE for a different provenance.
+ARG GATEWAY_BASE_IMAGE=docker.byoryn.cn/ms/webui:ms
 FROM ${GATEWAY_BASE_IMAGE}
 
+# Replace the base image's own site config and static assets with ours.
 RUN rm -f /etc/nginx/conf.d/default.conf
 COPY deploy/nginx/gagent.conf /etc/nginx/conf.d/gagent.conf
 COPY deploy/nginx/gagent_proxy_common.conf /etc/nginx/gagent_proxy_common.conf
-COPY --from=web /build/web-ui/dist /usr/share/nginx/html
+RUN rm -rf /usr/share/nginx/html && mkdir -p /usr/share/nginx/html
+COPY web-ui/dist /usr/share/nginx/html
 
-# nginx:alpine has no curl; use its own binary for a config check at build time.
+# Build gate: no RUNTIME .js may carry a baked-in backend origin, or every
+# browser request would go to the wrong host (LOCAL_INFRA §3 blood lesson).
+# Scoped to .js on purpose: source maps (*.js.map) legitimately mention the dev
+# origin and are not executed. (Shipping .map files at all is a separate,
+# minor, information-disclosure question — see §121.)
+RUN set -e; \
+    hits=$(grep -rl --include='*.js' ":9000" /usr/share/nginx/html 2>/dev/null | wc -l); \
+    echo "runtime .js files containing ':9000': ${hits}"; \
+    test "${hits}" -eq 0
+
+# The config must parse (fails the build, not the deploy).
 RUN nginx -t
 
 EXPOSE 80
+CMD ["nginx", "-g", "daemon off;"]

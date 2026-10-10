@@ -23,11 +23,9 @@ services:
       context: ..
       dockerfile: deploy/Dockerfile.gateway
       args:
-        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmmirror.com}
-        # Overridable because hosts without Docker Hub access get these images
-        # shipped in (gagentctl import-images) under whatever tag they arrived.
-        NODE_BASE_IMAGE: ${NODE_BASE_IMAGE:-node:22-alpine}
-        GATEWAY_BASE_IMAGE: ${GATEWAY_BASE_IMAGE:-nginx:1.27-alpine}
+        # nginx provenance only: the SPA is prebuilt outside the image and this
+        # host cannot pull node (see deploy/Dockerfile.gateway).
+        GATEWAY_BASE_IMAGE: ${GATEWAY_BASE_IMAGE:-docker.byoryn.cn/ms/webui:ms}
     restart: unless-stopped
     ports:
       - "${GATEWAY_PORT:-40003}:80"
@@ -78,37 +76,28 @@ services:
     logging: *logging
 
   proxy:
-    image: tecnativa/docker-socket-proxy:0.2.0
+    # Our own allowlisted Docker API proxy, not a community image: this host
+    # cannot pull one (see app/ops/docker_proxy.py). Same image as the app,
+    # different entrypoint.
+    image: gagent-app:${GAGENT_TAG:-latest}
+    command: ["python", "-m", "app.ops.docker_proxy"]
     restart: unless-stopped
     environment:
-      # Endpoint allowlist. Payload policy (which mounts are legal) is enforced
-      # by the app's sandbox builder and, from P3, by sandbox-manager.
-      CONTAINERS: "1"
-      IMAGES: "1"
-      INFO: "1"
-      PING: "1"
-      VERSION: "1"
-      POST: "1"
-      DELETE: "1"
-      EXEC: "0"          # execute_code dials OUT; interactive exec is P3
-      BUILD: "0"
-      VOLUMES: "0"
-      NETWORKS: "0"
-      SWARM: "0"
-      SYSTEM: "0"
-      SECRETS: "0"
-      CONFIGS: "0"
-      SERVICES: "0"
-      TASKS: "0"
-      NODES: "0"
-      PLUGINS: "0"
-      DISTRIBUTION: "0"
-      AUTH: "0"
-      SESSION: "0"
-      COMMIT: "0"
+      DOCKER_PROXY_SOCKET: /var/run/docker.sock
+      DOCKER_PROXY_PORT: "2375"
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
     volumes:
+      # The daemon socket is mounted into THIS container only, never the app's.
       - /var/run/docker.sock:/var/run/docker.sock:ro
     read_only: true
+    tmpfs:
+      - /tmp
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:2375/_ping', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
     networks: [sandbox]
     logging: *logging
 

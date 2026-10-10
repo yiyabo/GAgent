@@ -87,13 +87,23 @@ build() {
     --build-arg "APP_GID=${APP_GID:-1001}" \
     "${ROOT_DIR}" || die "app image build failed"
 
+  # The SPA is built here, not inside the image: this host cannot pull node
+  # (no Docker Hub route — see deploy/Dockerfile.gateway). The build needs node
+  # on the machine running gagentctl.
+  log "building frontend (needs node on this host)"
+  ( cd "${ROOT_DIR}/web-ui" \
+      && VITE_API_BASE_URL='' VITE_WS_BASE_URL='' npm run build ) || die "frontend build failed"
+  local hits
+  # Runtime .js only: source maps legitimately contain the dev origin and are
+  # never executed (same rule as the gate inside deploy/Dockerfile.gateway).
+  hits=$(grep -rl --include='*.js' ":9000" "${ROOT_DIR}/web-ui/dist" 2>/dev/null | wc -l)
+  [ "${hits}" -eq 0 ] || die "frontend runtime .js contains ':9000' (${hits} file(s))"
+
   log "building gagent-gateway:${tag}"
   DOCKER_BUILDKIT=1 docker build \
     -f "${DEPLOY_DIR}/Dockerfile.gateway" \
     -t "gagent-gateway:${tag}" \
-    --build-arg "NPM_REGISTRY=${NPM_REGISTRY:-https://registry.npmmirror.com}" \
-    --build-arg "NODE_BASE_IMAGE=${NODE_BASE_IMAGE:-node:22-alpine}" \
-    --build-arg "GATEWAY_BASE_IMAGE=${GATEWAY_BASE_IMAGE:-nginx:1.27-alpine}" \
+    --build-arg "GATEWAY_BASE_IMAGE=${GATEWAY_BASE_IMAGE:-docker.byoryn.cn/ms/webui:ms}" \
     "${ROOT_DIR}" || die "gateway image build failed"
   log "images built"
 }

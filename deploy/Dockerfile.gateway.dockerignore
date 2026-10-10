@@ -1,17 +1,6 @@
 # Build context for the gateway image (deploy/Dockerfile.gateway).
-# It needs the frontend sources and the nginx configs, nothing else.
+# It needs ONLY the prebuilt frontend bundle and the nginx configs: the SPA is
+# built outside the image (gagentctl build) because this host cannot pull node.
 *
-!web-ui/
-!web-ui/package.json
-!web-ui/package-lock.json
-!web-ui/tsconfig.json
-!web-ui/tsconfig.node.json
-!web-ui/vite.config.ts
-!web-ui/index.html
-!web-ui/postcss.config.js
-!web-ui/tailwind.config.js
-!web-ui/src/
-!web-ui/public/
-!web-ui/patches/
-!deploy/
+!web-ui/dist/
 !deploy/nginx/
