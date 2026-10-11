@@ -122,6 +122,25 @@ def _start_parent_watchdog():
     threading.Thread(target=_watch, daemon=True).start()
 
 
+def _startup_note(name, text=""):
+    """Leave a breadcrumb the HOST can read.
+
+    A sandbox container runs with --rm and the Docker API proxy refuses the
+    logs endpoint, so a prelude crash would otherwise be invisible: the
+    container's stderr is the very stream this prelude is still setting up.
+    The kernel dir is bind-mounted at the same path in both containers, so a
+    file written there is the one diagnostic channel that always works.
+    """
+    spill = os.environ.get("GAGENT_KERNEL_SPILL_DIR", "")
+    if not spill:
+        return
+    try:
+        with open(os.path.join(spill, name), "w", encoding="utf-8") as handle:
+            handle.write(text)
+    except OSError:
+        pass
+
+
 def _connect_cell_channel():
     """In a sandbox, make fds 0/1/2 be the host's cell channel.
 
@@ -144,19 +163,28 @@ def _connect_cell_channel():
         conn.sendall((json.dumps(dict(token=token, role=role)) + "\\n").encode("utf-8"))
         return conn
 
-    cell = _dial("cell")
+    try:
+        cell = _dial("cell")
+    except Exception:
+        _startup_note("startup_error.txt", "cell dial to " + endpoint + " failed:\\n" + traceback.format_exc())
+        raise
     try:
         err = _dial("stderr")
     except OSError:
         err = None
-    os.dup2(cell.fileno(), 0)
-    os.dup2(cell.fileno(), 1)
-    if err is not None:
-        os.dup2(err.fileno(), 2)
-    sys.stdin = os.fdopen(0, "r", encoding="utf-8", errors="replace")
-    sys.stdout = os.fdopen(1, "w", encoding="utf-8", errors="replace")
-    if err is not None:
-        sys.stderr = os.fdopen(2, "w", encoding="utf-8", errors="replace")
+    try:
+        os.dup2(cell.fileno(), 0)
+        os.dup2(cell.fileno(), 1)
+        if err is not None:
+            os.dup2(err.fileno(), 2)
+        sys.stdin = os.fdopen(0, "r", encoding="utf-8", errors="replace")
+        sys.stdout = os.fdopen(1, "w", encoding="utf-8", errors="replace")
+        if err is not None:
+            sys.stderr = os.fdopen(2, "w", encoding="utf-8", errors="replace")
+    except Exception:
+        _startup_note("startup_error.txt", "fd handover failed:\\n" + traceback.format_exc())
+        raise
+    _startup_note("startup_ok.txt", "connected to " + endpoint + "\\n")
     return True
 
 
@@ -794,6 +822,26 @@ def _force_remove_container(name: str) -> None:
         pass
 
 
+def _sandbox_prelude_error(kernel: SessionKernel) -> str:
+    """The runner's own account of a prelude failure, if it left one.
+
+    The runner writes ``startup_error.txt`` into the kernel dir (bind-mounted at
+    the same path in both containers) before it dies. Without it a prelude
+    crash inside a ``--rm`` container is unreachable: the proxy refuses the
+    logs endpoint, and the container's stderr is the stream the prelude is
+    still wiring up.
+    """
+    if kernel.kernel_dir is None:
+        return ""
+    note = Path(kernel.kernel_dir) / "startup_error.txt"
+    try:
+        if note.exists():
+            return note.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        pass
+    return ""
+
+
 def _spawn_sandbox(
     kernel: SessionKernel,
     *,
@@ -851,6 +899,13 @@ def _spawn_sandbox(
             memory=sandbox_ops.sandbox_memory(),
             cpus=sandbox_ops.sandbox_cpus(),
         )
+        logger.info(
+            "code-mode sandbox kernel %s: image=%s network=%s mounts=%s",
+            spec.name,
+            spec.image,
+            spec.resolved_network(),
+            [path for path, _mode in spec.mounts],
+        )
         completed = subprocess.run(
             sandbox_ops.build_sandbox_run_args(spec),
             capture_output=True,
@@ -863,9 +918,22 @@ def _spawn_sandbox(
                 "sandbox kernel container failed to start: "
                 + (completed.stderr or completed.stdout or "").strip()[:400]
             )
-        stdout, stdin, stderr = channel.wait_for_streams(
-            timeout=_SANDBOX_DIAL_TIMEOUT_SECONDS
-        )
+        try:
+            stdout, stdin, stderr = channel.wait_for_streams(
+                timeout=_SANDBOX_DIAL_TIMEOUT_SECONDS
+            )
+        except TimeoutError as exc:
+            detail = _sandbox_prelude_error(kernel)
+            if detail:
+                logger.error("code-mode sandbox prelude failed: %s", detail[:800])
+                raise TimeoutError(
+                    "sandbox kernel prelude failed: " + detail[:400]
+                ) from exc
+            raise
+        detail = _sandbox_prelude_error(kernel)
+        if detail:
+            logger.error("code-mode sandbox prelude failed: %s", detail[:800])
+            raise RuntimeError("sandbox kernel prelude failed: " + detail[:400])
         kernel.proc = SandboxProcess(
             name=spec.name or "",
             container_id=(completed.stdout or "").strip()[:64],
