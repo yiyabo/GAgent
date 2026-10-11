@@ -75,6 +75,14 @@ RUN python -m pip install --no-cache-dir -i ${PIP_INDEX_URL} \
     && python -m pip install --no-cache-dir -i ${PIP_INDEX_URL} \
       -r /tmp/sandbox-requirements.txt
 
+# pyarrow's recent wheels hard-require numpy>=2, but this stack is pinned to
+# numpy 1.26.4 (environment.yml) — the incumbent micromamba recipe got a *conda*
+# pyarrow build, which carries no such constraint. 16.1.0 still supports numpy
+# 1.26 and satisfies cooler/bioframe. Caught by the import validation below
+# ("pyarrow requires NumPy 2.0 or newer, found 1.26.4", measured 2026-10-11);
+# kept as its own layer so the bulk install above stays cached.
+RUN python -m pip install --no-cache-dir -i ${PIP_INDEX_URL} "pyarrow==16.1.0"
+
 # Fail the build if the stack is not actually importable: a sandbox that
 # silently lacks a library is a runtime mystery for the model, not a warning.
 #
