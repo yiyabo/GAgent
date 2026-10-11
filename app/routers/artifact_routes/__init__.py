@@ -611,13 +611,14 @@ async def render_artifact(
 
     extension = target.suffix.lower().lstrip(".")
 
-    # Initialize render cache directory
-    render_cache_dir = _render_cache_dir()
+    # Initialize render cache directory (per session: rendered files are
+    # session-owned content, see _render_cache_dir).
+    render_cache_dir = _render_cache_dir(session_id)
     render_cache_dir.mkdir(parents=True, exist_ok=True)
 
     if extension == "tex":
         # LaTeX -> PDF
-        cache_path = _get_render_cache_path(target, "pdf")
+        cache_path = _get_render_cache_path(target, "pdf", session_id=session_id)
         cached = cache_path.exists()
 
         if not cached:
@@ -632,7 +633,7 @@ async def render_artifact(
         return ArtifactRenderResponse(
             path=path,
             format="pdf",
-            url=f"/artifacts/rendered/{cache_path.name}",
+            url=f"/artifacts/rendered/{cache_path.name}?session_id={session_id}",
             rendered_at=datetime.fromtimestamp(cache_path.stat().st_mtime).isoformat(),
             cached=cached,
         )
@@ -640,7 +641,7 @@ async def render_artifact(
     elif extension == "md":
         # Markdown -> HTML
         context_hash = f"{session_id}:{source_type}:{str(target.relative_to(root_dir))}"
-        cache_path = _get_render_cache_path(target, "html", extra_hash=context_hash)
+        cache_path = _get_render_cache_path(target, "html", extra_hash=context_hash, session_id=session_id)
         cached = cache_path.exists()
 
         if not cached:
@@ -667,7 +668,7 @@ async def render_artifact(
                 detail="mammoth is not installed. Run: pip install mammoth",
             )
         context_hash = f"{session_id}:{source_type}:{str(target.relative_to(root_dir))}"
-        cache_path = _get_render_cache_path(target, "html", extra_hash=context_hash)
+        cache_path = _get_render_cache_path(target, "html", extra_hash=context_hash, session_id=session_id)
         cached = cache_path.exists()
         if not cached:
             html = _render_docx_to_html(target)
@@ -693,11 +694,21 @@ async def render_artifact(
 
 
 @router.get("/rendered/{filename}")
-async def get_rendered_file(filename: str) -> FileResponse:
-    """Serve a cached rendered file (PDF from LaTeX compilation)."""
+async def get_rendered_file(
+    filename: str,
+    request: Request,
+    session_id: str = Query(..., min_length=1, description="Owning session of the rendered file"),
+) -> FileResponse:
+    """Serve a cached rendered file (PDF from LaTeX compilation).
+
+    Rendered files are session-owned user content: the owning session is
+    required and ownership-checked, and the cache directory is per session,
+    so one session's URL cannot serve another session's document.
+    """
+    _ensure_session_access(session_id, request)
     # Sanitize filename to prevent directory traversal
     safe_filename = Path(filename).name
-    file_path = _render_cache_dir() / safe_filename
+    file_path = _render_cache_dir(session_id) / safe_filename
 
     if not file_path.exists() or not file_path.is_file():
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Rendered file not found")

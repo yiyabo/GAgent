@@ -40,6 +40,10 @@ def _store_pending_confirmation(
     extra_context: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Store a pending action awaiting confirmation."""
+    # Expire stale entries on every store: the only other cleanup call site is
+    # the explicit confirm handler, so an unanswered confirmation would
+    # otherwise sit in this in-process dict forever.
+    _cleanup_old_confirmations()
     _pending_confirmations[confirmation_id] = {
         "session_id": session_id,
         "actions": actions,

@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi import HTTPException, status
@@ -11,6 +12,59 @@ from app.routers import artifact_routes
 
 def _allow_access(*args, **kwargs) -> None:
     return None
+
+
+def _deny_access(*args, **kwargs) -> None:
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="session owner mismatch")
+
+
+def test_get_rendered_file_requires_session_access(monkeypatch) -> None:
+    monkeypatch.setattr(artifact_routes, "_ensure_session_access", _deny_access)
+
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(artifact_routes.get_rendered_file("main.pdf", None, session_id="session_abc"))
+
+    assert exc.value.status_code == status.HTTP_403_FORBIDDEN
+
+
+def test_get_rendered_file_serves_from_session_cache(tmp_path: Path, monkeypatch) -> None:
+    runtime_root = tmp_path / "runtime"
+    cache_dir = runtime_root / "session_abc" / ".render_cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    rendered = cache_dir / "main_deadbeef.pdf"
+    rendered.write_bytes(b"%PDF-1.4")
+
+    monkeypatch.setattr(artifact_routes, "RUNTIME_DIR", runtime_root)
+    monkeypatch.setattr(artifact_routes, "INFO_SESSIONS_DIR", tmp_path / "information_sessions")
+    monkeypatch.setattr(artifact_routes, "_ensure_session_access", _allow_access)
+
+    response = asyncio.run(
+        artifact_routes.get_rendered_file("main_deadbeef.pdf", None, session_id="session_abc")
+    )
+
+    assert Path(response.path) == rendered.resolve()
+
+
+def test_resolve_deliverable_view_rejects_version_traversal(tmp_path: Path, monkeypatch) -> None:
+    session_dir = tmp_path / "runtime" / "session_abc"
+    history = session_dir / "deliverables" / "history"
+    history.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "outside").mkdir(exist_ok=True)
+
+    monkeypatch.setattr(
+        artifact_routes,
+        "get_deliverable_settings",
+        lambda: SimpleNamespace(single_version_only=False),
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        artifact_routes._resolve_deliverable_view(
+            session_dir=session_dir,
+            scope="history",
+            version="../../outside",
+        )
+
+    assert exc.value.status_code == status.HTTP_400_BAD_REQUEST
 
 
 def test_resolve_session_dir_prefers_expected_root_by_purpose(

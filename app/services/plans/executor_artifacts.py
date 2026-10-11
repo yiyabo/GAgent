@@ -653,14 +653,24 @@ class _ArtifactMethods:
                     continue
             if source is None:
                 continue
-            entry = publish_artifact(
-                plan_id=plan_id,
-                alias=alias,
-                source_path=source,
-                producer_task_id=node.id,
-                manifest=manifest,
-                session_id=session_id,
-            )
+            try:
+                entry = publish_artifact(
+                    plan_id=plan_id,
+                    alias=alias,
+                    source_path=source,
+                    producer_task_id=node.id,
+                    manifest=manifest,
+                    session_id=session_id,
+                )
+            except ValueError as exc:
+                # Containment guard: a discovered candidate outside the
+                # session/plan roots must not abort materialization; the alias
+                # simply stays unpublished (explicit contracts are still
+                # enforced by the missing-publish checks, 2026-10-11).
+                logger.warning(
+                    "Skipping out-of-root artifact candidate for alias %s: %s", alias, exc
+                )
+                continue
             if entry is None:
                 continue
             manifest_changed = True

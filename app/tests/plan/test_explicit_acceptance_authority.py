@@ -178,7 +178,11 @@ def test_production_metadata_provenance_survives_materialization_and_dependencie
     tmp_path, monkeypatch, source
 ):
     monkeypatch.chdir(tmp_path)
-    output = tmp_path / "scratch.md"
+    # Publication sources must live under the runtime root (containment
+    # guard, 2026-10-11).
+    monkeypatch.setenv("APP_RUNTIME_ROOT", str(tmp_path / "runtime"))
+    output = tmp_path / "runtime" / "scratch.md"
+    output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text("Partial notes", encoding="utf-8")
     criteria = {
         "blocking": True,

@@ -225,7 +225,7 @@ class UnifiedCache:
     def _get_from_disk(self, cache_key: str) -> Optional[Any]:
         """Get value from disk cache."""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = apply_sqlite_pragmas(sqlite3.connect(self.db_path))
             cursor = conn.execute(
                 """
                 SELECT value, created_at, ttl, access_count
@@ -324,7 +324,7 @@ class UnifiedCache:
     def _save_to_disk(self, cache_key: str, namespace: str, value: Any, ttl: int):
         """Save entry to disk cache."""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = apply_sqlite_pragmas(sqlite3.connect(self.db_path))
             value_json = json.dumps(value)
             size = len(value_json.encode("utf-8"))
 
@@ -394,7 +394,7 @@ class UnifiedCache:
             # Remove from disk
             if self.enable_disk:
                 try:
-                    conn = sqlite3.connect(self.db_path)
+                    conn = apply_sqlite_pragmas(sqlite3.connect(self.db_path))
                     conn.execute("DELETE FROM cache_entries WHERE cache_key = ?", (cache_key,))
                     conn.commit()
                     conn.close()
@@ -420,7 +420,7 @@ class UnifiedCache:
             # Remove from disk
             if self.enable_disk:
                 try:
-                    conn = sqlite3.connect(self.db_path)
+                    conn = apply_sqlite_pragmas(sqlite3.connect(self.db_path))
                     conn.execute("DELETE FROM cache_entries WHERE namespace = ?", (namespace,))
                     conn.commit()
                     conn.close()
@@ -447,7 +447,7 @@ class UnifiedCache:
             # Clear from disk
             if self.enable_disk:
                 try:
-                    conn = sqlite3.connect(self.db_path)
+                    conn = apply_sqlite_pragmas(sqlite3.connect(self.db_path))
                     cursor = conn.execute(
                         """
                         DELETE FROM cache_entries
@@ -504,7 +504,7 @@ class UnifiedCache:
             # Add disk cache stats if enabled
             if self.enable_disk:
                 try:
-                    conn = sqlite3.connect(self.db_path)
+                    conn = apply_sqlite_pragmas(sqlite3.connect(self.db_path))
                     cursor = conn.execute(
                         """
                         SELECT 

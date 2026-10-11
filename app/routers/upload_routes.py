@@ -7,6 +7,7 @@ fileupload, sessionmedium
 import logging
 import os
 import shutil
+import stat
 import tarfile
 import uuid
 import zipfile
@@ -19,6 +20,7 @@ from pydantic import BaseModel
 
 from . import register_router
 from ..database import get_db
+from ..services.foundation.settings import get_settings
 from ..services.request_principal import ensure_owner_access, get_request_owner_id
 from ..services.upload_storage import ensure_session_dir
 
@@ -195,9 +197,11 @@ DEFAULT_MAX_FILE_SIZE = 10 * 1024 * 1024 * 1024  # 10GB
 MAX_FILE_SIZE = {
     "document": DEFAULT_MAX_FILE_SIZE,
     "image": DEFAULT_MAX_FILE_SIZE,
-    "data": None,  # allow large data files
-    "archive": None,  # allow large archives during testing
-    "bioinformatics": None,  # allow large sequencing files (FASTQ can be huge)
+    # ``None`` defers to UPLOAD_MAX_BYTES (see _get_max_size) so data,
+    # archive, and sequencing uploads are capped but tunable per deployment.
+    "data": None,
+    "archive": None,
+    "bioinformatics": None,
 }
 
 UPLOAD_SUBDIR = "uploads"
@@ -352,20 +356,39 @@ def _is_within_directory(base_dir: Path, target_path: Path) -> bool:
     return os.path.commonpath([str(base_dir), str(target_path)]) == str(base_dir)
 
 
+def _zip_member_is_link(member: zipfile.ZipInfo) -> bool:
+    """True for symlink members (unix mode bits in external_attr)."""
+    return stat.S_ISLNK((member.external_attr >> 16) & 0xFFFF)
+
+
 def _safe_extract_zip(zip_file: zipfile.ZipFile, dest_dir: Path) -> int:
+    max_bytes, max_entries = _extract_limits()
     count = 0
+    total_bytes = 0
     for member in zip_file.infolist():
+        if _zip_member_is_link(member):
+            raise HTTPException(status_code=400, detail="Archive links are not allowed for security reasons")
         member_path = dest_dir / member.filename
         if not _is_within_directory(dest_dir, member_path):
             raise HTTPException(status_code=400, detail="Archive entry escapes destination directory")
         if not member.is_dir():
             count += 1
+            total_bytes += int(member.file_size or 0)
+            if count > max_entries:
+                raise HTTPException(status_code=413, detail=f"Archive contains more than {max_entries} entries")
+            if total_bytes > max_bytes:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"Archive expands beyond {max_bytes // (1024 * 1024)}MB",
+                )
     zip_file.extractall(dest_dir)
     return count
 
 
 def _safe_extract_tar(tar_file: tarfile.TarFile, dest_dir: Path) -> int:
+    max_bytes, max_entries = _extract_limits()
     count = 0
+    total_bytes = 0
     for member in tar_file.getmembers():
         if member.islnk() or member.issym():
             raise HTTPException(status_code=400, detail="Archive links are not allowed for security reasons")
@@ -374,6 +397,14 @@ def _safe_extract_tar(tar_file: tarfile.TarFile, dest_dir: Path) -> int:
             raise HTTPException(status_code=400, detail="Archive entry escapes destination directory")
         if member.isfile():
             count += 1
+            total_bytes += int(member.size or 0)
+            if count > max_entries:
+                raise HTTPException(status_code=413, detail=f"Archive contains more than {max_entries} entries")
+            if total_bytes > max_bytes:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"Archive expands beyond {max_bytes // (1024 * 1024)}MB",
+                )
     tar_file.extractall(dest_dir)
     return count
 
@@ -391,7 +422,24 @@ def _extract_archive(file_path: Path, dest_dir: Path) -> int:
 
 
 def _get_max_size(category: str) -> Optional[int]:
-    return MAX_FILE_SIZE.get(category, DEFAULT_MAX_FILE_SIZE)
+    """Per-category upload ceiling.
+
+    Categories mapped to ``None`` (data/archive/bioinformatics) defer to
+    ``UPLOAD_MAX_BYTES`` instead of being uncapped.
+    """
+    configured = MAX_FILE_SIZE.get(category, DEFAULT_MAX_FILE_SIZE)
+    if configured is not None:
+        return configured
+    limit = int(get_settings().upload_max_bytes or 0)
+    return limit or DEFAULT_MAX_FILE_SIZE
+
+
+def _extract_limits() -> tuple:
+    """(max_uncompressed_bytes, max_entries) for archive extraction."""
+    settings = get_settings()
+    max_bytes = int(settings.upload_extract_max_bytes or 0)
+    max_entries = int(settings.upload_extract_max_entries or 0)
+    return (max_bytes or 8 * 1024**3, max_entries or 20000)
 
 
 

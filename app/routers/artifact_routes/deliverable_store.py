@@ -105,7 +105,14 @@ def _resolve_deliverable_view(
         normalized_scope = "latest"
 
     if explicit_version:
+        # ``version`` is caller-supplied and joins a filesystem path; refuse
+        # anything that does not resolve inside the history root (traversal
+        # via "..", absolute paths, or separators).
         version_dir = (history_root / explicit_version).resolve()
+        try:
+            version_dir.relative_to(history_root.resolve())
+        except ValueError:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid deliverable version")
         if not version_dir.exists() or not version_dir.is_dir():
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Deliverable version not found")
         manifest_path = version_dir / "manifest.json"

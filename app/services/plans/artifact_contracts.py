@@ -960,7 +960,7 @@ def publish_artifact(
     manifest: Dict[str, Any],
     session_id: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
-    from .artifact_versions import active_binding,stage
+    from .artifact_versions import active_binding,require_contained_source,stage
     if manifest.get("schema_version")==2 or active_binding.get():return stage(plan_id,canonicalize_artifact_alias(alias),source_path,producer_task_id,manifest,session_id)
     requested_alias = str(alias or "").strip()
     alias = canonicalize_artifact_alias(requested_alias)
@@ -970,6 +970,7 @@ def publish_artifact(
     source = Path(str(source_path or "").strip()).expanduser()
     if not source.exists() or not (source.is_file() or source.is_dir()):
         return None
+    require_contained_source(source, plan_id=plan_id, session_id=session_id)
     canonical.parent.mkdir(parents=True, exist_ok=True)
     if source.resolve() != canonical.resolve():
         if source.is_dir():
@@ -1121,6 +1122,12 @@ def find_candidate_source_for_alias(
     for raw_path in reversed(deduped):
         candidate = Path(raw_path).expanduser()
         if not candidate.exists() or not candidate.is_dir():
+            continue
+        # A filesystem root is never a task output directory: a path-like
+        # string such as "/expected.md" contributes its parent "/" as a
+        # candidate, and scanning from there walks the whole machine (it once
+        # matched an unrelated node_modules directory, 2026-10-11).
+        if candidate == Path(candidate.anchor):
             continue
         for basename in wanted:
             direct = candidate / basename

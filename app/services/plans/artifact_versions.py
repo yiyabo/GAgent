@@ -99,6 +99,35 @@ def locked(path):
         finally:fcntl.flock(stream,fcntl.LOCK_UN)
 
 
+def _contained_source_roots(plan_id,session_id):
+    """Storage roots a publication source may live under."""
+    from app.services.session_paths import get_runtime_root
+    from .artifact_contracts import canonical_plan_root
+    roots=[Path(get_runtime_root()).resolve()]
+    plan_root=canonical_plan_root(plan_id,session_id).resolve()
+    # Session-less plans live under <repo>/results/plans/plan_N; allow the
+    # whole results tree so legacy producers keep working.
+    roots.append(plan_root if session_id else plan_root.parent.parent)
+    return roots
+
+
+def require_contained_source(source,*,plan_id,session_id):
+    """Resolve ``source``, refusing paths outside the plan's storage roots.
+
+    Publication copies a caller-supplied path into the plan artifact store,
+    which the artifact routes then serve back; without this guard a tool
+    argument such as ``/app/.env`` would be published as an artifact.
+    """
+    resolved=Path(str(source or "").strip()).expanduser().resolve()
+    for root in _contained_source_roots(plan_id,session_id):
+        try:
+            resolved.relative_to(root)
+            return resolved
+        except ValueError:
+            continue
+    raise ValueError("version_source_outside_plan_roots")
+
+
 def versioned(plan_id,session_id=None):
     from .artifact_contracts import artifact_manifest_path
     return bool(getattr(get_settings(),'artifact_versioning_enabled',False) or _read(artifact_manifest_path(plan_id,session_id)).get('schema_version')==2)
@@ -126,11 +155,12 @@ def import_legacy(manifest,root):
 def stage(plan_id,alias,source_path,producer_task_id,manifest,session_id=None):
     from .artifact_contracts import canonical_plan_root
     from .artifact_contracts import validate_artifact
+    source=require_contained_source(source_path,plan_id=plan_id,session_id=session_id)
     root=canonical_plan_root(plan_id,session_id)
     import_legacy(manifest,root)
-    validation=validate_artifact(alias,source_path).to_dict()
+    validation=validate_artifact(alias,str(source)).to_dict()
     binding=active_binding.get()
-    record=_version(manifest,alias,source_path,producer_task_id,root,binding.to_dict() if binding else None,validation)
+    record=_version(manifest,alias,str(source),producer_task_id,root,binding.to_dict() if binding else None,validation)
     record['validated']=bool(validation.get('validated') and validation.get('schema_valid'))
     manifest['artifacts'][alias]=dict(record)
     if binding:binding.pending=manifest

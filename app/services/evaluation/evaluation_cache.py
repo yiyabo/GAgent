@@ -207,7 +207,7 @@ class EvaluationCache:
 
             # Check persistent cache
             try:
-                with sqlite3.connect(self.cache_db_path) as conn:
+                with apply_sqlite_pragmas(sqlite3.connect(self.cache_db_path)) as conn:
                     cursor = conn.execute(
                         """
                         SELECT evaluation_result, created_at, cache_metadata
@@ -321,7 +321,7 @@ class EvaluationCache:
                 metadata_json = json.dumps(cache_metadata)
 
                 # Store in persistent cache
-                with sqlite3.connect(self.cache_db_path) as conn:
+                with apply_sqlite_pragmas(sqlite3.connect(self.cache_db_path)) as conn:
                     conn.execute(
                         """
                         INSERT OR REPLACE INTO evaluation_cache 
@@ -426,7 +426,7 @@ class EvaluationCache:
         """Clean up old cache entries if needed"""
 
         try:
-            with sqlite3.connect(self.cache_db_path) as conn:
+            with apply_sqlite_pragmas(sqlite3.connect(self.cache_db_path)) as conn:
                 # Count total entries
                 cursor = conn.execute("SELECT COUNT(*) FROM evaluation_cache")
                 total_entries = cursor.fetchone()[0]
@@ -464,7 +464,7 @@ class EvaluationCache:
             # Get persistent cache stats
             persistent_stats = {}
             try:
-                with sqlite3.connect(self.cache_db_path) as conn:
+                with apply_sqlite_pragmas(sqlite3.connect(self.cache_db_path)) as conn:
                     cursor = conn.execute("SELECT COUNT(*) FROM evaluation_cache")
                     persistent_stats["total_entries"] = cursor.fetchone()[0]
 
@@ -516,7 +516,7 @@ class EvaluationCache:
 
             # Clear persistent cache
             try:
-                with sqlite3.connect(self.cache_db_path) as conn:
+                with apply_sqlite_pragmas(sqlite3.connect(self.cache_db_path)) as conn:
                     if evaluation_method:
                         cursor = conn.execute(
                             "SELECT COUNT(*) FROM evaluation_cache WHERE evaluation_method = ?", (evaluation_method,)
@@ -545,7 +545,7 @@ class EvaluationCache:
         optimization_results = {"actions_taken": [], "entries_removed": 0, "performance_improvement": 0.0}
 
         try:
-            with sqlite3.connect(self.cache_db_path) as conn:
+            with apply_sqlite_pragmas(sqlite3.connect(self.cache_db_path)) as conn:
                 # Remove entries older than 7 days
                 cursor = conn.execute(
                     """

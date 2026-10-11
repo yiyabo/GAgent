@@ -279,7 +279,7 @@ class BaseCache(ABC):
             
             if self.enable_persistent:
                 try:
-                    with sqlite3.connect(self._db_path) as conn:
+                    with apply_sqlite_pragmas(sqlite3.connect(self._db_path)) as conn:
                         conn.execute('DELETE FROM cache_entries')
                         conn.commit()
                     logger.info(f"Cleared cache database: {self._db_path}")
@@ -314,7 +314,7 @@ class BaseCache(ABC):
     def _save_to_db(self, entry: CacheEntry) -> None:
         """Save entry to database."""
         try:
-            with sqlite3.connect(self._db_path) as conn:
+            with apply_sqlite_pragmas(sqlite3.connect(self._db_path)) as conn:
                 conn.execute('''
                     INSERT OR REPLACE INTO cache_entries 
                     (key, entry_data, created_at, last_accessed, access_count, ttl)
@@ -334,7 +334,7 @@ class BaseCache(ABC):
     def _load_from_db(self, key: str) -> Optional[CacheEntry]:
         """Load entry from database."""
         try:
-            with sqlite3.connect(self._db_path) as conn:
+            with apply_sqlite_pragmas(sqlite3.connect(self._db_path)) as conn:
                 cursor = conn.execute(
                     'SELECT entry_data FROM cache_entries WHERE key = ?',
                     (key,)
@@ -353,7 +353,7 @@ class BaseCache(ABC):
     def _delete_from_db(self, key: str) -> bool:
         """Delete entry from database."""
         try:
-            with sqlite3.connect(self._db_path) as conn:
+            with apply_sqlite_pragmas(sqlite3.connect(self._db_path)) as conn:
                 cursor = conn.execute(
                     'DELETE FROM cache_entries WHERE key = ?',
                     (key,)
@@ -384,7 +384,7 @@ class BaseCache(ABC):
             # Also cleanup expired entries from database
             if self.enable_persistent:
                 try:
-                    with sqlite3.connect(self._db_path) as conn:
+                    with apply_sqlite_pragmas(sqlite3.connect(self._db_path)) as conn:
                         cursor = conn.execute('''
                             DELETE FROM cache_entries 
                             WHERE created_at + ttl < ?

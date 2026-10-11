@@ -101,6 +101,9 @@ def test_standard_publish_accepts_phage_tsv_source_for_csv_alias(
     tmp_path: Path,
 ) -> None:
     monkeypatch.chdir(tmp_path)
+    # Publication sources must live under the runtime root (containment
+    # guard, 2026-10-11).
+    monkeypatch.setenv("APP_RUNTIME_ROOT", str(tmp_path / "runtime"))
     source = tmp_path / "runtime" / "task_65" / "features" / "genomic_stats_clean.tsv"
     source.parent.mkdir(parents=True)
     source.write_text(
@@ -205,6 +208,9 @@ def test_advanced_model_input_raw_validator_does_not_unpickle_payload(tmp_path: 
 def test_dl_kmer_tensor_alias_uses_hdf5_contract(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     h5py = pytest.importorskip("h5py")
     monkeypatch.chdir(tmp_path)
+    # Publication sources must live under the runtime root (containment
+    # guard, 2026-10-11).
+    monkeypatch.setenv("APP_RUNTIME_ROOT", str(tmp_path / "runtime"))
     source = tmp_path / "runtime" / "task_100" / "data" / "dl_kmer_tensors.h5"
     source.parent.mkdir(parents=True)
     with h5py.File(source, "w") as handle:

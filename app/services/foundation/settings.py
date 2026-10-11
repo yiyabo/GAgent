@@ -201,6 +201,11 @@ if _USE_PYDANTIC:
         job_log_max_rows: int = Field(
             default=10000, env="JOB_LOG_MAX_ROWS"
         )
+        # Upload limits: single-file ceiling for categories mapped to None in
+        # upload_routes.MAX_FILE_SIZE, plus the zip/tar expansion budget.
+        upload_max_bytes: int = Field(default=2 * 1024**3, ge=0, env="UPLOAD_MAX_BYTES")
+        upload_extract_max_bytes: int = Field(default=8 * 1024**3, ge=0, env="UPLOAD_EXTRACT_MAX_BYTES")
+        upload_extract_max_entries: int = Field(default=20000, ge=0, env="UPLOAD_EXTRACT_MAX_ENTRIES")
 
         agent_runtime_v2_enabled: bool = Field(default=False, env="AGENT_RUNTIME_V2_ENABLED")
         agent_argument_validation_enabled: Optional[bool] = Field(default=None, env="AGENT_ARGUMENT_VALIDATION_ENABLED")
@@ -536,6 +541,18 @@ else:
                 self.job_log_max_rows = int(os.getenv("JOB_LOG_MAX_ROWS", "10000"))
             except Exception:
                 self.job_log_max_rows = 10000
+            try:
+                self.upload_max_bytes = int(os.getenv("UPLOAD_MAX_BYTES", str(2 * 1024**3)))
+            except Exception:
+                self.upload_max_bytes = 2 * 1024**3
+            try:
+                self.upload_extract_max_bytes = int(os.getenv("UPLOAD_EXTRACT_MAX_BYTES", str(8 * 1024**3)))
+            except Exception:
+                self.upload_extract_max_bytes = 8 * 1024**3
+            try:
+                self.upload_extract_max_entries = int(os.getenv("UPLOAD_EXTRACT_MAX_ENTRIES", "20000"))
+            except Exception:
+                self.upload_extract_max_entries = 20000
 
             for attr,key in [('agent_runtime_v2_enabled','AGENT_RUNTIME_V2_ENABLED'),('artifact_versioning_enabled','ARTIFACT_VERSIONING_ENABLED'),('skill_recommendation_v2_enabled','SKILL_RECOMMENDATION_V2_ENABLED'),('skill_context_progressive_enabled','SKILL_CONTEXT_PROGRESSIVE_ENABLED')]:
                 setattr(self,attr,os.getenv(key,'0').lower() in {'1','true','yes','on'})

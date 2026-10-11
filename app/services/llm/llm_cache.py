@@ -224,7 +224,7 @@ class LLMCache:
     def _get_from_persistent(self, cache_key: str) -> Optional[str]:
         """Get response from persistent cache."""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = apply_sqlite_pragmas(sqlite3.connect(self.db_path))
             cursor = conn.execute(
                 """
                 SELECT response, created_at, token_count
@@ -305,7 +305,7 @@ class LLMCache:
     ):
         """Store response in persistent cache."""
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = apply_sqlite_pragmas(sqlite3.connect(self.db_path))
             conn.execute(
                 """
                 INSERT OR REPLACE INTO llm_cache
@@ -369,7 +369,7 @@ class LLMCache:
             return
 
         try:
-            conn = sqlite3.connect(self.db_path)
+            conn = apply_sqlite_pragmas(sqlite3.connect(self.db_path))
             cutoff_time = datetime.now() - timedelta(seconds=self.ttl_seconds)
 
             cursor = conn.execute(
@@ -400,7 +400,7 @@ class LLMCache:
 
         if self.enable_persistent:
             try:
-                conn = sqlite3.connect(self.db_path)
+                conn = apply_sqlite_pragmas(sqlite3.connect(self.db_path))
                 cursor = conn.execute(
                     """
                     SELECT 
@@ -437,7 +437,7 @@ class LLMCache:
 
         if self.enable_persistent:
             try:
-                conn = sqlite3.connect(self.db_path)
+                conn = apply_sqlite_pragmas(sqlite3.connect(self.db_path))
 
                 # Top accessed prompts
                 cursor = conn.execute(

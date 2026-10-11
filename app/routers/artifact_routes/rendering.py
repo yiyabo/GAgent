@@ -17,9 +17,9 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Any, List, Tuple
+from typing import Any, List, Optional, Tuple
 
-from .session_dirs import _runtime_root_dir
+from .session_dirs import _resolve_session_dir, _runtime_root_dir
 
 
 def _facade() -> Any:
@@ -30,7 +30,17 @@ def _facade() -> Any:
 
 
 # Cache directory for rendered files
-def _render_cache_dir() -> Path:
+def _render_cache_dir(session_id: Optional[str] = None) -> Path:
+    """Per-session render cache.
+
+    Rendered files are user content: a shared cache directory would let one
+    session's ``/rendered/{filename}`` URL serve another session's document.
+    Callers pass the owning ``session_id``; the ``None`` fallback keeps the
+    legacy global directory reachable for tests that build cache paths
+    without a session.
+    """
+    if session_id:
+        return _resolve_session_dir(session_id) / ".render_cache"
     return _runtime_root_dir() / ".render_cache"
 
 
@@ -49,7 +59,13 @@ def _iter_render_dependency_files(source_path: Path) -> List[Tuple[str, Path, Pa
     return files
 
 
-def _get_render_cache_path(file_path: Path, extension: str, extra_hash: str = "") -> Path:
+def _get_render_cache_path(
+    file_path: Path,
+    extension: str,
+    extra_hash: str = "",
+    *,
+    session_id: Optional[str] = None,
+) -> Path:
     """Get cache path for rendered file based on source file hash.
 
     For .tex files, also incorporates the paper tree plus sibling refs/
@@ -71,7 +87,7 @@ def _get_render_cache_path(file_path: Path, extension: str, extra_hash: str = ""
         hash_parts.append(extra_hash)
     file_hash = hashlib.md5(":".join(hash_parts).encode()).hexdigest()[:16]
     cache_name = f"{file_path.stem}_{file_hash}.{extension}"
-    return _render_cache_dir() / cache_name
+    return _render_cache_dir(session_id) / cache_name
 
 
 def _rewrite_markdown_image_urls(

@@ -61,7 +61,11 @@ def test_real_plan_manifest_counts_original_and_canonical_mirror_once(
     tmp_path, monkeypatch
 ):
     monkeypatch.chdir(tmp_path)
-    source = tmp_path / "source.md"
+    # Publication sources must live under the session/runtime roots
+    # (containment guard, 2026-10-11); a bare tmp_path file is rejected.
+    monkeypatch.setenv("APP_RUNTIME_ROOT", str(tmp_path / "runtime"))
+    source = tmp_path / "runtime" / "source.md"
+    source.parent.mkdir(parents=True, exist_ok=True)
     source.write_text("# Source evidence\n", encoding="utf-8")
     manifest = {"plan_id": 1, "artifacts": {}}
     entry = publish_artifact(

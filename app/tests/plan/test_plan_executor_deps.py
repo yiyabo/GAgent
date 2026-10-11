@@ -596,6 +596,9 @@ class TestArtifactContracts:
         tmp_path,
     ):
         monkeypatch.chdir(tmp_path)
+        # Publication sources must live under the runtime root (containment
+        # guard, 2026-10-11).
+        monkeypatch.setenv("APP_RUNTIME_ROOT", str(tmp_path / "runtime"))
         runtime_file = (
             tmp_path
             / "runtime"
@@ -678,6 +681,9 @@ class TestArtifactContracts:
         tmp_path,
     ):
         monkeypatch.chdir(tmp_path)
+        # Publication sources must live under the runtime root (containment
+        # guard, 2026-10-11).
+        monkeypatch.setenv("APP_RUNTIME_ROOT", str(tmp_path / "runtime"))
         runtime_file = (
             tmp_path
             / "runtime"
@@ -739,6 +745,9 @@ class TestArtifactContracts:
         tmp_path,
     ):
         monkeypatch.chdir(tmp_path)
+        # Publication sources must live under the runtime root (containment
+        # guard, 2026-10-11).
+        monkeypatch.setenv("APP_RUNTIME_ROOT", str(tmp_path / "runtime"))
         runtime_file = (
             tmp_path
             / "runtime"
@@ -1018,7 +1027,9 @@ def test_deepthink_task_context_prompts_dependency_inspection(monkeypatch, tmp_p
         config=ExecutionConfig(session_context={"session_id": "session_test"}),
     )
 
-    assert result.status == "completed"
+    # The stub run uses no primary tool and produces no output, which is
+    # exactly the needs_review shape (2026-10-11).
+    assert result.status == "needs_review"
     task_context = captured["task_context"]
     assert task_context.dependency_outputs[0]["output_directories"] == [str(artifact.parent)]
     assert any("Before producing this task's final output" in item for item in task_context.constraints)
@@ -1498,7 +1509,10 @@ def test_resolve_manifest_aliases_does_not_recover_unregistered_alias(tmp_path):
 
 def test_enrich_finalized_payload_normalizes_contract_artifact_to_canonical_alias(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    artifact = tmp_path / "run" / "ai_evidence.md"
+    # Publication sources must live under the runtime root (containment
+    # guard, 2026-10-11).
+    monkeypatch.setenv("APP_RUNTIME_ROOT", str(tmp_path / "runtime"))
+    artifact = tmp_path / "runtime" / "run" / "ai_evidence.md"
     artifact.parent.mkdir(parents=True)
     artifact.write_text("# AI Evidence\ncontent\n", encoding="utf-8")
     node = PlanNode(id=11, plan_id=96, name="Summarize deep learning evidence", status="completed")

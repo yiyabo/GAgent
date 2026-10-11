@@ -59,10 +59,29 @@ def store_tool_output(
 
     cleaned_result = _drop_callables(raw_result)
     result_path = output_dir / "result.json"
-    _write_json(result_path, cleaned_result, compact=True)
+    # Serialize once so the cap is enforced *before* the write: a result
+    # bigger than MAX_OUTPUT_BYTES would otherwise land on disk at full size
+    # and only be flagged afterwards. Oversized results are stored as a
+    # small, still-parseable envelope that keeps the preview and byte count.
+    serialized = json.dumps(
+        cleaned_result, ensure_ascii=False, separators=(",", ":"), default=_json_default
+    ).encode("utf-8")
+    too_large = len(serialized) > MAX_OUTPUT_BYTES
+    if too_large:
+        _write_json(
+            result_path,
+            {
+                "truncated": True,
+                "original_bytes": len(serialized),
+                "max_llm_bytes": MAX_OUTPUT_BYTES,
+                "preview": _build_preview(cleaned_result),
+            },
+            compact=True,
+        )
+    else:
+        result_path.write_bytes(serialized)
 
-    size_bytes = result_path.stat().st_size
-    too_large = size_bytes > MAX_OUTPUT_BYTES
+    size_bytes = len(serialized)
     result_hash = _hash_file(result_path)
 
     schema = _infer_schema(cleaned_result)
@@ -87,6 +106,8 @@ def store_tool_output(
             "sha256": result_hash,
             "too_large_for_llm": too_large,
             "max_llm_bytes": MAX_OUTPUT_BYTES,
+            "truncated": too_large,
+            "stored_bytes": result_path.stat().st_size,
         },
         "data_schema": schema,
         "artifacts": artifacts,

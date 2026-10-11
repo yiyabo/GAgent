@@ -103,7 +103,7 @@ class EmbeddingCache:
         # 2. Check persistent cache
         if self.enable_persistent:
             try:
-                with sqlite3.connect(self.cache_db_path) as conn:
+                with apply_sqlite_pragmas(sqlite3.connect(self.cache_db_path)) as conn:
                     row = conn.execute(
                         "SELECT embedding_json, access_count FROM embedding_cache WHERE text_hash = ? AND model = ?",
                         (text_hash, model),
@@ -164,7 +164,7 @@ class EmbeddingCache:
         # Store in persistent cache
         if self.enable_persistent:
             try:
-                with sqlite3.connect(self.cache_db_path) as conn:
+                with apply_sqlite_pragmas(sqlite3.connect(self.cache_db_path)) as conn:
                     conn.execute(
                         """
                         INSERT OR REPLACE INTO embedding_cache 
@@ -232,7 +232,7 @@ class EmbeddingCache:
         """Clear persistent cache"""
         if self.enable_persistent:
             try:
-                with sqlite3.connect(self.cache_db_path) as conn:
+                with apply_sqlite_pragmas(sqlite3.connect(self.cache_db_path)) as conn:
                     conn.execute("DELETE FROM embedding_cache")
                     conn.commit()
                 logger.info("Persistent cache cleared")
@@ -249,7 +249,7 @@ class EmbeddingCache:
 
         if self.enable_persistent:
             try:
-                with sqlite3.connect(self.cache_db_path) as conn:
+                with apply_sqlite_pragmas(sqlite3.connect(self.cache_db_path)) as conn:
                     row = conn.execute("SELECT COUNT(*) FROM embedding_cache").fetchone()
                     stats["persistent_cache_size"] = row[0] if row else 0
 
@@ -271,7 +271,7 @@ class EmbeddingCache:
         cutoff_time = time.time() - (days * 24 * 3600)
 
         try:
-            with sqlite3.connect(self.cache_db_path) as conn:
+            with apply_sqlite_pragmas(sqlite3.connect(self.cache_db_path)) as conn:
                 cursor = conn.execute("DELETE FROM embedding_cache WHERE last_accessed < ?", (cutoff_time,))
                 deleted_count = cursor.rowcount
                 conn.commit()
