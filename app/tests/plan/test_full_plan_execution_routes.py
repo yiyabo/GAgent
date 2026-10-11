@@ -49,6 +49,91 @@ def _tree() -> PlanTree:
     return tree
 
 
+def _single_node_tree() -> PlanTree:
+    tree = PlanTree(
+        id=7,
+        title="Plan 7",
+        nodes={1: PlanNode(id=1, plan_id=7, name="Step 1", status="pending")},
+    )
+    tree.rebuild_adjacency()
+    return tree
+
+
+def _patch_sync_plan_run(monkeypatch, tree: PlanTree, execute_task, repair_result: dict) -> None:
+    monkeypatch.setattr(plan_routes, "_load_authorized_plan_tree", lambda _plan_id, _request: tree)
+    monkeypatch.setattr(plan_routes._plan_repo, "get_plan_tree", lambda _plan_id: tree)
+    monkeypatch.setattr(plan_routes._plan_executor, "execute_task", execute_task)
+    monkeypatch.setattr(
+        plan_routes,
+        "_run_task_audit_repair_after_execution",
+        lambda **_kwargs: repair_result,
+    )
+    monkeypatch.setattr(
+        plan_routes,
+        "_build_plan_execution_snapshot",
+        lambda _plan_id: {"active_task_ids": set(), "active_jobs": []},
+    )
+
+
+def test_execute_full_plan_sync_needs_review_task_is_not_a_failure(monkeypatch) -> None:
+    tree = _single_node_tree()
+
+    def _execute_task(_plan_id: int, task_id: int, **_kwargs):
+        tree.nodes[task_id].status = "needs_review"
+        tree.nodes[task_id].execution_result = json.dumps(
+            {"status": "needs_review", "content": "prose only"}
+        )
+        return SimpleNamespace(status="needs_review", duration_sec=0.1, content="prose only")
+
+    # The repair loop "failed" to fix it: the demotion guard must still keep
+    # needs_review instead of flipping it to failed (2026-10-11).
+    _patch_sync_plan_run(
+        monkeypatch,
+        tree,
+        _execute_task,
+        {"success": False, "final_status": "failed", "classification": "unknown", "steps": []},
+    )
+
+    response = plan_routes.execute_full_plan(
+        7,
+        _build_request("alice"),
+        plan_routes.ExecuteFullPlanRequest(async_mode=False),
+    )
+
+    assert response.success is True
+    assert response.result["needs_review_task_ids"] == [1]
+    assert response.result["failed_task_ids"] == []
+    assert "needing review" in response.message
+
+
+def test_execute_full_plan_sync_dependency_skip_is_not_a_failure(monkeypatch) -> None:
+    tree = _single_node_tree()
+
+    def _execute_task(_plan_id: int, task_id: int, **_kwargs):
+        tree.nodes[task_id].status = "skipped"
+        tree.nodes[task_id].execution_result = json.dumps({"status": "skipped", "content": "blocked"})
+        return SimpleNamespace(status="skipped", duration_sec=0.1, content="blocked")
+
+    _patch_sync_plan_run(
+        monkeypatch,
+        tree,
+        _execute_task,
+        {"success": False, "final_status": "skipped", "classification": "dependency_blocked", "steps": []},
+    )
+
+    response = plan_routes.execute_full_plan(
+        7,
+        _build_request("alice"),
+        plan_routes.ExecuteFullPlanRequest(async_mode=False),
+    )
+
+    # LOCAL_INFRA §117: dependency-blocked skips are not failures; the sync
+    # path now matches the async job's finalization (2026-10-11).
+    assert response.success is True
+    assert response.result["skipped_task_ids"] == [1]
+    assert "blocked/skipped" in response.message
+
+
 class _JobStoreStub:
     def __init__(self) -> None:
         self.running_calls = 0

@@ -79,6 +79,52 @@ def _facade() -> Any:
     return plan_executor
 
 
+def _node_declares_outputs(node: PlanNode) -> bool:
+    """True when the node's own metadata declares outputs or publish aliases."""
+    metadata = node.metadata if isinstance(node.metadata, dict) else {}
+    from .output_spec import output_spec_from_metadata
+
+    spec = output_spec_from_metadata(metadata)
+    if spec is not None and getattr(spec, "required_outputs", None):
+        return True
+    raw_required = metadata.get("required_outputs")
+    if isinstance(raw_required, list) and raw_required:
+        return True
+    spec_raw = metadata.get("output_spec") if isinstance(metadata.get("output_spec"), dict) else {}
+    contract = metadata.get("artifact_contract") or spec_raw.get("artifact_contract") or {}
+    if isinstance(contract, dict) and contract.get("publishes"):
+        return True
+    return False
+
+
+def _task_ran_without_output(
+    *,
+    node: PlanNode,
+    result: Any,
+    tools_used: List[str],
+    payload: Dict[str, Any],
+    tool_result_context: Dict[str, Any],
+) -> bool:
+    """True when a deep-think run used no primary execution tool and left no output.
+
+    A "success" in that state really means "the model answered in prose": the
+    task neither executed anything nor produced artifacts, so the honest
+    status is needs_review — a human decides whether the answer suffices.
+    Nodes that declare their own outputs are excluded: for those, the artifact
+    contract / verification path already decides pass or fail.
+    """
+    if any(tool in _PRIMARY_EXECUTION_TOOLS for tool in (tools_used or [])):
+        return False
+    if _node_declares_outputs(node):
+        return False
+    if _has_recoverable_output_evidence(payload, tool_result_context):
+        return False
+    verification = getattr(result, "output_verification", None)
+    if isinstance(verification, dict) and verification.get("artifact_paths"):
+        return False
+    return True
+
+
 class _DeepThinkMethods:
     """DeepThink delegation + qwen stream translation (mixin)."""
 
@@ -631,7 +677,20 @@ class _DeepThinkMethods:
                 metadata_payload = payload.get("metadata")
                 if isinstance(metadata_payload, dict):
                     metadata_payload["session_artifact_paths"] = session_artifact_paths[:40]
+            if deep_think_status == "success" and _task_ran_without_output(
+                node=node,
+                result=result,
+                tools_used=tools_used,
+                payload=payload,
+                tool_result_context=tool_result_context,
+            ):
+                # Nothing executed and nothing produced: report needs_review
+                # instead of a bare "success" (2026-10-11).
+                deep_think_status = "needs_review"
+                payload["status"] = deep_think_status
             payload, effective_execution_status = _coerce_blocked_dependency_payload(payload)
+            if str(payload.get("status") or "").strip().lower() == "needs_review":
+                effective_execution_status = "needs_review"
             if (
                 primary_tool_failed
                 and effective_execution_status == "completed"

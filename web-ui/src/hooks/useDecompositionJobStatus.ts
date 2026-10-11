@@ -1,7 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
 import { planTreeApi } from '@api/planTree';
-
-const FINAL_JOB_STATUSES = new Set(['completed', 'failed', 'cancelled']);
+import { FINAL_STATUSES } from '@components/chat/job-log/constants';
 
 export interface DecompositionJobStatus {
   job_id: string;
@@ -24,7 +23,7 @@ export function useDecompositionJobStatus(jobId: string | null) {
     enabled: !!jobId,
     refetchInterval: (data) => {
       const status = data?.status;
-      if (status && FINAL_JOB_STATUSES.has(status)) {
+      if (status && FINAL_STATUSES.has(status)) {
         return false;
       }
       return 5000;

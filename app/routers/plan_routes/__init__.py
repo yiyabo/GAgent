@@ -398,7 +398,7 @@ def verify_task_result(
         if isinstance(manual_acceptance, dict):
             manual_acceptance_reason = str(manual_acceptance.get("reason") or "").strip() or None
     final_status = str(finalization.final_status or "").strip().lower()
-    success = final_status not in {"failed", "error"}
+    success = final_status not in {"failed", "error", "needs_review"}
     if artifact_authority_status == "failed":
         success = False
     if manual_acceptance_active:
@@ -409,6 +409,11 @@ def verify_task_result(
         message = (
             f"Task {task_id} verification still failed deterministically, "
             f"but the task remains manually accepted."
+        )
+    elif final_status == "needs_review":
+        message = (
+            f"Task {task_id} needs review: no primary execution tool ran and "
+            "no output was produced."
         )
     elif verification_status == "passed":
         message = f"Task {task_id} verification passed."
@@ -622,6 +627,7 @@ def execute_task_with_dependencies(
         executed: List[int] = []
         failed: List[int] = []
         skipped: List[int] = []
+        needs_review: List[int] = []
         audit_repairs: Dict[str, Any] = {}
         owner_id = get_request_owner_id(raw_request)
         for tid in task_order:
@@ -644,12 +650,22 @@ def execute_task_with_dependencies(
             if result.status == "skipped":
                 skipped.append(tid)
                 break
+            if result.status == "needs_review":
+                needs_review.append(tid)
+                break
             failed.append(tid)
             break
 
+        success = len(failed) == 0 and len(skipped) == 0
+        if success and not needs_review:
+            message = "Execution completed successfully."
+        elif success:
+            message = f"Execution finished: {len(needs_review)} task(s) need review."
+        else:
+            message = "Execution finished with failures."
         return ExecuteTaskResponse(
-            success=len(failed) == 0 and len(skipped) == 0,
-            message="Execution completed successfully." if len(failed) == 0 and len(skipped) == 0 else "Execution finished with failures.",
+            success=success,
+            message=message,
             plan_id=plan_id,
             task_id=task_id,
             dependency_plan=dep_response,
@@ -659,7 +675,23 @@ def execute_task_with_dependencies(
                 "executed_task_ids": executed,
                 "failed_task_ids": failed,
                 "skipped_task_ids": skipped,
+                "needs_review_task_ids": needs_review,
             },
+        )
+
+    # Take the execution lock BEFORE the job row is created: the old order
+    # created a job and only then checked the lock, so a rejected duplicate
+    # left an orphaned queued job behind (2026-10-11).
+    execution_lock = _acquire_plan_execution_lock(plan_id, task_id)
+    if execution_lock is None:
+        return ExecuteTaskResponse(
+            success=False,
+            message=f"Task {task_id} in plan {plan_id} is already being executed. Please wait for it to finish.",
+            plan_id=plan_id,
+            task_id=task_id,
+            dependency_plan=dep_response,
+            job=None,
+            result=None,
         )
 
     owner_id = get_request_owner_id(raw_request)
@@ -700,30 +732,11 @@ def execute_task_with_dependencies(
         },
     )
 
-    # Prevent duplicate concurrent execution of the same plan+task.
-    lock_key = (plan_id, task_id)
-    with _task_execution_locks_guard:
-        if lock_key in _task_execution_locks and _task_execution_locks[lock_key].locked():
-            return ExecuteTaskResponse(
-                success=False,
-                message=f"Task {task_id} in plan {plan_id} is already being executed. Please wait for it to finish.",
-                plan_id=plan_id,
-                task_id=task_id,
-                dependency_plan=dep_response,
-                job=None,
-                result=None,
-            )
-        if lock_key not in _task_execution_locks:
-            _task_execution_locks[lock_key] = threading.Lock()
-        execution_lock = _task_execution_locks[lock_key]
-
     def _locked_run(**kwargs):
-        with execution_lock:
-            try:
-                _run_task_chain_job(**kwargs)
-            finally:
-                with _task_execution_locks_guard:
-                    _task_execution_locks.pop(lock_key, None)
+        try:
+            _run_task_chain_job(**kwargs)
+        finally:
+            _release_plan_execution_lock(plan_id, task_id, execution_lock)
 
     thread = threading.Thread(
         target=_locked_run,
@@ -738,7 +751,36 @@ def execute_task_with_dependencies(
         },
         daemon=True,
     )
-    thread.start()
+    try:
+        thread.start()
+    except Exception as exc:
+        try:
+            plan_decomposition_jobs.mark_failure(
+                job.job_id,
+                f"Failed to start task chain execution: {exc}",
+                result={
+                    "plan_id": plan_id,
+                    "target_task_id": task_id,
+                    "execution_order": task_order,
+                    "executed_task_ids": [],
+                    "failed_task_ids": [],
+                    "skipped_task_ids": [],
+                    "needs_review_task_ids": [],
+                    "steps": [],
+                },
+            )
+        except Exception:
+            pass
+        _release_plan_execution_lock(plan_id, task_id, execution_lock)
+        return ExecuteTaskResponse(
+            success=False,
+            message=f"Failed to start task execution: {exc}",
+            plan_id=plan_id,
+            task_id=task_id,
+            dependency_plan=dep_response,
+            job=job.to_payload(),
+            result=None,
+        )
 
     return ExecuteTaskResponse(
         success=True,
@@ -786,6 +828,7 @@ def get_plan_execution_summary(plan_id: int, request: Request):
         "completed": 0,
         "failed": 0,
         "skipped": 0,
+        "needs_review": 0,
         "blocked": 0,
         "running": 0,
         "pending": 0,
@@ -802,6 +845,7 @@ def get_plan_execution_summary(plan_id: int, request: Request):
         completed=status_counts["completed"],
         failed=status_counts["failed"],
         skipped=status_counts["skipped"],
+        needs_review=status_counts["needs_review"],
         blocked=status_counts["blocked"],
         running=status_counts["running"],
         pending=status_counts["pending"],
@@ -962,6 +1006,7 @@ def execute_full_plan(
         executed: List[int] = []
         failed: List[int] = []
         skipped: List[int] = []
+        needs_review: List[int] = []
         audit_repairs: Dict[str, Any] = {}
         owner_id = get_request_owner_id(raw_request)
         for tid in task_order:
@@ -1055,6 +1100,10 @@ def execute_full_plan(
 
             if final_status == "completed":
                 executed.append(tid)
+            elif final_status == "needs_review":
+                # Ran, produced nothing, no primary tool: a human must look.
+                # Not a failure (2026-10-11), so the plan run continues.
+                needs_review.append(tid)
             elif final_status in {"skipped", "blocked"}:
                 skipped.append(tid)
                 if request.stop_on_failure:
@@ -1064,13 +1113,15 @@ def execute_full_plan(
                 if request.stop_on_failure:
                     break
 
-        success = len(failed) == 0 and len(skipped) == 0
-        if success:
+        # Dependency-blocked skips are not failures (2026-10-10, LOCAL_INFRA
+        # §117); the sync path now matches the async job's finalization.
+        success = len(failed) == 0
+        if success and not skipped and not needs_review:
             message = "Full plan execution completed successfully."
-        elif skipped and not failed:
+        elif success:
             message = (
                 f"Full plan execution finished: {len(executed)} done, "
-                f"{len(skipped)} blocked/skipped."
+                f"{len(skipped)} blocked/skipped, {len(needs_review)} needing review."
             )
         else:
             message = (
@@ -1087,6 +1138,7 @@ def execute_full_plan(
                 "executed_task_ids": executed,
                 "failed_task_ids": failed,
                 "skipped_task_ids": skipped,
+                "needs_review_task_ids": needs_review,
                 "audit_repairs": audit_repairs,
             },
         )

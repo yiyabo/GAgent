@@ -16,6 +16,8 @@ const normalizeTaskStatus = (rawStatus?: string | null): Task['status'] => {
       return 'skipped';
     case 'blocked':
       return 'blocked';
+    case 'needs_review':
+      return 'needs_review';
     default:
       return 'pending';
   }

@@ -5,6 +5,7 @@ export const statusColorMap: Record<string, string> = {
   failed: 'red',
   skipped: 'default',
   blocked: 'orange',
+  needs_review: 'gold',
 };
 
 export const statusLabelMap: Record<string, string> = {
@@ -14,4 +15,5 @@ export const statusLabelMap: Record<string, string> = {
   failed: 'failed',
   skipped: 'skipped',
   blocked: 'blocked',
+  needs_review: 'needs_review',
 };

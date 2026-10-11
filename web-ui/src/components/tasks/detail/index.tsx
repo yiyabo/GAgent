@@ -224,7 +224,10 @@ const TaskDetailDrawer: React.FC = () => {
   const canManualAccept = Boolean(
     resultForActions &&
       !manualAccepted &&
-      (verificationStatus === 'failed' || taskStatusForManualAccept === 'failed' || taskStatusForManualAccept === 'skipped')
+      (verificationStatus === 'failed' ||
+        taskStatusForManualAccept === 'failed' ||
+        taskStatusForManualAccept === 'skipped' ||
+        taskStatusForManualAccept === 'needs_review')
   );
 
   useEffect(() => {

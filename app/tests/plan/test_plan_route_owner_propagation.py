@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from types import SimpleNamespace
 
 from fastapi import BackgroundTasks
@@ -73,6 +74,53 @@ class _Job:
 
     def to_payload(self):
         return {"job_id": self.job_id, "status": self.status}
+
+
+def test_async_execute_task_rejects_duplicate_before_creating_job(monkeypatch) -> None:
+    tree = _Tree(plan_id=9, task_id=5)
+    dep_plan = SimpleNamespace(
+        plan_id=9,
+        target_task_id=5,
+        satisfied_statuses=[],
+        direct_dependencies=[],
+        closure_dependencies=[],
+        missing_dependencies=[],
+        running_dependencies=[],
+        execution_order=[5],
+        cycle_detected=False,
+        cycle_paths=[],
+    )
+    created: list[dict] = []
+
+    monkeypatch.setattr(plan_routes._plan_repo, "get_plan_tree", lambda plan_id: tree)
+    monkeypatch.setattr(plan_routes, "_ensure_plan_access", lambda *args, **kwargs: None)
+    monkeypatch.setattr(plan_routes, "_build_execution_dependency_plan", lambda *args, **kwargs: dep_plan)
+    monkeypatch.setattr(
+        plan_routes.plan_decomposition_jobs,
+        "create_job",
+        lambda **kwargs: created.append(kwargs) or _Job(job_id="execute-dup", mode="task_chain"),
+    )
+    monkeypatch.setattr(plan_routes.plan_decomposition_jobs, "append_log", lambda *args, **kwargs: None)
+
+    plan_routes._task_execution_locks.clear()
+    held = threading.Lock()
+    held.acquire()
+    plan_routes._task_execution_locks[(9, 5)] = held
+    try:
+        response = plan_routes.execute_task_with_dependencies(
+            task_id=5,
+            plan_id=9,
+            raw_request=_build_request("bob"),
+            request=plan_routes.ExecuteTaskRequest(async_mode=True),
+        )
+    finally:
+        plan_routes._task_execution_locks.clear()
+
+    # The duplicate is rejected BEFORE a job row exists (2026-10-11): the old
+    # order created the job first and left it queued forever.
+    assert response.success is False
+    assert "already being executed" in response.message
+    assert created == []
 
 
 def test_async_decompose_job_records_request_owner(monkeypatch) -> None:

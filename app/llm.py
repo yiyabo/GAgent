@@ -1288,20 +1288,24 @@ class LLMClient(LLMProvider):
                                 or resp.headers.get("request-id"),
                                 usage=usage,
                             )
-                            _log_usage(
-                                provider=self.provider,
-                                model=model or self.model,
-                                prompt_tokens=usage.get("prompt_tokens", 0),
-                                completion_tokens=usage.get("completion_tokens", 0),
-                                total_tokens=usage.get("total_tokens", 0),
-                                call_status="ok",
-                                duration_ms=(time.perf_counter() - _t0) * 1000,
-                            )
 
                         content_delta = self._extract_stream_delta(obj)
                         if content_delta:
                             emitted_any = True
                             yield content_delta
+                    if isinstance(_last_usage, dict):
+                        # One ledger row per call: some providers repeat `usage`
+                        # in every chunk, and logging in-loop wrote one row per
+                        # chunk (2026-10-11).
+                        _log_usage(
+                            provider=self.provider,
+                            model=model or self.model,
+                            prompt_tokens=_last_usage.get("prompt_tokens", 0),
+                            completion_tokens=_last_usage.get("completion_tokens", 0),
+                            total_tokens=_last_usage.get("total_tokens", 0),
+                            call_status="ok",
+                            duration_ms=(time.perf_counter() - _t0) * 1000,
+                        )
                     _log_call_metrics(
                         method="stream_chat", provider=self.provider, model=model or self.model,
                         status="ok", latency_ms=(time.perf_counter() - _t0) * 1000,

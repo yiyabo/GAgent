@@ -74,12 +74,18 @@ def _run_task_audit_repair_after_execution(
 
 
 def _status_after_audit_repair(raw_status: Any, repair_result: Dict[str, Any]) -> str:
+    raw = str(raw_status or "").strip().lower()
     if repair_result.get("success") is True:
         return "completed"
+    # needs_review is not a failure (2026-10-11): repair may promote it to
+    # completed when it actually produced output, but must never demote it to
+    # failed — a human reviews it instead.
+    if raw == "needs_review":
+        return "needs_review"
     final_status = str(repair_result.get("final_status") or "").strip().lower()
     if final_status:
         return final_status
-    return str(raw_status or "failed").strip().lower() or "failed"
+    return raw or "failed"
 
 
 def _publish_deliverables_after_audit_repair(
@@ -167,6 +173,7 @@ def _run_task_chain_job(
 ) -> None:
     token = set_current_job(job_id)
     executed: List[int] = []
+    needs_review: List[int] = []
     failed: List[int] = []
     skipped: List[int] = []
     step_summaries: List[Dict[str, Any]] = []
@@ -348,6 +355,37 @@ def _run_task_chain_job(
                     },
                 )
                 return
+            if result.status == "needs_review":
+                needs_review.append(task_id)
+                _publish_progress(current_step=idx, current_task_id=task_id)
+                _facade().log_job_event(
+                    "warning",
+                    "Chain step needs review; stopping.",
+                    {"task_id": task_id, "reason": result.content},
+                )
+                # needs_review is not a failure (2026-10-11): the task ran but
+                # produced nothing, so the chain stops for a human to look at
+                # it while the job itself is recorded as succeeded.
+                _facade().plan_decomposition_jobs.mark_success(
+                    job_id,
+                    result={
+                        "plan_id": plan_id,
+                        "target_task_id": target_task_id,
+                        "execution_order": task_order,
+                        "executed_task_ids": executed,
+                        "failed_task_ids": failed,
+                        "skipped_task_ids": skipped,
+                        "needs_review_task_ids": needs_review,
+                        "steps": step_summaries,
+                    },
+                    stats={
+                        **_build_progress_stats(
+                            current_step=idx,
+                            current_task_id=task_id,
+                        ),
+                    },
+                )
+                return
 
             failed.append(task_id)
             _publish_progress(current_step=idx, current_task_id=task_id)
@@ -391,6 +429,7 @@ def _run_task_chain_job(
                 "executed_task_ids": executed,
                 "failed_task_ids": failed,
                 "skipped_task_ids": skipped,
+                "needs_review_task_ids": needs_review,
                 "steps": step_summaries,
             },
             stats={
@@ -421,6 +460,7 @@ def _run_full_plan_job(
     """Background execution wrapper for full-plan TodoList-based execution."""
     token = set_current_job(job_id)
     executed: List[int] = []
+    needs_review: List[int] = []
     failed: List[int] = []
     skipped: List[int] = []
     step_summaries: List[Dict[str, Any]] = []
@@ -892,7 +932,7 @@ def _run_full_plan_job(
                     _facade().log_job_event("error", "Plan step raised exception.", {"task_id": task_id, "error": str(exc)})
                     _facade().plan_decomposition_jobs.mark_failure(
                         job_id, error,
-                        result={"plan_id": plan_id, "execution_order": task_order, "executed_task_ids": executed, "failed_task_ids": failed, "skipped_task_ids": skipped, "steps": step_summaries, "audit_repairs": audit_repairs},
+                        result={"plan_id": plan_id, "execution_order": task_order, "executed_task_ids": executed, "failed_task_ids": failed, "skipped_task_ids": skipped, "needs_review_task_ids": needs_review, "steps": step_summaries, "audit_repairs": audit_repairs},
                         stats=_build_progress_stats(current_step=idx, current_task_id=task_id),
                     )
                     return
@@ -916,7 +956,7 @@ def _run_full_plan_job(
             step_summaries.append({"task_id": task_id, "status": final_status, "duration_sec": result.duration_sec, "audit_repair": repair_result})
 
             _facade().log_job_event(
-                "info" if result.status == "completed" else "warning" if result.status == "skipped" else "error",
+                "info" if result.status == "completed" else "warning" if result.status in {"skipped", "needs_review"} else "error",
                 f"Plan step completed: task #{task_id}",
                 {
                     "sub_type": "step_complete",
@@ -934,6 +974,13 @@ def _run_full_plan_job(
                 completed_steps += 1
                 _publish_progress(current_step=idx, current_task_id=task_id)
                 continue
+            if final_status == "needs_review":
+                # Ran, produced nothing, no primary tool: a human must look.
+                # Not a failure (2026-10-11), so the run continues and the job
+                # can still succeed.
+                needs_review.append(task_id)
+                _publish_progress(current_step=idx, current_task_id=task_id)
+                continue
             if final_status in {"skipped", "blocked"}:
                 skipped.append(task_id)
                 _publish_progress(current_step=idx, current_task_id=task_id)
@@ -942,7 +989,7 @@ def _run_full_plan_job(
                     _facade().log_job_event("warning", "Plan step skipped; stopping.", {"task_id": task_id, "reason": result.content})
                     _facade().plan_decomposition_jobs.mark_failure(
                         job_id, error,
-                        result={"plan_id": plan_id, "execution_order": task_order, "executed_task_ids": executed, "failed_task_ids": failed, "skipped_task_ids": skipped, "steps": step_summaries, "audit_repairs": audit_repairs},
+                        result={"plan_id": plan_id, "execution_order": task_order, "executed_task_ids": executed, "failed_task_ids": failed, "skipped_task_ids": skipped, "needs_review_task_ids": needs_review, "steps": step_summaries, "audit_repairs": audit_repairs},
                         stats=_build_progress_stats(current_step=idx, current_task_id=task_id),
                     )
                     return
@@ -968,6 +1015,7 @@ def _run_full_plan_job(
             "executed_task_ids": executed,
             "failed_task_ids": failed,
             "skipped_task_ids": skipped,
+            "needs_review_task_ids": needs_review,
             "steps": step_summaries,
             "audit_repairs": audit_repairs,
         }

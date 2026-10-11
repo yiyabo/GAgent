@@ -7,6 +7,7 @@ import { useChatStore } from '@store/chat';
 import { planTreeApi } from '@api/planTree';
 import { ENV } from '@/config/env';
 import JobLogPanel from '@components/chat/JobLogPanel';
+import { FINAL_STATUSES } from '@components/chat/job-log/constants';
 import type {
   BackgroundTaskBoardResponse,
   BackgroundTaskCategory,
@@ -21,7 +22,8 @@ dayjs.extend(relativeTime);
 const { Text } = Typography;
 
 const GROUP_ORDER: BackgroundTaskCategory[] = ['task_creation', 'phagescope', 'code_executor'];
-const FINAL_STATUSES = new Set(['succeeded', 'completed', 'failed']);
+// FINAL_STATUSES comes from the shared job-log constants (single source of
+// truth: succeeded/completed/failed/cancelled).
 
 const parseServerTime = (time?: string | null) => {
   // Shared helper treats zone-less backend timestamps as UTC (local-offset drift fix).

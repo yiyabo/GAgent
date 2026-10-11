@@ -16,6 +16,32 @@ def _tree(plan_id: int, *nodes: PlanNode) -> PlanTree:
     return tree
 
 
+def test_status_resolver_surfaces_needs_review_for_outputless_task(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    resolver = PlanStatusResolver()
+    tree = _tree(
+        40,
+        PlanNode(
+            id=1,
+            plan_id=40,
+            name="Explain only",
+            status="needs_review",
+            execution_result=json.dumps({"status": "needs_review", "content": "prose only"}),
+        ),
+    )
+
+    state = resolver.resolve_plan_states(40, tree)[1]
+
+    # A needs_review task must not fall through to the "ready to run" default,
+    # and must not block its dependents (2026-10-11).
+    assert state["effective_status"] == "needs_review"
+    assert state["reason_code"] == "needs_review"
+    assert state["blocked_by_dependencies"] is False
+
+
 def test_status_resolver_rejects_completed_task_when_explicit_publish_missing(
     monkeypatch,
     tmp_path,

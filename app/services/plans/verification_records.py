@@ -129,6 +129,8 @@ class _RecordMethods:
         metadata = payload_metadata if isinstance(payload_metadata, dict) else {}
         if bool(metadata.get("blocked_by_dependencies")):
             return "blocked_dependency"
+        if execution_status == "needs_review":
+            return "needs_review"
         if execution_status not in _COMPLETED_LIKE:
             return "execution_failed"
         if verification_status == "failed":

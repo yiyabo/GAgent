@@ -3,13 +3,18 @@ import {
   PauseCircleOutlined,
   CheckCircleOutlined,
   CloseCircleOutlined,
+  ExclamationCircleOutlined,
+  StopOutlined,
   SyncOutlined,
 } from '@ant-design/icons';
 import type { DecompositionJobStatus, JobLogEvent } from '@/types';
 import { parseServerTimestampMs } from '@/utils/serverTime';
 
 export const MAX_RENDER_LOGS = 200;
-export const FINAL_STATUSES = new Set(['succeeded', 'failed', 'completed']);
+// Job-level terminal statuses: polling and the log stream stop on any of
+// these. 'cancelled' was missing here (it lived only in the polling hook),
+// so cancelled jobs kept polling forever (2026-10-11).
+export const FINAL_STATUSES = new Set(['succeeded', 'failed', 'completed', 'cancelled']);
 
 export const levelColorMap: Record<string, string> = {
   debug: 'default',
@@ -65,6 +70,16 @@ export const statusMeta: Record<
     label: '失败',
     icon: <CloseCircleOutlined />,
   },
+  cancelled: {
+    color: 'default',
+    label: '已取消',
+    icon: <StopOutlined />,
+  },
+  needs_review: {
+    color: 'warning',
+    label: '待复核',
+    icon: <ExclamationCircleOutlined />,
+  },
 };
 
 export const normalizeActionStatusKey = (raw: unknown): string => {
@@ -76,6 +91,8 @@ export const normalizeActionStatusKey = (raw: unknown): string => {
   if (key === 'running') return 'running';
   if (key === 'pending') return 'pending';
   if (key === 'awaiting_confirmation') return 'awaiting_confirmation';
+  if (key === 'cancelled') return 'cancelled';
+  if (key === 'needs_review') return 'needs_review';
   return key;
 };
 

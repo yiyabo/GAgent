@@ -149,6 +149,7 @@ const PlansPage: React.FC = () => {
   failed: planTasks.filter((task) => resolveDisplayStatus(task.status, task.effective_status) === 'failed').length,
   skipped: planTasks.filter((task) => resolveDisplayStatus(task.status, task.effective_status) === 'skipped').length,
   blocked: planTasks.filter((task) => resolveDisplayStatus(task.status, task.effective_status) === 'blocked').length,
+  needs_review: planTasks.filter((task) => resolveDisplayStatus(task.status, task.effective_status) === 'needs_review').length,
   root: planTasks.filter((task) => task.task_type === 'root').length,
   composite: planTasks.filter((task) => task.task_type === 'composite').length,
   atomic: planTasks.filter((task) => task.task_type === 'atomic').length,
@@ -165,6 +166,7 @@ const PlansPage: React.FC = () => {
   failed: executionSummary.failed,
   skipped: executionSummary.skipped,
   blocked: executionSummary.blocked ?? 0,
+  needs_review: executionSummary.needs_review ?? 0,
   };
   }
   if (planStats) {
@@ -176,6 +178,7 @@ const PlansPage: React.FC = () => {
   failed: planStats.failed,
   skipped: planStats.skipped ?? 0,
   blocked: planStats.blocked ?? 0,
+  needs_review: planStats.needs_review ?? 0,
   };
   }
   return null;
@@ -214,6 +217,7 @@ const PlansPage: React.FC = () => {
   break;
   case 'blocked':
   case 'skipped':
+  case 'needs_review':
   badgeStatus = 'warning';
   break;
   default:
@@ -499,6 +503,7 @@ const PlansPage: React.FC = () => {
   {statusSummary.failed > 0 && <Tag color="red">Failed {statusSummary.failed}</Tag>}
   {statusSummary.blocked > 0 && <Tag color="orange">Blocked {statusSummary.blocked}</Tag>}
   {statusSummary.skipped > 0 && <Tag color="volcano">Skipped {statusSummary.skipped}</Tag>}
+  {statusSummary.needs_review > 0 && <Tag color="magenta">Needs review {statusSummary.needs_review}</Tag>}
   </Space>
   )}
   {planStats && (
@@ -861,6 +866,8 @@ const PlansPage: React.FC = () => {
   : executionInfo.status === 'blocked'
   ? 'warning'
   : executionInfo.status === 'skipped'
+  ? 'warning'
+  : executionInfo.status === 'needs_review'
   ? 'warning'
   : 'default'
   }

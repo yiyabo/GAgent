@@ -4,7 +4,7 @@ import type { ContextOptions } from './settings';
 export interface Task {
   id: number;
   name: string;
-  status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped' | 'blocked';
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'skipped' | 'blocked' | 'needs_review';
   effective_status?: string | null;
   freshness?: "fresh"|"stale"|"unknown"|"reconciling";
   stale_reasons?: string[];
@@ -153,6 +153,7 @@ export interface PlanExecutionSummary {
   failed: number;
   skipped: number;
   blocked?: number;
+  needs_review?: number;
   running: number;
   pending: number;
 }

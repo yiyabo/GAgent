@@ -168,6 +168,7 @@ class PlanExecutionSummary(BaseModel):
     failed: int
     skipped: int
     blocked: int = 0
+    needs_review: int = 0
     running: int
     pending: int
 
