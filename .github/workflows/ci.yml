@@ -157,7 +157,7 @@ jobs:
       - name: gagentctl smoke
         run: ./deploy/gagentctl smoke
 
-      - name: Ops service smoke (P4: retention dry-run + backup + list)
+      - name: Ops service smoke (P4 - retention dry-run + backup + list)
         run: |
           docker compose -f deploy/docker-compose.yml exec -T ops python -m app.ops.retention
           docker compose -f deploy/docker-compose.yml run --rm -T --no-deps ops python -m app.ops.backup
