@@ -98,23 +98,20 @@ jobs:
 
       # Gate: HIGH/CRITICAL that have a fix. Findings without an upstream fix
       # are reported but do not fail (they are base-image properties, not ours).
+      # trivy is installed by its official script, not a marketplace action:
+      # `aquasecurity/trivy-action@0.28.0` failed to resolve on the first run
+      # (2026-10-11, run 38136481569 — see LOCAL_INFRA §126).
+      - name: Install trivy
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+            | sh -s -- -b /usr/local/bin
+          trivy --version
+
       - name: Trivy scan app image
-        uses: aquasecurity/trivy-action@0.28.0
-        with:
-          image-ref: "gagent-app:latest"
-          format: "table"
-          severity: "HIGH,CRITICAL"
-          ignore-unfixed: true
-          exit-code: "1"
+        run: trivy image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 gagent-app:latest
 
       - name: Trivy scan gateway image
-        uses: aquasecurity/trivy-action@0.28.0
-        with:
-          image-ref: "gagent-gateway:latest"
-          format: "table"
-          severity: "HIGH,CRITICAL"
-          ignore-unfixed: true
-          exit-code: "1"
+        run: trivy image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 gagent-gateway:latest
 
       - name: Prepare CI .env and host dirs
         run: |
@@ -189,11 +186,11 @@ jobs:
             -t gagent-sandbox-python:latest \
             --build-arg BASE_IMAGE=python:3.12-slim .
 
+      - name: Install trivy
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+            | sh -s -- -b /usr/local/bin
+          trivy --version
+
       - name: Trivy scan sandbox image (report only)
-        uses: aquasecurity/trivy-action@0.28.0
-        with:
-          image-ref: "gagent-sandbox-python:latest"
-          format: "table"
-          severity: "HIGH,CRITICAL"
-          ignore-unfixed: true
-          exit-code: "0"
+        run: trivy image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 0 gagent-sandbox-python:latest
