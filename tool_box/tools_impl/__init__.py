@@ -29,6 +29,47 @@ from .execute_code import execute_code_tool
 from .delegate_task import delegate_task_tool
 from .load_skill import load_skill_tool
 
+
+def _rebind_cached_submodules() -> None:
+    """Re-attach every already-loaded submodule to this package object.
+
+    ``from .x import y`` binds ``y``; it never binds the *submodule* ``x``.  A
+    submodule attribute is set by the import system only at the moment that
+    submodule is first loaded, and that moment is not necessarily this
+    module's own init: ``app.services.terminal.session_manager`` imports
+    ``tool_box.bio_tools.remote_executor`` at module scope, which pulls in
+    ``tool_box`` -> ``integration`` -> ``tool_registry`` -> ``.tools_impl``
+    while ``session_manager`` itself is only half-initialized.  The
+    ``from .terminal_session import ...`` line above then reaches back into
+    that partial module and raises ImportError; CPython removes
+    ``tool_box.tools_impl`` from ``sys.modules`` but keeps the submodules it
+    had already loaded.  A later ``import tool_box.tools_impl`` builds a fresh
+    package object, and for each cached submodule the import lines above bind
+    only the ``*_tool`` object -- so ``tool_box.tools_impl.plan_tools`` and
+    friends come out missing, and every test patching a string target such as
+    ``tool_box.tools_impl.plan_tools.resolve_plan_review_result`` dies with
+    AttributeError (20 tests, measured 2026-10-11).
+
+    Rebinding from ``sys.modules`` makes the package carry the same attributes
+    in either import order, without changing what the lines above import.
+    """
+    import sys
+
+    package = sys.modules[__name__]
+    prefix = __name__ + "."
+    for module_name, module in list(sys.modules.items()):
+        if not module_name.startswith(prefix):
+            continue
+        child = module_name[len(prefix) :]
+        if "." in child:
+            # Nested submodule (e.g. ``web_search.handler``); its own parent binds it.
+            continue
+        setattr(package, child, module)
+
+
+_rebind_cached_submodules()
+
+
 __all__ = [
     "web_search_tool",
     "file_operations_tool",
