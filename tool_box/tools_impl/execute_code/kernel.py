@@ -81,6 +81,7 @@ import contextlib
 import io
 import json
 import os
+import socket
 import sys
 import threading
 import traceback
@@ -121,6 +122,44 @@ def _start_parent_watchdog():
     threading.Thread(target=_watch, daemon=True).start()
 
 
+def _connect_cell_channel():
+    """In a sandbox, make fds 0/1/2 be the host's cell channel.
+
+    The host cannot attach to this container (the Docker proxy implements no
+    hijack), so the kernel dials OUT instead: one connection for cell I/O and
+    one for fd-level stderr. After dup2 this file behaves exactly as if the
+    host had spawned us with pipes — stdin carries cells, fd 1 carries framed
+    replies plus raw fd output, and fd 2 stays a separate stream, because two
+    threads writing replies and stderr into one socket could split a protocol
+    frame in half. Returns True when the channel took over.
+    """
+    endpoint = os.environ.get("GAGENT_CELL_ENDPOINT", "").strip()
+    token = os.environ.get("GAGENT_CELL_TOKEN", "")
+    if not endpoint or not token:
+        return False
+    host, _, port = endpoint.partition("://")[2].partition(":")
+
+    def _dial(role):
+        conn = socket.create_connection((host, int(port)), timeout=30)
+        conn.sendall((json.dumps(dict(token=token, role=role)) + "\\n").encode("utf-8"))
+        return conn
+
+    cell = _dial("cell")
+    try:
+        err = _dial("stderr")
+    except OSError:
+        err = None
+    os.dup2(cell.fileno(), 0)
+    os.dup2(cell.fileno(), 1)
+    if err is not None:
+        os.dup2(err.fileno(), 2)
+    sys.stdin = os.fdopen(0, "r", encoding="utf-8", errors="replace")
+    sys.stdout = os.fdopen(1, "w", encoding="utf-8", errors="replace")
+    if err is not None:
+        sys.stderr = os.fdopen(2, "w", encoding="utf-8", errors="replace")
+    return True
+
+
 class _BlockedBackendPackageFinder:
     """Refuse imports of the host backend packages inside the kernel.
 
@@ -143,6 +182,10 @@ class _BlockedBackendPackageFinder:
 sys.meta_path.insert(0, _BlockedBackendPackageFinder())
 
 _start_parent_watchdog()
+
+# Sandbox kernels dial the host; local kernels keep their pipes. Either way the
+# rest of this file only ever sees stdin/stdout/stderr.
+_connect_cell_channel()
 
 _SENTINEL = os.environ["GAGENT_KERNEL_SENTINEL"]
 _CAPTURE_LIMIT = {capture_limit}
@@ -259,7 +302,9 @@ class SessionKernel:
     def __init__(self, key: Tuple):
         self.key = key
         self.cell_lock = threading.Lock()  # one cell at a time per kernel
-        self.proc: Optional[subprocess.Popen] = None
+        # Either a subprocess.Popen (local child) or a SandboxProcess (sibling
+        # container); both expose stdin/stdout/stderr/poll()/wait().
+        self.proc: Optional[Any] = None
         self.kernel_dir: Optional[Path] = None
         self.rpc_token = ""
         self.sentinel = ""
@@ -275,6 +320,10 @@ class SessionKernel:
         self.last_used = time.monotonic()
         # Write end of the parent-liveness pipe handed to the kernel.
         self.parent_fd_w: Optional[int] = None
+        # Sandbox transport (P3): the dial-back channel, present only when the
+        # kernel runs in a sibling container instead of a child process.
+        self.cell_channel: Optional[Any] = None
+        self.channel_token = ""
 
     def alive(self) -> bool:
         return self.proc is not None and self.proc.poll() is None
@@ -290,6 +339,11 @@ class SessionKernel:
         if self.alive():
             _kill_process_group(self.proc, escalate=True)
         self.proc = None
+        if self.cell_channel is not None:
+            # Closing the channel is also the sandbox's shutdown signal: the
+            # runner's stdin loop ends and the container exits on its own.
+            self.cell_channel.stop()
+            self.cell_channel = None
         if self.parent_fd_w is not None:
             # Closing the write end is what tells a *surviving* kernel the host
             # is done with it; the kill above already covers the normal path.
@@ -303,8 +357,16 @@ class SessionKernel:
             self.kernel_dir = None
 
 
-def _kill_process_group(proc: subprocess.Popen, escalate: bool = True) -> None:
-    """SIGTERM the whole process group, then SIGKILL after the grace window."""
+def _kill_process_group(proc, escalate: bool = True) -> None:
+    """SIGTERM the whole process group, then SIGKILL after the grace window.
+
+    A sandbox kernel is a *container*, not a process group, so it carries its
+    own ``sandbox_kill`` and is dispatched there instead.
+    """
+    sandbox_kill = getattr(proc, "sandbox_kill", None)
+    if callable(sandbox_kill):
+        sandbox_kill(escalate=escalate)
+        return
     if proc.poll() is not None:
         return
     try:
@@ -325,6 +387,89 @@ def _kill_process_group(proc: subprocess.Popen, escalate: bool = True) -> None:
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             logger.warning("execute_code kernel pid %s unkillable", proc.pid)
+
+
+class _EofTrackingReader:
+    """Wraps a stream so the kernel learns the peer is gone.
+
+    A sandbox kernel has no host process for ``poll()`` to ask about: the
+    channel IS the liveness signal. The reader marks EOF the moment ``read1``
+    comes back empty, which is exactly when the frame parser publishes
+    ``kernel-eof``.
+    """
+
+    def __init__(self, stream, on_eof: Callable[[], None]) -> None:
+        self._stream = stream
+        self._on_eof = on_eof
+
+    def read1(self, size: int = -1) -> bytes:
+        data = self._stream.read1(size)
+        if not data:
+            self._on_eof()
+        return data
+
+
+class SandboxProcess:
+    """``subprocess.Popen`` stand-in for a sandbox kernel container.
+
+    Exposes exactly what the kernel's pipe path touches — ``stdin``, ``stdout``,
+    ``stderr``, ``poll()``, ``wait()``, ``pid`` — so ``_stdout_reader``,
+    ``_stderr_reader``, ``_run_cell`` and ``SessionKernel`` need no branching.
+    ``sandbox_kill`` is the extra hook ``_kill_process_group`` dispatches on,
+    because a container is not a process group.
+    """
+
+    def __init__(
+        self,
+        *,
+        name: str,
+        container_id: str,
+        stdin,
+        stdout,
+        stderr,
+        channel: Any,
+        docker_bin: str = "docker",
+    ) -> None:
+        self.name = name
+        self.container_id = container_id
+        self.stdin = stdin
+        self.stderr = stderr
+        self.channel = channel
+        self._docker = docker_bin
+        self._eof = threading.Event()
+        # No host pid: the kill goes through sandbox_kill, not os.killpg.
+        self.pid = 0
+        self.stdout = _EofTrackingReader(stdout, self._on_eof)
+
+    def _on_eof(self) -> None:
+        self._eof.set()
+
+    def poll(self) -> Optional[int]:
+        return 0 if self._eof.is_set() else None
+
+    def wait(self, timeout: Optional[float] = None) -> Optional[int]:
+        self._eof.wait(timeout)
+        return self.poll()
+
+    def sandbox_kill(self, escalate: bool = True) -> None:
+        """Stop the container: close the channel (graceful), then kill it."""
+        try:
+            self.channel.stop()
+        except Exception:  # noqa: BLE001 - teardown must not raise
+            pass
+        if escalate:
+            deadline = time.monotonic() + config.kill_grace_seconds()
+            while not self._eof.is_set() and time.monotonic() < deadline:
+                time.sleep(0.05)
+        for argv in (
+            [self._docker, "kill", self.name],
+            [self._docker, "rm", "-f", self.name],
+        ):
+            try:
+                subprocess.run(argv, capture_output=True, timeout=20, check=False)
+            except Exception:  # noqa: BLE001 - the label-based GC is the backstop
+                pass
+        self._eof.set()
 
 
 _KERNELS: Dict[Tuple, SessionKernel] = {}
@@ -477,6 +622,21 @@ def _background_reaper() -> None:
 # --- spawn ------------------------------------------------------------------
 
 
+def _safe_read1(stream, size: int) -> bytes:
+    """``read1`` that treats any stream error as EOF.
+
+    The local transport is a pipe; the sandbox transport (cell_channel.py) is a
+    socket, where a killed peer surfaces as ConnectionResetError. Both mean the
+    same thing to the kernel — the peer is gone — and the reader MUST still
+    publish ``kernel-eof``, or a waiting cell would sit until its timeout
+    instead of reporting the death.
+    """
+    try:
+        return stream.read1(size)
+    except (OSError, ValueError):
+        return b""
+
+
 def _stdout_reader(kernel: SessionKernel) -> None:
     """Split the child's stdout into protocol frames and raw passthrough."""
     assert kernel.proc is not None and kernel.proc.stdout is not None
@@ -490,7 +650,7 @@ def _stdout_reader(kernel: SessionKernel) -> None:
     while True:
         # read1 returns as soon as any bytes arrive; a plain read(n) blocks
         # until n bytes or EOF and would sit on a complete small frame forever.
-        chunk = stream.read1(4096)
+        chunk = _safe_read1(stream, 4096)
         if not chunk:
             if buf:
                 raw(buf)
@@ -520,7 +680,7 @@ def _stdout_reader(kernel: SessionKernel) -> None:
                 continue
             body = rest[newline + 1:]
             while len(body) < length:
-                more = stream.read1(length - len(body))
+                more = _safe_read1(stream, length - len(body))
                 if not more:
                     kernel.response_q.put({"status": "kernel-eof"})
                     return
@@ -534,7 +694,7 @@ def _stdout_reader(kernel: SessionKernel) -> None:
 
 def _stderr_reader(kernel: SessionKernel) -> None:
     assert kernel.proc is not None and kernel.proc.stderr is not None
-    while chunk := kernel.proc.stderr.read1(4096):
+    while chunk := _safe_read1(kernel.proc.stderr, 4096):
         kernel.stderr.append(chunk, config.MAX_STDERR_BYTES)
 
 
@@ -555,17 +715,43 @@ def _spawn(
     kernel.rpc_server = KernelRPCServer(kernel)
     rpc_endpoint = kernel.rpc_server.start()
 
-    # Parent-liveness pipe: the child watches the read end, we hold the write
-    # end. Closing it (or dying) tells the kernel the host is gone.
-    parent_read, parent_write = os.pipe()
-    kernel.parent_fd_w = parent_write
-
     (kernel.kernel_dir / "gagent_tools.py").write_text(
         generate_stub_module(sorted(allowlist)), encoding="utf-8"
     )
     runner_path = kernel.kernel_dir / "gagent_kernel_runner.py"
     runner_path.write_text(KERNEL_RUNNER_SOURCE, encoding="utf-8")
 
+    if config.sandbox_enabled():
+        _spawn_sandbox(
+            kernel,
+            runner_path=runner_path,
+            child_cwd=child_cwd,
+            rpc_endpoint=rpc_endpoint,
+        )
+    else:
+        _spawn_local(
+            kernel,
+            runner_path=runner_path,
+            child_cwd=child_cwd,
+            rpc_endpoint=rpc_endpoint,
+        )
+    for target in (_stdout_reader, _stderr_reader):
+        threading.Thread(target=target, args=(kernel,), daemon=True).start()
+    _ensure_background_reaper()
+
+
+def _spawn_local(
+    kernel: SessionKernel,
+    *,
+    runner_path: Path,
+    child_cwd: Path,
+    rpc_endpoint: str,
+) -> None:
+    """The in-process child kernel: pipes, a parent-liveness fd, no container."""
+    # Parent-liveness pipe: the child watches the read end, we hold the write
+    # end. Closing it (or dying) tells the kernel the host is gone.
+    parent_read, parent_write = os.pipe()
+    kernel.parent_fd_w = parent_write
     child_env = build_child_env(
         rpc_endpoint=rpc_endpoint,
         rpc_token=kernel.rpc_token,
@@ -589,9 +775,111 @@ def _spawn(
         # Only the child needs the read end; the parent keeps the write end
         # open for the kernel's lifetime so EOF means "host is gone".
         os.close(parent_read)
-    for target in (_stdout_reader, _stderr_reader):
-        threading.Thread(target=target, args=(kernel,), daemon=True).start()
-    _ensure_background_reaper()
+
+
+# How long a freshly created sandbox container gets to dial back before the
+# spawn is declared failed (container start + DNS + connect, generously).
+_SANDBOX_DIAL_TIMEOUT_SECONDS = 60.0
+
+
+def _force_remove_container(name: str) -> None:
+    """Best-effort removal of a container whose spawn failed partway."""
+    if not name:
+        return
+    try:
+        subprocess.run(
+            ["docker", "rm", "-f", name], capture_output=True, timeout=20, check=False
+        )
+    except Exception:  # noqa: BLE001 - cleanup must not mask the real error
+        pass
+
+
+def _spawn_sandbox(
+    kernel: SessionKernel,
+    *,
+    runner_path: Path,
+    child_cwd: Path,
+    rpc_endpoint: str,
+) -> None:
+    """The sandbox kernel: a sibling container that dials back to us (P3).
+
+    The transport is inverted on purpose. The Docker API proxy implements no
+    exec/attach hijack, so the host cannot hold pipes into the container; the
+    container instead opens their equivalent by connecting to the cell channel,
+    and the runner dup2()s those sockets onto fds 0/1/2. Everything downstream
+    — the frame parser, the cell writer, the tool RPC bridge — is the pipe
+    path, unchanged.
+    """
+    from app.ops import sandbox as sandbox_ops
+
+    from .cell_channel import ENV_CELL_ENDPOINT, ENV_CELL_TOKEN, CellChannelServer
+
+    kernel.channel_token = secrets.token_urlsafe(32)
+    channel = CellChannelServer(kernel.channel_token)
+    endpoint = channel.start()
+    kernel.cell_channel = channel
+
+    spec = None
+    try:
+        workdir = str(child_cwd)
+        # The workspace is mounted at its OWN path, so the generated runner,
+        # the RPC stubs, PYTHONPATH and every relative path a cell writes
+        # resolve identically inside the sandbox. require_translatable refuses
+        # a source outside the runtime root, where the host path is unknowable.
+        sandbox_ops.require_translatable(workdir)
+        spec = sandbox_ops.SandboxRunSpec(
+            image=sandbox_ops.sandbox_python_image(),
+            kind="python",
+            command=["python", str(runner_path)],
+            workdir=workdir,
+            name=sandbox_ops.sandbox_name("gagent-kernel", uuid.uuid4().hex[:12]),
+            session_id=str(kernel.key[0]),
+            user=f"{os.getuid()}:{os.getgid()}",
+            mounts=[(workdir, "rw")],
+            env=sandbox_ops.build_sandbox_env(
+                workdir=workdir,
+                extra={
+                    "PYTHONPATH": str(kernel.kernel_dir),
+                    "GAGENT_KERNEL_SENTINEL": kernel.sentinel,
+                    "GAGENT_KERNEL_SPILL_DIR": str(kernel.kernel_dir),
+                    ENV_CELL_ENDPOINT: endpoint,
+                    ENV_CELL_TOKEN: kernel.channel_token,
+                    "GAGENT_RPC_ENDPOINT": rpc_endpoint,
+                    "GAGENT_RPC_TOKEN": kernel.rpc_token,
+                },
+            ),
+            memory=sandbox_ops.sandbox_memory(),
+            cpus=sandbox_ops.sandbox_cpus(),
+        )
+        completed = subprocess.run(
+            sandbox_ops.build_sandbox_run_args(spec),
+            capture_output=True,
+            text=True,
+            timeout=90,
+            check=False,
+        )
+        if completed.returncode != 0:
+            raise RuntimeError(
+                "sandbox kernel container failed to start: "
+                + (completed.stderr or completed.stdout or "").strip()[:400]
+            )
+        stdout, stdin, stderr = channel.wait_for_streams(
+            timeout=_SANDBOX_DIAL_TIMEOUT_SECONDS
+        )
+        kernel.proc = SandboxProcess(
+            name=spec.name or "",
+            container_id=(completed.stdout or "").strip()[:64],
+            stdin=stdin,
+            stdout=stdout,
+            stderr=stderr,
+            channel=channel,
+        )
+    except BaseException:
+        channel.stop()
+        kernel.cell_channel = None
+        if spec is not None:
+            _force_remove_container(spec.name or "")
+        raise
 
 
 # --- cell execution ---------------------------------------------------------

@@ -26,7 +26,7 @@ def _build_client() -> TestClient:
     return TestClient(app)
 
 
-def test_replay_api_returns_events(monkeypatch) -> None:
+def test_replay_api_returns_events(monkeypatch, local_sandbox_terminal) -> None:
     monkeypatch.setenv("TERMINAL_ENABLED", "true")
     client = _build_client()
 

@@ -29,6 +29,22 @@ TerminalMode = Literal["sandbox", "ssh", "qwen_code"]
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
+def _sandbox_backend() -> DockerPTYBackend:
+    """Backend for ``mode="sandbox"``: a container, never this process.
+
+    P3 replaced the old PTYBackend mapping — ``pty.openpty()`` + ``/bin/bash``
+    INSIDE the app container, which is exactly what made the public root shell
+    possible (LOCAL_INFRA §120). Tests substitute an in-process double by
+    patching THIS factory (``app/tests/conftest.py::local_sandbox_terminal``);
+    production has no env escape hatch back to the app's own shell.
+
+    The Docker API proxy implements no exec hijack, so a session here fails
+    closed until the P3 sandbox-manager owns that stream; ``TERMINAL_ENABLED``
+    therefore stays 0.
+    """
+    return DockerPTYBackend()
+
+
 @dataclass
 class TerminalEvent:
     type: WSMessageType
@@ -192,8 +208,13 @@ class TerminalSessionManager:
         backend: Union[PTYBackend, SSHBackend, DockerPTYBackend]
 
         if mode == "sandbox":
-            backend = PTYBackend()
+            backend = _sandbox_backend()
         elif mode == "ssh":
+            if str(os.getenv("TERMINAL_SSH_ENABLED", "")).strip() != "1":
+                raise ValueError(
+                    "SSH terminal mode is disabled (TERMINAL_SSH_ENABLED=0): a "
+                    "sandbox terminal must not depend on host credentials."
+                )
             backend = SSHBackend()
         elif mode == "qwen_code":
             backend = DockerPTYBackend()
@@ -226,11 +247,17 @@ class TerminalSessionManager:
 
         try:
             if mode == "sandbox":
+                # DockerPTYBackend binds `cwd` as /workspace, and the daemon
+                # resolves bind sources on the HOST (DooD), so the session
+                # workspace has to be translated before it is handed over.
+                from app.ops.sandbox import sandbox_python_image
+                from app.services.session_paths import host_path_for
+
                 await backend.spawn(
-                    shell="/bin/bash",
-                    cwd=session.cwd,
+                    cwd=host_path_for(session.cwd),
                     env=session.env,
-                    command_handler=lambda command: self._handle_command_check(session, command),
+                    exec_args=["/bin/bash"],
+                    image=sandbox_python_image(),
                 )
             elif mode == "qwen_code":
                 qwen_mount_plan = self._build_qwen_mount_plan(

@@ -42,7 +42,7 @@ async def _run_case() -> None:
     assert close["operation"] == "close"
 
 
-def test_terminal_session_tool_create_list_close() -> None:
+def test_terminal_session_tool_create_list_close(local_sandbox_terminal) -> None:
     asyncio.run(_run_case())
 
 
@@ -75,7 +75,7 @@ async def _run_context_fallback_case() -> None:
     assert close["success"] is True
 
 
-def test_terminal_session_tool_context_fallback_create_and_write() -> None:
+def test_terminal_session_tool_context_fallback_create_and_write(local_sandbox_terminal) -> None:
     asyncio.run(_run_context_fallback_case())
 
 

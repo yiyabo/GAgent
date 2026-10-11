@@ -23,7 +23,7 @@ def _build_client(monkeypatch) -> TestClient:
     return TestClient(app)
 
 
-def test_forbidden_command_path_smoke(monkeypatch) -> None:
+def test_forbidden_command_path_smoke(monkeypatch, local_sandbox_terminal) -> None:
     monkeypatch.setenv("TERMINAL_ENABLED", "true")
     client = _build_client(monkeypatch)
 

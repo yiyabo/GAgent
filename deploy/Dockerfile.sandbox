@@ -1,0 +1,97 @@
+# Sandbox image for execute_code kernels and sandbox terminals (P3).
+#
+# WHY NOT docker/code_executor/Dockerfile
+# That recipe builds FROM mambaorg/micromamba:2.5.0, which this deployment
+# cannot obtain: .8 has no route to Docker Hub (measured 2026-10-10) and the
+# byoryn registry carries library/python and library/alpine only — micromamba
+# is absent there (measured 2026-10-11). Worse, the image that recipe was
+# supposed to have produced does not exist: `gagent-python-runtime:latest` on
+# .8 is the old GAgent *app* image (Cmd=uvicorn app.main:app, WorkingDir=/app,
+# Python 3.10 at /usr/local/bin/python, no /opt/conda, no samtools/bcftools).
+# The science stack was never in it.
+#
+# So this recipe installs the same stack on a base this host CAN pull, with apt
+# and pip pointed at the Tsinghua mirrors the rest of the stack already uses.
+# The pip pins are the repo's own docker/code_executor/requirements.txt; the
+# core analysis stack mirrors docker/code_executor/environment.yml; the apt list
+# mirrors the micromamba recipe's system packages.
+#
+# Build (on .8, from the stack tree):
+#   DOCKER_BUILDKIT=1 docker build -f deploy/Dockerfile.sandbox \
+#     --build-arg BASE_IMAGE=docker.byoryn.cn/library/python:3.12-slim \
+#     -t gagent-sandbox-python:p1 .
+
+ARG BASE_IMAGE=docker.byoryn.cn/library/python:3.12-slim
+FROM ${BASE_IMAGE}
+
+ARG APT_MIRROR_HOST=mirrors.tuna.tsinghua.edu.cn
+ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_DEFAULT_TIMEOUT=600 \
+    PIP_PREFER_BINARY=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+USER root
+
+RUN sed -i "s|deb.debian.org|${APT_MIRROR_HOST}|g" \
+        /etc/apt/sources.list.d/*.sources /etc/apt/sources.list 2>/dev/null || true; \
+    apt-get update && apt-get install -y --no-install-recommends \
+      build-essential gcc g++ git curl pkg-config \
+      bedtools bcftools bowtie2 bwa minimap2 samtools seqtk tabix \
+      libhdf5-dev libopenblas-dev liblapack-dev libfreetype6-dev \
+      libpng-dev libglib2.0-0 libsm6 libxext6 libxrender1 \
+      libbz2-dev liblzma-dev zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Core analysis stack (environment.yml) + the repo's pip-only pins
+# (docker/code_executor/requirements.txt, unchanged).
+COPY docker/code_executor/requirements.txt /tmp/sandbox-requirements.txt
+RUN python -m pip install --no-cache-dir -i ${PIP_INDEX_URL} \
+      "numpy==1.26.4" "pandas==2.2.3" "scipy==1.14.1" "matplotlib==3.9.4" \
+      "seaborn==0.13.2" "scikit-learn==1.5.2" "statsmodels==0.14.6" \
+      "networkx==3.4.2" "umap-learn==0.5.7" \
+      anndata scanpy h5py pyarrow openpyxl xlrd loompy \
+      biopython pysam pyfaidx pyBigWig pybedtools pyranges \
+    && python -m pip install --no-cache-dir -i ${PIP_INDEX_URL} \
+      -r /tmp/sandbox-requirements.txt
+
+# Fail the build if the stack is not actually importable: a sandbox that
+# silently lacks a library is a runtime mystery for the model, not a warning.
+RUN python - <<'PY'
+import importlib
+
+modules = [
+    "numpy", "pandas", "scipy", "matplotlib", "seaborn", "sklearn",
+    "statsmodels.api", "networkx", "umap", "h5py", "pyarrow", "openpyxl",
+    "Bio", "pysam", "pyfaidx", "pyBigWig", "pybedtools", "pyranges",
+    "anndata", "scanpy", "cooler", "bioframe", "biotite", "pycirclize",
+    "primer3", "pyfastx", "biopandas", "mygene", "goatools", "gseapy",
+    "HTSeq", "vcfpy", "dna_features_viewer",
+]
+failed = []
+for module in modules:
+    try:
+        importlib.import_module(module)
+    except Exception as exc:  # noqa: BLE001 - report every failure at once
+        failed.append("%s: %s" % (module, exc))
+if failed:
+    raise RuntimeError("sandbox runtime import validation failed: " + " | ".join(failed))
+print("sandbox runtime imports ok")
+PY
+
+RUN command -v samtools >/dev/null && command -v bcftools >/dev/null && \
+    command -v bedtools >/dev/null && command -v tabix >/dev/null && \
+    command -v seqtk >/dev/null && command -v bwa >/dev/null && \
+    command -v bowtie2 >/dev/null && command -v minimap2 >/dev/null
+
+# Sandboxes run as the app's uid against a read-only root with a tmpfs /tmp
+# (app/ops/sandbox.py), so HOME and every cache must live on that tmpfs.
+ENV HOME=/tmp \
+    MPLCONFIGDIR=/tmp/matplotlib \
+    NUMBA_CACHE_DIR=/tmp/numba_cache
+
+WORKDIR /workspace

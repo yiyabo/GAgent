@@ -19,6 +19,10 @@ ENV_MAX_TOOL_CALLS = "CODE_MODE_MAX_TOOL_CALLS_PER_CELL"
 ENV_MAX_KERNELS = "CODE_MODE_MAX_KERNELS"
 ENV_KERNEL_IDLE = "CODE_MODE_KERNEL_IDLE_SECONDS"
 ENV_SCRATCH_DIR = "CODE_MODE_SCRATCH_DIR"
+# P3: run kernels in a sibling sandbox container instead of an in-process
+# child. Off by default — the child path stays the fallback for tests and for
+# hosts without a Docker daemon; the compose stack sets CODE_MODE_SANDBOX=1.
+ENV_SANDBOX = "CODE_MODE_SANDBOX"
 
 # v1 allowlist: read-only / information tools only. Enforcement lives in the
 # RPC server (tool_box/tools_impl/execute_code/rpc.py), not in the stubs.
@@ -53,6 +57,16 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 
 def code_mode_enabled() -> bool:
     return os.environ.get(ENV_ENABLED, "").strip() == "1"
+
+
+def sandbox_enabled() -> bool:
+    """Whether execute_code kernels run in a sibling container (P3).
+
+    Off by default: the in-process child kernel stays the fallback for tests
+    and for hosts without a Docker daemon, and turning this on is an explicit
+    deployment decision (the compose stack sets CODE_MODE_SANDBOX=1).
+    """
+    return os.environ.get(ENV_SANDBOX, "").strip() == "1"
 
 
 # Offer flag of the *other* lane. The execute_code copy points long goals at

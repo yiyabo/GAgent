@@ -30,6 +30,53 @@ def _reset_test_singletons() -> None:
 
 
 @pytest.fixture
+def local_sandbox_terminal(monkeypatch: pytest.MonkeyPatch) -> type:
+    """Make ``mode="sandbox"`` spawn a local PTY instead of a container.
+
+    ``mode="sandbox"`` maps to a container backend in production
+    (``session_manager._sandbox_backend``). The terminal route/WS/replay tests
+    need a *working* terminal and a real sandbox needs docker, so this double
+    is the test-only stand-in: production has no way to select an in-process
+    shell (LOCAL_INFRA §120).
+
+    IMPORT ORDER IS LOAD-BEARING, twice over:
+
+    * everything is imported inside the fixture, never at conftest module
+      scope. ``app.services.terminal.pty_backend`` pulls in a dozen
+      ``tool_box.tools_impl.*`` submodules; importing it *before*
+      ``tool_box.tools_impl`` leaves that package without its submodule
+      attributes, and every test that patches ``tool_box.tools_impl.<x>.<y>``
+      by string then fails with a baffling AttributeError (20 of them, measured
+      2026-10-11). The landmine is pre-existing — the same probe reproduces it
+      on the pre-P3 tree — but conftest is exactly where it gets stepped on.
+    * so ``tool_box.tools_impl`` is imported FIRST here, which is the order
+      that works.
+    """
+    import tool_box.tools_impl  # noqa: F401 - arming order, see docstring
+
+    import app.services.terminal.session_manager as session_manager_module
+    from app.services.terminal.pty_backend import PTYBackend
+
+    class LocalSandboxPTY(PTYBackend):
+        """PTYBackend that also accepts the container-shaped ``spawn`` call."""
+
+        async def spawn(self, **kwargs) -> None:
+            for container_only in (
+                "exec_args",
+                "extra_mounts",
+                "qwen_session_id",
+                "image",
+            ):
+                kwargs.pop(container_only, None)
+            await super().spawn(**kwargs)
+
+    monkeypatch.setattr(
+        session_manager_module, "_sandbox_backend", lambda: LocalSandboxPTY()
+    )
+    return LocalSandboxPTY
+
+
+@pytest.fixture
 def isolated_app_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]:
     paths = {
         "db_root": tmp_path / "db",

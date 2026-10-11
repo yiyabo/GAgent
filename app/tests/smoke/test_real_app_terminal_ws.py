@@ -10,6 +10,7 @@ import pytest
 def test_real_app_terminal_http_and_websocket_roundtrip(
     app_client_factory,
     isolated_terminal_manager,
+    local_sandbox_terminal,
 ) -> None:
     _ = isolated_terminal_manager
 
@@ -102,6 +103,7 @@ def test_real_app_terminal_session_mismatch_and_replay_errors_are_diagnostic(
     app_client_factory,
     isolated_terminal_manager,
     monkeypatch: pytest.MonkeyPatch,
+    local_sandbox_terminal,
 ) -> None:
     import app.routers.terminal_routes as terminal_routes
 

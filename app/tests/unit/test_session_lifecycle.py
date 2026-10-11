@@ -37,5 +37,5 @@ async def _run_case() -> None:
         manager._reaper_task.cancel()  # pylint: disable=protected-access
 
 
-def test_session_lifecycle_basic_roundtrip() -> None:
+def test_session_lifecycle_basic_roundtrip(local_sandbox_terminal) -> None:
     asyncio.run(_run_case())

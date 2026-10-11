@@ -32,7 +32,15 @@ def _cleanup_reaper() -> None:
         terminal_routes.terminal_session_manager._reaper_task = None
 
 
-def test_terminal_websocket_roundtrip(monkeypatch) -> None:
+def test_sandbox_mode_maps_to_a_container_backend() -> None:
+    """P3: a sandbox terminal must never be an in-process PTY (LOCAL_INFRA §120)."""
+    import app.services.terminal.session_manager as session_manager_module
+    from app.services.terminal.docker_pty_backend import DockerPTYBackend
+
+    assert isinstance(session_manager_module._sandbox_backend(), DockerPTYBackend)
+
+
+def test_terminal_websocket_roundtrip(monkeypatch, local_sandbox_terminal) -> None:
     monkeypatch.setenv("TERMINAL_ENABLED", "true")
     client = _build_client(monkeypatch)
 
