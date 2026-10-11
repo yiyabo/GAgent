@@ -209,6 +209,21 @@ if _USE_PYDANTIC:
         upload_extract_max_bytes: int = Field(default=20 * 1024**3, ge=0, env="UPLOAD_EXTRACT_MAX_BYTES")
         upload_extract_max_entries: int = Field(default=20000, ge=0, env="UPLOAD_EXTRACT_MAX_ENTRIES")
 
+        # Ops retention/backup knobs (app/ops/retention.py, app/ops/backup.py;
+        # the `ops` compose service runs them daily at 03:00 UTC+8). Defaults
+        # match deploy/.env.template. backup_dir is the ops-side path
+        # (BACKUP_DIR=/backups in compose); the app itself never writes there.
+        runtime_retention_days: int = Field(default=60, env="RUNTIME_RETENTION_DAYS")
+        runtime_max_gb: float = Field(default=300.0, env="RUNTIME_MAX_GB")
+        runtime_archive_before_delete: bool = Field(
+            default=True, env="RUNTIME_ARCHIVE_BEFORE_DELETE"
+        )
+        event_retention_days: int = Field(default=30, env="EVENT_RETENTION_DAYS")
+        usage_retention_days: int = Field(default=365, env="USAGE_RETENTION_DAYS")
+        backup_keep_daily: int = Field(default=14, env="BACKUP_KEEP_DAILY")
+        backup_keep_weekly: int = Field(default=4, env="BACKUP_KEEP_WEEKLY")
+        backup_dir: str = Field(default="data/backups", env="BACKUP_DIR")
+
         agent_runtime_v2_enabled: bool = Field(default=False, env="AGENT_RUNTIME_V2_ENABLED")
         agent_argument_validation_enabled: Optional[bool] = Field(default=None, env="AGENT_ARGUMENT_VALIDATION_ENABLED")
         agent_schema_disclosure_v2_enabled: Optional[bool] = Field(default=None, env="AGENT_SCHEMA_DISCLOSURE_V2_ENABLED")
@@ -555,6 +570,34 @@ else:
                 self.upload_extract_max_entries = int(os.getenv("UPLOAD_EXTRACT_MAX_ENTRIES", "20000"))
             except Exception:
                 self.upload_extract_max_entries = 20000
+            try:
+                self.runtime_retention_days = int(os.getenv("RUNTIME_RETENTION_DAYS", "60"))
+            except Exception:
+                self.runtime_retention_days = 60
+            try:
+                self.runtime_max_gb = float(os.getenv("RUNTIME_MAX_GB", "300"))
+            except Exception:
+                self.runtime_max_gb = 300.0
+            self.runtime_archive_before_delete = os.getenv(
+                "RUNTIME_ARCHIVE_BEFORE_DELETE", "1"
+            ).strip().lower() in {"1", "true", "yes", "on"}
+            try:
+                self.event_retention_days = int(os.getenv("EVENT_RETENTION_DAYS", "30"))
+            except Exception:
+                self.event_retention_days = 30
+            try:
+                self.usage_retention_days = int(os.getenv("USAGE_RETENTION_DAYS", "365"))
+            except Exception:
+                self.usage_retention_days = 365
+            try:
+                self.backup_keep_daily = int(os.getenv("BACKUP_KEEP_DAILY", "14"))
+            except Exception:
+                self.backup_keep_daily = 14
+            try:
+                self.backup_keep_weekly = int(os.getenv("BACKUP_KEEP_WEEKLY", "4"))
+            except Exception:
+                self.backup_keep_weekly = 4
+            self.backup_dir = os.getenv("BACKUP_DIR", "data/backups")
 
             for attr,key in [('agent_runtime_v2_enabled','AGENT_RUNTIME_V2_ENABLED'),('artifact_versioning_enabled','ARTIFACT_VERSIONING_ENABLED'),('skill_recommendation_v2_enabled','SKILL_RECOMMENDATION_V2_ENABLED'),('skill_context_progressive_enabled','SKILL_CONTEXT_PROGRESSIVE_ENABLED')]:
                 setattr(self,attr,os.getenv(key,'0').lower() in {'1','true','yes','on'})

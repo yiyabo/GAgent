@@ -856,6 +856,45 @@ def cleanup_action_logs(
                 )
 
 
+def cleanup_decomposition_job_logs(
+    plan_id: Optional[int],
+    *,
+    older_than_days: Optional[int] = None,
+    max_rows: Optional[int] = None,
+) -> None:
+    """Prune ``decomposition_job_logs`` rows by age and/or row cap.
+
+    Sibling of :func:`cleanup_action_logs` for the ops retention job
+    (``app.ops.retention``). The UTC+8 cutoff convention is deliberate and
+    matches the writer: rows are inserted by ``append_decomposition_job_log``
+    with ``JobLogEvent.timestamp``, which comes from the UTC+8 ``_now()``
+    helper in ``app.services.plans.decomposition_jobs``. Do NOT "normalize"
+    this cutoff to UTC without changing that writer (the same trap is
+    documented on :func:`cleanup_action_logs`).
+    """
+    db_path = _resolve_job_db_path(plan_id)
+    with plan_db_connection(db_path) as conn:
+        _ensure_decomposition_tables(conn)
+        if older_than_days is not None and older_than_days > 0:
+            cutoff = datetime.now(timezone(timedelta(hours=8))) - timedelta(days=older_than_days)
+            conn.execute(
+                "DELETE FROM decomposition_job_logs WHERE timestamp < ?",
+                (cutoff.isoformat(),),
+            )
+        if max_rows is not None and max_rows > 0:
+            rows = conn.execute(
+                "SELECT id FROM decomposition_job_logs ORDER BY timestamp DESC LIMIT -1 OFFSET ?",
+                (max_rows,),
+            ).fetchall()
+            if rows:
+                ids_to_delete = [row["id"] for row in rows]
+                placeholders = ",".join(["?"] * len(ids_to_delete))
+                conn.execute(
+                    f"DELETE FROM decomposition_job_logs WHERE id IN ({placeholders})",
+                    ids_to_delete,
+                )
+
+
 def fix_stale_jobs_on_startup() -> int:
     """
     job. 
