@@ -560,21 +560,14 @@ def test_jobs_board_resolves_current_task_state_without_plan_tree(
     plan_id = 105
     plan_db = tmp_path / "plan_105.sqlite"
     with plan_db_connection(plan_db) as plan_conn:
+        # plan_db_connection ensures the shard schema on first open
+        # (2026-10-11), so only the row insert is needed here.
         plan_conn.execute(
             """
-            CREATE TABLE tasks (
-                id INTEGER PRIMARY KEY,
-                status TEXT,
-                execution_result TEXT
-            )
-            """
-        )
-        plan_conn.execute(
-            """
-            INSERT INTO tasks (id, status, execution_result)
-            VALUES (?, ?, ?)
+            INSERT INTO tasks (id, name, status, execution_result)
+            VALUES (?, ?, ?, ?)
             """,
-            (17, "running", None),
+            (17, "Task 17", "running", None),
         )
 
     monkeypatch.setattr(

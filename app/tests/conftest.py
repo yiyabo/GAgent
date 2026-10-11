@@ -29,6 +29,25 @@ def _reset_test_singletons() -> None:
     get_settings.cache_clear()
 
 
+@pytest.fixture(autouse=True)
+def _ensure_test_connection_pool(tmp_path: Path) -> None:
+    """Give main-DB code paths an isolated pool when a test never asks for one.
+
+    Production initializes the pool in ``init_db()`` at startup. Tests that
+    touch main-DB code without calling ``init_db()`` used to fall back to the
+    pool's auto-init, which silently pointed at ``tasks.db``; that fallback is
+    gone (2026-10-11), so those tests get a per-test tmp database instead.
+    """
+    from app.database_pool import get_connection_pool, initialize_connection_pool
+
+    try:
+        get_connection_pool()
+    except RuntimeError:
+        initialize_connection_pool(
+            db_path=str(tmp_path / "test_main.db"), pool_size=1, max_overflow=1
+        )
+
+
 @pytest.fixture
 def local_sandbox_terminal(monkeypatch: pytest.MonkeyPatch) -> type:
     """Make ``mode="sandbox"`` spawn a local PTY instead of a container.

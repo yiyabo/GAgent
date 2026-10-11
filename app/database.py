@@ -7,6 +7,7 @@ plantask plan SQLite filemedium.
 from __future__ import annotations
 
 import logging
+import threading
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
@@ -368,6 +369,37 @@ def close_db_pool() -> None:
     get_connection_pool().close_pool()
 
 
+_ensured_shard_paths: set[str] = set()
+_ensured_shard_guard = threading.Lock()
+
+
+def _ensure_shard_schema(conn, plan_path: Path) -> None:
+    """Bring a plan shard up to the current schema on first open.
+
+    Only files named like shard databases (``plan_*.sqlite``) are touched, and
+    each path is ensured at most once per process; the system jobs database
+    and ad-hoc test files are left alone (2026-10-11).
+    """
+    try:
+        name = Path(plan_path).name
+    except TypeError:  # pragma: no cover - defensive
+        return
+    if not (name.startswith("plan_") and name.endswith((".sqlite", ".db"))):
+        return
+    try:
+        key = str(Path(plan_path).resolve())
+    except OSError:  # pragma: no cover - defensive
+        key = str(plan_path)
+    with _ensured_shard_guard:
+        if key in _ensured_shard_paths:
+            return
+    from .repository.plan_storage import ensure_plan_schema
+
+    ensure_plan_schema(conn)
+    with _ensured_shard_guard:
+        _ensured_shard_paths.add(key)
+
+
 @contextmanager
 def plan_db_connection(plan_path: Path, *, before_commit=None) -> Iterator:
     """Commit plan mutations only while their inherited run is still writable.
@@ -386,6 +418,7 @@ def plan_db_connection(plan_path: Path, *, before_commit=None) -> Iterator:
     from .services.foundation.sqlite_pragmas import apply_sqlite_pragmas
 
     apply_sqlite_pragmas(conn)
+    _ensure_shard_schema(conn, plan_path)
 
     try:
         yield conn

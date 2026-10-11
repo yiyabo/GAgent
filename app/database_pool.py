@@ -9,6 +9,7 @@ import logging
 import queue
 import sqlite3
 import threading
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
@@ -51,6 +52,7 @@ class SQLiteConnectionPool:
         # Thread-safe connection pool
         self._pool = queue.Queue(maxsize=pool_size)
         self._overflow_count = 0
+        self._borrowed = 0  # connections currently checked out of the pool
         self._lock = threading.Lock()
 
         # Initialize pool with connections
@@ -91,34 +93,44 @@ class SQLiteConnectionPool:
 
         return conn
 
-    def get_connection(self) -> sqlite3.Connection:
+    def get_connection(self) -> tuple[sqlite3.Connection, bool]:
         """
         Get a connection from the pool.
 
         Returns:
-            SQLite connection from pool or newly created if pool exhausted
+            ``(connection, is_overflow)`` — the overflow flag is decided here,
+            under the pool lock, so callers never have to infer it by watching
+            ``_overflow_count`` (which races with other threads).
 
         Raises:
             TimeoutError: If no connection available within timeout
         """
         try:
             # Try to get connection from pool (non-blocking)
-            return self._pool.get_nowait()
+            conn = self._pool.get_nowait()
+            self._mark_borrowed()
+            return conn, False
         except queue.Empty:
             # Pool is empty, check if we can create overflow connection
             with self._lock:
                 if self._overflow_count < self.max_overflow:
                     self._overflow_count += 1
+                    self._borrowed += 1
                     logger.debug(f"Creating overflow connection ({self._overflow_count}/{self.max_overflow})")
-                    return self._create_connection()
+                    return self._create_connection(), True
 
             # Pool exhausted and max overflow reached, wait for connection
             try:
                 conn = self._pool.get(timeout=self.timeout)
+                self._mark_borrowed()
                 logger.debug("Retrieved connection from pool after waiting")
-                return conn
+                return conn, False
             except queue.Empty:
                 raise TimeoutError(f"Could not get connection within {self.timeout} seconds")
+
+    def _mark_borrowed(self) -> None:
+        with self._lock:
+            self._borrowed += 1
 
     def return_connection(self, conn: sqlite3.Connection, is_overflow: bool = False):
         """
@@ -128,6 +140,9 @@ class SQLiteConnectionPool:
             conn: Connection to return
             is_overflow: Whether this is an overflow connection
         """
+        with self._lock:
+            if self._borrowed > 0:
+                self._borrowed -= 1
         if is_overflow:
             # Close overflow connections instead of returning to pool
             with self._lock:
@@ -156,10 +171,9 @@ class SQLiteConnectionPool:
         is_overflow = False
 
         try:
-            # Track if this is an overflow connection
-            initial_overflow = self._overflow_count
-            conn = self.get_connection()
-            is_overflow = self._overflow_count > initial_overflow
+            # The overflow flag is decided by get_connection under the pool
+            # lock; comparing _overflow_count here raced with other threads.
+            conn, is_overflow = self.get_connection()
 
             yield conn
 
@@ -179,9 +193,22 @@ class SQLiteConnectionPool:
             if conn:
                 self.return_connection(conn, is_overflow)
 
-    def close_pool(self):
-        """Close all connections in the pool."""
+    def close_pool(self, wait_seconds: float = 5.0):
+        """Close all connections in the pool.
+
+        Waits briefly for borrowed connections to come back: closing the pool
+        while a request still held a connection used to tear down a database
+        handle that request was mid-way through using.
+        """
         logger.info("Closing connection pool...")
+
+        deadline = time.monotonic() + max(0.0, wait_seconds)
+        while True:
+            with self._lock:
+                borrowed = self._borrowed
+            if borrowed <= 0 or time.monotonic() >= deadline:
+                break
+            time.sleep(0.05)
 
         # Close all connections in pool
         while not self._pool.empty():
@@ -191,6 +218,8 @@ class SQLiteConnectionPool:
             except queue.Empty:
                 break
 
+        if borrowed > 0:
+            logger.warning("Connection pool closed with %d connection(s) still borrowed", borrowed)
         logger.info("Connection pool closed")
 
     def get_stats(self) -> dict:
@@ -245,9 +274,11 @@ def get_connection_pool() -> SQLiteConnectionPool:
     if _connection_pool is None:
         with _pool_lock:
             if _connection_pool is None:
-                # Auto-initialize with default settings
-                logger.info("Auto-initializing connection pool with default settings")
-                _connection_pool = SQLiteConnectionPool("tasks.db")
+                raise RuntimeError(
+                    "Connection pool is not initialized; call initialize_connection_pool() "
+                    "during startup (init_db does this). The old auto-initialize fallback "
+                    "silently pointed every uninitialized caller at tasks.db."
+                )
 
     return _connection_pool
 

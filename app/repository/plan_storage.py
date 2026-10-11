@@ -66,6 +66,93 @@ def _resolve_job_db_path(plan_id: Optional[int]) -> Path:
     return get_plan_db_path(plan_id)
 
 
+def ensure_plan_schema(conn) -> None:
+    """Create every table/index a plan shard is expected to have (idempotent).
+
+    Runs on first shard open (``plan_db_connection``) and at plan creation, so
+    shards written by older revisions gain the current shape — including the
+    ``_ensure_*_column`` migrations — before any read touches them.
+    """
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS plan_meta (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            status TEXT DEFAULT 'pending',
+            instruction TEXT,
+            parent_id INTEGER,
+            position INTEGER DEFAULT 0,
+            path TEXT,
+            depth INTEGER DEFAULT 0,
+            metadata TEXT,
+            execution_result TEXT,
+            context_combined TEXT,
+            context_sections TEXT,
+            context_meta TEXT,
+            context_updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (parent_id) REFERENCES tasks (id) ON DELETE CASCADE
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS task_dependencies (
+            task_id INTEGER NOT NULL,
+            depends_on INTEGER NOT NULL,
+            PRIMARY KEY (task_id, depends_on),
+            FOREIGN KEY (task_id) REFERENCES tasks (id) ON DELETE CASCADE,
+            FOREIGN KEY (depends_on) REFERENCES tasks (id) ON DELETE CASCADE
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            snapshot TEXT NOT NULL,
+            note TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    # Column migrations for shards written by older revisions: the CREATE
+    # above is a no-op when the table already exists, and the indexes below
+    # fail with "no such column" on such tables until these run (2026-10-11).
+    _ensure_column(conn, "tasks", "status", "status TEXT DEFAULT 'pending'")
+    _ensure_column(conn, "tasks", "instruction", "instruction TEXT")
+    _ensure_column(conn, "tasks", "parent_id", "parent_id INTEGER")
+    _ensure_column(conn, "tasks", "position", "position INTEGER DEFAULT 0")
+    _ensure_column(conn, "tasks", "path", "path TEXT")
+    _ensure_column(conn, "tasks", "depth", "depth INTEGER DEFAULT 0")
+    _ensure_column(conn, "tasks", "metadata", "metadata TEXT")
+    _ensure_column(conn, "tasks", "execution_result", "execution_result TEXT")
+    _ensure_column(conn, "tasks", "context_combined", "context_combined TEXT")
+    _ensure_column(conn, "tasks", "context_sections", "context_sections TEXT")
+    _ensure_column(conn, "tasks", "context_meta", "context_meta TEXT")
+    _ensure_column(
+        conn,
+        "tasks",
+        "context_updated_at",
+        "context_updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+    )
+    _ensure_column(conn, "tasks", "created_at", "created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+    _ensure_column(conn, "tasks", "updated_at", "updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_path ON tasks(path)")
+    _ensure_decomposition_tables(conn)
+    _ensure_action_log_tables(conn)
+
+
 def initialize_plan_database(
     plan_id: int,
     *,
@@ -78,68 +165,12 @@ def initialize_plan_database(
     metadata = metadata or {}
 
     with plan_db_connection(db_path) as conn:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS plan_meta (
-                key TEXT PRIMARY KEY,
-                value TEXT
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS tasks (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                status TEXT DEFAULT 'pending',
-                instruction TEXT,
-                parent_id INTEGER,
-                position INTEGER DEFAULT 0,
-                path TEXT,
-                depth INTEGER DEFAULT 0,
-                metadata TEXT,
-                execution_result TEXT,
-                context_combined TEXT,
-                context_sections TEXT,
-                context_meta TEXT,
-                context_updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (parent_id) REFERENCES tasks (id) ON DELETE CASCADE
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS task_dependencies (
-                task_id INTEGER NOT NULL,
-                depends_on INTEGER NOT NULL,
-                PRIMARY KEY (task_id, depends_on),
-                FOREIGN KEY (task_id) REFERENCES tasks (id) ON DELETE CASCADE,
-                FOREIGN KEY (depends_on) REFERENCES tasks (id) ON DELETE CASCADE
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS snapshots (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                snapshot TEXT NOT NULL,
-                note TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            """
-        )
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_id)")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_path ON tasks(path)")
+        ensure_plan_schema(conn)
 
         _upsert_meta(conn, "schema_version", SCHEMA_VERSION)
         _upsert_meta(conn, "title", title)
         _upsert_meta(conn, "description", description or "")
         _upsert_meta(conn, "metadata", json.dumps(metadata, ensure_ascii=False))
-
-        _ensure_decomposition_tables(conn)
-        _ensure_action_log_tables(conn, plan_id=plan_id)
 
     logger.info("Initialized plan database %s at %s", plan_id, db_path)
     return db_path
@@ -188,6 +219,15 @@ def _upsert_meta(conn, key: str, value: Optional[str]) -> None:
 
 
 def _ensure_column(conn, table: str, column: str, ddl: str) -> None:
+    # ALTER on a missing table raises "no such table"; when the table is
+    # absent, the CREATE that runs before every _ensure_column caller is what
+    # defines the columns, so there is nothing to migrate (2026-10-11).
+    exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        (table,),
+    ).fetchone()
+    if exists is None:
+        return
     info_rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
     existing = {row["name"] for row in info_rows}
     if column not in existing:
