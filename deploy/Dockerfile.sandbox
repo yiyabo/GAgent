@@ -50,12 +50,28 @@ RUN sed -i "s|deb.debian.org|${APT_MIRROR_HOST}|g" \
 # Core analysis stack (environment.yml) + the repo's pip-only pins
 # (docker/code_executor/requirements.txt, unchanged).
 COPY docker/code_executor/requirements.txt /tmp/sandbox-requirements.txt
+
+# Build tooling up front, for the sdists below. setuptools is pinned below 81
+# to match docker/code_executor/environment.yml (setuptools=80.9.0), which
+# keeps the legacy pkg_resources path working for louvain-style packages.
 RUN python -m pip install --no-cache-dir -i ${PIP_INDEX_URL} \
-      "numpy==1.26.4" "pandas==2.2.3" "scipy==1.14.1" "matplotlib==3.9.4" \
+      "setuptools<81" wheel cython "numpy==1.26.4"
+
+# pybedtools ships ONLY an sdist, and its PEP 517 metadata step needs
+# setuptools — which python:3.12-slim no longer bundles, and which pip's build
+# isolation would hide anyway (measured 2026-10-11: "pybedtools uses setuptools
+# for installation but setuptools was not found"). So it is built first, with
+# --no-build-isolation against the tooling installed above; that also satisfies
+# the pinned pybedtools line in requirements.txt, so pip skips it there.
+RUN python -m pip install --no-cache-dir -i ${PIP_INDEX_URL} \
+      --no-build-isolation "pybedtools==0.11.0"
+
+RUN python -m pip install --no-cache-dir -i ${PIP_INDEX_URL} \
+      "pandas==2.2.3" "scipy==1.14.1" "matplotlib==3.9.4" \
       "seaborn==0.13.2" "scikit-learn==1.5.2" "statsmodels==0.14.6" \
       "networkx==3.4.2" "umap-learn==0.5.7" \
       anndata scanpy h5py pyarrow openpyxl xlrd loompy \
-      biopython pysam pyfaidx pyBigWig pybedtools pyranges \
+      biopython pysam pyfaidx pyBigWig pyranges \
     && python -m pip install --no-cache-dir -i ${PIP_INDEX_URL} \
       -r /tmp/sandbox-requirements.txt
 
