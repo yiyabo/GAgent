@@ -64,6 +64,10 @@ PY
   if [ "${rc}" -ne 0 ]; then
     if [ "${mode}" = "force" ]; then
       log "WARNING: gate is not clear (rc=${rc}) but --force given; proceeding"
+      # Audit trail for forced restarts (GATE_LOG existed since P1 but was
+      # never written; wired here in P4). Host-side file next to the runtime
+      # tree — the container-side equivalent used to be /app/data/logs.
+      printf '%s force-restart gate_rc=%s\n' "$(date -Is)" "${rc}" >> "${GATE_LOG}"
     else
       die "restart gate not clear (active work in progress); use --force to override"
     fi
@@ -147,6 +151,25 @@ case "${cmd}" in
   smoke)   smoke ;;
   reprobe) reprobe "$@" ;;
   deploy)  gate "${1:-enforce}"; "${COMPOSE[@]}" up -d --no-build; smoke ;;
+  # Ops verbs (P4): one-off containers from the ops service definition, so
+  # they see the same volumes/env without touching the running cron loop.
+  # `backup` is non-mutating (no gate); `restore` stops the app, so it goes
+  # through the gate first (pass "force" to override, like deploy).
+  backup)  "${COMPOSE[@]}" run --rm -T --no-deps ops python -m app.ops.backup "$@" ;;
+  restore)
+    ts="${1:-}"
+    [ -n "${ts}" ] || die "usage: gagentctl restore <ts>  (list: gagentctl backup --list)"
+    gate "${2:-enforce}"
+    log "restore ${ts}: stopping app, restoring, starting app"
+    "${COMPOSE[@]}" stop app
+    if ! "${COMPOSE[@]}" run --rm -T --no-deps ops python -m app.ops.backup --restore "${ts}"; then
+      "${COMPOSE[@]}" start app
+      die "restore failed; app restarted on the pre-restore data"
+    fi
+    "${COMPOSE[@]}" start app
+    # Give the app a moment to run its startup migrations before probing.
+    sleep 8
+    smoke ;;
   logs)    "${COMPOSE[@]}" logs -f --tail=200 app ;;
   ps)      "${COMPOSE[@]}" ps ;;
   # Image transport for hosts that cannot pull (the .8 reality): save on a
@@ -177,8 +200,9 @@ gagentctl commands:
   reprobe [base]   assert protected paths 401 from outside
   export-images    docker save the stack images to a tarball
   import-images    docker load the tarball
+  backup [--list]  SQLite online backup (VACUUM INTO) into the backup dir
+  restore <ts> [force]  gate, stop app, restore backup <ts>, start, smoke
   logs | ps
-(backup / restore land with the ops service in P4)
 EOF
      exit 2 ;;
 esac

@@ -3,6 +3,7 @@
 #   gateway   nginx + built web-ui: the ONLY published entrypoint
 #   app       FastAPI backend, internal network only, no docker.sock
 #   proxy     docker-socket-proxy: the app's only path to the Docker API
+#   ops       retention GC + SQLite backup cron (app image, app.ops.cron)
 #   redis     (profile "ha") realtime bus for multi-replica — single replica
 #             by default: the in-memory bus and the qwen/kernel singletons
 #             assume one app process.
@@ -10,7 +11,6 @@
 # Added in later phases (not yet defined here, so `up` works today):
 #   P3  sandbox images + egress-proxy (sandbox containers are created on demand
 #       by the app through `proxy`, never declared as services)
-#   P4  ops (retention GC / SQLite backup cron)
 #
 # One command on a fresh machine:  cp deploy/.env.template .env  &&  ./deploy/gagentctl up
 
@@ -114,6 +114,39 @@ services:
       start_period: 10s
       retries: 3
     networks: [sandbox]
+    logging: *logging
+
+  ops:
+    # Daily retention GC + SQLite online backups (VACUUM INTO), same image as
+    # the app with a different entrypoint. It needs the runtime bind read-WRITE
+    # (it archives then deletes expired session dirs) and the data volume for
+    # DB maintenance, and it is the ONLY container that mounts the backup dir.
+    # The app container is untouched by all of this (LOCAL_INFRA §125).
+    image: gagent-app:${GAGENT_TAG:-latest}
+    command: ["python", "-m", "app.ops.cron"]
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Container-only overrides, mirroring the app service.
+      APP_RUNTIME_ROOT: /app/runtime
+      DB_ROOT: /app/data/databases
+      BACKUP_DIR: /backups
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - ${GAGENT_RUNTIME_DIR}:/app/runtime
+      - gagent-data:/app/data
+      - ${GAGENT_BACKUP_DIR}:/backups
+    healthcheck:
+      # Docker inherits the image's HEALTHCHECK (an HTTP probe on :9000) into
+      # every container; this one serves no HTTP, so without an override it
+      # would be marked unhealthy forever — the exact trap the forwarder hit
+      # after the P2 cutover. Check that PID 1 still is the cron entrypoint.
+      test: ["CMD-SHELL", "grep -q app.ops.cron /proc/1/cmdline"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    networks: [front]
     logging: *logging
 
   forwarder:
