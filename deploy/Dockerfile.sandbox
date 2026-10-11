@@ -61,27 +61,13 @@ RUN python -m pip install --no-cache-dir -i ${PIP_INDEX_URL} \
 
 # Fail the build if the stack is not actually importable: a sandbox that
 # silently lacks a library is a runtime mystery for the model, not a warning.
-RUN python - <<'PY'
-import importlib
-
-modules = [
-    "numpy", "pandas", "scipy", "matplotlib", "seaborn", "sklearn",
-    "statsmodels.api", "networkx", "umap", "h5py", "pyarrow", "openpyxl",
-    "Bio", "pysam", "pyfaidx", "pyBigWig", "pybedtools", "pyranges",
-    "anndata", "scanpy", "cooler", "bioframe", "biotite", "pycirclize",
-    "primer3", "pyfastx", "biopandas", "mygene", "goatools", "gseapy",
-    "HTSeq", "vcfpy", "dna_features_viewer",
-]
-failed = []
-for module in modules:
-    try:
-        importlib.import_module(module)
-    except Exception as exc:  # noqa: BLE001 - report every failure at once
-        failed.append("%s: %s" % (module, exc))
-if failed:
-    raise RuntimeError("sandbox runtime import validation failed: " + " | ".join(failed))
-print("sandbox runtime imports ok")
-PY
+#
+# A single `python -c` line, NOT a heredoc: this host's BuildKit ships the
+# bundled dockerfile.v0 frontend, which rejects `RUN <<'PY'` with "unknown
+# instruction: IMPORT" (measured 2026-10-11), and the frontend image that does
+# support heredocs cannot be pulled here. That is a second, independent reason
+# the repo's docker/code_executor/Dockerfile cannot build on this host.
+RUN python -c "import importlib; mods = 'numpy pandas scipy matplotlib seaborn sklearn statsmodels.api networkx umap h5py pyarrow openpyxl Bio pysam pyfaidx pyBigWig pybedtools pyranges anndata scanpy cooler bioframe biotite pycirclize primer3 pyfastx biopandas mygene goatools gseapy HTSeq vcfpy dna_features_viewer'.split(); [importlib.import_module(m) for m in mods]; print('sandbox runtime imports ok')"
 
 RUN command -v samtools >/dev/null && command -v bcftools >/dev/null && \
     command -v bedtools >/dev/null && command -v tabix >/dev/null && \
