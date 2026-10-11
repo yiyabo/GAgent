@@ -137,6 +137,16 @@ jobs:
           APP_GID=1001
           APP_ENV=production
           AUTH_MODE=local
+          # The production profile is fail-closed: platform_profile() demands a
+          # validated public HTTPS LLM endpoint at import time (measured: run
+          # 38138301091 died with "PLATFORM_LLM_API_URL must be an absolute
+          # HTTP(S) URL"). These dummy values are never contacted — the smoke
+          # makes no LLM calls — and example.com resolves to public addresses
+          # from the runner, satisfying the DNS/allowlist checks.
+          PLATFORM_LLM_API_URL=https://example.com/v1/chat/completions
+          PLATFORM_LLM_API_KEY=ci-dummy
+          PLATFORM_LLM_MODEL=ci-dummy
+          PLATFORM_LLM_ALLOWED_HOSTS=example.com
           CORS_ORIGINS=http://127.0.0.1:18080
           LOG_LEVEL=INFO
           COMPOSE_PROFILES=
