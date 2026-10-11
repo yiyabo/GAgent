@@ -11,6 +11,8 @@ import hashlib
 import json
 import logging
 import os
+import queue
+import threading
 from dataclasses import dataclass, field
 from typing import Any, Callable, Awaitable, Dict, List, Optional
 
@@ -80,14 +82,55 @@ def _estimate_retired_image_tokens(text: str) -> int:
 # Token estimation
 # ---------------------------------------------------------------------------
 
-from functools import lru_cache
+_ENCODER = None
+_ENCODER_UNAVAILABLE = False
+_TIKTOKEN_LOAD_TIMEOUT_S = 15.0
+_ENCODER_LOCK = threading.Lock()
 
 
-@lru_cache(maxsize=1)
 def _get_encoder():
-    """Return a cached tiktoken encoder (lazy-loaded, cached after first call)."""
-    import tiktoken
-    return tiktoken.get_encoding("cl100k_base")
+    """Return the cached tiktoken encoder, or None when it cannot be loaded.
+
+    ``tiktoken.get_encoding`` fetches the BPE file over the network when it is
+    not already in ``TIKTOKEN_CACHE_DIR``.  On 2026-10-12 that fetch hung for
+    ~390 s on the production host (which cannot reach the blob endpoint), and
+    because this runs on the event loop it froze the whole app with it: the
+    run's lease expired mid-freeze and the run died with StaleRunClaim.  The
+    image now bakes the cache (deploy/tiktoken-cache + TIKTOKEN_CACHE_DIR);
+    this bounded load is the fallback for any host that still misses it, and
+    a failed load is remembered so later calls go straight to the heuristic
+    instead of paying the timeout again.
+    """
+    global _ENCODER, _ENCODER_UNAVAILABLE
+    if _ENCODER is not None or _ENCODER_UNAVAILABLE:
+        return _ENCODER
+    with _ENCODER_LOCK:
+        if _ENCODER is not None or _ENCODER_UNAVAILABLE:
+            return _ENCODER
+        result = queue.Queue(maxsize=1)
+
+        def _load() -> None:
+            try:
+                import tiktoken
+
+                result.put(tiktoken.get_encoding("cl100k_base"))
+            except BaseException:  # pragma: no cover - defensive
+                result.put(None)
+
+        threading.Thread(target=_load, name="tiktoken-load", daemon=True).start()
+        try:
+            encoder = result.get(timeout=_TIKTOKEN_LOAD_TIMEOUT_S)
+        except queue.Empty:
+            encoder = None
+        if encoder is None:
+            _ENCODER_UNAVAILABLE = True
+            logger.warning(
+                "tiktoken encoder unavailable within %.0fs; token counts fall back to the heuristic",
+                _TIKTOKEN_LOAD_TIMEOUT_S,
+            )
+        else:
+            _ENCODER = encoder
+    return _ENCODER
 
 
 def estimate_tokens(text: str) -> int:
@@ -95,20 +138,25 @@ def estimate_tokens(text: str) -> int:
 
     This is an approximation — exact counts depend on the actual model
     tokenizer, but cl100k_base is a reasonable proxy for Qwen/OpenAI/Claude.
+    When the encoder cannot be loaded the char/CJK heuristic below is used
+    instead; it must stay cheap, because callers run on the event loop.
     """
     if not text:
         return 0
-    try:
-        encoded_tokens = len(_get_encoder().encode(text))
-        cjk_chars = _count_cjk_chars(text)
-        if cjk_chars:
-            return max(encoded_tokens, cjk_chars)
-        return encoded_tokens
-    except Exception:
-        cjk_chars = _count_cjk_chars(text)
-        if cjk_chars:
-            return max(1, cjk_chars + (len(text) - cjk_chars) // 4)
-        return max(1, len(text) // 4)
+    encoder = _get_encoder()
+    if encoder is not None:
+        try:
+            encoded_tokens = len(encoder.encode(text))
+            cjk_chars = _count_cjk_chars(text)
+            if cjk_chars:
+                return max(encoded_tokens, cjk_chars)
+            return encoded_tokens
+        except Exception:
+            pass
+    cjk_chars = _count_cjk_chars(text)
+    if cjk_chars:
+        return max(1, cjk_chars + (len(text) - cjk_chars) // 4)
+    return max(1, len(text) // 4)
 
 
 def _count_cjk_chars(text: str) -> int:

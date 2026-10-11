@@ -22,3 +22,8 @@ __pycache__
 *.pyc
 *.sqlite
 *.md
+
+# tiktoken BPE cache is a build input for the app image (deploy/Dockerfile);
+# re-include it from the otherwise-excluded deploy/ tree.
+!deploy/tiktoken-cache
+!deploy/tiktoken-cache/**

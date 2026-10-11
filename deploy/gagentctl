@@ -77,6 +77,12 @@ PY
 smoke() {
   log "smoke: import + readiness + tracebacks"
   "${COMPOSE[@]}" exec -T app python -c "import app.main; print('IMPORT_OK')"
+  # tiktoken must load from the baked cache, not the network: a cold load
+  # froze the event loop for ~390 s on 2026-10-12 (LOCAL_INFRA §129).
+  local tk
+  tk=$("${COMPOSE[@]}" exec -T app python -c "import time,tiktoken;t=time.time();tiktoken.get_encoding('cl100k_base');dt=time.time()-t;print(round(dt,3));assert dt<5,'tiktoken load %.1fs (baked cache missing?)'%dt") \
+    || die "tiktoken load check failed (baked cache missing?)"
+  log "smoke: tiktoken load ${tk}s"
   local code
   code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${GATEWAY_PORT:-40003}/health/ready")
   [ "${code}" = "200" ] || die "gateway /health/ready returned ${code}"

@@ -43,6 +43,13 @@ RUN pip install --no-cache-dir -i "${PIP_INDEX_URL}" uv
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev
 
+# tiktoken fetches its BPE file over the network on first use, and the .8
+# production host cannot reach that blob endpoint; a cold first call froze
+# the event loop for ~390 s (2026-10-12).  Bake the cache into the image and
+# point tiktoken at it (cache filename = sha1 of the blob URL).
+COPY deploy/tiktoken-cache /opt/tiktoken-cache
+ENV TIKTOKEN_CACHE_DIR=/opt/tiktoken-cache
+
 COPY app ./app
 COPY tool_box ./tool_box
 COPY skills ./skills
