@@ -160,6 +160,14 @@ def _connect_cell_channel():
 
     def _dial(role):
         conn = socket.create_connection((host, int(port)), timeout=30)
+        # create_connection()'s timeout leaves the socket NON-BLOCKING (Python
+        # emulates the timeout with select). These fds are dup2()ed onto 0/1/2
+        # below, and a non-blocking fd 0 makes the runner's stdin read return
+        # EAGAIN — which the text layer reports as EOF, so the kernel would exit
+        # instantly without ever reading a cell (measured 2026-10-11: the
+        # micro-test printed "DUP2 READLINE: ''" while fd0 was the socket).
+        # Back to blocking before the handover.
+        conn.settimeout(None)
         conn.sendall((json.dumps(dict(token=token, role=role)) + "\\n").encode("utf-8"))
         return conn
 
