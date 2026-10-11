@@ -14,6 +14,12 @@ COMPOSE=(docker compose -f "${DEPLOY_DIR}/docker-compose.yml")
 [ -f "${DEPLOY_DIR}/.env" ] || { echo "missing ${DEPLOY_DIR}/.env (copy .env.template)"; exit 1; }
 # shellcheck disable=SC1091
 set -a; source "${DEPLOY_DIR}/.env"; set +a
+# .env is the *container* contract, not a host-shell contract: its
+# DOCKER_HOST=tcp://proxy:2375 points at a compose-internal name the host
+# cannot resolve, so every docker CLI call below would fail and the gate
+# silently reported "app not running" on a healthy stack (same class as the
+# p2-cutover leak c150b8ea; measured 2026-10-11).
+unset DOCKER_HOST
 APP_CONTAINER="gagent-app-1"
 GATE_LOG="${GAGENT_RUNTIME_DIR:-/tmp}/../restarts.log"
 

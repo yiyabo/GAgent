@@ -203,8 +203,10 @@ if _USE_PYDANTIC:
         )
         # Upload limits: single-file ceiling for categories mapped to None in
         # upload_routes.MAX_FILE_SIZE, plus the zip/tar expansion budget.
-        upload_max_bytes: int = Field(default=2 * 1024**3, ge=0, env="UPLOAD_MAX_BYTES")
-        upload_extract_max_bytes: int = Field(default=8 * 1024**3, ge=0, env="UPLOAD_EXTRACT_MAX_BYTES")
+        # Defaults match the long-standing 10GB document/image ceiling
+        # (upload_routes.DEFAULT_MAX_FILE_SIZE) so no category regresses.
+        upload_max_bytes: int = Field(default=10 * 1024**3, ge=0, env="UPLOAD_MAX_BYTES")
+        upload_extract_max_bytes: int = Field(default=20 * 1024**3, ge=0, env="UPLOAD_EXTRACT_MAX_BYTES")
         upload_extract_max_entries: int = Field(default=20000, ge=0, env="UPLOAD_EXTRACT_MAX_ENTRIES")
 
         agent_runtime_v2_enabled: bool = Field(default=False, env="AGENT_RUNTIME_V2_ENABLED")
@@ -542,13 +544,13 @@ else:
             except Exception:
                 self.job_log_max_rows = 10000
             try:
-                self.upload_max_bytes = int(os.getenv("UPLOAD_MAX_BYTES", str(2 * 1024**3)))
+                self.upload_max_bytes = int(os.getenv("UPLOAD_MAX_BYTES", str(10 * 1024**3)))
             except Exception:
-                self.upload_max_bytes = 2 * 1024**3
+                self.upload_max_bytes = 10 * 1024**3
             try:
-                self.upload_extract_max_bytes = int(os.getenv("UPLOAD_EXTRACT_MAX_BYTES", str(8 * 1024**3)))
+                self.upload_extract_max_bytes = int(os.getenv("UPLOAD_EXTRACT_MAX_BYTES", str(20 * 1024**3)))
             except Exception:
-                self.upload_extract_max_bytes = 8 * 1024**3
+                self.upload_extract_max_bytes = 20 * 1024**3
             try:
                 self.upload_extract_max_entries = int(os.getenv("UPLOAD_EXTRACT_MAX_ENTRIES", "20000"))
             except Exception:
