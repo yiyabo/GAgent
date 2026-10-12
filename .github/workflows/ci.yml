@@ -20,25 +20,19 @@ jobs:
         with:
           python-version: "3.10"
           cache: pip
-          cache-dependency-path: requirements-ci.txt
+          cache-dependency-path: uv.lock
 
       - name: Install dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements-ci.txt
+          python -m pip install uv==0.7.12
+          uv sync --frozen --no-dev --python 3.10
+
+      - name: Use the same offline tokenizer vocabulary as the app image
+        run: echo "TIKTOKEN_CACHE_DIR=${GITHUB_WORKSPACE}/deploy/tiktoken-cache" >> "$GITHUB_ENV"
 
       - name: Run backend contract and execution regressions
         run: >-
-          python -m pytest app/tests/unit app/tests/chat app/tests/plan app/tests/artifacts
-          app/tests/tools/test_task_verification.py
-          app/tests/tools/test_async_tool_executor.py
-          app/tests/tools/test_execute_code_cancellation.py
-          app/tests/tools/test_execute_code_rpc.py
-          app/tests/tools/test_delegation_cancellation.py
-          app/tests/integration/test_chat_message_pipeline.py
-          app/tests/integration/test_real_app_chat_sessions.py
-          app/tests/integration/test_skill_learning_api.py
-          -q -m "not external"
+          uv run --frozen --no-dev python -m pytest app/tests -q -m "not external"
 
   frontend-regressions:
     runs-on: ubuntu-latest

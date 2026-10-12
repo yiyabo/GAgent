@@ -27,7 +27,7 @@ class SkillDistiller:
         try:
             client=LLMClient(provider=settings.skill_learning_provider or settings.quality_evaluator_provider or settings.llm_provider,
                              model=settings.skill_learning_model or None,timeout=45,retries=0)
-            raw=await asyncio.wait_for(stream_chat_collect_async(client,prompt,max_tokens=3200),timeout=50)
+            raw=await asyncio.wait_for(stream_chat_collect_async(client,prompt,max_tokens=3200,enable_thinking=False),timeout=50)
             raw=raw.strip()
             if raw.startswith('```'):raw=raw.split('\n',1)[1].rsplit('```',1)[0]
             return DistillationResult.model_validate(json.loads(raw))

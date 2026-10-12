@@ -284,6 +284,7 @@ def set_usage_context(
     task_id: Optional[int] = None,
     call_purpose: Optional[str] = None,
     run_id: Optional[str] = None,
+    parent_run_id: Optional[str] = None,
     phase: Optional[str] = None,
     tool_name: Optional[str] = None,
     billing_key: Optional[str] = None,
@@ -298,6 +299,7 @@ def set_usage_context(
         "task_id": task_id,
         "call_purpose": call_purpose,
         "run_id": run_id,
+        "parent_run_id": parent_run_id,
         "phase": phase,
         "tool_name": tool_name,
         "billing_key": resolved_billing_key,
@@ -318,7 +320,7 @@ def update_usage_context(**fields: Any) -> None:
     ctx = dict(ctx) if isinstance(ctx, dict) else {}
     attribution_changed = False
     for key, value in fields.items():
-        if key in {"session_id", "plan_id", "task_id", "call_purpose", "run_id", "phase", "tool_name", "billing_key"} and value is not None:
+        if key in {"session_id", "plan_id", "task_id", "call_purpose", "run_id", "parent_run_id", "phase", "tool_name", "billing_key"} and value is not None:
             ctx[key] = value
             attribution_changed = attribution_changed or key in {"call_purpose", "tool_name", "billing_key"}
     if attribution_changed:
@@ -2308,6 +2310,12 @@ def reset_default_client() -> None:
 
 
 def _usage_parent_run(ctx):
+    # Background auxiliary calls run after the source claim has been released.
+    # Their explicitly bound source remains the parent; do not infer it from
+    # whichever unrelated chat claim happens to be active in the caller.
+    parent = ctx.get('parent_run_id')
+    if parent is not None:
+        return parent if parent != ctx.get('run_id') else None
     from app.services.chat_run_state import chat_run_claim
     claim=chat_run_claim.get()
     return claim[0] if claim and claim[0]!=ctx.get('run_id') else None

@@ -1147,7 +1147,7 @@ def test_code_executor_qwen_container_mounts_allowed_dirs_and_passes_session_id(
 
     result = asyncio.run(
         code_executor_module.code_executor_handler(
-            task=f"Read files from {extra_dir} and summarize them.",
+            task=f"Run a long-running numerical pipeline on the inputs from {extra_dir} and summarize its results.",
             allowed_tools=["Bash"],
             add_dirs=[str(extra_dir)],
             session_id="chat-xyz",
@@ -1156,7 +1156,7 @@ def test_code_executor_qwen_container_mounts_allowed_dirs_and_passes_session_id(
         )
     )
 
-    assert result["success"] is True
+    assert result["success"] is True, result.get("error") or result
     assert captured["session_id"] == "chat-xyz"
 
     mounts = captured["extra_mounts"]

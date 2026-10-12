@@ -1,3 +1,5 @@
+# Legacy lightweight development environment. GitHub CI and the app image use
+# `uv sync --frozen --no-dev` from pyproject.toml + uv.lock.
 fastapi>=0.111.0
 starlette>=0.37.2
 uvicorn[standard]>=0.30.0
@@ -30,3 +32,4 @@ argon2-cffi>=23.1.0
 mammoth>=1.6.0
 email-validator>=2.0.0
 pyahocorasick>=2.0.0
+tiktoken>=0.7.0
