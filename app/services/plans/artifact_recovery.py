@@ -138,6 +138,8 @@ def apply_recovery(repo,preview):
             source=_source(tree,session,entry['relative_path'],entry['task_id'])
             if file_hash(source)!=entry['checks']['sha256']: raise ValueError('source_changed_since_preview')
             sources.append(source)
+        from app.repository.plan_artifact_queries import pin_artifact_store
+        pin_artifact_store(plan_id, session)
         records={}
         for entry,source in zip(preview['entries'],sources):
             sha=entry['checks']['sha256'];dest=root/'recovered_blobs'/sha/source.name

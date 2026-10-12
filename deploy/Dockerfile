@@ -50,11 +50,6 @@ RUN uv sync --frozen --no-dev
 COPY deploy/tiktoken-cache /opt/tiktoken-cache
 ENV TIKTOKEN_CACHE_DIR=/opt/tiktoken-cache
 
-COPY app ./app
-COPY tool_box ./tool_box
-COPY skills ./skills
-COPY scripts ./scripts
-
 # Non-root runtime user. APP_UID/APP_GID must match the owner of the runtime
 # bind mount so session dirs stay writable (LOCAL_INFRA §120).
 ARG APP_UID=1001
@@ -68,6 +63,13 @@ RUN groupadd -g "${APP_GID}" gagent 2>/dev/null || true \
 # root-owned /app/data would leave the app (uid 1001) unable to create its
 # databases and the container permanently unhealthy. (The runtime bind mount is
 # owned on the host, but the same rule keeps a volume-based install working.)
+# Keep ownership setup in a dependency-cached layer. Source edits must not
+# recursively copy up the uv cache again on overlay/XFS.
+COPY app ./app
+COPY tool_box ./tool_box
+COPY skills ./skills
+COPY scripts ./scripts
+
 USER ${APP_UID}:${APP_GID}
 
 EXPOSE 9000

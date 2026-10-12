@@ -41,3 +41,20 @@ def mark_recovered_tasks_for_review(plan_id, expected, recovery_id):
             rm['verification_status']='unchecked';result['status']='needs_review'
             conn.execute("UPDATE tasks SET status='needs_review',metadata=?,execution_result=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
                 (json.dumps(meta,ensure_ascii=False),json.dumps(result,ensure_ascii=False),int(task_id)))
+
+
+def pin_artifact_store(plan_id, session_id):
+    from .chat_runs import _write_transaction
+    with get_db() as conn:
+        with _write_transaction(conn):
+            row=conn.execute('SELECT metadata FROM plans WHERE id=?',(plan_id,)).fetchone()
+            metadata=json.loads(row['metadata'] or '{}')
+            existing=(metadata.get('artifact_store_ref') or {}).get('session_id')
+            if existing:
+                if existing!=session_id: raise ValueError('artifact_store_changed')
+                return
+            sessions=conn.execute('SELECT id FROM chat_sessions WHERE plan_id=?',(plan_id,)).fetchall()
+            if len(sessions)!=1 or sessions[0]['id']!=session_id: raise ValueError('ambiguous_artifact_store')
+            metadata['artifact_store_ref']={'session_id':session_id}
+            conn.execute('UPDATE plans SET metadata=?,updated_at=CURRENT_TIMESTAMP WHERE id=?',
+                (json.dumps(metadata,ensure_ascii=False),plan_id))

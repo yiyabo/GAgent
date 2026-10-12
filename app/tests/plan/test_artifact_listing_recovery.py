@@ -118,3 +118,12 @@ def test_pending_recovery_cannot_overwrite_an_upgrade_to_v2(project,monkeypatch)
     manifest['schema_version']=2;path.write_text(json.dumps(manifest))
     with pytest.raises(ValueError,match='requires_v1'):apply_recovery(repo,ready)
     assert repo.get_plan_tree(plan).nodes[task].status=='completed'
+
+
+def test_recovered_artifact_store_survives_chat_rebinding(project):
+    repo,plan,root,task,folder=project;ready=preview(project)
+    apply_recovery(repo,ready)
+    with get_db() as c:c.execute("UPDATE chat_sessions SET plan_id=NULL WHERE id='session_recovery'")
+    assert list_artifacts(plan)['total']==1
+    assert list_artifacts(plan)['session_id']=='session_recovery'
+    assert repo.get_plan_tree(plan).metadata['artifact_store_ref']['session_id']=='session_recovery'
