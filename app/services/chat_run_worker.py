@@ -671,6 +671,11 @@ async def execute_chat_run(run_id: str) -> None:
         cancellation.reset_cancel_token(cancel_handle)
         chat_run_claim.reset(claim_handle)
         reset_run_budget(budget_handle)
+        try:
+            from app.repository.chat_job_projection import reconcile_terminal_chat_jobs
+            reconcile_terminal_chat_jobs(run_id)
+        except Exception:
+            logger.warning("Chat-control job projection repair failed run=%s", run_id, exc_info=True)
         for usage_token in usage_context_tokens:
             try:
                 clear_usage_context(usage_token)

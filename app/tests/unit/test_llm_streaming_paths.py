@@ -617,7 +617,7 @@ class TestDecomposerStreaming:
             def __init__(self) -> None:
                 self.stream_called = False
 
-            def stream_chat(self, prompt: str, model: Any = None) -> Iterator[str]:
+            def stream_chat(self, prompt: str, model: Any = None, enable_thinking: Optional[bool] = None) -> Iterator[str]:
                 self.stream_called = True
                 yield json.dumps({"target_node_id": 3, "mode": "nodes", "children": []})
 
@@ -636,7 +636,7 @@ class TestDecomposerStreaming:
             def __init__(self) -> None:
                 self.stream_called = False
 
-            def stream_chat(self, prompt: str, model: Any = None) -> Iterator[str]:
+            def stream_chat(self, prompt: str, model: Any = None, enable_thinking: Optional[bool] = None) -> Iterator[str]:
                 self.stream_called = True
                 yield "yes"
 

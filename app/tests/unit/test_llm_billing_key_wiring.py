@@ -102,7 +102,7 @@ class TestDecomposerPins:
         from app.services.llm.decomposer_service import PlanDecomposerLLMService
 
         class _FakeLLM:
-            def stream_chat(self, prompt, model=None):
+            def stream_chat(self, prompt, model=None, enable_thinking=None):
                 captured.append(current_usage_context())
                 return iter([reply])
 

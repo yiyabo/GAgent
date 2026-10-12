@@ -1565,7 +1565,11 @@ def _has_negated_plan_create_request(lowered: str) -> bool:
         "不用创建plan",
         "不用创建计划",
     )
-    return _contains_any_lowered(lowered, markers)
+    return _contains_any_lowered(lowered, markers) or bool(re.search(
+        r"(?:不|别|无需|不必)\s*(?:再|急着)?\s*(?:创建|新建|建立|生成|制定|构建|制作|设计)\s*(?:一个|新的?)?\s*(?:计划|plan(?:-tree)?)"
+        r"|\b(?:do\s+not|don't|dont|without)\s+(?:creat(?:e|ing)|generat(?:e|ing)|build(?:ing)?|mak(?:e|ing))\s+(?:a\s+|any\s+|the\s+)?(?:plan|plan-tree)\b",
+        lowered,
+    ))
 
 
 def _is_internal_contract_repair_request(text: str) -> bool:

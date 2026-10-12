@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from app.services.deep_think.models import structured_plan_contract_failed
+
 import asyncio
 import inspect
 import json
@@ -2788,7 +2790,7 @@ class StructuredChatAgent:
                         }
                         verification = getattr(result, "output_verification", None) or {}
                         execution_issues = getattr(result, "execution_issues", None) or []
-                        if execution_issues or (verification.get("authoritative") and verification.get("status") == "failed"):
+                        if structured_plan_contract_failed(result) or execution_issues or (verification.get("authoritative") and verification.get("status") == "failed"):
                             plan_decomposition_jobs.mark_failure(
                                 deep_think_job_id, "Execution or output verification did not complete successfully.",
                                 result={**job_result, "output_verification": verification, "execution_issues": execution_issues},

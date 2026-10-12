@@ -320,3 +320,120 @@ def test_interrupted_run_continues_through_http_without_repeating_verified_write
         assert downloaded.json() == {"A": {"count": 2, "mean": 15}, "B": {"count": 2, "mean": 40}}
         with get_db() as conn:
             assert conn.execute("SELECT COUNT(*) FROM chat_runs WHERE session_id=?", (session_id,)).fetchone()[0] == 2
+
+
+@pytest.mark.integration
+@pytest.mark.timeout(90)
+@pytest.mark.parametrize('cleaning_provider', [('native', False)], indirect=True)
+def test_chat_creates_visible_plan_tree_executes_dependencies_and_downloads(
+    app_client_factory, isolated_app_env, cleaning_provider, monkeypatch,
+):
+    """Real routes, kernels, PlanExecutor and publication; only model answers scripted."""
+    from app.services.foundation.settings import get_settings
+    monkeypatch.setenv('PLAN_OUTPUT_CONTRACTS_REQUIRED', '1')
+    monkeypatch.setenv('PLAN_EXECUTION_BUDGET_ENABLED', '1')
+    monkeypatch.setattr(get_settings(), 'plan_output_contracts_required', True)
+    monkeypatch.setattr(get_settings(), 'plan_execution_budget_enabled', True)
+    provider=cleaning_provider
+    stage={'name':'inspect','calls':0}
+    output=None
+    tasks=[]
+
+    def response():
+        stage['calls']+=1
+        name=stage['name'];index=stage['calls']
+        def call(tool,args):
+            return NativeStreamResult(content='Perform the requested step.',finish_reason='tool_calls',
+                tool_calls=[NativeToolCall(id=f'{name}-{index}',name=tool,arguments=args)])
+        if name=='plan':
+            if index==1:return call('load_tool_schema',{'name':'plan_operation'})
+            if index==2:return call('plan_operation',{'operation':'create','title':'Local CSV workflow',
+                'description':'Drop missing and nonnumeric scores; keep the first valid ID.', 'tasks':tasks})
+        elif index==1:
+            if name=='inspect':code=f"from pathlib import Path\nprint(Path({str(provider.input_path)!r}).read_text())"
+            elif name=='clean':code=textwrap.dedent(f'''
+                import csv,json
+                from pathlib import Path
+                out=Path({str(output)!r});out.mkdir(parents=True,exist_ok=True)
+                rows=[];seen=set()
+                for row in csv.DictReader(open({str(provider.input_path)!r})):
+                    try:score=float(row['score'])
+                    except (ValueError,TypeError):continue
+                    if row['id'] in seen:continue
+                    seen.add(row['id']);rows.append({{'id':row['id'],'group':row['group'],'score':score}})
+                with (out/'clean.csv').open('w') as f:
+                    w=csv.DictWriter(f,fieldnames=['id','group','score']);w.writeheader();w.writerows(rows)
+                print('Created clean.csv')
+            ''')
+            elif name=='stats':code=textwrap.dedent(f'''
+                import csv,json
+                from pathlib import Path
+                out=Path({str(output)!r});groups={{}}
+                for row in csv.DictReader((out/'clean.csv').open()):groups.setdefault(row['group'],[]).append(float(row['score']))
+                (out/'summary.json').write_text(json.dumps({{k:{{'count':len(v),'mean':sum(v)/len(v)}} for k,v in groups.items()}}))
+                print('Created summary.json')
+            ''')
+            else:code=f"from pathlib import Path\nout=Path({str(output)!r})\n(out/'report.md').write_text('Source: clean.csv; statistics: summary.json. Local synthetic data only.\\n'+(out/'summary.json').read_text())\nprint('Created report.md')"
+            return call('execute_code',{'code':code})
+        answer='Data inspected; please confirm the cleaning rules.' if name=='inspect' else 'Plan created.' if name=='plan' else f'Completed step. Outputs are in {output}.'
+        return call('submit_final_answer',{'answer':answer,'confidence':1.0})
+
+    monkeypatch.setattr(provider,'next_response',response)
+    with app_client_factory() as client:
+        _,output=_prepare_cleaning_request(client,provider)
+        names=['clean','stats','report'];files=['clean.csv','summary.json','report.md']
+        for i,(name,filename) in enumerate(zip(names,files)):
+            tasks.append({'name':name,'instruction':f'Use Python to {name} local data. Drop missing/nonnumeric scores; keep first valid ID. Write {output/filename}.',
+                'dependencies':names[:i], 'metadata':{'required_outputs':[{'kind':'document' if i==2 else 'data','target_path':str(output/filename)}]}})
+        def chat(label,message):
+            stage.update(name=label,calls=0)
+            created=client.post('/chat/runs',json={'session_id':'research-journey','client_message_id':label,
+                'message':message,'context':{'memory_enabled':False}},headers=HEADERS)
+            assert created.status_code==200,created.text
+            events=_sse_events(client.get(created.json()['events_stream_url'],params={'session_id':'research-journey'},headers=HEADERS).text)
+            finals=[e for _,e in events if e['type'] in {'final','error'}]
+            assert len(finals)==1 and finals[0]['type']=='final',events
+            assert finals[0]['payload']['metadata']['status']=='completed',finals
+        chat('inspect',f'先读取 {provider.input_path} 检查数据问题，不生成计划。')
+        assert client.get('/plans',headers=HEADERS).json()==[]
+        chat('plan','确认删除缺值与非数字，重复 ID 保留首条有效记录。创建真实计划树，包含 clean、stats、report 三个依赖任务，先不执行。')
+        plans=client.get('/plans',headers=HEADERS).json()
+        assert len(plans)==1,plans
+        plan=plans[0]['id']
+        tree=client.get(f'/plans/{plan}/tree',headers=HEADERS).json()
+        nodes=list(tree['nodes'].values()) if isinstance(tree['nodes'],dict) else tree['nodes']
+        assert len(nodes)==4 and len([n for n in nodes if n['parent_id'] is None])==1
+        assert all(n['metadata'].get('delivery_contract_required') for n in nodes if n['parent_id'] is not None)
+        by_name={n['name']:n for n in nodes}
+        assert by_name['stats']['dependencies']==[by_name['clean']['id']]
+        assert set(by_name['report']['dependencies'])=={by_name['clean']['id'],by_name['stats']['id']}
+        for name,filename in zip(names,files):
+            stage.update(name=name,calls=0)
+            task_id=by_name[name]['id']
+            run=client.post(f'/tasks/{task_id}/execute',params={'plan_id':plan},json={
+                'session_id':'research-journey','deep_think':True,'async_mode':False,
+                'include_dependencies':False,'include_subtasks':False},headers=HEADERS)
+            assert run.status_code==200 and run.json()['success'],run.text
+            assert (output/filename).is_file()
+        assert json.loads((output/'summary.json').read_text())=={'A':{'count':2,'mean':15},'B':{'count':2,'mean':40}}
+        for filename in files:
+            downloaded=client.get('/artifacts/sessions/research-journey/file',params={'path':f'workspace/{filename}'},headers=HEADERS)
+            assert downloaded.status_code==200 and downloaded.content==(output/filename).read_bytes()
+        result=client.get(f'/plans/{plan}/results',headers=HEADERS).json()
+        serialized=json.dumps(result)
+        assert all(filename in serialized for filename in files)
+        from app.services.plans.artifact_contracts import load_artifact_manifest
+        manifest=load_artifact_manifest(plan,'research-journey')
+        for name,filename in zip(names,files):
+            alias=f"task_{by_name[name]['id']}.{filename.replace('.', '_')}"
+            artifact=manifest['artifacts'][alias]
+            assert artifact['producer_task_id']==by_name[name]['id']
+            assert Path(artifact['path']).read_bytes()==(output/filename).read_bytes()
+        # Reconnect to the existing terminal stream; do not create another run.
+        with get_db() as conn:
+            run=conn.execute("SELECT run_id,last_event_seq FROM chat_runs WHERE idempotency_key='plan'").fetchone()
+        before=stage['calls']
+        replay=client.get(f"/chat/runs/{run['run_id']}/events",params={
+            'session_id':'research-journey','after_seq':run['last_event_seq']-1},headers=HEADERS)
+        assert _sse_events(replay.text)[-1][1]['type']=='final'
+        assert stage['calls']==before

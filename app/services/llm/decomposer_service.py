@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field, ValidationError
 from ...config.decomposer_config import DecomposerSettings, get_decomposer_settings
 from ...llm import LLMClient, usage_context_override
 from .llm_service import LLMService
+from app.services.foundation.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -189,6 +190,7 @@ class PlanDecomposerLLMService:
             response = "".join(self._llm.stream_chat(
                 prompt,
                 model=self._settings.model,
+                enable_thinking=get_settings().thinking_enabled,
             ))
         cleaned = strip_code_fences(response)
         try:
@@ -203,4 +205,5 @@ class PlanDecomposerLLMService:
             return "".join(self._llm.stream_chat(
                 prompt,
                 model=self._settings.model,
+                enable_thinking=get_settings().thinking_enabled,
             ))

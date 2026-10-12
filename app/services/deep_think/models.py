@@ -79,3 +79,10 @@ class TaskExecutionContext:
 
 class DeepThinkProtocolError(RuntimeError):
     """Raised when DeepThink output violates the required JSON protocol."""
+
+
+def structured_plan_contract_failed(result: Any) -> bool:
+    """Required operations that were not fulfilled are a failed goal, not success."""
+    return bool(getattr(result, 'structured_plan_required', False)
+                and not getattr(result, 'structured_plan_satisfied', False)
+                and getattr(result, 'structured_plan_state', None) != 'confirmation_required')

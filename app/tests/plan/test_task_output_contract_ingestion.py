@@ -138,3 +138,29 @@ def test_verified_output_publishes_through_real_executor_manifest(project, isola
     assert manifest['artifacts'][alias]['producer_task_id'] == node.id
     assert Path(manifest['artifacts'][alias]['path']).read_bytes() == data.read_bytes()
     assert alias in published.payload['metadata']['artifact_authority']['published_aliases']
+
+
+async def test_explicit_seed_contract_keeps_agreed_method_and_avoids_auto_rewrite(project, monkeypatch):
+    from app.services.plans import plan_generation as generation
+    repo, _, _, _ = project
+    async def forbidden(**kwargs):
+        raise AssertionError('Explicit contracts must not start automatic rewriting')
+    monkeypatch.setattr(generation, 'collect_plan_generation_materials', forbidden)
+    monkeypatch.setattr(generation, '_auto_review_and_optimize_plan', forbidden)
+    outcome = await generation.create_plan_and_generate(title='Local rules',description='Drop missing scores',
+        tasks=[{'name':'clean','instruction':'Drop missing values; never impute them.',**declaration()}],
+        owner='owner',repo=repo,decomposer=SimpleNamespace(),session_context={'user_message':'Keep first valid ID; drop missing scores.'})
+    assert outcome.decomposition_status == 'skipped_seeded'
+    assert outcome.auto_review['status'] == 'skipped_explicit_contract'
+    assert 'never impute' in outcome.seeded_tasks[0].instruction
+    assert outcome.plan_tree.metadata['explicit_seed_contract']['source_request'].startswith('Keep first')
+    assert any(p.id == outcome.plan_tree.id for p in repo.list_plans(owner='owner'))
+
+
+def test_plan_tool_context_uses_authoritative_owner_and_preserves_session():
+    from tool_box.context import ToolContext
+    from tool_box.tools_impl.plan_tools import _build_session_context_from_tool_context
+    value = _build_session_context_from_tool_context(ToolContext(owner_id='owner',session_id='session',
+        extra={'owner_id':'obsolete','user_message':'Keep my method'}))
+    assert value['owner_id']=='owner' and value['session_id']=='session'
+    assert value['user_message']=='Keep my method'

@@ -38,6 +38,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from app.services.deep_think_agent import DeepThinkResult, build_user_visible_step
 
 from .artifact_gallery import merge_artifact_gallery
+from app.services.deep_think.models import structured_plan_contract_failed
 
 
 def _ag() -> Any:
@@ -246,6 +247,8 @@ def _build_deep_think_response_metadata(
         if rejected:
             metadata["status"] = "failed"
             metadata["failure_kind"] = "output_contract_mismatch"
+    if structured_plan_contract_failed(result):
+        metadata.update(status="failed", goal_status="incomplete", failure_kind="structured_plan_contract_mismatch")
     issues = getattr(result, "execution_issues", [])
     if issues:
         metadata["execution_issues"] = _sanitize_chat_metadata_value(issues)

@@ -603,12 +603,27 @@ async def create_plan_and_generate(
         tasks=tasks,
     )
 
+    from .task_contracts import has_declared_acceptance
+    explicit_seed_contract = bool(seeded_tasks) and all(
+        node.metadata.get("delivery_contract_required") and has_declared_acceptance(node.metadata)
+        for node in seeded_tasks
+    )
+    if explicit_seed_contract:
+        # The caller supplied executable tasks and authoritative deliverables.
+        # Automatic rubric improvement cannot rewrite the agreed method.
+        effective_metadata["skip_auto_decomposition"] = True
+        effective_metadata["explicit_seed_contract"] = {
+            "source_request": str((session_context or {}).get("user_message") or description or ""),
+            "task_ids": [node.id for node in seeded_tasks],
+        }
+        repo.update_plan_metadata(plan_id, effective_metadata)
+
     collected_materials: List[Dict[str, Any]] = []
     effective_context = dict(session_context or {})
     if decomposer is None:
         decomposer = PlanDecomposer(repo=repo)
 
-    effective_context, collected_materials = await collect_plan_generation_materials(
+    effective_context, collected_materials = (effective_context, []) if explicit_seed_contract else await collect_plan_generation_materials(
         title=title,
         description=description,
         tasks=tasks,
@@ -647,12 +662,12 @@ async def create_plan_and_generate(
 
     auto_review_payload: Optional[Dict[str, Any]] = None
     try:
-        auto_review = await _auto_review_and_optimize_plan(
+        auto_review = None if explicit_seed_contract else await _auto_review_and_optimize_plan(
             plan_id=plan_id,
             repo=repo,
             trigger="plan_generation.create",
         )
-        auto_review_payload = auto_review.to_dict()
+        auto_review_payload = auto_review.to_dict() if auto_review else {"status": "skipped_explicit_contract", "optimization_attempted": False}
         updated_tree = repo.get_plan_tree(plan_id)
     except Exception as exc:
         logger.warning("Automatic post-create review failed for plan %s: %s", plan_id, exc)
@@ -666,7 +681,7 @@ async def create_plan_and_generate(
         }
 
     try:
-        phase_titles = await generate_phase_titles(updated_tree)
+        phase_titles = None if explicit_seed_contract else await generate_phase_titles(updated_tree)
         if phase_titles:
             repo.update_plan_metadata(
                 plan_id,

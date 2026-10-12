@@ -47,6 +47,10 @@ def _build_session_context_from_tool_context(tool_context: Optional[Any]) -> Opt
             if value is not None:
                 context[key] = value
 
+    owner_id = getattr(tool_context, "owner_id", None)
+    if owner_id:
+        context["owner_id"] = owner_id
+
     session_id = getattr(tool_context, "session_id", None)
     if session_id:
         context["session_id"] = session_id

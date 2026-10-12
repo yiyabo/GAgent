@@ -906,6 +906,11 @@ def fix_stale_jobs_on_startup() -> int:
     Returns:
         job count
     """
+    from .chat_job_projection import reconcile_terminal_chat_jobs
+    try:
+        reconcile_terminal_chat_jobs()
+    except Exception:
+        logger.warning("Could not reconcile terminal chat job projections before stale recovery", exc_info=True)
     fixed_count = 0
     now = datetime.now(timezone(timedelta(hours=8))).isoformat()
 
