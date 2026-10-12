@@ -75,6 +75,7 @@ def observe_result(agent,result):
 async def stop_empty_truncation(agent, step, steps):
     if getattr(agent, '_native_empty_truncated_streak', 0) < 2:
         return False
+    agent._termination_reason = 'empty_output_truncation'
     reason = 'Stopped after two truncated responses with no answer or tool call; synthesizing available evidence.'
     step.self_correction = reason
     step.status = 'analyzing'

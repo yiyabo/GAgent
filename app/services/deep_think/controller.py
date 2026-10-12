@@ -84,6 +84,7 @@ async def think(
             f"User query too long (max {max_user_query_chars} chars)"
         )
 
+    agent._termination_reason = None
     if agent._supports_native_tools():
         logger.info("[DEEP_THINK] Using native tool calling path")
         return await agent._think_native(user_query.strip(), context, task_context)
@@ -1947,6 +1948,7 @@ async def _native_finalize(
         tool_failures=tool_failures,
         search_verified=search_verified,
         fallback_used=fallback_used,
+        termination_reason=getattr(agent, "_termination_reason", None),
         structured_plan_required=bool(structured_plan_outcome.get("required")),
         structured_plan_satisfied=bool(structured_plan_outcome.get("satisfied")),
         structured_plan_state=structured_plan_outcome.get("state"),
@@ -2485,6 +2487,7 @@ Respond with ONLY a JSON object:
         tool_failures=tool_failures,
         search_verified=search_verified,
         fallback_used=fallback_used,
+        termination_reason=getattr(agent, "_termination_reason", None),
         structured_plan_required=bool(structured_plan_outcome.get("required")),
         structured_plan_satisfied=bool(structured_plan_outcome.get("satisfied")),
         structured_plan_state=structured_plan_outcome.get("state"),

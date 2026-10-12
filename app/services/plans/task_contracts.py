@@ -63,17 +63,21 @@ def require_declared_delivery(function):
     def wrapped(service, node, *args, **kwargs):
         finalization = function(service, node, *args, **kwargs)
         node_metadata = node.metadata or {}
-        if not node_metadata.get('delivery_contract_required') or finalization.final_status not in {'completed','success','succeeded','done'}:
+        requires = node_metadata.get('delivery_contract_required') or (node.parent_id is not None and getattr(get_settings(), 'plan_output_contracts_required', False))
+        stopped = bool(finalization.payload.get('metadata', {}).get('termination_reason'))
+        if not (requires or stopped) or finalization.final_status not in {'completed','success','succeeded','done'}:
             return finalization
         metadata = finalization.payload.setdefault('metadata', {})
-        if service.is_manual_acceptance_active(metadata) or has_declared_acceptance(node_metadata):
+        checked = metadata.get('output_verification') or {}
+        stopped_and_unverified = stopped and not (checked.get('authoritative') and checked.get('status') == 'passed')
+        if service.is_manual_acceptance_active(metadata) or (has_declared_acceptance(node_metadata) and not stopped_and_unverified):
             return finalization
         finalization.final_status = 'needs_review'
         finalization.payload['status'] = 'needs_review'
         verification = {**(finalization.verification or {}), 'status': 'unchecked', 'authoritative': False}
         metadata.update(verification_status='unchecked', verification=verification,
-            delivery_verification={'status': 'needs_review', 'reason': 'missing_declared_acceptance',
-                                   'message': 'Execution finished, but no declared output or content check establishes completion.'})
+            delivery_verification={'status': 'needs_review', 'reason': metadata.get('termination_reason') or 'missing_declared_acceptance',
+                                   'message': ('Execution stopped: ' + str(metadata['termination_reason']) + '; available outputs need review.') if stopped else 'Execution finished, but no declared output or content check establishes completion.'})
         finalization.verification = verification
         return finalization
     return wrapped

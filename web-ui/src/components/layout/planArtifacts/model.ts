@@ -13,6 +13,8 @@ export interface PlanArtifactFile {
   artifactVersionId?: string;
   freshness: string;
   validated?: boolean;
+  contentStatus?: string;
+  recovered?: boolean;
   recordedAt?: number;
 }
 
@@ -61,6 +63,8 @@ export function artifactFile(
     artifactVersionId,
     freshness: text(entry.freshness) || 'unknown',
     validated: typeof entry.validated === 'boolean' ? entry.validated : undefined,
+    contentStatus: text(entry.content_status) || undefined,
+    recovered: entry.origin === 'recovered_workspace',
     recordedAt: typeof entry.created_at === 'number' ? entry.created_at :
       typeof entry.updated_at === 'number' ? entry.updated_at : undefined,
   };

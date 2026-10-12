@@ -43,6 +43,7 @@ class DeepThinkResult:
     tool_failures: List[Dict[str, Any]] = field(default_factory=list)
     search_verified: bool = True
     fallback_used: bool = False
+    termination_reason: Optional[str] = None
     structured_plan_required: bool = False
     structured_plan_satisfied: bool = False
     structured_plan_state: Optional[str] = None

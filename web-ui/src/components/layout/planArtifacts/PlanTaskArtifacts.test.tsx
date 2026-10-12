@@ -3,10 +3,12 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { planTreeApi } from '@api/planTree';
+import { planArtifactsApi } from '@api/planArtifacts';
 import { artifactVersionsApi } from '@api/artifactVersions';
 import { PlanTaskArtifacts } from './PlanTaskArtifacts';
 import { artifactFile, collectPlanArtifacts } from './model';
 
+vi.mock('@api/planArtifacts', () => ({ planArtifactsApi: { list: vi.fn() } }));
 vi.mock('@api/planTree', () => ({ planTreeApi: { getPlanResults: vi.fn() } }));
 vi.mock('@api/artifactVersions', () => ({ artifactVersionsApi: { list: vi.fn() } }));
 vi.mock('../artifactPreview', () => ({ ArtifactPreviewModal: (props: any) => <div role="dialog">{props.sessionId}:{props.path}</div> }));
@@ -70,97 +72,90 @@ describe('plan artifact ownership', () => {
   });
 });
 
-describe('PlanTaskArtifacts', () => {
+
+const entry = (task: number, name: string, session = 's1') => ({ alias:name,
+  producer_task_id:task, path:`/app/runtime/${session}/artifacts/plan_1/${name}`, session_id:session });
+const page = (items = [entry(1,'one.csv')], extra = {}) => ({ plan_id:1, session_id:'s1',
+  schema_version:1, total:items.length, items, next_cursor:null, snapshot:'first', ...extra });
+
+describe('PlanTaskArtifacts lightweight listing', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(planTreeApi.getPlanResults).mockResolvedValue({ plan_id: 1, total: 2, items: [published(1, 'one.csv'), published(2, 'two.csv')] });
+    vi.mocked(planArtifactsApi.list).mockResolvedValue(page());
     vi.mocked(artifactVersionsApi.list).mockResolvedValue(emptyVersions);
   });
-
-  it('shows only selected task outputs and closes its preview when switching tasks', async () => {
-    const view = mount();
-    fireEvent.click(await screen.findByRole('button', { name: 'one.csv' }));
+  it('uses only the lightweight API and closes preview on task switch', async () => {
+    vi.mocked(planArtifactsApi.list).mockImplementation(async (_plan, task) => page([entry(task!,task===1?'one.csv':'two.csv')]));
+    const view=mount();
+    fireEvent.click(await screen.findByRole('button',{name:'one.csv'}));
     expect(screen.getByRole('dialog')).toHaveTextContent('s1:artifacts/plan_1/one.csv');
-    expect(screen.queryByText('two.csv')).not.toBeInTheDocument();
+    expect(planTreeApi.getPlanResults).not.toHaveBeenCalled();
+    expect(artifactVersionsApi.list).not.toHaveBeenCalled();
     view.rerender(<PlanTaskArtifacts planId={1} sessionId="s1" taskId={2} />);
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(await screen.findByText('two.csv')).toBeInTheDocument();
-    expect(screen.queryByText('one.csv')).not.toBeInTheDocument();
   });
-
-  it('does not show a late response after switching session and plan with the same task id', async () => {
-    let finish: (value: any) => void = () => {};
-    vi.mocked(planTreeApi.getPlanResults).mockImplementation(plan => plan === 1
-      ? new Promise(resolve => { finish = resolve; })
-      : Promise.resolve({ plan_id: 2, total: 1, items: [published(1, 'new.csv', 's2', 2)] }));
-    const view = mount();
-    await waitFor(() => expect(planTreeApi.getPlanResults).toHaveBeenCalledWith(1));
+  it('shows unknown quantity on failure instead of an empty or zero inventory', async () => {
+    vi.mocked(planArtifactsApi.list).mockRejectedValue(new Error('timeout'));
+    mount({planId:1,sessionId:'s1',taskId:null});
+    expect(await screen.findByText('数量未知')).toBeInTheDocument();
+    expect(screen.getByText('任务产物记录加载失败')).toBeInTheDocument();
+    expect(screen.queryByText('此计划尚未登记产物')).not.toBeInTheDocument();
+    expect(screen.queryByText('0')).not.toBeInTheDocument();
+    vi.mocked(planArtifactsApi.list).mockResolvedValue(page());
+    fireEvent.click(screen.getByRole('button',{name:/重\s*试/}));
+    expect(await screen.findByText('one.csv')).toBeInTheDocument();
+  });
+  it('shows zero only after a successful empty listing', async () => {
+    vi.mocked(planArtifactsApi.list).mockResolvedValue(page([]));
+    mount({planId:1,sessionId:'s1',taskId:null});
+    expect(await screen.findByText('此计划尚未登记产物')).toBeInTheDocument();
+    expect(screen.getByText('0')).toBeInTheDocument();
+  });
+  it('retains first-page files if loading another page fails', async () => {
+    vi.mocked(planArtifactsApi.list).mockImplementation(async (_p,_t,cursor) => {
+      if(cursor) throw new Error('changed');
+      return page([entry(1,'one.csv')],{total:2,next_cursor:'next'});
+    });
+    mount();fireEvent.click(await screen.findByText('加载更多产物'));
+    expect(await screen.findByText('已加载 1')).toBeInTheDocument();
+    expect(screen.getByRole('button',{name:'one.csv'})).toBeEnabled();
+  });
+  it('pages without losing producer ownership', async () => {
+    vi.mocked(planArtifactsApi.list).mockImplementation(async (_p,_t,cursor) => cursor
+      ? page([entry(2,'two.csv')],{total:2}) : page([entry(1,'one.csv')],{total:2,next_cursor:'next'}));
+    mount({planId:1,sessionId:'s1',taskId:null});
+    fireEvent.click(await screen.findByText('加载更多产物'));
+    expect(await screen.findByText('two.csv')).toBeInTheDocument();
+    expect(screen.getByText('one.csv')).toBeInTheDocument();
+    expect(screen.getByText('任务 #2')).toBeInTheDocument();
+  });
+  it('does not mix late responses from another plan/session', async () => {
+    let finish:(value:any)=>void=()=>{};
+    vi.mocked(planArtifactsApi.list).mockImplementation(plan => plan===1 ? new Promise(resolve=>{finish=resolve;})
+      : Promise.resolve(page([entry(1,'new.csv','s2')],{plan_id:2,session_id:'s2'})));
+    const view=mount();await waitFor(()=>expect(planArtifactsApi.list).toHaveBeenCalled());
     view.rerender(<PlanTaskArtifacts planId={2} sessionId="s2" taskId={1} />);
     expect(await screen.findByText('new.csv')).toBeInTheDocument();
-    finish({ plan_id: 1, total: 1, items: [published(1, 'old.csv')] });
-    await waitFor(() => expect(screen.queryByText('old.csv')).not.toBeInTheDocument());
-    expect(screen.getByRole('link', { name: '下载 new.csv' })).toHaveAttribute('href', expect.stringContaining('/sessions/s2/'));
+    finish(page());await waitFor(()=>expect(screen.queryByText('one.csv')).not.toBeInTheDocument());
   });
-
-  it('groups plan outputs by task and leaves missing ownership unassigned', async () => {
-    vi.mocked(artifactVersionsApi.list).mockResolvedValue({ ...emptyVersions, current_artifacts: { unknown: { path: 'unassigned.csv' } } } as any);
-    mount({ planId: 1, sessionId: 's1', taskId: null } as any);
-    expect(await screen.findByText('one.csv')).toBeInTheDocument();
-    expect(await screen.findByText('two.csv')).toBeInTheDocument();
-    expect(screen.getByText('任务 #1')).toBeInTheDocument();
-    expect(screen.getByText('任务 #2')).toBeInTheDocument();
-    expect(screen.getByText('任务归属未记录')).toBeInTheDocument();
-  });
-
-  it('shows a partial failure and keeps task receipts usable', async () => {
-    vi.mocked(artifactVersionsApi.list).mockRejectedValue(new Error('service down'));
-    mount();
-    expect(await screen.findByText('版本与来源暂时不可用')).toBeInTheDocument();
-    expect(await screen.findByRole('button', { name: 'one.csv' })).toBeEnabled();
-  });
-
-  it('does not treat foreign plan response as this plan outputs', async () => {
-    vi.mocked(planTreeApi.getPlanResults).mockResolvedValue({ plan_id: 2, total: 1, items: [published(1, 'foreign.csv')] });
-    mount();
-    expect(await screen.findByText('任务产物记录加载失败')).toBeInTheDocument();
+  it('rejects a mismatched response plan', async () => {
+    vi.mocked(planArtifactsApi.list).mockResolvedValue(page([entry(1,'foreign.csv')],{plan_id:2}));
+    mount();expect(await screen.findByText('数量未知')).toBeInTheDocument();
     expect(screen.queryByText('foreign.csv')).not.toBeInTheDocument();
   });
-
-  it('loads alias history and clears it on selection change', async () => {
-    const current = { alias: 'one.csv', path: '/app/runtime/s1/artifacts/plan_1/version_blobs/new/one.csv', artifact_version_id: 'new', producer_task_id: 1, validated: true, created_at: 100, origin: 'execution', freshness: 'fresh' as const };
-    const older = { ...current, path: '/app/runtime/s1/artifacts/plan_1/version_blobs/old/one.csv', artifact_version_id: 'old', created_at: 50 };
-    vi.mocked(artifactVersionsApi.list).mockResolvedValue({ schema_version: 2, manifest_revision: 2, current_artifacts: { 'one.csv': current }, versions: [current, older], next_cursor: null });
-    const view = mount();
-    fireEvent.click(await screen.findByRole('button', { name: 'one.csv 版本历史' }));
-    expect(await screen.findByText('one.csv · 版本历史')).toBeInTheDocument();
-    await waitFor(() => expect(artifactVersionsApi.list).toHaveBeenCalledWith(1, 'one.csv', 0));
-    expect(await screen.findByText('历史版本')).toBeInTheDocument();
+  it('does not describe recovered files as content-verified', async () => {
+    vi.mocked(planArtifactsApi.list).mockResolvedValue(page([{...entry(1,'old.csv'),content_status:'unchecked',storage_verified:true,validated:false}] as any));
+    mount();expect(await screen.findByText('文件已核对 · 内容待验收')).toBeInTheDocument();
+    expect(screen.queryByText('已通过声明检查')).not.toBeInTheDocument();
+  });
+  it('fetches version history only when requested', async () => {
+    const current={...entry(1,'one.csv'),artifact_version_id:'v1',validated:true,created_at:100,origin:'execution'};
+    vi.mocked(planArtifactsApi.list).mockResolvedValue(page([current]));
+    vi.mocked(artifactVersionsApi.list).mockResolvedValue({...emptyVersions,schema_version:2,current_artifacts:{'one.csv':current},versions:[current]} as any);
+    const view=mount();fireEvent.click(await screen.findByRole('button',{name:'one.csv 版本历史'}));
+    await waitFor(()=>expect(artifactVersionsApi.list).toHaveBeenCalledWith(1,'one.csv',0));
     view.rerender(<PlanTaskArtifacts planId={1} sessionId="s1" taskId={2} />);
     expect(screen.queryByText('one.csv · 版本历史')).not.toBeInTheDocument();
-  });
-
-  it('refreshes artifact freshness when task status stays completed but inputs become stale', async () => {
-    const current = { alias: 'one.csv', path: '/app/runtime/s1/artifacts/plan_1/one.csv', artifact_version_id: 'v1', producer_task_id: 1, validated: true, created_at: 100, origin: 'execution', freshness: 'fresh' as const };
-    vi.mocked(artifactVersionsApi.list).mockResolvedValue({ ...emptyVersions, schema_version: 2, current_artifacts: { 'one.csv': current }, versions: [current] });
-    const task = { id: 1, name: 'Task', status: 'completed' as const, freshness: 'fresh' as const };
-    const view = mount({ planId: 1, sessionId: 's1', taskId: 1, tasks: [task] } as any);
-    expect(await screen.findByText('当前')).toBeInTheDocument();
-    vi.mocked(artifactVersionsApi.list).mockResolvedValue({ ...emptyVersions, schema_version: 2, current_artifacts: { 'one.csv': { ...current, freshness: 'stale' } }, versions: [current] });
-    view.rerender(<PlanTaskArtifacts planId={1} sessionId="s1" taskId={1} tasks={[{ ...task, freshness: 'stale', stale_reasons: ['input_version_changed:data'] }]} />);
-    expect(await screen.findByText('待更新')).toBeInTheDocument();
-  });
-
-  it('uses the history response current pointer after the alias was republished', async () => {
-    const old = { alias: 'report', path: '/app/runtime/s1/artifacts/plan_1/old.csv', artifact_version_id: 'v1', producer_task_id: 1, validated: true, created_at: 100, origin: 'execution' };
-    const newer = { ...old, path: '/app/runtime/s1/artifacts/plan_1/new.csv', artifact_version_id: 'v2', created_at: 200 };
-    vi.mocked(artifactVersionsApi.list).mockImplementation(async (_id, alias) => alias
-      ? { ...emptyVersions, schema_version: 2, current_artifacts: { report: { ...newer, freshness: 'fresh' } }, versions: [newer, old] }
-      : { ...emptyVersions, schema_version: 2, current_artifacts: { report: { ...old, freshness: 'fresh' } }, versions: [old] });
-    mount();
-    fireEvent.click(await screen.findByRole('button', { name: 'old.csv 版本历史' }));
-    const newButton = await screen.findByRole('button', { name: 'new.csv' });
-    expect(newButton.closest('.plan-artifact-row')).toHaveTextContent('当前');
-    expect(newButton.closest('.plan-artifact-row')).not.toHaveTextContent('历史版本');
-    expect(screen.getByText('历史版本').closest('.plan-artifact-row')).toHaveTextContent('old.csv');
   });
 });

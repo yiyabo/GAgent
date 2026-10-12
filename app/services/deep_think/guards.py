@@ -365,6 +365,7 @@ def _apply_loop_guards(
                 signature,
             )
         if count >= _failure_signature_break_count():
+            agent._termination_reason = "repeated_tool_failure"
             from .acceptance import acceptance_missing
             trap_missing = acceptance_missing(
                 agent,
@@ -392,6 +393,7 @@ def _apply_loop_guards(
         from app.services.run_budget import current_run_budget
         shared_budget = current_run_budget()
         if shared_budget is None and elapsed >= _dta()._time_budget_break_seconds():
+            agent._termination_reason = "wall_clock_limit"
             if missing:
                 guard_state["missing_expectations"] = missing
                 agent._acceptance_missing = list(missing)
@@ -480,6 +482,7 @@ def _apply_loop_guards(
                     iteration,
                     ",".join(missing),
                 )
+            agent._termination_reason = "no_progress"
             return (
                 f"Stopped after {streak} steps without new deliverables; "
                 f"wrapping up with {len(verified)} verified deliverable(s)."

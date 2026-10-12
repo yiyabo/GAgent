@@ -1519,6 +1519,20 @@ register_router(
 )
 
 
+@plan_router.get('/{plan_id}/artifacts')
+def get_plan_artifacts(plan_id: int, request: Request, task_id: Optional[int] = None,
+                       cursor: Optional[str] = Query(None, max_length=256),
+                       limit: int = Query(50, ge=1, le=50)):
+    _ensure_plan_access(plan_id, request)
+    from app.services.plans.artifact_listing import list_artifacts, ArtifactListingConflict
+    try:
+        return list_artifacts(plan_id, task_id=task_id, cursor=cursor, limit=limit)
+    except ArtifactListingConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(409 if str(exc) == 'ambiguous_artifact_store' else 422, str(exc)) from exc
+
+
 @plan_router.get('/{plan_id}/artifact-versions')
 def get_artifact_versions(plan_id:int,request:Request,alias:Optional[str]=None,cursor:int=Query(0,ge=0)):
     _load_authorized_plan_tree(plan_id,request)

@@ -164,3 +164,16 @@ def test_plan_tool_context_uses_authoritative_owner_and_preserves_session():
         extra={'owner_id':'obsolete','user_message':'Keep my method'}))
     assert value['owner_id']=='owner' and value['session_id']=='session'
     assert value['user_message']=='Keep my method'
+
+
+def test_no_progress_stop_keeps_existing_partial_output_in_review(project, monkeypatch, tmp_path):
+    repo,plan,root,policy=project
+    policy.plan_output_contracts_required=False
+    node=repo.create_task(plan,name='legacy work',parent_id=root)
+    monkeypatch.chdir(tmp_path)
+    payload={'status':'completed','content':'Some analysis is available.',
+             'metadata':{'termination_reason':'no_progress'}}
+    result=TaskVerificationService().finalize_payload(node,payload,execution_status='completed')
+    assert result.final_status=='needs_review'
+    assert result.payload['metadata']['delivery_verification']['reason']=='no_progress'
+    assert result.payload['content']=='Some analysis is available.'

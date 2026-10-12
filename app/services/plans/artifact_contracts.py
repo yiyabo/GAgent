@@ -320,7 +320,7 @@ def load_artifact_manifest(plan_id: int, session_id: Optional[str] = None) -> Di
     return payload
 
 
-def save_artifact_manifest(plan_id: int, manifest: Dict[str, Any], session_id: Optional[str] = None) -> Path:
+def save_artifact_manifest(plan_id: int, manifest: Dict[str, Any], session_id: Optional[str] = None, *, expected_digest: Optional[str] = None) -> Path:
     from .artifact_versions import active_binding,save
     if manifest.get("schema_version")==2 or active_binding.get():return save(plan_id,manifest,session_id)
     path = artifact_manifest_path(plan_id, session_id)
@@ -329,6 +329,12 @@ def save_artifact_manifest(plan_id: int, manifest: Dict[str, Any], session_id: O
     with lock_path.open("a+", encoding="utf-8") as lock_file:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
         try:
+            if expected_digest is not None:
+                import hashlib
+                actual = json.loads(path.read_text()) if path.exists() else {}
+                observed = hashlib.sha256(json.dumps(actual, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+                if observed != expected_digest:
+                    raise ValueError("artifact_manifest_changed")
             existing = load_artifact_manifest(plan_id, session_id)
             merged = dict(existing)
             merged.update({k: v for k, v in manifest.items() if k != "artifacts"})

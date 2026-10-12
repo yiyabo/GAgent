@@ -603,6 +603,7 @@ class _DeepThinkMethods:
                 "notes": [result.thinking_summary] if result.thinking_summary else [],
                 "metadata": {
                     "deep_think": True,
+                    "termination_reason": getattr(result, "termination_reason", None),
                     "confidence": result.confidence,
                     "tools_used": tools_used,
                     "tool_failures": list(getattr(result, "tool_failures", []) or []),

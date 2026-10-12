@@ -541,7 +541,8 @@ class PlanStatusResolver:
                 # human decides whether the result is acceptable (2026-10-11).
                 effective_status = "needs_review"
                 status_reason = (
-                    _truncate_reason(content)
+                    _truncate_reason((metadata.get("delivery_verification") or {}).get("message"))
+                    or _truncate_reason(content)
                     or "Task ran without a primary tool or output; needs human review."
                 )
                 reason_code = "needs_review"

@@ -2,12 +2,12 @@ import React from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Alert, Button, Drawer, Empty, Spin, Tooltip } from 'antd';
 import { DownloadOutlined, FileOutlined, HistoryOutlined, ReloadOutlined } from '@ant-design/icons';
-import { planTreeApi } from '@api/planTree';
+import { planArtifactsApi, PlanArtifactEntry } from '@api/planArtifacts';
 import { artifactVersionsApi } from '@api/artifactVersions';
 import { buildArtifactFileUrl, buildDeliverableFileUrl } from '@api/artifacts';
 import type { PlanTaskNode } from '@/types';
 import { ArtifactPreviewModal } from '../artifactPreview';
-import { artifactFile, collectPlanArtifacts, PlanArtifactFile } from './model';
+import { artifactFile, PlanArtifactFile } from './model';
 import './planArtifacts.css';
 
 export interface PlanTaskArtifactsProps {
@@ -50,8 +50,8 @@ function ArtifactRow({ file, onPreview, onHistory, historical = false }: {
     <div className="plan-artifact-info">
       <button className="plan-artifact-name" title={file.name} disabled={!href} onClick={() => onPreview(file)}>{file.name}</button>
       <div className="plan-artifact-meta">
-        {historical ? <span>历史版本</span> : <span className={file.freshness === 'stale' ? 'plan-artifact-stale' : undefined}>{freshnessLabels[file.freshness] || '来源未追踪'}</span>}
-        {file.validated != null && <span>{file.validated ? '已通过声明检查' : '尚未核验'}</span>}
+        {historical ? <span>历史版本</span> : <span className={file.freshness === 'stale' ? 'plan-artifact-stale' : undefined}>{file.recovered ? '历史恢复' : freshnessLabels[file.freshness] || '来源未追踪'}</span>}
+        {file.contentStatus === 'unchecked' ? <span>文件已核对 · 内容待验收</span> : file.validated != null && <span>{file.validated ? '已通过声明检查' : '尚未核验'}</span>}
         {!href && <span>文件来源待确认</span>}
       </div>
       {historical && file.recordedAt && <div className="plan-artifact-meta">{new Date(file.recordedAt * 1000).toLocaleString()}</div>}
@@ -104,22 +104,16 @@ function ScopedPlanArtifacts({ planId, sessionId, artifactSessionId, taskId, tas
   const sourceSession = artifactSessionId || sessionId;
   const [preview, setPreview] = React.useState<PlanArtifactFile | null>(null);
   const [historyFile, setHistoryFile] = React.useState<PlanArtifactFile | null>(null);
+  const [cursor, setCursor] = React.useState<string | null>(null);
+  const [previous, setPrevious] = React.useState<PlanArtifactEntry[]>([]);
   const results = useQuery({
-    queryKey: ['plan-workspace-artifact-results', planId, sessionId, sourceSession],
+    queryKey: ['plan-workspace-artifact-results', planId, sessionId, sourceSession, taskId, cursor],
     queryFn: async () => {
-      const response = await planTreeApi.getPlanResults(planId);
+      const response = await planArtifactsApi.list(planId, taskId, cursor);
       if (response.plan_id !== planId) throw new Error('产物返回了不同计划的数据');
       return response;
     },
     staleTime: 15000,
-    retry: false,
-  });
-  const versions = useQuery({
-    queryKey: ['plan-workspace-artifact-versions', planId, sessionId, sourceSession],
-    queryFn: () => loadVersions(planId),
-    // This endpoint may hash large versioned files. Refresh on task transitions
-    // or explicit user action, not on a timer while the workspace is idle.
-    staleTime: 30000,
     retry: false,
   });
   const taskState = tasks.map(task => `${task.id}:${task.status}:${task.updated_at || ''}:${task.freshness || ''}:${JSON.stringify(task.stale_reasons || [])}`).join('|');
@@ -127,27 +121,29 @@ function ScopedPlanArtifacts({ planId, sessionId, artifactSessionId, taskId, tas
   React.useEffect(() => {
     if (previousTaskState.current !== taskState) {
       previousTaskState.current = taskState;
-      void results.refetch();
-      void versions.refetch();
+      setPrevious([]);
+      if (cursor != null) setCursor(null); else void results.refetch();
     }
-  }, [taskState, results.refetch, versions.refetch]);
-  const files = collectPlanArtifacts(planId, results.data?.items ?? [], versions.data, sourceSession, Boolean(artifactSessionId))
-    .filter(file => taskId == null || file.taskId === taskId);
+  }, [taskState, results.refetch, cursor]);
+  const files = [...previous, ...(results.data?.items ?? [])].map(entry =>
+    artifactFile(entry.alias, entry, entry.producer_task_id, results.data?.session_id || sourceSession,
+      Boolean(results.data?.session_id || artifactSessionId))).filter(file => taskId == null || file.taskId === taskId);
   const groups = new Map<number | null, PlanArtifactFile[]>();
   files.forEach(file => groups.set(file.taskId, [...(groups.get(file.taskId) ?? []), file]));
   const taskMap = new Map(tasks.filter(task => task.plan_id == null || task.plan_id === planId).map(task => [task.id, task]));
-  const busy = results.isFetching || versions.isFetching;
-  const loading = results.isLoading || versions.isLoading;
-  const refresh = () => { void results.refetch(); void versions.refetch(); };
+  const busy = results.isFetching;
+  const loading = results.isLoading;
+  const refresh = () => { setPrevious([]); if (cursor != null) setCursor(null); else void results.refetch(); };
+  const countLabel = results.error ? (files.length ? `已加载 ${files.length}` : '数量未知')
+    : results.data ? String(results.data.total) : '读取中';
   return <section className="plan-artifacts" aria-label={taskId == null ? '计划产物' : '任务产物'}>
     <div className="plan-artifacts-heading">
-      <div><strong>{taskId == null ? '计划产物' : '对应产物'}</strong><span className="plan-artifacts-count">{files.length}</span></div>
+      <div><strong>{taskId == null ? '计划产物' : '对应产物'}</strong><span className="plan-artifacts-count">{countLabel}</span></div>
       <Button size="small" type="text" icon={<ReloadOutlined spin={busy} />} onClick={refresh} aria-label="刷新产物" />
     </div>
     {loading && !files.length && <div className="plan-artifacts-loading"><Spin size="small" /> 正在读取产物记录</div>}
-    {results.error && <Alert type="warning" showIcon message="任务产物记录加载失败" description="已加载的计划清单仍可查看。" />}
-    {versions.error && <Alert type="warning" showIcon message="版本与来源暂时不可用" description="已登记的产物仍可查看，版本状态可能不是最新。" />}
-    {!loading && !files.length && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={taskId == null ? '此计划尚未登记产物' : '此任务尚未登记产物'} />}
+    {results.error && <Alert type="warning" showIcon message="任务产物记录加载失败" description={files.length ? "已加载的文件仍可查看；清单可能不完整。请刷新重试。" : "暂时无法确认产物数量，请刷新重试；这不表示文件不存在。"} action={<Button size="small" onClick={refresh}>重试</Button>} />}
+    {!loading && !results.error && !files.length && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={taskId == null ? '此计划尚未登记产物' : '此任务尚未登记产物'} />}
     {[...groups].map(([producer, entries]) => <div className="plan-artifacts-group" key={producer ?? 'unknown'}>
       {taskId == null && <div className="plan-artifacts-group-heading">
         {producer != null && onSelectTask
@@ -155,8 +151,11 @@ function ScopedPlanArtifacts({ planId, sessionId, artifactSessionId, taskId, tas
           : <span>{producer == null ? '任务归属未记录' : taskMap.get(producer)?.name || `任务 #${producer}`}</span>}
         <span>{entries.length} 个文件</span>
       </div>}
-      {entries.map(file => <ArtifactRow key={file.key} file={file} onPreview={setPreview} onHistory={versions.data?.schema_version >= 2 && file.artifactVersionId ? setHistoryFile : undefined} />)}
+      {entries.map(file => <ArtifactRow key={file.key} file={file} onPreview={setPreview} onHistory={file.artifactVersionId ? setHistoryFile : undefined} />)}
     </div>)}
+    {results.data?.next_cursor && <Button loading={busy} onClick={() => {
+      setPrevious([...previous, ...results.data!.items]); setCursor(results.data!.next_cursor);
+    }}>加载更多产物</Button>}
     {!loading && <p className="plan-artifact-note">按计划与任务的发布记录归属；未登记的会话文件可在“全部文件”查看。</p>}
     {historyFile && <ArtifactHistory key={historyFile.key} planId={planId} file={historyFile} onClose={() => setHistoryFile(null)} onPreview={setPreview} />}
     {preview?.path && <ArtifactPreviewModal key={preview.key} open onClose={() => setPreview(null)} sessionId={preview.sessionId} name={preview.name} path={preview.path} sourceType={preview.sourceType} sourcePath={preview.path} version={preview.version} />}
