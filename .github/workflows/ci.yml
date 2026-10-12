@@ -90,6 +90,7 @@ jobs:
         run: |
           DOCKER_BUILDKIT=1 docker build -f deploy/Dockerfile -t gagent-app:latest \
             --build-arg BASE_IMAGE=python:3.12-slim \
+            --build-arg APT_MIRROR_HOST= --build-arg PIP_INDEX_URL=https://pypi.org/simple \
             --build-arg APP_UID=1001 --build-arg APP_GID=1001 .
           DOCKER_BUILDKIT=1 docker build -f deploy/Dockerfile.gateway -t gagent-gateway:latest \
             --build-arg GATEWAY_BASE_IMAGE=nginx:1.29-alpine .
