@@ -438,7 +438,12 @@ def _find_missing_absolute_input_paths(
         if not token or token in seen:
             continue
         seen.add(token)
-        if _is_executor_owned_path(token):
+        prefix = text[max(0, match.start()-120):match.start()]
+        reads = list(re.finditer(r"\b(?:read|load|inspect|input)\b|读取|读入|载入|输入", prefix, re.IGNORECASE))
+        writes = list(re.finditer(r"\b(?:write|save|output|export|create)\b|写入|保存|输出|导出|创建", prefix, re.IGNORECASE))
+        scratch = any(token == root or token.startswith(root+'/') for root in ('/tmp', '/var/tmp'))
+        declared_scratch_input = scratch and reads and (not writes or reads[-1].start() > writes[-1].start())
+        if _is_executor_owned_path(token) and not declared_scratch_input:
             continue
         candidate = Path(token).expanduser()
         if candidate.exists():

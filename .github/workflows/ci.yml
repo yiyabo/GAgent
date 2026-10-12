@@ -13,26 +13,30 @@ jobs:
   backend-regressions:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
     steps:
       - uses: actions/checkout@v5
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
+          python-version: ${{ matrix.python-version }}
           cache: pip
           cache-dependency-path: uv.lock
 
       - name: Install dependencies
         run: |
           python -m pip install uv==0.7.12
-          uv sync --frozen --no-dev --python 3.10
+          uv sync --frozen --no-dev --python ${{ matrix.python-version }}
 
       - name: Use the same offline tokenizer vocabulary as the app image
         run: echo "TIKTOKEN_CACHE_DIR=${GITHUB_WORKSPACE}/deploy/tiktoken-cache" >> "$GITHUB_ENV"
 
       - name: Run backend contract and execution regressions
         run: >-
-          uv run --frozen --no-dev python -m pytest app/tests -q -m "not external"
+          uv run --frozen --no-dev --python ${{ matrix.python-version }} python -m pytest app/tests -q -m "not external"
 
   frontend-regressions:
     runs-on: ubuntu-latest

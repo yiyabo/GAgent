@@ -162,6 +162,16 @@ def test_execute_code_locally_skips_auto_fix_for_blocked_dependency(tmp_path: Pa
     assert "Fewer than 2 valid samples" in (outcome.error_summary or "")
 
 
+@pytest.mark.parametrize('root', ['/tmp/gagent_missing_contract_test', '/var/tmp/gagent_missing_contract_test'])
+def test_declared_scratch_input_is_checked_but_scratch_output_is_not(root, monkeypatch):
+    from app.services.interpreter.code_execution import _find_missing_absolute_input_paths
+    monkeypatch.setattr(Path, 'exists', lambda _: False)
+    assert _find_missing_absolute_input_paths(f'Read all files from {root} and summarize them.') == [root]
+    assert _find_missing_absolute_input_paths(f'读取 {root}，统计数据。') == [root]
+    assert _find_missing_absolute_input_paths(f'Use a temporary directory at {root}.') == []
+    assert _find_missing_absolute_input_paths(f'Read /data/source.csv then write to {root}/out.csv.') == ['/data/source.csv']
+
+
 def test_execute_code_locally_blocks_missing_absolute_input_path_before_generation(
     tmp_path: Path,
     monkeypatch,
