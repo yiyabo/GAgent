@@ -37,6 +37,7 @@ from .model_metric_schema import (
 )
 from .plan_models import PlanNode
 from .output_spec import output_spec_from_metadata, spec_metadata_view, validate_output_spec, is_readonly_output_probe, accepted_output_paths, session_output_origin_map
+from .task_contracts import require_declared_delivery
 from .task_metadata_generator import is_inferred_task_spec
 from .verification_checks import _CheckMethods
 from .verification_discovery import _DiscoveryMethods
@@ -212,6 +213,7 @@ class TaskVerificationService(_CueMethods, _PathMethods, _CheckMethods, _Discove
             "artifact_path_stats": self._artifact_path_category_stats(artifact_paths),
         }
 
+    @require_declared_delivery
     def finalize_payload(
         self,
         node: PlanNode,

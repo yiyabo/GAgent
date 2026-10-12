@@ -226,6 +226,7 @@ if _USE_PYDANTIC:
 
         agent_runtime_v2_enabled: bool = Field(default=False, env="AGENT_RUNTIME_V2_ENABLED")
         plan_execution_budget_enabled: bool = Field(default=False, env="PLAN_EXECUTION_BUDGET_ENABLED")
+        plan_output_contracts_required: bool = Field(default=False, env="PLAN_OUTPUT_CONTRACTS_REQUIRED")
         plan_task_budget_seconds: float = Field(default=7200, gt=0, le=86400, env="PLAN_TASK_BUDGET_SECONDS")
         plan_job_budget_seconds: float = Field(default=43200, gt=0, le=604800, env="PLAN_JOB_BUDGET_SECONDS")
         plan_synthesis_reserve_seconds: float = Field(default=120, ge=0, le=300, env="PLAN_SYNTHESIS_RESERVE_SECONDS")
@@ -608,6 +609,7 @@ else:
                 setattr(self,attr,os.getenv(key,'0').lower() in {'1','true','yes','on'})
             self.chat_run_synthesis_reserve_seconds = max(0,min(300,float(os.getenv('CHAT_RUN_SYNTHESIS_RESERVE_SECONDS','0'))))
             self.plan_execution_budget_enabled = os.getenv('PLAN_EXECUTION_BUDGET_ENABLED','0').lower() in {'1','true','yes','on'}
+            self.plan_output_contracts_required = os.getenv('PLAN_OUTPUT_CONTRACTS_REQUIRED','0').lower() in {'1','true','yes','on'}
             self.plan_task_budget_seconds = max(1,min(86400,float(os.getenv('PLAN_TASK_BUDGET_SECONDS','7200'))))
             self.plan_job_budget_seconds = max(1,min(604800,float(os.getenv('PLAN_JOB_BUDGET_SECONDS','43200'))))
             self.plan_synthesis_reserve_seconds = max(0,min(300,float(os.getenv('PLAN_SYNTHESIS_RESERVE_SECONDS','120'))))

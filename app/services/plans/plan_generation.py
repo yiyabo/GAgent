@@ -457,7 +457,8 @@ def _create_seed_tasks(
         name = str(raw_task.get("name") or raw_task.get("title") or f"Task {index}").strip()
         instruction = str(raw_task.get("instruction") or raw_task.get("description") or "").strip()
         status = str(raw_task.get("status") or "pending").strip() or "pending"
-        metadata = dict(raw_task.get("metadata") or {}) if isinstance(raw_task.get("metadata"), dict) else {}
+        from .task_contracts import seed_metadata
+        metadata = seed_metadata(raw_task)
         metadata.setdefault("task_type", metadata.get("task_type") or "composite")
         metadata = ensure_task_metadata(
             metadata=metadata,

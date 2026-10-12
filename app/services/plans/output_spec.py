@@ -219,7 +219,18 @@ def output_spec_from_metadata(metadata: Any) -> Optional[OutputSpec]:
     if not isinstance(metadata, dict):
         return None
     spec = None
+    if "required_outputs" in metadata:
+        prior = metadata.get("output_spec") or {}
+        prior = prior if isinstance(prior, dict) else {}
+        source = metadata.get("required_outputs_source") or (
+            prior.get("source") if prior.get("required_outputs") == metadata["required_outputs"] else None
+        ) or "explicit"
+        spec = parse_output_spec({**prior, "required_outputs": metadata["required_outputs"], "source": source,
+            "acceptance_criteria": metadata.get("acceptance_criteria", prior.get("acceptance_criteria")),
+            "artifact_contract": metadata.get("artifact_contract", prior.get("artifact_contract"))}, strict=True)
     for key in ("output_spec", "v2_spec", "acceptance_spec"):
+        if spec is not None:
+            break
         if metadata.get(key) is None:
             continue
         spec = parse_output_spec(metadata[key], strict=True)

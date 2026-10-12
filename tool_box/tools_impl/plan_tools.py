@@ -1676,6 +1676,7 @@ Legacy compatibility:
                     "properties": {
                         "name": {"type": "string", "description": "Task name"},
                         "instruction": {"type": "string", "description": "Detailed task instruction"},
+                        "metadata": {"type": "object", "description": "Output contract: required_outputs entries contain kind, target_path, min_count and extensions; artifact_contract contains requires/publishes aliases. File-producing seed tasks must declare these. Text-only tasks use delivery_mode=text and remain subject to content review."},
                         "dependencies": {
                             "type": "array",
                             "items": {"type": "string"},

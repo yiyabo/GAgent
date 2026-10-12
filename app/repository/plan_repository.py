@@ -1205,10 +1205,12 @@ class PlanRepository:
             ),
         )
         task_id = cursor.lastrowid
+        from app.services.plans.task_contracts import normalize
+        merged_metadata = normalize(merged_metadata, task_id=task_id, parent_id=parent_id, new_definition=True)
         new_path = _build_path(parent_info["path"] if parent_info else "", task_id)
         conn.execute(
-            "UPDATE tasks SET path=?, depth=? WHERE id=?",
-            (new_path, depth, task_id),
+            "UPDATE tasks SET path=?, depth=?, metadata=? WHERE id=?",
+            (new_path, depth, _dump_json(merged_metadata), task_id),
         )
         self._replace_dependencies(conn, task_id, deps)
         self._resequence_children(conn, parent_id)
@@ -1231,6 +1233,14 @@ class PlanRepository:
         execution_result: Optional[str] = None,
     ) -> PlanNode:
         self._ensure_task_columns(conn, plan_id)
+        if metadata is not None or name is not None or instruction is not None:
+            from app.services.plans.task_contracts import normalize
+            prior = self._get_node_from_conn(conn, plan_id, task_id)
+            candidate = dict(prior.metadata or {}) if metadata is None else dict(metadata)
+            if (prior.metadata or {}).get('delivery_contract_required'):
+                candidate['delivery_contract_required'] = True
+            metadata = normalize(candidate, task_id=task_id, parent_id=prior.parent_id,
+                                 new_definition=name is not None or instruction is not None)
         sets: List[str] = []
         params: List[Any] = []
         if name is not None:
@@ -1679,8 +1689,8 @@ def _merge_metadata(
     base = dict(metadata or {})
     artifact_contract = base.get("artifact_contract")
     if isinstance(artifact_contract, dict):
-        normalized_contract: Dict[str, List[str]] = {}
-        for field in ("requires", "publishes"):
+        normalized_contract: Dict[str, Any] = {}
+        for field in ("requires", "publishes", "required_resources"):
             raw_items = artifact_contract.get(field)
             if not isinstance(raw_items, list):
                 continue
@@ -1692,6 +1702,10 @@ def _merge_metadata(
             if cleaned:
                 normalized_contract[field] = cleaned
         if normalized_contract:
+            # Provenance determines verification authority. Dropping this turns
+            # an inferred filename into an explicit blocking promise on reload.
+            if isinstance(artifact_contract.get("source"), str):
+                normalized_contract["source"] = artifact_contract["source"]
             base["artifact_contract"] = normalized_contract
         else:
             base.pop("artifact_contract", None)

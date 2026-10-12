@@ -129,6 +129,7 @@ class UnifiedToolExecutor:
             owner_id=context.owner_id,
             work_dir=context.work_dir or "",
             model_provider=getattr(context, 'model_provider', None),
+            extra={"ancestor_chain": list(context.ancestor_chain)} if context.ancestor_chain is not None else {},
             on_progress=context.on_progress,
             on_progress_loop=progress_loop,
         )

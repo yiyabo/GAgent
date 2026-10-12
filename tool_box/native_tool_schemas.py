@@ -975,6 +975,7 @@ NATIVE_TOOL_CONTENT: Dict[str, Dict[str, Any]] = {
                         "properties": {
                             "name": {"type": "string"},
                             "instruction": {"type": "string"},
+                            "metadata": {"type": "object", "description": "Output contract: required_outputs entries contain kind, target_path, min_count and extensions; artifact_contract contains requires/publishes aliases. File-producing seed tasks must declare these. Text-only tasks use delivery_mode=text and remain subject to content review."},
                             "dependencies": {
                                 "type": "array",
                                 "items": {"type": "string"},

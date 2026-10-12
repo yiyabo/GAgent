@@ -1673,6 +1673,10 @@
                   "instruction": {
                     "type": "string"
                   },
+                  "metadata": {
+                    "description": "Output contract: required_outputs entries contain kind, target_path, min_count and extensions; artifact_contract contains requires/publishes aliases. File-producing seed tasks must declare these. Text-only tasks use delivery_mode=text and remain subject to content review.",
+                    "type": "object"
+                  },
                   "name": {
                     "type": "string"
                   }

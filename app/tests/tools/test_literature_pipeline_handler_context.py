@@ -48,7 +48,7 @@ def test_wrapper_drops_tool_context_and_forwards_the_rest(_impl_spy) -> None:
     )
     assert result["success"] is True
     assert calls == [
-        {"query": "phage depolymerase", "max_results": 3, "download_pdfs": False}
+        {"query": "phage depolymerase", "max_results": 3, "download_pdfs": False, "session_id": "s1", "task_id": 2}
     ]
     assert metered and metered[0]["tool_name"] == "literature_pipeline"
     assert metered[0]["call_status"] == "ok"
@@ -88,7 +88,14 @@ def test_registered_handler_survives_the_executor_hop(_impl_spy) -> None:
         )
     )
     assert result["success"] is True
-    assert calls[-1] == {"query": "phage depolymerase", "max_results": 2}
+    assert calls[-1] == {"query": "phage depolymerase", "max_results": 2, "session_id": "s1"}
+
+
+def test_rpc_context_retains_task_ancestry_without_overwriting_explicit_scope(_impl_spy):
+    calls, _ = _impl_spy
+    context = ToolContext(session_id='context-session', task_id=7, extra={'ancestor_chain': [1, 3]})
+    asyncio.run(lp.literature_pipeline_handler('q', tool_context=context, session_id='explicit-session', task_id=None))
+    assert calls[-1] == {'query':'q', 'session_id':'explicit-session', 'task_id':7, 'ancestor_chain':[1, 3]}
 
 
 # ---------------------------------------------------------------------------

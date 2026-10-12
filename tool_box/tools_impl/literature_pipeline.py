@@ -1832,10 +1832,20 @@ async def literature_pipeline_handler(query: str, **kwargs: Any) -> Dict[str, An
     # ancestor_chain instead — forwarding it blindly raised
     # "unexpected keyword argument 'tool_context'" on every call since this
     # wrapper landed (2026-09-29; first real hit 2026-10-09, LOCAL_INFRA §116).
-    kwargs.pop("tool_context", None)
+    tool_context = kwargs.pop("tool_context", None)
     # Code-mode stubs (and any JSON caller) may send ``null`` for arguments
     # they did not set; omitted means omitted, so the impl defaults apply.
     kwargs = {key: value for key, value in kwargs.items() if value is not None}
+    # Code-mode RPC dispatch bypasses UnifiedToolExecutor._normalize_params;
+    # preserve its context identity before dropping the framework-only object.
+    if tool_context is not None:
+        for key in ("session_id", "task_id"):
+            value = getattr(tool_context, key, None)
+            if key not in kwargs and value is not None:
+                kwargs[key] = value
+        chain = (getattr(tool_context, "extra", None) or {}).get("ancestor_chain")
+        if "ancestor_chain" not in kwargs and isinstance(chain, list):
+            kwargs["ancestor_chain"] = list(chain)
 
     started = time.monotonic()
     call_status = "ok"
