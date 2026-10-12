@@ -2448,14 +2448,14 @@ class StructuredChatAgent:
                                             result.get("decomposition_completed")
                                         ) or str(
                                             result.get("decomposition_status") or ""
-                                        ).strip().lower() in {"completed", "partial", "not_configured", "skipped"}
+                                        ).strip().lower() in {"completed", "partial", "not_configured", "skipped", "skipped_seeded"}
                                         if integrated_generation:
                                             logger.info(
                                                 "[DeepThink] Plan %s returned from integrated generation with decomposition_status=%s",
                                                 plan_id,
                                                 result.get("decomposition_status"),
                                             )
-                                            if self._start_background_created_plan_auto_review(
+                                            if result.get("decomposition_status") != "skipped_seeded" and self._start_background_created_plan_auto_review(
                                                 plan_id
                                             ):
                                                 result["auto_review"] = {

@@ -325,11 +325,19 @@ def test_interrupted_run_continues_through_http_without_repeating_verified_write
 @pytest.mark.integration
 @pytest.mark.timeout(90)
 @pytest.mark.parametrize('cleaning_provider', [('native', False)], indirect=True)
+@pytest.mark.parametrize('journey_headers', [HEADERS, {}], ids=['authenticated', 'legacy-local'])
+@pytest.mark.parametrize('async_execution', [False, True], ids=['inline-task', 'background-task'])
 def test_chat_creates_visible_plan_tree_executes_dependencies_and_downloads(
-    app_client_factory, isolated_app_env, cleaning_provider, monkeypatch,
+    app_client_factory, isolated_app_env, cleaning_provider, monkeypatch, journey_headers, async_execution,
 ):
     """Real routes, kernels, PlanExecutor and publication; only model answers scripted."""
     from app.services.foundation.settings import get_settings
+    import sys
+    from app.routers.chat.agent import StructuredChatAgent
+    monkeypatch.setattr(sys.modules[__name__], 'HEADERS', journey_headers)
+    decompositions = []
+    monkeypatch.setattr(StructuredChatAgent, '_auto_decompose_plan',
+                        lambda *a, **kw: decompositions.append(kw))
     monkeypatch.setenv('PLAN_OUTPUT_CONTRACTS_REQUIRED', '1')
     monkeypatch.setenv('PLAN_EXECUTION_BUDGET_ENABLED', '1')
     monkeypatch.setattr(get_settings(), 'plan_output_contracts_required', True)
@@ -399,6 +407,7 @@ def test_chat_creates_visible_plan_tree_executes_dependencies_and_downloads(
         chat('plan','确认删除缺值与非数字，重复 ID 保留首条有效记录。创建真实计划树，包含 clean、stats、report 三个依赖任务，先不执行。')
         plans=client.get('/plans',headers=HEADERS).json()
         assert len(plans)==1,plans
+        assert decompositions == [], 'A complete seed contract must not launch background decomposition'
         plan=plans[0]['id']
         tree=client.get(f'/plans/{plan}/tree',headers=HEADERS).json()
         nodes=list(tree['nodes'].values()) if isinstance(tree['nodes'],dict) else tree['nodes']
@@ -411,9 +420,20 @@ def test_chat_creates_visible_plan_tree_executes_dependencies_and_downloads(
             stage.update(name=name,calls=0)
             task_id=by_name[name]['id']
             run=client.post(f'/tasks/{task_id}/execute',params={'plan_id':plan},json={
-                'session_id':'research-journey','deep_think':True,'async_mode':False,
-                'include_dependencies':False,'include_subtasks':False},headers=HEADERS)
+                'session_id':'research-journey','deep_think':True,'async_mode':async_execution,
+                'include_dependencies':async_execution,'include_subtasks':async_execution},headers=HEADERS)
             assert run.status_code==200 and run.json()['success'],run.text
+            if async_execution:
+                job_id = run.json()['job']['job_id']
+                deadline = time.monotonic() + 20
+                while time.monotonic() < deadline:
+                    job = client.get(f'/jobs/{job_id}', headers=HEADERS).json()
+                    if job['status'] in {'succeeded', 'failed', 'cancelled'}:
+                        break
+                    time.sleep(0.05)
+                assert job['status'] == 'succeeded', job
+                current = client.get(f'/plans/{plan}/tree', headers=HEADERS).json()['nodes']
+                assert current[str(task_id)]['status'] == 'completed', current
             assert (output/filename).is_file()
         assert json.loads((output/'summary.json').read_text())=={'A':{'count':2,'mean':15},'B':{'count':2,'mean':40}}
         for filename in files:

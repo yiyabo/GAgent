@@ -127,6 +127,31 @@ def test_failed_explicit_execution_marks_run_failed(monkeypatch):
     assert emitter.events[-1]["payload"]["metadata"]["status"] == "failed"
 
 
+@pytest.mark.parametrize('supplied_owner', [None, 'obsolete-owner'])
+def test_worker_restores_owner_from_durable_run_before_building_agent(monkeypatch, supplied_owner):
+    import app.services.chat_run_worker as worker
+
+    async def stream(*args, event_sink, **kwargs):
+        await event_sink({'type': 'final', 'payload': {'response': 'Done'}})
+        yield ''
+
+    agent = SimpleNamespace(extra_context={}, process_unified_stream=stream)
+    _isolate_worker(monkeypatch, agent)
+    request = ChatRequest(message='create a plan', session_id='session-1',
+                          context={'owner_id': supplied_owner})
+    monkeypatch.setattr(worker, 'get_chat_run', lambda _: {
+        'request_json': request.model_dump_json(), 'owner_id': 'persisted-owner'})
+    seen = []
+
+    async def build(req, **kwargs):
+        seen.append(req.context.get('owner_id'))
+        return agent, req.message
+
+    monkeypatch.setattr(worker, 'build_agent_for_chat_request', build)
+    asyncio.run(worker.execute_chat_run('recovered-owner-run'))
+    assert seen == ['persisted-owner']
+
+
 def test_error_stream_is_not_marked_succeeded(monkeypatch):
     async def stream(*args, event_sink, **kwargs):
         await event_sink({"type": "error", "message": "provider unavailable"})

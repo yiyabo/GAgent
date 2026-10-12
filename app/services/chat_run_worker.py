@@ -534,6 +534,10 @@ async def execute_chat_run(run_id: str) -> None:
             return
         data = json.loads(raw)
         request = ChatRequest.model_validate(data)
+        # Workers may resume without the HTTP principal's contextvars. The
+        # durable run owns the identity, never a client-supplied context field.
+        request.context = {**(request.context or {}),
+                           "owner_id": str(row.get("owner_id") or "legacy-local")}
         await prepare_run_resume(run_id, request.context or {})
 
         if mark_chat_run_started(run_id, worker_id=worker_id) is False:
