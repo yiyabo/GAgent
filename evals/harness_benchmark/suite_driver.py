@@ -390,7 +390,9 @@ def main() -> None:
 
     driver_path = Path(CONTAINER_DRIVER)
     if not driver_path.is_file():
-        sys.exit(f"container driver missing on .8: {CONTAINER_DRIVER} — sync the branch first")
+        sys.exit(f"Legacy evaluator missing: {CONTAINER_DRIVER}. Production images do not bundle evals. "
+                 "Use a dedicated evaluation container with the corpus mounted, or the finite "
+                 "scripts/run_harness_workflow_eval.py supervisor; the retired container is not a deployment target.")
     problems = validate_manifest(manifest)
     if problems:
         for problem in problems:

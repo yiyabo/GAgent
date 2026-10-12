@@ -91,3 +91,4 @@
 - 阶段 1：`cdbbbd4b` + `72ff5c8b`；真实 Skills 流式传输/计量、来源与上下文恢复已修；定向 136 passed / 2 skipped。完整回归首次 3500 passed，另 1 项新测试文件命名约束已修且该约束重验通过。
 - 阶段 2：预算与收尾候选实现完成，默认关闭新计划预算开关；定向 169 passed，含任务重试不重置预算、取消传播、跨线程、暂停、跨软窗口工具与单次合成。待完整旅程及候选全量验证后决定启用。
 - 阶段 3：顶层 required_outputs 进入统一契约，seed/API/优化器共用的仓储写入边界规范化输出；修复仓储丢弃 artifact_contract.source 的权威误升级；新增契约开关默认关闭。230 项定向回归通过，另验证真实 PlanExecutor→文件验证→manifest 发布并按字节核对成功。literature_pipeline 的 RPC 上下文也保留 session/task/祖先路径。
+- 阶段 4 首组：重启门覆盖 system jobs，查询失败不再算空闲，down 加门、force 可达且留审计；隔离 Docker CLI 测试 3 passed。工作台待验收状态及独立数量通过 8 项面板测试；legacy 评测器默认目标修正并通过无网络 dry-run。长期项目 pin/联合恢复仍为独立后续发布组。

@@ -15,5 +15,5 @@ export const statusLabelMap: Record<string, string> = {
   failed: 'failed',
   skipped: 'skipped',
   blocked: 'blocked',
-  needs_review: 'needs_review',
+  needs_review: '待验收',
 };

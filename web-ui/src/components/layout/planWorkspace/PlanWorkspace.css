@@ -16,6 +16,7 @@
 .pw-live-indicator { color: var(--primary-color); display: inline-flex; align-items: center; gap: 5px; }
 .pw-live-indicator::before { content: ''; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
 .pw-error-text { color: #bf5655; }
+.pw-review-text { color: #9a701f; }
 .pw-muted { color: var(--text-secondary); }
 .pw-small { font-size: 13px; line-height: 1.7; }
 .pw-tabs { flex: 1; min-height: 0; min-width: 0; }
@@ -48,7 +49,7 @@
 .pw-status-completed, .pw-status-succeeded { color: #43886f; }
 .pw-status-running, .pw-status-in_progress { color: var(--primary-color); }
 .pw-status-failed, .pw-status-error { color: #bf5655; }
-.pw-status-blocked { color: #b18b43; }
+.pw-status-blocked, .pw-status-needs_review { color: #b18b43; }
 .pw-detail { min-width: 0; display: flex; flex-direction: column; min-height: 0; }
 .pw-detail-header { padding: 22px 24px 19px; border-bottom: 1px solid var(--pw-line); }
 .pw-detail h2 { font-size: 18px; line-height: 1.6; font-weight: 600; margin: 12px 0 15px; overflow-wrap: anywhere; color: var(--text-primary); }

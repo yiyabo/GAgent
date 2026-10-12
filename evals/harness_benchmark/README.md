@@ -1,5 +1,10 @@
 # Harness Benchmark: 容器内真实链路评测基线（~50+ 任务裁判）
 
+> **2026-10-12 执行入口更新**：生产已迁移到 Compose，默认容器改为 `gagent-app-1`，旧 `phage-agent` 已停用。
+> 当前自包含生产镜像不打包 `evals/`。此 legacy HTTP/SSE 套件须在挂载了评测代码和 corpus 的专用评测容器运行；缺少 controller 时会在调用模型前退出，不能把源码同步到旧容器当作部署。
+> 新的有限监督评测入口为 `scripts/run_harness_workflow_eval.py`（配置/独立工作目录/超时与计量）和 `scripts/run_skill_recommendation_eval.py`。它们的控制器/PlanExecutor 入口含义与本套件的 HTTP/SSE 不同，报告不能混用。
+> 下方历史启动步骤和历史结果保留供复现；新镜像发布走 `/srv/gagent/src/deploy/gagentctl`，不再通过源码 bind 生效。生产改动后需要新的完整产品旅程验证。
+
 **扩充后的评测基线：57 个任务、机器判定、跑 .8 容器内真实 chat-run 链路。**
 用途：每轮大改前后各跑一次，对比 report.md 判定有无退化（成功率 / 耗时 /
 token / 兜底率 / 交付物率）。

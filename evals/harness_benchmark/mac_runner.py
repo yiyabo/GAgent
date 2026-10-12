@@ -3,7 +3,7 @@
 
 Runs the expanded harness benchmark (evals/pipeline_benchmark/tasks, 50 tasks
 + evals/harness_benchmark/tasks_code, code-mode tasks) against the REAL
-chat-run chain inside the phage-agent container on 10.110.107.8:
+chat-run chain inside the selected container on 10.110.107.8:
 
     python3 evals/harness_benchmark/mac_runner.py --label baseline_pre
     python3 evals/harness_benchmark/mac_runner.py --label smoke_tm --category code_mode
@@ -55,7 +55,7 @@ REPORT_ROOT = REPO_ROOT / "evals" / "reports" / "harness_benchmark"
 DEFAULT_HOST = "10.110.107.8"
 DEFAULT_USER = "root"
 DEFAULT_CONTROL_PATH = "~/.ssh/cm-gagent8"
-DEFAULT_CONTAINER = "phage-agent"
+DEFAULT_CONTAINER = "gagent-app-1"
 CONTAINER_REPO = "/app"
 LABEL_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 

@@ -42,6 +42,15 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); client?.clear(); });
 describe('plan workspace navigation and async isolation', () => {
+  it('shows review work separately from completed execution tasks', async () => {
+    const pendingReview = tree(1);
+    pendingReview.nodes['2'].status = 'needs_review';
+    api.getPlanTree.mockResolvedValue(pendingReview);
+    mount();
+    expect(await screen.findByText('1 个待验收')).toBeInTheDocument();
+    expect(screen.getByText('1 / 2 个执行任务已完成')).toBeInTheDocument();
+    expect(screen.getByText('#2 · 待验收')).toBeInTheDocument();
+  });
   it('retains selected plan while task tree loads', async () => {
     let finish!: (value: PlanTreeResponse) => void;
     api.getPlanTree.mockReturnValue(new Promise((resolve) => { finish = resolve; }));

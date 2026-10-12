@@ -6,6 +6,7 @@ export const statusLabels: Record<string, string> = {
   completed: '已完成', succeeded: '已完成', failed: '失败', error: '失败',
   blocked: '等待依赖', skipped: '已跳过', cancelled: '已取消', canceled: '已取消',
   paused: '已暂停', stale: '待更新', unknown: '来源未追踪', reconciling: '同步中',
+  needs_review: '待验收',
 };
 export const statusLabel = (status: string) => statusLabels[status] ?? status;
 export const taskStatus = (task: PlanTaskNode) => task.effective_status || task.status;

@@ -30,46 +30,26 @@ die() { printf '[gagentctl] ERROR: %s\n' "$*" >&2; exit 1; }
 # decomposition jobs across every plan shard. Non-zero => refuse to restart.
 gate() {
   local mode="${1:-enforce}"
+  local services
+  services=$("${COMPOSE[@]}" ps --status running --services) || die "cannot inspect the running stack; restart state is unknown"
   # On a FRESH stack there is no app container, so the probe below would fail and
   # abort `up` before anything starts. Nothing can be interrupted if nothing is
   # running, so treat "app not running" as an automatically clear gate.
-  if ! "${COMPOSE[@]}" ps --status running --services 2>/dev/null | grep -qx app; then
+  if ! grep -qx app <<< "${services}"; then
     log "gate: app service is not running — nothing to interrupt, gate clear"
     return 0
   fi
-  "${COMPOSE[@]}" exec -T app python - <<'PY'
-import glob, os, sqlite3, sys
-main = os.path.join(os.getenv("DB_ROOT", "/app/data/databases"), "main", "plan_registry.db")
-active = 0
-try:
-    c = sqlite3.connect(f"file:{main}?mode=ro", uri=True)
-    active = c.execute(
-        "SELECT COUNT(*) FROM chat_runs WHERE status IN ('running','queued')"
-    ).fetchone()[0]
-except Exception as exc:
-    print(f"gate: chat_runs probe failed: {exc}", file=sys.stderr)
-jobs = 0
-for path in glob.glob(os.path.join(os.getenv("DB_ROOT", "/app/data/databases"), "plans", "*.sqlite")):
-    try:
-        c = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
-        jobs += c.execute(
-            "SELECT COUNT(*) FROM decomposition_jobs WHERE status IN ('queued','running')"
-        ).fetchone()[0]
-    except Exception:
-        pass
-print(f"gate: active_chat_runs={active} active_plan_jobs={jobs}")
-sys.exit(1 if (active or jobs) else 0)
-PY
-  local rc=$?
+  local rc=0
+  "${COMPOSE[@]}" exec -T app python - < "${ROOT_DIR}/app/ops/restart_gate.py" || rc=$?
   if [ "${rc}" -ne 0 ]; then
-    if [ "${mode}" = "force" ]; then
+    if [ "${mode}" = "force" ] || [ "${mode}" = "--force" ]; then
       log "WARNING: gate is not clear (rc=${rc}) but --force given; proceeding"
       # Audit trail for forced restarts (GATE_LOG existed since P1 but was
       # never written; wired here in P4). Host-side file next to the runtime
       # tree — the container-side equivalent used to be /app/data/logs.
-      printf '%s force-restart gate_rc=%s\n' "$(date -Is)" "${rc}" >> "${GATE_LOG}"
+      printf '%s force-restart gate_rc=%s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "${rc}" >> "${GATE_LOG}"
     else
-      die "restart gate not clear (active work in progress); use --force to override"
+      die "restart gate not clear (active work or unknown state); use --force to override"
     fi
   fi
 }
@@ -152,7 +132,10 @@ case "${cmd}" in
   # --no-build everywhere: images are built by `build` (plain docker build);
   # letting compose build here would hit the buildx/daemon mismatch above.
   up)      gate enforce; "${COMPOSE[@]}" up -d --no-build "$@"; smoke ;;
-  down)    "${COMPOSE[@]}" down "$@" ;;
+  down)
+    mode=enforce
+    if [ "${1:-}" = "force" ] || [ "${1:-}" = "--force" ]; then mode=force; shift; fi
+    gate "${mode}"; "${COMPOSE[@]}" down "$@" ;;
   gate)    gate "${1:-enforce}" ;;
   smoke)   smoke ;;
   reprobe) reprobe "$@" ;;
@@ -183,7 +166,7 @@ case "${cmd}" in
   # Export only what is actually built: the sandbox images arrive in P3, and
   # `docker save` fails the whole command if any named image is absent.
   export-images)
-    local tag="${GAGENT_TAG:-latest}" out="${1:-/tmp/gagent-images.tgz}" imgs=()
+    tag="${GAGENT_TAG:-latest}" out="${1:-/tmp/gagent-images.tgz}" imgs=()
     for img in gagent-app gagent-gateway gagent-sandbox-python gagent-sandbox-qwen; do
       if docker image inspect "${img}:${tag}" >/dev/null 2>&1; then
         imgs+=("${img}:${tag}")

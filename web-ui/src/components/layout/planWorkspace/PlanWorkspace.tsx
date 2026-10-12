@@ -63,6 +63,7 @@ const ScopedPlanWorkspace: React.FC<{ planId: number | null; sessionId: string |
   const executionTasks = tasks.filter((task) => task.task_type === 'atomic');
   const completed = executionTasks.filter((task) => taskStatus(task) === 'completed').length;
   const failures = executionTasks.filter((task) => taskStatus(task) === 'failed').length;
+  const needsReview = executionTasks.filter((task) => taskStatus(task) === 'needs_review').length;
   const planTitle = treeQuery.data?.title || currentPlanTitle || (planId != null ? `Plan #${planId}` : '尚未创建计划');
   const artifactSessionId = artifactSourceSession(treeQuery.data) ?? undefined;
   const foreignSource = Boolean(artifactSessionId && artifactSessionId !== sessionId);
@@ -138,6 +139,7 @@ const ScopedPlanWorkspace: React.FC<{ planId: number | null; sessionId: string |
         {planId != null && <><span className="pw-separator">·</span><span>{completed} / {executionTasks.length} 个执行任务已完成</span>
           {activeJobs.length > 0 && <span className="pw-live-indicator">执行中</span>}
           {failures > 0 && <span className="pw-error-text">{failures} 个失败</span>}</>}
+        {needsReview > 0 && <span className="pw-review-text">{needsReview} 个待验收</span>}
       </div>
     </header>
     {sourceNotice && <Alert className="pw-alert" type="info" showIcon
