@@ -317,6 +317,7 @@ async def save_native_checkpoint(
         "cycle": json_value(cycle), "guard": json_value(guard),
         "thinking_steps": json_value(steps), "tools_used": list(tools_used),
         "native_cap_escalations": getattr(agent,"_native_cap_escalations",0),
+        "native_empty_truncated_streak": getattr(agent,"_native_empty_truncated_streak",0),
         "native_repair_cap": getattr(agent,"_native_repair_cap",None),
         "runtime_policy": policy_for(agent),
         "schema_policy": 2 if getattr(agent._schema_disclosure,"v2",False) else 1,

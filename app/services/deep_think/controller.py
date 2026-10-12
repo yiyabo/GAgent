@@ -325,6 +325,7 @@ async def _native_run_setup(
             list(restored.controller_state.get("execution_issues") or []),
         )
         agent._native_cap_escalations=restored.controller_state.get("native_cap_escalations",0)
+        agent._native_empty_truncated_streak=restored.controller_state.get("native_empty_truncated_streak",0)
         from .runtime_policy import restore_disclosure_controls
         restore_disclosure_controls(agent, restored.controller_state)
         agent._schema_disclosure.v2=restored.controller_state.get("schema_policy",1)==2
@@ -1222,6 +1223,9 @@ async def _native_no_tool_call_cycle(
     Extracted verbatim from ``_think_native``.
     """
     # No tool calls – pure thinking text.
+    from .native_validation import stop_empty_truncation
+    if await stop_empty_truncation(agent, current_step, thinking_steps):
+        return "break", ""
     # Try to parse structured JSON actions from content as compatibility fallback.
     parsed_actions = agent._try_parse_structured_actions(result.content or "")
     if parsed_actions:

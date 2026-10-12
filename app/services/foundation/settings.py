@@ -225,6 +225,11 @@ if _USE_PYDANTIC:
         backup_dir: str = Field(default="data/backups", env="BACKUP_DIR")
 
         agent_runtime_v2_enabled: bool = Field(default=False, env="AGENT_RUNTIME_V2_ENABLED")
+        plan_execution_budget_enabled: bool = Field(default=False, env="PLAN_EXECUTION_BUDGET_ENABLED")
+        plan_task_budget_seconds: float = Field(default=7200, gt=0, le=86400, env="PLAN_TASK_BUDGET_SECONDS")
+        plan_job_budget_seconds: float = Field(default=43200, gt=0, le=604800, env="PLAN_JOB_BUDGET_SECONDS")
+        plan_synthesis_reserve_seconds: float = Field(default=120, ge=0, le=300, env="PLAN_SYNTHESIS_RESERVE_SECONDS")
+        plan_close_reserve_seconds: float = Field(default=10, ge=0, le=60, env="PLAN_CLOSE_RESERVE_SECONDS")
         agent_argument_validation_enabled: Optional[bool] = Field(default=None, env="AGENT_ARGUMENT_VALIDATION_ENABLED")
         agent_schema_disclosure_v2_enabled: Optional[bool] = Field(default=None, env="AGENT_SCHEMA_DISCLOSURE_V2_ENABLED")
         agent_tool_receipt_compaction_enabled: bool = Field(default=False, env="AGENT_TOOL_RECEIPT_COMPACTION_ENABLED")
@@ -602,6 +607,11 @@ else:
             for attr,key in [('agent_runtime_v2_enabled','AGENT_RUNTIME_V2_ENABLED'),('artifact_versioning_enabled','ARTIFACT_VERSIONING_ENABLED'),('skill_recommendation_v2_enabled','SKILL_RECOMMENDATION_V2_ENABLED'),('skill_context_progressive_enabled','SKILL_CONTEXT_PROGRESSIVE_ENABLED')]:
                 setattr(self,attr,os.getenv(key,'0').lower() in {'1','true','yes','on'})
             self.chat_run_synthesis_reserve_seconds = max(0,min(300,float(os.getenv('CHAT_RUN_SYNTHESIS_RESERVE_SECONDS','0'))))
+            self.plan_execution_budget_enabled = os.getenv('PLAN_EXECUTION_BUDGET_ENABLED','0').lower() in {'1','true','yes','on'}
+            self.plan_task_budget_seconds = max(1,min(86400,float(os.getenv('PLAN_TASK_BUDGET_SECONDS','7200'))))
+            self.plan_job_budget_seconds = max(1,min(604800,float(os.getenv('PLAN_JOB_BUDGET_SECONDS','43200'))))
+            self.plan_synthesis_reserve_seconds = max(0,min(300,float(os.getenv('PLAN_SYNTHESIS_RESERVE_SECONDS','120'))))
+            self.plan_close_reserve_seconds = max(0,min(60,float(os.getenv('PLAN_CLOSE_RESERVE_SECONDS','10'))))
             for attr, key in [('agent_argument_validation_enabled', 'AGENT_ARGUMENT_VALIDATION_ENABLED'), ('agent_schema_disclosure_v2_enabled', 'AGENT_SCHEMA_DISCLOSURE_V2_ENABLED')]:
                 value = os.getenv(key)
                 setattr(self, attr, None if value is None else value.lower() in {'1','true','yes','on'})

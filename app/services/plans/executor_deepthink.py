@@ -506,6 +506,7 @@ class _DeepThinkMethods:
                 ),
             )
 
+        from .execution_budget import request_profile
         deep_think_agent = _facade().DeepThinkAgent(
             llm_client=self._llm._llm,
             available_tools=_execution_tools([
@@ -533,11 +534,7 @@ class _DeepThinkMethods:
             on_thinking_delta=on_thinking_delta,
             on_tool_start=on_tool_start,
             on_tool_result=on_tool_result,
-            request_profile={
-                "current_plan_id": node.plan_id, "current_task_id": node.id,
-                "session_id": session_context.get("session_id"),
-                "owner_id": session_context.get("owner_id"),
-            },
+            request_profile=request_profile(node.plan_id, node.id, session_context),
         )
         current_job_id = self._current_job_id()
         if current_job_id:

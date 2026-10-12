@@ -13,6 +13,7 @@ from pydantic import ValidationError
 from ...config.executor_config import ExecutorSettings, get_executor_settings
 from ...llm import LLMClient, NativeStreamResult, close_current_loop_async_client
 from app.services.run_budget import RunDeadlineExceeded, check_run_active
+from .execution_budget import bounded_plan_job, run_task as run_budgeted_task
 from app.repository.run_steps import StaleRunClaim
 from app.services.deep_think.checkpointing import ControllerRestoreError
 from ..tool_schemas import build_executor_tool_schemas, EXECUTOR_AVAILABLE_TOOLS
@@ -178,6 +179,7 @@ class PlanExecutor(_ArtifactMethods, _DelegateMethods, _DeepThinkMethods):
 
         return ancestor_chain, work_dir
 
+    @bounded_plan_job()
     def execute_plan(
         self,
         plan_id: int,
@@ -608,7 +610,8 @@ class PlanExecutor(_ArtifactMethods, _DelegateMethods, _DeepThinkMethods):
 
     def _run_task(self,plan_id,node,tree,config):
         from .artifact_versions import execute_bound
-        return execute_bound(self,plan_id,node,tree,config,lambda:self._run_task_unbound(plan_id,node,tree,config))
+        return run_budgeted_task(self, plan_id, node, lambda: execute_bound(
+            self, plan_id, node, tree, config, lambda: self._run_task_unbound(plan_id,node,tree,config)))
 
     def _run_task_unbound(
         self,

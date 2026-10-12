@@ -36,6 +36,7 @@ class RunBudget:
     close_reserve_seconds: float = 10.0
     cancel_token: CancelToken = field(default_factory=lambda: current_cancel_token() or CancelToken())
     started_at: float = field(default_factory=time.monotonic)
+    synthesis_reserve_seconds: Optional[float] = None
     closed: bool = field(default=False, init=False)
 
     def __post_init__(self) -> None:
@@ -45,6 +46,9 @@ class RunBudget:
         if parent is not None and parent.cancel_token is self.cancel_token:
             self.started_at = parent.started_at
             self.total_seconds = min(self.total_seconds, parent.total_seconds)
+            self.close_reserve_seconds = max(self.close_reserve_seconds, parent.close_reserve_seconds)
+        elif parent is not None:
+            self.total_seconds = min(self.total_seconds, parent.remaining_seconds(closeout=True))
             self.close_reserve_seconds = max(self.close_reserve_seconds, parent.close_reserve_seconds)
         self.close_reserve_seconds = min(max(0.0, self.close_reserve_seconds), self.total_seconds / 2)
         self.cancel_token.set_deadline(self.deadline_at - self.close_reserve_seconds, DEADLINE_REASON)
@@ -57,11 +61,16 @@ class RunBudget:
         reserve = 0.0 if closeout else self.close_reserve_seconds
         return max(0.0, self.deadline_at - reserve - time.monotonic())
 
-    def remaining_work_seconds(self) -> float:
+    @property
+    def effective_synthesis_reserve_seconds(self) -> float:
         from app.services.foundation.settings import get_settings
-        reserve=getattr(get_settings(),'chat_run_synthesis_reserve_seconds',0)
-        reserve=min(reserve,max(0,self.total_seconds-self.close_reserve_seconds)*.2)
-        return max(0,self.remaining_seconds()-reserve)
+        reserve = self.synthesis_reserve_seconds
+        if reserve is None:
+            reserve = getattr(get_settings(), 'chat_run_synthesis_reserve_seconds', 0)
+        return min(max(0, reserve), max(0, self.total_seconds-self.close_reserve_seconds)*.2)
+
+    def remaining_work_seconds(self) -> float:
+        return max(0, self.remaining_seconds()-self.effective_synthesis_reserve_seconds)
 
     def should_finalize(self) -> bool:
         return self.remaining_work_seconds()<=0
@@ -268,8 +277,7 @@ def should_finalize():
 
 async def run_work_stage(awaitable,*,stage,cancel_event=None):
     budget=current_run_budget()
-    from app.services.foundation.settings import get_settings
-    soft=getattr(get_settings(),'chat_run_synthesis_reserve_seconds',0)>0
+    soft = bool(budget and budget.effective_synthesis_reserve_seconds > 0)
     try:
         return await run_stage(awaitable,stage=stage,timeout=budget.remaining_work_seconds() if budget and soft else None,cancel_event=cancel_event)
     except asyncio.TimeoutError:

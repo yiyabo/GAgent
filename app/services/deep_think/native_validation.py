@@ -1,5 +1,5 @@
 """Response checks never manufacture execution or guess incomplete arguments."""
-import hashlib,json
+import hashlib,json,logging
 from app.services.foundation.settings import get_settings
 from .runtime_policy import policy_for
 
@@ -55,6 +55,9 @@ def observe_result(agent,result):
     diagnostics=getattr(result,"diagnostics",None) or {}
     agent._last_native_done_seen=diagnostics.get("done_seen",True) or diagnostics.get('repair_complete',False)
     if not policy_for(agent, get_settings())['arguments']:return
+    empty_truncation = (getattr(result, 'finish_reason', None) == 'length'
+                        and not result.tool_calls and not (result.content or '').strip())
+    agent._native_empty_truncated_streak = getattr(agent, '_native_empty_truncated_streak', 0) + 1 if empty_truncation else 0
     invalid=False
     for call in result.tool_calls:
         error=validate(call.arguments,schema_for(agent,call.name))
@@ -67,6 +70,25 @@ def observe_result(agent,result):
     if invalid and getattr(result,'finish_reason',None)=='length' and count<2:
         agent._native_repair_cap=8192;agent._native_cap_escalations=count+1
     else:agent._native_repair_cap=None
+
+
+async def stop_empty_truncation(agent, step, steps):
+    if getattr(agent, '_native_empty_truncated_streak', 0) < 2:
+        return False
+    reason = 'Stopped after two truncated responses with no answer or tool call; synthesizing available evidence.'
+    step.self_correction = reason
+    step.status = 'analyzing'
+    if not steps or steps[-1] is not step:
+        steps.append(step)
+    logging.getLogger(__name__).warning('[endgame] empty_output_truncation iteration=%s', step.iteration)
+    if agent.on_thinking:
+        await agent._safe_callback(step)
+    return True
+
+
+def bounded_synthesis(agent):
+    return (enabled() or bool(getattr(agent, 'request_profile', {}).get('plan_budget_enabled'))
+            or getattr(agent, '_native_empty_truncated_streak', 0) >= 2)
 
 
 class ToolCallRepair(list):

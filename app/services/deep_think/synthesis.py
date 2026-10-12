@@ -697,8 +697,8 @@ async def _generate_fallback_from_evidence(
 ) -> str:
     if not hasattr(agent.llm_client, "chat_async"):
         raise DeepThinkProtocolError("LLM client does not support chat_async")
-    from .native_validation import enabled
-    if enabled():
+    from .native_validation import bounded_synthesis
+    if bounded_synthesis(agent):
         if getattr(agent,"_synthesis_attempted",False):return _build_structured_fallback(agent,steps,user_query)
         agent._synthesis_attempted=True;max_retries=1
     if timeout is None:
@@ -969,8 +969,8 @@ async def _forced_synthesis_from_steps(
             synthesis_timeout,
             synthesis_max_tokens,
         )
-        from .native_validation import enabled
-        if enabled():
+        from .native_validation import bounded_synthesis
+        if bounded_synthesis(agent):
             if getattr(agent,'_synthesis_attempted',False):return _build_structured_fallback(agent,steps,user_query)
             agent._synthesis_attempted=True
         raw = await run_stage(
@@ -1004,8 +1004,8 @@ async def _fallback_answer_from_steps(
     user_query: str = "",
     task_context: Optional[TaskExecutionContext] = None,
 ) -> str:
-    from .native_validation import enabled
-    if enabled() and getattr(agent,'_synthesis_attempted',False):
+    from .native_validation import bounded_synthesis
+    if bounded_synthesis(agent) and getattr(agent,'_synthesis_attempted',False):
         return _build_structured_fallback(agent,steps,user_query)
     language = _dta().detect_reasoning_language(user_query)
     if not steps:

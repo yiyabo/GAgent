@@ -1076,7 +1076,9 @@ class PlanDecompositionJobManager:
         Returns False when the job (or its pause flag) no longer exists,
         signalling the caller to abort the execution loop.
         """
+        from app.services.run_budget import check_run_active
         while True:
+            check_run_active()
             with self._lock:
                 job = self._jobs.get(job_id)
                 event = self._execution_pause.get(job_id)

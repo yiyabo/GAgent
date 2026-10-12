@@ -34,21 +34,28 @@ _T = TypeVar("_T")
 class CancelToken:
     """A thread-safe cancellation flag shared by the loop and worker threads."""
 
-    __slots__ = ("_event", "_lock", "_reason", "_deadline", "_deadline_reason", "_closed")
+    __slots__ = ("_event", "_lock", "_reason", "_deadline", "_deadline_reason", "_closed", "_parent")
 
-    def __init__(self) -> None:
+    def __init__(self, parent: Optional["CancelToken"] = None) -> None:
         self._event = threading.Event()
         self._lock = threading.Lock()
         self._reason = ""
         self._deadline: Optional[float] = None
         self._deadline_reason = "run_deadline_exceeded"
         self._closed = False
+        self._parent = parent
 
     @property
     def cancelled(self) -> bool:
+        # One-way linkage: a child observes its parent, while closing or timing
+        # out one task never cancels the enclosing plan or a later sibling.
+        parent_reason = self._parent.reason if self._parent is not None and self._parent.cancelled else None
         # Thread/CLI supervisors enforce the deadline even if their parent
         # event loop is temporarily blocked by a synchronous bridge.
         with self._lock:
+            if parent_reason is not None and not self._event.is_set():
+                self._reason = parent_reason
+                self._event.set()
             if not self._event.is_set() and self._deadline is not None and time.monotonic() >= self._deadline:
                 self._reason = self._deadline_reason
                 self._event.set()
@@ -86,6 +93,14 @@ class CancelToken:
 
     def wait(self, timeout: Optional[float] = None) -> bool:
         """Block the calling thread until cancelled or *timeout* elapses."""
+        if self._parent is not None:
+            end = None if timeout is None else time.monotonic() + max(0, timeout)
+            while not self.cancelled:
+                remaining = None if end is None else end - time.monotonic()
+                if remaining is not None and remaining <= 0:
+                    return self.cancelled
+                self._event.wait(0.05 if remaining is None else min(0.05, remaining))
+            return True
         with self._lock:
             remaining = max(0.0, self._deadline - time.monotonic()) if self._deadline is not None else None
         if remaining is not None:

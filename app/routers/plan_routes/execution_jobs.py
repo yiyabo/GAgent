@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import asyncio
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -14,6 +15,8 @@ from app.services.plans.decomposition_jobs import (
 )
 from app.services.plans.dependency_enrichment import check_artifact_readiness
 from app.services.plans.plan_executor import ExecutionConfig
+from app.services.plans.execution_budget import bounded_plan_job, bounded_plan_task
+from app.services.run_budget import RunDeadlineExceeded, check_run_active
 
 from .dependency_plan import (
     _build_dependency_block_details,
@@ -30,6 +33,7 @@ def _facade() -> Any:
     return facade
 
 
+@bounded_plan_task
 def _run_task_audit_repair_after_execution(
     *,
     plan_id: int,
@@ -58,6 +62,8 @@ def _run_task_audit_repair_after_execution(
                 owner_id=owner_id,
             ),
         )
+    except (RunDeadlineExceeded, asyncio.CancelledError):
+        raise
     except Exception as exc:
         logger.exception("Task audit-repair loop failed for plan %s task %s", plan_id, task_id)
         return {
@@ -161,6 +167,7 @@ def _run_decomposition_job(
     )
 
 
+@bounded_plan_job(lambda: _facade().plan_decomposition_jobs)
 def _run_task_chain_job(
     *,
     job_id: str,
@@ -262,6 +269,7 @@ def _run_task_chain_job(
         }
 
         for idx, task_id in enumerate(task_order, start=1):
+            check_run_active()
             _facade().log_job_event(
                 "info",
                 "Executing chain step.",
@@ -282,6 +290,8 @@ def _run_task_chain_job(
                     task_id,
                     config=exec_config,
                 )
+            except (RunDeadlineExceeded, asyncio.CancelledError):
+                raise
             except Exception as exc:  # pragma: no cover - defensive
                 failed.append(task_id)
                 _publish_progress(current_step=idx, current_task_id=task_id)
@@ -366,6 +376,7 @@ def _run_task_chain_job(
                 # needs_review is not a failure (2026-10-11): the task ran but
                 # produced nothing, so the chain stops for a human to look at
                 # it while the job itself is recorded as succeeded.
+                check_run_active()
                 _facade().plan_decomposition_jobs.mark_success(
                     job_id,
                     result={
@@ -420,6 +431,7 @@ def _run_task_chain_job(
             current_step=total_steps,
             current_task_id=task_order[-1] if task_order else None,
         )
+        check_run_active()
         _facade().plan_decomposition_jobs.mark_success(
             job_id,
             result={
@@ -443,6 +455,7 @@ def _run_task_chain_job(
         reset_current_job(token)
 
 
+@bounded_plan_job(lambda: _facade().plan_decomposition_jobs)
 def _run_full_plan_job(
     *,
     job_id: str,
@@ -547,6 +560,7 @@ def _run_full_plan_job(
         }
 
         for idx, task_id in enumerate(task_order, start=1):
+            check_run_active()
             _facade().log_job_event(
                 "info",
                 "Executing plan step.",
@@ -876,6 +890,8 @@ def _run_full_plan_job(
                             "content": result.content[:200] if result.content else None,
                         },
                     )
+            except (RunDeadlineExceeded, asyncio.CancelledError):
+                raise
             except Exception as exc:
                 repair_result: Optional[Dict[str, Any]] = None
                 failure_payload = {
@@ -898,6 +914,8 @@ def _run_full_plan_job(
                         owner_id=owner_id,
                     )
                     audit_repairs[str(task_id)] = repair_result
+                except (RunDeadlineExceeded, asyncio.CancelledError):
+                    raise
                 except Exception as repair_exc:
                     audit_repairs[str(task_id)] = {"success": False, "error": str(repair_exc), "trigger_status": "failed"}
                 if repair_result is not None and _status_after_audit_repair("failed", repair_result) == "completed":
@@ -1034,6 +1052,7 @@ def _run_full_plan_job(
                 stats=final_stats,
             )
         else:
+            check_run_active()
             _facade().plan_decomposition_jobs.mark_success(
                 job_id,
                 result=final_result,
