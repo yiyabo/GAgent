@@ -507,3 +507,13 @@ def test_task_verifier_keeps_manually_accepted_publish_gap_completed(monkeypatch
     assert finalization.final_status == "completed"
     assert finalization.payload["status"] == "completed"
     assert finalization.payload["metadata"]["artifact_authority"]["status"] == "failed"
+
+
+def test_already_executed_review_task_is_not_shown_as_unstarted_due_to_dependencies(monkeypatch,tmp_path):
+    monkeypatch.chdir(tmp_path)
+    first=PlanNode(id=1,plan_id=40,name='Upstream',status='needs_review',execution_result=json.dumps({'status':'needs_review'}))
+    second=PlanNode(id=2,plan_id=40,name='Existing report',dependencies=[1],status='needs_review',
+        execution_result=json.dumps({'status':'needs_review','metadata':{'delivery_verification':{'message':'Content awaits review.'}}}))
+    states=PlanStatusResolver().resolve_plan_states(40,_tree(40,first,second))
+    assert states[2]['effective_status']=='needs_review'
+    assert states[2]['status_reason']=='Content awaits review.'

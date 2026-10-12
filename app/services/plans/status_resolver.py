@@ -435,6 +435,16 @@ class PlanStatusResolver:
                 effective_status = "failed"
                 status_reason = "Explicit acceptance or a hard verification check failed."
                 reason_code = "acceptance_rejected"
+            elif raw_status == "needs_review" or payload_status == "needs_review":
+                # Ran but produced nothing and executed no primary tool: a
+                # human decides whether the result is acceptable (2026-10-11).
+                effective_status = "needs_review"
+                status_reason = (
+                    _truncate_reason((metadata.get("delivery_verification") or {}).get("message"))
+                    or _truncate_reason(content)
+                    or "Task ran without a primary tool or output; needs human review."
+                )
+                reason_code = "needs_review"
             elif incomplete_dependencies:
                 effective_status = "blocked"
                 status_reason = _dependency_block_reason(task_id, incomplete_dependencies)
@@ -536,16 +546,6 @@ class PlanStatusResolver:
                     effective_status = "completed"
                     status_reason = _truncate_reason(content or raw_result_text) or "Completed."
                     reason_code = "completed"
-            elif raw_status == "needs_review" or payload_status == "needs_review":
-                # Ran but produced nothing and executed no primary tool: a
-                # human decides whether the result is acceptable (2026-10-11).
-                effective_status = "needs_review"
-                status_reason = (
-                    _truncate_reason((metadata.get("delivery_verification") or {}).get("message"))
-                    or _truncate_reason(content)
-                    or "Task ran without a primary tool or output; needs human review."
-                )
-                reason_code = "needs_review"
             elif raw_status == "skipped":
                 if blocked_meta:
                     effective_status = "blocked"

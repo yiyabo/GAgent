@@ -106,3 +106,15 @@ def test_http_listing_is_owner_scoped_and_keeps_old_results_compatible(project,a
         assert client.get(f'/plans/{plan}/artifacts',headers={'X-Forwarded-User':'other'}).status_code==403
         legacy=client.get(f'/plans/{plan}/results',headers={'X-Forwarded-User':'owner'})
         assert legacy.status_code==200 and 'raw' in legacy.json()['items'][0]
+
+
+def test_pending_recovery_cannot_overwrite_an_upgrade_to_v2(project,monkeypatch):
+    from app.repository import plan_artifact_queries as queries
+    repo,plan,root,task,folder=project;ready=preview(project)
+    with monkeypatch.context() as patch:
+        patch.setattr(queries,'mark_recovered_tasks_for_review',lambda *a:(_ for _ in ()).throw(RuntimeError('crash')))
+        with pytest.raises(RuntimeError):apply_recovery(repo,ready)
+    path=artifact_manifest_path(plan,'session_recovery');manifest=json.loads(path.read_text())
+    manifest['schema_version']=2;path.write_text(json.dumps(manifest))
+    with pytest.raises(ValueError,match='requires_v1'):apply_recovery(repo,ready)
+    assert repo.get_plan_tree(plan).nodes[task].status=='completed'

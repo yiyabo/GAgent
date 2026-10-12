@@ -124,6 +124,7 @@ def apply_recovery(repo,preview):
         manifest=json.loads(path.read_text()) if path.exists() else {}
         if (manifest.get('recoveries') or {}).get(rid,{}).get('status')=='applied':
             return {'recovery_id':rid,'status':'already_applied','files':len(preview['entries'])}
+        if manifest.get('schema_version',1)!=1: raise ValueError('recovery_requires_v1_manifest')
         pending=(manifest.get('recoveries') or {}).get(rid)
         if not pending and digest(manifest)!=preview['manifest_digest']: raise ValueError('manifest_changed')
         tree=repo.get_plan_tree(plan_id)
