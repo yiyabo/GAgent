@@ -99,6 +99,8 @@ from .code_executor_helpers import (
     summarize_amem_experiences_for_cc as _summarize_amem_experiences_for_cc_fn,
 )
 from .code_executor_bridge import _code_executor_job_stream_loggers
+from .plan_status_reply import task_status_question, task_status_reply
+from .plan_job_handoff import stream_chat_plan_handoff
 from .guardrail_handlers import (
     apply_completion_claim_guardrail as _apply_completion_claim_guardrail_fn,
     apply_experiment_fallback as _apply_experiment_fallback_fn,
@@ -1354,6 +1356,37 @@ class StructuredChatAgent:
         """
         routing_decision, route_profile = self._resolve_request_routing(user_message)
         effective_user_message = routing_decision.effective_user_message
+        status_ids = task_status_question(effective_user_message) if self.plan_session.plan_id is not None and not routing_decision.manual_deep_think else []
+        if status_ids:
+            self.extra_context["explicit_task_override"] = False
+            self.extra_context["plan_execute_required"] = False
+            self.extra_context["full_plan_execution"] = False
+            self.extra_context.pop("pending_scope_task_ids", None)
+            self.extra_context.pop("_full_plan_executor_delegate", None)
+            response_text = task_status_reply(self.plan_session.repo, self.plan_session.plan_id, status_ids)
+            response_metadata = {"plan_id": self.plan_session.plan_id, "read_only_task_status": True,
+                                 **routing_decision.metadata()}
+            async for chunk in _stream_direct_image_response(
+                self, response_text=response_text, response_metadata=response_metadata,
+                event_sink=event_sink,
+            ):
+                yield chunk
+            return
+        if (
+            self.plan_session.plan_id is not None
+            and str((self.extra_context or {}).get("owner_id") or "").strip()
+            and (routing_decision.full_plan_execution or "plan_execution_hint" in routing_decision.route_reason_codes or
+                 (routing_decision.explicit_task_override and len(routing_decision.explicit_task_ids) == 1))
+        ):
+            self.extra_context["explicit_task_override"] = False
+            self.extra_context["plan_execute_required"] = False
+            self.extra_context["full_plan_execution"] = False
+            self.extra_context.pop("pending_scope_task_ids", None)
+            self.extra_context.pop("_full_plan_executor_delegate", None)
+            target_id = None if (routing_decision.full_plan_execution or "plan_execution_hint" in routing_decision.route_reason_codes) else routing_decision.explicit_task_ids[0]
+            async for chunk in stream_chat_plan_handoff(self, target_id, event_sink=event_sink):
+                yield chunk
+            return
         self._update_routing_context(routing_decision)
         _seed_active_subject_from_routing(self, routing_decision)
         if self.session_id:

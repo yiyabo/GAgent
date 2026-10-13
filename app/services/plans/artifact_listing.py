@@ -3,6 +3,7 @@ import base64
 import hashlib
 import json
 from .artifact_contracts import artifact_manifest_path
+from .declared_output_listing import list_declared_outputs
 from app.repository.plan_artifact_queries import artifact_store_session, published_receipts
 
 FIELDS = {'path','deliverable_path','version','artifact_version_id','freshness','origin',
@@ -38,14 +39,19 @@ def list_artifacts(plan_id, *, task_id=None, cursor=None, limit=50):
     if not isinstance(manifest,dict) or not isinstance(manifest.get('artifacts',{}),dict):
         raise ValueError('invalid_artifact_manifest')
     entries = {}
+    published_sources = set()
     for producer, records in published_receipts(plan_id, task_id):
         if not isinstance(records,dict):
             continue
         for alias, record in records.items():
+            if isinstance(record, dict):
+                published_sources.add(str(record.get('source_path') or record.get('path') or ''))
             entry = _entry(plan_id, producer, alias, record, session)
             if entry: entries[alias] = entry
     # Manifest pointers supersede older receipts, including changed producers.
     for alias, record in manifest.get('artifacts',{}).items():
+        if isinstance(record, dict):
+            published_sources.add(str(record.get('source_path') or record.get('path') or ''))
         entries.pop(alias, None)
         producer = record.get('producer_task_id') if isinstance(record,dict) else None
         if task_id is not None and producer != task_id:
@@ -73,5 +79,8 @@ def list_artifacts(plan_id, *, task_id=None, cursor=None, limit=50):
         page.append(entry); size += weight
     end = offset+len(page)
     next_cursor = base64.urlsafe_b64encode(json.dumps([fingerprint,end]).encode()).decode() if end<len(rows) else None
+    declared, declared_truncated = list_declared_outputs(plan_id,session,task_id)
+    declared = [item for item in declared if item['path'] not in published_sources]
     return {'plan_id':plan_id,'session_id':session,'schema_version':manifest.get('schema_version',1),
-            'total':len(rows),'items':page,'next_cursor':next_cursor,'snapshot':fingerprint}
+            'total':len(rows),'items':page,'next_cursor':next_cursor,'snapshot':fingerprint,
+            'declared_outputs':declared,'declared_outputs_truncated':declared_truncated}

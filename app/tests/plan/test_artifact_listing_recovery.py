@@ -36,6 +36,32 @@ def test_listing_is_small_even_with_megabytes_of_thoughts_and_raw_payloads(proje
     assert second['next_cursor'] is None
 
 
+def test_declared_outputs_show_accepted_and_partial_files_without_scratch(project):
+    repo, plan, root, task, folder = project
+    output = folder / 'results' / 'sections' / '01_intro.md'
+    output.parent.mkdir(parents=True)
+    output.write_text('# Introduction\n')
+    scratch = folder / 'scratch.py'
+    scratch.write_text('print(1)')
+    spec = {'required_outputs': [{'kind': 'document', 'min_count': 5,
+                                   'extensions': ['.md'], 'target_path': 'results/sections'}],
+            'source': 'explicit'}
+    repo.update_task(plan, task, metadata={'output_spec': spec, 'output_spec_base_dir': str(folder)},
+                     status='failed', execution_result=json.dumps({'metadata': {
+                         'output_spec_base_dir': str(folder),
+                         'output_verification': {'status': 'failed', 'matched_counts': [1], 'artifact_paths': [str(output), str(scratch)]},
+                     }}))
+    listing = list_artifacts(plan, task_id=task)
+    assert listing['total'] == 0
+    assert [(item['path'], item['output_status']) for item in listing['declared_outputs']] == [(str(output), 'partial')]
+    assert (listing['declared_outputs'][0]['matched_count'], listing['declared_outputs'][0]['required_count']) == (1, 5)
+    repo.update_task(plan, task, status='completed', execution_result=json.dumps({'metadata': {
+        'output_spec_base_dir': str(folder),
+        'output_verification': {'status': 'passed', 'artifact_paths': [str(output), str(scratch)]},
+    }}))
+    assert list_artifacts(plan, task_id=task)['declared_outputs'][0]['output_status'] == 'accepted'
+
+
 def test_manifest_overrides_receipts_and_cursor_rejects_changes(project):
     repo,plan,root,task,folder=project
     repo.update_task(plan,task,execution_result=json.dumps({'metadata':{'published_artifacts':{'one':{'path':'old.csv'},'two':{'path':'two.csv'}}}}))
