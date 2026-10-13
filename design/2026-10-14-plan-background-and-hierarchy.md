@@ -41,7 +41,12 @@ analysis continue in chat. A status question does not authorize execution.
    `DECOMP_RETRY_LIMIT=1`. Invalid JSON is regenerated, never patched into guessed
    children. The synchronous stream forwards the thinking policy to the provider.
 6. The UI retains unfinished composite types and exposes a partial-decomposition
-   notice. Historical #185 files/results are retained; displaying that its
+   notice with a usable "继续拆解" action on the selected childless stage. This
+   submits the existing asynchronous decomposition API and shows its own job
+   log; it does not execute the research task. Submission callbacks are scoped
+   to the initiating session/plan/task, and queued runs disable repeat clicks.
+   Job-board decomposition records retain their target task so reopening the
+   workspace still shows the associated run. Historical #185 files/results are retained; displaying that its
    hierarchy is incomplete does not fabricate missing child tasks.
 
 ## Verification and release

@@ -6,9 +6,10 @@ import { planTreeApi } from '@api/planTree';
 import { useTasksStore } from '@store/tasks';
 import TaskExecuteModal from '@components/tasks/detail/TaskExecuteModal';
 import { ExecutionResult } from '@components/tasks/detail/TaskDetailSections';
+import { useCallbackScope } from '@components/tasks/detail/useCallbackScope';
 import JobLogPanel from '@components/chat/JobLogPanel';
 import PlanTaskArtifacts from '../planArtifacts/PlanTaskArtifacts';
-import type { BackgroundTaskItem, PlanTaskNode } from '@/types';
+import type { BackgroundTaskItem, PlanSyncEventDetail, PlanTaskNode } from '@/types';
 import { isActiveJob, selectTaskJob, statusLabel, taskStatus } from './model';
 import { TaskStatusIcon } from './TaskOutline';
 
@@ -20,10 +21,48 @@ interface Props {
 const SelectedTaskDetail: React.FC<Props> = ({ planId, sessionId, artifactSessionId, task, tasks, jobs, executionBlocked = false,
   onSelectTask, onShowHistory, onBack, onRefresh }) => {
   const [executeOpen, setExecuteOpen] = useState(false);
-  const [startedJobId, setStartedJobId] = useState<string | null>(null);
+  const [startedJob, setStartedJob] = useState<{ job_id: string; job_type: string; status: string } | null>(null);
+  const [decomposing, setDecomposing] = useState(false);
+  const [decompositionError, setDecompositionError] = useState<string | null>(null);
+  const scope = `${sessionId}:${planId}:${task.id}:${executionBlocked}`;
+  const beginRequest = useCallbackScope(scope);
+  useEffect(() => { setStartedJob(null); setDecomposing(false); setDecompositionError(null); setExecuteOpen(false); }, [scope]);
   const taskMap = useMemo(() => new Map(tasks.map((item) => [item.id, item])), [tasks]);
   const job = selectTaskJob(jobs, task.id);
-  const running = taskStatus(task) === 'running' || Boolean(job && isActiveJob(job));
+  const running = taskStatus(task) === 'running' || Boolean(job && isActiveJob(job)) ||
+    Boolean(startedJob && ['running', 'in_progress', 'queued'].includes(startedJob.status));
+  const needsDecomposition = task.task_type === 'composite' && taskStatus(task) !== 'completed' &&
+    !tasks.some((item) => item.parent_id === task.id);
+  useEffect(() => {
+    const current = jobs.find((item) => item.job_id === startedJob?.job_id);
+    if (current) setStartedJob((previous) => previous ? { ...previous, status: current.status } : previous);
+  }, [jobs, startedJob?.job_id]);
+  useEffect(() => {
+    const completed = (event: Event) => {
+      const detail = (event as CustomEvent<PlanSyncEventDetail>).detail;
+      if (detail?.type === 'plan_jobs_completed' && detail.plan_id === planId && detail.job_id === startedJob?.job_id) {
+        setStartedJob((previous) => previous ? { ...previous, status: detail.status || 'completed' } : previous);
+      }
+    };
+    window.addEventListener('tasksUpdated', completed);
+    return () => window.removeEventListener('tasksUpdated', completed);
+  }, [planId, startedJob?.job_id]);
+  const continueDecomposition = async () => {
+    if (running || decomposing || executionBlocked || !needsDecomposition) return;
+    const isCurrent = beginRequest();
+    setDecomposing(true); setDecompositionError(null);
+    try {
+      const response = await planTreeApi.decomposeTask(task.id, {
+        plan_id: planId, expand_depth: 1, allow_existing_children: false, async_mode: true,
+      });
+      if (!isCurrent()) return;
+      if (!response.success || !response.job?.job_id) throw new Error(response.message || '阶段拆解未能启动，请重试。');
+      setStartedJob({ job_id: response.job.job_id, job_type: 'plan_decompose', status: response.job.status });
+      onRefresh();
+    } catch (error) {
+      if (isCurrent()) setDecompositionError(error instanceof Error ? error.message : '阶段拆解未能启动，请重试。');
+    } finally { if (isCurrent()) setDecomposing(false); }
+  };
   const result = useQuery({
     queryKey: ['planTree', 'taskResult', planId, task.id],
     queryFn: () => planTreeApi.getTaskResult(planId, task.id),
@@ -31,7 +70,7 @@ const SelectedTaskDetail: React.FC<Props> = ({ planId, sessionId, artifactSessio
   });
   useEffect(() => { void result.refetch(); }, [task.status, task.effective_status, task.freshness, task.updated_at, result.refetch]);
   const openDetails = () => { if (!executionBlocked) useTasksStore.getState().openTaskDrawer(task); };
-  const jobId = startedJobId ?? job?.job_id;
+  const jobId = startedJob?.job_id ?? job?.job_id;
   const dependencies = task.dependencies ?? [];
   return <section className="pw-detail" aria-label="选中任务详情">
     <div className="pw-detail-header">
@@ -42,13 +81,16 @@ const SelectedTaskDetail: React.FC<Props> = ({ planId, sessionId, artifactSessio
         <span className={`pw-status-label pw-status-${taskStatus(task)}`}><TaskStatusIcon status={taskStatus(task)} />{statusLabel(taskStatus(task))}</span>
         <Space size={6}>
           <Button size="small" icon={<ExportOutlined />} disabled={executionBlocked} title={executionBlocked ? '打开来源会话后可操作' : undefined} onClick={openDetails}>完整详情</Button>
-          <Button size="small" type="primary" icon={<PlayCircleOutlined />} disabled={running || executionBlocked} onClick={() => setExecuteOpen(true)}>
-            {task.status === 'failed' ? '重新执行' : '执行任务'}
+          <Button size="small" type="primary" icon={needsDecomposition ? <NodeIndexOutlined /> : <PlayCircleOutlined />}
+            loading={decomposing} disabled={running || decomposing || executionBlocked}
+            onClick={() => needsDecomposition ? void continueDecomposition() : setExecuteOpen(true)}>
+            {needsDecomposition ? '继续拆解' : task.status === 'failed' ? '重新执行' : '执行任务'}
           </Button>
         </Space>
       </div>
     </div>
     <div className="pw-detail-body">
+      {decompositionError && <Alert type="error" showIcon message={decompositionError} />}
       {task.freshness && task.freshness !== 'fresh' && <Alert type={task.freshness === 'stale' ? 'warning' : 'info'} showIcon
         message={statusLabel(task.freshness)} description={task.stale_reasons?.join('；') || undefined} />}
       {task.status_reason && <Alert type={taskStatus(task) === 'failed' ? 'error' : 'info'} showIcon message={task.status_reason} />}
@@ -65,7 +107,7 @@ const SelectedTaskDetail: React.FC<Props> = ({ planId, sessionId, artifactSessio
       <section className="pw-detail-section"><div className="pw-section-heading"><h3><HistoryOutlined /> 执行过程</h3>
         <Button type="link" size="small" onClick={onShowHistory}>计划运行记录</Button></div>
         {jobId ? <><p className="pw-muted pw-small">{job?.mode === 'full_plan' ? '以下为包含该任务的计划运行日志。' : '查看关联运行的实时步骤与日志。'}</p>
-          <JobLogPanel key={jobId} defaultExpanded compact jobId={jobId} planId={planId} jobType={job?.job_type ?? 'plan_execute'} targetTaskName={task.name} />
+          <JobLogPanel key={jobId} defaultExpanded compact jobId={jobId} planId={planId} jobType={startedJob?.job_type ?? job?.job_type ?? 'plan_execute'} targetTaskName={task.name} />
         </> : <div className="pw-quiet-state">{running ? '任务正在执行，尚未收到关联运行记录。' : '暂无可关联到此任务的运行记录。'}
           <span>所有计划级执行记录保留在“运行记录”中。</span></div>}
       </section>
@@ -84,7 +126,7 @@ const SelectedTaskDetail: React.FC<Props> = ({ planId, sessionId, artifactSessio
       currentSessionId={sessionId} activeTask={task} isTaskDrawerOpen taskMap={taskMap}
       handleDependencyClick={(id) => { setExecuteOpen(false); onSelectTask(id); }}
       refetchPlanTasks={onRefresh} refetchTaskResult={() => { void result.refetch(); }}
-      onExecutionStarted={(id) => { setStartedJobId(id); onRefresh(); }} />}
+      onExecutionStarted={(id) => { setStartedJob({ job_id: id, job_type: 'plan_execute', status: 'queued' }); onRefresh(); }} />}
   </section>;
 };
 export default SelectedTaskDetail;
