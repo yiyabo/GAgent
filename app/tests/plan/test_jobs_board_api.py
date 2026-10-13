@@ -14,6 +14,20 @@ from app.database import plan_db_connection
 from app.services.request_principal import LEGACY_LOCAL_OWNER_ID
 
 
+def test_decomposition_progress_retains_target_task_for_reopened_workspace() -> None:
+    progress = job_routes._extract_item_progress(
+        category="task_creation", status="queued",
+        job_payload={"job_type": "plan_decompose", "task_id": 4, "stats": {}, "params": {}},
+    )
+    assert progress["current_task_id"] == 4
+    assert progress["progress_status"] == "queued"
+    whole_plan = job_routes._extract_item_progress(
+        category="task_creation", status="queued",
+        job_payload={"job_type": "plan_decompose", "task_id": None},
+    )
+    assert "current_task_id" not in whole_plan
+
+
 def _create_board_db() -> sqlite3.Connection:
     conn = sqlite3.connect(":memory:", check_same_thread=False)
     conn.row_factory = sqlite3.Row

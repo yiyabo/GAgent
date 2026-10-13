@@ -461,6 +461,8 @@ def _extract_item_progress(
                 progress_text = f"{done}/{total}"
 
     if job_type == "plan_decompose" or category == "task_creation":
+        if job_type == "plan_decompose":
+            current_task_id = _to_int(payload.get("task_id"))
         node_budget = _to_int(params.get("node_budget"))
         if node_budget is None:
             node_budget = _to_int(stats.get("node_budget"))

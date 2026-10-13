@@ -44,7 +44,7 @@ export function planTreeToTasks(tree: PlanTreeResponse): Task[] {
     const isRoot = node.parent_id == null;
     const hasChildren = childIds.length > 0;
     const metadata = (node.metadata as Record<string, any>) || {};
-    const unfinishedStage = metadata.task_type === 'composite' &&
+    const unfinishedStage = !hasChildren && metadata.task_type === 'composite' &&
       (metadata.decomposition_status === 'failed' || metadata.decomposition_status === 'pending' || failedDecomposition.has(id));
     const taskType: Task['task_type'] = isRoot ? 'root' : hasChildren || unfinishedStage ? 'composite' : 'atomic';
     const status = normalizeTaskStatus(node.effective_status ?? node.status);
