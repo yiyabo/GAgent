@@ -36,6 +36,24 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.clearAllTimers(); vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe('job stream connection lifecycle', () => {
+  it('starts a fresh visible phase for repairs while retaining the original log', async () => {
+    const {result} = renderHook(() => useJobLogStream({jobId: 'job-a', planId: 1}));
+    await settle();
+    const source = FakeEventSource.instances[0];
+    const original = {id: 1, timestamp: '2026-10-13T02:00:00Z', level: 'info', message: 'original',
+      metadata: {sub_type: 'thinking_step', step: {iteration: 42, thought: 'original execution', status: 'thinking'}}};
+    const repair = {id: 2, timestamp: '2026-10-13T02:00:01Z', level: 'info', message: 'repair',
+      metadata: {sub_type: 'repair_progress', status: 'repairing', attempt: 1, max_attempts: 2}};
+    const next = {id: 3, timestamp: '2026-10-13T02:00:02Z', level: 'info', message: 'inspect',
+      metadata: {sub_type: 'thinking_step', step: {iteration: 1, thought: 'inspect existing files', status: 'thinking'}}};
+    await act(async () => source.emit({type: 'snapshot', job: {...snapshot(), logs: [original, repair, next]}}));
+    expect(result.current.thinkingProcess.steps.map(step => step.iteration)).toEqual([1]);
+    expect(result.current.logs).toHaveLength(3);
+    await act(async () => source.emit({type: 'event', status: 'running', event: {
+      ...repair, id: 4, timestamp: '2026-10-13T02:00:03Z', metadata: {...repair.metadata, attempt: 2},
+    }}));
+    expect(result.current.thinkingProcess.steps).toEqual([]);
+  });
   it('keeps one bootstrap and stream despite fresh metadata and changing heartbeat content', async () => {
     const {result} = renderHook(() => useJobLogStream({jobId: 'job-a', planId: 1}));
     await settle();

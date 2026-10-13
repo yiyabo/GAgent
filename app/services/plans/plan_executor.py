@@ -394,6 +394,7 @@ class PlanExecutor(_ArtifactMethods, _DelegateMethods, _DeepThinkMethods):
             if result.status in ("failed", "skipped"):
                 needs_recovery = (
                     cfg.auto_recovery
+                    and result.metadata.get("failure_kind") != "contract_mismatch"
                     and recovery_attempts.get(node.id, 0) < cfg.max_recovery_attempts
                 )
 
@@ -1062,6 +1063,10 @@ class PlanExecutor(_ArtifactMethods, _DelegateMethods, _DeepThinkMethods):
                         result_payload,
                         execution_status=task_status,
                     )
+                    if self._should_repair_contract(finalization) and self._contract_repair_limit(config):
+                        return self._run_task_with_deep_think(plan_id=plan_id, node=node, parent=parent,
+                            dependencies=dependencies, plan_outline=outline, tree=tree, config=config,
+                            repair_finalization=finalization)
                     finalization, raw_response = self._materialize_finalization(
                         plan_id,
                         node,

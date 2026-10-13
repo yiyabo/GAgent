@@ -129,9 +129,14 @@ def test_real_controller_completion_protocol_does_not_bypass_output_verification
 class _RepairAgent:
     def __init__(self, *args, **kwargs):
         self.calls = []
+        self.queries = []
+        self.limits = []
+        self.max_iterations = 152
 
     async def think(self, query, context=None, task_context=None):
         self.calls.append(context.get("contract_repair") if context else None)
+        self.queries.append(query)
+        self.limits.append(self.max_iterations)
         return _missing_result()
 
 
@@ -191,6 +196,37 @@ def test_invalid_per_run_limit_is_rejected(value):
         ExecutionConfig(contract_repair_attempts=value)
 
 
+def test_repair_feedback_is_specific_and_second_attempt_changes_method(task_case):
+    executor,repo,plan,task,_,_=task_case(setting_limit=2)
+    node=repo.get_node(plan,task)
+    final,_=executor._finalize_task_execution(plan,node,{'status':'success','content':'Partial',
+        'metadata':{'tool_failures':[{'error':"KeyError: summary"}]}},execution_status='completed')
+    agent=_RepairAgent()
+    result=executor._attempt_contract_repair_with_deep_think(plan_id=plan,node=node,
+        task_context=TaskExecutionContext(task_id=task),session_context={},deep_think_agent=agent,
+        finalization=final,tool_result_context={})
+    assert 'answer.json' in agent.queries[0] and 'KeyError: summary' in agent.queries[0]
+    assert 'simpler method' in agent.queries[1]
+    assert agent.limits==[12,12] and agent.max_iterations==152
+    assert result.final_status=='failed' and len(result.payload['metadata']['repair_history'])==2
+
+
+def test_repair_respects_existing_deadline_without_opening_another_attempt(task_case):
+    from app.services.cancellation import CancelToken,set_cancel_token,reset_cancel_token
+    from app.services.run_budget import RunDeadlineExceeded
+    executor,repo,plan,task,_,_=task_case();node=repo.get_node(plan,task)
+    final,_=executor._finalize_task_execution(plan,node,{'status':'success','content':'Missing','metadata':{}},execution_status='completed')
+    token=CancelToken();token.set('run_deadline_exceeded');handle=set_cancel_token(token);agent=_RepairAgent()
+    try:
+        with pytest.raises(RunDeadlineExceeded):
+            executor._attempt_contract_repair_with_deep_think(plan_id=plan,node=node,
+                task_context=TaskExecutionContext(task_id=task),session_context={},deep_think_agent=agent,
+                finalization=final,tool_result_context={})
+        assert agent.calls==[] and agent.max_iterations==152
+    finally:
+        reset_cancel_token(handle)
+
+
 def test_mutated_invalid_config_is_rejected_before_initial_provider_call(task_case):
     executor, repo, plan, task, target, provider = task_case()
     config = _config()
@@ -198,3 +234,46 @@ def test_mutated_invalid_config_is_rejected_before_initial_provider_call(task_ca
     with pytest.raises(ValueError, match="contract_repair_attempts"):
         executor.execute_task(plan, task, config=config)
     assert provider.calls == 0 and not target.exists()
+
+
+@pytest.mark.parametrize('protocol',['native','strict'])
+def test_targeted_repair_uses_real_controller_and_kernel_after_failed_verification(task_case,monkeypatch,protocol):
+    executor,repo,plan,task,target,provider=task_case(protocol=protocol,produce=False)
+    original=provider.next_response;state={'repair':False,'initial_calls':0}
+    def response(messages):
+        if 'Repair contract mismatch' in json.dumps(messages) and not state['repair']:
+            state.update(repair=True,initial_calls=provider.calls)
+            provider.calls=0;provider.produce=True
+        return original(messages)
+    monkeypatch.setattr(provider,'next_response',response)
+    result=executor.execute_task(plan,task,config=_config())
+    assert result.status=='completed',(state,provider.calls,target.exists(),result.metadata.get('repair_history'),result.metadata.get('failure_kind'),result.metadata.get('output_verification'))
+    assert state['repair'] and state['initial_calls']>0
+    assert json.loads(target.read_text())=={'count':2}
+    assert result.metadata['repair_attempts']==1
+    assert result.metadata['output_verification']['status']=='passed'
+    assert repo.get_node(plan,task).status=='completed'
+
+
+@pytest.mark.parametrize('backend',['legacy','external'])
+def test_other_backends_enter_the_same_local_repair_without_repeating_initial_work(task_case,monkeypatch,backend):
+    from app.services.plans.executor_models import ExecutionResponse
+    from app.services.plans.task_delegate_executor import TaskDelegationResult
+    executor,repo,plan,task,target,provider=task_case(produce=True)
+    calls=[]
+    if backend=='legacy':
+        monkeypatch.setattr(executor,'_should_use_deep_think',lambda config:False)
+        def generate(*a,**kw):
+            calls.append(1)
+            return ExecutionResponse(status='success',content='Initial attempt did not write the file')
+        executor._llm.generate=generate
+    else:
+        monkeypatch.setattr(executor,'_should_delegate_plan_task',lambda config:True)
+        def delegate(*a,**kw):
+            calls.append(1)
+            return TaskDelegationResult(status='completed',summary='Delegate omitted the requested file')
+        monkeypatch.setattr(executor._task_delegate_executor,'execute',delegate)
+    result=executor.execute_task(plan,task,config=_config())
+    assert result.status=='completed',result.to_dict()
+    assert calls==[1] and json.loads(target.read_text())=={'count':2}
+    assert result.metadata['contract_repair'] is True

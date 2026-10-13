@@ -190,6 +190,10 @@ class _DelegateMethods:
             payload,
             execution_status=execution_status,
         )
+        if self._should_repair_contract(finalization) and self._contract_repair_limit(config):
+            return self._run_task_with_deep_think(plan_id=plan_id, node=node, parent=parent,
+                dependencies=self._resolve_dependencies(tree, node), plan_outline=None, tree=tree, config=config,
+                repair_finalization=finalization)
         finalization, raw_response = self._materialize_finalization(
             plan_id,
             node,

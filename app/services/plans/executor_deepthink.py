@@ -37,6 +37,8 @@ The module uses its own ``logging.getLogger(__name__)`` (split precedent).
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
+from dataclasses import replace
 import json
 import logging
 import os
@@ -138,11 +140,13 @@ class _DeepThinkMethods:
         plan_outline: Optional[str],
         tree: PlanTree,
         config: ExecutionConfig,
+        repair_finalization: Optional[VerificationFinalization] = None,
     ) -> ExecutionResult:
         check_run_active()
         self._contract_repair_limit(config)
         try:
-            self._repo.update_task(plan_id, node.id, status="running", execution_result="")
+            self._repo.update_task(plan_id, node.id, status="running", execution_result=(
+                json.dumps(repair_finalization.payload, ensure_ascii=False) if repair_finalization else ""))
             node.status = "running"
         except (RunDeadlineExceeded, StaleRunClaim, ControllerRestoreError):
             raise
@@ -553,6 +557,18 @@ class _DeepThinkMethods:
                 logger.warning("Failed to register runtime controller: %s", exc)
 
         try:
+            if repair_finalization is not None:
+                finalization = self._attempt_contract_repair_with_deep_think(
+                    plan_id=plan_id, node=node, task_context=task_context,
+                    session_context=session_context, deep_think_agent=deep_think_agent,
+                    finalization=repair_finalization, tool_result_context=tool_result_context, config=config)
+                finalization, raw_response = self._materialize_finalization(
+                    plan_id, node, finalization, session_context=config.session_context)
+                node.execution_result, node.status = raw_response, finalization.final_status
+                tree.nodes[node.id] = node
+                return ExecutionResult(plan_id=plan_id, task_id=node.id, status=finalization.final_status,
+                    content=str(finalization.payload.get('content') or ''),
+                    metadata=finalization.payload.get('metadata') or {}, raw_response=raw_response, attempts=1)
             result = _run_coroutine_sync(
                 deep_think_agent.think(
                     user_query,
@@ -904,121 +920,101 @@ class _DeepThinkMethods:
     def _contract_repair_limit(self, config: Optional[ExecutionConfig] = None) -> int:
         value = getattr(config, "contract_repair_attempts", None)
         if value is None:
-            value = getattr(self._settings, "contract_repair_attempts", 1)
+            value = getattr(self._settings, "contract_repair_attempts", 2)
         if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 3:
             raise ValueError("contract_repair_attempts must be an integer from 0 to 3")
         return value
 
+    @staticmethod
+    def _should_repair_contract(finalization: VerificationFinalization) -> bool:
+        metadata = finalization.payload.get("metadata") or {}
+        return (finalization.final_status == "failed"
+                and metadata.get("failure_kind") == "contract_mismatch"
+                and isinstance(metadata.get("contract_diff"), dict)
+                and not metadata.get("blocked_by_dependencies")
+                and metadata.get("termination_reason") not in {"cancelled", "run_deadline_exceeded"})
+
     def _attempt_contract_repair_with_deep_think(
-        self,
-        *,
-        plan_id: int,
-        node: PlanNode,
-        task_context: TaskExecutionContext,
-        session_context: Dict[str, Any],
-        deep_think_agent: DeepThinkAgent,
-        finalization: VerificationFinalization,
-        tool_result_context: Dict[str, Any],
+        self, *, plan_id: int, node: PlanNode, task_context: TaskExecutionContext,
+        session_context: Dict[str, Any], deep_think_agent: DeepThinkAgent,
+        finalization: VerificationFinalization, tool_result_context: Dict[str, Any],
         config: Optional[ExecutionConfig] = None,
     ) -> VerificationFinalization:
+        """Feed the failed checks back to the existing agent, then verify again."""
+        from app.llm import usage_context_override
+
         max_attempts = self._contract_repair_limit(config)
-        if max_attempts <= 0:
-            return finalization
-
-        for attempt in range(1, max_attempts + 1):
-            metadata = finalization.payload.get("metadata") if isinstance(finalization.payload, dict) else {}
-            if not isinstance(metadata, dict):
-                return finalization
-            if str(metadata.get("failure_kind") or "").strip().lower() != "contract_mismatch":
-                return finalization
-            contract_diff = metadata.get("contract_diff")
-            if not isinstance(contract_diff, dict):
-                return finalization
-
-            repair_query = self._build_contract_repair_query(
-                node=node,
-                attempt=attempt,
-                contract_diff=contract_diff,
-            )
-            repair_context = dict(session_context)
-            repair_context["contract_repair"] = {
-                "attempt": attempt,
-                "max_attempts": max_attempts,
-                "contract_diff": contract_diff,
-            }
-            try:
-                _log_job(
-                    "warning",
-                    "Contract repair attempt started.",
-                    {"plan_id": plan_id, "task_id": node.id, "attempt": attempt},
-                )
-                result = _run_coroutine_sync(
-                    deep_think_agent.think(
-                        repair_query,
-                        context=repair_context,
-                        task_context=task_context,
-                    )
-                )
-            except (RunDeadlineExceeded, StaleRunClaim, ControllerRestoreError):
-                raise
-            except Exception as exc:
-                logger.warning("Contract repair attempt failed for task %s: %s", node.id, exc)
-                metadata["contract_repair_error"] = str(exc)
-                finalization.payload["metadata"] = metadata
-                return finalization
-
-            repair_payload: Dict[str, Any] = {
-                "status": "success",
-                "content": result.final_answer,
-                "notes": [result.thinking_summary] if result.thinking_summary else [],
-                "metadata": {
-                    "deep_think": True,
-                    "contract_repair": True,
-                    "repair_attempts": attempt,
-                    "confidence": result.confidence,
-                    "tools_used": result.tools_used,
-                },
-            }
-            final_answer_paths = self._extract_path_like_values(result.final_answer)
-            if final_answer_paths:
-                existing_paths = [
-                    str(item).strip()
-                    for item in list(tool_result_context.get("artifact_paths") or [])
-                    if str(item).strip()
-                ]
-                tool_result_context["artifact_paths"] = list(
-                    dict.fromkeys([*final_answer_paths, *existing_paths])
-                )[:40]
-            artifact_paths = tool_result_context.get("artifact_paths")
-            if isinstance(artifact_paths, list) and artifact_paths:
-                repair_payload["artifact_paths"] = artifact_paths[:40]
-                repair_payload["metadata"]["artifact_paths"] = artifact_paths[:40]
-
-            repair_payload, execution_status = _coerce_blocked_dependency_payload(repair_payload)
-            repaired, _ = self._finalize_task_execution(
-                plan_id,
-                node,
-                repair_payload,
-                execution_status=execution_status,
-                trigger="contract_repair",
-            )
-            repaired_meta = repaired.payload.get("metadata") if isinstance(repaired.payload, dict) else {}
-            if isinstance(repaired_meta, dict):
-                repaired_meta["repair_attempts"] = attempt
-                repaired.payload["metadata"] = repaired_meta
-            finalization = repaired
-            _log_job(
-                "info" if repaired.final_status == "completed" else "warning",
-                "Contract repair attempt finished.",
-                {
-                    "plan_id": plan_id,
-                    "task_id": node.id,
-                    "attempt": attempt,
-                    "status": repaired.final_status,
-                },
-            )
-            if repaired.final_status == "completed":
-                return repaired
+        original_limit = getattr(deep_think_agent, "max_iterations", None)
+        history = []
+        try:
+            if original_limit is not None:
+                deep_think_agent.max_iterations = min(original_limit, 12)
+            for attempt in range(1, max_attempts + 1):
+                check_run_active()
+                if not self._should_repair_contract(finalization):
+                    break
+                metadata = finalization.payload.get("metadata") or {}
+                diff = metadata["contract_diff"]
+                repair_query = self._build_contract_repair_query(node=node, attempt=attempt, contract_diff=diff)
+                recent_errors = metadata.get("tool_failures") or metadata.get("execution_issues") or []
+                repair_query += "\nRecent errors: " + json.dumps(recent_errors, ensure_ascii=False)[:4000]
+                repair_query += "\nRead the actual JSON/table fields before using them. Preserve outputs that already passed. Use existing local evidence and keep its citations/statistics consistent; do not invent missing facts or repeat the research."
+                if attempt > 1:
+                    repair_query += "\nThe previous method did not work. Use a simpler method for the missing output; for Markdown/text, write short sections directly instead of continuing to patch a failing renderer."
+                repair_context = {**session_context, "paper_mode": False,
+                                  "contract_repair": {"attempt": attempt, "max_attempts": max_attempts, "contract_diff": diff}}
+                repair_task = replace(task_context, plan_outline=None, skill_context=None,
+                    task_instruction="Complete only the missing deliverables from the previous execution.",
+                    constraints=["Reuse existing evidence; do not restart the original workflow or alter passed files.",
+                                 "Honor the original output/content requirements and verify actual input fields before writing.",
+                                 "Use submit_final_answer (native) or final_answer (strict) when done. PlanExecutor verifies and publishes the files."])
+                event = {"sub_type": "repair_progress", "plan_id": plan_id, "task_id": node.id,
+                         "attempt": attempt, "max_attempts": max_attempts, "status": "repairing"}
+                _log_job("warning", f"正在补齐缺失产物（{attempt}/{max_attempts}）", event)
+                try:
+                    with usage_context_override(phase="plan_repair", call_purpose="plan_contract_repair"):
+                        result = _run_coroutine_sync(deep_think_agent.think(
+                            repair_query, context=repair_context, task_context=repair_task))
+                    check_run_active()
+                except (RunDeadlineExceeded, StaleRunClaim, ControllerRestoreError):
+                    raise
+                except Exception as exc:
+                    metadata["contract_repair_error"] = str(exc)
+                    metadata["repair_attempts"] = attempt
+                    _log_job("warning", "补交中断，保留已有结果。", {**event, "status": "failed", "error": str(exc)})
+                    break
+                payload = deepcopy(finalization.payload)
+                payload.update(status="success", content=result.final_answer)
+                repaired_metadata = payload.setdefault("metadata", {})
+                repaired_metadata.update(contract_repair=True, repair_attempts=attempt,
+                    termination_reason=getattr(result, "termination_reason", None),
+                    tools_used=list(result.tools_used or []),
+                    tool_failures=list(getattr(result, "tool_failures", []) or []),
+                    execution_issues=list(getattr(result, "execution_issues", []) or []))
+                paths = list(dict.fromkeys([*payload.get("artifact_paths", []),
+                    *tool_result_context.get("artifact_paths", []),
+                    *self._extract_path_like_values(result.final_answer)]))
+                payload["artifact_paths"] = paths
+                repaired_metadata["artifact_paths"] = paths
+                # Do not let the first attempt's empty produced-path list hide
+                # files which the repair controller actually wrote and checked.
+                checked = getattr(result, "output_verification", None)
+                previous = repaired_metadata.pop("output_produced_paths", None) or []
+                if isinstance(checked, dict) and checked.get("artifact_paths"):
+                    repaired_metadata["output_produced_paths"] = list(dict.fromkeys([
+                        *previous, *checked.get("artifact_paths", [])]))
+                payload, execution_status = _coerce_blocked_dependency_payload(payload)
+                finalization, _ = self._finalize_task_execution(
+                    plan_id, node, payload, execution_status=execution_status, trigger="contract_repair")
+                history.append({"attempt": attempt, "status": finalization.final_status,
+                    "remaining": finalization.payload.get("metadata", {}).get("contract_diff")})
+                finalization.payload.setdefault("metadata", {})["repair_history"] = list(history)
+                _log_job("info" if finalization.final_status == "completed" else "warning",
+                    "补交验收通过。" if finalization.final_status == "completed" else "补交仍未通过验收。",
+                    {**event, "status": finalization.final_status})
+        finally:
+            if original_limit is not None:
+                deep_think_agent.max_iterations = original_limit
         return finalization
 
     @staticmethod

@@ -125,7 +125,8 @@ def test_plan_executor_delegation_prompt_omits_internal_tool_hints() -> None:
     delegate = _DelegateStub(TaskDelegationResult(status="completed", summary="ok"))
     executor = _make_executor(repo, delegate)
 
-    _ = executor.execute_task(105, 1, config=ExecutionConfig(session_context={"session_id": "s1"}))
+    # This case isolates the delegate prompt; repair has separate controller coverage.
+    _ = executor.execute_task(105, 1, config=ExecutionConfig(session_context={"session_id": "s1"}, contract_repair_attempts=0))
 
     assert delegate.calls
     prompt = delegate.calls[0].task_prompt
@@ -159,7 +160,7 @@ def test_plan_executor_delegated_missing_output_fails_verification(tmp_path: Pat
     )
     executor = _make_executor(repo, delegate)
 
-    result = executor.execute_task(102, 1, config=ExecutionConfig(session_context={"session_id": "s1"}))
+    result = executor.execute_task(102, 1, config=ExecutionConfig(session_context={"session_id": "s1"}, contract_repair_attempts=0))
 
     assert result.status == "failed"
     assert delegate.calls

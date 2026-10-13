@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+import pytest
 from types import SimpleNamespace
 
 from starlette.requests import Request
@@ -12,6 +13,32 @@ from app.services.plans.artifact_contracts import canonical_artifact_path, save_
 from app.services.plans.artifact_preflight import ArtifactPreflightIssue, ArtifactPreflightResult
 from app.services.plans.plan_models import PlanNode, PlanTree
 from app.services.request_principal import RequestPrincipal
+
+
+@pytest.mark.parametrize('entry', ['sync_plan','async_plan','task_chain'])
+def test_targeted_repair_is_not_repeated_by_route_layers(monkeypatch, entry):
+    tree=_single_node_tree();store=_JobStoreStub();calls=[]
+    def execute(*args,**kwargs):
+        calls.append(1)
+        return SimpleNamespace(status='failed',duration_sec=.1,content='Missing output after bounded repair')
+    monkeypatch.setattr(plan_routes,'_load_authorized_plan_tree',lambda *a:tree)
+    monkeypatch.setattr(plan_routes._plan_repo,'get_plan_tree',lambda *a:tree)
+    monkeypatch.setattr(plan_routes._plan_executor,'execute_task',execute)
+    monkeypatch.setattr(plan_routes,'plan_decomposition_jobs',store)
+    monkeypatch.setattr(plan_routes,'log_job_event',lambda *a,**kw:None)
+    monkeypatch.setattr(plan_routes,'_build_plan_execution_snapshot',lambda *a,**kw:{'active_task_ids':set(),'active_jobs':[]})
+    monkeypatch.setattr(plan_routes._audit_repair_loop_service,'run_task_loop',
+                        lambda **kw:pytest.fail('Route launched a second repair controller'))
+    if entry=='sync_plan':
+        response=plan_routes.execute_full_plan(7,_build_request('alice'),plan_routes.ExecuteFullPlanRequest(async_mode=False))
+        assert not response.success
+    elif entry=='async_plan':
+        plan_routes._run_full_plan_job(job_id='repair-closure',plan_id=7,task_order=[1],stop_on_failure=True,owner_id='alice')
+        assert store.failure_calls
+    else:
+        plan_routes._run_task_chain_job(job_id='repair-chain',plan_id=7,target_task_id=1,task_order=[1])
+        assert store.failure_calls
+    assert calls==[1]
 
 
 def _build_request(owner_id: str) -> Request:

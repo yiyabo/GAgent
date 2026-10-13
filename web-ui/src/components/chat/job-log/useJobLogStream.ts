@@ -164,6 +164,13 @@ const _rebuildThinkingFromLogs = (
       continue;
     }
 
+    if (subType === 'repair_progress' && metadata.status === 'repairing') {
+      // Iteration numbers restart for each bounded repair. Show the current
+      // phase here; original phases remain available in the complete log.
+      steps.splice(0, steps.length);
+      continue;
+    }
+
     if (subType === 'thinking_step') {
       const rawStep = metadata?.step ?? {};
       const iteration = Number(rawStep?.iteration ?? 0);
@@ -930,6 +937,11 @@ export function useJobLogStream({ jobId, initialJob, planId, jobType: initialJob
           }
           appendLogEvent(parsed.event);
           const subType = parsed.event?.metadata?.sub_type;
+          if (subType === 'repair_progress' && parsed.event?.metadata?.status === 'repairing') {
+            const next: ThinkingProcess = { status: 'active', steps: [] };
+            thinkingProcessRef.current = next;
+            setThinkingProcess(next);
+          }
           if (subType === 'thinking_step') {
             const rawStep = parsed.event?.metadata?.step ?? {};
             mergeThinkingStep({

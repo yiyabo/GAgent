@@ -1,4 +1,4 @@
-"""Background execution jobs and post-execution audit-repair orchestration."""
+"""Background execution jobs; automatic output repair belongs to PlanExecutor."""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ import asyncio
 import logging
 from typing import Any, Dict, List, Optional
 
-from app.services.plans.audit_repair_loop import AuditRepairLoopConfig
 from app.services.plans.decomposition_jobs import (
     execute_decomposition_job,
     reset_current_job,
@@ -15,7 +14,7 @@ from app.services.plans.decomposition_jobs import (
 )
 from app.services.plans.dependency_enrichment import check_artifact_readiness
 from app.services.plans.plan_executor import ExecutionConfig
-from app.services.plans.execution_budget import bounded_plan_job, bounded_plan_task
+from app.services.plans.execution_budget import bounded_plan_job
 from app.services.run_budget import RunDeadlineExceeded, check_run_active
 
 from .dependency_plan import (
@@ -33,7 +32,6 @@ def _facade() -> Any:
     return facade
 
 
-@bounded_plan_task
 def _run_task_audit_repair_after_execution(
     *,
     plan_id: int,
@@ -42,41 +40,12 @@ def _run_task_audit_repair_after_execution(
     session_id: Optional[str],
     owner_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Audit one task after execution and repair safe artifact/path failures.
-
-    The audit-repair service owns classification and decides whether to rerun,
-    delegate to the code agent, or block. This wrapper keeps full-plan sync and
-    async execution paths consistent.
-    """
+    """Compatibility hook: return the executor verdict without more execution."""
     trigger_status = str(result_status or "").strip().lower()
-    try:
-        loop_result = _facade()._audit_repair_loop_service.run_task_loop(
-            plan_id=plan_id,
-            task_id=task_id,
-            config=AuditRepairLoopConfig(
-                max_loops=2,
-                max_task_repairs=1,
-                enable_delegate_repair=True,
-                enable_rerun=True,
-                session_id=session_id,
-                owner_id=owner_id,
-            ),
-        )
-    except (RunDeadlineExceeded, asyncio.CancelledError):
-        raise
-    except Exception as exc:
-        logger.exception("Task audit-repair loop failed for plan %s task %s", plan_id, task_id)
-        return {
-            "success": trigger_status == "completed",
-            "final_status": "completed" if trigger_status == "completed" else "failed",
-            "classification": "audit_repair_error",
-            "message": str(exc),
-            "steps": [],
-            "trigger_status": trigger_status,
-        }
-    data = loop_result.to_dict()
-    data["trigger_status"] = trigger_status
-    return data
+    # Repair and verification belong to PlanExecutor for every entry point.
+    # Retain this facade hook for callers; do not start a second task or CLI here.
+    return {"success": trigger_status == "completed", "final_status": trigger_status,
+            "classification": "executor_owned_repair", "steps": [], "trigger_status": trigger_status}
 
 
 def _status_after_audit_repair(raw_status: Any, repair_result: Dict[str, Any]) -> str:
@@ -857,39 +826,7 @@ def _run_full_plan_job(
                     enforce_dependencies=str(dependency_block_mode or "warn").strip().lower() == "block",
                 )
                 
-                # Task-level retry loop: up to 3 attempts for failed tasks
-                max_task_attempts = 3
-                result = None
-                for task_attempt in range(1, max_task_attempts + 1):
-                    result = _facade()._plan_executor.execute_task(plan_id, task_id, config=exec_config)
-                    
-                    if result.status == "completed":
-                        break
-                    
-                    if task_attempt == max_task_attempts:
-                        _facade().log_job_event(
-                            "warning",
-                            f"Task #{task_id} failed after {max_task_attempts} attempts; proceeding to audit repair.",
-                            {
-                                "task_id": task_id,
-                                "step": idx,
-                                "attempts": task_attempt,
-                                "final_status": result.status,
-                            },
-                        )
-                        break
-                    
-                    _facade().log_job_event(
-                        "warning",
-                        f"Task #{task_id} failed (attempt {task_attempt}/{max_task_attempts}); retrying.",
-                        {
-                            "task_id": task_id,
-                            "step": idx,
-                            "attempt": task_attempt,
-                            "status": result.status,
-                            "content": result.content[:200] if result.content else None,
-                        },
-                    )
+                result = _facade()._plan_executor.execute_task(plan_id, task_id, config=exec_config)
             except (RunDeadlineExceeded, asyncio.CancelledError):
                 raise
             except Exception as exc:

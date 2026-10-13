@@ -17,6 +17,7 @@ import { useJobLogStream } from './useJobLogStream';
 import { ActionLogs, LogList } from './LogSection';
 import { ResultSummary, ProgressBar } from './ResultSection';
 import { ThinkingProcess } from '@components/chat/ThinkingProcess';
+import { RepairProgressBadge } from './RepairProgressBadge';
 
 dayjs.extend(relativeTime);
 
@@ -82,9 +83,10 @@ const JobLogPanel: React.FC<JobLogPanelProps> = ({ jobId, initialJob, targetTask
         <Text type="secondary" style={{ fontSize: 12 }}>
           #{jobId.slice(0, 8)}
         </Text>
+        <RepairProgressBadge logs={logs} jobStatus={status} />
       </Space>
     );
-  }, [jobId, statusInfo, jobTypeInfo]);
+  }, [jobId, statusInfo, jobTypeInfo, logs, status]);
 
   const lastUpdatedText = React.useMemo(() => {
     if (!lastUpdatedAt) return null;

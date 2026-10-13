@@ -68,7 +68,7 @@ class ExecutorSettings:
     force_rerun: bool = False
     auto_recovery: bool = False
     max_recovery_attempts: int = 2
-    contract_repair_attempts: int = 1
+    contract_repair_attempts: int = 2
     autonomous: bool = False
     # --- Plan authority rollout ---
     # When False (the default), PlanExecutor no longer uses inferred contracts

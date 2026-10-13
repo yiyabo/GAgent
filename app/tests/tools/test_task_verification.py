@@ -1384,7 +1384,8 @@ def test_plan_executor_marks_task_failed_when_verification_fails(tmp_path, monke
     # Pin the in-process stub path; the external-delegate route starts a real Docker LLM and hangs.
     monkeypatch.setattr(executor, "_should_delegate_plan_task", lambda _cfg: False)
 
-    result = executor.execute_task(1, 1, config=ExecutionConfig(enable_skills=False))
+    # Inspect the first verification verdict, before any automatic repair.
+    result = executor.execute_task(1, 1, config=ExecutionConfig(enable_skills=False, contract_repair_attempts=0))
 
     assert result.status == "failed"
     assert repo.update_calls[-1][2]["status"] == "failed"

@@ -170,7 +170,7 @@ class ExecutionConfig:
             force_rerun=getattr(settings, "force_rerun", False),
             auto_recovery=getattr(settings, "auto_recovery", False),
             max_recovery_attempts=max(1, getattr(settings, "max_recovery_attempts", 2)),
-            contract_repair_attempts=max(0, getattr(settings, "contract_repair_attempts", 1)),
+            contract_repair_attempts=max(0, getattr(settings, "contract_repair_attempts", 2)),
             autonomous=getattr(settings, "autonomous", False),
             enable_skills=settings.enable_skills,
             skill_budget_chars=settings.skill_budget_chars,
