@@ -957,7 +957,14 @@ class _DeepThinkMethods:
                 diff = metadata["contract_diff"]
                 repair_query = self._build_contract_repair_query(node=node, attempt=attempt, contract_diff=diff)
                 recent_errors = metadata.get("tool_failures") or metadata.get("execution_issues") or []
-                repair_query += "\nRecent errors: " + json.dumps(recent_errors, ensure_ascii=False)[:4000]
+                errors = [str(item.get("error") or item.get("message") or item.get("summary") or "")
+                          if isinstance(item, dict) else str(item) for item in recent_errors]
+                repair_query += "\nRecent errors:\n" + "\n".join(errors)[-4000:]
+                failures = (metadata.get("output_verification") or metadata.get("verification") or {}).get("failures") or []
+                repair_query += "\nFailed checks:\n" + "\n".join(
+                    f"- {item.get('path') or item.get('type')}: {item.get('message') or 'check failed'}"
+                    for item in failures if isinstance(item, dict))[:4000]
+                repair_query += "\nOriginal content requirements (do not rerun the original workflow): " + str(node.instruction or node.name)
                 repair_query += "\nRead the actual JSON/table fields before using them. Preserve outputs that already passed. Use existing local evidence and keep its citations/statistics consistent; do not invent missing facts or repeat the research."
                 if attempt > 1:
                     repair_query += "\nThe previous method did not work. Use a simpler method for the missing output; for Markdown/text, write short sections directly instead of continuing to patch a failing renderer."
