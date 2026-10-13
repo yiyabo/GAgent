@@ -49,6 +49,11 @@ def _ah() -> Any:
 
 
 def handle_task_action(agent: Any, action: LLMAction) -> AgentStep:
+    from app.services.plans.edit_policy import TASK_EDITS, agent_plan_edit_allowed, blocked_plan_edit
+    if action.name in TASK_EDITS:
+        denied = blocked_plan_edit(action.name, agent_plan_edit_allowed(agent))
+        if denied:
+            return AgentStep(action=action, success=False, message=denied["error"], details=denied)
     _task_verifier = _ah()._task_verifier
     _normalize_dependencies_fn = _ah()._normalize_dependencies_fn
     params = action.parameters or {}

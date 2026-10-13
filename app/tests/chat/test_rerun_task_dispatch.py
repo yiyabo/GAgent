@@ -246,6 +246,7 @@ def _create_action(parameters: Dict[str, Any]) -> LLMAction:
 
 def test_handle_task_action_create_task_anchor_validation() -> None:
     agent = _fake_agent(_tree())
+    agent._current_user_message = "Create a task with the requested anchor"
 
     # position pattern references a different task than anchor_task_id.
     with pytest.raises(ValueError, match="anchor_task_id does not match"):

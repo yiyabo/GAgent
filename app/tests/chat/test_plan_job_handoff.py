@@ -1,4 +1,5 @@
 import asyncio
+import pytest
 from types import SimpleNamespace
 
 from app.routers.chat.plan_job_handoff import enqueue_chat_plan_job
@@ -59,6 +60,14 @@ def test_retry_followup_prefers_recent_task_over_stale_session_binding(monkeypat
         return [item async for item in StructuredChatAgent.process_unified_stream(agent, "重新执行吧")]
     events = asyncio.run(collect())
     assert called == [4] and len(events) == 1 and 'job-4' in events[0]
+
+
+@pytest.mark.parametrize('message', ['这样啊，你重新执行一下吧', '明白了，帮我重试一下吧', '那你重新运行一遍吧'])
+def test_colloquial_retry_uses_existing_task_scope(message):
+    from app.routers.chat.plan_execution_intent import resolve_plan_execution_target
+    from app.routers.chat.request_routing import resolve_request_routing
+    agent = SimpleNamespace(plan_session=SimpleNamespace(plan_id=185), extra_context={'current_task_id':4}, history=[])
+    assert resolve_plan_execution_target(agent, resolve_request_routing(message=message, plan_id=185, current_task_id=4)) == (True, [4])
 
 
 def test_multi_task_handoff_submits_one_scope(monkeypatch):

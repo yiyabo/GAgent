@@ -88,6 +88,7 @@ def plan_task_scope(plan_id, task_id):
 
 def request_profile(plan_id, task_id, context):
     profile = {"current_plan_id": plan_id, "current_task_id": task_id,
+               "plan_tree_edit_allowed": False,
                "session_id": context.get("session_id"), "owner_id": context.get("owner_id")}
     if enabled():
         budget = current_run_budget()

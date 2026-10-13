@@ -9,11 +9,11 @@ from .guardrails import extract_task_ids_from_text
 
 
 _FOLLOWUP = re.compile(
-    r"^(?:(?:请|麻烦|那就|现在|直接|好的|可以的|可以)[，,\s]*)*"
+    r"^(?:(?:这样啊|这样|原来如此|明白了|明白|好啊|好|嗯|那|你|请|麻烦|帮我|那就|现在|直接|好的|可以的|可以)[，,\s]*)*"
     r"(?:重新执行|重新运行|重跑|重试|再试(?:一次)?|继续执行|继续运行|继续做|"
     r"执行(?:这个任务|这个|它)?|开始执行|开始|开工|跑一下|跑一次|继续|"
     r"rerun|retry|try again|execute it(?: again)?|run it(?: again)?|continue executing)"
-    r"(?:吧|一下|一次)?[\s!！。]*$", re.IGNORECASE,
+    r"(?:(?:吧|一下|一次|一遍|下))*[\s!！。]*$", re.IGNORECASE,
 )
 _PLAN_REF = re.compile(r"(?:plan|计划)\s*#?\s*\d+", re.IGNORECASE)
 

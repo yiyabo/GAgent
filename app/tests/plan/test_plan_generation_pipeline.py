@@ -479,7 +479,7 @@ def test_create_plan_and_generate_skips_decomposition_for_seeded_plan(monkeypatc
     assert ready.auto_completed_generation is False
 
 
-def test_review_plan_ensures_generation_ready_before_scoring(monkeypatch) -> None:
+def test_review_plan_scores_existing_tree_without_decomposition(monkeypatch) -> None:
     tree = _build_tree()
     repo = _ReviewRepoStub(tree)
     readiness_called = {"value": False}
@@ -516,12 +516,12 @@ def test_review_plan_ensures_generation_ready_before_scoring(monkeypatch) -> Non
     result = asyncio.run(_review_plan(tree.id))
 
     assert result["success"] is True
-    assert result["decomposition_status"] == "completed"
-    assert readiness_called["value"] is True
+    assert result["decomposition_status"] == "unknown"
+    assert readiness_called["value"] is False
     assert repo.metadata_updates
 
 
-def test_optimize_plan_ensures_generation_ready_before_mutation(monkeypatch) -> None:
+def test_explicit_optimize_changes_do_not_regenerate_tree(monkeypatch) -> None:
     tree = _build_tree()
     repo = _OptimizeRepoStub(tree)
     readiness_called = {"value": False}
@@ -541,8 +541,8 @@ def test_optimize_plan_ensures_generation_ready_before_mutation(monkeypatch) -> 
     )
 
     assert result["success"] is True
-    assert result["decomposition_status"] == "completed"
-    assert readiness_called["value"] is True
+    assert result["decomposition_status"] == "unknown"
+    assert readiness_called["value"] is False
     assert repo.tree.nodes[2].instruction == "Updated task A"
 
 

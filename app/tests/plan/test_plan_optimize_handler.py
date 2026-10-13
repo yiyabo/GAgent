@@ -214,6 +214,21 @@ def test_optimize_plan_accepts_description_and_add_task_aliases(monkeypatch) -> 
     assert repo.created_tasks[-1].instruction == "Test clustering stability across resolutions."
 
 
+def test_user_requested_add_task_preserves_explicit_output_contract(monkeypatch) -> None:
+    from app.services.plans.output_spec import output_spec_from_metadata
+    repo = _OptimizeRepoStub(_build_tree())
+    monkeypatch.setattr("app.repository.plan_repository.PlanRepository", lambda: repo)
+    _stub_optimize_reviews(monkeypatch)
+    metadata = {"task_type": "atomic", "required_outputs": [
+        {"kind": "markdown", "target_path": "results/sections/chapter.md", "min_count": 1}]}
+    result = asyncio.run(_optimize_plan(1, [{"action": "add_task", "name": "Write a chapter",
+        "instruction": "Reuse existing evidence and write the chapter.", "parent_id": 2, "metadata": metadata}]))
+    assert result['success'] is True
+    spec = output_spec_from_metadata(repo.created_tasks[-1].metadata)
+    assert spec.authoritative and spec.required_outputs[0].target_path == 'results/sections/chapter.md'
+    assert repo.created_tasks[-1].metadata['task_type'] == 'atomic'
+
+
 def test_optimize_plan_rejects_empty_update_payload(monkeypatch) -> None:
     repo = _OptimizeRepoStub(_build_tree())
     monkeypatch.setattr("app.repository.plan_repository.PlanRepository", lambda: repo)

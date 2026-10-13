@@ -117,6 +117,11 @@ def _should_run_artifact_preflight(tree: Any) -> bool:
 
 
 async def handle_plan_action(agent: Any, action: LLMAction) -> AgentStep:
+    from app.services.plans.edit_policy import PLAN_ACTION_EDITS, agent_plan_edit_allowed, blocked_plan_edit
+    if action.name in PLAN_ACTION_EDITS:
+        denied = blocked_plan_edit(action.name, agent_plan_edit_allowed(agent))
+        if denied:
+            return AgentStep(action=action, success=False, message=denied["error"], details=denied)
     params = action.parameters or {}
     if action.name == "create_plan":
         title = params.get("title")
@@ -255,12 +260,8 @@ async def handle_plan_action(agent: Any, action: LLMAction) -> AgentStep:
             evaluate_plan_rubric,
             is_rubric_evaluation_unavailable,
         )
-        readiness = await _maybe_ensure_plan_generation_ready_for_agent(
-            agent,
-            plan_id=plan_id,
-            fallback_tree=tree,
-        )
-        tree = readiness.plan_tree
+        readiness = SimpleNamespace(plan_tree=tree,
+            decomposition_status=(getattr(tree, "metadata", None) or {}).get("plan_generation", {}).get("decomposition_status", "unknown"))
         # NOTE: review skips artifact preflight — reviewing a plan with
         # broken artifact contracts is fine; the review should report issues.
         try:
@@ -334,11 +335,9 @@ async def handle_plan_action(agent: Any, action: LLMAction) -> AgentStep:
         changes = params.get("changes")
 
         repo = agent.plan_session.repo
-        readiness = await _maybe_ensure_plan_generation_ready_for_agent(
-            agent,
-            plan_id=plan_id,
-            fallback_tree=tree,
-        )
+        readiness = (SimpleNamespace(plan_tree=tree, decomposition_status=(getattr(tree, "metadata", None) or {}).get("plan_generation", {}).get("decomposition_status", "unknown"))
+            if isinstance(changes, list) and changes else await _maybe_ensure_plan_generation_ready_for_agent(
+                agent, plan_id=plan_id, fallback_tree=tree))
         # Use the tree from readiness (may have been mutated/expanded)
         tree = getattr(readiness, "plan_tree", None) or tree
         # NOTE: optimize skips artifact preflight — the whole point of

@@ -60,7 +60,8 @@ const ScopedPlanWorkspace: React.FC<{ planId: number | null; sessionId: string |
   const previouslyActive = useRef(false);
   const selectedTask = tasks.find((task) => task.id === pickedTaskId)
     ?? defaultTaskSelection(tasks);
-  const executionTasks = tasks.filter((task) => task.task_type === 'atomic');
+  const executionTasks = tasks.filter((task) => task.task_type !== 'root' &&
+    !tasks.some((child) => child.parent_id === task.id));
   const completed = executionTasks.filter((task) => taskStatus(task) === 'completed').length;
   const failures = executionTasks.filter((task) => taskStatus(task) === 'failed').length;
   const needsReview = executionTasks.filter((task) => taskStatus(task) === 'needs_review').length;
@@ -145,7 +146,7 @@ const ScopedPlanWorkspace: React.FC<{ planId: number | null; sessionId: string |
     {tasks.some((task) => task.task_type === 'composite' && taskStatus(task) !== 'completed' &&
       !tasks.some((child) => child.parent_id === task.id)) &&
       <Alert className="pw-alert" type="warning" showIcon message="计划拆解未完成"
-        description="部分阶段尚未生成原子子任务。选择未完成阶段并点击“继续拆解”，生成子任务后再执行。" />}
+        description="部分阶段尚未生成子任务。执行或重试会沿用原任务；需要修改任务树时，可明确选择“继续拆解”。" />}
     {sourceNotice && <Alert className="pw-alert" type="info" showIcon
       message={`“${sourceNotice.title}”的产物属于另一会话`}
       description="打开来源会话后可继续执行。当前会话与计划绑定保持不变。"

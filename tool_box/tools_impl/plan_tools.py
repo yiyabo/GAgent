@@ -143,6 +143,12 @@ async def plan_operation_handler(
     Returns:
         Dict containing operation result
     """
+    from app.services.plans.edit_policy import PLAN_EDITS, blocked_plan_edit, tool_plan_edit_allowed
+    if operation in PLAN_EDITS:
+        denied = blocked_plan_edit(operation, tool_plan_edit_allowed(tool_context))
+        if denied:
+            return denied
+
     # Session-plan isolation: if the session is bound to a plan, only allow
     # operations on that plan (except create and bind, which manage bindings).
     if operation not in ("create", "bind") and plan_id is not None and tool_context is not None:
@@ -411,18 +417,9 @@ async def _review_plan(plan_id: Optional[int], tool_context: Optional[Any] = Non
         )
 
         repo = PlanRepository()
-        if _supports_generation_readiness(repo):
-            readiness = await ensure_plan_generation_ready(
-                plan_id=plan_id,
-                repo=repo,
-                decomposer=PlanDecomposer(repo=repo),
-                session_context=_build_session_context_from_tool_context(tool_context),
-            )
-        else:
-            readiness = SimpleNamespace(
-                plan_tree=repo.get_plan_tree(plan_id),
-                decomposition_status="unavailable",
-            )
+        existing_tree = repo.get_plan_tree(plan_id)
+        readiness = SimpleNamespace(plan_tree=existing_tree,
+            decomposition_status=(getattr(existing_tree, "metadata", None) or {}).get("plan_generation", {}).get("decomposition_status", "unknown"))
         plan_tree = readiness.plan_tree
         # NOTE: review skips artifact preflight — reviewing a plan with
         # broken artifact contracts is fine; the review should report issues.
@@ -767,14 +764,10 @@ async def _optimize_plan(
         repo = PlanRepository()
         existing_tree = repo.get_plan_tree(plan_id)
         explicit_revision = isinstance(changes, list) and bool(changes)
-        already_executed = any(
-            node.parent_id is not None
-            and node.status in {"completed", "failed", "running", "needs_review"}
-            for node in existing_tree.nodes.values()
-        )
-        if explicit_revision and already_executed:
-            # Repairing an existing plan must not regenerate its tree first.
-            readiness = SimpleNamespace(plan_tree=existing_tree, decomposition_status="completed")
+        if explicit_revision:
+            # Apply only the requested edits, never regenerate other branches.
+            readiness = SimpleNamespace(plan_tree=existing_tree,
+                decomposition_status=(getattr(existing_tree, "metadata", None) or {}).get("plan_generation", {}).get("decomposition_status", "unknown"))
         elif _supports_generation_readiness(repo):
             readiness = await ensure_plan_generation_ready(
                 plan_id=plan_id,
@@ -881,7 +874,7 @@ async def _optimize_plan(
                                 break
                     
                     task_metadata = ensure_task_metadata(
-                        metadata=None,
+                        metadata=change.get("metadata") if isinstance(change.get("metadata"), dict) else None,
                         task_name=task_name,
                         instruction=task_instruction,
                     )

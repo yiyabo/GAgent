@@ -107,8 +107,8 @@ class ArtifactPreflightService:
             elif (((getattr(node, "metadata", None) or {}).get("decomposition_status") == "failed"
                    or (node.id in failed_decomposition and (getattr(node, "metadata", None) or {}).get("task_type") == "composite"))
                   and str(node.status).lower() not in _COMPLETED_LIKE):
-                errors.append(ArtifactPreflightIssue(code="decomposition_incomplete", severity="error",
-                    task_id=node.id, message=f"Task #{node.id} is a stage whose decomposition failed; generate its atomic subtasks before executing."))
+                warnings.append(ArtifactPreflightIssue(code="decomposition_incomplete", severity="warning",
+                    task_id=node.id, message=f"Task #{node.id} has no generated subtasks. Execute the existing task and its original output contract; only an explicit user request may decompose it."))
             task_contracts.append(snapshot)
             for issue in snapshot_issues:
                 if issue.severity == "error":

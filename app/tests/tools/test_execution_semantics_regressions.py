@@ -187,7 +187,7 @@ def test_optimize_plan_step_uses_atomic_repo_apply() -> None:
     )
     agent._refresh_plan_tree = lambda force_reload=True: refreshed.__setitem__("count", refreshed["count"] + 1)
     agent.session_id = "s1"
-    agent._current_user_message = "optimize"
+    agent._current_user_message = "optimize the plan"
     agent.history = []
     agent.extra_context = {}
 
