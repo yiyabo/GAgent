@@ -958,20 +958,31 @@ class _DeepThinkMethods:
         original_limit = getattr(deep_think_agent, "max_iterations", None)
         history = []
         try:
-            if original_limit is not None:
-                deep_think_agent.max_iterations = min(original_limit, 12)
             for attempt in range(1, max_attempts + 1):
                 check_run_active()
                 if not self._should_repair_contract(finalization):
                     break
                 metadata = finalization.payload.get("metadata") or {}
                 diff = metadata["contract_diff"]
-                repair_query = self._build_contract_repair_query(node=node, attempt=attempt, contract_diff=diff)
+                failures = (metadata.get("output_verification") or metadata.get("verification") or {}).get("failures") or []
+                missing_count = sum(
+                    max(0, item["required_count"] - item["actual_count"])
+                    for item in failures if isinstance(item, dict)
+                    and isinstance(item.get("required_count"), int)
+                    and isinstance(item.get("actual_count"), int)
+                )
+                # A missing chapter set needs room for several writes. Keep the
+                # existing 12-step cap for one-file repairs and the same two
+                # attempts/deadline for both paths.
+                if original_limit is not None:
+                    deep_think_agent.max_iterations = min(original_limit, 24 if missing_count >= 2 else 12)
+                repair_query = self._build_contract_repair_query(
+                    node=node, attempt=attempt, contract_diff=diff, failed_checks=failures,
+                    base_dir=metadata.get("output_spec_base_dir"))
                 recent_errors = metadata.get("tool_failures") or metadata.get("execution_issues") or []
                 errors = [str(item.get("error") or item.get("message") or item.get("summary") or "")
                           if isinstance(item, dict) else str(item) for item in recent_errors]
                 repair_query += "\nRecent errors:\n" + "\n".join(errors)[-4000:]
-                failures = (metadata.get("output_verification") or metadata.get("verification") or {}).get("failures") or []
                 repair_query += "\nFailed checks:\n" + "\n".join(
                     f"- {item.get('path') or item.get('type')}: {item.get('message') or 'check failed'}"
                     for item in failures if isinstance(item, dict))[:4000]
@@ -981,11 +992,17 @@ class _DeepThinkMethods:
                     repair_query += "\nThe previous method did not work. Use a simpler method for the missing output; for Markdown/text, write short sections directly instead of continuing to patch a failing renderer."
                 repair_context = {**session_context, "paper_mode": False,
                                   "contract_repair": {"attempt": attempt, "max_attempts": max_attempts, "contract_diff": diff}}
+                base_dir = str(metadata.get("output_spec_base_dir") or "").strip()
+                repair_constraints = [
+                    "Reuse existing evidence; do not restart the original workflow or alter passed files.",
+                    "Honor the original output/content requirements and verify actual input fields before writing.",
+                    "Use submit_final_answer (native) or final_answer (strict) when done. PlanExecutor verifies and publishes the files.",
+                ]
+                if base_dir:
+                    repair_constraints.insert(0, f"Canonical task output directory: {base_dir}. Resolve relative required outputs beneath this directory.")
                 repair_task = replace(task_context, plan_outline=None, skill_context=None,
                     task_instruction="Complete only the missing deliverables from the previous execution.",
-                    constraints=["Reuse existing evidence; do not restart the original workflow or alter passed files.",
-                                 "Honor the original output/content requirements and verify actual input fields before writing.",
-                                 "Use submit_final_answer (native) or final_answer (strict) when done. PlanExecutor verifies and publishes the files."])
+                    constraints=repair_constraints)
                 event = {"sub_type": "repair_progress", "plan_id": plan_id, "task_id": node.id,
                          "attempt": attempt, "max_attempts": max_attempts, "status": "repairing"}
                 _log_job("warning", f"正在补齐缺失产物（{attempt}/{max_attempts}）", event)
@@ -1041,6 +1058,8 @@ class _DeepThinkMethods:
         node: PlanNode,
         attempt: int,
         contract_diff: Dict[str, Any],
+        failed_checks: Optional[List[Dict[str, Any]]] = None,
+        base_dir: Optional[str] = None,
     ) -> str:
         expected = contract_diff.get("expected_deliverables") or []
         missing = contract_diff.get("missing_required_outputs") or []
@@ -1060,8 +1079,34 @@ class _DeepThinkMethods:
             lines.append(f"Missing required outputs: {missing}")
         if wrong_format:
             lines.append(f"Wrong-format outputs: {wrong_format}")
+        for check in failed_checks or []:
+            if not isinstance(check, dict):
+                continue
+            required, actual_count = check.get("required_count"), check.get("actual_count")
+            path = str(check.get("path") or "").strip()
+            if path and isinstance(required, int) and isinstance(actual_count, int) and required > actual_count:
+                extensions = check.get("extensions") or []
+                suffixes = ", ".join(str(ext) for ext in extensions) if isinstance(extensions, list) else ""
+                target = path
+                if base_dir and Path(base_dir).is_absolute() and not Path(path).is_absolute() and ".." not in Path(path).parts:
+                    target = str(Path(base_dir) / path)
+                lines.append(
+                    f"AUTHORITATIVE FILE DEFICIT: {path} requires {required} files"
+                    f"{f' ({suffixes})' if suffixes else ''}; the verifier found {actual_count}. "
+                    f"Create at least {required - actual_count} additional files directly in {target} before finishing."
+                )
         if actual:
-            lines.append(f"Actual outputs currently present: {actual}")
+            if isinstance(actual, list) and len(actual) > 12:
+                lines.append(
+                    f"The previous run reported {len(actual)} output paths; do not audit unrelated files. "
+                    "Inspect the failed target directory and reuse the existing evidence."
+                )
+            else:
+                lines.append(f"Actual outputs currently present: {actual}")
+        lines.append(
+            "Write the missing deliverable files now. A diagnosis, plan or final-answer claim "
+            "without those files does not satisfy this task."
+        )
         lines.append("Completion requires passing verification; similar filenames or prose claims are insufficient.")
         return "\n".join(lines)
 

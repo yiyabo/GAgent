@@ -154,12 +154,14 @@ class _RepairAgent:
         self.calls = []
         self.queries = []
         self.limits = []
+        self.task_contexts = []
         self.max_iterations = 152
 
     async def think(self, query, context=None, task_context=None):
         self.calls.append(context.get("contract_repair") if context else None)
         self.queries.append(query)
         self.limits.append(self.max_iterations)
+        self.task_contexts.append(task_context)
         return _missing_result()
 
 
@@ -232,6 +234,41 @@ def test_repair_feedback_is_specific_and_second_attempt_changes_method(task_case
     assert 'simpler method' in agent.queries[1]
     assert agent.limits==[12,12] and agent.max_iterations==152
     assert result.final_status=='failed' and len(result.payload['metadata']['repair_history'])==2
+
+
+def test_multi_document_repair_receives_verifier_counts_and_time_to_write(task_case):
+    executor, repo, plan, task, target, _ = task_case(setting_limit=2)
+    sections = target.parent / 'results' / 'sections'
+    sections.mkdir(parents=True)
+    first_section = sections / '01_introduction.md'
+    first_section.write_text('# Introduction\nEvidence-backed draft.\n')
+    repo.update_task(plan, task, metadata={'output_spec': {
+        'source': 'explicit', 'required_outputs': [{
+            'kind': 'document', 'target_path': str(sections),
+            'min_count': 5, 'extensions': ['.md'],
+        }],
+    }})
+    node = repo.get_node(plan, task)
+    final, _ = executor._finalize_task_execution(
+        plan, node, {'status': 'success', 'content': 'One chapter exists.',
+                     'artifact_paths': [str(first_section)], 'metadata': {}},
+        execution_status='completed',
+    )
+    assert final.payload['metadata']['output_verification']['failures'][0]['actual_count'] == 1
+    agent = _RepairAgent()
+    result = executor._attempt_contract_repair_with_deep_think(
+        plan_id=plan, node=node, task_context=TaskExecutionContext(task_id=task),
+        session_context={}, deep_think_agent=agent, finalization=final,
+        tool_result_context={}, config=_config(contract_repair_attempts=2),
+    )
+    assert result.final_status == 'failed'
+    assert agent.limits == [24, 24]
+    assert agent.max_iterations == 152
+    assert 'requires 5 files' in agent.queries[0]
+    assert 'verifier found 1' in agent.queries[0]
+    assert f'Create at least 4 additional files directly in {sections}' in agent.queries[0]
+    assert any(str(target.parent) in item for item in agent.task_contexts[0].constraints)
+    assert 'A diagnosis, plan or final-answer claim' in agent.queries[0]
 
 
 def test_repair_respects_existing_deadline_without_opening_another_attempt(task_case):
