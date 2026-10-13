@@ -10,6 +10,7 @@ from .guardrails import extract_task_ids_from_text
 _STATE_WORDS = ("失败", "完成", "结束", "执行中", "还在执行", "运行中", "卡住", "状态", "进度",
                 "failed", "completed", "finished", "running", "status", "progress")
 _QUESTION_WORDS = ("?", "？", "吗", "么", "呢", "是否", "是不是", "还在", "什么状态", "怎么样")
+_DECISION_QUESTIONS = ("是否", "要不要", "需不需要", "该不该", "应不应该", "能否", "可否", "可以")
 _ACTION_WORDS = ("重新执行", "继续执行", "开始执行", "执行任务", "执行task", "完成任务", "启动任务", "重试", "修复", "补交", "继续做", "帮我做", "run task", "retry task", "rerun task", "fix task")
 
 
@@ -18,7 +19,11 @@ def task_status_question(message: str) -> list[int]:
     if not text or len(text) > 180:
         return []
     ids = extract_task_ids_from_text(text)
-    if not ids or any(word in text for word in _ACTION_WORDS):
+    if not ids:
+        return []
+    if any(word in text for word in _DECISION_QUESTIONS) and any(word in text for word in _QUESTION_WORDS):
+        return ids[:5]
+    if any(word in text for word in _ACTION_WORDS):
         return []
     if not any(word in text for word in _STATE_WORDS) or not any(word in text for word in _QUESTION_WORDS):
         return []

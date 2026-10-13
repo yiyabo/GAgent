@@ -1196,6 +1196,11 @@ def test_task_status_question_never_becomes_execution() -> None:
     assert "read_only_task_status" in decision.route_reason_codes
     rerun = resolve_request_routing(message="重新执行任务4", plan_id=185)
     assert rerun.explicit_task_override is True
+    for question in ("是否继续执行任务4？", "任务4失败了，要不要重新执行？", "可以执行 Task 4 吗？"):
+        inquiry = resolve_request_routing(message=question, plan_id=185)
+        assert inquiry.intent_type == "chat"
+        assert inquiry.explicit_task_override is False
+        assert "read_only_task_status" in inquiry.route_reason_codes
 
 
 def test_task_status_question_returns_one_read_only_final_without_deepthink() -> None:
