@@ -25,7 +25,7 @@ import { getVerificationView } from './verification';
 
 const { Paragraph, Text, Title } = Typography;
 
-const RenderedResultContent: React.FC<{ content: string }> = ({ content }) => {
+const RenderedResultContent: React.FC<{ content: string; sessionId?: string | null }> = ({ content, sessionId }) => {
   const [expanded, setExpanded] = React.useState(false);
   return <div style={{ marginTop: 8 }}>
     <Text type="secondary" copyable={{ text: content }}>复制结果正文</Text>
@@ -33,7 +33,7 @@ const RenderedResultContent: React.FC<{ content: string }> = ({ content }) => {
       marginTop: 8, maxHeight: expanded ? undefined : 480, overflowY: expanded ? undefined : 'auto',
       overflowWrap: 'anywhere',
     }}>
-      <MarkdownRenderer content={content} />
+      <MarkdownRenderer content={content} sessionId={sessionId} />
     </div>
     {content.length > 1800 && <Button type="link" size="small" onClick={() => setExpanded(value => !value)}>
       {expanded ? '收起正文' : '展开完整正文'}
@@ -420,6 +420,7 @@ interface ExecutionResultProps {
   resultLoading: boolean;
   taskResult: PlanResultItem | undefined;
   cachedResult: PlanResultItem | undefined;
+  sessionId?: string | null;
   onReverify?: (() => void) | null;
   onManualAccept?: (() => void) | null;
   verifyLoading?: boolean;
@@ -462,6 +463,7 @@ export const TaskDrawerContent: React.FC<TaskDrawerContentProps> = ({
   taskTokenUsage,
 }) => {
   const { message } = AntdApp.useApp();
+  const resultSessionId = useChatStore(state => state.currentSession?.session_id ?? state.currentSession?.id ?? null);
   const effectiveStatus = activeTask.effective_status ?? activeTask.status ?? 'pending';
   const isBlocked = effectiveStatus === 'blocked';
   const hasTimestamps = Boolean(activeTask.created_at) || Boolean(activeTask.updated_at);
@@ -567,6 +569,7 @@ export const TaskDrawerContent: React.FC<TaskDrawerContentProps> = ({
           resultLoading={resultLoading}
           taskResult={taskResult}
           cachedResult={cachedResult}
+          sessionId={activeTask.session_id || resultSessionId}
           onReverify={onReverify}
           onManualAccept={onManualAccept}
           verifyLoading={verifyLoading}
@@ -742,6 +745,7 @@ export const ExecutionResult: React.FC<ExecutionResultProps> = ({
   resultLoading,
   taskResult,
   cachedResult,
+  sessionId,
   onReverify,
   onManualAccept,
   verifyLoading = false,
@@ -849,7 +853,7 @@ export const ExecutionResult: React.FC<ExecutionResultProps> = ({
               )}
             </Space>
           )}
-          {result.content && <RenderedResultContent content={result.content} />}
+          {result.content && <RenderedResultContent content={result.content} sessionId={sessionId} />}
         </div>
       )}
       <Space wrap>

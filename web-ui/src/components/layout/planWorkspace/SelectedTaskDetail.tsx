@@ -74,7 +74,8 @@ const SelectedTaskDetail: React.FC<Props> = ({ planId, sessionId, artifactSessio
           taskId={task.id} tasks={tasks} onSelectTask={onSelectTask} />
       </section>
       {(result.data?.content || result.data?.metadata) && <section className="pw-detail-section"><h3>结果与验收</h3>
-        <ExecutionResult taskResult={result.data} cachedResult={undefined} resultLoading={result.isFetching} />
+        <ExecutionResult taskResult={result.data} cachedResult={undefined} resultLoading={result.isFetching}
+          sessionId={artifactSessionId || sessionId} />
         <Button type="link" size="small" disabled={executionBlocked} onClick={openDetails}>查看验收详情与操作</Button>
       </section>}
       {result.isError && <Alert type="warning" showIcon message="任务结果暂时无法读取" description="可以刷新计划，或在完整详情中重试。" />}
