@@ -757,8 +757,17 @@ async def _optimize_plan(
         from app.repository.plan_repository import PlanRepository
 
         repo = PlanRepository()
-
-        if _supports_generation_readiness(repo):
+        existing_tree = repo.get_plan_tree(plan_id)
+        explicit_revision = isinstance(changes, list) and bool(changes)
+        already_executed = any(
+            node.parent_id is not None
+            and node.status in {"completed", "failed", "running", "needs_review"}
+            for node in existing_tree.nodes.values()
+        )
+        if explicit_revision and already_executed:
+            # Repairing an existing plan must not regenerate its tree first.
+            readiness = SimpleNamespace(plan_tree=existing_tree, decomposition_status="completed")
+        elif _supports_generation_readiness(repo):
             readiness = await ensure_plan_generation_ready(
                 plan_id=plan_id,
                 repo=repo,
@@ -767,7 +776,7 @@ async def _optimize_plan(
             )
         else:
             readiness = SimpleNamespace(
-                plan_tree=repo.get_plan_tree(plan_id),
+                plan_tree=existing_tree,
                 decomposition_status="unavailable",
             )
 

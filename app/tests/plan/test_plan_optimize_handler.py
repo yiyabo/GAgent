@@ -162,6 +162,27 @@ def test_optimize_plan_accepts_nested_updated_fields_alias(monkeypatch) -> None:
     assert repo.tree.nodes[2].instruction == "Updated task A"
 
 
+def test_explicit_edit_of_executed_plan_skips_generation_readiness(monkeypatch) -> None:
+    tree = _build_tree()
+    tree.nodes[2].status = "completed"
+    repo = _OptimizeRepoStub(tree)
+    monkeypatch.setattr("app.repository.plan_repository.PlanRepository", lambda: repo)
+    _stub_optimize_reviews(monkeypatch)
+
+    async def unexpected_generation(**_kwargs):
+        raise AssertionError("An executed plan must not regenerate before an explicit edit")
+
+    monkeypatch.setattr("tool_box.tools_impl.plan_tools.ensure_plan_generation_ready", unexpected_generation)
+    result = asyncio.run(_optimize_plan(1, [{
+        "action": "update_task", "task_id": 3,
+        "instruction": "Reuse completed evidence and write the missing result.",
+    }]))
+    assert result["success"] is True
+    assert result["applied_changes"] == 1
+    assert tree.nodes[2].status == "completed"
+    assert tree.nodes[3].instruction == "Reuse completed evidence and write the missing result."
+
+
 def test_optimize_plan_accepts_description_and_add_task_aliases(monkeypatch) -> None:
     repo = _OptimizeRepoStub(_build_tree())
     monkeypatch.setattr("app.repository.plan_repository.PlanRepository", lambda: repo)
