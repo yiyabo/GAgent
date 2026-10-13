@@ -129,7 +129,7 @@ class UnifiedToolExecutor:
             owner_id=context.owner_id,
             work_dir=context.work_dir or "",
             model_provider=getattr(context, 'model_provider', None),
-            extra={"ancestor_chain": list(context.ancestor_chain or []),
+            extra={**({"ancestor_chain": list(context.ancestor_chain)} if context.ancestor_chain is not None else {}),
                    "plan_tree_edit_allowed": False if context.task_id is not None and context.mode == "task_execution" else None},
             on_progress=context.on_progress,
             on_progress_loop=progress_loop,
