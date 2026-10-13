@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import os
 import re
 from collections import deque
@@ -92,6 +93,8 @@ class DecompositionPromptBuilder:
         }
 
         project_root = os.getcwd()
+        from .output_spec import output_spec_from_metadata
+        parent_spec = output_spec_from_metadata(node.metadata) if node is not None else None
 
         prompt = [
             self.SYSTEM_HEADER,
@@ -142,6 +145,7 @@ class DecompositionPromptBuilder:
             f"Name: {node_title}",
             f"Instruction: {node_instruction}",
             f"Existing children count: {len(node_children)}",
+            f"Parent delivery requirements (preserve): {json.dumps(parent_spec.to_dict(), ensure_ascii=False) if parent_spec else '(none declared)'}",
             *node_children,
             "\n=== CONSTRAINTS ===",
             self._format_constraints(constraints),
@@ -191,6 +195,10 @@ class DecompositionPromptBuilder:
             "  ]",
             "}",
             "\nSTRICT REQUIREMENTS:",
+            "- Preserve the hierarchy: root -> composite stage groups -> atomic executable tasks. At the root, create stage groups with leaf=false; within a stage, create concrete leaf=true steps when they can be executed independently.",
+            "- should_stop applies to this node's branch only. If this node is already atomic, return no children and should_stop=true; other stages still need decomposition.",
+            "- Keep the parent's agreed method, input constraints and final deliverables. Split the work without substituting methods or weakening acceptance requirements.",
+            "- Return concise task instructions, not draft reports or manuscript content. Do not repeat the full parent context in every child; use context={} when the parent already supplies it.",
             "- The entire response must be valid JSON (no comments, no trailing commas, no Markdown code fences).",
             "- `children` must be an array. Each child must include `name`, `instruction`, `dependencies`, `leaf`, and `context`.",
             "- DEPENDENCY RULES (critical):",
@@ -408,6 +416,8 @@ class PlanDecomposer:
                 continue
 
             node = tree.nodes.get(current.node_id) if current.node_id else None
+            if mode == "plan_bfs" and node is not None and node.metadata.get("task_type") == "atomic" and not tree.children_ids(node.id):
+                continue
             if (
                 not allow_existing
                 and node is not None
@@ -455,8 +465,8 @@ class PlanDecomposer:
             )
 
             try:
-                llm_result = self._llm.generate(prompt)
                 llm_calls += 1
+                llm_result = self._llm.generate(prompt)
             except Exception as exc:  # pragma: no cover - defensive
                 logger.exception("Decomposition failed for node %s: %s", current.node_id, exc)
                 _log_job(
@@ -465,6 +475,8 @@ class PlanDecomposer:
                     {"node_id": current.node_id, "error": str(exc)},
                 )
                 failed.append(current.node_id)
+                if node is not None:
+                    self._set_decomposition_state(plan_id, tree, node, "failed", str(exc))
                 continue
 
             processed.append(current.node_id)
@@ -482,22 +494,28 @@ class PlanDecomposer:
                 },
             )
             if not children:
+                if node is not None:
+                    self._set_decomposition_state(plan_id, tree, node,
+                        "atomic" if llm_result.should_stop else "failed",
+                        llm_result.reason or "empty_decomposition_response")
+                if not llm_result.should_stop:
+                    failed.append(current.node_id)
                 if llm_result.should_stop:
-                    stopped_reason = llm_result.reason or "llm_requested_stop"
+                    stopped_reason = (llm_result.reason or "llm_requested_stop") if not queue else stopped_reason
                     _log_job(
                         "info",
                         "LLM requested to stop decomposition",
                         {"node_id": current.node_id, "reason": stopped_reason},
                     )
-                    break
+                    continue
                 if self._settings.stop_on_empty:
-                    stopped_reason = llm_result.reason or "empty_children"
+                    stopped_reason = (llm_result.reason or "empty_children") if not queue else stopped_reason
                     _log_job(
                         "info",
                         "No new subtasks; stopping according to settings",
                         {"node_id": current.node_id, "reason": stopped_reason},
                     )
-                    break
+                    continue
                 continue
 
             created_sibling_ids = [n.id for n in created_nodes if n.parent_id == current.node_id]
@@ -530,6 +548,7 @@ class PlanDecomposer:
                 )
                 if (
                     not child.leaf
+                    and not llm_result.should_stop
                     and current.relative_depth + 1 <= max_depth
                     and (budget_remaining is None or budget_remaining > 0)
                     ):
@@ -543,6 +562,8 @@ class PlanDecomposer:
             # Fix C: after the full sibling batch exists, enforce
             # evidence → writer/consumer edges when the LLM omitted them.
             if batch_created:
+                if node is not None:
+                    self._set_decomposition_state(plan_id, tree, node, "completed", None)
                 self._auto_link_evidence_to_writers(
                     plan_id=plan_id,
                     siblings=batch_created,
@@ -555,13 +576,13 @@ class PlanDecomposer:
                 )
 
             if llm_result.should_stop:
-                stopped_reason = llm_result.reason or "llm_requested_stop"
+                stopped_reason = (llm_result.reason or "llm_requested_stop") if not queue else stopped_reason
                 _log_job(
                     "info",
                     "LLM requested to stop further decomposition",
                     {"node_id": current.node_id, "reason": stopped_reason},
                 )
-                break
+                continue
 
         if budget_remaining is not None and budget_remaining <= 0:
             stopped_reason = stopped_reason or "node_budget_exhausted"
@@ -626,6 +647,14 @@ class PlanDecomposer:
         self, children: Iterable[DecompositionChild], limit: int
     ) -> List[DecompositionChild]:
         return list(children)[: max(limit, 0)]
+
+    def _set_decomposition_state(self, plan_id, tree, node, status, reason):
+        metadata = dict(node.metadata or {})
+        metadata.update(decomposition_status=status, decomposition_reason=reason)
+        if node.parent_id is not None and not metadata.get("is_root") and metadata.get("task_type") != "root":
+            metadata["task_type"] = "atomic" if status == "atomic" else "composite"
+        updated = self._repo.update_task(plan_id, node.id, metadata=metadata)
+        tree.nodes[node.id] = updated
 
     @staticmethod
     def _infer_paper_section(name: str, instruction: str) -> Optional[str]:
@@ -729,6 +758,8 @@ class PlanDecomposer:
             current_deps=validated_deps,
         )
         child_metadata = self._derive_paper_metadata(child)
+        child_metadata["task_type"] = "atomic" if child.leaf else "composite"
+        child_metadata["decomposition_status"] = "atomic" if child.leaf else "pending"
         child_metadata = ensure_task_metadata(
             metadata=child_metadata,
             task_name=child.name,

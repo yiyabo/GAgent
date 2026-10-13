@@ -22,6 +22,8 @@ class DecomposerSettings:
     auto_on_create: bool = True
     stop_on_empty: bool = True
     retry_limit: int = 1
+    max_tokens: int = 8192
+    thinking_enabled: bool = False
     allow_existing_children: bool = False
     # Graph simplification settings
     enable_simplification: bool = True  # default
@@ -85,6 +87,8 @@ def get_decomposer_settings() -> DecomposerSettings:
         auto_on_create=_env_bool("DECOMP_AUTO_ON_CREATE", defaults.auto_on_create),
         stop_on_empty=_env_bool("DECOMP_STOP_ON_EMPTY", defaults.stop_on_empty),
         retry_limit=_env_int("DECOMP_RETRY_LIMIT", defaults.retry_limit),
+        max_tokens=max(1024, min(16384, _env_int("DECOMP_MAX_TOKENS", defaults.max_tokens))),
+        thinking_enabled=_env_bool("DECOMP_THINKING_ENABLED", defaults.thinking_enabled),
         allow_existing_children=_env_bool(
             "DECOMP_ALLOW_EXISTING_CHILDREN", defaults.allow_existing_children
         ),

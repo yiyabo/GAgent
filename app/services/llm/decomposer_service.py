@@ -186,18 +186,30 @@ class PlanDecomposerLLMService:
         structured outputs and buffered calls get 504'd by the upstream
         gateway (LOCAL_INFRA §7; journey 2026-09-21 T3 reproduction).
         """
-        with usage_context_override(call_purpose="plan_decomposition", phase="plan"):
-            response = "".join(self._llm.stream_chat(
-                prompt,
-                model=self._settings.model,
-                enable_thinking=get_settings().thinking_enabled,
-            ))
-        cleaned = strip_code_fences(response)
-        try:
-            return DecompositionResponse.model_validate_json(cleaned)
-        except ValidationError:
-            logger.error("Failed to parse decomposition response: %s", cleaned)
-            raise
+        attempts = 1 + max(0, min(2, self._settings.retry_limit))
+        for attempt in range(attempts):
+            effective_prompt = prompt
+            if attempt:
+                effective_prompt += (
+                    "\nThe previous response was empty or invalid JSON. Return one complete compact JSON object. "
+                    "Keep each instruction concise; omit unused context fields. Preserve the parent's method and "
+                    "output requirements. Do not include Markdown or comments."
+                )
+            with usage_context_override(call_purpose="plan_decomposition", phase="plan"):
+                response = "".join(self._llm.stream_chat(
+                    effective_prompt, model=self._settings.model,
+                    max_tokens=self._settings.max_tokens,
+                    enable_thinking=self._settings.thinking_enabled,
+                ))
+            try:
+                result = DecompositionResponse.model_validate_json(strip_code_fences(response))
+                # Validate the child payload before returning to the planner.
+                result.children
+                return result
+            except (ValueError, ValidationError) as exc:
+                logger.warning("Invalid decomposition response attempt=%s/%s chars=%s: %s", attempt + 1, attempts, len(response), exc)
+                if attempt + 1 == attempts:
+                    raise
 
     def decide_search(self, prompt: str) -> str:
         """Ask the LLM whether plan generation needs external material collection."""

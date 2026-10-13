@@ -110,6 +110,17 @@ class _FakeAsyncStreamResponse:
             yield line
 
 
+def test_sync_structured_stream_honors_output_budget_and_thinking_off(monkeypatch):
+    fake = _FakeSyncClient([_FakeStreamResponse(lines=_sse_lines(['{}']))])
+    monkeypatch.setattr(llm_mod, '_get_shared_sync_client', lambda: fake)
+    monkeypatch.setattr(llm_mod, '_outbound_limiter', _NoopLimiter())
+    monkeypatch.setenv('LLM_THINKING_OFF_REASONING_EFFORT', 'low')
+    assert ''.join(_client().stream_chat('plan', max_tokens=8192, enable_thinking=False)) == '{}'
+    payload = fake.calls[0]['json']
+    assert payload['max_tokens'] == 8192 and payload['enable_thinking'] is False
+    assert payload['reasoning_effort'] == 'low'
+
+
 class _FakeAsyncClient:
     def __init__(self, responses: List[_FakeAsyncStreamResponse]) -> None:
         self._responses = list(responses)
@@ -609,7 +620,8 @@ class TestDecomposerStreaming:
         from app.services.llm.decomposer_service import PlanDecomposerLLMService
 
         service = PlanDecomposerLLMService.__new__(PlanDecomposerLLMService)
-        service._settings = SimpleNamespace(model="qwen-test")
+        from app.config.decomposer_config import DecomposerSettings
+        service._settings = DecomposerSettings(model="qwen-test")
         return service
 
     def test_generate_uses_streaming(self) -> None:
@@ -617,8 +629,9 @@ class TestDecomposerStreaming:
             def __init__(self) -> None:
                 self.stream_called = False
 
-            def stream_chat(self, prompt: str, model: Any = None, enable_thinking: Optional[bool] = None) -> Iterator[str]:
+            def stream_chat(self, prompt: str, model: Any = None, enable_thinking: Optional[bool] = None, **kwargs) -> Iterator[str]:
                 self.stream_called = True
+                assert kwargs['max_tokens'] == 8192 and enable_thinking is False
                 yield json.dumps({"target_node_id": 3, "mode": "nodes", "children": []})
 
             def chat(self, prompt: str, **kwargs: Any) -> str:

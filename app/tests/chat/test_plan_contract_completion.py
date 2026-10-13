@@ -5,6 +5,7 @@ from app.routers.chat.request_routing import resolve_request_routing
 from app.routers.chat.response_metadata import _build_deep_think_response_metadata
 from app.services.deep_think.models import DeepThinkResult, structured_plan_contract_failed
 from app.services.llm import decomposer_service
+from app.config.decomposer_config import DecomposerSettings
 
 
 @pytest.mark.parametrize('message',[
@@ -47,7 +48,7 @@ def test_plan_decomposer_and_material_decision_honor_effective_thinking(monkeypa
         yield '{"target_node_id":1,"mode":"leaf","is_leaf":true,"children":[]}'
     monkeypatch.setattr(decomposer_service,'get_settings',lambda:SimpleNamespace(thinking_enabled=thinking))
     service=decomposer_service.PlanDecomposerLLMService(llm=SimpleNamespace(stream_chat=stream),
-        settings=SimpleNamespace(model='model'))
+        settings=DecomposerSettings(model='model', thinking_enabled=thinking))
     service.generate('decompose')
     service.decide_search('decide')
     assert len(requests)==2 and all(r['enable_thinking'] is thinking for r in requests)

@@ -1233,6 +1233,13 @@ class LLMClient(LLMProvider):
             "max_tokens": max_tokens,
             "stream": True,
         }
+        enable_thinking = kwargs.pop("enable_thinking", None)
+        if isinstance(enable_thinking, bool):
+            payload["enable_thinking"] = enable_thinking
+            if not enable_thinking:
+                effort = _thinking_off_reasoning_effort()
+                if effort:
+                    payload["reasoning_effort"] = effort
         headers = self._build_headers()
         timeout = _make_request_timeout(timeout_override)
 
