@@ -42,6 +42,17 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); client?.clear(); });
 describe('plan workspace navigation and async isolation', () => {
+  it('counts existing childless stages as executable without requiring decomposition', async () => {
+    const existing = tree(1);
+    existing.nodes['1'].status = 'pending';
+    existing.nodes['2'].status = 'failed';
+    existing.nodes['2'].metadata = {task_type: 'composite', decomposition_status: 'failed'};
+    existing.nodes['3'].metadata = {task_type: 'composite', decomposition_status: 'failed'};
+    api.getPlanTree.mockResolvedValue(existing);
+    mount();
+    expect(await screen.findByText('1 / 2 个执行任务已完成')).toBeInTheDocument();
+    expect(screen.getByRole('button', {name: /重新执行/})).toBeEnabled();
+  });
   it('shows review work separately from completed execution tasks', async () => {
     const pendingReview = tree(1);
     pendingReview.nodes['2'].status = 'needs_review';

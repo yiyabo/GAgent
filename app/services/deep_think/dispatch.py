@@ -326,6 +326,7 @@ async def _execute_native_tool_call(
             str(agent.request_profile.get("session_id") or "").strip(),
         ),
         extra={
+            "plan_tree_edit_allowed": agent.request_profile.get("plan_tree_edit_allowed"),
             "chat_history": list(agent.messages[-20:]) if getattr(agent, "messages", None) else [],
             "paper_mode": bool(agent.request_profile.get("paper_mode", False)),
             "deep_think_enabled": True,

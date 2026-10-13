@@ -596,6 +596,7 @@ def _bind_chat_tool_progress(callback: Optional[Any], tool_name: str) -> Optiona
 
 
 def _build_chat_tool_context(agent: Any, tool_name: str) -> Optional[Any]:
+    from app.services.plans.edit_policy import agent_plan_edit_allowed
     session_id = getattr(agent, "session_id", None)
     if not isinstance(session_id, str) or not session_id.strip():
         return None
@@ -651,6 +652,7 @@ def _build_chat_tool_context(agent: Any, tool_name: str) -> Optional[Any]:
         work_dir=str(work_dir),
         on_progress=_bind_chat_tool_progress(on_progress, tool_name),
         on_progress_loop=on_progress_loop,
+        extra={"plan_tree_edit_allowed": agent_plan_edit_allowed(agent)},
     )
 
 

@@ -30,6 +30,14 @@ beforeEach(() => {
 afterEach(() => { cleanup(); client?.clear(); });
 
 describe('unfinished stage continuation', () => {
+  it('lets a failed childless stage retry its original task without decomposing', () => {
+    const p = props(); p.task = { ...stage, status: 'failed' }; p.tasks = [p.task];
+    mount(p);
+    expect(screen.getByRole('button', { name: /继续拆解/ })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /重新执行/ }));
+    expect(screen.getByText('执行对话框')).toBeInTheDocument();
+    expect(api.decomposeTask).not.toHaveBeenCalled();
+  });
   it('submits only decomposition and displays its background log without executing the stage', async () => {
     const p = props(); mount(p);
     fireEvent.click(screen.getByRole('button', { name: /继续拆解/ }));

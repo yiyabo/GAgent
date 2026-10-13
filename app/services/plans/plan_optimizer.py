@@ -547,6 +547,7 @@ def _normalize_generated_changes(
                     "name": name,
                     "instruction": instruction,
                     "parent_id": parent_id_int,
+                    **({"metadata": dict(change["metadata"])} if isinstance(change.get("metadata"), dict) else {}),
                     **({"dependencies": deps} if deps else {}),
                 }
             )

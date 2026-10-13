@@ -81,10 +81,11 @@ const SelectedTaskDetail: React.FC<Props> = ({ planId, sessionId, artifactSessio
         <span className={`pw-status-label pw-status-${taskStatus(task)}`}><TaskStatusIcon status={taskStatus(task)} />{statusLabel(taskStatus(task))}</span>
         <Space size={6}>
           <Button size="small" icon={<ExportOutlined />} disabled={executionBlocked} title={executionBlocked ? '打开来源会话后可操作' : undefined} onClick={openDetails}>完整详情</Button>
-          <Button size="small" type="primary" icon={needsDecomposition ? <NodeIndexOutlined /> : <PlayCircleOutlined />}
-            loading={decomposing} disabled={running || decomposing || executionBlocked}
-            onClick={() => needsDecomposition ? void continueDecomposition() : setExecuteOpen(true)}>
-            {needsDecomposition ? '继续拆解' : task.status === 'failed' ? '重新执行' : '执行任务'}
+          {needsDecomposition && <Button size="small" icon={<NodeIndexOutlined />} loading={decomposing}
+            disabled={running || decomposing || executionBlocked} onClick={() => void continueDecomposition()}>继续拆解</Button>}
+          <Button size="small" type="primary" icon={<PlayCircleOutlined />} disabled={running || decomposing || executionBlocked}
+            onClick={() => setExecuteOpen(true)}>
+            {task.status === 'failed' ? '重新执行' : '执行任务'}
           </Button>
         </Space>
       </div>

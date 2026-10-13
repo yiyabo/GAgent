@@ -1359,6 +1359,9 @@ class StructuredChatAgent:
         ``event_sink`` receives the same JSON payloads as SSE ``data:`` lines (dict form).
         """
         routing_decision, route_profile = self._resolve_request_routing(user_message)
+        from app.services.plans.edit_policy import user_requested_plan_edit
+        self._plan_tree_edit_allowed = bool(routing_decision.plan_create_required or
+            user_requested_plan_edit(routing_decision.effective_user_message))
         effective_user_message = routing_decision.effective_user_message
         status_ids = task_status_question(effective_user_message) if self.plan_session.plan_id is not None and not routing_decision.manual_deep_think else []
         if status_ids:
@@ -1978,6 +1981,12 @@ class StructuredChatAgent:
                                 existing_plan_id=existing_plan_id,
                                 plan_title=plan_title,
                             )
+
+                    from app.services.plans.edit_policy import PLAN_EDITS, blocked_plan_edit, agent_plan_edit_allowed
+                    if name == "plan_operation" and requested_operation in PLAN_EDITS:
+                        denied = blocked_plan_edit(requested_operation, agent_plan_edit_allowed(self))
+                        if denied:
+                            return denied
 
                     if name not in ("plan_operation", "verify_task"):
                         if name == "code_executor":
@@ -2704,6 +2713,7 @@ class StructuredChatAgent:
                         **routing_decision.metadata(),
                         "current_plan_id": self.plan_session.plan_id,
                         "chat_plan_execution_background_only": True,
+                        "plan_tree_edit_allowed": self._plan_tree_edit_allowed,
                         "current_plan_title": plan_tree.title if plan_tree else None,
                         "current_task_id": self.extra_context.get("current_task_id"),
                         "pending_scope_task_ids": list(
@@ -3299,6 +3309,9 @@ class StructuredChatAgent:
         yield _sse_message(final_payload)
 
     def _update_routing_context(self, routing_decision: RequestRoutingDecision) -> None:
+        from app.services.plans.edit_policy import user_requested_plan_edit
+        self._plan_tree_edit_allowed = bool(routing_decision.plan_create_required or
+            user_requested_plan_edit(routing_decision.effective_user_message))
         self.extra_context.update(
             {
                 "request_tier": routing_decision.request_tier,

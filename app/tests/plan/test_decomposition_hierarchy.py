@@ -94,7 +94,7 @@ def test_invalid_decomposition_has_one_bounded_retry_without_inventing_children(
         PlanDecomposerLLMService(llm=Broken(), settings=DecomposerSettings()).generate('keep it')
 
 
-def test_failed_stage_stays_composite_and_is_not_executable_as_atomic(repo):
+def test_failed_stage_can_execute_original_task_without_automatic_decomposition(repo):
     plan = repo.create_plan(title='Partial plan')
     root = repo.create_task(plan.id, name='Root', metadata={'is_root': True})
     stage = repo.create_task(plan.id, name='Stage', parent_id=root.id, metadata={'task_type': 'composite'})
@@ -106,4 +106,6 @@ def test_failed_stage_stays_composite_and_is_not_executable_as_atomic(repo):
     assert result.failed_nodes == [stage.id] and result.stats['llm_calls'] == 1
     assert tree.nodes[stage.id].metadata['task_type'] == 'composite'
     preflight = ArtifactPreflightService().validate_plan(plan.id, tree, manifest={'artifacts': {}})
-    assert any(issue.code == 'decomposition_incomplete' for issue in preflight.errors)
+    assert not any(issue.code == 'decomposition_incomplete' for issue in preflight.errors)
+    assert any(issue.code == 'decomposition_incomplete' for issue in preflight.warnings)
+    assert repo.get_plan_tree(plan.id).children_ids(stage.id) == []
