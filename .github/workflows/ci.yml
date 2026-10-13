@@ -95,6 +95,9 @@ jobs:
           DOCKER_BUILDKIT=1 docker build -f deploy/Dockerfile.gateway -t gagent-gateway:latest \
             --build-arg GATEWAY_BASE_IMAGE=nginx:1.29-alpine .
 
+      - name: Check SSE delivery through two nginx hops
+        run: python3 deploy/verify-sse-chain.py
+
       # App image: gate HIGH/CRITICAL that have a fix (findings without an
       # upstream fix are reported but do not fail — base-image properties).
       # trivy is installed by its official script, not a marketplace action:
