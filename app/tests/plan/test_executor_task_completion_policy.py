@@ -20,8 +20,9 @@ def _missing_result():
 
 
 class _StrictProvider:
-    def __init__(self, target, *, produce=True):
+    def __init__(self, target, *, produce=True, extra_targets=()):
         self.target = target
+        self.extra_targets = tuple(extra_targets)
         self.produce = produce
         self.calls = 0
 
@@ -33,10 +34,14 @@ class _StrictProvider:
         assert "submit_final_answer" in text and "PlanExecutor" in text
         self.calls += 1
         if self.calls == 1:
-            code = f"from pathlib import Path\nPath({str(self.target)!r}).write_text('{{\"count\":2}}')" if self.produce else "print('No output produced')"
+            targets = (self.target, *self.extra_targets)
+            code = "from pathlib import Path\n" + "\n".join(
+                f"Path({str(path)!r}).write_text({('# Reused evidence\\nCount: 2\\n' if path.suffix == '.md' else 'item,count\\nsource,2\\n' if path.suffix == '.csv' else '{\"count\":2}')!r})"
+                for path in targets
+            ) if self.produce else "print('No output produced')"
             return {"thinking": "Produce the requested output using Python.", "action": {"tool": "execute_code", "params": {"code": code}}, "final_answer": None}
         return {"thinking": "Deliver the output for independent verification.", "action": None,
-                "final_answer": {"answer": f"Produced [answer.json]({self.target}) containing the requested count. The task output is available for inspection.", "confidence": 1.0}}
+                "final_answer": {"answer": "Produced " + ", ".join(f"[{path.name}]({path})" for path in (self.target, *self.extra_targets)) + ". The task outputs are available for inspection.", "confidence": 1.0}}
 
     async def stream_chat_async(self, **kwargs):
         yield json.dumps(self.next_response(kwargs["messages"]))
@@ -86,16 +91,26 @@ def task_case(isolated_app_env, monkeypatch):
         conn.execute("INSERT INTO chat_sessions(id,owner_id,name) VALUES('completion-policy','tester','completion')")
         conn.commit()
 
-    def create(*, protocol="native", produce=True, setting_limit=2):
+    def create(*, protocol="native", produce=True, setting_limit=2, filenames=("answer.json",)):
         repo = PlanRepository()
         plan = repo.create_plan("Completion policy", owner="tester")
-        node = repo.create_task(plan.id, name="Produce answer", instruction="Use Python to write answer.json with a numeric count of two.")
+        node = repo.create_task(plan.id, name="Produce answer", instruction="Use Python to write the declared outputs from existing evidence with a count of two.")
         target = path_router.get_path_router().get_task_output_dir_from_tree(
             "completion-policy", node.id, repo.get_plan_tree(plan.id), create=True,
-        ) / "answer.json"
-        spec = {"source": "explicit", "required_outputs": [{"kind": "data", "extensions": [".json"], "target_path": str(target)}]}
-        repo.update_task(plan.id, node.id, metadata={"output_spec": spec})
-        provider = (_NativeProvider if protocol == "native" else _StrictProvider)(target, produce=produce)
+        ) / filenames[0]
+        targets = [target.parent / filename for filename in filenames]
+        spec = {"source": "explicit", "required_outputs": [
+            {"kind": "document" if path.suffix == ".md" else "data", "extensions": [path.suffix], "target_path": str(path)}
+            for path in targets
+        ]}
+        repo.update_task(plan.id, node.id, metadata={
+            "output_spec": spec,
+            **({"acceptance_criteria": {"blocking": True, "checks": [
+                {"type": "file_nonempty", "path": str(path)} for path in targets
+            ]}} if filenames != ("answer.json",) else {}),
+        })
+        provider = (_NativeProvider if protocol == "native" else _StrictProvider)(
+            target, produce=produce, extra_targets=targets[1:])
         settings = replace(get_executor_settings(), plan_task_execution_backend="internal",
                            contract_repair_attempts=setting_limit, deep_think_max_iterations=4)
         executor = PlanExecutor(repo=repo, settings=settings, llm_service=SimpleNamespace(_llm=provider))
@@ -253,6 +268,145 @@ def test_targeted_repair_uses_real_controller_and_kernel_after_failed_verificati
     assert result.metadata['repair_attempts']==1
     assert result.metadata['output_verification']['status']=='passed'
     assert repo.get_node(plan,task).status=='completed'
+
+
+@pytest.mark.parametrize("protocol", ["native", "strict"])
+@pytest.mark.parametrize("filenames", [("answer.md",), ("answer.md", "answer.json")])
+def test_next_run_repairs_prior_missing_outputs_from_existing_evidence(task_case, monkeypatch, protocol, filenames):
+    import app.services.plans.plan_executor as facade
+
+    executor, repo, plan, task, target, provider = task_case(
+        protocol=protocol, filenames=filenames)
+    evidence = target.parent / "source_notes.txt"
+    evidence.write_text("Existing checked evidence: source count is two.\n")
+    node = repo.get_node(plan, task)
+    old, _ = executor._finalize_task_execution(
+        plan, node, {"status": "success", "content": "Analysis done; files missing",
+                     "artifact_paths": [str(evidence)], "metadata": {}},
+        execution_status="completed",
+    )
+    assert old.final_status == "failed"
+    assert len(old.payload["metadata"]["contract_diff"]["missing_required_outputs"]) == len(filenames), (
+        old.payload["metadata"]["contract_diff"], old.payload["metadata"].get("output_verification"))
+    repo.update_task(plan, task, status="failed", execution_result=json.dumps(old.payload))
+    from app.services.plans.executor_resume_repair import previous_delivery_gap
+    assert previous_delivery_gap(repo.get_node(plan, task)) is not None
+
+    real_agent = facade.DeepThinkAgent
+    offered = []
+    def capture_agent(**kwargs):
+        offered.extend(kwargs["available_tools"])
+        return real_agent(**kwargs)
+    monkeypatch.setattr(facade, "DeepThinkAgent", capture_agent)
+    real_response = provider.next_response
+    prompts = []
+    def capture_response(messages):
+        prompts.append(json.dumps(messages, ensure_ascii=False))
+        return real_response(messages)
+    monkeypatch.setattr(provider, "next_response", capture_response)
+
+    result = executor.execute_task(plan, task, config=_config())
+    assert result.status == "completed", (
+        result.status, provider.calls, prompts[:1], result.metadata.get("repair_history"),
+        result.metadata.get("output_verification"),
+        [(filename, (target.parent / filename).exists()) for filename in filenames],
+    )
+    assert result.metadata["resumed_delivery_gap"] is True
+    assert result.metadata["repair_attempts"] == 1
+    assert 2 <= provider.calls <= 4  # write + final; native may add file-profile checks
+    assert "Repair contract mismatch" in prompts[0]
+    assert "source_notes.txt" in prompts[0]
+    assert "web_search" not in offered and "literature_pipeline" not in offered
+    assert "scientific_figure_generator" in offered
+    assert all((target.parent / filename).is_file() for filename in filenames)
+    assert result.metadata["output_verification"]["status"] == "passed"
+
+
+def test_prior_missing_output_without_reusable_evidence_keeps_normal_execution(task_case, monkeypatch):
+    import app.services.plans.plan_executor as facade
+
+    executor, repo, plan, task, target, provider = task_case(filenames=("answer.md",))
+    node = repo.get_node(plan, task)
+    old, _ = executor._finalize_task_execution(
+        plan, node, {"status": "success", "content": "File missing", "metadata": {}},
+        execution_status="completed",
+    )
+    repo.update_task(plan, task, status="failed", execution_result=json.dumps(old.payload))
+    real_agent = facade.DeepThinkAgent
+    offered = []
+    def capture_agent(**kwargs):
+        offered.extend(kwargs["available_tools"])
+        return real_agent(**kwargs)
+    monkeypatch.setattr(facade, "DeepThinkAgent", capture_agent)
+
+    result = executor.execute_task(plan, task, config=_config())
+    assert result.status == "completed", result.to_dict()
+    assert result.metadata.get("resumed_delivery_gap") is not True
+    assert "web_search" in offered
+    assert provider.calls == 2
+
+
+def test_previous_gap_uses_completed_dependency_files_when_task_has_no_prior_files(task_case):
+    from app.services import path_router
+
+    executor, repo, plan, task, target, provider = task_case(
+        protocol="strict", filenames=("answer.md", "answer.json"))
+    dependency = repo.create_task(plan, name="Collected evidence", instruction="Evidence already collected.")
+    source_dir = path_router.get_path_router().get_task_output_dir_from_tree(
+        "completion-policy", dependency.id, repo.get_plan_tree(plan), create=True)
+    source = source_dir / "evidence.txt"
+    source.write_text("Source count: two.\n")
+    repo.update_task(plan, dependency.id, status="completed", execution_result=json.dumps({
+        "status": "completed", "content": "Source ready", "artifact_paths": [str(source)],
+    }))
+    repo.update_task(plan, task, dependencies=[dependency.id])
+    node = repo.get_node(plan, task)
+    old, _ = executor._finalize_task_execution(
+        plan, node, {"status": "success", "content": "Outputs missing", "metadata": {}},
+        execution_status="completed",
+    )
+    repo.update_task(plan, task, status="failed", execution_result=json.dumps(old.payload))
+    result = executor.execute_task(plan, task, config=_config())
+    assert result.status == "completed", result.to_dict()
+    assert result.metadata["resumed_delivery_gap"] is True
+    assert result.metadata["repair_attempts"] == 1
+    assert provider.calls == 2
+    assert target.is_file() and (target.parent / "answer.json").is_file()
+
+
+def test_previous_gap_is_not_reused_after_output_contract_changes(task_case):
+    from app.services.plans.executor_resume_repair import previous_delivery_gap
+
+    executor, repo, plan, task, target, _ = task_case(filenames=("answer.md",))
+    node = repo.get_node(plan, task)
+    old, _ = executor._finalize_task_execution(
+        plan, node, {"status": "success", "content": "Missing answer.md", "metadata": {}},
+        execution_status="completed",
+    )
+    repo.update_task(plan, task, status="failed", execution_result=json.dumps(old.payload))
+    assert previous_delivery_gap(repo.get_node(plan, task)) is not None
+    changed = dict(repo.get_node(plan, task).metadata)
+    changed["output_spec"] = {"source": "explicit", "required_outputs": [
+        {"kind": "document", "extensions": [".md"], "target_path": str(target.parent / "new_request.md")}
+    ]}
+    repo.update_task(plan, task, metadata=changed)
+    assert previous_delivery_gap(repo.get_node(plan, task)) is None
+
+
+def test_explicit_zero_disables_previous_gap_resume(task_case):
+    executor, repo, plan, task, target, provider = task_case(protocol="strict", filenames=("answer.md",))
+    evidence = target.parent / "source_notes.txt"
+    evidence.write_text("Existing count: two.\n")
+    node = repo.get_node(plan, task)
+    old, _ = executor._finalize_task_execution(
+        plan, node, {"status": "success", "content": "Missing answer.md",
+                     "artifact_paths": [str(evidence)], "metadata": {}},
+        execution_status="completed",
+    )
+    repo.update_task(plan, task, status="failed", execution_result=json.dumps(old.payload))
+    result = executor.execute_task(plan, task, config=_config(contract_repair_attempts=0))
+    assert result.status == "completed" and provider.calls == 2
+    assert result.metadata.get("resumed_delivery_gap") is not True
 
 
 @pytest.mark.parametrize('backend',['legacy','external'])

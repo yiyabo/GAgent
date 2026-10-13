@@ -66,6 +66,7 @@ from .executor_text_utils import (
     _run_coroutine_sync,
 )
 from .plan_models import PlanNode, PlanTree
+from .executor_resume_repair import has_existing_evidence, previous_delivery_gap
 from .task_verification import VerificationFinalization
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -144,9 +145,15 @@ class _DeepThinkMethods:
     ) -> ExecutionResult:
         check_run_active()
         self._contract_repair_limit(config)
+        prior_delivery_gap = (
+            previous_delivery_gap(node)
+            if (repair_finalization is None and self._contract_repair_limit(config)
+                and not config.force_rerun) else None
+        )
         try:
+            retained_failure = repair_finalization or prior_delivery_gap
             self._repo.update_task(plan_id, node.id, status="running", execution_result=(
-                json.dumps(repair_finalization.payload, ensure_ascii=False) if repair_finalization else ""))
+                json.dumps(retained_failure.payload, ensure_ascii=False) if retained_failure else ""))
             node.status = "running"
         except (RunDeadlineExceeded, StaleRunClaim, ControllerRestoreError):
             raise
@@ -227,6 +234,12 @@ class _DeepThinkMethods:
             session_id=session_context.get("session_id"),
             tree=tree,
         )
+        if (repair_finalization is None and prior_delivery_gap is not None
+                and has_existing_evidence(prior_delivery_gap, dependency_paths, task_work_dir)):
+            repair_finalization = prior_delivery_gap
+            _log_job("info", "复用已有证据，优先补齐上次验收的缺项。", {
+                "sub_type": "repair_resume", "plan_id": plan_id, "task_id": node.id,
+            })
 
         if paper_mode:
             session_context["paper_mode"] = True
@@ -341,7 +354,7 @@ class _DeepThinkMethods:
             "injected_chars": 0,
             "selection_latency_ms": 0.0,
         }
-        if config.enable_skills:
+        if config.enable_skills and repair_finalization is None:
             try:
                 loader = get_skills_loader(auto_sync=False)
                 tool_hints = self._derive_skill_tool_hints(
@@ -511,26 +524,24 @@ class _DeepThinkMethods:
             )
 
         from .execution_budget import request_profile
+        repair_resume = bool(repair_finalization and
+                             repair_finalization.payload.get("metadata", {}).get("resumed_delivery_gap"))
+        tool_names = [
+            "web_search", "graph_rag", "sequence_fetch", "code_executor",
+            "file_operations", "document_reader", "vision_reader", "bio_tools",
+            "literature_pipeline", "review_pack_writer", "phagescope_research",
+            "phagescope", "plan_operation", "manuscript_writer",
+            "terminal_session", "deliverable_submit",
+        ]
+        if repair_resume:
+            tool_names = [name for name in tool_names if name not in {
+                "web_search", "graph_rag", "sequence_fetch", "literature_pipeline",
+                "phagescope_research", "phagescope", "plan_operation",
+            }]
+            tool_names.append("scientific_figure_generator")
         deep_think_agent = _facade().DeepThinkAgent(
             llm_client=self._llm._llm,
-            available_tools=_execution_tools([
-                "web_search",
-                "graph_rag",
-                "sequence_fetch",
-                "code_executor",
-                "file_operations",
-                "document_reader",
-                "vision_reader",
-                "bio_tools",
-                "literature_pipeline",
-                "review_pack_writer",
-                "phagescope_research",
-                "phagescope",
-                "plan_operation",
-                "manuscript_writer",
-                "terminal_session",
-                "deliverable_submit",
-            ]),
+            available_tools=_execution_tools(tool_names),
             tool_executor=_tool_wrapper,
             max_iterations=getattr(self._settings, "deep_think_max_iterations", 16),
             tool_timeout=UnifiedToolExecutor.DEFAULT_TIMEOUT_SECONDS,
