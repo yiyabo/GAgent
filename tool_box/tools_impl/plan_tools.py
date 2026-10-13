@@ -5,6 +5,7 @@ This module provides plan creation and optimization functionality for DeepThink 
 Supports creating, reviewing, optimizing, and querying plans with iterative improvement.
 """
 
+import asyncio
 import inspect
 import json
 import logging
@@ -193,6 +194,13 @@ async def plan_operation_handler(
             return {"success":True,"operation":"recompute",**enqueue(repo,resolved,request,owner)}
         elif operation == "execute_all":
             return await _execute_all(plan_id, tool_context=tool_context)
+        elif operation == "execute_task":
+            ids = kwargs.get("target_task_ids")
+            if ids is None and kwargs.get("target_task_id") is not None:
+                ids = [kwargs["target_task_id"]]
+            if not isinstance(ids, list) or not ids:
+                return {"success": False, "operation": operation, "error": "target_task_ids is required"}
+            return await _execute_all(plan_id, tool_context=tool_context, task_ids=ids)
         elif operation == "update_task":
             return await _update_task(
                 plan_id,
@@ -1397,6 +1405,7 @@ async def _update_task(
 async def _execute_all(
     plan_id: Optional[int],
     tool_context: Optional[Any] = None,
+    task_ids: Optional[List[int]] = None,
 ) -> Dict[str, Any]:
     """Execute all pending tasks in the plan via the execute-full background job.
 
@@ -1410,202 +1419,24 @@ async def _execute_all(
         if plan_id is None:
             return {"success": False, "error": "plan_id is required for execute_all"}
 
-    execution_lock = None
-    release_execution_lock: Optional[Callable[[int, int, Any], None]] = None
-
     try:
-        from app.repository.plan_repository import PlanRepository
-        from app.services.plans.todo_list import build_full_plan_todo_list
-        from app.services.plans.decomposition_jobs import plan_decomposition_jobs
-        # Sibling addresses, not the HTTP layer: the execution engine and the
-        # plan/task execution locks live outside the plan_routes facade.
-        from app.routers.plan_routes.execution_jobs import _run_full_plan_job
-        from app.routers.plan_routes.state import (
-            _acquire_plan_execution_lock,
-            _release_plan_execution_lock,
-        )
-        # These two stay facade-resolved: tests patch them on the facade
-        # namespace and this call-time import must observe those patches.
-        from app.routers.plan_routes import (
-            _resolve_effective_task_states,
-            _todo_list_to_dict,
-        )
-        release_execution_lock = _release_plan_execution_lock
-        import threading
-
-        repo = PlanRepository()
-        tree = repo.get_plan_tree(plan_id)
-
-        # Build todo list and get pending task order
-        # --- Artifact dependency enrichment ---
-        try:
-            from app.services.plans.dependency_enrichment import enrich_plan_dependencies, validate_plan_dag
-            from app.services.plans.dependency_validation import normalize_plan_dependencies
-            _enrichment = enrich_plan_dependencies(tree)
-            if _enrichment.added_edges:
-                _persist_failures: List[int] = []
-                for _enode in tree.iter_nodes():
-                    try:
-                        repo.update_task(plan_id, _enode.id, dependencies=list(_enode.dependencies))
-                    except Exception as _persist_exc:
-                        _persist_failures.append(_enode.id)
-                        logger.warning(
-                            "Failed to persist dependencies for task %s in plan %s: %s",
-                            _enode.id, plan_id, _persist_exc,
-                        )
-                if _persist_failures:
-                    logger.warning(
-                        "Plan %s: %d/%d task dependency writes failed (task IDs: %s). "
-                        "In-memory tree may diverge from DB.",
-                        plan_id, len(_persist_failures), len(list(tree.iter_nodes())),
-                        _persist_failures[:10],
-                    )
-                else:
-                    logger.info("Enriched plan %s with %d implicit edges in execute_all.", plan_id, len(_enrichment.added_edges))
-            _normalization = normalize_plan_dependencies(tree)
-            if _normalization.dependencies_by_task:
-                for _tid, _deps in _normalization.dependencies_by_task.items():
-                    repo.update_task(plan_id, _tid, dependencies=list(_deps))
-                    if _tid in tree.nodes:
-                        tree.nodes[_tid].dependencies = list(_deps)
-                logger.info(
-                    "Normalized dependency edges for plan %s tasks %s in execute_all.",
-                    plan_id,
-                    _normalization.changed_task_ids,
-                )
-            for _issue in _normalization.issues:
-                logger.warning("Plan dependency validation: %s", _issue.message)
-            _dag_val = validate_plan_dag(tree)
-            if _dag_val.has_errors():
-                return {"success": False, "error": _dag_val.summary(), "operation": "execute_all", "plan_id": plan_id}
-        except Exception as _enrich_exc:
-            logger.warning("Dependency enrichment failed in execute_all: %s", _enrich_exc)
-
-        todo = build_full_plan_todo_list(tree, expand_composites=True, ordering_mode="structure")
-        state_by_task = _resolve_effective_task_states(plan_id, tree)
-        todo_dict = _todo_list_to_dict(todo, plan_id, state_by_task=state_by_task, tree=tree)
-        task_order = list(todo_dict.get("pending_order") or [])
-
-        if _should_run_artifact_preflight(tree):
-            preflight = _artifact_preflight_service.validate_plan(plan_id, tree)
-            if preflight.has_errors():
-                return _preflight_failure_payload(
-                    operation="execute_all",
-                    plan_id=plan_id,
-                    decomposition_status=None,
-                    result=preflight,
-                )
-
-        if not task_order:
-            return {
-                "success": True,
-                "operation": "execute_all",
-                "plan_id": plan_id,
-                "message": "No pending tasks to execute. All tasks may already be completed.",
-            }
-
-        # Acquire execution lock
-        execution_lock = _acquire_plan_execution_lock(plan_id, 0)
-        if execution_lock is None:
-            return {
-                "success": False,
-                "operation": "execute_all",
-                "plan_id": plan_id,
-                "message": f"Plan {plan_id} is already being executed. Please wait.",
-            }
-
-        # Resolve session context and owner
-        session_id = None
-        owner_id = None
-        if tool_context is not None:
-            session_id = getattr(tool_context, "session_id", None)
-            owner_id = getattr(tool_context, "owner_id", None)
+        from app.services.plans.background_submission import submit_plan_execution
+        owner_id = getattr(tool_context, "owner_id", None) if tool_context else None
+        session_id = getattr(tool_context, "session_id", None) if tool_context else None
         if not owner_id and session_id:
-            try:
-                from app.routers.chat.session_helpers import lookup_session_owner
-                owner_id = lookup_session_owner(session_id)
-            except Exception:
-                pass
-
-        initial_completed_steps = int(todo_dict.get("completed_tasks") or 0)
-        overall_total_steps = int(todo_dict.get("total_tasks") or 0)
-
-        # Create background job
-        job = plan_decomposition_jobs.create_job(
-            plan_id=plan_id,
-            task_id=None,
-            mode="full_plan",
-            job_type="plan_execute",
-            owner_id=owner_id,
-            session_id=session_id,
-            params={
-                "include_dependencies": True,
-                "include_subtasks": True,
-                "deep_think": True,
-                "steps": len(task_order),
-                "overall_total_steps": overall_total_steps,
-                "initial_completed_steps": initial_completed_steps,
-                "stop_on_failure": False,
-            },
-            metadata={
-                "session_id": session_id,
-                "plan_id": plan_id,
-                "plan_title": tree.title,
-                "target_task_id": None,
-                "task_order": task_order,
-                "todo_phases": len(todo.phases),
-                "todo_total_tasks": overall_total_steps,
-                "todo_completed_tasks": initial_completed_steps,
-            },
-        )
-
-        # Launch background thread
-        def _locked_run(**kwargs: Any) -> None:
-            try:
-                _run_full_plan_job(**kwargs)
-            finally:
-                if release_execution_lock is not None and execution_lock is not None:
-                    release_execution_lock(plan_id, 0, execution_lock)
-
-        thread = threading.Thread(
-            target=_locked_run,
-            kwargs={
-                "job_id": job.job_id,
-                "plan_id": plan_id,
-                "task_order": task_order,
-                "initial_completed_steps": initial_completed_steps,
-                "overall_total_steps": overall_total_steps,
-                "deep_think": True,
-                "session_id": session_id,
-                "paper_mode": False,
-                "stop_on_failure": False,
-            },
-            daemon=True,
-        )
-        thread.start()
-
-        return {
-            "success": True,
-            "operation": "execute_all",
-            "plan_id": plan_id,
-            "job_id": job.job_id,
-            "pending_tasks": len(task_order),
-            "message": (
-                f"Full plan execution started in background ({len(task_order)} pending tasks). "
-                f"Job ID: {job.job_id}. Track progress via /jobs/{job.job_id}/stream."
-            ),
-        }
-    except Exception as e:
-        # Release execution lock if it was acquired but the thread was never started.
-        try:
-            if execution_lock is not None and release_execution_lock is not None:
-                release_execution_lock(plan_id, 0, execution_lock)
-        except (NameError, UnboundLocalError):
-            pass  # Lock was never acquired
-        except Exception:
-            pass  # Best-effort release
-        logger.exception(f"execute_all failed for plan {plan_id}: {e}")
-        return {"success": False, "error": str(e), "operation": "execute_all", "plan_id": plan_id}
+            from app.routers.chat.session_helpers import lookup_session_owner
+            owner_id = lookup_session_owner(session_id)
+        response = await asyncio.to_thread(submit_plan_execution, plan_id, task_ids,
+                                          owner_id=owner_id, session_id=session_id)
+        payload = response.model_dump()
+        job = payload.get("job") or {}
+        detail = payload.get("result") or {}
+        if isinstance(detail, dict) and detail.get("preflight"):
+            payload.update(status="artifact_preflight_failed", preflight=detail["preflight"], error=response.message)
+        return {**payload, "operation": "execute_task" if task_ids is not None else "execute_all", "job_id": job.get("job_id"),
+                "background_submitted": bool(response.success and job)}
+    except Exception as exc:
+        return {"success": False, "operation": "execute_all", "plan_id": plan_id, "error": str(exc)}
 
 
 # Tool definition for registration
@@ -1624,6 +1455,8 @@ When the user wants to execute the entire plan, run all tasks, or start the plan
 you MUST use operation="execute_all". Do NOT attempt to execute tasks one by one yourself.
 execute_all launches a background job that handles all tasks automatically in dependency order,
 with progress tracking and error handling. It returns a job_id for real-time monitoring.
+For specific tasks use operation="execute_task" and target_task_ids. All plan task execution
+is submitted to background jobs; return the job receipt immediately and let the user keep chatting.
 Trigger phrases: "执行全部任务", "执行整个计划", "开始吧", "跑起来", "execute all",
 "run the plan", "let's go", "start executing", "do all tasks", or any similar intent.
 
@@ -1671,7 +1504,7 @@ Legacy compatibility:
             "operation": {
                 "type": "string",
                 "description": "Operation type",
-                "enum": ["create", "bind", "review", "optimize", "get", "todo_list", "execute_all", "update_task", "recompute"],
+                "enum": ["create", "bind", "review", "optimize", "get", "todo_list", "execute_all", "execute_task", "update_task", "recompute"],
             },
             "title": {
                 "type": "string",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+import re
 
 from .guardrails import extract_task_ids_from_text
 
@@ -18,9 +19,11 @@ def task_status_question(message: str) -> list[int]:
     text = str(message or "").strip().lower()
     if not text or len(text) > 180:
         return []
-    ids = extract_task_ids_from_text(text)
+    ids = extract_task_ids_from_text(re.sub(r"(?:plan|计划)\s*#?\s*\d+", "", text))
     if not ids:
         return []
+    if re.fullmatch(r"(?:任务|task)\s*#?\s*\d+", text):
+        return ids[:5]
     if any(word in text for word in _DECISION_QUESTIONS) and any(word in text for word in _QUESTION_WORDS):
         return ids[:5]
     if any(word in text for word in _ACTION_WORDS):
@@ -47,7 +50,7 @@ def task_status_reply(repo: Any, plan_id: int, task_ids: list[int]) -> str:
         state = _STATUS.get(str(node.status or "").lower(), str(node.status or "未知"))
         lines.append(f"计划 #{plan_id} 的 Task #{task_id}「{node.display_name()}」当前状态：{state}。")
     if any(tree.nodes.get(task_id) and tree.nodes[task_id].status in {"failed", "skipped", "blocked"} for task_id in task_ids):
-        lines.append("需要继续时，请明确说“重新执行任务编号”或点击任务旁的“重新执行”；我不会因为查询状态自动启动任务。")
+        lines.append("需要继续时，可以回复“重新执行”或点击任务旁的“重新执行”；任务会提交后台，查询状态不会启动任务。")
     elif any(tree.nodes.get(task_id) and tree.nodes[task_id].status == "running" for task_id in task_ids):
         lines.append("任务正在后台运行，可在计划运行记录查看进度；这条状态查询不会启动新的执行。")
     return "\n".join(lines)

@@ -244,137 +244,43 @@ def test_get_structured_response_uses_deterministic_execute_shortcut_without_llm
     assert action.parameters == {"task_id": task_id}
 
 
-def test_process_unified_stream_uses_deterministic_execute_shortcut_without_llm() -> None:
-    task_id = 66
-    agent = _build_agent("请继续执行 Task 66", current_task_id=task_id)
+def test_process_unified_stream_submits_background_task_without_llm(monkeypatch) -> None:
+    from app.routers.chat import plan_job_handoff
+    async def enqueue(agent, task_id):
+        assert task_id == 66
+        return SimpleNamespace(success=True, message="queued", job={"job_id": "task-66-job"})
+    monkeypatch.setattr(plan_job_handoff, "enqueue_chat_plan_job", enqueue)
+    agent = _build_agent("请继续执行 Task 66", current_task_id=66)
     agent.history = []
     agent.session_id = None
     agent.llm_service = _ExplodingLLM()
-    decision = _build_explicit_execute_decision("请继续执行 Task 66", task_id)
-    agent._resolve_request_routing = lambda _message: (decision, None)
-
-    async def _fake_execute_structured(structured: LLMStructuredResponse) -> AgentResult:
-        action = structured.actions[0]
-        assert action.kind == "task_operation"
-        assert action.name == "rerun_task"
-        assert action.parameters == {"task_id": task_id}
-        return AgentResult(
-            reply="Task [66] execution status: completed.",
-            steps=[
-                AgentStep(
-                    action=action,
-                    success=True,
-                    message="Task [66] execution status: completed.",
-                    details={"task_id": task_id, "status": "completed"},
-                )
-            ],
-            suggestions=[],
-            primary_intent="rerun_task",
-            success=True,
-        )
-
-    agent.execute_structured = _fake_execute_structured
-
-    async def _collect() -> list[str]:
-        chunks: list[str] = []
-        async for chunk in agent.process_unified_stream("请继续执行 Task 66"):
-            chunks.append(chunk)
-        return chunks
-
-    chunks = asyncio.run(_collect())
-
-    first_payload = json.loads(chunks[0].removeprefix("data: ").strip())
-    assert first_payload["type"] == "progress_status"
-    assert first_payload["phase"] == "planning"
-    assert first_payload["status"] == "running"
-
-    payload = json.loads(chunks[-1].removeprefix("data: ").strip())
-    assert payload["type"] == "final"
-    assert payload["payload"]["metadata"]["deterministic_execute_shortcut"] is True
-    assert payload["payload"]["actions"][0]["name"] == "rerun_task"
+    decision = _build_explicit_execute_decision("请继续执行 Task 66", 66)
+    agent._resolve_request_routing = lambda _: (decision, None)
+    async def collect():
+        return [json.loads(chunk.removeprefix("data: ").strip()) async for chunk in agent.process_unified_stream("请继续执行 Task 66")]
+    events = asyncio.run(collect())
+    assert [event["type"] for event in events] == ["final"]
+    assert events[0]["payload"]["metadata"]["background_job_id"] == "task-66-job"
 
 
-def test_process_unified_stream_persists_deterministic_execute_response_for_refresh(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    task_id = 66
-    agent = _build_agent("请继续执行 Task 66", current_task_id=task_id)
+def test_process_unified_stream_persists_background_receipt_for_refresh(monkeypatch) -> None:
+    from app.routers.chat import plan_job_handoff
+    async def enqueue(agent, task_id):
+        return SimpleNamespace(success=True, message="queued", job={"job_id": "task-66-job"})
+    monkeypatch.setattr(plan_job_handoff, "enqueue_chat_plan_job", enqueue)
+    saved = []
+    monkeypatch.setattr("app.routers.chat.agent._persist_runtime_context", lambda _: None)
+    monkeypatch.setattr("app.routers.chat.agent._save_chat_message", lambda sid, role, text, metadata=None, **kw: saved.append((text, metadata)))
+    agent = _build_agent("请继续执行 Task 66", current_task_id=66)
     agent.history = []
     agent.session_id = "session-1"
-    agent.llm_service = _ExplodingLLM()
-    decision = _build_explicit_execute_decision("请继续执行 Task 66", task_id)
-    agent._resolve_request_routing = lambda _message: (decision, None)
-
-    saved_messages: list[dict] = []
-
-    monkeypatch.setattr("app.routers.chat.agent._persist_runtime_context", lambda _agent: None)
-
-    def _fake_save_chat_message(
-        session_id, role, content, metadata=None, *, owner_id=None, model_provider=None
-    ):
-        saved_messages.append(
-            {
-                "session_id": session_id,
-                "role": role,
-                "content": content,
-                "metadata": metadata,
-                "owner_id": owner_id,
-            }
-        )
-
-    monkeypatch.setattr("app.routers.chat.agent._save_chat_message", _fake_save_chat_message)
-
-    async def _fake_execute_structured(structured: LLMStructuredResponse) -> AgentResult:
-        action = structured.actions[0]
-        return AgentResult(
-            reply="",
-            steps=[
-                AgentStep(
-                    action=action,
-                    success=True,
-                    message="",
-                    details={"task_id": task_id, "status": "running"},
-                )
-            ],
-            suggestions=[],
-            primary_intent="rerun_task",
-            success=True,
-        )
-
-    agent.execute_structured = _fake_execute_structured
-
-    async def _collect() -> list[str]:
-        chunks: list[str] = []
-        async for chunk in agent.process_unified_stream("请继续执行 Task 66"):
-            chunks.append(chunk)
-        return chunks
-
-    chunks = asyncio.run(_collect())
-    events = [json.loads(chunk.removeprefix("data: ").strip()) for chunk in chunks]
-
-    synthetic_steps = [
-        event for event in events
-        if event.get("type") == "thinking_step"
-        and isinstance(event.get("step"), dict)
-        and event["step"].get("iteration") == 0
-    ]
-    assert [step["step"]["status"] for step in synthetic_steps] == ["thinking", "done"]
-    assert synthetic_steps[0]["step"]["display_text"] == "准备任务上下文"
-    assert synthetic_steps[1]["step"]["display_text"] == "任务上下文已就绪"
-
-    payload = json.loads(chunks[-1].removeprefix("data: ").strip())
-    assert payload["type"] == "final"
-    assert payload["payload"]["response"] == "任务 66 已开始执行。"
-    assert payload["payload"]["metadata"]["actions"][0]["name"] == "rerun_task"
-
-    assert len(saved_messages) == 1
-    saved = saved_messages[0]
-    assert saved["session_id"] == "session-1"
-    assert saved["role"] == "assistant"
-    assert saved["content"] == "任务 66 已开始执行。"
-    assert saved["metadata"]["deterministic_execute_shortcut"] is True
-    assert saved["metadata"]["status"] == "running"
-    assert saved["metadata"]["actions"][0]["parameters"] == {"task_id": task_id}
+    decision = _build_explicit_execute_decision("请继续执行 Task 66", 66)
+    agent._resolve_request_routing = lambda _: (decision, None)
+    async def collect():
+        return [chunk async for chunk in agent.process_unified_stream("请继续执行 Task 66")]
+    asyncio.run(collect())
+    assert len(saved) == 1 and saved[0][1]["background_job_id"] == "task-66-job"
+    assert "后台执行" in saved[0][0]
 
 
 def test_prepare_rerun_task_execution_disables_skills_for_explicit_execute_shortcut() -> None:
@@ -408,158 +314,38 @@ def test_prepare_rerun_task_execution_disables_skills_for_explicit_execute_short
 
 
 @pytest.mark.asyncio
-async def test_rerun_task_uses_async_wrapper_without_blocking_event_loop() -> None:
-    task_id = 23
-    agent = _build_agent("请执行 Task 23", current_task_id=task_id)
-    tree = agent.plan_session.repo.get_plan_tree(34)
-    agent.plan_session.ensure = lambda: tree
-    agent.plan_session.refresh = lambda: tree
-    agent.plan_session.current_tree = lambda: tree
-    agent.session_id = "session-1"
-    agent.history = []
-    agent.max_history_messages = 80
-    agent.extra_context.setdefault("recent_tool_results", [])
-
-    def _slow_execute_task(plan_id: int, rerun_task_id: int, config=None):
-        assert plan_id == 34
-        assert rerun_task_id == task_id
-        assert config is not None
-        time.sleep(0.05)
-        return SimpleNamespace(
-            status="completed",
-            to_dict=lambda: {"status": "completed", "task_id": rerun_task_id},
-        )
-
-    agent.plan_executor = SimpleNamespace(execute_task=_slow_execute_task)
-    action = LLMAction(
-        kind="task_operation",
-        name="rerun_task",
-        parameters={"task_id": task_id},
-        order=1,
-    )
-
+async def test_rerun_task_submission_does_not_block_event_loop(monkeypatch) -> None:
+    from app.routers.chat import plan_job_handoff
+    agent = _build_agent("执行任务23", current_task_id=23)
+    agent.plan_executor = SimpleNamespace(execute_task=lambda *a, **k: pytest.fail("inline execution"))
+    def submit(agent, action, target):
+        assert target == 23
+        time.sleep(.05)
+        return AgentStep(action=action, success=True, message="queued", details={"background_submitted": True})
+    monkeypatch.setattr(plan_job_handoff, "submit_plan_action", submit)
+    action = LLMAction(kind="task_operation", name="rerun_task", parameters={"task_id": 23}, order=1)
     pending = asyncio.create_task(agent._handle_task_action(action))
-
-    await asyncio.sleep(0.01)
-
-    assert pending.done() is False
-
+    await asyncio.sleep(.01)
+    assert not pending.done()
     step = await pending
-
-    assert step.success is True
-    assert step.message == "Task [23] execution status: completed."
-    assert step.details["status"] == "completed"
-    assert step.details["task_id"] == task_id
-    assert step.details["result"] == {"status": "completed", "task_id": task_id}
-    assert step.details["job"]["job_type"] == "plan_execute"
+    assert step.success and step.details["background_submitted"]
 
 
-def test_process_unified_stream_bridges_rerun_task_thinking_events() -> None:
-    task_id = 66
-    agent = _build_agent("请继续执行 Task 66", current_task_id=task_id)
+def test_plan_task_thinking_is_not_relayed_into_chat(monkeypatch) -> None:
+    from app.routers.chat import plan_job_handoff
+    async def enqueue(agent, target):
+        return SimpleNamespace(success=True, message="queued", job={"job_id": "isolated-plan-job"})
+    monkeypatch.setattr(plan_job_handoff, "enqueue_chat_plan_job", enqueue)
+    agent = _build_agent("执行任务66", current_task_id=66)
     agent.history = []
-    agent.session_id = "session-bridge"
-    agent.conversation_id = "conversation-bridge"
-    agent.llm_service = _ExplodingLLM()
-    decision = _build_explicit_execute_decision("请继续执行 Task 66", task_id)
-    agent._resolve_request_routing = lambda _message: (decision, None)
-
-    async def _fake_execute_structured(structured: LLMStructuredResponse) -> AgentResult:
-        action = structured.actions[0]
-        job_id = str(agent.extra_context.get("_rerun_task_execution_job_id") or "")
-        assert job_id
-        plan_decomposition_jobs.append_log(
-            job_id,
-            "info",
-            "DeepThink step update",
-            {
-                "sub_type": "thinking_step",
-                "step": {
-                    "iteration": 1,
-                    "status": "running",
-                    "display_text": "分析任务目标",
-                    "thought": "先检查任务上下文与已有产出。",
-                    "kind": "reasoning",
-                },
-            },
-        )
-        plan_decomposition_jobs.append_log(
-            job_id,
-            "info",
-            "DeepThink delta update",
-            {
-                "sub_type": "thinking_delta",
-                "iteration": 1,
-                "delta": "检查已有证据与文件输出。",
-            },
-        )
-        await asyncio.sleep(0)
-        return AgentResult(
-            reply="Deterministic execute-task shortcut: task 66.",
-            steps=[
-                AgentStep(
-                    action=action,
-                    success=True,
-                    message="Task [66] execution status: completed.",
-                    details={
-                        "status": "completed",
-                        "task_id": task_id,
-                        "result": {
-                            "plan_id": 34,
-                            "task_id": task_id,
-                            "status": "completed",
-                            "content": "Task 66 completed with promoted artifacts.",
-                            "metadata": {
-                                "thinking_process": {
-                                    "status": "completed",
-                                    "total_iterations": 1,
-                                    "steps": [{"iteration": 1, "display_text": "分析任务目标"}],
-                                },
-                                "session_artifact_paths": ["raw_files/task_66/report.md"],
-                            },
-                            "raw_response": json.dumps(
-                                {
-                                    "status": "completed",
-                                    "content": "Task 66 completed with promoted artifacts.",
-                                    "metadata": {
-                                        "thinking_process": {
-                                            "status": "completed",
-                                            "total_iterations": 1,
-                                            "steps": [{"iteration": 1, "display_text": "分析任务目标"}],
-                                        },
-                                        "session_artifact_paths": ["raw_files/task_66/report.md"],
-                                    },
-                                    "session_artifact_paths": ["raw_files/task_66/report.md"],
-                                },
-                                ensure_ascii=False,
-                            ),
-                        },
-                    },
-                )
-            ],
-            suggestions=[],
-            primary_intent="rerun_task",
-            success=True,
-        )
-
-    agent.execute_structured = _fake_execute_structured
-
-    async def _collect() -> list[dict]:
-        events: list[dict] = []
-        async for chunk in agent.process_unified_stream("请继续执行 Task 66"):
-            events.append(json.loads(chunk.removeprefix("data: ").strip()))
-        return events
-
-    events = asyncio.run(_collect())
-
-    assert any(event["type"] == "thinking_step" for event in events)
-    assert any(event["type"] == "thinking_delta" for event in events)
-    final_event = events[-1]
-    assert final_event["type"] == "final"
-    assert final_event["payload"]["response"] == "Task 66 completed with promoted artifacts."
-    assert final_event["payload"]["metadata"]["deterministic_execute_shortcut"] is True
-    assert final_event["payload"]["metadata"]["thinking_process"]["total_iterations"] == 1
-    assert final_event["payload"]["metadata"]["session_artifact_paths"] == ["raw_files/task_66/report.md"]
+    agent.session_id = None
+    decision = _build_explicit_execute_decision("执行任务66", 66)
+    agent._resolve_request_routing = lambda _: (decision, None)
+    async def collect():
+        return [json.loads(chunk.removeprefix("data: ").strip()) async for chunk in agent.process_unified_stream("执行任务66")]
+    events = asyncio.run(collect())
+    assert [event["type"] for event in events] == ["final"]
+    assert events[0]["payload"]["metadata"]["background_job_id"] == "isolated-plan-job"
 
 
 def test_resolve_full_plan_targets_skips_tasks_blocked_by_running_dependencies():

@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PositiveInt
 
 
 def _default_plan_paper_mode() -> bool:
@@ -217,6 +217,7 @@ class DependencyPlanResponse(BaseModel):
 
 
 class ExecuteTaskRequest(BaseModel):
+    selected_task_ids: List[PositiveInt] = Field(default_factory=list, max_length=64)
     include_dependencies: bool = True
     include_subtasks: bool = True
     deep_think: bool = True

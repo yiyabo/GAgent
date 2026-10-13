@@ -114,17 +114,21 @@ def _isolate_worker(monkeypatch, agent):
     return emitter, finished
 
 
-def test_failed_explicit_execution_marks_run_failed(monkeypatch):
+def test_multi_task_worker_returns_submission_receipt_without_inline_execution(monkeypatch):
+    async def stream(*args, event_sink, **kwargs):
+        await event_sink({"type": "final", "payload": {"response": "Queued", "metadata": {"background_job_id": "job-scope"}}})
+        yield ""
+
     agent = SimpleNamespace(
         extra_context={"explicit_task_override": True, "current_task_id": 43, "pending_scope_task_ids": [44]},
         session_id="session-1", history=[], plan_session=SimpleNamespace(plan_id=77),
-        plan_executor=SimpleNamespace(execute_task=lambda *args, **kwargs: SimpleNamespace(status="failed")),
+        plan_executor=SimpleNamespace(execute_task=lambda *a, **k: pytest.fail("inline execution")),
+        process_unified_stream=stream,
     )
     emitter, finished = _isolate_worker(monkeypatch, agent)
-    asyncio.run(execute_chat_run("run-explicit-failed"))
-    assert finished == ["failed"]
-    assert emitter.events[-1]["type"] == "final"
-    assert emitter.events[-1]["payload"]["metadata"]["status"] == "failed"
+    asyncio.run(execute_chat_run("run-explicit-submitted"))
+    assert finished == ["succeeded"]
+    assert emitter.events[-1]["payload"]["metadata"]["background_job_id"] == "job-scope"
 
 
 @pytest.mark.parametrize('supplied_owner', [None, 'obsolete-owner'])
@@ -285,32 +289,23 @@ def test_explicit_resume_prepares_inside_scope_and_attributes_parent_after_build
     assert order == ["prepare", "build", "usage"]
 
 
-def test_explicit_task_handoffs_share_budget_and_preserve_completed_ids(monkeypatch):
-    from app.services.cancellation import current_cancel_token
-    from app.services.run_budget import current_run_budget
-
-    seen = []
-
-    def execute(plan_id, task_id, **kwargs):
-        seen.append(current_run_budget())
-        if task_id == 43:
-            return SimpleNamespace(status="completed")
-        current_cancel_token().wait(5)
-        return SimpleNamespace(status="cancelled")
+def test_background_receipt_does_not_wait_for_plan_tasks_or_exhaust_chat_budget(monkeypatch):
+    async def stream(*args, event_sink, **kwargs):
+        await asyncio.sleep(.01)
+        await event_sink({"type": "final", "payload": {"response": "Queued", "metadata": {"background_job_id": "job-scope"}}})
+        yield ""
 
     agent = SimpleNamespace(
         extra_context={"explicit_task_override": True, "current_task_id": 43, "pending_scope_task_ids": [44]},
-        session_id="session-1", history=[], plan_session=SimpleNamespace(plan_id=77),
-        plan_executor=SimpleNamespace(execute_task=execute),
+        process_unified_stream=stream,
+        plan_executor=SimpleNamespace(execute_task=lambda *a, **k: pytest.fail("inline execution")),
     )
-    emitter, _ = _isolate_worker(monkeypatch, agent)
+    emitter, finished = _isolate_worker(monkeypatch, agent)
     monkeypatch.setenv("CHAT_RUN_BUDGET_SECONDS", "0.18")
     monkeypatch.setenv("CHAT_RUN_CLOSE_RESERVE_SECONDS", "0.06")
     asyncio.run(execute_chat_run("run-task-handoff"))
-    assert len(seen) == 2 and seen[0] is seen[1]
-    metadata = emitter.events[-1]["payload"]["metadata"]
-    assert metadata["failure_kind"] == "deadline_exceeded"
-    assert metadata["partial"] and metadata["completed_task_ids"] == [43]
+    assert finished == ["succeeded"]
+    assert emitter.events[-1]["payload"]["metadata"]["background_job_id"] == "job-scope"
 
 
 def test_explicit_execution_final_payload_preserves_tool_facts() -> None:

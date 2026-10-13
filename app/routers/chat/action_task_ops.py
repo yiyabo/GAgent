@@ -310,16 +310,9 @@ def handle_task_action(agent: Any, action: LLMAction) -> AgentStep:
         )
 
     if action.name == "rerun_task":
-        tree, task_id, exec_config = _prepare_rerun_task_execution(agent, action)
-        result, job_id = _execute_rerun_task_with_job(agent, tree, task_id, exec_config)
-        return _finalize_rerun_task_execution(
-            agent,
-            action,
-            tree,
-            task_id,
-            result,
-            job_id=job_id,
-        )
+        from .plan_job_handoff import submit_plan_action
+        task_id = agent._coerce_int(params.get("task_id"), "task_id")
+        return submit_plan_action(agent, action, task_id)
 
     if action.name == "verify_task":
         task_id = agent._coerce_int(params.get("task_id"), "task_id")

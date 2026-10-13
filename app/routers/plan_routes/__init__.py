@@ -557,17 +557,13 @@ def execute_task_with_dependencies(
 ):
     request = request or ExecuteTaskRequest()
     tree = _load_authorized_plan_tree(plan_id, raw_request)
-    if not tree.has_node(task_id):
-        raise HTTPException(status_code=404, detail=f"Task {task_id} not found in plan {plan_id}")
+    selected_task_ids = list(dict.fromkeys([task_id, *request.selected_task_ids]))
+    for selected_id in selected_task_ids:
+        if not tree.has_node(selected_id):
+            raise HTTPException(status_code=404, detail=f"Task {selected_id} not found in plan {plan_id}")
     state_by_task = _resolve_effective_task_states(plan_id, tree)
-
-    dep_plan = _build_execution_dependency_plan(
-        tree,
-        task_id,
-        include_dependencies=bool(request.include_dependencies),
-        include_subtasks=bool(request.include_subtasks),
-        state_by_task=state_by_task,
-    )
+    from .execution_selection import selected_dependency_plan
+    dep_plan = selected_dependency_plan(tree, selected_task_ids, request, state_by_task)
     dep_response = _to_dependency_plan_response(tree, dep_plan, state_by_task=state_by_task)
 
     if dep_plan.cycle_detected:
@@ -585,7 +581,8 @@ def execute_task_with_dependencies(
     scoped_task_ids.update(dep_plan.closure_dependencies)
     scoped_task_ids.add(task_id)
     if request.include_subtasks:
-        scoped_task_ids.update(_collect_subtree_node_ids(tree, task_id))
+        for selected_id in selected_task_ids:
+            scoped_task_ids.update(_collect_subtree_node_ids(tree, selected_id))
     preflight = _artifact_preflight_service.validate_plan(
         plan_id,
         tree,
@@ -679,118 +676,8 @@ def execute_task_with_dependencies(
             },
         )
 
-    # Take the execution lock BEFORE the job row is created: the old order
-    # created a job and only then checked the lock, so a rejected duplicate
-    # left an orphaned queued job behind (2026-10-11).
-    execution_lock = _acquire_plan_execution_lock(plan_id, task_id)
-    if execution_lock is None:
-        return ExecuteTaskResponse(
-            success=False,
-            message=f"Task {task_id} in plan {plan_id} is already being executed. Please wait for it to finish.",
-            plan_id=plan_id,
-            task_id=task_id,
-            dependency_plan=dep_response,
-            job=None,
-            result=None,
-        )
-
-    owner_id = get_request_owner_id(raw_request)
-    job = plan_decomposition_jobs.create_job(
-        plan_id=plan_id,
-        task_id=task_id,
-        mode="task_chain",
-        job_type="plan_execute",
-        owner_id=owner_id,
-        session_id=request.session_id,
-        params={
-            "include_dependencies": request.include_dependencies,
-            "include_subtasks": request.include_subtasks,
-            "deep_think": request.deep_think,
-            "paper_mode": request.paper_mode,
-            "steps": len(task_order),
-        },
-        metadata={
-            "session_id": request.session_id,
-            "plan_id": plan_id,
-            "plan_title": tree.title,
-            "target_task_id": task_id,
-            "target_task_name": tree.nodes[task_id].display_name(),
-        },
-    )
-    plan_decomposition_jobs.append_log(
-        job.job_id,
-        "info",
-        "Task execution has been queued in background.",
-        {
-            "plan_id": plan_id,
-            "task_id": task_id,
-            "job_type": job.job_type,
-            "mode": job.mode,
-            "steps": len(task_order),
-            "deep_think": request.deep_think,
-            "paper_mode": request.paper_mode,
-        },
-    )
-
-    def _locked_run(**kwargs):
-        try:
-            _run_task_chain_job(**kwargs)
-        finally:
-            _release_plan_execution_lock(plan_id, task_id, execution_lock)
-
-    thread = threading.Thread(
-        target=_locked_run,
-        kwargs={
-            "job_id": job.job_id,
-            "plan_id": plan_id,
-            "target_task_id": task_id,
-            "task_order": task_order,
-            "deep_think": request.deep_think,
-            "session_id": request.session_id,
-            "paper_mode": request.paper_mode,
-        },
-        daemon=True,
-    )
-    try:
-        thread.start()
-    except Exception as exc:
-        try:
-            plan_decomposition_jobs.mark_failure(
-                job.job_id,
-                f"Failed to start task chain execution: {exc}",
-                result={
-                    "plan_id": plan_id,
-                    "target_task_id": task_id,
-                    "execution_order": task_order,
-                    "executed_task_ids": [],
-                    "failed_task_ids": [],
-                    "skipped_task_ids": [],
-                    "needs_review_task_ids": [],
-                    "steps": [],
-                },
-            )
-        except Exception:
-            pass
-        _release_plan_execution_lock(plan_id, task_id, execution_lock)
-        return ExecuteTaskResponse(
-            success=False,
-            message=f"Failed to start task execution: {exc}",
-            plan_id=plan_id,
-            task_id=task_id,
-            dependency_plan=dep_response,
-            job=job.to_payload(),
-            result=None,
-        )
-
-    return ExecuteTaskResponse(
-        success=True,
-        message="Task execution started in background.",
-        plan_id=plan_id,
-        task_id=task_id,
-        dependency_plan=dep_response,
-        job=job.to_payload(),
-        result={"job_id": job.job_id, "status": job.status},
-    )
+    from .execution_submission import start_task_chain
+    return start_task_chain(tree, task_id, selected_task_ids, task_order, dep_response, request, raw_request)
 
 
 @plan_router.get(

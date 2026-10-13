@@ -492,6 +492,9 @@ async def _native_tool_cycle(
             current_step=current_step,
         )
 
+        if getattr(agent, "_chat_plan_handoff_result", None):
+            return "break", tool_results, None, ""
+
         loop_guard_break_reason = await run_stage(asyncio.to_thread(
             agent._apply_loop_guards,
             messages=messages,
@@ -1808,6 +1811,10 @@ async def _native_finalize(
         logger.info("[DEEP_THINK_NATIVE] Rejected process-only final answer; switching to fallback synthesis")
         final_answer = ""
 
+    if getattr(agent, "_chat_plan_handoff_result", None):
+        from .background_handoff import conclude_background_plan
+        return await conclude_background_plan(agent, thinking_steps, tools_used, iteration)
+
     # ---- Forced synthesis: one more LLM call with all evidence before falling back ----
     # Guard: only emit the "整集阻塞" blocker when the router has explicitly confirmed
     # (via explicit_scope_all_blocked in context) that every task in the named set is
@@ -2232,6 +2239,10 @@ async def _think_prompt_based(
                 messages.append({"role": "assistant", "content": response_text})
                 from .receipt_projection import project_text
                 messages.append({"role": "user", "content": "Tool Output: " + project_text(agent, str(tool_name), current_step.action_result or '')})
+
+                if getattr(agent, "_chat_plan_handoff_result", None):
+                    from .background_handoff import conclude_background_plan
+                    return await conclude_background_plan(agent, thinking_steps, tools_used, iteration)
 
                 cycle_results = [
                     {

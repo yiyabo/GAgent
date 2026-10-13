@@ -153,32 +153,17 @@ def test_execute_structured_retries_before_failing() -> None:
     assert result.steps[0].details["max_attempts"] == 2
 
 
-def test_execute_plan_step_marks_failure_when_plan_has_failed_or_skipped_tasks() -> None:
-    tree = SimpleNamespace(id=34)
-    summary = SimpleNamespace(
-        executed_task_ids=[1],
-        failed_task_ids=[],
-        skipped_task_ids=[2],
-        to_dict=lambda: {
-            "executed_task_ids": [1],
-            "failed_task_ids": [],
-            "skipped_task_ids": [2],
-        },
-    )
-    agent = StructuredChatAgent.__new__(StructuredChatAgent)
-    agent._require_plan_bound = lambda: tree
-    agent.plan_executor = SimpleNamespace(execute_plan=lambda _plan_id, config=None: summary)
-    agent._refresh_plan_tree = lambda force_reload=True: None
-    agent.session_id = "s1"
-    agent._current_user_message = "run"
-    agent.history = []
-    agent.extra_context = {}
-
+def test_execute_plan_step_reports_submission_rejection_without_running_tasks(monkeypatch) -> None:
+    from app.routers.chat import plan_job_handoff
+    agent = _build_minimal_agent()
+    agent.plan_executor = SimpleNamespace(execute_plan=lambda *a, **k: pytest.fail("inline plan execution"))
+    response = SimpleNamespace(success=False, message="blocked by dependencies", job=None,
+        model_dump=lambda: {"success": False, "job": None, "message": "blocked by dependencies"})
+    monkeypatch.setattr(plan_job_handoff, "_enqueue", lambda *a, **k: response)
     action = LLMAction(kind="plan_operation", name="execute_plan", parameters={}, order=1)
     step = asyncio.run(agent._handle_plan_action(action))
-
-    assert step.success is False
-    assert step.details["skipped_task_ids"] == [2]
+    assert not step.success and not step.details["background_submitted"]
+    assert "blocked by dependencies" in step.message
 
 
 def test_optimize_plan_step_uses_atomic_repo_apply() -> None:
@@ -224,31 +209,19 @@ def test_optimize_plan_step_uses_atomic_repo_apply() -> None:
     }
 
 
-def test_rerun_task_step_marks_failure_on_skipped_status() -> None:
-    tree = SimpleNamespace(id=34)
-    result = SimpleNamespace(
-        status="skipped",
-        to_dict=lambda: {"status": "skipped", "content": "blocked by dependencies"},
-    )
-    agent = StructuredChatAgent.__new__(StructuredChatAgent)
-    agent._require_plan_bound = lambda: tree
-    agent.plan_executor = SimpleNamespace(execute_task=lambda _plan_id, _task_id, config=None: result)
-    agent._refresh_plan_tree = lambda force_reload=True: None
-    agent.session_id = "s1"
-    agent._current_user_message = "run"
-    agent.history = []
-    agent.extra_context = {}
-
-    action = LLMAction(
-        kind="task_operation",
-        name="rerun_task",
-        parameters={"task_id": 23},
-        order=1,
-    )
-    step = agent._handle_task_action(action)
-
-    assert step.success is False
-    assert step.message == "Task [23] was skipped."
+def test_rerun_task_step_reports_submission_rejection_without_running_task(monkeypatch) -> None:
+    from app.routers.chat import plan_job_handoff
+    agent = _build_minimal_agent()
+    agent._coerce_int = lambda value, name: int(value)
+    agent._require_plan_bound = lambda: SimpleNamespace(id=34)
+    agent.plan_executor = SimpleNamespace(execute_task=lambda *a, **k: pytest.fail("inline task execution"))
+    response = SimpleNamespace(success=False, message="blocked by dependencies", job=None,
+        model_dump=lambda: {"success": False, "job": None, "message": "blocked by dependencies"})
+    monkeypatch.setattr(plan_job_handoff, "_enqueue", lambda *a, **k: response)
+    action = LLMAction(kind="task_operation", name="rerun_task", parameters={"task_id": 23}, order=1)
+    step = action_handlers_module.handle_task_action(agent, action)
+    assert not step.success and not step.details["background_submitted"]
+    assert "blocked by dependencies" in step.message
 
 
 def test_optional_file_read_failure_remains_failed(

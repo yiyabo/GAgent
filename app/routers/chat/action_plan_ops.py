@@ -228,49 +228,8 @@ async def handle_plan_action(agent: Any, action: LLMAction) -> AgentStep:
         )
 
     if action.name in ("execute_plan", "execute_all"):
-        # LLM output frequently emits name='execute_all' (the prompt catalog
-        # and tool_schemas document it as an operation value); route it to the
-        # same full-plan background execution as execute_plan.
-        tree = agent._require_plan_bound()
-        if agent.plan_executor is None:
-            raise ValueError("Plan executor is not enabled in this environment.")
-        paper_mode_raw = params.get("paper_mode")
-        paper_mode = False
-        if isinstance(paper_mode_raw, bool):
-            paper_mode = paper_mode_raw
-        elif paper_mode_raw is not None:
-            paper_mode = str(paper_mode_raw).strip().lower() in {"1", "true", "yes", "on", "y"}
-        # Build session context and pass to plan executor.
-        session_ctx = {
-            "session_id": agent.session_id,  # For tool calls.
-            "user_message": agent._current_user_message if hasattr(agent, "_current_user_message") else None,
-            "chat_history": agent.history,
-            "chat_history_max_messages": getattr(agent, "max_history_messages", 80),
-            "recent_tool_results": agent.extra_context.get("recent_tool_results", []),
-            "paper_mode": paper_mode,
-        }
-        from app.services.execution.runtime import execution_context
-        session_ctx=execution_context(agent,overrides=session_ctx)
-        from app.services.memory.context_recall import inherit_recall_context
-        session_ctx.update(inherit_recall_context(agent))
-        exec_config = ExecutionConfig(session_context=session_ctx, paper_mode=paper_mode)
-        summary = await asyncio.to_thread(agent.plan_executor.execute_plan, tree.id, config=exec_config)
-        executed_count = len(summary.executed_task_ids)
-        failed_count = len(summary.failed_task_ids)
-        skipped_count = len(summary.skipped_task_ids)
-        parts = [f"Plan #{tree.id} finished execution"]
-        parts.append(f"Succeeded tasks: {executed_count}")
-        if failed_count:
-            parts.append(f"Failed tasks: {failed_count}")
-        if skipped_count:
-            parts.append(f"Skipped tasks: {skipped_count}")
-        message = "，".join(parts) + "。"
-        details = summary.to_dict()
-        success = failed_count == 0 and skipped_count == 0
-        agent._refresh_plan_tree(force_reload=True)
-        return AgentStep(
-            action=action, success=success, message=message, details=details
-        )
+        from .plan_job_handoff import submit_plan_action
+        return await asyncio.to_thread(submit_plan_action, agent, action, None)
 
     if action.name == "delete_plan":
         plan_id_param = params.get("plan_id") or agent.plan_session.plan_id
@@ -743,19 +702,6 @@ async def handle_task_action_async(agent: Any, action: LLMAction) -> AgentStep:
     if action.name != "rerun_task":
         return _ah().handle_task_action(agent, action)
 
-    tree, task_id, exec_config = _prepare_rerun_task_execution(agent, action)
-    result, job_id = await asyncio.to_thread(
-        _execute_rerun_task_with_job,
-        agent,
-        tree,
-        task_id,
-        exec_config,
-    )
-    return _finalize_rerun_task_execution(
-        agent,
-        action,
-        tree,
-        task_id,
-        result,
-        job_id=job_id,
-    )
+    from .plan_job_handoff import submit_plan_action
+    task_id = agent._coerce_int((action.parameters or {}).get("task_id"), "task_id")
+    return await asyncio.to_thread(submit_plan_action, agent, action, task_id)

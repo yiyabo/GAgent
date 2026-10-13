@@ -1,4 +1,5 @@
 """Tests for the todo_list operation in plan_operation_handler."""
+from types import SimpleNamespace
 import asyncio
 from unittest.mock import patch
 
@@ -167,8 +168,8 @@ def test_execute_all_blocks_on_artifact_preflight_failure():
     stub = _RepoStub(tree)
 
     with patch(
-        "app.repository.plan_repository.PlanRepository",
-        return_value=stub,
+        "app.routers.plan_routes._load_authorized_plan_tree",
+        return_value=tree,
     ), patch.object(
         plan_routes,
         "_resolve_effective_task_states",
@@ -182,7 +183,7 @@ def test_execute_all_blocks_on_artifact_preflight_failure():
             "total_tasks": 3,
         },
     ), patch(
-        "tool_box.tools_impl.plan_tools._artifact_preflight_service.validate_plan",
+        "app.routers.plan_routes._artifact_preflight_service.validate_plan",
         return_value=ArtifactPreflightResult(
             plan_id=1,
             ok=False,
@@ -200,6 +201,7 @@ def test_execute_all_blocks_on_artifact_preflight_failure():
             plan_operation_handler(
                 operation="execute_all",
                 plan_id=1,
+                tool_context=SimpleNamespace(owner_id="owner", session_id=None),
             )
         )
 
