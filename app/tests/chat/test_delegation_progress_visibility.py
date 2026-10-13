@@ -237,8 +237,8 @@ def _drive_scripted(
     _patch_runtime(monkeypatch)
     monkeypatch.setattr(chat_routes, "DeepThinkAgent", _scripted_agent_class(calls))
     agent = _build_stream_agent()
-    agent._resolve_request_routing = lambda _message: (_decision("run it", visibility=visibility), _profile())
-    return _run(agent, "run it")
+    agent._resolve_request_routing = lambda _message: (_decision("run the tool", visibility=visibility), _profile())
+    return _run(agent, "run the tool")
 
 
 # ---------------------------------------------------------------------------

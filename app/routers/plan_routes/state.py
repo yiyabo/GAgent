@@ -38,6 +38,11 @@ def _acquire_plan_execution_lock(plan_id: int, task_id: int = 0) -> Optional[thr
     """Acquire a non-blocking execution lock for a plan/task scope."""
     lock_key = (plan_id, task_id)
     with _task_execution_locks_guard:
+        if task_id == 0 and any(pid == plan_id and lock.locked() for (pid, _), lock in _task_execution_locks.items()):
+            return None
+        full_plan_lock = _task_execution_locks.get((plan_id, 0))
+        if task_id != 0 and full_plan_lock is not None and full_plan_lock.locked():
+            return None
         execution_lock = _task_execution_locks.get(lock_key)
         if execution_lock is None:
             execution_lock = threading.Lock()

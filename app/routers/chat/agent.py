@@ -101,6 +101,7 @@ from .code_executor_helpers import (
 from .code_executor_bridge import _code_executor_job_stream_loggers
 from .plan_status_reply import task_status_question, task_status_reply
 from .plan_job_handoff import stream_chat_plan_handoff
+from .plan_execution_intent import resolve_plan_execution_target
 from .guardrail_handlers import (
     apply_completion_claim_guardrail as _apply_completion_claim_guardrail_fn,
     apply_experiment_fallback as _apply_experiment_fallback_fn,
@@ -1237,6 +1238,9 @@ class StructuredChatAgent:
 
             steps.append(step)
             details = step.details or {}
+            if details.get("background_submitted"):
+                structured.llm_reply.message = step.message
+                break
             result_payload = details.get("result")
             if isinstance(result_payload, dict):
                 if (
@@ -1365,26 +1369,28 @@ class StructuredChatAgent:
             self.extra_context.pop("_full_plan_executor_delegate", None)
             response_text = task_status_reply(self.plan_session.repo, self.plan_session.plan_id, status_ids)
             response_metadata = {"plan_id": self.plan_session.plan_id, "read_only_task_status": True,
-                                 **routing_decision.metadata()}
+                                 "queried_task_ids": status_ids, **routing_decision.metadata()}
+            if len(status_ids) == 1:
+                response_metadata["task_id"] = status_ids[0]
+                self.extra_context["current_task_id"] = status_ids[0]
+                node = self.plan_session.repo.get_plan_tree(self.plan_session.plan_id).nodes.get(status_ids[0])
+                if node is not None:
+                    response_metadata["task_name"] = node.display_name()
             async for chunk in _stream_direct_image_response(
                 self, response_text=response_text, response_metadata=response_metadata,
                 event_sink=event_sink,
             ):
                 yield chunk
             return
-        if (
-            self.plan_session.plan_id is not None
-            and str((self.extra_context or {}).get("owner_id") or "").strip()
-            and (routing_decision.full_plan_execution or "plan_execution_hint" in routing_decision.route_reason_codes or
-                 (routing_decision.explicit_task_override and len(routing_decision.explicit_task_ids) == 1))
-        ):
+        execution_requested, target_ids = resolve_plan_execution_target(self, routing_decision)
+        if execution_requested:
             self.extra_context["explicit_task_override"] = False
             self.extra_context["plan_execute_required"] = False
             self.extra_context["full_plan_execution"] = False
             self.extra_context.pop("pending_scope_task_ids", None)
             self.extra_context.pop("_full_plan_executor_delegate", None)
-            target_id = None if (routing_decision.full_plan_execution or "plan_execution_hint" in routing_decision.route_reason_codes) else routing_decision.explicit_task_ids[0]
-            async for chunk in stream_chat_plan_handoff(self, target_id, event_sink=event_sink):
+            target = target_ids[0] if target_ids and len(target_ids) == 1 else target_ids
+            async for chunk in stream_chat_plan_handoff(self, target, event_sink=event_sink):
                 yield chunk
             return
         self._update_routing_context(routing_decision)
@@ -1394,26 +1400,6 @@ class StructuredChatAgent:
                 _persist_runtime_context(self)
             except Exception as exc:  # pragma: no cover - defensive
                 logger.debug("Failed to persist routing runtime context: %s", exc)
-
-        # ── Full plan execution ────────────────────────────────────────
-        # When routing detected an execute-the-whole-plan request, delegate
-        # to PlanExecutor immediately.  Without this hook the deterministic
-        # single-task shortcut below hijacked the turn and only one atomic
-        # task ever ran per chat message.
-        if (
-            routing_decision.full_plan_execution
-            and self.plan_session.plan_id is not None
-        ):
-            async for chunk in _stream_full_plan_delegate(
-                self,
-                routing_decision=routing_decision,
-                user_message=effective_user_message,
-                event_sink=event_sink,
-                run_id=run_id,
-                log_delegation=True,
-            ):
-                yield chunk
-            return
 
         direct_image_response = _build_recent_image_display_response(
             self,
@@ -1433,32 +1419,11 @@ class StructuredChatAgent:
 
         deterministic_execute = self._build_deterministic_execute_task_structured()
         if deterministic_execute is not None:
-            async for chunk in _stream_deterministic_execute(
-                self,
-                deterministic_execute=deterministic_execute,
-                effective_user_message=effective_user_message,
-                run_id=run_id,
-                event_sink=event_sink,
-            ):
+            target_id = int(deterministic_execute.actions[0].parameters["task_id"])
+            async for chunk in stream_chat_plan_handoff(self, target_id, event_sink=event_sink):
                 yield chunk
             return
-
-        # ── Full plan execution via PlanExecutor ──────────────────────
-        # When _full_plan_executor_delegate is set, delegate to PlanExecutor
-        # instead of the DeepThink cascade.  PlanExecutor handles DAG ordering,
-        # artifact manifest registration, task verification, and deliverable
-        # publishing.
-        if self.extra_context.get("_full_plan_executor_delegate"):
-            async for chunk in _stream_full_plan_delegate(
-                self,
-                routing_decision=routing_decision,
-                user_message=effective_user_message,
-                event_sink=event_sink,
-                run_id=run_id,
-                log_delegation=False,
-            ):
-                yield chunk
-            return
+        self.extra_context.pop("_full_plan_executor_delegate", None)
 
         queue: asyncio.Queue[Any] = asyncio.Queue()
         producer_closed = False
@@ -2403,6 +2368,12 @@ class StructuredChatAgent:
                     else:
                         result = await execute_tool(name, **safe_params)
 
+                    if (name == "plan_operation" and isinstance(result, dict)
+                            and result.get("success") and result.get("background_submitted") and result.get("job_id")):
+                        dt_agent._chat_plan_handoff_result = result
+                        dt_agent._chat_plan_handoff_query = effective_user_message
+                        return result
+
                     # Special handling: bind Plan to session after successful creation
                     if name == "plan_operation" and isinstance(result, dict):
                         if result.get("success") and result.get("operation") == "create":
@@ -2732,6 +2703,7 @@ class StructuredChatAgent:
                         **route_profile.prompt_metadata(),
                         **routing_decision.metadata(),
                         "current_plan_id": self.plan_session.plan_id,
+                        "chat_plan_execution_background_only": True,
                         "current_plan_title": plan_tree.title if plan_tree else None,
                         "current_task_id": self.extra_context.get("current_task_id"),
                         "pending_scope_task_ids": list(
@@ -2809,6 +2781,7 @@ class StructuredChatAgent:
                             "type": "result",
                             "result": result,
                             "bg_category": deep_think_bg_category,
+                            "background_plan_job_id": (getattr(dt_agent, "_chat_plan_handoff_result", None) or {}).get("job_id"),
                             "job_id": deep_think_job_id if deep_think_job_created else None,
                         }
                     )

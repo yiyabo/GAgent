@@ -1171,20 +1171,13 @@ def test_english_chat_continuation_stays_chat() -> None:
     assert intent == "chat"
 
 
-def test_explicit_task_id_elevates_chat_to_execute_task() -> None:
-    """When user mentions a specific task ID (e.g. '任务7') without an explicit
-    execute keyword, the intent should still be elevated to execute_task."""
-    # "任务7" contains no execute keyword → resolve_intent_type returns "chat"
-    intent, _ = resolve_intent_type(message="任务7")
-    assert intent == "chat"  # pre-elevation
-
-    # But resolve_request_routing should elevate to execute_task via explicit_task_override
-    decision = resolve_request_routing(message="任务7")
-    assert decision.intent_type == "execute_task"
-    assert decision.explicit_task_override is True
-    assert decision.explicit_task_ids == [7]
-    assert "explicit_task_override" in decision.route_reason_codes
-    assert "intent_execute_task" in decision.route_reason_codes
+def test_task_reference_without_execution_command_does_not_start_plan_work() -> None:
+    for message in ("任务7", "查看任务7的产物"):
+        decision = resolve_request_routing(message=message, plan_id=42)
+        assert decision.intent_type == "chat"
+        assert not decision.explicit_task_override
+        if message == "任务7":
+            assert decision.explicit_task_ids == [7]
 
 
 def test_task_status_question_never_becomes_execution() -> None:

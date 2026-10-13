@@ -142,6 +142,9 @@ const ScopedPlanWorkspace: React.FC<{ planId: number | null; sessionId: string |
         {needsReview > 0 && <span className="pw-review-text">{needsReview} 个待验收</span>}
       </div>
     </header>
+    {(treeQuery.data?.metadata?.plan_generation as any)?.decomposition_status === 'partial' &&
+      <Alert className="pw-alert" type="warning" showIcon message="计划拆解未完成"
+        description="部分阶段尚未生成原子子任务。请在任务完整详情中继续拆解，再执行该阶段。" />}
     {sourceNotice && <Alert className="pw-alert" type="info" showIcon
       message={`“${sourceNotice.title}”的产物属于另一会话`}
       description="打开来源会话后可继续执行。当前会话与计划绑定保持不变。"

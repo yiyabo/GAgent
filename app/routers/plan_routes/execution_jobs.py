@@ -146,6 +146,7 @@ def _run_task_chain_job(
     deep_think: bool = True,
     session_id: Optional[str] = None,
     paper_mode: bool = False,
+    owner_id: Optional[str] = None,
 ) -> None:
     token = set_current_job(job_id)
     executed: List[int] = []
@@ -236,6 +237,8 @@ def _run_task_chain_job(
             "deep_think_enabled": bool(deep_think),
             "paper_mode": bool(paper_mode),
         }
+        if owner_id:
+            session_ctx["owner_id"] = owner_id
 
         for idx, task_id in enumerate(task_order, start=1):
             check_run_active()

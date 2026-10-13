@@ -10,6 +10,7 @@ from .guardrails import (
     extract_task_ids_from_text,
 )
 from .plan_status_reply import task_status_question
+from .plan_execution_intent import explicit_task_execution_requested
 from .subject_identity import (
     build_subject_aliases,
     canonicalize_subject_ref,
@@ -1185,7 +1186,9 @@ def resolve_request_routing(
     )
     explicit_task_ids = extract_task_ids_from_text(effective_user_message)
     status_query_ids = task_status_question(effective_user_message) if effective_plan_bound and not manual else []
-    explicit_task_override = bool(explicit_task_ids) and not status_query_ids
+    explicit_task_override = bool(explicit_task_ids) and not status_query_ids and (
+        not effective_plan_bound or explicit_task_execution_requested(effective_user_message)
+    )
     if status_query_ids:
         intent_type = "chat"
         plan_execute_required = False

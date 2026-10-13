@@ -90,6 +90,8 @@ class ArtifactPreflightService:
         publisher_map: Dict[str, List[int]] = {}
         consumer_map: Dict[str, List[int]] = {}
         selected_nodes = [tree.nodes[task_id] for task_id in selected_task_ids]
+        generation = (getattr(tree, "metadata", None) or {}).get("plan_generation") or {}
+        failed_decomposition = set((generation.get("decomposition") or {}).get("failed_nodes") or [])
         dependencies_by_task: Dict[int, Set[int]] = {
             node.id: set(getattr(node, "dependencies", None) or [])
             for node in selected_nodes
@@ -97,6 +99,16 @@ class ArtifactPreflightService:
 
         for node in selected_nodes:
             snapshot, snapshot_issues = self._build_contract_snapshot(plan_id, node, session_id)
+            has_children = bool(getattr(tree, "children_ids", lambda _: [])(node.id))
+            if has_children:
+                # Composite contracts describe the subtree's delivery. The
+                # actual publisher is the leaf that produces each artifact.
+                snapshot.publishes = []
+            elif (((getattr(node, "metadata", None) or {}).get("decomposition_status") == "failed"
+                   or (node.id in failed_decomposition and (getattr(node, "metadata", None) or {}).get("task_type") == "composite"))
+                  and str(node.status).lower() not in _COMPLETED_LIKE):
+                errors.append(ArtifactPreflightIssue(code="decomposition_incomplete", severity="error",
+                    task_id=node.id, message=f"Task #{node.id} is a stage whose decomposition failed; generate its atomic subtasks before executing."))
             task_contracts.append(snapshot)
             for issue in snapshot_issues:
                 if issue.severity == "error":

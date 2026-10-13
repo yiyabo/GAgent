@@ -16,6 +16,8 @@ reuse, the rerun/deep-think job creation, the tool/progress callback machine
 from __future__ import annotations
 
 import asyncio
+import pytest
+from types import SimpleNamespace
 import json
 from typing import Any, AsyncIterator, Dict, List, Optional
 
@@ -327,99 +329,47 @@ def test_image_ambiguity_branch_emits_clarification_final_event(tmp_path, monkey
 # ---------------------------------------------------------------------------
 
 
-def test_deterministic_execute_branch_event_sequence(monkeypatch) -> None:
-    jobs = _patch_runtime(monkeypatch)
-
-    async def _fake_execute_structured(structured: Any) -> AgentResult:
-        return AgentResult(
-            reply="Task [66] execution status: completed.",
-            steps=[
-                AgentStep(
-                    action=structured.actions[0],
-                    success=True,
-                    message="done",
-                    details={"task_id": 66, "status": "completed"},
-                )
-            ],
-            suggestions=[],
-            primary_intent="rerun_task",
-            success=True,
-        )
-
+def test_deterministic_execute_branch_returns_only_background_receipt(monkeypatch) -> None:
+    from app.routers.chat import plan_job_handoff
+    _patch_runtime(monkeypatch)
+    async def enqueue(agent, task_id):
+        assert task_id == 66
+        return SimpleNamespace(success=True, message="queued", job={"job_id": "plan-job-66"})
+    monkeypatch.setattr(plan_job_handoff, "enqueue_chat_plan_job", enqueue)
     agent = _build_agent()
-    decision = _decision(
-        "继续执行 Task 66",
-        tier="execute",
-        intent="execute_task",
-        explicit_task_ids=[66],
-        explicit_task_override=True,
-    )
-    agent._resolve_request_routing = lambda _message: (decision, _profile("execute", "execute_task"))
-    agent.execute_structured = _fake_execute_structured
-
+    decision = _decision("继续执行 Task 66", intent="execute_task", explicit_task_ids=[66], explicit_task_override=True)
+    agent._resolve_request_routing = lambda _: (decision, _profile())
+    agent.execute_structured = lambda *_: pytest.fail("plan executed inside chat")
     events = _run(agent, "继续执行 Task 66")
-
-    assert _types(events) == ["progress_status", "thinking_step", "thinking_step", "final"]
-    progress = events[0]
-    assert progress["phase"] == "planning"
-    assert progress["status"] == "running"
-    assert progress["iteration"] == 0
-    assert [event["step"]["status"] for event in events[1:3]] == ["thinking", "done"]
-    final = events[3]["payload"]
-    assert final["metadata"]["deterministic_execute_shortcut"] is True
-    assert final["actions"][0]["name"] == "rerun_task"
-    assert final["actions"][0]["parameters"] == {"task_id": 66}
-    assert jobs.names() == ["create_job", "register_subscriber"]
-    created = [call for call in jobs.calls if call[0] == "create_job"][0][1]
-    assert created["job_type"] == "plan_execute"
-    assert created["mode"] == "single_task"
-    assert created["task_id"] == 66
-    assert created["params"] == {
-        "session_id": "sess-golden",
-        "task_id": 66,
-        "mode": "rerun_task",
-    }
-    assert created["metadata"]["source"] == "deterministic_execute_shortcut"
-    assert created["metadata"]["target_task_name"] == "Task 66"
+    assert _types(events) == ["final"]
+    assert events[0]["payload"]["metadata"]["background_job_id"] == "plan-job-66"
 
 
-# ---------------------------------------------------------------------------
-# full-plan delegation branches
-# ---------------------------------------------------------------------------
-
-
-def _stub_full_plan(agent: StructuredChatAgent) -> Dict[str, Any]:
-    seen: Dict[str, Any] = {}
-
-    async def _branch(**kwargs: Any) -> AsyncIterator[str]:
-        seen.update(kwargs)
-        yield 'data: {"type": "full_plan_start"}\n\n'
-        yield 'data: {"type": "full_plan_task_complete"}\n\n'
-
-    agent._run_full_plan_via_executor = _branch
-    return seen
-
-
-def test_routing_full_plan_delegate_streams_executor_events() -> None:
+def test_routing_full_plan_delegate_returns_background_receipt(monkeypatch) -> None:
+    from app.routers.chat import plan_job_handoff
+    _patch_runtime(monkeypatch)
+    async def enqueue(agent, task_id):
+        assert task_id is None
+        return SimpleNamespace(success=True, message="queued", job={"job_id": "plan-job-all"})
+    monkeypatch.setattr(plan_job_handoff, "enqueue_chat_plan_job", enqueue)
     agent = _build_agent()
-    decision = _decision("执行整个计划", tier="execute", intent="execute_task", full_plan_execution=True)
-    agent._resolve_request_routing = lambda _message: (decision, _profile("execute", "execute_task"))
-    _stub_full_plan(agent)
-
+    decision = _decision("执行整个计划", intent="execute_task", full_plan_execution=True)
+    agent._resolve_request_routing = lambda _: (decision, _profile())
     events = _run(agent, "执行整个计划")
+    assert _types(events) == ["final"]
+    assert events[0]["payload"]["metadata"]["background_job_id"] == "plan-job-all"
 
-    assert _types(events) == ["full_plan_start", "full_plan_task_complete"]
 
-
-def test_context_full_plan_delegate_streams_executor_events() -> None:
+def test_stale_context_full_plan_delegate_does_not_start_execution(monkeypatch) -> None:
+    _patch_runtime(monkeypatch)
     agent = _build_agent(extra_context={"_full_plan_executor_delegate": True})
-    decision = _decision("执行整个计划")
-    agent._resolve_request_routing = lambda _message: (decision, _profile())
-    _stub_full_plan(agent)
-
-    events = _run(agent, "执行整个计划")
-
-    assert _types(events) == ["full_plan_start", "full_plan_task_complete"]
+    decision = _decision("解释结果")
+    agent._resolve_request_routing = lambda _: (decision, _profile())
+    monkeypatch.setattr(agent_module, "_build_recent_image_display_response", lambda *a, **k: ("现有结果", {}))
+    agent._run_full_plan_via_executor = lambda **k: pytest.fail("stale context executed plan")
+    events = _run(agent, "解释结果")
+    assert _types(events) == ["final"]
+    assert events[0]["payload"]["response"] == "现有结果"
 
 
 # ---------------------------------------------------------------------------

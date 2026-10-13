@@ -57,7 +57,7 @@ def test_decomposer_unlimited_budget_does_not_crash_on_child_enqueue() -> None:
         enable_simplification=False,
     )
     decomposer = PlanDecomposer(
-        repo=SimpleNamespace(),
+        repo=SimpleNamespace(update_task=lambda pid, tid, metadata: tree.nodes[tid].model_copy(update={"metadata": metadata})),
         llm_service=_FakeDecomposerLLM(),
         settings=settings,
     )

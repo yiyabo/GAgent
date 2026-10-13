@@ -611,6 +611,8 @@ async def _drain_unified_stream_events(
                 structured_plan_meta=structured_plan_meta,
                 plan_runtime_meta=plan_runtime_meta,
             )
+            if item.get("background_plan_job_id"):
+                final_metadata["background_job_id"] = item["background_plan_job_id"]
 
             from app.services.memory.context_recall import attach_recall_metadata
             attach_recall_metadata(final_metadata, agent.extra_context)

@@ -148,7 +148,7 @@ async def test_explicit_seed_contract_keeps_agreed_method_and_avoids_auto_rewrit
     monkeypatch.setattr(generation, 'collect_plan_generation_materials', forbidden)
     monkeypatch.setattr(generation, '_auto_review_and_optimize_plan', forbidden)
     outcome = await generation.create_plan_and_generate(title='Local rules',description='Drop missing scores',
-        tasks=[{'name':'clean','instruction':'Drop missing values; never impute them.',**declaration()}],
+        tasks=[{'name':'clean','instruction':'Drop missing values; never impute them.', 'metadata': {'task_type': 'atomic'}, **declaration()}],
         owner='owner',repo=repo,decomposer=SimpleNamespace(),session_context={'user_message':'Keep first valid ID; drop missing scores.'})
     assert outcome.decomposition_status == 'skipped_seeded'
     assert outcome.auto_review['status'] == 'skipped_explicit_contract'

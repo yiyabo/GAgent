@@ -437,6 +437,13 @@ def _root_instruction(title: str, description: Optional[str]) -> str:
     return str(description or f"Root task for plan: {title}").strip()
 
 
+def _decomposition_status(result, tree):
+    unfinished = any((node.metadata or {}).get("task_type") == "composite" and not tree.children_ids(node.id)
+                     and (node.metadata or {}).get("decomposition_status") in {"pending", "failed"}
+                     for node in tree.nodes.values())
+    return "partial" if result.failed_nodes or unfinished or result.stopped_reason == "node_budget_exhausted" else "completed"
+
+
 def _create_seed_tasks(
     repo: PlanRepository,
     plan_id: int,
@@ -611,7 +618,10 @@ async def create_plan_and_generate(
     if explicit_seed_contract:
         # The caller supplied executable tasks and authoritative deliverables.
         # Automatic rubric improvement cannot rewrite the agreed method.
-        effective_metadata["skip_auto_decomposition"] = True
+        # Deliverables protect the agreed method; they do not prove atomicity.
+        # Only explicitly atomic seeds may skip recursive decomposition.
+        if all(node.metadata.get("task_type") == "atomic" for node in seeded_tasks):
+            effective_metadata["skip_auto_decomposition"] = True
         effective_metadata["explicit_seed_contract"] = {
             "source_request": str((session_context or {}).get("user_message") or description or ""),
             "task_ids": [node.id for node in seeded_tasks],
@@ -644,7 +654,7 @@ async def create_plan_and_generate(
             node_budget=decomposer.settings.total_node_budget,
             session_context=effective_context,
         )
-        decomposition_status = "completed" if not decomposition.failed_nodes else "partial"
+        decomposition_status = _decomposition_status(decomposition, repo.get_plan_tree(plan_id))
     else:
         decomposition_status = "not_configured"
 
@@ -757,7 +767,7 @@ async def ensure_plan_generation_ready(
         node_budget=decomposer.settings.total_node_budget,
         session_context=effective_context,
     )
-    decomposition_status = "completed" if not decomposition.failed_nodes else "partial"
+    decomposition_status = _decomposition_status(decomposition, repo.get_plan_tree(plan_id))
 
     updated_tree = repo.get_plan_tree(plan_id)
     merged_metadata = _merge_plan_generation_metadata(

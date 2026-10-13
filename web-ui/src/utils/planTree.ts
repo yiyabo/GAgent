@@ -25,6 +25,7 @@ const normalizeTaskStatus = (rawStatus?: string | null): Task['status'] => {
 
 export function planTreeToTasks(tree: PlanTreeResponse): Task[] {
   const nodes = Object.values(tree.nodes || {});
+  const failedDecomposition = new Set<number>((tree.metadata?.plan_generation as any)?.decomposition?.failed_nodes ?? []);
   
   const childrenByParent = new Map<number, number[]>();
   nodes.forEach((node: PlanNodeResponse) => {
@@ -42,9 +43,10 @@ export function planTreeToTasks(tree: PlanTreeResponse): Task[] {
     const childIds = childrenByParent.get(id) ?? [];
     const isRoot = node.parent_id == null;
     const hasChildren = childIds.length > 0;
-    const taskType: Task['task_type'] = isRoot ? 'root' : hasChildren ? 'composite' : 'atomic';
-
     const metadata = (node.metadata as Record<string, any>) || {};
+    const unfinishedStage = metadata.task_type === 'composite' &&
+      (metadata.decomposition_status === 'failed' || metadata.decomposition_status === 'pending' || failedDecomposition.has(id));
+    const taskType: Task['task_type'] = isRoot ? 'root' : hasChildren || unfinishedStage ? 'composite' : 'atomic';
     const status = normalizeTaskStatus(node.effective_status ?? node.status);
 
     return {
@@ -52,7 +54,7 @@ export function planTreeToTasks(tree: PlanTreeResponse): Task[] {
       name: node.name,
       status,
       effective_status: node.effective_status ?? node.status ?? null,
-      status_reason: node.status_reason ?? null,
+      status_reason: node.status_reason ?? (unfinishedStage ? '阶段拆解尚未完成，未生成原子子任务。' : null),
       blocked_by_dependencies: node.blocked_by_dependencies ?? false,
       incomplete_dependencies: Array.isArray(node.incomplete_dependencies)
         ? node.incomplete_dependencies.map(Number).filter((dep) => !Number.isNaN(dep))
