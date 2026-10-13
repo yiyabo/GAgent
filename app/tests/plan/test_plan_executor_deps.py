@@ -1099,6 +1099,20 @@ def test_contract_repair_query_prefers_runtime_artifacts_over_external_copy():
     assert "do not copy large artifacts" in query
     assert "Create the exact missing required output files" not in query
 
+
+def test_contract_repair_query_uses_authoritative_counts_without_dumping_long_file_lists():
+    node = PlanNode(id=4, plan_id=185, name="Write review sections")
+    query = PlanExecutor._build_contract_repair_query(
+        node=node, attempt=1,
+        contract_diff={"actual_outputs": [f"unrelated_{i}.json" for i in range(80)]},
+        failed_checks=[{"type": "output_spec", "path": "results/sections",
+                        "required_count": 5, "actual_count": 1, "extensions": [".md"]}],
+    )
+    assert "results/sections requires 5 files (.md); the verifier found 1" in query
+    assert "Create at least 4 additional files directly in results/sections" in query
+    assert "80 output paths" in query
+    assert "unrelated_79.json" not in query
+
     def test_materialize_finalization_publishes_inferred_alias_when_explicit_contract_empty(
         self,
         monkeypatch,
