@@ -18,12 +18,13 @@ import { ActionLogs, LogList } from './LogSection';
 import { ResultSummary, ProgressBar } from './ResultSection';
 import { ThinkingProcess } from '@components/chat/ThinkingProcess';
 import { RepairProgressBadge } from './RepairProgressBadge';
+import { parseServerTimeDayjs } from '@/utils/serverTime';
 
 dayjs.extend(relativeTime);
 
 const { Text, Paragraph } = Typography;
 
-const JobLogPanel: React.FC<JobLogPanelProps> = ({ jobId, initialJob, targetTaskName, planId, jobType: initialJobType, defaultExpanded = false }) => {
+const JobLogPanel: React.FC<JobLogPanelProps> = ({ jobId, initialJob, targetTaskName, planId, jobType: initialJobType, defaultExpanded = false, compact = false }) => {
   const { message } = AntdApp.useApp();
   const {
     logs,
@@ -89,8 +90,8 @@ const JobLogPanel: React.FC<JobLogPanelProps> = ({ jobId, initialJob, targetTask
   }, [jobId, statusInfo, jobTypeInfo, logs, status]);
 
   const lastUpdatedText = React.useMemo(() => {
-    if (!lastUpdatedAt) return null;
-    return dayjs(lastUpdatedAt).locale('zh-cn').fromNow();
+    const parsed = parseServerTimeDayjs(lastUpdatedAt);
+    return parsed?.isValid() ? parsed.locale('zh-cn').fromNow() : null;
   }, [lastUpdatedAt]);
 
   const lastControlText = React.useMemo(() => {
@@ -164,7 +165,7 @@ const JobLogPanel: React.FC<JobLogPanelProps> = ({ jobId, initialJob, targetTask
                   会话编号： {jobMetadata.session_id}
                 </Text>
               )}
-              {lastUpdatedText && (
+              {!compact && lastUpdatedText && (
                 <Text type="secondary" style={{ fontSize: 12 }}>
                   最近更新： {lastUpdatedText}
                 </Text>
@@ -248,11 +249,11 @@ const JobLogPanel: React.FC<JobLogPanelProps> = ({ jobId, initialJob, targetTask
                 }}
               />
             )}
-            <ActionLogs actionLogs={actionLogs} />
-            <LogList logs={logs} missingJob={missingJob} />
+            {!compact && <ActionLogs actionLogs={actionLogs} />}
+            {!compact && <LogList logs={logs} missingJob={missingJob} />}
             <ResultSummary result={result} jobType={jobType} />
 
-            {Object.keys(stats || {}).length > 0 && (
+            {!compact && Object.keys(stats || {}).length > 0 && (
               <div style={{ fontSize: 12, color: '#999' }}>
                 <Divider plain style={{ margin: '12px 0' }}>
                   运行统计

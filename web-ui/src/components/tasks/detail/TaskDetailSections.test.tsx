@@ -27,6 +27,15 @@ vi.mock('@api/artifacts', async () => {
 const mockedArtifactsApi = vi.mocked(artifactsApi);
 
 describe('ExecutionResult', () => {
+  it('renders the task result as Markdown instead of showing syntax markers', () => {
+    render(<ExecutionResult resultLoading={false} cachedResult={undefined}
+      taskResult={{ task_id: 2, status: 'completed',
+        content: '# Evidence report\n\n**Reviewed** 18 studies.\n\n| Group | Count |\n| --- | ---: |\n| Phage | 18 |' }} />);
+    expect(screen.getByRole('heading', { name: 'Evidence report' })).toBeInTheDocument();
+    expect(screen.getByText('Reviewed').tagName).toBe('STRONG');
+    expect(screen.getByRole('table')).toBeInTheDocument();
+    expect(screen.getByText('复制结果正文')).toBeInTheDocument();
+  });
   it('renders a readable failure summary with humanized failure kind', () => {
     const onReverify = vi.fn();
 

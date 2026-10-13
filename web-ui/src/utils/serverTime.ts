@@ -18,6 +18,13 @@ export function parseServerTimestampMs(value?: string | null): number | null {
   if (!value) return null;
   const raw = String(value).trim();
   if (!raw) return null;
+  // Older job payloads appended "Z" to an already offset-aware timestamp,
+  // e.g. 2026-10-13T20:47:03+08:00Z. Keep the recorded offset.
+  const legacyNormalized = raw.replace(/([+\-]\d{2}:?\d{2})[zZ]$/, '$1');
+  if (legacyNormalized !== raw) {
+    const ms = Date.parse(legacyNormalized);
+    return Number.isNaN(ms) ? null : ms;
+  }
   if (!ZONE_SUFFIX_RE.test(raw) && DATETIME_HEAD_RE.test(raw)) {
     const normalized = raw.includes('T') ? raw : raw.replace(' ', 'T');
     const withZone = `${normalized}Z`;

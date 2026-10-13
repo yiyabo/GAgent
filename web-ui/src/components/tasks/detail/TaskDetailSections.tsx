@@ -14,6 +14,7 @@ import {
 } from 'antd';
 import { CopyOutlined, FileOutlined, LinkOutlined } from '@ant-design/icons';
 import ToolResultCard from '@components/chat/ToolResultCard';
+import { MarkdownRenderer } from '@components/chat/MarkdownRenderer';
 import { ArtifactPreviewModal } from '@components/layout/artifactPreview';
 import { buildDeliverableFileUrl } from '@api/artifacts';
 import { useChatStore } from '@store/chat';
@@ -23,6 +24,22 @@ import { statusColorMap, statusLabelMap } from './constants';
 import { getVerificationView } from './verification';
 
 const { Paragraph, Text, Title } = Typography;
+
+const RenderedResultContent: React.FC<{ content: string }> = ({ content }) => {
+  const [expanded, setExpanded] = React.useState(false);
+  return <div style={{ marginTop: 8 }}>
+    <Text type="secondary" copyable={{ text: content }}>复制结果正文</Text>
+    <div className="task-result-markdown" style={{
+      marginTop: 8, maxHeight: expanded ? undefined : 480, overflowY: expanded ? undefined : 'auto',
+      overflowWrap: 'anywhere',
+    }}>
+      <MarkdownRenderer content={content} />
+    </div>
+    {content.length > 1800 && <Button type="link" size="small" onClick={() => setExpanded(value => !value)}>
+      {expanded ? '收起正文' : '展开完整正文'}
+    </Button>}
+  </div>;
+};
 
 // Clipboard fallback for non-HTTPS environments.
 export function fallbackCopyToClipboard(text: string): boolean {
@@ -832,15 +849,7 @@ export const ExecutionResult: React.FC<ExecutionResultProps> = ({
               )}
             </Space>
           )}
-          {result.content && (
-            <Paragraph
-              style={{ whiteSpace: 'pre-wrap', marginTop: 4, marginBottom: 0 }}
-              copyable
-              ellipsis={{ rows: 6, expandable: true, symbol: 'Expand' }}
-            >
-              {result.content}
-            </Paragraph>
-          )}
+          {result.content && <RenderedResultContent content={result.content} />}
         </div>
       )}
       <Space wrap>

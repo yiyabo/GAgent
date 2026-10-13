@@ -12,7 +12,7 @@ const PlanRunHistory: React.FC<Props> = ({ jobs, planId, loading, error, onBackg
   const selected = jobs.find((job) => job.job_id === picked) ?? jobs.find(isActiveJob) ?? jobs[0];
   return <div className="pw-history">
     <div className="pw-section-heading"><h3>运行记录</h3><Button size="small" onClick={onBackground}>后台任务面板</Button></div>
-    <p className="pw-muted pw-small">显示当前计划最近的运行。展开记录可查看执行步骤、工具调用与完整日志。</p>
+    <p className="pw-muted pw-small">显示当前计划最近的运行和思考步骤；诊断信息可从“原始日志”查看。</p>
     {error && <Alert type="warning" showIcon message="运行记录暂时无法刷新" description={error} />}
     {!jobs.length ? <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={loading ? '正在读取运行记录…' : '该计划暂无运行记录'} /> : <>
       <div className="pw-run-list">
@@ -23,7 +23,7 @@ const PlanRunHistory: React.FC<Props> = ({ jobs, planId, loading, error, onBackg
           </span><ClockCircleOutlined />
         </button>)}
       </div>
-      {selected && <JobLogPanel key={selected.job_id} jobId={selected.job_id} planId={planId}
+      {selected && <JobLogPanel compact key={selected.job_id} jobId={selected.job_id} planId={planId}
         jobType={selected.job_type} targetTaskName={selected.label} />}
     </>}
   </div>;

@@ -1,5 +1,5 @@
 import type { ArtifactVersions } from '@/api/artifactVersions';
-import type { PlanResultItem } from '@/types';
+import type { PlanResultItem, PlanTaskNode } from '@/types';
 
 export interface PlanArtifactFile {
   key: string;
@@ -16,6 +16,7 @@ export interface PlanArtifactFile {
   contentStatus?: string;
   recovered?: boolean;
   recordedAt?: number;
+  inventorySource?: 'workspace';
 }
 
 const text = (value: unknown): string => typeof value === 'string' ? value.trim() : '';
@@ -108,4 +109,22 @@ export function collectPlanArtifacts(
     paths.add(key);
     return true;
   });
+}
+
+/** The task workspace mirrors the plan's numeric ancestor path. */
+export function taskWorkspacePrefix(task: PlanTaskNode, tasks: PlanTaskNode[]): string | null {
+  const parsed = typeof task.path === 'string' && /^\/(?:\d+\/)*\d+$/.test(task.path)
+    ? task.path.slice(1).split('/').map(Number) : null;
+  if (parsed && parsed[parsed.length - 1] === task.id) return `raw_files/${parsed.map(id => `task_${id}`).join('/')}`;
+  const byId = new Map(tasks.map(item => [item.id, item]));
+  const chain: number[] = [];
+  const seen = new Set<number>();
+  let current: PlanTaskNode | undefined = task;
+  while (current && !seen.has(current.id)) {
+    seen.add(current.id);
+    chain.unshift(current.id);
+    if (current.parent_id != null && !byId.has(current.parent_id)) return null;
+    current = current.parent_id == null ? undefined : byId.get(current.parent_id);
+  }
+  return current || !chain.length ? null : `raw_files/${chain.map(id => `task_${id}`).join('/')}`;
 }
