@@ -562,7 +562,15 @@ async def execute_chat_run(run_id: str) -> None:
         # use plan_executor.execute_task() directly.  The plan executor has
         # a more focused DeepThink that reliably calls code_executor.
         _ctx = getattr(agent, "extra_context", None) or {}
-        _explicit = _ctx.get("explicit_task_override")
+        # Persisted runtime context can still contain the previous turn's
+        # execution scope. Only the current message may authorize execution.
+        _route_resolver = getattr(agent, "_resolve_request_routing", None)
+        _routing_decision = _route_resolver(message_to_send)[0] if callable(_route_resolver) else None
+        if _routing_decision is not None and _routing_decision.explicit_task_override and len(_routing_decision.explicit_task_ids) > 1:
+            agent._update_routing_context(_routing_decision)
+            _ctx = getattr(agent, "extra_context", None) or {}
+        _explicit = (_routing_decision.explicit_task_override if _routing_decision is not None
+                     else _ctx.get("explicit_task_override"))
         _first_task = _ctx.get("current_task_id")
         _plan_id = getattr(
             getattr(agent, "plan_session", None), "plan_id", None
@@ -571,7 +579,9 @@ async def execute_chat_run(run_id: str) -> None:
 
         _pending = list(_ctx.get("pending_scope_task_ids") or [])
 
-        if _explicit and _first_task and _plan_id and _executor and _pending:
+        _current_scope_has_multiple = (len(_routing_decision.explicit_task_ids) > 1
+                                       if _routing_decision is not None else bool(_pending))
+        if _explicit and _current_scope_has_multiple and _first_task and _plan_id and _executor and _pending:
             # Direct execution path: use plan_executor for ALL tasks
             outcome = await _run_explicit_task_execution(
                 agent,

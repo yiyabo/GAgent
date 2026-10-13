@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Literal, Mapping, Optional, Sequence
 from .guardrails import (
     extract_task_ids_from_text,
 )
+from .plan_status_reply import task_status_question
 from .subject_identity import (
     build_subject_aliases,
     canonicalize_subject_ref,
@@ -1183,7 +1184,12 @@ def resolve_request_routing(
         and not plan_intent.conflict_requires_confirmation
     )
     explicit_task_ids = extract_task_ids_from_text(effective_user_message)
-    explicit_task_override = bool(explicit_task_ids)
+    status_query_ids = task_status_question(effective_user_message) if effective_plan_bound and not manual else []
+    explicit_task_override = bool(explicit_task_ids) and not status_query_ids
+    if status_query_ids:
+        intent_type = "chat"
+        plan_execute_required = False
+        combined_reasons.append("read_only_task_status")
     if explicit_task_override:
         combined_reasons.append("explicit_task_override")
         # Explicit task IDs → elevate to execute_task so DeepThink

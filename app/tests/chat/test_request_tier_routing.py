@@ -1187,6 +1187,88 @@ def test_explicit_task_id_elevates_chat_to_execute_task() -> None:
     assert "intent_execute_task" in decision.route_reason_codes
 
 
+def test_task_status_question_never_becomes_execution() -> None:
+    decision = resolve_request_routing(message="这会是不是任务task4还是失败的？", plan_id=185)
+    assert decision.intent_type == "chat"
+    assert decision.explicit_task_ids == [4]
+    assert decision.explicit_task_override is False
+    assert decision.plan_execute_required is False
+    assert "read_only_task_status" in decision.route_reason_codes
+    rerun = resolve_request_routing(message="重新执行任务4", plan_id=185)
+    assert rerun.explicit_task_override is True
+
+
+def test_task_status_question_returns_one_read_only_final_without_deepthink() -> None:
+    from types import SimpleNamespace
+    from app.routers.chat.agent import StructuredChatAgent
+
+    class Repo:
+        def get_plan_tree(self, plan_id):
+            assert plan_id == 185
+            return SimpleNamespace(nodes={4: SimpleNamespace(
+                status="failed", display_name=lambda: "综述分章节撰写",
+            )})
+
+    decision = resolve_request_routing(message="这会是不是任务task4还是失败的？", plan_id=185)
+    agent = SimpleNamespace(
+        _resolve_request_routing=lambda _message: (decision, None),
+        plan_session=SimpleNamespace(plan_id=185, repo=Repo()),
+        session_id=None, extra_context={},
+    )
+    async def collect():
+        return [chunk async for chunk in StructuredChatAgent.process_unified_stream(
+            agent, "这会是不是任务task4还是失败的？")]
+    chunks = asyncio.run(collect())
+    assert len(chunks) == 1
+    assert '"type": "final"' in chunks[0]
+    assert "Task #4" in chunks[0] and "失败" in chunks[0]
+
+
+def test_explicit_single_task_hands_off_to_background_without_running_chat_executor(monkeypatch) -> None:
+    from app.routers.chat import plan_job_handoff
+
+    async def enqueue(agent, task_id):
+        assert task_id == 4
+        return SimpleNamespace(success=True, message="queued", job={"job_id": "job-4"})
+
+    monkeypatch.setattr(plan_job_handoff, "enqueue_chat_plan_job", enqueue)
+    decision = resolve_request_routing(message="重新执行任务4", plan_id=185)
+    agent = SimpleNamespace(
+        _resolve_request_routing=lambda _message: (decision, None),
+        plan_session=SimpleNamespace(plan_id=185),
+        session_id=None, extra_context={"owner_id": "alice"},
+    )
+    async def collect():
+        return [chunk async for chunk in StructuredChatAgent.process_unified_stream(
+            agent, "重新执行任务4")]
+    chunks = asyncio.run(collect())
+    assert len(chunks) == 1
+    assert "job-4" in chunks[0]
+    assert "后台执行" in chunks[0]
+
+
+def test_full_plan_execution_hands_off_to_background(monkeypatch) -> None:
+    from app.routers.chat import plan_job_handoff
+
+    async def enqueue(agent, task_id):
+        assert task_id is None
+        return SimpleNamespace(success=True, message="queued", job={"job_id": "job-all"})
+
+    monkeypatch.setattr(plan_job_handoff, "enqueue_chat_plan_job", enqueue)
+    decision = resolve_request_routing(message="开始执行整个计划", plan_id=185)
+    agent = SimpleNamespace(
+        _resolve_request_routing=lambda _message: (decision, None),
+        plan_session=SimpleNamespace(plan_id=185),
+        session_id=None, extra_context={"owner_id": "alice"},
+    )
+    async def collect():
+        return [chunk async for chunk in StructuredChatAgent.process_unified_stream(
+            agent, "开始执行整个计划")]
+    chunks = asyncio.run(collect())
+    assert len(chunks) == 1
+    assert "job-all" in chunks[0]
+
+
 def test_explicit_task_id_with_continue_elevates_to_execute() -> None:
     """'继续做任务13、14' should route to execute_task."""
     decision = resolve_request_routing(message="继续做任务13、14")
