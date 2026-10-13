@@ -19,6 +19,14 @@ def _missing_result():
         thinking_summary="No output file was produced.")
 
 
+def _fixture_output_text(path):
+    if path.suffix == ".md":
+        return "# Reused evidence\nCount: 2\n"
+    if path.suffix == ".csv":
+        return "item,count\nsource,2\n"
+    return '{"count":2}'
+
+
 class _StrictProvider:
     def __init__(self, target, *, produce=True, extra_targets=()):
         self.target = target
@@ -36,7 +44,7 @@ class _StrictProvider:
         if self.calls == 1:
             targets = (self.target, *self.extra_targets)
             code = "from pathlib import Path\n" + "\n".join(
-                f"Path({str(path)!r}).write_text({('# Reused evidence\\nCount: 2\\n' if path.suffix == '.md' else 'item,count\\nsource,2\\n' if path.suffix == '.csv' else '{\"count\":2}')!r})"
+                f"Path({str(path)!r}).write_text({_fixture_output_text(path)!r})"
                 for path in targets
             ) if self.produce else "print('No output produced')"
             return {"thinking": "Produce the requested output using Python.", "action": {"tool": "execute_code", "params": {"code": code}}, "final_answer": None}
