@@ -5,12 +5,17 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { planTreeApi } from '@api/planTree';
 import { planArtifactsApi } from '@api/planArtifacts';
 import { artifactVersionsApi } from '@api/artifactVersions';
+import { artifactsApi } from '@api/artifacts';
 import { PlanTaskArtifacts } from './PlanTaskArtifacts';
-import { artifactFile, collectPlanArtifacts } from './model';
+import { artifactFile, collectPlanArtifacts, taskWorkspacePrefix } from './model';
 
 vi.mock('@api/planArtifacts', () => ({ planArtifactsApi: { list: vi.fn() } }));
 vi.mock('@api/planTree', () => ({ planTreeApi: { getPlanResults: vi.fn() } }));
 vi.mock('@api/artifactVersions', () => ({ artifactVersionsApi: { list: vi.fn() } }));
+vi.mock('@api/artifacts', async () => {
+  const actual = await vi.importActual<typeof import('@api/artifacts')>('@api/artifacts');
+  return { ...actual, artifactsApi: { listSessionArtifacts: vi.fn() } };
+});
 vi.mock('../artifactPreview', () => ({ ArtifactPreviewModal: (props: any) => <div role="dialog">{props.sessionId}:{props.path}</div> }));
 
 const published = (taskId: number, name: string, sid = 's1', planId = 1) => ({
@@ -27,6 +32,15 @@ function mount(props = { planId: 1, sessionId: 's1', taskId: 1 }) {
 }
 
 describe('plan artifact ownership', () => {
+  it('derives a nested task workspace only from plan ancestry', () => {
+    const tasks = [
+      { id: 1, parent_id: null },
+      { id: 3, parent_id: 1 },
+      { id: 7, parent_id: 3, path: '/1/3/7' },
+    ] as any;
+    expect(taskWorkspacePrefix(tasks[2], tasks)).toBe('raw_files/task_1/task_3/task_7');
+    expect(taskWorkspacePrefix({ ...tasks[2], path: '/1/../7' }, tasks)).toBe('raw_files/task_1/task_3/task_7');
+  });
   it('does not guess a current-session download for a different session path', () => {
     const file = artifactFile('report', { path: '/app/runtime/old/report.csv', deliverable_path: 'report.csv' }, 1, 'new');
     expect(file.path).toBeNull();
@@ -109,8 +123,47 @@ describe('PlanTaskArtifacts lightweight listing', () => {
   it('shows zero only after a successful empty listing', async () => {
     vi.mocked(planArtifactsApi.list).mockResolvedValue(page([]));
     mount({planId:1,sessionId:'s1',taskId:null});
-    expect(await screen.findByText('此计划尚未登记产物')).toBeInTheDocument();
-    expect(screen.getByText('0')).toBeInTheDocument();
+    expect(await screen.findByText('暂无已发布交付物')).toBeInTheDocument();
+    expect(screen.getByText('已发布 0')).toBeInTheDocument();
+  });
+  it('shows verified-on-disk task files separately when the publication manifest is empty', async () => {
+    vi.mocked(planArtifactsApi.list).mockResolvedValue(page([]));
+    vi.mocked(artifactsApi.listSessionArtifacts).mockResolvedValue({
+      session_id: 's1', root_path: '/app/runtime/s1/raw_files/task_1/task_2', count: 1,
+      items: [{ name: 'evidence.md', path: 'raw_files/task_1/task_2/results/evidence.md', type: 'file', size: 128 }],
+    });
+    mount({ planId: 1, sessionId: 's1', taskId: 2, tasks: [
+      { id: 1, parent_id: null, task_type: 'root', status: 'running' },
+      { id: 2, parent_id: 1, path: '/1/2', task_type: 'atomic', status: 'completed' },
+    ] } as any);
+    expect(await screen.findByRole('button', { name: 'evidence.md' })).toBeEnabled();
+    expect(screen.getByText('已发布 0 · 工作文件 1')).toBeInTheDocument();
+    expect(screen.getByText('任务工作文件 · 未登记为计划交付物')).toBeInTheDocument();
+    expect(artifactsApi.listSessionArtifacts).toHaveBeenCalledWith('s1', {
+      pathPrefix: 'raw_files/task_1/task_2', maxDepth: 10, limit: 500,
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'evidence.md' }));
+    expect(screen.getByRole('dialog')).toHaveTextContent('s1:raw_files/task_1/task_2/results/evidence.md');
+  });
+  it('collects plan-level work files from leaf task directories without counting composite parents', async () => {
+    vi.mocked(planArtifactsApi.list).mockResolvedValue(page([]));
+    vi.mocked(artifactsApi.listSessionArtifacts).mockImplementation(async (_sid, options) => {
+      const task = options?.pathPrefix?.endsWith('task_2') ? 2 : 3;
+      return {
+        session_id: 's1', root_path: '/app/runtime/s1', count: 1,
+        items: [{ name: `task-${task}.md`, path: `raw_files/task_1/task_${task}/results/task-${task}.md`, type: 'file', size: 80 }],
+      };
+    });
+    mount({ planId: 1, sessionId: 's1', taskId: null, tasks: [
+      { id: 1, parent_id: null, task_type: 'root', status: 'running', name: 'root' },
+      { id: 4, parent_id: 1, path: '/1/4', task_type: 'composite', status: 'completed', name: 'Group' },
+      { id: 2, parent_id: 1, path: '/1/2', task_type: 'atomic', status: 'completed', name: 'First' },
+      { id: 3, parent_id: 1, path: '/1/3', task_type: 'atomic', status: 'completed', name: 'Second' },
+    ] } as any);
+    expect(await screen.findByRole('button', { name: 'task-2.md' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'task-3.md' })).toBeInTheDocument();
+    expect(screen.getByText('已发布 0 · 工作文件 2')).toBeInTheDocument();
+    expect(artifactsApi.listSessionArtifacts).toHaveBeenCalledTimes(2);
   });
   it('retains first-page files if loading another page fails', async () => {
     vi.mocked(planArtifactsApi.list).mockImplementation(async (_p,_t,cursor) => {

@@ -65,7 +65,7 @@ const SelectedTaskDetail: React.FC<Props> = ({ planId, sessionId, artifactSessio
       <section className="pw-detail-section"><div className="pw-section-heading"><h3><HistoryOutlined /> 执行过程</h3>
         <Button type="link" size="small" onClick={onShowHistory}>计划运行记录</Button></div>
         {jobId ? <><p className="pw-muted pw-small">{job?.mode === 'full_plan' ? '以下为包含该任务的计划运行日志。' : '查看关联运行的实时步骤与日志。'}</p>
-          <JobLogPanel key={jobId} defaultExpanded jobId={jobId} planId={planId} jobType={job?.job_type ?? 'plan_execute'} targetTaskName={task.name} />
+          <JobLogPanel key={jobId} defaultExpanded compact jobId={jobId} planId={planId} jobType={job?.job_type ?? 'plan_execute'} targetTaskName={task.name} />
         </> : <div className="pw-quiet-state">{running ? '任务正在执行，尚未收到关联运行记录。' : '暂无可关联到此任务的运行记录。'}
           <span>所有计划级执行记录保留在“运行记录”中。</span></div>}
       </section>
@@ -74,7 +74,8 @@ const SelectedTaskDetail: React.FC<Props> = ({ planId, sessionId, artifactSessio
           taskId={task.id} tasks={tasks} onSelectTask={onSelectTask} />
       </section>
       {(result.data?.content || result.data?.metadata) && <section className="pw-detail-section"><h3>结果与验收</h3>
-        <ExecutionResult taskResult={result.data} cachedResult={undefined} resultLoading={result.isFetching} />
+        <ExecutionResult taskResult={result.data} cachedResult={undefined} resultLoading={result.isFetching}
+          sessionId={artifactSessionId || sessionId} />
         <Button type="link" size="small" disabled={executionBlocked} onClick={openDetails}>查看验收详情与操作</Button>
       </section>}
       {result.isError && <Alert type="warning" showIcon message="任务结果暂时无法读取" description="可以刷新计划，或在完整详情中重试。" />}

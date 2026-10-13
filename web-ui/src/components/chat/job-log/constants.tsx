@@ -167,6 +167,8 @@ export const parseStreamData = (raw: MessageEvent<any>): StreamMessage | null =>
 
 export interface JobLogPanelProps {
   jobId: string;
+  /** Plan workspace shows the thinking timeline; diagnostics remain in 原始日志. */
+  compact?: boolean;
   defaultExpanded?: boolean;
   initialJob?: DecompositionJobStatus | null;
   targetTaskName?: string | null;

@@ -1,6 +1,5 @@
 import * as React from 'react';
 import { Space, Tag, Typography, Alert, Divider } from 'antd';
-import dayjs from 'dayjs';
 import type { ActionLogEntry, JobLogEvent } from '@/types';
 import { levelColorMap, statusMeta, normalizeActionStatusKey, parseIsoToMs } from './constants';
 import { parseServerTimeDayjs } from '@/utils/serverTime';
@@ -10,7 +9,7 @@ const { Text } = Typography;
 /** Render a backend timestamp as local wall-clock time (zone-less values are UTC). */
 const formatLogTime = (value: string): string => {
   const d = parseServerTimeDayjs(value);
-  return d && d.isValid() ? d.format('HH:mm:ss') : dayjs(value).format('HH:mm:ss');
+  return d && d.isValid() ? d.format('HH:mm:ss') : '时间未记录';
 };
 
 export const LogMetadata: React.FC<{ metadata: Record<string, any> | undefined }> = ({ metadata }) => {
