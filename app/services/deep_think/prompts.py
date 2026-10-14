@@ -36,6 +36,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from app.services.deep_think.models import TaskExecutionContext
 from app.services.foundation.settings import CHAT_HISTORY_ABS_MAX, get_settings
 from app.services.response_style import PROFESSIONAL_STYLE_INSTRUCTION
+from app.services.prompt_policy import PLAN_SCOPE_POLICY, REFERENCE_SCOPE_POLICY
 from app.services.tool_schemas import (
     code_executor_enabled,
     code_mode_enabled,
@@ -151,7 +152,7 @@ def _build_structured_plan_requirement_block(agent: "DeepThinkAgent") -> str:
             ops.append("optimize")
         plan_ref = f" targeting plan_id={plan_id}" if plan_id is not None else ""
         requirement_lines.append(
-            "The user requested plan mutation. You MUST call `plan_operation` "
+            "The user requested a plan operation. Review is read-only; optimize changes the tree only when requested. You MUST call `plan_operation` "
             f"with operation(s) {', '.join(ops)}{plan_ref} before submitting the final answer."
         )
     if requirement_lines:
@@ -280,15 +281,15 @@ def _get_structured_plan_retry_prompt(agent: "DeepThinkAgent") -> str:
         return (
             "The user explicitly requested a structured plan lifecycle operation. "
             f"You must call `plan_operation` with the required operation(s): {', '.join(required_ops)}. "
-            "Do not call `submit_final_answer` until those required operation(s) have succeeded."
+            "Use the active response protocol to report the real operation result. If an operation fails with a concrete blocker, report it truthfully; do not invent success or change the Plan to bypass it."
         )
     plan_id = agent._current_plan_id()
     plan_ref = f" (plan_id={plan_id})" if plan_id else ""
     return (
         f"The user explicitly requested a plan review, optimize, or update operation{plan_ref}. "
         "You must call `plan_operation` with the appropriate operation (review/optimize/update) "
-        "before calling `submit_final_answer`. Do not respond with prose alone — "
-        "the plan must be mutated as requested."
+        "before finishing with the active response protocol. Report the actual operation result; "
+        "review is read-only and does not authorize optimization or other mutations."
     )
 
 
@@ -314,7 +315,7 @@ def _build_request_tier_block(agent: "DeepThinkAgent") -> str:
         "=== EFFICIENCY CONTRACT ===\n"
         "- Be targeted and efficient: spend exactly as much effort as the request needs, no more.\n"
         "- Simple questions get direct answers; small edits to existing deliverables get small, direct fixes (edit the parameter, re-run the script, deliver). Do not rebuild the world for a tweak.\n"
-        "- For multi-step work, organize yourself (plan/todo) instead of wandering; stop as soon as the request is actually satisfied.\n"
+        "- For multi-step work, organize an internal todo-list instead of wandering; stop as soon as the request is actually satisfied.\n"
         "- If the answer depends on file/workspace/remote state, call the relevant tool now; a no-tool guess is not an acceptable substitute for a check you could run.\n"
         "- Use web_search only to fill a concrete factual gap, and cite verifiable sources for time-sensitive claims.\n"
         "- When a successful tool result already produced evidence files (for example `literature_pipeline`'s `study_cards.jsonl`, `library.jsonl`, `evidence.md`, `study_matrix.md`, or a coverage report), read the relevant records with `file_operations` before claiming evidence is missing or unconfirmed; never invent findings to fill a gap.\n"
@@ -328,9 +329,9 @@ def _build_request_tier_block(agent: "DeepThinkAgent") -> str:
 def _build_tool_access_block(agent: "DeepThinkAgent") -> str:
     lines = [
         "=== TOOL ACCESS ===",
-        "- You have access to ALL registered tools. Choose the right tool based on user intent.",
+        "- Use the tools available in this run. A catalog or Skill mentioning a tool does not make it available; load its schema when supported before calling it.",
         "- For simple chat questions, you may answer directly without tools.",
-        "- For questions involving data, files, remote services, or verifiable facts, use tools to obtain ground truth — never fabricate results.",
+        "- Use tools for data/files, current remote state, uncertain factual claims or explicit verification. Stable conceptual explanations can be answered directly; never fabricate results.",
         "- If a tool call fails, report the failure honestly; do not invent tool-like certainty.",
     ]
     current_plan_id = agent._current_plan_id()
@@ -346,8 +347,8 @@ def _build_tool_access_block(agent: "DeepThinkAgent") -> str:
             return "\n".join(lines) + "\n"
         lines.append(
             f"- This session is bound to plan {current_plan_id}. "
-            "When calling plan_operation, ALWAYS use this plan_id. "
-            "Ignore references to other plans in the chat history."
+            "Use this plan_id by default unless the current user explicitly selects another Plan. "
+            "References to other plans in old history do not switch the current target."
         )
     return "\n".join(lines) + "\n"
 
@@ -357,7 +358,7 @@ def _build_grounded_tooling_block(agent: "DeepThinkAgent") -> str:
     return (
         "=== GROUNDED TOOLING ===\n"
         "- If the answer depends on local files, workspace contents, remote task/API state, sequences, or "
-        "other checkable facts, use the appropriate tool(s) before stating specifics.\n"
+        "time-sensitive facts or explicit verification, use the appropriate tool(s) before stating specifics. Stable conceptual explanations do not need a search by default.\n"
         "- Do not substitute confident-sounding prose for evidence when a tool can obtain the "
         "ground truth within reasonable latency.\n\n"
     )
@@ -368,14 +369,14 @@ def _build_artifact_deliverable_workflow_block(agent: "DeepThinkAgent") -> str:
         """=== FIGURE FINE-TUNING & ITERATIVE REFINEMENT RULES ===
 - When the user requests a figure fine-tuning (e.g., prompt starting with '【图表局部微调】针对目标图表' or asking to modify colors, fonts, margins, annotations, or panel layouts of an existing figure):
   1. ALWAYS treat this as a DIFFERENTIAL MODIFICATION on the existing figure, NOT a new figure from scratch.
-  2. DO NOT state that the previous figure is missing or absent from session directory.
+  2. Verify the target figure and its source/provenance. If they are missing, say which inputs are unavailable; do not invent an existing figure or its data.
   3. Inspect the existing figure provenance table (*_provenance.tsv), legend (summary.md), or datasets in conversation history to retain the exact same underlying data points, values, and group names.
   4. Apply the requested visual modifications (e.g. palette change, font size, highlighting, bounding box focus) while keeping all other untouched elements strictly intact.
-  5. In-place overwrite the target figure with the exact same output_basename and generate all three formats (PNG 300dpi, editable vector SVG, publication PDF).
+  5. Preserve the target output_basename and existing/requested formats. Do not add PDF/SVG rendering or other deliverables unless requested or required by the output contract.
 
 === ARTIFACT AND DELIVERABLE WORKFLOW ===
 """
-        "- Treat requests to analyze, combine, summarize, regenerate, export, save, or visualize existing files, plan outputs, task outputs, or deliverables as action requests, not prose-only answers.\n"
+        "- For analysis or summaries of existing files, inspect relevant evidence and answer in chat. Create files only when the user or task output contract requests a saved artifact.\n"
         "- For such requests, choose the needed tools yourself: discover relevant artifacts, read or profile supporting files, synthesize or compute, create/write the requested output, verify it when a file is requested, then submit the final answer.\n"
         "- Do not substitute chat prose, copy-paste Markdown, or a code snippet for a requested saved file, generated figure, or deliverable.\n"
         "- Good pattern: user asks to generate `plan_114_summary.md` from a completed plan -> inspect the plan manifest/deliverables, read the relevant CSV/JSON/MD evidence, write the Markdown report with manuscript_writer or file_operations, verify the path exists, then report the saved file.\n"
@@ -465,8 +466,9 @@ def _build_session_isolation_block(agent: "DeepThinkAgent") -> str:
         f"- When searching for or reading analysis results, model outputs, feature files, or data dictionaries, "
         f"ALWAYS look under `{session_dir}/` first (especially `{session_dir}/results/` and `{session_dir}/raw_files/`).\n"
         "- NEVER read result/output files from global project directories like `/app/output/`, "
-        "`/app/results/`, or `/data*/` — those contain outputs from OTHER sessions "
+        "`/app/results/`, or `/data*/` merely to discover outputs — those may contain outputs from OTHER sessions "
         "and will cause cross-contamination of findings.\n"
+        "- Explicit current attachments, resolved dependency artifact paths, manifest-listed files and canonical source inputs may live outside this session directory. Use those exact references; do not reject them or substitute session copies solely because of their location.\n"
         "- If you need to find a previously generated file in this session, use file_operations with a path scoped to "
         f"`{session_dir}/`, not the project root.\n"
         "- When listing files to discover outputs, scope the listing to the session directory. Do NOT list "
@@ -494,7 +496,7 @@ def _build_session_isolation_block(agent: "DeepThinkAgent") -> str:
 
 def _build_shared_strategy_block(agent: "DeepThinkAgent") -> str:
     return (
-        "=== EFFORT AND TOOLING POLICY ===\n"
+        PLAN_SCOPE_POLICY + "\n" + REFERENCE_SCOPE_POLICY + "\n=== EFFORT AND TOOLING POLICY ===\n"
         "1. First classify the request: casual chat, direct answer, evidence-backed research, or execution task.\n"
         "2. Match effort to the request. Default to the lightest path that fully satisfies the user.\n"
         "3. Do NOT start broad web/literature research for greetings, casual follow-ups, simple explanations, or opinion-style questions.\n"
@@ -521,9 +523,9 @@ def _build_shared_strategy_block(agent: "DeepThinkAgent") -> str:
         "- Never script around sequence_fetch failures with execute_code.\n"
         "- Never script around bio_tools input-conversion/parsing failures with execute_code.\n"
         "- For status polling tools, if state is unchanged across several checks, stop active polling and summarize current status.\n"
-        "- If the user explicitly asks for a plan or task breakdown and plan_operation is available, use plan_operation to create or update a structured plan instead of replying with a prose-only pseudo-plan.\n"
+        "- If the user explicitly asks for a persistent Plan/task tree and plan_operation is available, use plan_operation to create or update a structured plan instead of replying with a prose-only pseudo-plan. A request to explain steps or outline a method can be answered in chat.\n"
         "- For plan creation, `plan_operation.create` already performs integrated material collection before decomposition when needed. Do not manually split this into create-then-decompose unless you are explicitly refining an existing plan later.\n"
-        "- When executing a currently bound plan task, do NOT use plan_operation or task_operation just to mark that task completed/failed. Tool execution auto-sync already handles current task status; use plan_operation/task_operation only for structural plan edits.\n"
+        "- When executing a currently bound plan task, do NOT use plan_operation or task_operation just to mark that task completed/failed. The executor and verifier determine completion; read-only Plan queries remain available, but execution does not authorize structural plan edits.\n"
         "- When executing a currently bound plan task, observation-only tools (read-only file_operations, document_reader, vision_reader) may clarify one concrete uncertainty, but they are not task completion. Do not loop on probe-only exploration.\n"
         "- If the current bound task depends on upstream deliverables that are missing, report BLOCKED_DEPENDENCY clearly instead of silently switching to a different upstream task.\n"
         "- Do not convert an integration/analysis task into full upstream preprocessing unless the task instruction explicitly authorizes backfilling prerequisites.\n"
@@ -658,6 +660,14 @@ def _extract_history_messages(
     merged (alternation-friendly). A trailing user item identical to the
     current query is dropped to avoid duplicating the live user turn.
     """
+    # Remove the full live turn before reference clipping; otherwise a long
+    # query becomes a second, shortened user message with different constraints.
+    history = (context or {}).get("chat_history")
+    if current_user_query and isinstance(history, list) and history:
+        last = history[-1]
+        if (isinstance(last, dict) and last.get("role") == "user"
+                and str(last.get("content") or "").strip() == str(current_user_query).strip()):
+            context = {**context, "chat_history": history[:-1]}
     selected, _brief = _select_recent_history(context)
     messages: List[Dict[str, str]] = []
     for msg in selected:
@@ -888,8 +898,8 @@ def _build_native_system_prompt(
         + "\n=== RULES ===\n"
         "- Do NOT call submit_final_answer prematurely.\n"
         "- Do NOT launch broad web/literature research unless the user asks for sources, latest information, deep analysis, or the task is clearly evidence-sensitive.\n"
-        "- For simple requests, prefer zero-tool or one-tool answers; for factual questions, prefer tool verification over guessing.\n"
-        "- Keep quick checks synchronous; use background workflows only for clearly long-running operations.\n"
+        "- For simple requests, prefer zero-tool or one-tool answers; verify current or uncertain factual specifics rather than guessing.\n"
+        "- Keep ordinary tool-backed work in chat. Only requested execution of existing Plan tasks is handed to Plan background jobs.\n"
         "- Prioritize directness, relevance, and user intent over maximum comprehensiveness.\n"
         "- Prioritize evidence-backed conclusions over speculation when evidence is actually needed.\n"
         "- Grounding (configs and files): Only report file paths, env vars, API provider names, or model IDs that appear "
@@ -1067,11 +1077,11 @@ Operations:
 - get: Get plan details. Params: {"operation": "get", "plan_id": 123}
 
 WORKFLOW for Plan Creation:
-1. For a new plan, call 'create' directly from the current context
+1. Only when the user explicitly requests a new persistent Plan, call 'create' from the current context
 2. The create path may collect web_search or graph_rag evidence before decomposition when needed
 3. Treat the returned plan as already generated/decomposed up to the configured budget; do not assume a second decomposition step is pending
-4. After a successful new-plan create, report the result to the user immediately. Do NOT automatically call 'review' or 'optimize' — let the user decide whether to review or improve the plan
-5. For a bound plan, use 'get', 'review', or 'optimize' on the existing plan_id
+4. After a successful new-plan create, report the result immediately. Do NOT automatically call 'review', 'optimize' or execution unless the user also requested them
+5. Use 'get' for state, 'review' for requested read-only assessment, and 'optimize' only for requested edits
 6. Only use 'review' or 'optimize' when the user explicitly requests it (e.g., "review the plan", "optimize it", "improve the plan")
 7. Report the real plan result to the user with plan_id and decomposition/rubric status when available
 
@@ -1079,7 +1089,7 @@ IMPORTANT:
 - When creating plans, ensure each task has clear, actionable instructions.
 - For optimize/update_task, put editable fields at the top level (name/instruction/dependencies). Do not send only nested updated_fields values.
 - If the user asks to update the plan description or rationale summary, use action='update_description' with a top-level description field.
-- Do NOT use this tool to mark the currently executing task completed/failed. Current task status is auto-synced from tool execution; use this tool only for structural plan changes.""",
+- Do NOT use this tool to mark the currently executing task completed/failed. The executor and verifier determine completion; execution and retry do not authorize structural plan changes.""",
         "terminal_session": """Interactive terminal (PTY shell) for running commands directly.
 
 Operations:
@@ -1100,8 +1110,7 @@ IMPORTANT: data must end with \\n to execute the command.""",
             "\"context_paths\": [\"/path/to/refs.bib\", \"/path/to/data.csv\"], "
             "\"analysis_path\": \"/path/to/analysis_results\"}. "
             "IMPORTANT: For ANY paper/manuscript/report/summary writing task that should create a file (sections, drafts, revisions, assembly), "
-            "ALWAYS use manuscript_writer instead of ad-hoc scripting. "
-            "Never write paper content directly with execute_code."
+            "Prefer manuscript_writer for substantive evidence-based drafting. For small corrections or acceptance repair using existing text/evidence, write or patch the required files directly with file_operations or execute_code; do not restart the full drafting pipeline."
         ),
         "literature_pipeline": (
             "Collect a literature evidence pack from PubMed/PMC. "
@@ -1242,15 +1251,15 @@ Your goal is to choose the right depth for the user's request: be thorough when 
 - Keep quick checks synchronous; use background=true only for clearly long-running jobs and return job_id for job_status follow-ups.
 - Bio_tools catalog (synced from tools_config.json): {_BIO_TOOLS_CATALOG_TEXT}
 
-=== BIO_TOOLS RECOVERY PROTOCOL (MANDATORY) ===
-1. Call bio_tools(..., operation="help") and inspect required parameters.
-2. Retry bio_tools with corrected parameters and verified absolute paths.
-3. If still failing, run targeted web_search for operation/parameter mapping.
-4. If still failing for reasons other than input parsing/conversion, use execute_code for minimal shell-level diagnostics.
-Try at least 3 different recovery attempts before reporting failure.
+=== BIO_TOOLS RECOVERY PROTOCOL ===
+1. For an operation/parameter error, inspect bio_tools(..., operation="help") and the retry_hint.
+2. Retry with corrected parameters and verified absolute paths when a concrete correction exists.
+3. Use targeted web_search only if an unresolved operation/parameter mapping needs external documentation, not for repeated network failures.
+4. For failures other than input parsing/conversion, use minimal execute_code diagnostics only when they can resolve the observed blocker.
+Retry only when an error supplies an actionable correction. For repeated connectivity/service failure, report the concrete blocker instead of forcing a fixed number of searches or retries.
 
 === PLAN CREATION RULE ===
-Research before planning only when current external best practices or factual verification materially affect the plan. Otherwise create or update the structured plan directly from the current context first.
+Only when the user requested a persistent Plan, research before planning if current external best practices or factual verification materially affect it. Otherwise create or update the requested structured plan directly from the current context. Ordinary discussion and multi-step tool use do not require a Plan.
 
 {agent._build_protocol_boundary_block("legacy")}
 === OUTPUT FORMAT ===
@@ -1285,7 +1294,7 @@ def _get_next_step_prompt(agent: "DeepThinkAgent", iteration: int) -> str:
     completion nudge; the endgame is owned by the loop guards, not by a
     tier-specific prompt ladder."""
     return (
-        'If the request is already satisfied, call submit_final_answer now. If you still need file or '
+        'If the request is already satisfied, finish using the active protocol: submit_final_answer for native tool calling, or final_answer for strict JSON. If you still need file or '
         'tool evidence, call the tool now — do not output transitional narration as a standalone response. '
         'And if a successful literature_pipeline earlier in this run already produced study_cards.jsonl, '
         'library.jsonl, evidence.md, study_matrix.md, or a coverage report, read the relevant records with '

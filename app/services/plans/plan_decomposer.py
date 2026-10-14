@@ -100,10 +100,10 @@ class DecompositionPromptBuilder:
             self.SYSTEM_HEADER,
             f"\n=== PROJECT ROOT ===",
             f"Project root directory: {project_root}",
-            f"IMPORTANT: All output file paths in acceptance_criteria MUST use RELATIVE paths from the project root. "
+            f"IMPORTANT: New output file paths in acceptance_criteria and required_outputs should use task-relative paths, resolved against each task's output directory at execution, not the project root. "
             f"Use paths like 'results/...' or 'output/...'. "
             f"Do NOT use absolute paths like '{project_root}/results/...'. "
-            f"Do NOT use paths from chat history or data source directories as output locations.",
+            f"Do NOT use paths from chat history or data source directories as output locations. Preserve exact output paths explicitly required by the current user or parent contract instead of replacing them with invented locations.",
         ]
 
         from app.services.memory.context_recall import format_recall_context
