@@ -1356,6 +1356,8 @@ class TaskVerificationService(_CueMethods, _PathMethods, _CheckMethods, _Discove
         if not normalized or normalized == "/":
             return False
         lowered = normalized.lower()
+        if "/scratch/.execution/" in lowered:
+            return True
         basename = lowered.rsplit("/", 1)[-1]
         if basename in _INTERNAL_ARTIFACT_FILENAMES and "/tool_outputs/" in lowered:
             return True

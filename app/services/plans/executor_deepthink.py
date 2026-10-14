@@ -68,6 +68,7 @@ from .executor_text_utils import (
 from .plan_models import PlanNode, PlanTree
 from .paper_task_policy import is_planning_document, requires_manuscript_content, PLANNING_DOCUMENT_SCOPE
 from .executor_resume_repair import has_existing_evidence, previous_delivery_gap
+from .executor_history import history_scope, load_history, save_history
 from .task_verification import VerificationFinalization
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -241,7 +242,8 @@ class _DeepThinkMethods:
             tree=tree,
         )
         if (repair_finalization is None and prior_delivery_gap is not None
-                and has_existing_evidence(prior_delivery_gap, dependency_paths, task_work_dir)):
+                and (prior_delivery_gap.payload.get("metadata", {}).get("execution_history_ref")
+                     or has_existing_evidence(prior_delivery_gap, dependency_paths, task_work_dir))):
             repair_finalization = prior_delivery_gap
             _log_job("info", "复用已有证据，优先补齐上次验收的缺项。", {
                 "sub_type": "repair_resume", "plan_id": plan_id, "task_id": node.id,
@@ -552,6 +554,9 @@ class _DeepThinkMethods:
                 "phagescope_research", "phagescope", "plan_operation",
             }]
             tool_names.append("scientific_figure_generator")
+        from app.services.foundation.settings import get_settings
+        from app.services.deep_think.text_utils import _DEEP_THINK_THINKING_BUDGET
+        session_context["execution_history_scope"] = history_scope(node, session_context, dep_outputs)
         deep_think_agent = _facade().DeepThinkAgent(
             llm_client=self._llm._llm,
             available_tools=_execution_tools(tool_names),
@@ -563,6 +568,8 @@ class _DeepThinkMethods:
             on_tool_start=on_tool_start,
             on_tool_result=on_tool_result,
             request_profile=request_profile(node.plan_id, node.id, session_context),
+            enable_thinking=get_settings().thinking_enabled,
+            thinking_budget=_DEEP_THINK_THINKING_BUDGET,
         )
         current_job_id = self._current_job_id()
         if current_job_id:
@@ -581,6 +588,22 @@ class _DeepThinkMethods:
                 logger.warning("Failed to register runtime controller: %s", exc)
 
         try:
+            if repair_finalization is not None:
+                history_ref = repair_finalization.payload.get("metadata", {}).get("execution_history_ref")
+                try:
+                    continuation = load_history(history_ref, task_work_dir, session_context["execution_history_scope"])
+                except ControllerRestoreError as exc:
+                    check_run_active()
+                    failed_payload = deepcopy(repair_finalization.payload)
+                    failed_payload.setdefault("metadata", {})["execution_issues"] = [
+                        {"code": "step_reconciliation_required", "reason": str(exc)}]
+                    self._repo.update_task(plan_id, node.id, status="failed",
+                        execution_result=json.dumps(failed_payload, ensure_ascii=False))
+                    raise
+                if history_ref and continuation is None:
+                    repair_finalization = None  # Inputs changed: execute the current task afresh.
+                elif continuation:
+                    session_context["execution_continuation"] = continuation
             if repair_finalization is not None:
                 finalization = self._attempt_contract_repair_with_deep_think(
                     plan_id=plan_id, node=node, task_context=task_context,
@@ -601,6 +624,7 @@ class _DeepThinkMethods:
                 )
             )
             check_run_active()
+            history_ref = save_history(task_work_dir, getattr(result, "continuation", None))
 
             primary_tool_failed = (
                 primary_execution_tool_failed
@@ -639,6 +663,8 @@ class _DeepThinkMethods:
             }
             metadata_payload = payload.get("metadata")
             if isinstance(metadata_payload, dict):
+                if history_ref:
+                    metadata_payload["execution_history_ref"] = history_ref
                 for key in ("output_spec", "output_input_snapshot", "output_spec_base_dir", "output_verification"):
                     value = getattr(result, key, None)
                     if value is not None:
@@ -1008,8 +1034,15 @@ class _DeepThinkMethods:
         from app.llm import usage_context_override
 
         max_attempts = self._contract_repair_limit(config)
+        if not max_attempts or not self._should_repair_contract(finalization):
+            return finalization
         original_limit = getattr(deep_think_agent, "max_iterations", None)
         history = []
+        continuation = session_context.get("execution_continuation")
+        if continuation is None:
+            metadata = finalization.payload.get("metadata") or {}
+            continuation = load_history(metadata.get("execution_history_ref"),
+                metadata.get("output_spec_base_dir"), session_context.get("execution_history_scope"))
         try:
             for attempt in range(1, max_attempts + 1):
                 check_run_active()
@@ -1045,6 +1078,13 @@ class _DeepThinkMethods:
                     repair_query += "\nThe previous method did not work. Use a simpler method for the missing output; for Markdown/text, write short sections directly instead of continuing to patch a failing renderer."
                 repair_context = {**session_context, "paper_mode": False,
                                   "contract_repair": {"attempt": attempt, "max_attempts": max_attempts, "contract_diff": diff}}
+                if continuation:
+                    repair_context["execution_continuation"] = continuation
+                else:
+                    # Legacy runs have no full transcript. Their candidate answer
+                    # remains evidence, not proof that a required file was saved.
+                    previous_answer = str(finalization.payload.get("content") or "")
+                    repair_query += "\nPrevious candidate response (not a delivered file):\n" + previous_answer
                 base_dir = str(metadata.get("output_spec_base_dir") or "").strip()
                 repair_constraints = [
                     "Reuse existing evidence; do not restart the original workflow or alter passed files.",
@@ -1079,6 +1119,10 @@ class _DeepThinkMethods:
                     tools_used=list(result.tools_used or []),
                     tool_failures=list(getattr(result, "tool_failures", []) or []),
                     execution_issues=list(getattr(result, "execution_issues", []) or []))
+                continuation = getattr(result, "continuation", None)
+                history_ref = save_history(base_dir, continuation)
+                if history_ref:
+                    repaired_metadata["execution_history_ref"] = history_ref
                 paths = list(dict.fromkeys([*payload.get("artifact_paths", []),
                     *tool_result_context.get("artifact_paths", []),
                     *self._extract_path_like_values(result.final_answer)]))
@@ -1088,9 +1132,9 @@ class _DeepThinkMethods:
                 # files which the repair controller actually wrote and checked.
                 checked = getattr(result, "output_verification", None)
                 previous = repaired_metadata.pop("output_produced_paths", None) or []
-                if isinstance(checked, dict) and checked.get("artifact_paths"):
+                if previous or (isinstance(checked, dict) and checked.get("artifact_paths")):
                     repaired_metadata["output_produced_paths"] = list(dict.fromkeys([
-                        *previous, *checked.get("artifact_paths", [])]))
+                        *previous, *(checked.get("artifact_paths", []) if isinstance(checked, dict) else [])]))
                 payload, execution_status = _coerce_blocked_dependency_payload(payload)
                 finalization, _ = self._finalize_task_execution(
                     plan_id, node, payload, execution_status=execution_status, trigger="contract_repair")

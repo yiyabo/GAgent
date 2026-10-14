@@ -153,6 +153,7 @@ def _run_task_chain_job(
     needs_review: List[int] = []
     failed: List[int] = []
     skipped: List[int] = []
+    reused: List[int] = []
     step_summaries: List[Dict[str, Any]] = []
     total_steps = len(task_order)
 
@@ -161,7 +162,7 @@ def _run_task_chain_job(
         current_step: Optional[int] = None,
         current_task_id: Optional[int] = None,
     ) -> Dict[str, Any]:
-        done_steps = len(executed) + len(failed) + len(skipped)
+        done_steps = len(executed) + len(failed) + len(skipped) + len(reused)
         progress_percent = 0
         if total_steps > 0:
             progress_percent = int(round((min(done_steps, total_steps) / total_steps) * 100))
@@ -174,6 +175,7 @@ def _run_task_chain_job(
             "executed": len(executed),
             "failed": len(failed),
             "skipped": len(skipped),
+            "reused": len(reused),
             "done": done_steps,
             "total_steps": total_steps,
             "progress_percent": progress_percent,
@@ -257,11 +259,14 @@ def _run_task_chain_job(
 
             try:
                 exec_config = ExecutionConfig(session_context=session_ctx, paper_mode=bool(paper_mode))
-                result = _facade()._plan_executor.execute_task(
-                    plan_id,
-                    task_id,
-                    config=exec_config,
-                )
+                from app.services.plans.executor_reuse import completed_result
+                result = (completed_result(_facade()._plan_executor, plan_id, task_id, session_ctx)
+                          if task_id != target_task_id else None)
+                if result is None:
+                    result = _facade()._plan_executor.execute_task(plan_id, task_id, config=exec_config)
+                else:
+                    _facade().log_job_event("info", "Reusing verified upstream task outputs.",
+                        {"task_id": task_id, "status": "already_completed"})
             except (RunDeadlineExceeded, asyncio.CancelledError):
                 raise
             except Exception as exc:  # pragma: no cover - defensive
@@ -283,6 +288,7 @@ def _run_task_chain_job(
                         "executed_task_ids": executed,
                         "failed_task_ids": failed,
                         "skipped_task_ids": skipped,
+                        "reused_task_ids": reused,
                         "steps": step_summaries,
                     },
                     stats={
@@ -294,16 +300,17 @@ def _run_task_chain_job(
                 )
                 return
 
+            was_reused = bool((getattr(result, "metadata", None) or {}).get("reused"))
             step_summaries.append(
                 {
                     "task_id": task_id,
-                    "status": result.status,
+                    "status": "already_completed" if was_reused else result.status,
                     "duration_sec": result.duration_sec,
                 }
             )
 
             if result.status == "completed":
-                executed.append(task_id)
+                (reused if was_reused else executed).append(task_id)
                 _publish_progress(current_step=idx, current_task_id=task_id)
                 continue
             if result.status == "skipped":
@@ -327,6 +334,7 @@ def _run_task_chain_job(
                         "executed_task_ids": executed,
                         "failed_task_ids": failed,
                         "skipped_task_ids": skipped,
+                        "reused_task_ids": reused,
                         "steps": step_summaries,
                     },
                     stats={
@@ -358,6 +366,7 @@ def _run_task_chain_job(
                         "executed_task_ids": executed,
                         "failed_task_ids": failed,
                         "skipped_task_ids": skipped,
+                        "reused_task_ids": reused,
                         "needs_review_task_ids": needs_review,
                         "steps": step_summaries,
                     },
@@ -388,6 +397,7 @@ def _run_task_chain_job(
                     "executed_task_ids": executed,
                     "failed_task_ids": failed,
                     "skipped_task_ids": skipped,
+                    "reused_task_ids": reused,
                     "steps": step_summaries,
                 },
                 stats={
@@ -413,6 +423,7 @@ def _run_task_chain_job(
                 "executed_task_ids": executed,
                 "failed_task_ids": failed,
                 "skipped_task_ids": skipped,
+                "reused_task_ids": reused,
                 "needs_review_task_ids": needs_review,
                 "steps": step_summaries,
             },
@@ -428,6 +439,7 @@ def _run_task_chain_job(
 
 
 @bounded_plan_job(lambda: _facade().plan_decomposition_jobs)
+
 def _run_full_plan_job(
     *,
     job_id: str,

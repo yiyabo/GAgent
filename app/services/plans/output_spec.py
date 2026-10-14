@@ -599,6 +599,8 @@ def validate_output_spec(
     for raw in artifact_paths:
         path = Path(raw).expanduser()
         path = (path if path.is_absolute() else root / path).resolve()
+        if "/scratch/.execution/" in path.as_posix().lower():
+            continue  # Internal transcripts cannot satisfy a user deliverable.
         try:
             if path.is_file() and path.stat().st_size > 0 and path not in files:
                 files.append(path)

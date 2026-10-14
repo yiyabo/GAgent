@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence
 
 from app.services.deep_think.models import ThinkingStep
@@ -556,6 +557,8 @@ def _needs_directory_profile_before_final(
     if not agent._directory_dataset_analysis_requested(user_query):
         return None
     path = agent._extract_directory_path_from_query(user_query)
+    if path and Path(path).is_file():
+        return None  # A repair's explicit file target is not a directory census request.
     if path and agent._directory_payload_is_generic_tabular_only(path):
         return None
     if agent._file_operation_profile_or_census_seen(steps):
