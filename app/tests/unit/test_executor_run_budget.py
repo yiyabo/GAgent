@@ -136,19 +136,42 @@ async def test_active_native_llm_deadline_is_not_retried():
         async def stream_chat_with_tools_async(self, **kwargs):
             calls.append(True)
             try:
+                # Trigger the run-wide deadline only once this provider is
+                # active. A cold/loaded CI runner may consume the old 80ms
+                # allowance before entry, which tests a different branch.
+                current_run_budget().expire()
                 await asyncio.Event().wait()
             finally:
                 settled.set()
 
     agent = DeepThinkAgent(LLM(), [], lambda *args: None)
     step = ThinkingStep(1, "", None, None, None)
-    with budget_scope():
+    with budget_scope(seconds=60, reserve=1):
         with pytest.raises(RunDeadlineExceeded):
             await _native_llm_step(
                 agent, messages=[], tool_schemas=[], iteration=1, current_step=step,
                 thinking_steps=[], consecutive_llm_failures=0, max_consecutive_llm_failures=3,
             )
     assert calls == [True] and settled.is_set()
+
+
+async def test_expired_native_llm_deadline_does_not_start_provider():
+    from app.services.deep_think.controller import _native_llm_step
+    from app.services.deep_think_agent import DeepThinkAgent, ThinkingStep
+
+    calls = []
+    class LLM:
+        async def stream_chat_with_tools_async(self, **kwargs):
+            calls.append(True)
+
+    agent = DeepThinkAgent(LLM(), [], lambda *args: None)
+    step = ThinkingStep(1, "", None, None, None)
+    with budget_scope(seconds=60, reserve=1) as budget:
+        budget.expire()
+        with pytest.raises(RunDeadlineExceeded):
+            await _native_llm_step(agent, messages=[], tool_schemas=[], iteration=1, current_step=step,
+                thinking_steps=[], consecutive_llm_failures=0, max_consecutive_llm_failures=3)
+    assert calls == []
 
 
 async def test_provider_iterator_is_closed_on_deadline():

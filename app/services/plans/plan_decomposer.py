@@ -162,7 +162,7 @@ class DecompositionPromptBuilder:
             '  "metadata": {',
             '  "required_outputs": [{"kind":"data|image|document", "min_count":1, "extensions":[".csv"], "target_path":"results/output.csv", "in_place":false}],',
             '  "paper_section": "<optional: abstract|introduction|method|experiment|result|discussion|conclusion|references>",',
-            '  "paper_role": "<optional: evidence_collector|section_writer|manuscript_assembler|citation_validator>",',
+            '  "paper_role": "<optional: planning_document|evidence_collector|section_writer|manuscript_assembler|citation_validator>",',
             '  "paper_context_paths": ["<optional artifact path>", "..."],',
             '  "artifact_contract": {',
             '    "requires": ["<alias of an upstream artifact this task consumes, e.g. lit_review.search_corpus_jsonl>"],',
@@ -212,6 +212,7 @@ class DecompositionPromptBuilder:
             "  * Keywords that signal downstream consumer roles: 撰写, 写作, 起草, 初稿, 章节, 报告, 分析, draft, write, author, section, report, analyze, synthesize.",
             "- For tasks that deliver files, include metadata.required_outputs with user-requested type, minimum count, format and task-relative target_path. Do not invent expected scientific values. Non-mechanical requirements remain unchecked/human-reviewed.",
             "- For paper-writing tasks, include `metadata.paper_section`, `metadata.paper_role`, and `metadata.paper_context_paths` when known.",
+            "- Positioning notes, scope decisions, proposals and chapter outlines are planning_document tasks, not introduction/section_writer tasks. Set paper_mode=false and omit paper_section for them. Preserve a parent's planning-only boundary; do not turn its children into manuscript drafting or full literature collection.",
             "- ARTIFACT CONTRACT RULES (MANDATORY — this is how products get registered on the plan):",
             "  * Every leaf task that writes a file MUST declare `metadata.artifact_contract.publishes` with one alias per deliverable file, AND a matching `metadata.required_outputs` entry whose `target_path` is that file (task-relative, e.g. `results/extraction_matrix.csv`).",
             "  * Alias grammar: `<namespace>.<file_stem>_<ext>` — lowercase snake_case, exactly one dot. The slot is the file name with its extension joined by an underscore: `results/search_corpus.jsonl` -> `<namespace>.search_corpus_jsonl`, `figures/fig1_schematic.png` -> `<namespace>.fig1_schematic_png`.",
@@ -688,6 +689,8 @@ class PlanDecomposer:
         return None
 
     def _derive_paper_metadata(self, child: DecompositionChild) -> Dict[str, Any]:
+        from .paper_task_policy import is_planning_document
+
         metadata = dict(child.metadata or {})
         if metadata.get("required_outputs"):
             from .output_spec import InvalidOutputSpec, parse_output_spec
@@ -731,6 +734,9 @@ class PlanDecomposer:
             metadata["paper_context_paths"] = paper_context_paths
         if section or role or paper_context_paths:
             metadata["paper_mode"] = True
+        if is_planning_document(child.name, child.instruction, metadata):
+            metadata.update(paper_role="planning_document", paper_mode=False)
+            metadata.pop("paper_section", None)
         return metadata
 
     def _create_child_node(
