@@ -442,11 +442,13 @@ class PlanStatusResolver:
                 # human decides whether the result is acceptable (2026-10-11).
                 effective_status = "needs_review"
                 status_reason = (
+                    "文件已保留，但验收规则配置无效，需要修正规则后复验。"
+                    if verification_status == "config_error" else
                     _truncate_reason((metadata.get("delivery_verification") or {}).get("message"))
                     or _truncate_reason(content)
                     or "Task ran without a primary tool or output; needs human review."
                 )
-                reason_code = "needs_review"
+                reason_code = "verification_config_error" if verification_status == "config_error" else "needs_review"
             elif incomplete_dependencies:
                 effective_status = "blocked"
                 status_reason = _dependency_block_reason(task_id, incomplete_dependencies)

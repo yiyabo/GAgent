@@ -129,7 +129,7 @@ const FAILURE_KIND_LABELS: Record<string, string> = {
   contract_mismatch: 'Deliverable contract mismatch',
   execution_failed: 'Execution failed',
   blocked_dependency: 'Blocked by dependency',
-  verification_config_error: 'Verification configuration error',
+  verification_config_error: '验收规则配置无效',
 };
 
 export function humanizeFailureKind(kind: string): string {
@@ -776,8 +776,9 @@ export const ExecutionResult: React.FC<ExecutionResultProps> = ({
     .toLowerCase();
   const executionCompleted = executionStatus === 'completed' || executionStatus === 'done' || executionStatus === 'success';
   const executionFailed = executionStatus === 'failed' || executionStatus === 'error';
+  const configError = verification.status === 'config_error';
   const showFailureSummary =
-    executionFailed || failureKind.length > 0 || verification.status === 'failed';
+    executionFailed || (failureKind.length > 0 && !configError) || verification.status === 'failed';
   const repairNote = resolveRepairNote(result.metadata);
   const artifactAuthority =
     result.metadata && typeof result.metadata.artifact_authority === 'object'
@@ -856,6 +857,21 @@ export const ExecutionResult: React.FC<ExecutionResultProps> = ({
           {result.content && <RenderedResultContent content={result.content} sessionId={sessionId} />}
         </div>
       )}
+      {configError && (
+        <Alert
+          type="warning"
+          showIcon
+          message="文件已保留，验收规则需要核对"
+          description={
+            <Space direction="vertical" size={4}>
+              <Text>当前尚未确认完成。请修正验收规则后复验，重复执行任务无法修复规则配置。</Text>
+              {verification.configErrors.map((error, index) => (
+                <Text type="secondary" key={index}>{String(error.message ?? '')}</Text>
+              ))}
+            </Space>
+          }
+        />
+      )}
       <Space wrap>
         {result.status && (
           <Tag color={statusColorMap[result.status] ?? 'default'}>
@@ -900,7 +916,7 @@ export const ExecutionResult: React.FC<ExecutionResultProps> = ({
           }
         />
       )}
-      {executionCompleted && verification.status !== 'failed' && publishedArtifactLabels.length === 0 && (
+      {executionCompleted && !configError && verification.status !== 'failed' && publishedArtifactLabels.length === 0 && (
         <Alert
           type={expectedPublishAliases.length > 0 ? 'warning' : 'info'}
           showIcon

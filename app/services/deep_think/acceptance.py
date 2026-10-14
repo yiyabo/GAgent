@@ -161,6 +161,11 @@ def build_acceptance_spec_prompt_block(
         "declared formats, exact target paths, distinct file counts, and changes "
         "to in-place targets against their pre-execution snapshots."
     )
+    lines.append(
+        "Acceptance check types are validators, not deliverables. A verification "
+        "configuration error requires rule review; do not invent a file named "
+        "after the check type or repeat completed work to repair the rule."
+    )
     return "\n".join(lines) + "\n"
 
 
@@ -303,6 +308,9 @@ def acceptance_missing(
                 artifact_paths=report["artifact_paths"],
             )
             if outcome and not outcome.get("success"):
+                if outcome.get("verification_config_error"):
+                    report.setdefault("config_errors", []).append(outcome)
+                    continue
                 report["failures"].append(outcome)
                 strict = bool(criteria.get("blocking", True)) and (
                     not is_inferred_task_spec(criteria) or bool(check.get("hard"))
@@ -312,6 +320,9 @@ def acceptance_missing(
                     label = str(outcome.get("path") or outcome.get("type"))
                     if label not in missing:
                         missing.append(label)
-    report["status"] = "failed" if report["failures"] else "passed"
+    report["status"] = (
+        "failed" if report["failures"] else
+        "config_error" if report.get("config_errors") else "passed"
+    )
     agent._output_verification = report
     return missing
