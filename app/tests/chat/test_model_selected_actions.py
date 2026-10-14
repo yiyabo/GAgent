@@ -305,3 +305,17 @@ def test_quoted_artifact_error_does_not_require_a_plan_rubric_review():
     decision = resolve_model_routing(message=query, plan_id=187, current_task_id=16)
     assert not decision.plan_review_required and not decision.plan_execute_required
     assert decision.route_reason_codes == [MODEL_SELECTION]
+
+
+def test_legacy_rollout_also_does_not_force_review_from_a_filename(monkeypatch):
+    from app.services.foundation.settings import get_settings
+    monkeypatch.setattr(get_settings(),'chat_model_action_selection_enabled',False)
+    agent=_build_agent()
+    decision,_=agent._resolve_request_routing("Artifact preflight failed: requires 'phage_depoly.review_outline_md'. 不是有文件吗？")
+    assert not decision.plan_review_required and 'plan_review' not in decision.route_reason_codes
+    assert not decision.plan_optimize_required
+
+
+def test_chat_fallback_cannot_execute_the_highlighted_task_inline():
+    agent=_build_agent(extra_context={'chat_plan_execution_background_only':True})
+    assert _build_deep_think_task_context(agent,user_message='这个不是有文件吗？') is None

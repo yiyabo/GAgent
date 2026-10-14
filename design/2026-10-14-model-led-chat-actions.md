@@ -27,3 +27,7 @@ Scripted native/strict tests verify that the model is called, its tool choices r
 The model can still misunderstand a user request or choose the wrong tool. Structural validation does not prove semantic intent. Do not claim paraphrase completeness or zero unintended mutations from unit tests. If live semantic checks fail, keep this behavior switch disabled and report the failures.
 
 Hermes source inspected at 0e427d788d253630d38a3a51cd76849e73cd6925: run_agent.py, agent/conversation_loop.py, agent/turn_context.py, agent/turn_tool_round.py and related modules. It feeds user/history/tools into one model loop and appends tool results; it also retains regex for protocol/commands/guards. GAgent keeps its own independent deliverable acceptance.
+
+## Rollout hold after real probing
+
+The isolated real probe found incorrect stage selection and execute_all on a targetless retry. Full model-selected routing remains disabled. New scope prompt wording is a draft awaiting later validation; the original failing records are retained. Common chat fixes (no keyword-forced review/optimize, no inline execution assignment from the selected Plan task) also apply with the full policy disabled. Details and other independent fixes are in 2026-10-14-input-discovery-and-refresh.md.

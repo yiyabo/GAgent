@@ -1402,6 +1402,7 @@ class StructuredChatAgent:
                 async for chunk in stream_chat_plan_handoff(self, target, event_sink=event_sink):
                     yield chunk
                 return
+        self.extra_context['chat_plan_execution_background_only'] = True
         self._update_routing_context(routing_decision)
         _seed_active_subject_from_routing(self, routing_decision)
         if self.session_id:
@@ -3104,6 +3105,14 @@ class StructuredChatAgent:
             plan_id=self.plan_session.plan_id,
             current_task_id=self.extra_context.get("current_task_id"),
         )
+        if resolver is resolve_request_routing:
+            # Natural-language review/edit choices belong to the model, even
+            # while the legacy execution shortcuts remain enabled. Quoted
+            # paths such as review_outline.md are not review commands.
+            from dataclasses import replace
+            decision = replace(decision, plan_review_required=False, plan_optimize_required=False,
+                route_reason_codes=[code for code in decision.route_reason_codes
+                                    if code not in {'plan_review', 'plan_optimize'}])
         profile = build_request_tier_profile(
             decision,
             default_max_iterations=_resolve_deep_think_max_iterations(),

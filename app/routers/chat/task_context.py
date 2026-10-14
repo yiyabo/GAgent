@@ -236,7 +236,8 @@ def _build_deep_think_task_context(
     *,
     user_message: str,
 ) -> Optional[TaskExecutionContext]:
-    if (getattr(agent, "extra_context", None) or {}).get("action_selection") == "model":
+    context = getattr(agent, "extra_context", None) or {}
+    if context.get("action_selection") == "model" or context.get('chat_plan_execution_background_only'):
         return None  # A highlighted task is reference, not an assignment to the chat loop.
     raw_task_id = getattr(agent, "extra_context", {}).get("current_task_id")
     try:
