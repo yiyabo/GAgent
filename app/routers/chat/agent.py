@@ -399,6 +399,11 @@ class StructuredChatAgent:
         routing_decision, _route_profile = self._resolve_request_routing(user_message)
         effective_user_message = routing_decision.effective_user_message
         self._update_routing_context(routing_decision)
+        from .model_selection import MODEL_SELECTION
+        if MODEL_SELECTION in routing_decision.route_reason_codes:
+            structured = await self._invoke_llm(effective_user_message)
+            return self._apply_completion_claim_guardrail(structured)
+        # Legacy adapters already supplied their routing policy; preserve that contract.
         structured = self._build_deterministic_execute_task_structured()
         if structured is None:
             structured = await self._invoke_llm(effective_user_message)
@@ -1359,73 +1364,72 @@ class StructuredChatAgent:
         ``event_sink`` receives the same JSON payloads as SSE ``data:`` lines (dict form).
         """
         routing_decision, route_profile = self._resolve_request_routing(user_message)
-        from app.services.plans.edit_policy import user_requested_plan_edit
-        self._plan_tree_edit_allowed = bool(routing_decision.plan_create_required or
-            user_requested_plan_edit(routing_decision.effective_user_message))
         effective_user_message = routing_decision.effective_user_message
-        status_ids = task_status_question(effective_user_message) if self.plan_session.plan_id is not None and not routing_decision.manual_deep_think else []
-        if status_ids:
-            self.extra_context["explicit_task_override"] = False
-            self.extra_context["plan_execute_required"] = False
-            self.extra_context["full_plan_execution"] = False
-            self.extra_context.pop("pending_scope_task_ids", None)
-            self.extra_context.pop("_full_plan_executor_delegate", None)
-            response_text = task_status_reply(self.plan_session.repo, self.plan_session.plan_id, status_ids)
-            response_metadata = {"plan_id": self.plan_session.plan_id, "read_only_task_status": True,
-                                 "queried_task_ids": status_ids, **routing_decision.metadata()}
-            if len(status_ids) == 1:
-                response_metadata["task_id"] = status_ids[0]
-                self.extra_context["current_task_id"] = status_ids[0]
-                node = self.plan_session.repo.get_plan_tree(self.plan_session.plan_id).nodes.get(status_ids[0])
-                if node is not None:
-                    response_metadata["task_name"] = node.display_name()
-            async for chunk in _stream_direct_image_response(
-                self, response_text=response_text, response_metadata=response_metadata,
-                event_sink=event_sink,
-            ):
-                yield chunk
-            return
-        execution_requested, target_ids = resolve_plan_execution_target(self, routing_decision)
-        if execution_requested:
-            self.extra_context["explicit_task_override"] = False
-            self.extra_context["plan_execute_required"] = False
-            self.extra_context["full_plan_execution"] = False
-            self.extra_context.pop("pending_scope_task_ids", None)
-            self.extra_context.pop("_full_plan_executor_delegate", None)
-            target = target_ids[0] if target_ids and len(target_ids) == 1 else target_ids
-            async for chunk in stream_chat_plan_handoff(self, target, event_sink=event_sink):
-                yield chunk
-            return
+        self._current_user_message = effective_user_message
+        from .model_selection import MODEL_SELECTION
+        # Legacy adapters retain their declared contract; new chat turns select actions in the model.
+        if MODEL_SELECTION not in routing_decision.route_reason_codes:
+            status_ids = task_status_question(effective_user_message) if self.plan_session.plan_id is not None and not routing_decision.manual_deep_think else []
+            if status_ids:
+                self.extra_context["explicit_task_override"] = False
+                self.extra_context["plan_execute_required"] = False
+                self.extra_context["full_plan_execution"] = False
+                self.extra_context.pop("pending_scope_task_ids", None)
+                self.extra_context.pop("_full_plan_executor_delegate", None)
+                response_text = task_status_reply(self.plan_session.repo, self.plan_session.plan_id, status_ids)
+                response_metadata = {"plan_id": self.plan_session.plan_id, "read_only_task_status": True,
+                                     "queried_task_ids": status_ids, **routing_decision.metadata()}
+                if len(status_ids) == 1:
+                    response_metadata["task_id"] = status_ids[0]
+                    self.extra_context["current_task_id"] = status_ids[0]
+                    node = self.plan_session.repo.get_plan_tree(self.plan_session.plan_id).nodes.get(status_ids[0])
+                    if node is not None:
+                        response_metadata["task_name"] = node.display_name()
+                async for chunk in _stream_direct_image_response(
+                    self, response_text=response_text, response_metadata=response_metadata,
+                    event_sink=event_sink,
+                ):
+                    yield chunk
+                return
+            execution_requested, target_ids = resolve_plan_execution_target(self, routing_decision)
+            if execution_requested:
+                self.extra_context["explicit_task_override"] = False
+                self.extra_context["plan_execute_required"] = False
+                self.extra_context["full_plan_execution"] = False
+                self.extra_context.pop("pending_scope_task_ids", None)
+                self.extra_context.pop("_full_plan_executor_delegate", None)
+                target = target_ids[0] if target_ids and len(target_ids) == 1 else target_ids
+                async for chunk in stream_chat_plan_handoff(self, target, event_sink=event_sink):
+                    yield chunk
+                return
+        self.extra_context['chat_plan_execution_background_only'] = True
         self._update_routing_context(routing_decision)
+        selected_task = self.extra_context.pop('current_task_id', None)
+        if selected_task is not None:
+            self.extra_context['referenced_task_id'] = selected_task
+        self.extra_context.pop('task_id', None)
+        self.extra_context.pop('task_directory_full', None)
         _seed_active_subject_from_routing(self, routing_decision)
         if self.session_id:
             try:
                 _persist_runtime_context(self)
             except Exception as exc:  # pragma: no cover - defensive
                 logger.debug("Failed to persist routing runtime context: %s", exc)
-
-        direct_image_response = _build_recent_image_display_response(
-            self,
-            user_message=effective_user_message,
-            routing_decision=routing_decision,
-        )
-        if direct_image_response is not None:
-            response_text, response_metadata = direct_image_response
-            async for chunk in _stream_direct_image_response(
-                self,
-                response_text=response_text,
-                response_metadata=response_metadata,
-                event_sink=event_sink,
-            ):
-                yield chunk
-            return
-
-        deterministic_execute = self._build_deterministic_execute_task_structured()
-        if deterministic_execute is not None:
-            target_id = int(deterministic_execute.actions[0].parameters["task_id"])
-            async for chunk in stream_chat_plan_handoff(self, target_id, event_sink=event_sink):
-                yield chunk
-            return
+        if MODEL_SELECTION not in routing_decision.route_reason_codes:
+            direct_image_response = _build_recent_image_display_response(
+                self, user_message=effective_user_message, routing_decision=routing_decision)
+            if direct_image_response is not None:
+                response_text, response_metadata = direct_image_response
+                async for chunk in _stream_direct_image_response(
+                    self, response_text=response_text, response_metadata=response_metadata, event_sink=event_sink):
+                    yield chunk
+                return
+            deterministic_execute = self._build_deterministic_execute_task_structured()
+            if deterministic_execute is not None:
+                target_id = int(deterministic_execute.actions[0].parameters["task_id"])
+                async for chunk in stream_chat_plan_handoff(self, target_id, event_sink=event_sink):
+                    yield chunk
+                return
         self.extra_context.pop("_full_plan_executor_delegate", None)
 
         queue: asyncio.Queue[Any] = asyncio.Queue()
@@ -1954,6 +1958,7 @@ class StructuredChatAgent:
                     requested_operation = str(safe_params.get("operation") or "").strip().lower()
                     allow_new_plan_rebind = bool(
                         self.extra_context.get("plan_new_requested")
+                        or self.extra_context.get("action_selection") == "model"
                     ) and created_plan_this_turn_id is None
 
                     if name == "plan_operation" and requested_operation == "create":
@@ -3095,13 +3100,24 @@ class StructuredChatAgent:
         self,
         user_message: str,
     ) -> tuple[RequestRoutingDecision, RequestTierProfile]:
-        decision = resolve_request_routing(
+        from .model_selection import resolve_model_routing
+        resolver = (resolve_model_routing if getattr(get_settings(), "chat_model_action_selection_enabled", False)
+                    else resolve_request_routing)
+        decision = resolver(
             message=user_message,
             history=self.history,
             context=self.extra_context,
             plan_id=self.plan_session.plan_id,
             current_task_id=self.extra_context.get("current_task_id"),
         )
+        if resolver is resolve_request_routing:
+            # Natural-language review/edit choices belong to the model, even
+            # while the legacy execution shortcuts remain enabled. Quoted
+            # paths such as review_outline.md are not review commands.
+            from dataclasses import replace
+            decision = replace(decision, plan_review_required=False, plan_optimize_required=False,
+                route_reason_codes=[code for code in decision.route_reason_codes
+                                    if code not in {'plan_review', 'plan_optimize'}])
         profile = build_request_tier_profile(
             decision,
             default_max_iterations=_resolve_deep_think_max_iterations(),
@@ -3309,7 +3325,13 @@ class StructuredChatAgent:
         yield _sse_message(final_payload)
 
     def _update_routing_context(self, routing_decision: RequestRoutingDecision) -> None:
+        from .model_selection import MODEL_SELECTION, update_model_context
+        if MODEL_SELECTION in routing_decision.route_reason_codes:
+            update_model_context(self, routing_decision)
+            return
         from app.services.plans.edit_policy import user_requested_plan_edit
+        self.extra_context.pop("action_selection", None)
+        self.extra_context.pop("model_plan_index", None)
         self._plan_tree_edit_allowed = bool(routing_decision.plan_create_required or
             user_requested_plan_edit(routing_decision.effective_user_message))
         self.extra_context.update(

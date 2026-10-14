@@ -3552,12 +3552,12 @@ def test_task_verifier_rejects_invalid_explicit_blocking_criteria_with_outputs(t
     )
 
     metadata = finalization.payload["metadata"]
-    assert finalization.final_status == "failed"
+    assert finalization.final_status == "needs_review"
     assert finalization.verification is not None
-    assert metadata["verification_status"] == "failed"
+    assert metadata["verification_status"] == "config_error"
     assert metadata["verification"]["blocking"] is True
-    assert metadata["verification"]["failures"][0]["failure_kind"] == "verification_config_error"
-    assert metadata["failure_kind"] == "contract_mismatch"
+    assert metadata["verification"]["config_errors"][0]["failure_kind"] == "verification_config_error"
+    assert metadata["failure_kind"] == "verification_config_error"
 
 
 def test_task_verifier_still_fails_config_error_when_no_output_evidence(tmp_path) -> None:
@@ -4248,3 +4248,16 @@ def test_manuscript_markdown_quality_rejects_textual_figures_without_embeds(tmp_
     failure = finalization.verification["failures"][0]
     assert failure["type"] == "manuscript_markdown_quality"
     assert "embedded_figures" in failure["message"]
+
+
+def test_literal_jsonl_file_count_is_a_rule_error_not_eighty_missing_files(tmp_path):
+    target=tmp_path/'raw_corpus.jsonl'
+    target.write_text(''.join(json.dumps({'synthetic':True,'id':i})+'\n' for i in range(80)))
+    node=PlanNode(id=16,plan_id=187,name='Collect records',metadata={'acceptance_criteria':{
+        'category':'file_data','blocking':True,'checks':[
+            {'type':'file_exists','path':str(target)},
+            {'type':'glob_count_at_least','path':str(target),'min_count':80}]}})
+    result=TaskVerificationService().finalize_payload(node,{'status':'completed','artifact_paths':[str(target)]},execution_status='completed')
+    assert result.final_status=='needs_review'
+    assert result.payload['metadata']['failure_kind']=='verification_config_error'
+    assert target.exists() and len(target.read_text().splitlines())==80

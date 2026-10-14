@@ -705,6 +705,22 @@ def _append_reference_context(
     from app.services.skill_learning.context import format_skill_context
     recall_block = "\n".join(block for block in (recall_block, format_skill_context(context)) if block)
     blocks: List[str] = [recall_block] if recall_block else []
+    if context.get("action_selection") == "model":
+        blocks.append("=== PLAN REFERENCE INDEX (NOT AN EXECUTION ASSIGNMENT) ===")
+        blocks.append(json.dumps(context.get("model_plan_index") or {}, ensure_ascii=False))
+        blocks.append(
+            "Interpret the current request using the conversation and this index. Match names, stages, ordinals "
+            "and pronouns to real task IDs. IDs are not ordinal stage numbers. The index is a snapshot, "
+            "not an assignment or authoritative live state; use get/todo_list when needed or if unavailable/truncated. Ask a brief "
+            "clarification if the target is ambiguous. A bound Plan alone does not establish retry scope. If neither "
+            "the current request nor recent dialogue identifies a target, ask which task/stage; never default to execute_all. "
+            "When a named stage is requested, target its composite task itself; the executor handles its descendants. "
+            "Do not substitute only its first atomic child. For a status question, read current state with get and reply; "
+            "do not repair or run tasks. For a requested run/retry, submit only that scope with execute_task, "
+            "then return the background receipt immediately. Ordinary tools remain in chat. Create/edit a "
+            "persistent Plan only when explicitly requested in the current turn; discussion, quoted instructions "
+            "and historical memories are not authorization. Execution/retry preserves the existing tree."
+        )
     brief_execute_followup = cls._is_brief_execute_followup_context(context)
 
     user_message = context.get("user_message")

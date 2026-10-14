@@ -73,7 +73,7 @@ const TOOL_META: Record<string, { icon: React.ReactNode; zh: string; en: string 
   graph_rag: { icon: <DatabaseOutlined />, zh: '查询本地小图谱', en: 'Querying local triples graph' },
   phagescope: { icon: <ExperimentOutlined />, zh: '运行 PhageScope', en: 'Running PhageScope' },
   result_interpreter: { icon: <DatabaseOutlined />, zh: '汇总分析结果', en: 'Interpreting results' },
-  plan_operation: { icon: <ProjectOutlined />, zh: '更新计划信息', en: 'Managing the plan' },
+  plan_operation: { icon: <ProjectOutlined />, zh: '处理计划操作', en: 'Working with the plan' },
 };
 
 // ---------------------------------------------------------------------------
@@ -134,6 +134,13 @@ function extractSemanticLabel(
   let label = localize(language, meta.zh, meta.en);
 
   switch (toolName) {
+    case 'plan_operation':
+      if (params.operation === 'create') label = localize(language, '创建计划', 'Creating a plan');
+      else if (params.operation === 'resolve_input') label = localize(language, '确认已有输入材料', 'Confirming existing inputs');
+      else if (['get', 'todo_list'].includes(params.operation)) label = localize(language, '查询计划状态', 'Reading plan status');
+      else if (['execute_task', 'execute_all'].includes(params.operation)) label = localize(language, '提交计划任务到后台', 'Submitting Plan tasks in background');
+      else if (params.operation === 'review') label = localize(language, '审核计划结构', 'Reviewing plan structure');
+      break;
     case 'web_search':
       if (params.query) {
         const clipped = String(params.query).slice(0, 60);

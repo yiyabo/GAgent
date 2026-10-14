@@ -38,6 +38,7 @@ def resume_info(row: dict) -> dict:
 
     result = {"run_id": row["run_id"], "session_id": row["session_id"],
               "status": row["status"], "can_resume": False, "reason_code": "not_terminal",
+              "automatic_resume_allowed": False,
               "reason": "任务尚未结束，请先等待或停止任务。"}
     if row["status"] not in {"failed", "cancelled"}:
         return result
@@ -65,14 +66,44 @@ def resume_info(row: dict) -> dict:
             return {**result, "reason_code": "reconciliation_required", "reason": "部分写入操作的结果尚未确认，需要先核对原任务的文件或外部操作。"}
     except (ValueError, RuntimeError, OSError):
         return {**result, "reason_code": "checkpoint_unavailable", "reason": "执行检查点损坏或已不可读取，无法直接继续。"}
-    return {**result, "can_resume": True, "reason_code": "ready", "reason": "将创建一条新任务继续执行；已完成步骤会在校验后复用。"}
+    automatic = (row['status'] == 'failed' and not (payload.get('context') or {}).get('resume_from_run_id')
+                 and row.get('error') in {'server restarted; run interrupted', 'worker lease expired; run interrupted'})
+    return {**result, "can_resume": True, "automatic_resume_allowed": automatic,
+            "reason_code": "ready", "reason": "将创建一次新的执行尝试；已完成步骤会在校验后复用。"}
 
 
 def annotate_unanswered_turns(messages: list, session_id: str, owner_id: str) -> None:
     """History keeps a continuation entry after cancellation with no final answer."""
     from app.repository.context_recall import terminal_turns_without_answer
+    from app.repository.chat_runs import get_chat_run
 
     users = {message.id: message for message in messages if message.role == 'user' and message.id is not None}
+    root_by_id = {key: key for key in users}
+    hidden = set()
+    # Older versions persisted each checkpoint retry as another user message.
+    # Collapse only proven continuations in this response; keep all DB evidence.
+    for identity, message in sorted(users.items()):
+        source_id = (message.metadata or {}).get('resume_from_run_id')
+        source = get_chat_run(str(source_id)) if source_id else None
+        parent_id = source.get('user_message_id') if source else None
+        parent = users.get(parent_id)
+        if (parent and source.get('session_id') == session_id and source.get('owner_id') == owner_id
+                and parent.content == message.content and parent_id < identity):
+            root_by_id[identity] = root_by_id[parent_id]
+            hidden.add(identity)
+    latest_by_root = {root: max(identity for identity, parent in root_by_id.items() if parent == root)
+                      for root in set(root_by_id.values())}
     for row in terminal_turns_without_answer(session_id, owner_id, list(users)):
-        message = users[row['user_message_id']]
-        message.metadata = {**(message.metadata or {}), 'resume_run_id': row['run_id'], 'resume_run_status': row['status']}
+        identity = row['user_message_id']
+        root = root_by_id[identity]
+        if latest_by_root[root] != identity:
+            continue
+        message = users[root]
+        error = str(row.get('error') or '')
+        if error in {'server restarted; run interrupted', 'worker lease expired; run interrupted'}:
+            error = '执行心跳中断，已完成的步骤已保留。'
+        message.metadata = {**(message.metadata or {}), 'resume_run_id': row['run_id'],
+                            'resume_run_status': row['status']}
+        if error:
+            message.metadata['resume_run_error'] = error
+    messages[:] = [message for message in messages if message.id not in hidden]

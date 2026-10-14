@@ -353,10 +353,12 @@ class PlanStatusResolver:
                 for alias in authoritative_publish_aliases
                 if canonical_artifact_path(plan_id, alias, session_id) is not None
             ]
+            from .input_discovery import existing_bindings
+            confirmed_inputs = existing_bindings(node, manifest_payload, metadata)
             missing_required_aliases = [
                 alias
                 for alias in canonical_required_aliases
-                if alias not in preflight.manifest_resolved_aliases
+                if alias not in preflight.manifest_resolved_aliases and alias not in confirmed_inputs
             ]
             published_aliases: List[str] = []
             missing_publish_aliases: List[str] = []

@@ -53,6 +53,7 @@ export interface ChatRunResumeInfo {
   session_id: string;
   status: string;
   can_resume: boolean;
+  automatic_resume_allowed?: boolean;
   reason_code: string;
   reason: string;
   message?: string;

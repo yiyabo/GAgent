@@ -315,6 +315,17 @@ class _ArtifactMethods:
         *,
         session_context: Optional[Dict[str, Any]],
     ) -> Tuple[VerificationFinalization, str]:
+        from .input_discovery import attach as attach_input_bindings, existing_bindings
+        attach_input_bindings(session_context or {}, finalization.payload)
+        discovery = (session_context or {}).get('artifact_input_discovery') or {}
+        confirmed = existing_bindings(node, self._get_artifact_manifest(plan_id, session_context),
+                                      finalization.payload.get('metadata') or {}) if discovery else {}
+        unresolved = [alias for alias in discovery.get('missing', []) if alias not in confirmed]
+        if unresolved and finalization.final_status == 'completed':
+            finalization.final_status = 'skipped'
+            finalization.payload.update(status='skipped', content='输入材料仍待确认：' + ', '.join(unresolved))
+            finalization.payload.setdefault('metadata', {}).update(
+                blocked_by_dependencies=True, missing_artifact_aliases=unresolved)
         finalization.payload = self._promote_workspace_artifacts_to_task_dir(
             node=node,
             payload=finalization.payload,
@@ -733,6 +744,18 @@ class _ArtifactMethods:
                     self._backfill_task_artifacts(plan_id, dep, manifest, session_context)
 
         resolved = resolve_manifest_aliases(manifest, required_aliases)
+        from .input_discovery import existing_bindings
+        input_bindings = existing_bindings(node, manifest)
+        try:
+            prior_payload = json.loads(node.execution_result or '{}') if isinstance(node.execution_result, str) else node.execution_result or {}
+            prior_bindings = (prior_payload.get('metadata') or {}).get('input_artifact_bindings') or {}
+            if isinstance(session_context, dict) and any(alias not in input_bindings for alias in prior_bindings):
+                session_context['input_binding_changed'] = True
+        except (ValueError, TypeError, AttributeError):
+            pass
+        resolved.update({alias: record['path'] for alias, record in input_bindings.items() if alias in required_aliases})
+        if isinstance(session_context, dict) and input_bindings:
+            session_context['input_artifact_bindings'] = input_bindings
         missing_for_resolution = [alias for alias in required_aliases if alias not in resolved]
         if not missing_for_resolution:
             return contract, resolved, [], {}
@@ -1405,6 +1428,8 @@ class _ArtifactMethods:
             if isinstance(value, dict):
                 for item_key, item_value in value.items():
                     lowered = str(item_key).strip().lower()
+                    if lowered in {'input_artifact_bindings', 'input_artifact_binding'}:
+                        continue
                     if lowered in {"artifact_paths", "produced_files", "session_artifact_paths"} and isinstance(
                         item_value, (list, tuple, set)
                     ):
@@ -1439,6 +1464,8 @@ class _ArtifactMethods:
             return {}
         result = payload.get("result")
         if not isinstance(result, dict):
+            return {}
+        if result.get('operation') == 'resolve_input':
             return {}
 
         extracted: Dict[str, Any] = {}

@@ -32,6 +32,8 @@ def agent_plan_edit_allowed(agent: Any) -> bool | None:
     selected = getattr(agent, "_plan_tree_edit_allowed", None)
     if selected is not None:
         return selected
+    if (getattr(agent, "extra_context", None) or {}).get("action_selection") == "model":
+        return None  # Chat semantics are selected by its model; never unlock an explicit False fence.
     message = getattr(agent, "_current_user_message", None)
     if message is None:
         return None  # legacy direct service callers have no chat turn

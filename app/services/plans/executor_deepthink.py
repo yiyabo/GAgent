@@ -152,6 +152,9 @@ class _DeepThinkMethods:
             if (repair_finalization is None and self._contract_repair_limit(config)
                 and not config.force_rerun) else None
         )
+        if (config.session_context or {}).get('input_binding_changed'):
+            prior_delivery_gap = None
+            repair_finalization = None
         try:
             retained_failure = repair_finalization or prior_delivery_gap
             self._repo.update_task(plan_id, node.id, status="running", execution_result=(
@@ -264,6 +267,10 @@ class _DeepThinkMethods:
             "This submits your answer; PlanExecutor independently checks OutputSpec and determines task completion.",
         ]
         constraints.extend(output_contract_lines)
+        from . import input_discovery
+        input_prompt = input_discovery.prompt(session_context)
+        if input_prompt:
+            constraints.append(input_prompt)
         if planning_document:
             constraints.append(PLANNING_DOCUMENT_SCOPE)
         # Extract tool names mentioned in the instruction and enforce priority
@@ -473,6 +480,8 @@ class _DeepThinkMethods:
 
         async def on_tool_result(tool: str, payload: Dict[str, Any]) -> None:
             nonlocal primary_execution_tool_failed
+            input_discovery.restore_receipt(session_context, node,
+                self._get_artifact_manifest(plan_id, session_context), payload)
             tool_name = str(tool or "").strip().lower()
             if tool_name in _PRIMARY_EXECUTION_TOOLS and payload.get("success") is False:
                 primary_execution_tool_failed = True
@@ -517,7 +526,13 @@ class _DeepThinkMethods:
         _on_stdout, _on_stderr = self._build_agent_stream_loggers(_job_id_for_stream)
 
         async def _tool_wrapper(tool_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
-            return await self._tool_executor.execute(
+            blocked = input_discovery.guard(session_context, tool_name, params)
+            if blocked:
+                return blocked
+            if tool_name == 'plan_operation' and params.get('operation') == 'resolve_input':
+                return input_discovery.bind(session_context, node,
+                    self._get_artifact_manifest(plan_id, session_context), params)
+            response = await self._tool_executor.execute(
                 tool_name,
                 params,
                 context=ToolExecutionContext(
@@ -537,6 +552,8 @@ class _DeepThinkMethods:
                     on_stderr=_on_stderr,
                 ),
             )
+            input_discovery.note_read(session_context, tool_name, params, response)
+            return response
 
         from .execution_budget import request_profile
         repair_resume = bool(repair_finalization and

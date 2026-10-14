@@ -473,7 +473,8 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => {
   client_message_id: clientMessageId,
   },
   };
-  source.get().addMessage(userMessage);
+  // A checkpoint continuation belongs to the existing user turn.
+  if (!metadata?.resume_from_run_id) source.get().addMessage(userMessage);
 
   // Optimistic Assistant Message
   const assistantMessageId = `msg_${clientMessageId}_assistant`;

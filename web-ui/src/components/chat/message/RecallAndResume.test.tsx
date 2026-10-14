@@ -24,6 +24,11 @@ describe('recall evidence and continuation controls',()=>{
     rerender(<ResumeRunAction sessionId="a" status="failed"/>);
     expect(screen.queryByRole('button')).toBeNull();
   });
+  it('retains the interruption reason beside the continuation action',()=>{
+    render(<ResumeRunAction runId="parent" sessionId="a" status="failed" error="执行心跳中断，已完成的步骤已保留。"/>);
+    expect(screen.getByRole('status').textContent).toContain('心跳中断');
+    expect(screen.getByRole('button',{name:'继续此任务'})).toBeTruthy();
+  });
   it('dispatches once while pending and displays the explicit refusal reason',async()=>{
     let reject!: (error:Error)=>void;
     resume.mockReturnValue(new Promise((_,r)=>reject=r));

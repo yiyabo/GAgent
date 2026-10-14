@@ -78,6 +78,19 @@ def _save_run_user_message(
     session_id: str,
     owner_id: str,
 ) -> None:
+    source_id = (request.context or {}).get("resume_from_run_id")
+    if source_id:
+        source = get_chat_run(str(source_id))
+        try:
+            same_message = json.loads((source or {}).get('request_json') or '{}').get('message') == request.message
+        except (ValueError, TypeError):
+            same_message = False
+        if (source and source.get("session_id") == session_id and source.get("owner_id") == owner_id
+                and source.get('status') in {'failed', 'cancelled'} and same_message
+                and isinstance(source.get("user_message_id"), int)):
+            # A continuation is another attempt at the original turn, not a new user message.
+            set_chat_run_user_message_id(run_id, source["user_message_id"])
+            return
     user_message_metadata = (
         {"client_message_id": request.client_message_id}
         if request.client_message_id

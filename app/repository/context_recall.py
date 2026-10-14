@@ -130,7 +130,10 @@ def terminal_turns_without_answer(session_id: str, owner_id: str, message_ids: l
         if not conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='chat_runs'").fetchone():
             return []
         placeholders = ','.join('?' for _ in message_ids)
-        return [dict(row) for row in conn.execute(f"""SELECT run_id,status,user_message_id FROM chat_runs
+        return [dict(row) for row in conn.execute(f"""SELECT run_id,status,user_message_id,error FROM chat_runs
             WHERE session_id=? AND owner_id=? AND assistant_message_id IS NULL
-            AND status IN ('failed','cancelled') AND user_message_id IN ({placeholders})""",
+            AND status IN ('failed','cancelled') AND user_message_id IN ({placeholders})
+            AND NOT EXISTS (SELECT 1 FROM chat_runs newer WHERE newer.session_id=chat_runs.session_id
+                AND newer.user_message_id=chat_runs.user_message_id AND newer.rowid>chat_runs.rowid)
+            ORDER BY rowid ASC""",
             [session_id,owner_id,*message_ids]).fetchall()]

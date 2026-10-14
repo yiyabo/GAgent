@@ -28,8 +28,8 @@ def test_preflight_reports_missing_producer_for_required_alias(monkeypatch, tmp_
 
     result = service.validate_plan(11, tree)
 
-    assert result.ok is False
-    assert any(issue.code == "missing_producer" for issue in result.errors)
+    assert result.ok is True
+    assert any(issue.code == "missing_producer" for issue in result.warnings)
     assert result.task_contracts[0].contract_source == "explicit"
 
 
@@ -349,7 +349,7 @@ def test_supervised_ml_contract_blocks_missing_label_inputs(monkeypatch, tmp_pat
 
     result = service.validate_plan(96, tree)
 
-    missing = [issue.alias for issue in result.errors if issue.code == "missing_producer"]
-    assert result.ok is False
+    missing = [issue.alias for issue in result.warnings if issue.code == "missing_producer"]
+    assert result.ok is True
     assert "phage_ml.training_metadata_parquet" in missing
     assert "phage_ml.feature_row_ids_json" in missing

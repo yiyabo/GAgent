@@ -949,6 +949,7 @@ NATIVE_TOOL_CONTENT: Dict[str, Dict[str, Any]] = {
             "Use create only for explicitly requested persistent Plans. After creation return its actual structure; do not automatically review, optimize or execute. Review is read-only and does not authorize edits or execution. "
             "Use bind to switch the current session to a different plan (e.g. '切换到 plan X', '绑定 plan X'). "
             "Use get/todo_list for status, review for requested assessment, and optimize only for explicit edits. Execution/retry preserves the original task tree and output requirements. "
+            "For missing-input/file questions use get and file_operations; review scores Plan structure, not artifact contents. In task input reconciliation, resolve_input confirms an inspected candidate without editing the tree. "
             "Research with web_search first only when latest external evidence materially affects the plan. "
             "For optimize, use concrete change objects such as add_task, update_task, update_description, "
             "delete_task, or reorder_task; keep update_task fields at the top level. If changes are omitted, optimize may auto-generate them from the latest rubric review. "
@@ -959,7 +960,7 @@ NATIVE_TOOL_CONTENT: Dict[str, Dict[str, Any]] = {
             "properties": {
                 "operation": {
                     "type": "string",
-                    "enum": ["create", "bind", "review", "optimize", "get", "execute_all", "execute_task", "todo_list", "update_task", "recompute"],
+                    "enum": ["create", "bind", "review", "optimize", "get", "execute_all", "execute_task", "todo_list", "update_task", "recompute", "resolve_input"],
                     "description": "Plan operation to perform. Use execute_all to run all pending tasks in background. Use bind to switch to a different plan.",
                 },
                 "title": {"type": "string", "description": "Plan title (for create)."},
@@ -967,6 +968,9 @@ NATIVE_TOOL_CONTENT: Dict[str, Dict[str, Any]] = {
                 "changed_task_ids": {"type":"array","items":{"type":"integer"}},
                 "changed_aliases": {"type":"array","items":{"type":"string"}},
                 "target_task_ids": {"type":"array","items":{"type":"integer"}},
+                "input_alias": {"type":"string", "description":"Pending input alias to confirm during task input reconciliation."},
+                "candidate_id": {"type":"string", "description":"Candidate ID from task input inventory; read its contents before resolve_input."},
+                "reason": {"type":"string", "description":"Explain why the inspected candidate content satisfies the required input."},
                 "plan_id": {"type": "integer", "description": "Plan ID (for review/optimize/get)."},
                 "tasks": {
                     "type": "array",

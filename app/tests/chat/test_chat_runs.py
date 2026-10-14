@@ -149,6 +149,6 @@ def test_fix_stale_chat_runs_on_startup(memory_chat_run_db: sqlite3.Connection) 
     assert n == 1
     row = cr.get_chat_run("run_stale")
     assert row["status"] == "failed"
-    assert "restarted" in (row.get("error") or "").lower()
+    assert "lease expired" in (row.get("error") or "").lower()
     evs = cr.fetch_events_after("run_stale", -1)
     assert any(p.get("type") == "error" for _, p in evs)
