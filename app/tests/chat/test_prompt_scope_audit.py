@@ -171,7 +171,7 @@ async def test_synthesis_preserves_long_live_request_and_bound_task_instruction(
     instruction = "原任务说明 " * 150 + "原有章节数量必须保留。"
     task = TaskExecutionContext(task_id=4, task_instruction=instruction)
     steps = [ThinkingStep(iteration=1, thought="The existing evidence is sufficient to report the current state.",
-                          action=None, observation=None, status="done")]
+                          action=None, action_result=None, self_correction=None, status="done")]
     if mode == "fallback":
         await synthesis._generate_fallback_from_evidence(agent, user_query=query,
             evidence_snippets="Existing records", steps=steps, task_context=task)
