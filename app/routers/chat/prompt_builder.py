@@ -12,6 +12,7 @@ from app.services.response_style import (
     PROFESSIONAL_STYLE_INSTRUCTION,
     sanitize_professional_response_text,
 )
+from .model_selection import resolve_model_routing
 from .request_routing import resolve_request_routing
 
 logger = logging.getLogger(__name__)
@@ -45,7 +46,9 @@ def agent_history_limit(agent: Any) -> int:
 
 def should_use_deep_think(agent: Any, message: str) -> bool:
     """Check if the router would select a DeepThink engine path."""
-    decision = resolve_request_routing(
+    resolver = (resolve_model_routing if getattr(get_settings(), "chat_model_action_selection_enabled", False)
+                else resolve_request_routing)
+    decision = resolver(
         message=message,
         history=getattr(agent, "history", None),
         context=getattr(agent, "extra_context", None),

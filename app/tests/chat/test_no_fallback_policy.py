@@ -1259,7 +1259,7 @@ def test_deep_think_explicit_new_plan_reuses_created_plan_on_second_create(
     assert agent.plan_session.plan_id == 99
 
 
-def test_deep_think_bound_new_subject_plan_request_requires_confirmation(
+def test_legacy_bound_new_subject_plan_request_requires_confirmation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     tool_calls: list[tuple[str, dict]] = []
@@ -1284,6 +1284,13 @@ def test_deep_think_bound_new_subject_plan_request_requires_confirmation(
         "canonical_ref": "/tmp/old_dataset",
         "display_ref": "/tmp/old_dataset",
     }
+
+    from app.routers.chat.request_routing import resolve_request_routing, build_request_tier_profile
+    # Only explicit legacy adapters have the old subject-conflict gate.
+    def legacy_route(message):
+        decision = resolve_request_routing(message=message, context=agent.extra_context, plan_id=42)
+        return decision, build_request_tier_profile(decision, default_max_iterations=100)
+    agent._resolve_request_routing = legacy_route
 
     events = asyncio.run(
         _collect_deep_think_events(agent, "Create a plan for /tmp/new_dataset analysis")

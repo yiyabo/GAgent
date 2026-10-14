@@ -1104,6 +1104,7 @@ async def _get_plan(plan_id: Optional[int]) -> Dict[str, Any]:
     
     try:
         from app.repository.plan_repository import PlanRepository
+        from app.services.plans.read_projection import execution_summary
         
         repo = PlanRepository()
         plan_tree = repo.get_plan_tree(plan_id)
@@ -1120,6 +1121,7 @@ async def _get_plan(plan_id: Optional[int]) -> Dict[str, Any]:
                 "parent_id": node.parent_id,
                 "dependencies": node.dependencies or [],
                 "depth": node.depth,
+                "last_execution": execution_summary(node),
             }
             
             parent_key = node.parent_id
@@ -1153,6 +1155,7 @@ async def _get_plan(plan_id: Optional[int]) -> Dict[str, Any]:
             "pending_tasks": pending_tasks,
             "completed_tasks": completed_tasks,
             "task_tree": task_tree,
+            "state_note": "status is the current task state; last_execution describes the previous result and may still be failed while a retry is running. get is read-only and does not repair or execute tasks.",
             "message": f"Plan '{plan_tree.title}' has {total_tasks} tasks ({pending_tasks} pending, {completed_tasks} completed).",
         }
         

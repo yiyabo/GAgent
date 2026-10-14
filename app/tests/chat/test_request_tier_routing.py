@@ -286,12 +286,15 @@ def test_phagescope_xlsx_subject_does_not_rewrite_create_plan_to_deep_profile() 
     assert structured.actions[0].name == "create_plan"
 
 
-def test_phagescope_dataset_understanding_rewrites_llm_create_plan_to_deep_profile() -> None:
+def test_legacy_phagescope_dataset_understanding_rewrites_llm_create_plan_to_deep_profile() -> None:
     agent = StructuredChatAgent.__new__(StructuredChatAgent)
     agent.plan_session = SimpleNamespace(plan_id=None)
     agent.plan_tree = None
     agent.extra_context = {}
     agent.history = []
+    # Legacy adapters retain declared routing; normal turns use model_selection.
+    agent._resolve_request_routing = lambda message: (resolve_request_routing(
+        message=message, context=agent.extra_context), None)
     agent.session_id = "session-phagescope-dataset"
     agent.conversation_id = None
     agent.max_history_messages = 80
@@ -1049,7 +1052,7 @@ def test_explicit_execution_still_overrides_existing_image_display() -> None:
     assert decision.request_route_mode == "auto_deepthink"
 
 
-def test_process_unified_stream_reuses_recent_image_without_starting_deep_think() -> None:
+def test_legacy_process_unified_stream_reuses_recent_image_without_starting_deep_think() -> None:
     agent = StructuredChatAgent.__new__(StructuredChatAgent)
     agent.plan_session = SimpleNamespace(plan_id=None)
     agent.extra_context = {
@@ -1066,6 +1069,9 @@ def test_process_unified_stream_reuses_recent_image_without_starting_deep_think(
         ]
     }
     agent.history = []
+    # Legacy adapters retain declared routing; normal turns use model_selection.
+    agent._resolve_request_routing = lambda message: (resolve_request_routing(
+        message=message, context=agent.extra_context), None)
     agent.session_id = None
     agent.llm_service = object()
 
@@ -1084,7 +1090,7 @@ def test_process_unified_stream_reuses_recent_image_without_starting_deep_think(
     assert payload["payload"]["metadata"]["artifact_gallery"][0]["path"] == "tool_outputs/run_2/figure.png"
 
 
-def test_process_unified_stream_asks_for_clarification_when_multiple_recent_images_match() -> None:
+def test_legacy_process_unified_stream_asks_for_clarification_when_multiple_recent_images_match() -> None:
     agent = StructuredChatAgent.__new__(StructuredChatAgent)
     agent.plan_session = SimpleNamespace(plan_id=None)
     agent.extra_context = {
@@ -1102,6 +1108,9 @@ def test_process_unified_stream_asks_for_clarification_when_multiple_recent_imag
         ]
     }
     agent.history = []
+    # Legacy adapters retain declared routing; normal turns use model_selection.
+    agent._resolve_request_routing = lambda message: (resolve_request_routing(
+        message=message, context=agent.extra_context), None)
     agent.session_id = None
     agent.llm_service = object()
 

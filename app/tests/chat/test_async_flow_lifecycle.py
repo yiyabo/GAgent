@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional
 import pytest
 
 from app.routers.chat.agent import StructuredChatAgent
+from app.routers.chat.request_routing import resolve_request_routing, build_request_tier_profile
 
 
 # ---------------------------------------------------------------------------
@@ -42,6 +43,12 @@ def _build_stub_agent(
     agent.history = []
     agent.session_id = session_id
     agent.llm_service = object()
+    # Explicit legacy adapter: freezes its presentation SSE contract only.
+    # Fresh model-led turns are covered in test_model_selected_actions.
+    def legacy_route(message):
+        decision = resolve_request_routing(message=message, context=agent.extra_context)
+        return decision, build_request_tier_profile(decision, default_max_iterations=100)
+    agent._resolve_request_routing = legacy_route
     return agent
 
 
@@ -75,7 +82,7 @@ async def _collect_chunks(
 class TestProcessUnifiedStreamLifecycle:
     """Core lifecycle guarantees for process_unified_stream."""
 
-    def test_image_shortcut_terminates_with_final_event(self) -> None:
+    def test_legacy_image_shortcut_terminates_with_final_event(self) -> None:
         """The image-reuse fast path completes cleanly."""
         agent = _build_stub_agent(
             extra_context={
@@ -101,7 +108,7 @@ class TestProcessUnifiedStreamLifecycle:
         final = _parse_sse(chunks[-1])
         assert final["type"] == "final"
 
-    def test_stream_completes_within_reasonable_time(self) -> None:
+    def test_legacy_stream_completes_within_reasonable_time(self) -> None:
         """Image shortcut should not take more than 1 second end-to-end."""
         agent = _build_stub_agent(
             extra_context={
@@ -128,7 +135,7 @@ class TestProcessUnifiedStreamLifecycle:
         assert elapsed < 1.0, f"Stream took {elapsed:.3f}s, should be < 1s"
         assert any(_parse_sse(c)["type"] == "final" for c in chunks)
 
-    def test_clarification_path_terminates_with_final(self) -> None:
+    def test_legacy_clarification_path_terminates_with_final(self) -> None:
         """Multi-image disambiguation yields a final event."""
         agent = _build_stub_agent(
             extra_context={
