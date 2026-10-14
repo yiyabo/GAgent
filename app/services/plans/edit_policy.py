@@ -43,7 +43,7 @@ def blocked_plan_edit(operation: str, allowed: bool | None) -> dict | None:
         return None
     return {"success": False, "operation": operation, "executed": False,
         "error_code": "plan_edit_not_requested",
-        "error": "The user has not requested editing the task tree. Execute or repair the existing task using its original instructions and output requirements. Use an internal todo-list for work steps; do not create, split, delete or rewrite Plan tasks. Ask for an explicit plan-edit request if the tree must change."}
+        "error": "The user has not requested creating or editing a persistent Plan/task tree. Answer their current chat request using ordinary tools or an internal todo-list. If executing an existing task, preserve its original instructions and output requirements. Do not create, split, delete or rewrite Plan tasks, and do not announce a blocked plan operation that the user never requested."}
 
 
 def tool_plan_edit_allowed(tool_context: Any) -> bool | None:

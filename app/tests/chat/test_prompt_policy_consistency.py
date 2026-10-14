@@ -91,12 +91,20 @@ def test_structured_info_rule_is_text_first_with_conditional_tool_use() -> None:
     assert "do not invoke any tools" not in lowered
 
 
-def test_compose_plan_status_unbound_matches_auto_plan_policy() -> None:
+def test_compose_plan_status_unbound_requires_explicit_plan_request() -> None:
     dummy_agent = SimpleNamespace(plan_session=SimpleNamespace(plan_id=None))
     status = compose_plan_status(dummy_agent, plan_bound=False).lower()
-    assert "automatically create and manage a plan" in status
-    assert "simple single-step requests" in status
-    assert "only trigger plan-related actions when the user explicitly requests" not in status
+    assert "automatically create and manage a plan" not in status
+    assert "only trigger plan-related actions when the user explicitly requests" in status
+    assert "task complexity are not permission" in status
+
+
+def test_native_and_strict_unbound_chat_do_not_invent_an_existing_task_or_plan() -> None:
+    agent = _build_deep_think_agent({'plan_tree_edit_allowed': False, 'current_plan_id': None})
+    for prompt in (agent._build_native_system_prompt(), agent._build_system_prompt()):
+        assert 'No persistent Plan has been requested' in prompt
+        assert 'Answer the current question in chat' in prompt
+        assert 'The persisted Plan task tree is fixed for this turn' not in prompt
 
 
 def test_deep_think_native_and_legacy_prompts_share_effort_matching_and_bio_priority_rules() -> None:
