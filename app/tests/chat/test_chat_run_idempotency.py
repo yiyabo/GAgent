@@ -246,3 +246,15 @@ async def test_sse_with_keepalive_emits_comment_on_idle() -> None:
         lines.append(line)
     assert lines[-1] == "data: done\n\n"
     assert any(line == ": keepalive\n\n" for line in lines)
+
+
+async def test_checkpoint_resume_reuses_original_user_message(idem_db, worker_gate):
+    first=run_routes.start_background_chat_run(_req(cmid='first'),session_id='sess_unit',owner_id='u1')
+    original=cr.get_chat_run(first)['user_message_id']
+    cr.mark_chat_run_finished(first,'failed',error='worker lease expired; run interrupted')
+    request=_req(cmid='second')
+    request.context={'resume_from_run_id':first}
+    second=run_routes.start_background_chat_run(request,session_id='sess_unit',owner_id='u1')
+    assert second!=first
+    assert cr.get_chat_run(second)['user_message_id']==original
+    assert _user_message_count(idem_db)==1

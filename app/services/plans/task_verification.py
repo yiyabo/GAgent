@@ -778,6 +778,23 @@ class TaskVerificationService(_CueMethods, _PathMethods, _CheckMethods, _Discove
             metadata["execution_reported_status"] = normalized_execution_status
             normalized_payload["metadata"] = metadata
 
+        if (self._failures_are_verification_config_errors(failures)
+                and self._has_output_evidence(local_artifact_paths)
+                and normalized_execution_status in _COMPLETED_LIKE):
+            # Preserve outputs without accepting an impossible or malformed rule.
+            # Rewriting the same files cannot repair the verifier's configuration.
+            config_errors = [dict(item) for item in failures]
+            metadata.update(verification_status='config_error', verification_config_error=True,
+                            verification_config_errors=config_errors, failure_kind='verification_config_error',
+                            verification_authoritative=False)
+            metadata.pop('contract_diff', None)
+            metadata.pop('plan_patch_suggestion', None)
+            verification.update(status='config_error', config_errors=config_errors, failures=[])
+            verification.pop('contract_diff', None)
+            if isinstance(metadata.get('artifact_verification'), dict):
+                metadata['artifact_verification'].update(status='config_error', tags=['verification_config_error'])
+            normalized_payload.update(status='needs_review', metadata=metadata,
+                content='文件已保留，但验收规则配置无效，尚不能确认完成。请修正验收规则后复验。\n\n' + str(normalized_payload.get('content') or ''))
         return VerificationFinalization(
             final_status=str(normalized_payload["status"]),
             execution_status=normalized_execution_status,
@@ -1130,6 +1147,9 @@ class TaskVerificationService(_CueMethods, _PathMethods, _CheckMethods, _Discove
         ]
 
         resolved_require = resolve_manifest_aliases(manifest_payload, require_aliases) if require_aliases else {}
+        from .input_discovery import existing_bindings
+        resolved_require.update({alias: record['path'] for alias, record in
+            existing_bindings(node, manifest_payload, metadata).items() if alias in require_aliases})
         satisfied_require_aliases: List[str] = []
         missing_require_aliases: List[str] = []
         for alias in require_aliases:

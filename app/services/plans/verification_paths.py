@@ -613,6 +613,8 @@ class _PathMethods:
             if isinstance(value, dict):
                 for item_key, item_value in value.items():
                     lowered = str(item_key).strip().lower()
+                    if lowered in {'input_artifact_bindings', 'input_artifact_binding'}:
+                        continue
                     if lowered == "artifact_paths" and isinstance(item_value, (list, tuple, set)):
                         for item in item_value:
                             _add(item)

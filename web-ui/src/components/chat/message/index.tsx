@@ -598,7 +598,7 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
             );
           })()}
           {type === 'assistant' && <RecallReferences context={(metadata as any)?.recall_context} />}
-          <ResumeRunAction runId={type === 'assistant' ? chatRunIdFromMeta : (metadata as any)?.resume_run_id} sessionId={effectiveSessionId} status={type === 'assistant' ? status : (metadata as any)?.resume_run_status} />
+          <ResumeRunAction runId={type === 'assistant' ? chatRunIdFromMeta : (metadata as any)?.resume_run_id} sessionId={effectiveSessionId} status={type === 'assistant' ? status : (metadata as any)?.resume_run_status} error={(metadata as any)?.resume_run_error} />
         </div>
       </div>
 

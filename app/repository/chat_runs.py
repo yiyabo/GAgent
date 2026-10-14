@@ -373,7 +373,7 @@ def get_last_event_seq(run_id: str) -> int:
     return int(row.get("last_event_seq") or -1)
 
 
-_STALE_RUN_ERROR = "server restarted; run interrupted"
+_STALE_RUN_ERROR = "worker lease expired; run interrupted"
 
 DEFAULT_LEASE_TTL_SECONDS = 30
 
@@ -537,7 +537,8 @@ def reap_expired_chat_runs(*, ttl_seconds: int = DEFAULT_LEASE_TTL_SECONDS) -> i
                 if transition_chat_run_status(conn, rid, "failed", error=_STALE_RUN_ERROR):
                     _append_event(conn, rid, {
                         "type": "error",
-                        "message": "Server restarted; this run was interrupted.",
+                        "message": "执行心跳超时，本轮已中断。已完成的步骤会保留。",
+                        "error_code": "worker_lease_expired",
                         "run_interrupted": True,
                     })
                     n += 1

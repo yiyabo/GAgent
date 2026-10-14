@@ -138,3 +138,19 @@ def test_profile_and_project_candidates_cannot_starve_each_other(recall_db):
     selected = recall('a','lysin')['memories']
     assert any(row['scope'] == 'project' for row in selected)
     assert any(row['id'] == 'profile' for row in selected)
+
+
+def test_history_collapses_proven_legacy_continuations_and_keeps_last_error(recall_db, monkeypatch):
+    from app.services.run_resume import annotate_unanswered_turns
+    roots=[SimpleNamespace(id=i,role='user',content='explain the missing input',metadata={}) for i in [1,2,3]]
+    roots[1].metadata={'resume_from_run_id':'r1'}
+    roots[2].metadata={'resume_from_run_id':'r2'}
+    sources={'r1':{'user_message_id':1,'session_id':'a','owner_id':'u'},
+             'r2':{'user_message_id':2,'session_id':'a','owner_id':'u'}}
+    monkeypatch.setattr('app.repository.chat_runs.get_chat_run',lambda r:sources[r])
+    monkeypatch.setattr('app.repository.context_recall.terminal_turns_without_answer',lambda *a:[
+        {'run_id':f'r{i}','user_message_id':i,'status':'failed','error':'server restarted; run interrupted'} for i in [1,2,3]])
+    annotate_unanswered_turns(roots,'a','u')
+    assert len(roots)==1 and roots[0].id==1
+    assert roots[0].metadata['resume_run_id']=='r3'
+    assert '心跳' in roots[0].metadata['resume_run_error']

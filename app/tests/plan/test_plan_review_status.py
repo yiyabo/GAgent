@@ -236,3 +236,35 @@ def test_evaluate_plan_rubric_uses_sync_streaming_for_builtin_client_inside_runn
     assert calls["stream"] == 1
     assert result.feedback.get("status") != "evaluation_unavailable"
     assert result.overall_score > 0
+
+
+def test_review_keeps_event_loop_and_heartbeat_available(monkeypatch):
+    import threading
+    from contextvars import ContextVar
+    tree=_build_review_tree();repo=_RepoStub(tree)
+    monkeypatch.setattr('app.repository.plan_repository.PlanRepository',lambda:repo)
+    main_thread=threading.get_ident();entered=threading.Event();release=threading.Event()
+    marker=ContextVar('review_test_context',default=None)
+    def slow_review(*args,**kwargs):
+        assert threading.get_ident()!=main_thread
+        assert marker.get()=='run-owner'
+        entered.set()
+        assert release.wait(2)
+        raise RuntimeError('simulated evaluator failure')
+    monkeypatch.setattr('app.services.plans.plan_rubric_evaluator.evaluate_plan_rubric',slow_review)
+    async def run():
+        handle=marker.set('run-owner')
+        task=asyncio.create_task(_review_plan(tree.id))
+        try:
+            for _ in range(50):
+                if entered.is_set():break
+                await asyncio.sleep(.005)
+            assert entered.is_set(), 'review blocked the async heartbeat loop'
+            # Heartbeats/control callbacks remain schedulable while the model waits.
+            tick=asyncio.Event();asyncio.get_running_loop().call_soon(tick.set)
+            await asyncio.wait_for(tick.wait(),.1)
+        finally:
+            release.set();marker.reset(handle)
+            result=await task
+        assert result['success'] is False
+    asyncio.run(run())

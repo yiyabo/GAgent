@@ -130,7 +130,7 @@ export async function recoverAfterStreamFailure(options: StreamRecoveryOptions):
         }
         if (await restoreFromHistory()) return true;
         const info = await chatApi.getResumeInfo(runId, apiSessionId);
-        if (!info.can_resume) return false;
+        if (!info.can_resume || info.automatic_resume_allowed === false) return false;
         autoResumedRunIds.add(runId);
         autoResumeCount += 1;
         keepPending('服务端已恢复，正在从断点自动续跑…');

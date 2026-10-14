@@ -118,6 +118,15 @@ describe('recoverAfterStreamFailure stage 3 (auto resume from checkpoint)', () =
     expect(first.autoResumeFromCheckpoint).toHaveBeenCalledTimes(1);
   });
 
+  it('does not automatically restart a continuation that failed again', async () => {
+    getResumeInfo.mockResolvedValue({ can_resume: true, automatic_resume_allowed: false });
+    const opts = makeOptions();
+    const pending = recoverAfterStreamFailure(opts as any);
+    await vi.advanceTimersByTimeAsync(45000);
+    await expect(pending).resolves.toBe(false);
+    expect(opts.autoResumeFromCheckpoint).not.toHaveBeenCalled();
+  });
+
   it('stops immediately when the run is definitively not resumable', async () => {
     getResumeInfo.mockResolvedValue({ can_resume: false, reason: 'already finished' });
     const opts = makeOptions();

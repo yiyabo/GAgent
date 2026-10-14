@@ -45,6 +45,7 @@ describe('explicit durable continuation', () => {
     expect(postChatRun).not.toHaveBeenCalled();
     expect(streamRunEvents).toHaveBeenCalledWith('server-A','child',-1);
     expect(store.inputText).toBe('Unsent draft');
+    expect(store.messages.filter((m:any)=>m.type==='user')).toHaveLength(0);
     expect(store.messages.find((m:any)=>m.type==='assistant').metadata).toMatchObject({chat_run_id:'child',resume_from_run_id:'parent',status:'completed'});
   });
   it('retains a cancelled child as failed UI status so continuation remains available', async () => {

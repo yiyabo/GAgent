@@ -194,7 +194,14 @@ def bind(executor,plan_id,node,cfg):
     contract=resolve_artifact_contract_with_provenance(task_name=node.name,instruction=node.instruction or '',metadata=node.metadata)
     required=contract.requires()
     inputs={a:manifest['artifacts'][a]['artifact_version_id'] for a in required if a in manifest['artifacts'] and manifest['artifacts'][a].get('artifact_version_id')}
+    from .input_discovery import existing_bindings
+    confirmed_inputs=existing_bindings(node,manifest)
+    for record in confirmed_inputs.values():
+        alias=record.get('source_alias');version=record.get('source_version_id')
+        if alias and version:inputs[alias]=version
     source_inputs={}
+    for alias,record in confirmed_inputs.items():
+        source_inputs[alias]={'source':record['source_path'],'blob_id':record['sha256'],'path':record['path']}
     raw=(node.metadata or {}).get('source_inputs',{})
     for name,path in raw.items() if isinstance(raw,dict) else []:
         blob,immutable=snapshot(Path(path),canonical_plan_root(plan_id,session));source_inputs[name]={'source':str(path),'blob_id':blob,'path':immutable}

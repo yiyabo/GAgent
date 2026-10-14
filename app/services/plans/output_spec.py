@@ -349,6 +349,8 @@ def seed_task_output_snapshot(
 def is_readonly_output_probe(tool_name: str, parameters: Any) -> bool:
     """Use the existing tool-role metadata and the mixed file operation mode."""
     tool_name = str(tool_name or "").strip().lower()
+    if tool_name == 'plan_operation' and isinstance(parameters, dict) and parameters.get('operation') == 'resolve_input':
+        return True  # Confirming an existing input does not produce an output.
     if tool_name == "file_operations":
         parameters = parameters if isinstance(parameters, dict) else {}
         return str(parameters.get("operation") or "").lower() in {

@@ -521,12 +521,16 @@ async def _review_plan(plan_id: Optional[int], tool_context: Optional[Any] = Non
         # -----------------------------
         # Rubric evaluation (strict, English)
         # -----------------------------
-        rubric_result = evaluate_plan_rubric(
+        rubric_result = await asyncio.to_thread(
+            evaluate_plan_rubric,
             plan_tree,
             evaluator_provider="qwen",
             evaluator_model="qwen3.7-max",
             model_provider=getattr(tool_context, "model_provider", None) if tool_context is not None else None,
         )
+
+        from app.services.run_budget import check_run_active
+        check_run_active()
 
         # Persist evaluation into plan metadata (merge, do not overwrite).
         merged_meta: Dict[str, Any] = dict(getattr(plan_tree, "metadata", None) or {})
@@ -1122,6 +1126,8 @@ async def _get_plan(plan_id: Optional[int]) -> Dict[str, Any]:
                 "dependencies": node.dependencies or [],
                 "depth": node.depth,
                 "last_execution": execution_summary(node),
+                "artifact_contract": ((node.metadata or {}).get('output_spec') or {}).get('artifact_contract')
+                    or (node.metadata or {}).get('artifact_contract') or {},
             }
             
             parent_key = node.parent_id
@@ -1454,6 +1460,7 @@ execute_all launches a background job that handles all tasks automatically in de
 with progress tracking and error handling. It returns a job_id for real-time monitoring.
 For specific tasks use operation="execute_task" and target_task_ids. All plan task execution
 is submitted to background jobs; return the job receipt immediately and let the user keep chatting.
+For missing-input/file questions use get and file_operations to inspect actual materials. Review scores Plan structure; it does not inspect artifact contents. During task input reconciliation, resolve_input confirms a candidate only after reading it; it never edits the tree.
 Use execute_all only for an explicit whole-plan request. A short "开始吧" or "let's go" follows the established target scope; it does not select all tasks or override a recently named task.
 
 BIND operation:
@@ -1500,7 +1507,7 @@ Legacy compatibility:
             "operation": {
                 "type": "string",
                 "description": "Operation type",
-                "enum": ["create", "bind", "review", "optimize", "get", "todo_list", "execute_all", "execute_task", "update_task", "recompute"],
+                "enum": ["create", "bind", "review", "optimize", "get", "todo_list", "execute_all", "execute_task", "update_task", "recompute", "resolve_input"],
             },
             "title": {
                 "type": "string",
@@ -1531,6 +1538,9 @@ Legacy compatibility:
             "changed_task_ids": {"type":"array","items":{"type":"integer"}},
             "changed_aliases": {"type":"array","items":{"type":"string"}},
             "target_task_ids": {"type":"array","items":{"type":"integer"}},
+            "input_alias": {"type":"string", "description":"Pending input alias to confirm during task input reconciliation."},
+            "candidate_id": {"type":"string", "description":"Candidate ID from task input inventory; read its contents before resolve_input."},
+            "reason": {"type":"string", "description":"Explain why the inspected candidate content satisfies the required input."},
             "plan_id": {
                 "type": "integer",
                 "description": "Plan ID (required for review, optimize, get, todo_list)",

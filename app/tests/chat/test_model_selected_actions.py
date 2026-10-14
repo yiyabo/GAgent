@@ -296,3 +296,12 @@ def test_ordinary_file_work_stays_in_chat_and_preserves_tool_receipt(monkeypatch
     assert operations == ["file_operations"] and len(provider.calls) == 2
     assert events[-1]["type"] == "final"
     assert "background" not in events[-1]["payload"]["metadata"].get("termination_reason", "")
+
+
+def test_quoted_artifact_error_does_not_require_a_plan_rubric_review():
+    query = ("Execution failed. Artifact preflight failed for plan #187: Task #16 requires artifact alias "
+             "'phage_depoly.review_outline_md', but no in-plan producer or canonical manifest entry was found. "
+             "但是这个不是缺少一个嘛？")
+    decision = resolve_model_routing(message=query, plan_id=187, current_task_id=16)
+    assert not decision.plan_review_required and not decision.plan_execute_required
+    assert decision.route_reason_codes == [MODEL_SELECTION]

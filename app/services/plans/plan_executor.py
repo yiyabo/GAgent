@@ -689,6 +689,9 @@ class PlanExecutor(_ArtifactMethods, _DelegateMethods, _DeepThinkMethods):
             if config.session_context is None:
                 config.session_context = {}
             session_context = config.session_context if isinstance(config.session_context, dict) else {}
+            session_context.pop('artifact_input_discovery', None)
+            session_context.pop('input_artifact_bindings', None)
+            session_context.pop('input_binding_changed', None)
             from app.services.memory.context_recall import hydrate_context
             hydrate_context(session_context, session_context.get("session_id"),
                             session_context.get("user_message") or node.instruction or node.display_name())
@@ -703,7 +706,12 @@ class PlanExecutor(_ArtifactMethods, _DelegateMethods, _DeepThinkMethods):
                 from app.services.skill_learning.context import hydrate_context as hydrate_skills
                 hydrate_skills(session_context, session_context.get("session_id"), node.instruction or node.display_name())
             delegation_mode = self._should_delegate_plan_task(config)
-            if missing_aliases and config.enforce_dependencies and not delegation_mode:
+            from .input_discovery import enabled as discovery_enabled, prepare as prepare_input_discovery
+            discovering_inputs = bool(missing_aliases and discovery_enabled() and
+                self._should_use_deep_think(config) and not delegation_mode and
+                prepare_input_discovery(node, tree, self._get_artifact_manifest(plan_id, session_context),
+                                        missing_aliases, session_context))
+            if missing_aliases and config.enforce_dependencies and (not delegation_mode or discovery_enabled()) and not discovering_inputs:
                 _log_job(
                     "warning",
                     f"Task {node.id} blocked: required artifacts not published",
@@ -721,7 +729,7 @@ class PlanExecutor(_ArtifactMethods, _DelegateMethods, _DeepThinkMethods):
                     producer_candidates=producer_map,
                     resolved_input_artifacts=resolved_input_artifacts,
                 )
-            elif missing_aliases:
+            elif missing_aliases and not discovering_inputs:
                 _log_job(
                     "warning",
                     f"Task {node.id} continuing with missing required artifacts",

@@ -108,6 +108,9 @@ class _CheckMethods:
                 if not raw_glob:
                     return self._verification_config_error(check_type, "Check is missing a valid `glob`.")
                 min_count = resolve_glob_min_count(raw_check, default=1)
+                if min_count > 1 and not glob.has_magic(raw_glob) and Path(raw_glob).suffix:
+                    return self._verification_config_error(check_type,
+                        f"A literal file path cannot match {min_count} files. This rule counts files, not records; correct the verification rule before accepting the result.")
                 patterns = self._resolve_glob_patterns(raw_glob, base_dir, artifact_paths)
                 pattern = patterns[0]
                 matched = self._glob_matches(patterns)

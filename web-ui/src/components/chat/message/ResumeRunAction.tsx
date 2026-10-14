@@ -3,14 +3,16 @@ import { Button, message } from 'antd';
 import { PlayCircleOutlined } from '@ant-design/icons';
 import { useChatStore } from '@store/chat';
 
-export default function ResumeRunAction({ runId, sessionId, status }: {
-  runId?: string | null; sessionId?: string | null; status?: string;
+export default function ResumeRunAction({ runId, sessionId, status, error }: {
+  runId?: string | null; sessionId?: string | null; status?: string; error?: string;
 }) {
   const resume = useChatStore((state) => state.resumeChatRun);
   const [busy, setBusy] = useState(false);
   const pending = useRef(false);
   if (!runId || !sessionId || !['failed', 'cancelled'].includes(status ?? '')) return null;
   return (
+    <div>
+    {error && <div role="status" style={{ marginTop: 8, color: '#8c6d1f' }}>{error}</div>}
     <Button size="small" icon={<PlayCircleOutlined />} loading={busy} style={{ marginTop: 12 }}
       onClick={async () => {
         if (pending.current) return;
@@ -22,5 +24,6 @@ export default function ResumeRunAction({ runId, sessionId, status }: {
       }}>
       继续此任务
     </Button>
+    </div>
   );
 }

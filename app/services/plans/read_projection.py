@@ -30,6 +30,16 @@ def execution_summary(node):
         for item in failures[:10]
         if isinstance(item, dict)
     ]
+    published = metadata.get("published_artifacts") or {}
+    outputs = (
+        [
+            {"alias": alias, "path": entry.get("path"), "validated": entry.get("validated")}
+            for alias, entry in published.items()
+            if isinstance(entry, dict)
+        ][:20]
+        if isinstance(published, dict)
+        else []
+    )
     return {
         "last_status": payload.get("status"),
         "verification_status": metadata.get("verification_status"),
@@ -39,4 +49,5 @@ def execution_summary(node):
         "repair_attempts": metadata.get("repair_attempts", 0),
         "failed_checks": checks,
         "failed_check_count": len(failures),
+        "published_outputs": outputs,
     }

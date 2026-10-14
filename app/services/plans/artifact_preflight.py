@@ -202,8 +202,12 @@ class ArtifactPreflightService:
             # canonical path.  Only registered aliases that genuinely lack
             # a producer should block execution.
             is_registered = canonical_artifact_path(plan_id, alias, session_id) is not None
-            severity = "error" if is_registered else "warning"
-            target_list = errors if is_registered else warnings
+            from .input_discovery import enabled as input_discovery_enabled
+            # Missing registration is not evidence that the required material is absent.
+            # The execution agent can inspect existing outputs before reporting a blocker.
+            blocks = is_registered and not input_discovery_enabled()
+            severity = "error" if blocks else "warning"
+            target_list = errors if blocks else warnings
             for consumer_task_id in sorted(set(consumers)):
                 target_list.append(
                     ArtifactPreflightIssue(

@@ -239,6 +239,7 @@ if _USE_PYDANTIC:
         skill_context_progressive_enabled: bool = Field(default=False, env="SKILL_CONTEXT_PROGRESSIVE_ENABLED")
         chat_run_synthesis_reserve_seconds: float = Field(default=0, ge=0, le=300, env="CHAT_RUN_SYNTHESIS_RESERVE_SECONDS")
         chat_model_action_selection_enabled: bool = Field(default=False, env="CHAT_MODEL_ACTION_SELECTION_ENABLED")
+        plan_input_discovery_enabled: bool = Field(default=True, env="PLAN_INPUT_DISCOVERY_ENABLED")
         skill_learning_enabled: bool = Field(default=False, env="SKILL_LEARNING_ENABLED")
         skill_learning_provider: Optional[str] = Field(default=None, env="SKILL_LEARNING_PROVIDER")
         skill_learning_model: Optional[str] = Field(default=None, env="SKILL_LEARNING_MODEL")
@@ -610,6 +611,7 @@ else:
                 setattr(self,attr,os.getenv(key,'0').lower() in {'1','true','yes','on'})
             self.chat_run_synthesis_reserve_seconds = max(0,min(300,float(os.getenv('CHAT_RUN_SYNTHESIS_RESERVE_SECONDS','0'))))
             self.chat_model_action_selection_enabled = os.getenv("CHAT_MODEL_ACTION_SELECTION_ENABLED", "0").lower() in ("1", "true", "yes")
+            self.plan_input_discovery_enabled = os.getenv("PLAN_INPUT_DISCOVERY_ENABLED", "1").lower() in ("1", "true", "yes")
             self.plan_execution_budget_enabled = os.getenv('PLAN_EXECUTION_BUDGET_ENABLED','0').lower() in {'1','true','yes','on'}
             self.plan_output_contracts_required = os.getenv('PLAN_OUTPUT_CONTRACTS_REQUIRED','0').lower() in {'1','true','yes','on'}
             self.plan_task_budget_seconds = max(1,min(86400,float(os.getenv('PLAN_TASK_BUDGET_SECONDS','7200'))))

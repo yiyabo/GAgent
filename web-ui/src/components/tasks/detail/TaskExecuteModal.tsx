@@ -227,7 +227,7 @@ const TaskExecuteModal: React.FC<TaskExecuteModalProps> = ({
   {executeError && (
   <Alert
   type="error"
-  message="Execution failed"
+  message="执行请求未成功"
   description={executeError}
   showIcon
   />
@@ -262,7 +262,7 @@ const TaskExecuteModal: React.FC<TaskExecuteModalProps> = ({
   <Text type="secondary">Missing dependencies:</Text>
   {dependencyPlan.missing_dependencies.length === 0 ? (
   <div style={{ marginTop: 6 }}>
-  <Text>All dependencies are satisfied.</Text>
+  <Text>前置任务状态已满足；输入文件仍需核对。</Text>
   </div>
   ) : (
   <Space
