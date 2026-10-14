@@ -1438,7 +1438,8 @@ plan_operation_tool = {
     "description": """Plan creation, optimization, and execution tool for DeepThink Agent.
 
 Supports creating plans, reviewing them, optimizing, and executing all tasks.
-Use this tool to create well-structured plans with iterative improvement.
+Create a persistent Plan only when the user explicitly requests one; ordinary discussion, code and analysis do not require Plan nodes.
+get/todo_list/review inspect existing state. Review is read-only. Execution and retry do not authorize edits to tasks or their output contracts.
 
 RECOMPUTE:
 For explicitly requested updates of prior results, update changed task instructions then use recompute. It updates only the requested affected dependency closure. Do not use for status questions.
@@ -1450,8 +1451,7 @@ execute_all launches a background job that handles all tasks automatically in de
 with progress tracking and error handling. It returns a job_id for real-time monitoring.
 For specific tasks use operation="execute_task" and target_task_ids. All plan task execution
 is submitted to background jobs; return the job receipt immediately and let the user keep chatting.
-Trigger phrases: "执行全部任务", "执行整个计划", "开始吧", "跑起来", "execute all",
-"run the plan", "let's go", "start executing", "do all tasks", or any similar intent.
+Use execute_all only for an explicit whole-plan request. A short "开始吧" or "let's go" follows the established target scope; it does not select all tasks or override a recently named task.
 
 BIND operation:
 - Switches the current session to a different plan
@@ -1462,11 +1462,11 @@ BIND operation:
 - Trigger phrases: "切换到 plan X", "绑定 plan X", "switch to plan X", "bind to plan X"
 
 WORKFLOW for Plan Creation:
-1. Use 'create' to generate the plan in one synchronous pass
+1. Only when the user asks for a persistent Plan, use 'create' to generate it in one synchronous pass
 2. The system may collect web_search or graph_rag evidence before decomposition when needed
 3. 'create' returns only after the plan has been decomposed as far as the configured budget allows
-4. Use 'review' to score the completed structure
-5. Use 'optimize' to change the structure; if no explicit changes are supplied, it may synthesize them from the latest rubric review
+4. Report the actual structure and decomposition status immediately; do not automatically review, optimize or execute
+5. Use 'review' only for a requested read-only assessment. Use 'optimize' only for requested edits; if no explicit changes are supplied, it may synthesize them from the latest rubric review
 
 OPTIMIZE CHANGE FORMAT (each change MUST have an "action" field):
 - update_task: {"action": "update_task", "task_id": 4, "name": "New Name", "instruction": "New details"}

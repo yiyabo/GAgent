@@ -13,9 +13,11 @@ the "Executor prompt too long" warning text and level are unchanged.
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any, Dict, List, Optional
 
+from app.services.prompt_policy import REFERENCE_SCOPE_POLICY, TASK_EXECUTION_POLICY
 from .plan_models import PlanNode
 
 logger = logging.getLogger(__name__)
@@ -28,7 +30,9 @@ class ExecutorPromptBuilder:
         "You are an execution agent that completes research or engineering tasks. "
         "When a task requires external tools (data retrieval, code execution, file operations), "
         "use the provided function-calling tools. "
-        "When a task is text-only (design, planning, writing, analysis), respond with plain text content directly."
+        "Respond with plain text only when the output contract permits text-only delivery. "
+        "Writing, design and analysis tasks that require files must create and verify those exact files. "
+        + TASK_EXECUTION_POLICY
     )
 
     TOOL_HINTS = (
@@ -43,7 +47,7 @@ class ExecutorPromptBuilder:
         "- Read documents (PDF/TXT) → document_reader\n"
         "- Read images/scanned docs → vision_reader\n"
         "- PhageScope operations → phagescope\n"
-        "- Design/planning/text writing → respond directly, no tool needed"
+        "- Design/planning/text writing → text only if the output contract permits; otherwise write the required files"
     )
 
     # Rough char-to-token ratio ~3.5 for mixed EN/ZH text.
@@ -79,7 +83,7 @@ class ExecutorPromptBuilder:
         import re
 
         # Find file paths
-        file_paths = re.findall(r'[\w/\-\.]+\.(csv|json|txt|png|jpg|pdf|fasta|fa|fq|xlsx)', result)
+        file_paths = re.findall(r'[\w/\-\.]+\.(?:jsonl|csv|tsv|json|md|bib|txt|png|svg|jpg|pdf|fasta|fa|fq|xlsx)\b', result)
 
         # Find numbers with context (e.g., "accuracy: 0.95", "rows: 1000")
         metrics = re.findall(r'\b\w+[:\s=]+\d+\.?\d*%?\b', result)[:5]
@@ -91,7 +95,7 @@ class ExecutorPromptBuilder:
         ]
 
         if file_paths:
-            summary_parts.append(f"[Key files: {', '.join(set(file_paths[:5]))}]")
+            summary_parts.append(f"[Key files: {', '.join(dict.fromkeys(file_paths[:5]))}]")
 
         if metrics:
             summary_parts.append(f"[Key metrics: {'; '.join(metrics[:5])}]")
@@ -154,7 +158,7 @@ class ExecutorPromptBuilder:
         include_tool_hints: bool = True,
     ) -> str:
         from app.services.memory.context_recall import format_recall_context
-        lines: List[str] = [self.SYSTEM_HEADER]
+        lines: List[str] = [self.SYSTEM_HEADER, REFERENCE_SCOPE_POLICY]
         recall_block = format_recall_context(session_context)
         from app.services.skill_learning.context import format_skill_context
         recall_block = "\n".join(block for block in (recall_block, format_skill_context(session_context)) if block)
@@ -193,6 +197,9 @@ class ExecutorPromptBuilder:
             lines.append(f"Instruction: {node.instruction.strip()}")
         lines.append(f"Path: {node.path}")
         node_metadata = node.metadata if isinstance(node.metadata, dict) else {}
+        from .output_spec import output_spec_from_metadata, spec_metadata_view
+        output_spec = output_spec_from_metadata(node_metadata)
+        node_metadata = spec_metadata_view(node_metadata, output_spec)
         paper_mode = bool(
             node_metadata.get("paper_mode")
             or (session_context or {}).get("paper_mode")
@@ -232,8 +239,13 @@ class ExecutorPromptBuilder:
                 raw_path = str(check.get("path") or "").strip()
                 if raw_path and raw_path not in required_output_paths:
                     required_output_paths.append(raw_path)
-        if acceptance_criteria or artifact_contract:
+        if acceptance_criteria or artifact_contract or (output_spec and output_spec.required_outputs):
             lines.append("\n=== OUTPUT CONTRACT ===")
+            if output_spec and output_spec.required_outputs:
+                lines.append("OutputSpec (preserve every target, format, minimum count and content requirement):")
+                lines.append(json.dumps(output_spec.to_dict(), ensure_ascii=False))
+                if node_metadata.get("output_spec_base_dir"):
+                    lines.append(f"Resolve relative output targets against: {node_metadata['output_spec_base_dir']}")
             if required_output_paths:
                 lines.append("Required output files that must exist before the task can complete:")
                 for path in required_output_paths[:20]:
@@ -337,9 +349,11 @@ class ExecutorPromptBuilder:
                 end_idx = prompt.find("\n===", idx + len(marker))
                 if end_idx != -1:
                     prompt = prompt[:idx] + "\n[Plan outline omitted due to prompt size limit]\n" + prompt[end_idx:]
-            # Hard-truncate if still too long.
+                else:
+                    prompt = prompt[:idx] + "\n[Plan outline omitted due to prompt size limit]"
+            # Never silently cut the assigned instruction or output contract.
             if len(prompt) > self.MAX_PROMPT_CHARS:
-                prompt = prompt[: self.MAX_PROMPT_CHARS] + "\n... [TRUNCATED]"
+                raise ValueError("Context insufficient: the assigned task and required output contract exceed the prompt size limit.")
         return prompt
 
 

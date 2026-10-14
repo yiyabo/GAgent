@@ -12,6 +12,7 @@ from app.repository.chat_runs import get_chat_run, is_chat_run_owned
 from app.services.chat_run_state import chat_run_claim
 from .evidence import fingerprint_input
 from .models import SkillDraft
+from app.services.prompt_policy import REFERENCE_SCOPE_POLICY
 
 
 def in_scope(skill: dict, scope: dict) -> bool:
@@ -101,7 +102,8 @@ def format_skill_context(context: dict | None) -> str:
     payload=(context or {}).get('learned_skill_context')
     if not isinstance(payload,dict) or not payload.get('skills'):return ''
     return ('=== LEARNED PROCEDURES AVAILABLE ===\n'
-            'Read the supplied relevant procedure before applying it. Use load_skill with its exact name for sections not supplied. '
+            + REFERENCE_SCOPE_POLICY + '\n'
+            + 'Read the supplied relevant procedure before applying it. Use load_skill with its exact name for sections not supplied. '
             'Candidate/trial procedures are experiments, not verified general solutions. Follow the current user request and independently verify outputs. '
             'Read validated_dimensions and limitations; file-contract validation does not prove scientific correctness.\n'
             +json.dumps(payload,ensure_ascii=False))

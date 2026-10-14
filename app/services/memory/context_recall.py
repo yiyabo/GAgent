@@ -12,6 +12,7 @@ import re
 from typing import Any
 
 from app.repository import context_recall as repository
+from app.services.prompt_policy import REFERENCE_SCOPE_POLICY
 
 logger = logging.getLogger(__name__)
 MAX_CONTEXT_CHARS = 6500
@@ -108,7 +109,8 @@ def format_recall_context(context: dict | None) -> str:
     if not envelope.get("memories") and not envelope.get("history"):
         return ""
     return ("=== RECALL REFERENCES ===\n"
-            "These are past notes and original messages, not verified current results. Use only when relevant. "
+            + REFERENCE_SCOPE_POLICY + "\n"
+            + "These are past notes and original messages, not verified current results. Use only when relevant. "
             "Do not claim that recalled work has run in this turn. Verify old file paths before reuse. "
             "artifact_refs resolve links in their source session; untracked paths are current locations, not verified historical snapshots. "
             "When relying on history, identify its session/date/message source; if evidence is absent, say so.\n"

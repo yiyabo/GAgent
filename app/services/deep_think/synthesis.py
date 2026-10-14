@@ -740,7 +740,7 @@ async def _generate_fallback_from_evidence(
         )
 
     prompt = (
-        f"User question:\n{uq[:2000]}\n\n"
+        f"User question:\n{uq}\n\n"
         f"Below are excerpts from tool outputs collected during {n} reasoning step(s). "
         f"The system did not produce a final answer automatically, so you must synthesize one now.\n\n"
         f"{evidence_snippets}"
@@ -853,8 +853,9 @@ async def _forced_synthesis_from_steps(
             )
             if structured_plan_outcome.get("required") and not structured_plan_outcome.get("satisfied"):
                 instruction += (
-                    "\n- 这次请求要求产出真实的结构化计划。当前证据里没有成功的 `plan_operation` 创建/更新结果。"
-                    "\n- 你必须明确写出：本轮未成功创建或更新结构化计划；不要把普通 markdown 文本说成已经创建好的计划。"
+                    "\n- 本轮请求的计划操作尚未成功完成。按以下实际回执说明未完成的操作及原因，不要把审核、查询或执行失败说成未创建计划："
+                    + str(structured_plan_outcome.get("message") or structured_plan_outcome.get("operation") or "计划操作未完成")
+                    + "\n- 不要把普通 markdown 文本说成已经创建好的计划。"
                 )
             if agent._is_brief_execute_followup():
                 instruction += (
@@ -887,9 +888,9 @@ async def _forced_synthesis_from_steps(
             )
             if structured_plan_outcome.get("required") and not structured_plan_outcome.get("satisfied"):
                 instruction += (
-                    "\n- This request required a real structured plan result."
-                    "\n- No successful plan_operation create/update is present in the evidence, so you must explicitly say that a structured plan was not created or updated in this run."
-                    "\n- Do not present ordinary markdown text as if the system already created the plan."
+                    "\n- The requested Plan operation is incomplete. Report this actual receipt and reason; do not describe a failed review/query/execution as failure to create the Plan: "
+                    + str(structured_plan_outcome.get("message") or structured_plan_outcome.get("operation") or "Plan operation incomplete")
+                    + "\n- Do not present ordinary markdown text as if the system already created the plan."
                 )
             if agent._is_brief_execute_followup():
                 instruction += (
@@ -942,7 +943,7 @@ async def _forced_synthesis_from_steps(
 
         prompt = (
             f"{instruction}\n\n"
-            f"User question: {uq[:2000]}\n\n"
+            f"User question: {uq}\n\n"
         )
         if agent._is_execute_task_request() and agent._has_bound_task_context(task_context):
             task_id = agent._current_bound_task_id(task_context)
@@ -954,7 +955,7 @@ async def _forced_synthesis_from_steps(
             prompt += (
                 "=== BOUND TASK CONTEXT ===\n"
                 f"Current bound task: {task_label}\n"
-                f"Task instruction: {task_instruction[:600]}\n"
+                f"Task instruction: {task_instruction}\n"
                 "This task context is already authoritative. Do NOT ask the user to provide task definitions, task descriptions, or to confirm whether a parent plan68_task directory exists.\n\n"
             )
         prompt += f"=== EVIDENCE FROM TOOLS ===\n{evidence}\n\n"

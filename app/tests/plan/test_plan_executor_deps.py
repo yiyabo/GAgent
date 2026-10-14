@@ -1071,7 +1071,7 @@ def test_save_artifact_manifest_merges_existing_artifacts(monkeypatch, tmp_path)
     }
 
 
-def test_contract_repair_query_prefers_runtime_artifacts_over_external_copy():
+def test_contract_repair_query_reuses_runtime_artifacts_without_writing_unrelated_backups():
     node = PlanNode(
         id=13,
         plan_id=99,
@@ -1094,10 +1094,10 @@ def test_contract_repair_query_prefers_runtime_artifacts_over_external_copy():
         },
     )
 
-    assert "runtime/workspace artifact exists" in query
-    assert "instead of copying it to an external absolute path" in query
-    assert "do not copy large artifacts" in query
-    assert "Create the exact missing required output files" not in query
+    assert "Reuse a valid existing artifact" in query
+    assert "satisfy the exact target path in the current output contract" in query
+    assert "Do not copy artifacts to unrelated historical backup or upload paths" in query
+    assert "instead of silently substituting another path" in query
 
 
 def test_contract_repair_query_uses_authoritative_counts_without_dumping_long_file_lists():

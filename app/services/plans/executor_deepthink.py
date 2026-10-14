@@ -270,8 +270,8 @@ class _DeepThinkMethods:
         if _tool_names_in_instruction:
             constraints.append(
                 f"CRITICAL: The task instruction explicitly specifies tool(s): {', '.join(_tool_names_in_instruction)}. "
-                f"You MUST use these tool(s) as the primary method. Do NOT substitute with other tools "
-                f"(e.g., do NOT use code_executor or manuscript_writer when literature_pipeline is specified)."
+                "Honor the tools explicitly required as methods, rather than treating an incidental or negated mention as a command. "
+                "Supporting inspection, computation and file-write tools remain available to complete the same output contract."
             )
         # Inject session runtime directory so LLM knows where files are
         session_id = session_context.get("session_id")
@@ -327,7 +327,8 @@ class _DeepThinkMethods:
         if _detected_compressed or _instruction_mentions_compressed:
             _compressed_hint_lines = [
                 "COMPRESSED DATA HANDLING: The task involves compressed archive files. "
-                "Before reading or analyzing data, you MUST decompress them first using code_executor or terminal_session."
+                    "Inspect the format first. Extract only required archive members using available execute_code, code_executor or terminal_session tools. "
+                    "For a single compressed data file, use a reader that supports its compression when possible."
             ]
             if _detected_compressed:
                 _compressed_hint_lines.append(
@@ -341,7 +342,7 @@ class _DeepThinkMethods:
                 "  - .zip: `unzip <file> -d <target_dir>`",
                 "  - .gz (single file): `gunzip -k <file>` or `gzip -dk <file>`",
                 "After decompression, use file_operations to verify the extracted contents before proceeding with analysis.",
-                "Do NOT attempt to read compressed files directly with pandas, csv, or other data libraries — they will fail."
+                "Do not pass archive containers directly to a table reader. Libraries such as pandas can read supported single-file compression; use extraction when the reader cannot handle the format."
             ])
             constraints.extend(_compressed_hint_lines)
         # --- Skill content injection ---
@@ -1070,8 +1071,8 @@ class _DeepThinkMethods:
             f"Repair attempt: {attempt}.",
             "The previous execution did not satisfy the output contract. Do not redo unrelated work.",
             "First check whether the required artifact already exists in the current task runtime/workspace output directory.",
-            "If a valid runtime/workspace artifact exists, report that path as the authoritative output instead of copying it to an external absolute path.",
-            "Only create missing outputs inside the current task output directory; do not copy large artifacts to historical backup, upload, or user-environment absolute paths.",
+            "Reuse a valid existing artifact, but satisfy the exact target path in the current output contract. Resolve relative targets against the canonical task output directory; preserve an explicitly required absolute target when the runtime permits it.",
+            "Do not copy artifacts to unrelated historical backup or upload paths. If the exact requested target cannot be written, report that blocker instead of silently substituting another path.",
         ]
         if expected:
             lines.append(f"Expected deliverables: {expected}")

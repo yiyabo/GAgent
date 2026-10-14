@@ -59,6 +59,20 @@ def should_use_deep_think(agent: Any, message: str) -> bool:
 _MAX_PROMPT_CHARS = 100_000
 
 
+def _join_bounded_prompt(parts: List[str], references: List[str]) -> str:
+    """Drop optional reference blocks before ever cutting the live request/rules."""
+    kept = list(parts)
+    for reference in sorted((item for item in references if item), key=len, reverse=True):
+        if len("\n".join(kept)) <= _MAX_PROMPT_CHARS:
+            break
+        if reference in kept:
+            kept[kept.index(reference)] = "[Reference omitted due to prompt size limit]"
+    prompt = "\n".join(kept)
+    if len(prompt) > _MAX_PROMPT_CHARS:
+        raise ValueError("Context insufficient: the current request and required instructions exceed the prompt size limit.")
+    return prompt
+
+
 def build_prompt(agent: Any, user_message: str) -> str:
     plan_bound = agent.plan_session.plan_id is not None
     history_text = format_history(agent)
@@ -79,7 +93,7 @@ def build_prompt(agent: Any, user_message: str) -> str:
     guidelines = compose_guidelines(agent, plan_bound)
 
     prompt_parts = [
-        "You are an AI assistant that manages research plans represented as task trees.",
+        "You are a research assistant. Answer the user's request in chat; manage persistent task trees only when explicitly requested.",
         f"Current mode: {agent.mode}",
         f"Conversation ID: {agent.conversation_id or 'N/A'}",
         f"Session binding: {plan_status}",
@@ -109,22 +123,10 @@ def build_prompt(agent: Any, user_message: str) -> str:
         f"\nUser message: {user_message}",
         "Respond with the JSON object now.",
     ])
-    prompt = "\n".join(prompt_parts)
-    if len(prompt) > _MAX_PROMPT_CHARS:
-        logger.warning(
-            "Chat prompt too long (%d chars), truncating plan outline.",
-            len(prompt),
-        )
-        # Truncate plan outline first (usually the largest section).
-        outline_marker = "\n=== Plan Overview ==="
-        idx = prompt.find(outline_marker)
-        if idx != -1:
-            end_idx = prompt.find("\nReturn a JSON", idx)
-            if end_idx != -1:
-                prompt = prompt[:idx] + "\n=== Plan Overview ===\n[Omitted due to prompt size limit]\n" + prompt[end_idx:]
-        if len(prompt) > _MAX_PROMPT_CHARS:
-            prompt = prompt[:_MAX_PROMPT_CHARS] + "\n... [TRUNCATED]\nRespond with the JSON object now."
-    return prompt
+    return _join_bounded_prompt(prompt_parts, [
+        memory_section, f"History (latest {agent_history_limit(agent)} messages):\n{history_text}",
+        plan_outline, plan_catalog,
+    ])
 
 
 def build_simple_stream_chat_prompt(agent: Any, user_message: str) -> str:
@@ -189,25 +191,10 @@ def build_simple_stream_chat_prompt(agent: Any, user_message: str) -> str:
             "\nRespond in plain language now.",
         ]
     )
-    prompt = "\n".join(prompt_parts)
-    if len(prompt) > _MAX_PROMPT_CHARS:
-        logger.warning(
-            "Simple stream chat prompt too long (%d chars), truncating plan outline.",
-            len(prompt),
-        )
-        outline_marker = "\n=== Plan Overview ==="
-        idx = prompt.find(outline_marker)
-        if idx != -1:
-            end_idx = prompt.find("\n\nUser message:", idx)
-            if end_idx != -1:
-                prompt = (
-                    prompt[:idx]
-                    + "\n=== Plan Overview ===\n[Omitted due to prompt size limit]\n"
-                    + prompt[end_idx:]
-                )
-        if len(prompt) > _MAX_PROMPT_CHARS:
-            prompt = prompt[:_MAX_PROMPT_CHARS] + "\n... [TRUNCATED]\nRespond in plain language now."
-    return prompt
+    return _join_bounded_prompt(prompt_parts, [
+        memory_section, f"History (latest {agent_history_limit(agent)} messages):\n{history_text}",
+        plan_outline, plan_catalog,
+    ])
 
 
 def coerce_plain_text_chat_response(raw: str) -> str:
@@ -290,7 +277,7 @@ def compose_plan_catalog(agent: Any, plan_bound: bool) -> str:
     return (
         "Available plans (up to 10, for reference):\n"
         f"{summaries}\n"
-        "If the user wants to work with one of them, ask for the specific plan ID; otherwise keep clarifying needs."
+        "Use a Plan only when the current request refers to it. Ask for an ID only if the target is ambiguous; otherwise answer the current question."
     )
 
 

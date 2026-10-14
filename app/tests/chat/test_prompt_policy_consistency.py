@@ -210,7 +210,7 @@ def test_deep_think_prompts_require_structured_plan_tool_for_explicit_plan_reque
     legacy_prompt = agent._build_system_prompt()
 
     for prompt in (native_prompt, legacy_prompt):
-        assert "plan or task breakdown" in prompt
+        assert "persistent Plan/task tree" in prompt
         assert "use plan_operation to create or update a structured plan" in prompt
         assert "prose-only pseudo-plan" in prompt
 
@@ -239,7 +239,7 @@ def test_plan_operation_guidance_makes_research_optional() -> None:
 
     # Both native and legacy prompts should contain plan creation guidance
     assert "PLAN CREATION RULE" in legacy_prompt
-    assert "Research before planning only when current external best practices" in legacy_prompt
+    assert "Only when the user requested a persistent Plan, research before planning" in legacy_prompt
 
 
 def test_agent_history_limit_clamps_overrides() -> None:
