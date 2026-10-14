@@ -1,6 +1,6 @@
 import type { PlanResultItem } from '@/types';
 
-export type VerificationStatus = 'passed' | 'failed' | 'skipped';
+export type VerificationStatus = 'passed' | 'failed' | 'skipped' | 'config_error';
 
 export interface VerificationView {
   status: VerificationStatus | null;
@@ -11,6 +11,7 @@ export interface VerificationView {
   blocking: boolean;
   generated: boolean;
   failures: Array<Record<string, any>>;
+  configErrors: Array<Record<string, any>>;
   artifactPaths: string[];
 }
 
@@ -28,6 +29,7 @@ export const getVerificationView = (
       blocking: true,
       generated: false,
       failures: [],
+      configErrors: [],
       artifactPaths: [],
     };
   }
@@ -36,7 +38,7 @@ export const getVerificationView = (
     ? verification.status.trim().toLowerCase()
     : '';
   const status: VerificationStatus | null =
-    rawStatus === 'passed' || rawStatus === 'failed' || rawStatus === 'skipped'
+    rawStatus === 'passed' || rawStatus === 'failed' || rawStatus === 'skipped' || rawStatus === 'config_error'
       ? rawStatus
       : null;
 
@@ -47,6 +49,8 @@ export const getVerificationView = (
       ? 'Verification failed'
       : status === 'skipped'
       ? 'Verification skipped'
+      : status === 'config_error'
+      ? '验收规则需修正'
       : null;
 
   const color =
@@ -56,6 +60,8 @@ export const getVerificationView = (
       ? 'red'
       : status === 'skipped'
       ? 'default'
+      : status === 'config_error'
+      ? 'gold'
       : 'default';
 
   const failures = Array.isArray(verification.failures)
@@ -76,6 +82,9 @@ export const getVerificationView = (
     blocking: verification.blocking !== false,
     generated: verification.generated === true,
     failures,
+    configErrors: Array.isArray(verification.config_errors)
+      ? verification.config_errors.filter((item) => item && typeof item === 'object')
+      : [],
     artifactPaths,
   };
 };

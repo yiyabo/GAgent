@@ -120,6 +120,10 @@ class TaskVerificationService(_CueMethods, _PathMethods, _CheckMethods, _Discove
         )
         if status != "failed" and not failures:
             return False
+        if cls._failures_are_verification_config_errors(failures):
+            # A broken checker has not rejected the output. Preserve the
+            # verifier's needs_review state, including persisted older records.
+            return False
         node_meta = dict(node.metadata or {})
         criteria = spec_metadata_view(node_meta, output_spec_from_metadata(node_meta)).get("acceptance_criteria")
         if not isinstance(criteria, dict):

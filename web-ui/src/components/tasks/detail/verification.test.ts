@@ -4,6 +4,18 @@ import type { PlanResultItem } from '@/types';
 import { getVerificationView } from './verification';
 
 describe('task verification view', () => {
+  it('keeps rule errors separate from failed checks', () => {
+    const view = getVerificationView({ task_id: 1, status: 'needs_review', metadata: {
+      verification: { status: 'config_error', failures: [], config_errors: [
+        { type: 'glob_count_at_least', message: 'This check counts files, not records.' },
+      ] },
+    } });
+    expect(view.status).toBe('config_error');
+    expect(view.label).toBe('验收规则需修正');
+    expect(view.color).toBe('gold');
+    expect(view.failures).toEqual([]);
+    expect(view.configErrors).toHaveLength(1);
+  });
   it('returns null status when verification metadata is missing', () => {
     const view = getVerificationView({ task_id: 1 } as PlanResultItem);
     expect(view.status).toBeNull();
