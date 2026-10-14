@@ -212,3 +212,9 @@ def test_evidence_collector_is_not_manuscript_recovery():
 @pytest.mark.parametrize('title',['Research protocol execution','Outline-based manuscript writing'])
 def test_planning_word_used_as_input_or_executable_method_is_not_a_planning_deliverable(title):
     assert not is_planning_document(title,'Execute the specified method and deliver its results.')
+
+
+def test_current_manuscript_goal_overrides_role_from_an_older_planning_task():
+    metadata={'paper_role':'planning_document'}
+    assert not is_planning_document('Write introduction','Draft the actual manuscript introduction.',metadata)
+    assert requires_manuscript_content('Write introduction','Draft the actual manuscript introduction.',metadata)

@@ -23,12 +23,19 @@ _PLANNING_OUTPUT = re.compile(
     r"(?:(?:positioning|scope|editorial)\s+(?:strategy\s+)?(?:note|brief)|(?:chapter\s+)?outline)\b",
     re.I,
 )
+_MANUSCRIPT_WRITING = re.compile(
+    r"\b(?:write|draft|revise|assemble|generate|polish)\b.{0,60}"
+    r"\b(?:manuscript|paper|review|report|section|introduction|abstract)\b|"
+    r"(?:撰写|起草|写作|修订|润色|成稿|合并|整合).{0,30}(?:论文|手稿|综述|章节|正文|报告)", re.I)
 
 
 def is_planning_document(name: Any, instruction: Any, metadata: Any = None) -> bool:
     role = (metadata or {}).get("paper_role") if isinstance(metadata, dict) else None
-    return bool(role == "planning_document" or _PLANNING_TITLE.search(str(name or ""))
-                or _PLANNING_OUTPUT.search(str(instruction or "")))
+    if _PLANNING_TITLE.search(str(name or "")) or _PLANNING_OUTPUT.search(str(instruction or "")):
+        return True
+    # User-directed edits may leave the old role in metadata. A clear current
+    # drafting goal must not inherit an earlier planning-only restriction.
+    return bool(role == "planning_document" and not _MANUSCRIPT_WRITING.search(f"{name or ''}\n{instruction or ''}"))
 
 
 def requires_manuscript_content(name: Any, instruction: Any, metadata: Any = None) -> bool:
@@ -40,12 +47,7 @@ def requires_manuscript_content(name: Any, instruction: Any, metadata: Any = Non
         return False
     if role in {"section_writer", "manuscript_writer", "manuscript_assembler"}:
         return True
-    text = f"{name or ''}\n{instruction or ''}"
-    return bool(re.search(
-        r"\b(?:write|draft|revise|assemble|generate|polish)\b.{0,60}"
-        r"\b(?:manuscript|paper|review|report|section|introduction|abstract)\b|"
-        r"(?:撰写|起草|写作|修订|润色|成稿|合并|整合).{0,30}(?:论文|手稿|综述|章节|正文|报告)",
-        text, re.I))
+    return bool(_MANUSCRIPT_WRITING.search(f"{name or ''}\n{instruction or ''}"))
 
 
 PLANNING_DOCUMENT_SCOPE = (

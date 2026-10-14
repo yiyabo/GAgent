@@ -22,6 +22,8 @@ Plan #187 的定位笔记 #13 被赋予 `paper_role=section_writer`、`paper_sec
 
 `paper_task_policy.py` 是小型纯函数：根据任务名称与明确交付目标识别定位、范围笔记、大纲、proposal/protocol 文档，不按生物学主题、Plan/Task ID 或文件名判断。不把“使用大纲写正文”“执行研究 protocol”当成规划笔记。
 
+用户明确把旧规划任务改成正文写作时，当前任务目标优先于遗留的 planning_document 标签，不沿用旧规划限制。
+
 - 新计划生成：规划节点使用 `planning_document`，去除错误 paper_section、关闭 paper_mode，保留 OutputSpec、依赖、引用与发布声明。
 - 已有计划执行：只覆盖本次执行上下文，不改其持久树、指令或契约；默认全项目 paper_mode 也不能把规划节点升级成正文。
 - 原生执行与外部委托提示同源；规划文档仍需按要求落文件，事实缺口仍可核对，不机械限制成零搜索或固定字数。
