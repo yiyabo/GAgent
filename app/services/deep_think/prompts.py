@@ -121,9 +121,10 @@ def _build_structured_plan_requirement_block(agent: "DeepThinkAgent") -> str:
         )
     if agent.request_profile.get("chat_plan_execution_background_only") and plan_id is not None:
         requirement_lines.append(
-            "Plan task execution belongs in background jobs. Use plan_operation execute_task with target_task_ids "
+            "Only when the user explicitly asks to run Plan tasks, execution belongs in background jobs. Use plan_operation execute_task with target_task_ids "
             "for a selected scope, or execute_all for the whole plan. Do not perform the task's searches, code or "
-            "file production in this chat loop. After successful submission, return the job receipt."
+            "file production in this chat loop. After successful submission, return the job receipt. "
+            "A discussion or status question does not authorize starting Plan execution."
         )
     if flags["create_required"] and flags["execute_after_create_required"]:
         requirement_lines.append(
