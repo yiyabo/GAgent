@@ -8,6 +8,7 @@ from typing import Iterable, Optional
 
 from .plan_models import PlanNode
 from .task_verification import VerificationFinalization
+from .executor_history import task_binding
 
 
 def _output_targets(spec: object) -> object:
@@ -40,6 +41,9 @@ def previous_delivery_gap(node: PlanNode) -> Optional[VerificationFinalization]:
         return None
     if metadata.get("termination_reason") in {"cancelled", "run_deadline_exceeded"}:
         return None
+    history_ref = metadata.get("execution_history_ref") or {}
+    if history_ref and history_ref.get("scope", {}).get("goal_binding") != task_binding(node):
+        return None
 
     diff = metadata.get("contract_diff")
     if not isinstance(diff, dict):
@@ -62,13 +66,14 @@ def previous_delivery_gap(node: PlanNode) -> Optional[VerificationFinalization]:
 
     retained = {key: deepcopy(metadata[key]) for key in (
         "failure_kind", "contract_diff", "verification", "output_verification", "tool_failures",
+        "execution_history_ref",
     ) if key in metadata}
     retained["resumed_delivery_gap"] = True
     raw_paths = prior.get("artifact_paths")
     paths = [str(item) for item in raw_paths if isinstance(item, str)] if isinstance(raw_paths, list) else []
     payload = {
         "status": "failed",
-        "content": "The previous attempt left verified delivery requirements unmet.",
+        "content": str(prior.get("content") or "The previous attempt left verified delivery requirements unmet."),
         "artifact_paths": paths,
         "metadata": retained,
     }

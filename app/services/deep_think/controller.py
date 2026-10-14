@@ -15,12 +15,14 @@ in-loop UnifiedToolExecutor re-import) stay in place verbatim.
 
 from __future__ import annotations
 
+from .iteration_state import _NativeCycleState, _consume_handoff_iteration_reserve
+from .conversation import seed_messages, capture, produced_paths
+
 import asyncio
 import json
 import logging
 import os
 import time
-from dataclasses import dataclass, field
 from datetime import datetime
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
@@ -92,59 +94,8 @@ async def think(
     return await agent._think_prompt_based(user_query.strip(), context, task_context)
 
 
-def _consume_handoff_iteration_reserve(
-    *,
-    iteration: int,
-    base_limit: int,
-    limit: int,
-    reserve_used: int,
-    reserve_max: int = 4,
-) -> tuple[int, int]:
-    """Consume one handoff iteration reserve cycle, if eligible.
-
-    Static budget semantics: the loop limit may grow beyond ``base_limit``
-    only when a task handoff lands on the final base-budget iteration (the
-    newly bound task would otherwise get zero cycles), and never by more
-    than ``reserve_max`` cycles in total. Returns ``(new_limit, new_used)``;
-    the worst-case limit is always ``base_limit + reserve_max``.
-    """
-    if reserve_used >= reserve_max or iteration < base_limit - 1:
-        return limit, reserve_used
-    return limit + 1, reserve_used + 1
 
 
-@dataclass
-class _NativeCycleState:
-    """Mutable per-run counters shared by the native-loop stage helpers.
-
-    Pure container — no behaviour. Field names mirror the loop-local
-    variables of the pre-split ``_think_native`` one-to-one (incl. the
-    static budget caps: the iteration limit starts at max_iterations and can
-    only grow via ``_consume_handoff_iteration_reserve`` when a task handoff
-    lands on the final base-budget iteration, so the worst case is
-    max_iterations + handoff_reserve_max — never an open-ended mutation).
-    """
-
-    confidence: float = 0.0
-    last_tool_cycle_signature: Optional[str] = None
-    identical_tool_cycle_count: int = 0
-    probe_only_execution_cycles: int = 0
-    readonly_verification_cycles: int = 0
-    forced_probe_followthrough_attempts: int = 0
-    forced_handoff_followthrough_attempts: int = 0
-    had_real_execution_tool: bool = False
-    partial_completion_retry_count: int = 0
-    max_partial_retries: int = 3
-    handoff_reserve_max: int = 4
-    base_iteration_limit: int = 0
-    last_real_execution_tool_results: List[Dict[str, Any]] = field(default_factory=list)
-    force_verified_execution_finalization: bool = False
-    pending_handoff_task_id: Optional[int] = None
-    pending_handoff_previous_task_id: Optional[int] = None
-    structured_plan_finalize_nudge_plan_id: Optional[int] = None
-    bound_task_before_cycle: Optional[int] = None
-    runtime_iteration_limit: int = 0
-    handoff_reserve_used: int = 0
 
 
 def _apply_task_handoff_transition(
@@ -274,11 +225,8 @@ async def _native_run_setup(
         from app.services.deep_think.acceptance import build_acceptance_spec_prompt_block
 
         system_prompt += build_acceptance_spec_prompt_block(acceptance_spec, agent._acceptance_base_dir)
-    messages: List[Dict[str, Any]] = [
-        {"role": "system", "content": system_prompt},
-        *_extract_history_messages(context, current_user_query=user_query),
-        {"role": "user", "content": user_query},
-    ]
+    messages = seed_messages(context, system_prompt=system_prompt, user_message=user_query,
+        protocol="native", history=_extract_history_messages(context, current_user_query=user_query))
 
     llm_model = (
         getattr(agent.llm_client, "model", "")
@@ -289,7 +237,7 @@ async def _native_run_setup(
     ctx_mgr = ContextWindowManager(model=llm_model, budget_tokens=max(0, _ctx_budget) or None)
 
     loop_guard_state: Dict[str, Any] = {
-        "verified_deliverables": [],
+        "verified_deliverables": produced_paths(context),
         "failure_sig_counts": {},
         "failure_sig_warned": set(),
         "last_progress_iteration": 0,
@@ -299,7 +247,7 @@ async def _native_run_setup(
         "expected_outputs": expected_outputs,
         "acceptance_spec": acceptance_spec,
     }
-    agent._produced_deliverable_paths = []
+    agent._produced_deliverable_paths = produced_paths(context)
     agent._produced_image_paths = []
     agent._execution_issues = []
     agent._acceptance_missing: List[str] = []
@@ -1963,6 +1911,9 @@ async def _native_finalize(
         structured_plan_plan_id=structured_plan_outcome.get("plan_id"),
         structured_plan_title=structured_plan_outcome.get("plan_title"),
         structured_plan_operation=structured_plan_outcome.get("operation"),
+        continuation=capture(context, messages=messages, final_answer=final_answer,
+                             protocol="native",
+                             produced=(output_fields.get("output_verification") or {}).get("artifact_paths", [])),
         **output_fields,
     )
 
@@ -1978,7 +1929,7 @@ async def _think_prompt_based(
 
     agent._acceptance_spec = await prepare_acceptance_spec(agent, user_query, context, task_context)
     agent._expected_outputs_current = _derive_expected_outputs(user_query)
-    agent._produced_deliverable_paths = []
+    agent._produced_deliverable_paths = produced_paths(context)
     agent._execution_issues = []
     thinking_steps: List[ThinkingStep] = []
     tools_used: List[str] = []
@@ -1989,11 +1940,8 @@ async def _think_prompt_based(
 
         system_prompt += build_acceptance_spec_prompt_block(agent._acceptance_spec, agent._acceptance_base_dir)
 
-    messages = [
-        {"role": "system", "content": system_prompt},
-        *_extract_history_messages(context, current_user_query=user_query),
-        {"role": "user", "content": f"User Query: {user_query}"}
-    ]
+    messages = seed_messages(context, system_prompt=system_prompt, user_message=f"User Query: {user_query}",
+        protocol="strict", history=_extract_history_messages(context, current_user_query=user_query))
 
     iteration = 0
     final_answer = ""
@@ -2506,5 +2454,8 @@ Respond with ONLY a JSON object:
         structured_plan_plan_id=structured_plan_outcome.get("plan_id"),
         structured_plan_title=structured_plan_outcome.get("plan_title"),
         structured_plan_operation=structured_plan_outcome.get("operation"),
+        continuation=capture(context, messages=messages, final_answer=final_answer,
+                             protocol="strict",
+                             produced=(output_fields.get("output_verification") or {}).get("artifact_paths", [])),
         **output_fields,
     )

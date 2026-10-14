@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import pytest
 from typing import Any, Dict, List
 
 from app.routers import plan_routes
@@ -14,6 +15,7 @@ class _FakeExecResult:
 
 
 def test_run_task_chain_job_emits_task_progress_events(monkeypatch) -> None:
+    monkeypatch.setattr("app.services.plans.executor_reuse.completed_result", lambda *a: None)
     events: List[Dict[str, Any]] = []
     stats_updates: List[Dict[str, Any]] = []
 
@@ -72,6 +74,7 @@ def test_run_task_chain_job_emits_task_progress_events(monkeypatch) -> None:
 def test_run_task_chain_job_passes_paper_mode_into_execution_config(
     monkeypatch,
 ) -> None:
+    monkeypatch.setattr("app.services.plans.executor_reuse.completed_result", lambda *a: None)
     captured_modes: List[bool] = []
 
     monkeypatch.setattr(plan_routes, "log_job_event", lambda *args, **kwargs: None)
@@ -105,3 +108,29 @@ def test_execute_task_request_reads_plan_paper_mode_default(
     monkeypatch.setenv("PLAN_PAPER_MODE_DEFAULT", "true")
     request = plan_routes.ExecuteTaskRequest()
     assert request.paper_mode is True
+
+
+def test_chain_reuses_upstream_but_executes_the_selected_task(monkeypatch):
+    from types import SimpleNamespace
+    executed, reused, results = [], [], []
+    monkeypatch.setattr(plan_routes, "log_job_event", lambda *a, **kw: None)
+    monkeypatch.setattr(plan_routes.plan_decomposition_jobs, "mark_running", lambda *a: None)
+    monkeypatch.setattr(plan_routes.plan_decomposition_jobs, "update_stats", lambda *a: None)
+    monkeypatch.setattr(plan_routes.plan_decomposition_jobs, "mark_success",
+        lambda job_id, result=None, stats=None: results.append(result))
+    monkeypatch.setattr(plan_routes.plan_decomposition_jobs, "mark_failure",
+        lambda *a, **kw: pytest.fail("Chain unexpectedly failed"))
+    def reuse(executor, plan_id, task_id, context):
+        reused.append(task_id)
+        return SimpleNamespace(status="completed", duration_sec=0, content="Verified",
+                               metadata={"reused": True})
+    monkeypatch.setattr("app.services.plans.executor_reuse.completed_result", reuse)
+    def execute(plan_id, task_id, config=None):
+        executed.append(task_id)
+        return _FakeExecResult()
+    monkeypatch.setattr(plan_routes._plan_executor, "execute_task", execute)
+    plan_routes._run_task_chain_job(job_id="reuse", plan_id=1, target_task_id=3,
+        task_order=[1, 2, 3], session_id="one")
+    assert executed == [3] and reused == [1, 2]
+    assert results[0]["executed_task_ids"] == [3]
+    assert results[0]["reused_task_ids"] == [1, 2]

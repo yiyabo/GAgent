@@ -24,11 +24,14 @@ def policy(monkeypatch):
     return settings
 
 
-def test_disabled_path_leaves_legacy_context_untouched(policy):
+def test_disabled_budget_keeps_execution_intent_without_creating_a_clock(policy):
     policy.plan_execution_budget_enabled = False
     with pb.plan_job_scope(), pb.plan_task_scope(1, 2):
         assert current_run_budget() is None
-        assert 'intent_type' not in pb.request_profile(1, 2, {})
+        profile = pb.request_profile(1, 2, {})
+        assert profile['intent_type'] == 'execute_task'
+        assert not profile.get('plan_budget_enabled')
+        assert 'execution_budget' not in profile
 
 
 def test_task_retry_keeps_deadline_and_sibling_is_not_closed(policy):

@@ -88,11 +88,12 @@ def plan_task_scope(plan_id, task_id):
 
 def request_profile(plan_id, task_id, context):
     profile = {"current_plan_id": plan_id, "current_task_id": task_id,
+               "intent_type": "execute_task", "execution_lane": "plan",
                "plan_tree_edit_allowed": False,
                "session_id": context.get("session_id"), "owner_id": context.get("owner_id")}
     if enabled():
         budget = current_run_budget()
-        profile.update(intent_type="execute_task", execution_lane="plan", plan_budget_enabled=True)
+        profile["plan_budget_enabled"] = True
         if budget:
             profile["execution_budget"] = {"total_seconds": budget.total_seconds,
                 "remaining_seconds": budget.remaining_seconds(),
