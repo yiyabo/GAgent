@@ -740,7 +740,7 @@ async def _generate_fallback_from_evidence(
         )
 
     prompt = (
-        f"User question:\n{uq[:2000]}\n\n"
+        f"User question:\n{uq}\n\n"
         f"Below are excerpts from tool outputs collected during {n} reasoning step(s). "
         f"The system did not produce a final answer automatically, so you must synthesize one now.\n\n"
         f"{evidence_snippets}"
@@ -943,7 +943,7 @@ async def _forced_synthesis_from_steps(
 
         prompt = (
             f"{instruction}\n\n"
-            f"User question: {uq[:2000]}\n\n"
+            f"User question: {uq}\n\n"
         )
         if agent._is_execute_task_request() and agent._has_bound_task_context(task_context):
             task_id = agent._current_bound_task_id(task_context)
@@ -955,7 +955,7 @@ async def _forced_synthesis_from_steps(
             prompt += (
                 "=== BOUND TASK CONTEXT ===\n"
                 f"Current bound task: {task_label}\n"
-                f"Task instruction: {task_instruction[:600]}\n"
+                f"Task instruction: {task_instruction}\n"
                 "This task context is already authoritative. Do NOT ask the user to provide task definitions, task descriptions, or to confirm whether a parent plan68_task directory exists.\n\n"
             )
         prompt += f"=== EVIDENCE FROM TOOLS ===\n{evidence}\n\n"
