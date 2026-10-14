@@ -821,11 +821,12 @@ class _DeepThinkMethods:
 
     def _derive_manuscript_output_path(self, node: PlanNode) -> str:
         metadata = node.metadata if isinstance(node.metadata, dict) else {}
-        from .output_spec import output_spec_from_metadata
+        from .output_spec import output_spec_from_metadata, spec_metadata_view
         spec = output_spec_from_metadata(metadata)
+        metadata = spec_metadata_view(metadata, spec)
         for output in (spec.required_outputs if spec else []):
             path = str(output.target_path or "").strip()
-            if output.kind == "document" and Path(path).suffix.lower() in {".md", ".markdown", ".html"}:
+            if output.kind == "document" and output.min_count == 1 and Path(path).suffix.lower() in {".md", ".markdown", ".html"}:
                 return str(Path(path).with_suffix(".md")) if path.lower().endswith(".html") else path
         acceptance = metadata.get("acceptance_criteria") if isinstance(metadata.get("acceptance_criteria"), dict) else {}
         checks = acceptance.get("checks") if isinstance(acceptance, dict) else None
@@ -833,11 +834,9 @@ class _DeepThinkMethods:
             for check in checks:
                 if isinstance(check, dict) and check.get("type") in {"file_exists", "file_nonempty"}:
                     path = str(check.get("path") or "").strip()
-                    if path:
+                    if Path(path).suffix.lower() in {".md", ".markdown", ".html"}:
                         if path.lower().endswith(".html"):
                             return path[:-5] + ".md"
-                        if not path.lower().endswith(".md"):
-                            return str(Path(path).with_suffix(".md"))
                         return path
         contract = metadata.get("artifact_contract") if isinstance(metadata, dict) else {}
         publishes = contract.get("publishes") if isinstance(contract, dict) else None
@@ -855,7 +854,7 @@ class _DeepThinkMethods:
         if (not self._should_repair_contract(finalization)
                 or not requires_manuscript_content(node.name, node.instruction, node.metadata)):
             return False
-        from .output_spec import output_spec_from_metadata
+        from .output_spec import output_spec_from_metadata, spec_metadata_view
         spec = output_spec_from_metadata(node.metadata)
         if spec and spec.required_outputs and not any(
             output.kind == "document" and output.min_count == 1 and output.target_path
@@ -865,6 +864,7 @@ class _DeepThinkMethods:
             return False  # the existing repair loop handles other/multiple outputs
         if not (spec and spec.required_outputs):
             metadata = node.metadata if isinstance(node.metadata, dict) else {}
+            metadata = spec_metadata_view(metadata, spec)
             checks = (metadata.get("acceptance_criteria") or {}).get("checks") or []
             from .artifact_contracts import candidate_filenames_for_alias
             aliases = (metadata.get("artifact_contract") or {}).get("publishes") or []

@@ -7,12 +7,13 @@ from typing import Any
 # Match the deliverable goal, not a paper mentioned as input or background.
 # No filenames, extensions, task IDs or biological topics determine the mode.
 _PLANNING_TITLE = re.compile(
-    r"定位(?:策略|与.{0,12}(?:主线|范围|策略))|(?:大纲|提纲)(?:设计|文档|构建|规划|整理|$)|"
-    r"(?:目标读者|拟投期刊).{0,12}(?:定位|选择|策略)|"
-    r"\b(?:positioning|scope|editorial)\s+(?:strategy|note|plan|brief)\b|"
+    r"(?:定位(?:策略|与.{0,12}(?:主线|范围|策略))|(?:大纲|提纲)(?:设计|文档|构建|规划|整理)?|"
+    r"(?:目标读者|拟投期刊).{0,12}(?:定位|选择|策略))(?:与差异分析)?\s*$|"
+    r"^(?:(?:write|draft|prepare|design|create|develop|revise|update|generate)\s+(?:a\s+|the\s+)?)?"
+    r"(?:positioning|scope|editorial)\s+(?:strategy|note|plan|brief)\b|"
     r"^(?:(?:write|draft|prepare|design|create|develop|revise|update|assemble|generate|build|finali[sz]e)\s+(?:a\s+|the\s+)?)?"
     r"(?:(?:detailed|final|structured|chapter-level)\s+)?"
-    r"(?:(?:chapter|section|review|paper|manuscript|research)\s+)?(?:outline|proposal|protocol)\b"
+    r"(?:(?:chapter|section|review|paper|manuscript|research|introduction)\s+)?(?:outline|proposal|protocol)\b"
     r"(?:\s+(?:design|document|note|plan|draft|strategy))?(?:\s*$|\s*[:（(])",
     re.I,
 )

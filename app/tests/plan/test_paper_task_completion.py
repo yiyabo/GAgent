@@ -24,6 +24,7 @@ from app.services.plans.task_verification import VerificationFinalization
     ("Write a positioning strategy note", "Decide audience and scope."),
     ("Draft manuscript outline", "Outline the future paper."),
     ("Generate detailed chapter outline", "Use the approved strategy."),
+    ("Draft introduction outline", "Outline the planned introduction, do not draft its body."),
     ("Prepare research proposal", "Produce a research proposal."),
     ("Research protocol", "Describe the protocol."),
     ("Scope decisions", "Deliver a scope note."),
@@ -44,6 +45,9 @@ def test_planning_goal_overrides_stale_section_writer_metadata(title, instructio
     ("撰写综述引言", "根据定位策略与大纲撰写正文。"),
     ("Therapeutic strategies", "Draft the therapeutic strategies section of the manuscript."),
     ("Write full manuscript from outline", "Assemble and verify the complete manuscript."),
+    ("依据定位策略撰写综述正文", "使用上游定位笔记作为参考，撰写正文。"),
+    ("基于大纲文档撰写引言", "按上游材料撰写引言章节。"),
+    ("Write introduction using positioning strategy", "Use the strategy note to draft the introduction."),
 ])
 def test_manuscript_consuming_planning_material_remains_manuscript(title, instruction):
     metadata={'paper_role':'section_writer', 'paper_mode':True}
@@ -65,7 +69,7 @@ def test_planner_preserves_planning_output_contract_and_inputs():
     assert metadata == original
 
 
-def _run(tmp_path, monkeypatch, *, planning=False, write=True, bad_quality=False, extra_missing=False, block=False):
+def _run(tmp_path, monkeypatch, *, planning=False, write=True, bad_quality=False, extra_missing=False, block=False, legacy=False):
     root=tmp_path/'task';root.mkdir()
     path=root/'note.md'
     meta={'paper_mode':True,'paper_section':'introduction','paper_role':'section_writer',
@@ -77,6 +81,11 @@ def _run(tmp_path, monkeypatch, *, planning=False, write=True, bad_quality=False
              'min_text_chars':200,'min_sections':3,'required_terms':['Citations']}]}
     if extra_missing:
         meta['required_outputs'].append({'kind':'data','target_path':'data.csv','extensions':['.csv']})
+    if legacy:
+        meta.pop('required_outputs')
+        meta['acceptance_criteria']={'category':'file_data','blocking':True,'checks':[
+            {'type':'file_nonempty','path':str(root/'data.csv')},
+            {'type':'file_nonempty','path':str(path)}]}
     node=PlanNode(id=4,plan_id=7,name='综述定位与主线策略' if planning else 'Write manuscript',
                   instruction='输出为一份定位策略笔记。' if planning else 'Write the manuscript introduction.',metadata=meta)
     original=deepcopy(meta)
@@ -218,3 +227,17 @@ def test_current_manuscript_goal_overrides_role_from_an_older_planning_task():
     metadata={'paper_role':'planning_document'}
     assert not is_planning_document('Write introduction','Draft the actual manuscript introduction.',metadata)
     assert requires_manuscript_content('Write introduction','Draft the actual manuscript introduction.',metadata)
+
+
+def test_legacy_missing_data_does_not_redraft_the_existing_manuscript(tmp_path,monkeypatch):
+    result,path,calls,*_=_run(tmp_path,monkeypatch,legacy=True)
+    assert result.status=='failed' and calls==[] and path.read_text().startswith('# Positioning')
+
+
+def test_nested_output_spec_criteria_use_the_exact_manuscript_target():
+    executor=PlanExecutor(repo=MagicMock(),llm_service=MagicMock())
+    node=PlanNode(id=4,plan_id=7,name='Write manuscript',metadata={'output_spec':{
+        'source':'explicit','required_outputs':[],'acceptance_criteria':{'checks':[
+            {'type':'file_exists','path':'data/results.csv'},
+            {'type':'file_nonempty','path':'reports/paper.md'}]}}})
+    assert executor._derive_manuscript_output_path(node)=='reports/paper.md'
