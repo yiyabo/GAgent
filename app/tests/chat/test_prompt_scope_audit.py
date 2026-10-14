@@ -145,3 +145,12 @@ def test_dependency_summary_preserves_full_evidence_paths_from_omitted_middle():
     summary = ExecutorPromptBuilder()._summarize_long_result(raw, max_length=200)
     assert path in summary and bib in summary
     assert "[Key files:" in summary
+
+
+def test_strict_plan_catalog_and_retry_nudge_use_supported_operations():
+    agent = DeepThinkAgent(llm_client=SimpleNamespace(), available_tools=["plan_operation"],
+                          tool_executor=lambda *_: None, request_profile={"current_plan_id": 42})
+    prompt = agent._build_system_prompt()
+    assert '- execute_task:' in prompt and '"target_task_ids": [4]' in prompt
+    assert '- execute_all:' in prompt and 'A retry of one task is not a whole-plan request' in prompt
+    assert '(review/optimize/update)' not in agent._get_structured_plan_retry_prompt()

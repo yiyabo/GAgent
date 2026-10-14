@@ -287,7 +287,7 @@ def _get_structured_plan_retry_prompt(agent: "DeepThinkAgent") -> str:
     plan_ref = f" (plan_id={plan_id})" if plan_id else ""
     return (
         f"The user explicitly requested a plan review, optimize, or update operation{plan_ref}. "
-        "You must call `plan_operation` with the appropriate operation (review/optimize/update) "
+        "You must call `plan_operation` with the appropriate operation (review/optimize); use optimize for requested structural updates "
         "before finishing with the active response protocol. Report the actual operation result; "
         "review is read-only and does not authorize optimization or other mutations."
     )
@@ -1075,6 +1075,9 @@ Operations:
 - review: Review plan quality and structure. Returns BOTH: (1) structural health_score and (2) a strict research-plan rubric_score with detailed breakdown. Params: {"operation": "review", "plan_id": 123}
 - optimize: Apply changes to improve the plan. Params: {"operation": "optimize", "plan_id": 123, "changes": [{"action": "add_task|update_task|update_description|delete_task|reorder_task", ...}]}. If `changes` is omitted, optimize may synthesize changes from the latest rubric feedback.
 - get: Get plan details. Params: {"operation": "get", "plan_id": 123}
+- execute_task: Submit requested existing Plan tasks to a background job. Params: {"operation": "execute_task", "plan_id": 123, "target_task_ids": [4]}. Return the receipt immediately; do not implement the task in chat.
+- execute_all: Submit the whole Plan only when the user requests the entire Plan. Params: {"operation": "execute_all", "plan_id": 123}. A retry of one task is not a whole-plan request.
+- bind: Switch to a Plan explicitly selected by the current user. Params: {"operation": "bind", "plan_id": 123}.
 
 WORKFLOW for Plan Creation:
 1. Only when the user explicitly requests a new persistent Plan, call 'create' from the current context
