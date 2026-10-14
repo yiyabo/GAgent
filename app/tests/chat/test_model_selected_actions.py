@@ -249,9 +249,13 @@ def test_rollback_restores_legacy_context_policy(monkeypatch):
 
 
 @pytest.mark.parametrize("native", [True, False])
-def test_ordinary_file_work_stays_in_chat_and_preserves_tool_receipt(monkeypatch, native):
+@pytest.mark.parametrize("model_selection", [True, False])
+def test_ordinary_file_work_stays_in_chat_and_preserves_tool_receipt(monkeypatch, native, model_selection):
+    from app.services.foundation.settings import get_settings
+    monkeypatch.setattr(get_settings(), "chat_model_action_selection_enabled", model_selection)
     _patch_runtime(monkeypatch)
     agent = _build_agent()
+    agent.extra_context["task_id"] = 66
     operations = []
 
     class Files(ScriptedProvider):
@@ -297,6 +301,9 @@ def test_ordinary_file_work_stays_in_chat_and_preserves_tool_receipt(monkeypatch
     assert events[-1]["type"] == "final"
     assert "background" not in events[-1]["payload"]["metadata"].get("termination_reason", "")
 
+
+    assert agent.extra_context.get("current_task_id") is None
+    assert agent.extra_context.get("task_id") is None
 
 def test_quoted_artifact_error_does_not_require_a_plan_rubric_review():
     query = ("Execution failed. Artifact preflight failed for plan #187: Task #16 requires artifact alias "

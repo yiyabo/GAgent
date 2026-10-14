@@ -182,13 +182,13 @@ def pending(context) -> list[str]:
 
 
 def guard(context, tool, params) -> dict | None:
+    from .output_spec import is_readonly_output_probe
     missing = pending(context)
     if not missing:
         return None
     allowed = (
         tool in {"document_reader", "vision_reader"}
-        or tool == "file_operations"
-        and params.get("operation") in {"read", "list", "info", "stat", "search"}
+        or tool == "file_operations" and is_readonly_output_probe(tool, params)
         or tool == "plan_operation"
         and params.get("operation") == "resolve_input"
     )
@@ -207,7 +207,7 @@ def note_read(context, tool, params, result):
     state = context.get("artifact_input_discovery")
     if not state or not result.get("success"):
         return
-    if tool == "file_operations" and params.get("operation") == "read" or tool == "document_reader":
+    if tool == "file_operations" and params.get("operation") == "read" or tool in {"document_reader", "vision_reader"}:
         raw = params.get("path") or params.get("file_path")
         if raw:
             state["read_paths"].append(str(Path(raw).resolve()))

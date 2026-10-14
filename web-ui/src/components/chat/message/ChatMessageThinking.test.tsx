@@ -173,7 +173,7 @@ describe('ChatMessage thinking rendering', () => {
     });
 
     fireEvent.click(screen.getByText('Thought process'));
-    expect(screen.getByText('Managing the plan')).toBeInTheDocument();
+    expect(screen.getByText('Creating a plan')).toBeInTheDocument();
     expect(screen.queryByText(/Running 1 tools/)).not.toBeInTheDocument();
     const itemRow = container.querySelector('.tp-item-row');
     expect(itemRow).not.toBeNull();

@@ -1404,6 +1404,11 @@ class StructuredChatAgent:
                 return
         self.extra_context['chat_plan_execution_background_only'] = True
         self._update_routing_context(routing_decision)
+        selected_task = self.extra_context.pop('current_task_id', None)
+        if selected_task is not None:
+            self.extra_context['referenced_task_id'] = selected_task
+        self.extra_context.pop('task_id', None)
+        self.extra_context.pop('task_directory_full', None)
         _seed_active_subject_from_routing(self, routing_decision)
         if self.session_id:
             try:
