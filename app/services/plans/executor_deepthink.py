@@ -66,6 +66,7 @@ from .executor_text_utils import (
     _run_coroutine_sync,
 )
 from .plan_models import PlanNode, PlanTree
+from .paper_task_policy import is_planning_document, requires_manuscript_content, PLANNING_DOCUMENT_SCOPE
 from .executor_resume_repair import has_existing_evidence, previous_delivery_gap
 from .task_verification import VerificationFinalization
 
@@ -170,11 +171,16 @@ class _DeepThinkMethods:
         for key in ("output_spec", "output_input_snapshot", "output_spec_base_dir"):
             if key in node_metadata:
                 session_context[key] = node_metadata[key]
-        paper_mode = bool(
+        planning_document = is_planning_document(node.name, node.instruction, node_metadata)
+        paper_mode = not planning_document and bool(
             config.paper_mode
             or session_context.get("paper_mode")
             or node_metadata.get("paper_mode")
         )
+        if planning_document:
+            # Existing persisted trees may contain the old section_writer tag.
+            # Correct this run's instructions without editing that task tree.
+            session_context["paper_mode"] = False
         user_query = (node.instruction or node.display_name() or f"Execute task #{node.id}").strip()
         dep_outputs: List[Dict[str, Any]] = []
         paper_context_paths: List[str] = []
@@ -256,6 +262,8 @@ class _DeepThinkMethods:
             "This submits your answer; PlanExecutor independently checks OutputSpec and determines task completion.",
         ]
         constraints.extend(output_contract_lines)
+        if planning_document:
+            constraints.append(PLANNING_DOCUMENT_SCOPE)
         # Extract tool names mentioned in the instruction and enforce priority
         _instruction_lower = (node.instruction or "").lower()
         _tool_names_in_instruction = [
@@ -306,11 +314,15 @@ class _DeepThinkMethods:
                     "Paper mode is enabled: prioritize dependency artifact_paths and paper_context_paths as primary evidence.",
                     "When resolved_input_artifacts or absolute paper_context_paths are provided, treat them as the canonical source of truth instead of guessing filenames.",
                     "Do not claim completion without explicit citation integrity checks against provided reference files.",
-                    "CRITICAL TOOL SELECTION: For writing ANY paper content (sections, drafts, revisions, full assembly), you MUST use manuscript_writer. Do NOT use code_executor to write paper text. code_executor may only be used for data analysis, code generation, or non-writing tasks.",
                     "MD-FIRST MANUSCRIPT RULE: write the manuscript source as Markdown (.md) first and make it pass manuscript quality gates before attempting PDF rendering. PDF is a derived deliverable, not the source of truth.",
                     "CRITICAL EVIDENCE GATHERING: When using literature_pipeline to collect evidence for a review or manuscript, set download_pdfs=true (default) and max_pdfs>=20. The review coverage gate requires at least 6 full-text studies; abstract-only cards will block publication.",
                 ]
             )
+            if requires_manuscript_content(node.name, node.instruction, node_metadata):
+                constraints.append(
+                    "For substantive manuscript drafting, use manuscript_writer with the supplied evidence. "
+                    "Task completion still depends on the actual output and content checks, not the tool name."
+                )
         # --- Compressed file detection and decompression guidance ---
         _compressed_extensions = ('.tar.gz', '.tgz', '.tar.bz2', '.tbz2', '.tar.xz', '.txz', '.zip', '.rar', '.7z', '.gz')
         _instruction_text = (node.instruction or "").lower()
@@ -590,18 +602,6 @@ class _DeepThinkMethods:
             )
             check_run_active()
 
-            fallback_result = None
-            if paper_mode and "manuscript_writer" not in (result.tools_used or []):
-                if self._is_leaf_task(node, tree):
-                    fallback_result = self._run_manuscript_writer_fallback(
-                        node=node,
-                        task_context=task_context,
-                        session_context=session_context,
-                        deep_think_result=result,
-                        tool_result_context=tool_result_context,
-                        tree=tree,
-                    )
-
             primary_tool_failed = (
                 primary_execution_tool_failed
                 or _deep_think_has_failed_primary_execution_tool(result)
@@ -611,20 +611,6 @@ class _DeepThinkMethods:
             if execution_issues:
                 deep_think_status = "failed"
             tools_used = list(result.tools_used or [])
-            if fallback_result and fallback_result.get("success"):
-                if "manuscript_writer" not in tools_used:
-                    tools_used = tools_used + ["manuscript_writer"]
-                fallback_paths = self._extract_path_like_values(fallback_result)
-                if fallback_paths:
-                    existing_paths = [
-                        str(item).strip()
-                        for item in list(tool_result_context.get("artifact_paths") or [])
-                        if str(item).strip()
-                    ]
-                    tool_result_context["artifact_paths"] = list(
-                        dict.fromkeys([*fallback_paths, *existing_paths])
-                    )[:40]
-
             payload: Dict[str, Any] = {
                 "status": deep_think_status,
                 "content": result.final_answer,
@@ -729,6 +715,31 @@ class _DeepThinkMethods:
                 payload,
                 execution_status=effective_execution_status,
             )
+            # Verify before choosing recovery; publication/result persistence
+            # happens only after these checks and any targeted repair.
+            # An accepted deliverable finishes regardless of which writer was
+            # used. Retain the legacy writer recovery only for a real, missing
+            # manuscript output, never as a completion prerequisite.
+            if (paper_mode and self._is_leaf_task(node, tree)
+                    and self._needs_manuscript_recovery(node, finalization, task_work_dir)
+                    and "manuscript_writer" not in tools_used):
+                _log_job("info", "验收仍有缺项，尝试补齐论文交付。", {
+                    "sub_type": "repair_progress", "task_id": node.id,
+                    "status": "repairing", "method": "manuscript_writer",
+                })
+                fallback_result = self._run_manuscript_writer_fallback(
+                    node=node, task_context=task_context, session_context=session_context,
+                    deep_think_result=result, tool_result_context=tool_result_context, tree=tree)
+                if fallback_result and fallback_result.get("success"):
+                    paths = list(dict.fromkeys([*payload.get("artifact_paths", []),
+                        *self._extract_path_like_values(fallback_result)]))[:40]
+                    tool_result_context["artifact_paths"] = paths
+                    payload["artifact_paths"] = paths
+                    payload["metadata"].update(artifact_paths=paths,
+                        tools_used=[*tools_used, "manuscript_writer"])
+                    payload["metadata"].pop("output_produced_paths", None)
+                    finalization, _ = self._finalize_task_execution(
+                        plan_id, node, payload, execution_status=effective_execution_status)
             finalization = self._attempt_contract_repair_with_deep_think(
                 plan_id=plan_id,
                 node=node,
@@ -810,11 +821,17 @@ class _DeepThinkMethods:
 
     def _derive_manuscript_output_path(self, node: PlanNode) -> str:
         metadata = node.metadata if isinstance(node.metadata, dict) else {}
+        from .output_spec import output_spec_from_metadata
+        spec = output_spec_from_metadata(metadata)
+        for output in (spec.required_outputs if spec else []):
+            path = str(output.target_path or "").strip()
+            if output.kind == "document" and Path(path).suffix.lower() in {".md", ".markdown", ".html"}:
+                return str(Path(path).with_suffix(".md")) if path.lower().endswith(".html") else path
         acceptance = metadata.get("acceptance_criteria") if isinstance(metadata.get("acceptance_criteria"), dict) else {}
         checks = acceptance.get("checks") if isinstance(acceptance, dict) else None
         if isinstance(checks, list):
             for check in checks:
-                if isinstance(check, dict) and check.get("type") == "file_exists":
+                if isinstance(check, dict) and check.get("type") in {"file_exists", "file_nonempty"}:
                     path = str(check.get("path") or "").strip()
                     if path:
                         if path.lower().endswith(".html"):
@@ -825,11 +842,46 @@ class _DeepThinkMethods:
         contract = metadata.get("artifact_contract") if isinstance(metadata, dict) else {}
         publishes = contract.get("publishes") if isinstance(contract, dict) else None
         if isinstance(publishes, list) and publishes:
+            from .artifact_contracts import candidate_filenames_for_alias
             for alias in publishes:
-                alias_str = str(alias).strip()
-                if alias_str:
-                    return f"manuscript/{alias_str}.md"
+                for name in candidate_filenames_for_alias(str(alias)):
+                    if Path(name).suffix.lower() in {".md", ".markdown"}:
+                        return name
         return f"manuscript/task_{node.id}_manuscript.md"
+
+    def _needs_manuscript_recovery(
+        self, node: PlanNode, finalization: VerificationFinalization, task_work_dir: str
+    ) -> bool:
+        if (not self._should_repair_contract(finalization)
+                or not requires_manuscript_content(node.name, node.instruction, node.metadata)):
+            return False
+        from .output_spec import output_spec_from_metadata
+        spec = output_spec_from_metadata(node.metadata)
+        if spec and spec.required_outputs and not any(
+            output.kind == "document" and output.min_count == 1 and output.target_path
+            and Path(output.target_path).suffix.lower() in {".md", ".markdown", ".html"}
+            for output in spec.required_outputs
+        ):
+            return False  # the existing repair loop handles other/multiple outputs
+        if not (spec and spec.required_outputs):
+            metadata = node.metadata if isinstance(node.metadata, dict) else {}
+            checks = (metadata.get("acceptance_criteria") or {}).get("checks") or []
+            from .artifact_contracts import candidate_filenames_for_alias
+            aliases = (metadata.get("artifact_contract") or {}).get("publishes") or []
+            declared_paths = [str(check.get("path") or "") for check in checks
+                if isinstance(check, dict) and check.get("type") in {"file_exists", "file_nonempty"}]
+            declared_paths.extend(name for alias in aliases for name in candidate_filenames_for_alias(str(alias)))
+            if not any(Path(path).suffix.lower() in {".md", ".markdown", ".html"} for path in declared_paths):
+                return False  # do not invent an output target for a heavy writer
+        path = Path(self._derive_manuscript_output_path(node))
+        if not path.is_absolute():
+            path = Path(task_work_dir) / path
+        # Content/quality failure or a missing *other* output is not permission
+        # to overwrite an existing manuscript. Targeted repair owns those gaps.
+        try:
+            return not (path.is_file() and path.stat().st_size > 0)
+        except OSError:
+            return False  # uncertain file state belongs to targeted repair
 
     def _gather_manuscript_context_paths(
         self,

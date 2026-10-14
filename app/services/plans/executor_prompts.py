@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional
 
 from app.services.prompt_policy import REFERENCE_SCOPE_POLICY, TASK_EXECUTION_POLICY
 from .plan_models import PlanNode
+from .paper_task_policy import is_planning_document, PLANNING_DOCUMENT_SCOPE
 
 logger = logging.getLogger(__name__)
 
@@ -200,7 +201,10 @@ class ExecutorPromptBuilder:
         from .output_spec import output_spec_from_metadata, spec_metadata_view
         output_spec = output_spec_from_metadata(node_metadata)
         node_metadata = spec_metadata_view(node_metadata, output_spec)
-        paper_mode = bool(
+        planning_document = is_planning_document(node.name, node.instruction, node_metadata)
+        if planning_document:
+            lines.append(PLANNING_DOCUMENT_SCOPE)
+        paper_mode = not planning_document and bool(
             node_metadata.get("paper_mode")
             or (session_context or {}).get("paper_mode")
         )
