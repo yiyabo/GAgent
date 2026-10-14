@@ -110,16 +110,21 @@ def _build_structured_plan_requirement_block(agent: "DeepThinkAgent") -> str:
     requirement_lines: List[str] = []
     if agent.request_profile.get("plan_tree_edit_allowed") is False:
         requirement_lines.append(
-            "The persisted Plan task tree is fixed for this turn. Executing, retrying or repairing a task does not "
+            ("No persistent Plan has been requested in this chat. A topic selection or request to explain a subject "
+             "is not permission to create a research project. Answer the current question in chat; do not create "
+             "or bind a Plan. Ordinary tools and an internal todo-list remain available."
+             if plan_id is None else
+             "The persisted Plan task tree is fixed for this turn. Executing, retrying or repairing a task does not "
             "authorize plan edits. Do not create/split/delete/move/rewrite tasks, change their output requirements, "
             "or optimize the tree. You may maintain an internal todo-list and change your working approach "
-            "to complete the original task. Plan edits require an explicit user request."
+            "to complete the original task. Plan edits require an explicit user request.")
         )
     if agent.request_profile.get("chat_plan_execution_background_only") and plan_id is not None:
         requirement_lines.append(
-            "Plan task execution belongs in background jobs. Use plan_operation execute_task with target_task_ids "
+            "Only when the user explicitly asks to run Plan tasks, execution belongs in background jobs. Use plan_operation execute_task with target_task_ids "
             "for a selected scope, or execute_all for the whole plan. Do not perform the task's searches, code or "
-            "file production in this chat loop. After successful submission, return the job receipt."
+            "file production in this chat loop. After successful submission, return the job receipt. "
+            "A discussion or status question does not authorize starting Plan execution."
         )
     if flags["create_required"] and flags["execute_after_create_required"]:
         requirement_lines.append(

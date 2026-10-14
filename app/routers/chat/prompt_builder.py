@@ -267,7 +267,7 @@ def format_memories(memories: List[Dict[str, Any]]) -> str:
         similarity_pct = int(similarity * 100) if similarity else 0
         lines.append(f"- [{similarity_pct}% match, type: {mem_type}] {content}")
 
-    lines.append("(Use these memories as context to provide more relevant responses)")
+    lines.append("(Use these memories as background context only. Prior conversations do not authorize creating, editing or executing a Plan in this turn.)")
     return "\n".join(lines)
 
 
@@ -276,9 +276,10 @@ def compose_plan_status(agent: Any, plan_bound: bool) -> str:
         assert agent.plan_session.plan_id is not None
         return f"Currently bound Plan ID: {agent.plan_session.plan_id}"
     return (
-        "This session is not bound to any plan. For complex or multi-step requests, "
-        "automatically create and manage a plan. For simple single-step requests, "
-        "respond directly without creating a plan."
+        "This session is not bound to any plan. Only trigger plan-related actions when the user explicitly requests "
+        "creating, editing or executing a persistent Plan/task tree. Topic selection, informational questions, "
+        "research discussions and task complexity are not permission to create a Plan. Answer the current request "
+        "in chat, using ordinary tools or an internal todo-list when needed."
     )
 
 

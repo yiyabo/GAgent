@@ -26,6 +26,16 @@ def test_old_creation_context_is_not_edit_authorization_for_new_retry():
     assert agent_plan_edit_allowed(agent) is False
 
 
+def test_topic_selection_in_new_session_does_not_request_plan_even_with_plan_related_history():
+    from app.routers.chat.request_routing import resolve_request_routing
+    message='噬菌体/抗菌 → 多糖解聚酶（降解荚膜/生物膜）\n这个'
+    history=[{'role':'user','content':'不错不错，你知道解聚酶嘛？'},
+        {'role':'assistant','content':'噬菌体/抗菌 → 多糖解聚酶；也可以写综述或制作研究计划。需要我针对某个方向深入展开吗？'}]
+    decision=resolve_request_routing(message=message,history=history,plan_id=None)
+    assert decision.intent_type=='chat' and decision.plan_create_required is False
+    assert user_requested_plan_edit(decision.effective_user_message) is False
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('operation', ['create','bind','optimize','update_task'])
 async def test_plan_handler_rejects_mutation_before_dispatch(monkeypatch, operation):

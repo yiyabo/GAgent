@@ -613,7 +613,8 @@ class PlanDecompositionJob:
             "finished_at": _to_iso(self.finished_at),
         }
         if include_logs:
-            data["logs"] = [event.to_payload() for event in self.logs]
+            # A background writer may append while individual events serialize.
+            data["logs"] = [event.to_payload() for event in list(self.logs)]
         return data
 
     def append_log(
