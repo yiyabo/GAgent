@@ -38,11 +38,14 @@ def _sandbox_backend() -> DockerPTYBackend:
     patching THIS factory (``app/tests/conftest.py::local_sandbox_terminal``);
     production has no env escape hatch back to the app's own shell.
 
-    The Docker API proxy implements no exec hijack, so a session here fails
-    closed until the P3 sandbox-manager owns that stream; ``TERMINAL_ENABLED``
-    therefore stays 0.
+    The container dials back over the code kernel's existing channel, so the
+    Docker API proxy needs neither exec nor attach hijacking.
     """
-    return DockerPTYBackend()
+    from app.services.session_paths import get_host_runtime_root
+    if not get_host_runtime_root():
+        return DockerPTYBackend()  # Native-host development retains its direct Docker transport.
+    from .sandbox_pty_backend import SandboxPTYBackend
+    return SandboxPTYBackend()
 
 
 @dataclass
@@ -192,6 +195,7 @@ class TerminalSessionManager:
         session_id: str,
         *,
         mode: TerminalMode = "sandbox",
+        work_dir: Optional[str] = None,
         ssh_config: Optional[SSHConfig] = None,
         qwen_extra_mounts: Optional[Sequence[Tuple[str, str]]] = None,
         qwen_add_dirs: Optional[Sequence[str]] = None,
@@ -203,6 +207,12 @@ class TerminalSessionManager:
             raise ValueError("session_id is required")
 
         workspace = self._workspace_path(owner)
+        if work_dir and mode == "sandbox":
+            from app.services.session_paths import get_runtime_session_dir
+            workspace = Path(work_dir).resolve()
+            if not workspace.is_relative_to(get_runtime_session_dir(owner).resolve()):
+                raise ValueError("Terminal work_dir must belong to the current session")
+            workspace.mkdir(parents=True, exist_ok=True)
         terminal_id = str(uuid4())
         created_at = self._now()
         backend: Union[PTYBackend, SSHBackend, DockerPTYBackend]
@@ -247,14 +257,10 @@ class TerminalSessionManager:
 
         try:
             if mode == "sandbox":
-                # DockerPTYBackend binds `cwd` as /workspace, and the daemon
-                # resolves bind sources on the HOST (DooD), so the session
-                # workspace has to be translated before it is handed over.
                 from app.ops.sandbox import sandbox_python_image
-                from app.services.session_paths import host_path_for
-
+                backend.session_id = owner
                 await backend.spawn(
-                    cwd=host_path_for(session.cwd),
+                    cwd=session.cwd,
                     env=session.env,
                     exec_args=["/bin/bash"],
                     image=sandbox_python_image(),
@@ -321,6 +327,7 @@ class TerminalSessionManager:
         session_id: str,
         *,
         mode: TerminalMode = "sandbox",
+        work_dir: Optional[str] = None,
     ) -> TerminalSession:
         target_id = str(session_id).strip()
         if not target_id:
@@ -335,6 +342,7 @@ class TerminalSessionManager:
                 s
                 for s in self._sessions.values()
                 if s.session_id == target_id and s.mode == mode and s.state in {"active", "idle", "creating"}
+                and (not work_dir or s.cwd == str(Path(work_dir).resolve()))
             ]
             if candidates:
                 candidates.sort(key=lambda s: s.last_activity, reverse=True)
@@ -350,9 +358,9 @@ class TerminalSessionManager:
             # Spawn failed and the slot was removed.  Re-enter the full
             # ensure path so that only one waiter creates the replacement
             # session while the others see it via the normal lookup.
-            return await self.ensure_session_for_chat(target_id, mode=mode)
+            return await self.ensure_session_for_chat(target_id, mode=mode, work_dir=work_dir)
 
-        return await self.create_session(target_id, mode=mode)
+        return await self.create_session(target_id, mode=mode, **({"work_dir": work_dir} if work_dir else {}))
 
     async def ensure_qwen_code_session(
         self,

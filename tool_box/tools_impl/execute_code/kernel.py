@@ -867,6 +867,7 @@ def _spawn_sandbox(
     path, unchanged.
     """
     from app.ops import sandbox as sandbox_ops
+    from app.ops.workspace_mounts import session_mounts
 
     from .cell_channel import ENV_CELL_ENDPOINT, ENV_CELL_TOKEN, CellChannelServer
 
@@ -891,7 +892,7 @@ def _spawn_sandbox(
             name=sandbox_ops.sandbox_name("gagent-kernel", uuid.uuid4().hex[:12]),
             session_id=str(kernel.key[0]),
             user=f"{os.getuid()}:{os.getgid()}",
-            mounts=[(workdir, "rw")],
+            mounts=session_mounts(workdir, str(kernel.key[0])),
             env=sandbox_ops.build_sandbox_env(
                 workdir=workdir,
                 extra={

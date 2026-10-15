@@ -68,6 +68,8 @@ async def terminal_session_handler(
 ) -> Dict[str, Any]:
     op = str(operation or "").strip().lower()
     effective_session_id = _resolve_effective_session_id(session_id, tool_context)
+    workspace = getattr(tool_context, "work_dir", None)
+    workspace_kwargs = {"work_dir": workspace} if workspace and mode == "sandbox" else {}
 
     if op == "create":
         if not effective_session_id:
@@ -84,6 +86,7 @@ async def terminal_session_handler(
             session = await terminal_session_manager.ensure_session_for_chat(
                 effective_session_id,
                 mode=resolved_mode,
+                **workspace_kwargs,
             )
         return {
             "operation": op,
@@ -102,6 +105,7 @@ async def terminal_session_handler(
         session = await terminal_session_manager.ensure_session_for_chat(
             effective_session_id,
             mode=resolved_mode,
+            **workspace_kwargs,
         )
         return {
             "operation": op,
@@ -132,6 +136,7 @@ async def terminal_session_handler(
             session = await terminal_session_manager.ensure_session_for_chat(
                 effective_session_id,
                 mode=resolved_mode,
+                **workspace_kwargs,
             )
             resolved_terminal_id = session.terminal_id
         if data is None:

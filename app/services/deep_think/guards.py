@@ -295,6 +295,13 @@ def _apply_loop_guards(
     verified: List[str] = guard_state["verified_deliverables"]
     failure_counts: Dict[str, int] = guard_state["failure_sig_counts"]
     failure_warned: set = guard_state["failure_sig_warned"]
+    agent_managed = bool(getattr(agent, "_plan_agent_completion", False))
+    if agent_managed:
+        from .observation_progress import observe
+        if observe(tool_results, guard_state):
+            guard_state["last_progress_iteration"] = iteration
+            guard_state["no_progress_nudge_sent"] = False
+            logger.info("[DEEP_THINK][progress] iteration=%s new_observation=true", iteration)
 
     new_verified: List[str] = []
     for candidate in agent._extract_guard_candidates(tool_results):
@@ -427,7 +434,11 @@ def _apply_loop_guards(
         streak = iteration - int(guard_state["last_progress_iteration"])
         if streak >= _progress_free_nudge_streak() and not guard_state["no_progress_nudge_sent"]:
             guard_state["no_progress_nudge_sent"] = True
-            if verified:
+            if agent_managed:
+                content = (f"The last {streak} steps added no new useful observation, computation or output. "
+                           "Change the ineffective approach, complete the next concrete step using existing materials, "
+                           "or explain the unresolved blocker. Repeating the same probes will not help.")
+            elif verified:
                 files_list = "\n".join(f"- {p}" for p in verified[:6])
                 content = (
                     f"No new deliverable has been produced in the last {streak} steps. "
@@ -483,9 +494,11 @@ def _apply_loop_guards(
                     ",".join(missing),
                 )
             agent._termination_reason = "no_progress"
+            output_label = "recorded output file(s)" if agent_managed else "verified deliverable(s)"
             return (
-                f"Stopped after {streak} steps without new deliverables; "
-                f"wrapping up with {len(verified)} verified deliverable(s)."
+                f"Stopped after {streak} steps without "
+                + ("new observations, computations or outputs; " if agent_managed else "new deliverables; ")
+                + f"wrapping up with {len(verified)} {output_label}."
             )
 
     logger.info(
