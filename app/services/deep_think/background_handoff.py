@@ -5,9 +5,9 @@ from .models import DeepThinkResult
 
 async def conclude_background_plan(agent, steps, tools_used, iteration):
     record = agent._chat_plan_handoff_result
-    job_id = str(record['job_id'])
     plan_id = record.get('plan_id')
-    text = f"计划 #{plan_id} 已提交后台执行（作业 {job_id}）。你可以继续聊天，进度和产物在计划面板查看。"
+    from app.services.plans.execution_receipt import execution_receipt
+    text = execution_receipt(record, record.get('submitted_task_ids'))
     if steps:
         steps[-1].status = 'done'
         if agent.on_thinking:

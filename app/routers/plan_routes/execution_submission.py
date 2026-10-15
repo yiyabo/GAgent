@@ -36,6 +36,8 @@ def start_task_chain(tree, task_id, selected_task_ids, task_order, dependency_pl
                     "selected_task_ids": selected_task_ids},
             metadata={"session_id": request.session_id, "plan_id": plan_id, "plan_title": tree.title,
                       "target_task_id": task_id, "target_task_name": tree.nodes[task_id].display_name(),
+                      "requested_tasks": [{"task_id": tid, "name": tree.nodes[tid].display_name()}
+                                          for tid in selected_task_ids],
                       "task_order": task_order, "requested_task_ids": selected_task_ids},
         )
         facade.plan_decomposition_jobs.append_log(

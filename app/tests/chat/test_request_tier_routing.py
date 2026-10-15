@@ -1251,7 +1251,7 @@ def test_explicit_single_task_hands_off_to_background_without_running_chat_execu
     chunks = asyncio.run(collect())
     assert len(chunks) == 1
     assert "job-4" in chunks[0]
-    assert "后台执行" in chunks[0]
+    assert "已提交后台" in chunks[0] and "正在排队" in chunks[0]
 
 
 def test_full_plan_execution_hands_off_to_background(monkeypatch) -> None:

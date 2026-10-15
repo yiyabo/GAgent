@@ -27,7 +27,7 @@ def test_background_plan_submission_closes_chat_without_another_model_call(nativ
     async def execute(name, arguments):
         assert name == 'plan_operation'
         result = {'success': True, 'operation': 'execute_task', 'plan_id': 185,
-                  'job_id': 'job-4', 'background_submitted': True}
+                  'job_id': 'job-4', 'background_submitted': True, 'submitted_task_ids': [4]}
         agent._chat_plan_handoff_result = result
         agent._chat_plan_handoff_query = '提交任务4到后台执行'
         return result
@@ -36,5 +36,6 @@ def test_background_plan_submission_closes_chat_without_another_model_call(nativ
     result = asyncio.run(agent.think('提交任务4到后台执行'))
     assert calls == ['model']
     assert result.termination_reason == 'background_plan_submitted'
-    assert 'job-4' in result.final_answer and result.output_verification is None
+    assert '任务 #4' in result.final_answer and '正在排队' in result.final_answer
+    assert 'job-4' not in result.final_answer and result.output_verification is None
     assert result.thinking_steps[-1].status == 'done'

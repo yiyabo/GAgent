@@ -1953,6 +1953,12 @@ class StructuredChatAgent:
                     nonlocal bio_failure_active, failed_tool_name
                     nonlocal help_seen_after_failure, retry_seen_after_help
                     nonlocal created_plan_this_turn_id
+                    # A native batch can contain more calls after submission.
+                    # The chat turn ends at the first durable handoff; never
+                    # start another job or foreground work from the same batch.
+                    if getattr(dt_agent, "_chat_plan_handoff_result", None):
+                        return {"success": True, "executed": False, "skipped": True,
+                                "reason": "background_handoff_complete"}
                     runtime_tool_context = params.get("tool_context") if isinstance(params, dict) else None
                     safe_params = _sanitize_deep_think_tool_params(params)
                     requested_operation = str(safe_params.get("operation") or "").strip().lower()

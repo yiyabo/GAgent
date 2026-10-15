@@ -138,6 +138,17 @@ def test_registry_has_all_native_tools_with_valid_envelopes() -> None:
         assert isinstance(params["properties"], dict) and params["properties"]
 
 
+def test_plan_execution_contract_matches_toolbox_and_native_surfaces():
+    from app.services.plans.execution_contract import PLAN_EXECUTION_GUIDANCE, execution_target_ids_schema
+    from tool_box.tools_impl.plan_tools import plan_operation_tool
+    native = TOOL_REGISTRY["plan_operation"]["function"]
+    assert PLAN_EXECUTION_GUIDANCE in native["description"]
+    assert PLAN_EXECUTION_GUIDANCE in plan_operation_tool["description"]
+    assert native["parameters"]["properties"]["target_task_ids"] == execution_target_ids_schema()
+    assert plan_operation_tool["parameters_schema"]["properties"]["target_task_ids"] == execution_target_ids_schema()
+    assert native["parameters"]["properties"]["target_task_id"] == plan_operation_tool["parameters_schema"]["properties"]["target_task_id"]
+
+
 def test_bio_tools_enum_stays_dynamic_from_tools_config() -> None:
     config_path = PROJECT_ROOT / "tool_box" / "bio_tools" / "tools_config.json"
     config = json.loads(config_path.read_text(encoding="utf-8"))

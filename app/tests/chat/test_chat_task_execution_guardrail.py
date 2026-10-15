@@ -280,7 +280,7 @@ def test_process_unified_stream_persists_background_receipt_for_refresh(monkeypa
         return [chunk async for chunk in agent.process_unified_stream("请继续执行 Task 66")]
     asyncio.run(collect())
     assert len(saved) == 1 and saved[0][1]["background_job_id"] == "task-66-job"
-    assert "后台执行" in saved[0][0]
+    assert "已提交后台" in saved[0][0] and "正在排队" in saved[0][0]
 
 
 def test_prepare_rerun_task_execution_disables_skills_for_explicit_execute_shortcut() -> None:

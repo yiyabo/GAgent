@@ -21,6 +21,8 @@ PHRASES = [
     "能不能帮我把 task2 再跑一遍？",
     "刚才那个继续往下做",
     "Please resume the outline stage",
+    "执行一下task5吧",
+    "帮我把第五个任务跑起来",
 ]
 READ_REQUESTS = [
     "task2修好了吗？",
@@ -28,6 +30,9 @@ READ_REQUESTS = [
     "我引用的是‘执行task2’，并没要求你执行",
     "介绍一下解聚酶",
     "是否需要重跑那个阶段？",
+    "先别执行task5",
+    "我刚才执行过task5了",
+    "我刚才说‘执行task5’，先别真的运行",
 ]
 
 
@@ -162,6 +167,9 @@ def test_paraphrased_execution_requires_model_call_and_only_submits_background(m
             "plan_id": 34,
             "background_submitted": True,
             "job_id": "one",
+            "submitted_task_ids": [66],
+            "job": {"job_id": "one", "status": "queued", "metadata": {
+                "requested_tasks": [{"task_id": 66, "name": "章节大纲"}]}},
         }
 
     monkeypatch.setattr("app.routers.chat.agent.execute_tool", handler)
@@ -176,7 +184,10 @@ def test_paraphrased_execution_requires_model_call_and_only_submits_background(m
     )
     events = _run(agent, query)
     assert len(provider.calls) == 1 and len(submitted) == 1
-    assert events[-1]["type"] == "final" and "one" in events[-1]["payload"]["response"]
+    payload = events[-1]["payload"]
+    assert events[-1]["type"] == "final" and "章节大纲（任务 #66）" in payload["response"]
+    assert "正在排队" in payload["response"] and "one" not in payload["response"]
+    assert payload["metadata"]["background_job_id"] == "one"
     assert agent.extra_context.get("current_task_id") is None
 
 
@@ -312,6 +323,39 @@ def test_quoted_artifact_error_does_not_require_a_plan_rubric_review():
     decision = resolve_model_routing(message=query, plan_id=187, current_task_id=16)
     assert not decision.plan_review_required and not decision.plan_execute_required
     assert decision.route_reason_codes == [MODEL_SELECTION]
+
+
+def test_handoff_stops_later_calls_in_same_native_batch(monkeypatch):
+    _patch_runtime(monkeypatch)
+    agent = _build_agent()
+    calls = []
+
+    class Batch(NativeProvider):
+        async def stream_chat_with_tools_async(self, **kwargs):
+            self.calls.append(kwargs["messages"])
+            return NativeStreamResult(content="Submit selected scope", tool_calls=[
+                NativeToolCall("first", "plan_operation", {"operation": "execute_task", "target_task_ids": [66]}),
+                NativeToolCall("second", "plan_operation", {"operation": "execute_task", "target_task_ids": [67]}),
+                NativeToolCall("third", "file_operations", {"operation": "read", "path": "note.md"}),
+            ])
+
+    provider = Batch("重跑task66", "execute_task")
+
+    async def execute(name, **params):
+        calls.append(name)
+        return {"success": True, "background_submitted": True, "job_id": "first-job", "plan_id": 34,
+                "operation": "execute_task", "submitted_task_ids": [66]}
+
+    monkeypatch.setattr("app.routers.chat.agent.execute_tool", execute)
+
+    class Agent(DeepThinkAgent):
+        def __init__(self, **kwargs):
+            super().__init__(**{**kwargs, "llm_client": provider})
+
+    monkeypatch.setattr("app.routers.chat_routes.DeepThinkAgent", Agent)
+    events = _run(agent, "重跑task66")
+    assert calls == ["plan_operation"] and len(provider.calls) == 1
+    assert events[-1]["payload"]["metadata"]["background_job_id"] == "first-job"
 
 
 def test_legacy_rollout_also_does_not_force_review_from_a_filename(monkeypatch):
