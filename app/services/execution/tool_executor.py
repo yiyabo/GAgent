@@ -140,6 +140,11 @@ class UnifiedToolExecutor:
             act = str(safe_params.get("action") or "").strip().lower()
             if act.startswith("batch_"):
                 timeout = max(timeout, 600)
+            if act == "gateway":
+                requested_timeout = safe_params.get("timeout", timeout - 5)
+                if isinstance(requested_timeout, (int, float)) and not isinstance(requested_timeout, bool):
+                    # Let collection persist partial files before the existing outer timeout.
+                    safe_params["timeout"] = min(requested_timeout, max(1, timeout - 5))
         try:
             from tool_box import execute_tool
 
@@ -456,6 +461,9 @@ class UnifiedToolExecutor:
             return "(no result)"
 
         if tool_name == "phagescope" and isinstance(result, dict):
+            if result.get("action") == "gateway":
+                from tool_box.phagescope_gateway_contract import summarize_gateway_result
+                return summarize_gateway_result(result)
             action = str(result.get("action") or "phagescope").strip().lower()
             if result.get("success") is False:
                 return (

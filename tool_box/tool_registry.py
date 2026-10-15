@@ -107,7 +107,7 @@ _TOOL_METADATA: Dict[str, Dict[str, Any]] = {
         "search_hint": "file read write copy move delete list",
     },
     "phagescope": {
-        "search_hint": "phage bacteriophage annotation pipeline submit",
+        "search_hint": "phage bacteriophage gateway catalog protein host family structure sequence annotation slurm submit status results",
     },
     "phagescope_research": {
         "search_hint": "phagescope local dataset host taxonomy machine learning audit split",

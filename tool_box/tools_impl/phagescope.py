@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import httpx
 
 from app.services.tool_output_resolver import get_tool_output_resolver
+from tool_box.context import ToolContext
 
 logger = logging.getLogger(__name__)
 
@@ -201,7 +202,15 @@ async def phagescope_handler(
     manifest_path: Optional[str] = None,
     retry_phage_ids: Optional[Any] = None,
     phage_ids_file: Optional[str] = None,
+    gateway_action: Optional[str] = None,
+    gateway_params: Optional[Dict[str, Any]] = None,
+    tool_context: Optional[ToolContext] = None,
 ) -> Dict[str, Any]:
+    if str(action).lower().strip() == "gateway":
+        from .phagescope_gateway import gateway_handler
+
+        context = tool_context or ToolContext(session_id=session_id, task_id=task_id)
+        return await gateway_handler(gateway_action, gateway_params, timeout=timeout, context=context)
     base_url = _get_base_url(base_url)
     headers = {"Accept": "application/json"}
     if token:
@@ -628,3 +637,8 @@ phagescope_tool = {
         "Download RefSeq meta data and GFF3: action=bulk_download, phageids='refseq', modulelist='phage_meta_data,gff3'",
     ],
 }
+
+# The independent gateway contract is shared with native schemas.
+from ..phagescope_gateway_contract import extend_schema as _extend_gateway_schema
+
+_extend_gateway_schema(phagescope_tool, "parameters_schema")

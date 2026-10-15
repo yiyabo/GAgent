@@ -1,5 +1,40 @@
 # PhageScope Dataset Guide
 
+## Agent Gateway tools
+
+Use the existing `phagescope` tool with `action="gateway"` and a
+`gateway_action`. Start with `capabilities` to see whether data and analysis
+channels are configured; credentials are supplied by the server, never inferred
+from legacy website userid or asked for as model/tool arguments.
+
+- Catalog: `overview` (cite its `checked_on`), `datasets`, `phages` with at least
+  one filter, `phage`, `phage_proteins`, `phage_features`, `phage_sequence`.
+- Protein/host/family/structure: `protein`, `hosts`, `families`, `family`,
+  `family_members`, `structures`. Structure availability is a lookup, not a new
+  structure prediction.
+- Analysis: `submit` with `gateway_params.modules` and exactly one of `fasta`,
+  `file_path`, `accession`; use the returned numeric `job_id` with `status` and
+  `save_results`. Submissions return immediately; do not continuously poll in
+  chat or re-submit after a lost response. The receipt is saved locally.
+- `gateway_params.save=true` saves a data response in the current task workspace.
+  `save_results` collects all returned module files plus a provenance manifest.
+  The gateway caps text at 1 MiB per file, genomes at 200,000 bases and protein
+  previews at 2,000 characters. Check `truncated`/`truncated_files`; `.preview`
+  files are incomplete source material. Full-file download, remote cancellation
+  and remote job listing are not provided by this gateway contract.
+
+All 18 analysis modules are exposed: annotation, quality, host, host_cherry,
+lifestyle, lifestyle_phatyp, viralverify, trna, crispr, taxonomic_phagcn,
+taxonomic, alignment, anticrispr, arvf, transmembrane, terminator, tree, cluster.
+Required annotation is added and duplicate modules are removed before submission.
+No separate content acceptance or approval stage is part of this workflow.
+
+Example: `{"action":"gateway","gateway_action":"phages","gateway_params":{"host":"Klebsiella","pagesize":20,"save":true}}`.
+
+Legacy website actions and public bulk downloads remain available through the
+same tool. They use a different protocol; do not mix their taskid with gateway
+job_id or their input arguments with gateway_params.
+
 ## Overview
 
 **PhageScope** (2024 Release): Comprehensive database of bacteriophage genomes

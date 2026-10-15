@@ -17,6 +17,8 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
+from .phagescope_gateway_contract import extend_schema as _extend_gateway_schema
+
 NATIVE_TOOL_CONTENT: Dict[str, Dict[str, Any]] = {
     "web_search": {
         # 已对齐 impl（2026-09-24 漂移合并）：补齐 provider/max_results，描述同步 impl
@@ -1182,3 +1184,5 @@ NATIVE_TOOL_CONTENT: Dict[str, Dict[str, Any]] = {
         },
     },
 }
+
+_extend_gateway_schema(NATIVE_TOOL_CONTENT["phagescope"], "parameters")
