@@ -234,6 +234,9 @@ def dry_run_reverify_plan(
     task_ids: Optional[List[int]] = Body(default=None),
 ):
     _load_authorized_plan_tree(plan_id, request)
+    from app.services.plans.completion_policy import acceptance_enabled
+    if not acceptance_enabled():
+        raise HTTPException(status_code=410, detail="独立验收已关闭。")
     if not isinstance(task_ids, list):
         task_ids = None
     result = _task_verifier.dry_run_reverify_plan(
@@ -344,6 +347,9 @@ def verify_task_result(
     plan_id: int = Query(..., description="plan ID"),
 ):
     tree = _load_authorized_plan_tree(plan_id, request)
+    from app.services.plans.completion_policy import acceptance_enabled
+    if not acceptance_enabled():
+        raise HTTPException(status_code=410, detail="独立验收已关闭。任务按执行结果记录，后续任务可自行补充输入。")
     if not tree.has_node(task_id):
         raise HTTPException(status_code=404, detail=f"Task {task_id} not found in plan {plan_id}")
     node = tree.get_node(task_id)
@@ -453,6 +459,9 @@ def accept_task_result(
     plan_id: int = Query(..., description="plan ID"),
 ):
     tree = _load_authorized_plan_tree(plan_id, request)
+    from app.services.plans.completion_policy import acceptance_enabled
+    if not acceptance_enabled():
+        raise HTTPException(status_code=410, detail="独立验收已关闭，无需人工审批。")
     if not tree.has_node(task_id):
         raise HTTPException(status_code=404, detail=f"Task {task_id} not found in plan {plan_id}")
     node = tree.get_node(task_id)
@@ -813,6 +822,7 @@ def execute_full_plan(
 
     # --- Artifact dependency enrichment ---
     try:
+        from app.services.plans.completion_policy import acceptance_enabled
         _enrichment_result = enrich_plan_dependencies(tree)
         if _enrichment_result.added_edges:
             for _enode in tree.iter_nodes():
@@ -825,7 +835,7 @@ def execute_full_plan(
                 plan_id, len(_enrichment_result.added_edges),
             )
         _normalization = normalize_plan_dependencies(tree)
-        if _normalization.dependencies_by_task:
+        if _normalization.dependencies_by_task and acceptance_enabled():
             for _tid, _deps in _normalization.dependencies_by_task.items():
                 _plan_repo.update_task(plan_id, _tid, dependencies=list(_deps))
                 if _tid in tree.nodes:

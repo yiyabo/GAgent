@@ -188,6 +188,11 @@ def _build_cli_task_contract(
     task_text = str(task or "").strip()
     if not isinstance(execution_spec, dict):
         return task_text
+    if execution_spec.get("agent_managed_completion"):
+        from app.services.plans.completion_policy import guidance
+        inputs = {key: execution_spec.get(key) for key in (
+            "plan_id", "task_id", "resolved_input_artifacts", "dependency_outputs", "dependency_artifact_paths")}
+        return task_text + "\n" + guidance() + "\nAvailable input references:\n" + json.dumps(inputs, ensure_ascii=False)
 
     lines: List[str] = ["[BOUND TASK CONTEXT]"]
     is_verification_only = _is_verification_only_task(task_text)

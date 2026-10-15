@@ -137,7 +137,7 @@ const ScopedPlanWorkspace: React.FC<{ planId: number | null; sessionId: string |
           another session's list (2026-10-09, LOCAL_INFRA §113). */}
       <h2 className="pw-plan-title" title={planTitle}>{planTitle}</h2>
       <div className="pw-plan-meta"><span>{planId == null ? '在对话中创建计划' : `Plan #${planId}`}</span>
-        {planId != null && <><span className="pw-separator">·</span><span>{completed} / {executionTasks.length} 个执行任务已完成</span>
+        {planId != null && <><span className="pw-separator">·</span><span>{completed} / {executionTasks.length} 个任务已执行</span>
           {activeJobs.length > 0 && <span className="pw-live-indicator">执行中</span>}
           {failures > 0 && <span className="pw-error-text">{failures} 个失败</span>}</>}
         {needsReview > 0 && <span className="pw-review-text">{needsReview} 个待验收</span>}

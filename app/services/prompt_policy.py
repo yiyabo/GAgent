@@ -18,7 +18,7 @@ REFERENCE_SCOPE_POLICY = (
 TASK_EXECUTION_POLICY = (
     "Complete only the assigned task with its original instructions and output contract. "
     "Use an internal todo-list if useful; do not create, split, delete, move or rewrite Plan nodes. "
-    "Reuse existing dependency evidence and outputs that passed verification. Repair the reported "
+    "Reuse existing dependency evidence and available outputs. Inspect their contents and repair "
     "missing or invalid deliverables without restarting successful upstream work. Report a concrete "
-    "blocker if the required evidence is actually unavailable; never invent evidence or relax acceptance."
+    "blocker if the required evidence is actually unavailable; never invent evidence or hide limitations."
 )

@@ -50,6 +50,8 @@ def _parse_execution_result(raw_value: Any) -> Tuple[Optional[str], List[str], D
         metadata = payload.get("metadata") or {}
         if not isinstance(metadata, dict):
             metadata = {}
+        from app.services.plans.completion_policy import result_metadata
+        metadata = result_metadata(metadata)
         return content, notes, metadata, payload
 
     # Fallback for unexpected payload types

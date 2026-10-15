@@ -93,12 +93,15 @@ def candidates(tree, node, manifest: dict) -> list[dict]:
         }
     # Verified declared files can exist before canonical publication in older plans.
     from .output_spec import output_spec_from_metadata
+    from .completion_policy import acceptance_enabled, execution_status
 
     for producer in tree.nodes.values():
-        if producer.id == node.id or producer.status not in {"completed", "done", "success"}:
+        producer_payload = _payload(producer)
+        producer_status = producer.status if acceptance_enabled() else execution_status(producer.status, producer_payload.get("metadata"))
+        if producer.id == node.id or producer_status not in {"completed", "done", "success"}:
             continue
         payload = _payload(producer)
-        if (payload.get("metadata") or {}).get("verification_status") != "passed":
+        if acceptance_enabled() and (payload.get("metadata") or {}).get("verification_status") != "passed":
             continue
         spec = output_spec_from_metadata(producer.metadata or {})
         declared = (
@@ -106,7 +109,11 @@ def candidates(tree, node, manifest: dict) -> list[dict]:
         )
         for raw in payload.get("artifact_paths") or []:
             path = Path(str(raw))
-            if not path.is_absolute() or path.name not in declared:
+            if not path.is_absolute():
+                continue
+            if acceptance_enabled() and path.name not in declared:
+                continue
+            if not acceptance_enabled() and not path.is_file():
                 continue
             found.setdefault(
                 str(path.resolve()),
@@ -144,7 +151,8 @@ def candidates(tree, node, manifest: dict) -> list[dict]:
 
 def prepare(node, tree, manifest, missing, context) -> bool:
     items = candidates(tree, node, manifest)
-    if not items:
+    from .completion_policy import acceptance_enabled
+    if not items and acceptance_enabled():
         return False
     context["artifact_input_discovery"] = {
         "missing": list(missing),
@@ -164,6 +172,10 @@ def prompt(context) -> str:
     state = context.get("artifact_input_discovery")
     if not state:
         return ""
+    from .completion_policy import acceptance_enabled, guidance
+    if not acceptance_enabled():
+        return guidance() + "\nInput discovery hints (optional bindings):\n" + json.dumps(
+            {"missing_aliases": state["missing"], "candidates": state["candidates"]}, ensure_ascii=False)
     return (
         "INPUT RECONCILIATION: The required input aliases were not resolved; this does not establish that files are absent. "
         "Inspect the actual candidate contents using file_operations read or document_reader. Decide whether a candidate "
@@ -182,6 +194,9 @@ def pending(context) -> list[str]:
 
 
 def guard(context, tool, params) -> dict | None:
+    from .completion_policy import acceptance_enabled
+    if not acceptance_enabled():
+        return None
     from .output_spec import is_readonly_output_probe
     missing = pending(context)
     if not missing:

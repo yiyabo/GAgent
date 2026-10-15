@@ -250,6 +250,10 @@ class ArtifactPreflightService:
                 )
             )
 
+        from .completion_policy import acceptance_enabled
+        if not acceptance_enabled():
+            warnings.extend(issue.model_copy(update={"severity": "warning"}) for issue in errors)
+            errors = []
         return ArtifactPreflightResult(
             plan_id=plan_id,
             ok=not errors,

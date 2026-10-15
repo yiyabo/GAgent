@@ -134,6 +134,8 @@ class CodeAgentTaskDelegateExecutor:
 
     def _build_delegate_prompt(self, spec: TaskDelegationSpec) -> str:
         plan_bound = self._is_plan_bound(spec)
+        from .completion_policy import acceptance_enabled, guidance
+        strict = not plan_bound or acceptance_enabled()
         # The delegate boundary contract is shared by both shapes; only the
         # scope line, the header and the plan/task labels differ.
         lines = [
@@ -147,8 +149,8 @@ class CodeAgentTaskDelegateExecutor:
                 if plan_bound
                 else "Complete only this task; do not expand its scope or take on other work."
             ),
-            "The orchestration system, not you, decides final task completion after deterministic verification.",
-            "If inputs are missing, report BLOCKED_DEPENDENCY with a concise DETAIL.",
+            "The orchestration system, not you, decides final task completion after deterministic verification." if strict else guidance(),
+            "If inputs are missing, report BLOCKED_DEPENDENCY with a concise DETAIL." if strict else "Recover missing inputs from available materials or make a supplement before reporting any remaining blocker.",
             "Return the strict final response schema requested by the execution runtime.",
             "Do not claim that internal Phage-Agent tools were called; this delegate only has the external code-agent runtime tools.",
             "",
@@ -166,7 +168,7 @@ class CodeAgentTaskDelegateExecutor:
             lines.append("\n=== RESOLVED INPUT ARTIFACTS ===")
             for alias, path in spec.resolved_input_artifacts.items():
                 lines.append(f"- {alias}: {path}")
-        if spec.acceptance_criteria:
+        if spec.acceptance_criteria and strict:
             lines.append("\n=== ACCEPTANCE CRITERIA ===")
             lines.append(self._format_json_block(spec.acceptance_criteria))
         if spec.artifact_contract:

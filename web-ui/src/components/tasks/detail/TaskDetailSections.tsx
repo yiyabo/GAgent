@@ -766,6 +766,7 @@ export const ExecutionResult: React.FC<ExecutionResultProps> = ({
     return <Text type="secondary">No execution result available</Text>;
   }
   const verification = getVerificationView(result);
+  const agentManaged = result.metadata?.execution_policy === 'agent';
   const executionStatus = String(
     result.metadata?.execution_status ?? result.status ?? ''
   )
@@ -778,7 +779,7 @@ export const ExecutionResult: React.FC<ExecutionResultProps> = ({
   const executionFailed = executionStatus === 'failed' || executionStatus === 'error';
   const configError = verification.status === 'config_error';
   const showFailureSummary =
-    executionFailed || (failureKind.length > 0 && !configError) || verification.status === 'failed';
+    executionFailed || (!agentManaged && ((failureKind.length > 0 && !configError) || verification.status === 'failed'));
   const repairNote = resolveRepairNote(result.metadata);
   const artifactAuthority =
     result.metadata && typeof result.metadata.artifact_authority === 'object'
@@ -893,12 +894,12 @@ export const ExecutionResult: React.FC<ExecutionResultProps> = ({
         {executionCompleted && publishedArtifactLabels.length === 0 && (
           <Tag>No published artifact</Tag>
         )}
-        {canVerify && onReverify && (
+        {!agentManaged && canVerify && onReverify && (
           <Button size="small" onClick={onReverify} loading={verifyLoading}>
             Re-verify
           </Button>
         )}
-        {canManualAccept && onManualAccept && (
+        {!agentManaged && canManualAccept && onManualAccept && (
           <Button size="small" onClick={onManualAccept} loading={manualAcceptLoading}>
             Accept manually
           </Button>
@@ -916,7 +917,7 @@ export const ExecutionResult: React.FC<ExecutionResultProps> = ({
           }
         />
       )}
-      {executionCompleted && !configError && verification.status !== 'failed' && publishedArtifactLabels.length === 0 && (
+      {executionCompleted && !agentManaged && !configError && verification.status !== 'failed' && publishedArtifactLabels.length === 0 && (
         <Alert
           type={expectedPublishAliases.length > 0 ? 'warning' : 'info'}
           showIcon

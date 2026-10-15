@@ -192,6 +192,12 @@ async def prepare_acceptance_spec(
 ) -> Optional[AcceptanceSpec]:
     """Use an existing declaration before any optional extraction call."""
     context = context if isinstance(context, dict) else {}
+    from app.services.plans.completion_policy import plan_agent_managed
+    agent._plan_agent_completion = plan_agent_managed(agent, context, task_context)
+    if agent._plan_agent_completion:
+        agent._acceptance_spec = None
+        agent._output_verification = None
+        return None
     spec = output_spec_from_metadata(context)
     if spec is None:
         provided = getattr(task_context, "output_spec", None)
@@ -252,6 +258,8 @@ def acceptance_missing(
     verified_paths: List[str],
     spec: Optional[AcceptanceSpec] = None,
 ) -> List[str]:
+    if getattr(agent, "_plan_agent_completion", False):
+        return []
     from app.services.deep_think.text_utils import _missing_expectations_detailed
 
     spec = spec or getattr(agent, "_acceptance_spec", None)

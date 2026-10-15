@@ -1,5 +1,6 @@
 # noqa: D401 - module-level documentation handled in docs/decompose_task_plan.md
 from __future__ import annotations
+from .completion_policy import acceptance_enabled
 
 import logging
 import json
@@ -222,7 +223,7 @@ class DecompositionPromptBuilder:
             "  * Example (literature review): the search task publishes [`lit_review.search_corpus_jsonl`]; the extraction task requires [`lit_review.search_corpus_jsonl`] and publishes [`lit_review.extraction_matrix_csv`]; the drafting task requires the matrix and publishes [`lit_review.manuscript_draft_md`].",
             "  * Tasks that produce no file (pure analysis or decisions) may leave `publishes` empty — never invent an alias for a file that will not be written.",
             "- SINGLE-PRODUCER RULE (critical): each artifact alias must have exactly ONE producing task in the plan. A task that only VERIFIES, validates, checks, summarizes, or reads an upstream task's output (e.g. an acceptance/verification task depending on the producer) must NOT list that alias in `publishes` — it should list it in `requires` instead (or simply keep the `dependencies` edge and its acceptance checks). Duplicate `publishes` across producer and verifier tasks blocks plan execution.",
-            "- For file/data tasks that download files, generate datasets, or write reports/artifacts, include `metadata.acceptance_criteria` when possible. Use deterministic checks only; prefer `file_exists`, `file_nonempty`, `glob_count_at_least`, `text_contains`, `json_field_equals`, `json_field_at_least`, or `pdb_residue_present`.",
+            "- For file/data tasks that download files, generate datasets, or write reports/artifacts, include `metadata.acceptance_criteria` when possible. Use deterministic checks only; prefer `file_exists`, `file_nonempty`, `glob_count_at_least`, `text_contains`, `json_field_equals`, `json_field_at_least`, or `pdb_residue_present`." if acceptance_enabled() else "- Describe requested output files and their intended contents clearly. Do not add independent acceptance checks or human approval stages; leave metadata.acceptance_criteria empty. Each execution Agent may inspect upstream materials and supplement missing inputs within its assigned task.",
             "- `context.sections` must be an array of JSON objects, never strings. Every object must provide `title` and `content` keys.",
             "- Use empty arrays (`[]`) or empty objects (`{}`) when there is no data.",
             "- Do not invent additional top-level keys beyond this schema.",

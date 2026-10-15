@@ -6,6 +6,9 @@ import os
 # inherits the production APP_ENV must not activate the fail-closed
 # platform profile.
 os.environ.setdefault("APP_ENV", "development")
+# Legacy contract suites exercise the rollback policy. Agent-led completion
+# tests explicitly select the new production default and reset settings.
+os.environ.setdefault("PLAN_ACCEPTANCE_ENABLED", "1")
 
 import asyncio
 from collections.abc import Callable, Iterator

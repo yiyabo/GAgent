@@ -11,7 +11,7 @@ export const statusColorMap: Record<string, string> = {
 export const statusLabelMap: Record<string, string> = {
   pending: 'pending',
   running: 'running',
-  completed: 'completed',
+  completed: '已执行',
   failed: 'failed',
   skipped: 'skipped',
   blocked: 'blocked',

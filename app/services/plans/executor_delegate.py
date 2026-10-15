@@ -258,6 +258,10 @@ class _DelegateMethods:
         metadata = node_metadata if isinstance(node_metadata, dict) else {}
         spec = output_spec_from_metadata(metadata)
         metadata = spec_metadata_view(metadata, spec)
+        from .completion_policy import acceptance_enabled, guidance
+        if not acceptance_enabled():
+            outputs = spec.to_dict()["required_outputs"] if spec else []
+            return [guidance(), "Requested task outputs (guidance): " + json.dumps(outputs, ensure_ascii=False)]
         acceptance = metadata.get("acceptance_criteria") if isinstance(metadata.get("acceptance_criteria"), dict) else {}
         contract = metadata.get("artifact_contract") if isinstance(metadata.get("artifact_contract"), dict) else {}
         required_paths: List[str] = []

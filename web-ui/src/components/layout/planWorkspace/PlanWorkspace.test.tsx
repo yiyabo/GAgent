@@ -50,7 +50,7 @@ describe('plan workspace navigation and async isolation', () => {
     existing.nodes['3'].metadata = {task_type: 'composite', decomposition_status: 'failed'};
     api.getPlanTree.mockResolvedValue(existing);
     mount();
-    expect(await screen.findByText('1 / 2 个执行任务已完成')).toBeInTheDocument();
+    expect(await screen.findByText('1 / 2 个任务已执行')).toBeInTheDocument();
     expect(screen.getByRole('button', {name: /重新执行/})).toBeEnabled();
   });
   it('shows review work separately from completed execution tasks', async () => {
@@ -59,7 +59,7 @@ describe('plan workspace navigation and async isolation', () => {
     api.getPlanTree.mockResolvedValue(pendingReview);
     mount();
     expect(await screen.findByText('1 个待验收')).toBeInTheDocument();
-    expect(screen.getByText('1 / 2 个执行任务已完成')).toBeInTheDocument();
+    expect(screen.getByText('1 / 2 个任务已执行')).toBeInTheDocument();
     expect(screen.getByText('#2 · 待验收')).toBeInTheDocument();
   });
   it('retains selected plan while task tree loads', async () => {
@@ -70,7 +70,7 @@ describe('plan workspace navigation and async isolation', () => {
     await act(async () => { finish(tree(1)); });
     expect(await screen.findByRole('heading', { name: '筛选 1' })).toBeInTheDocument();
     expect(useChatStore.getState().currentPlanId).toBe(1);
-    expect(screen.getByText('1 / 2 个执行任务已完成')).toBeInTheDocument();
+    expect(screen.getByText('1 / 2 个任务已执行')).toBeInTheDocument();
   });
   it('shows the bound plan read-only and never offers a plan switcher', async () => {
     mount();

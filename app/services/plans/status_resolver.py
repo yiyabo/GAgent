@@ -166,6 +166,8 @@ class PlanStatusResolver:
         session_id: Optional[str] = None,
     ) -> Dict[int, Dict[str, Any]]:
         manifest_payload = manifest if isinstance(manifest, dict) else load_artifact_manifest(plan_id, session_id)
+        from .completion_policy import acceptance_enabled, execution_status as lifecycle_status
+        strict_acceptance = acceptance_enabled()
         preflight = self._artifact_preflight.validate_plan(
             plan_id,
             tree,
@@ -267,7 +269,7 @@ class PlanStatusResolver:
             # executed directly).
             child_ids = list(tree.children_ids(task_id))
             has_own_contract, needs_own_verification = self._own_acceptance_requirements(node, contract_by_task.get(task_id))
-            if child_ids and not has_own_contract:
+            if child_ids and (not has_own_contract or not strict_acceptance):
                 child_states = [_resolve(cid) for cid in child_ids]
                 child_statuses = [
                     str(cs.get("effective_status") or "pending")
@@ -421,6 +423,10 @@ class PlanStatusResolver:
                 effective_status = "running"
                 status_reason = "Currently executing in an active background job."
                 reason_code = "active_execution"
+            elif not strict_acceptance:
+                effective_status = lifecycle_status(raw_status or payload_status, metadata)
+                reason_code = "execution_finished" if effective_status == "completed" else "execution_" + effective_status
+                status_reason = "本任务已执行。后续任务执行时可检查并补充所需材料。" if effective_status == "completed" else None
             elif artifact_freshness["freshness"] in {"stale","reconciling"}:
                 effective_status = "pending" if artifact_freshness["freshness"]=="stale" else "blocked"
                 status_reason = "; ".join(artifact_freshness["stale_reasons"]) or "Publication reconciliation pending"
