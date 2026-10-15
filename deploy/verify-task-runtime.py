@@ -49,11 +49,21 @@ async def main():
         assert json.loads((task / 'results/summary.json').read_text()) == {'sum': 10}
         terminal = await terminal_session_handler(operation='ensure', tool_context=context)
         assert terminal['cwd'] == str(task), terminal
-        snippet = f'import json; print("TERMINAL_"+"SUM", sum(json.loads(x)["value"] for x in open({str(upstream)!r})))'
+        terminal_output = task / 'results/terminal-read.json'
+        snippet = (f'import json; from pathlib import Path; n=sum(json.loads(x)["value"] for x in open({str(upstream)!r})); '
+                   f'Path({str(terminal_output)!r}).write_text(json.dumps({{"sum":n}})); print("TERMINAL_"+"SUM",n)')
         command = 'python -c ' + shlex.quote(snippet) + '\n'
         outcome = await terminal_session_handler(operation='write', terminal_id=terminal['terminal_id'],
                                                   data=command, tool_context=context)
-        assert 'TERMINAL_SUM 10' in str(outcome), outcome
+        # PTY idle/echo is not command completion; wait for the command's own receipt.
+        async def wait_for_output():
+            while True:
+                try:
+                    return json.loads(terminal_output.read_text())
+                except (FileNotFoundError, json.JSONDecodeError):
+                    pass
+                await asyncio.sleep(.05)
+        assert await asyncio.wait_for(wait_for_output(), 15) == {'sum': 10}, outcome
         assert upstream.read_text().splitlines()[0] == '{"value": 0}'
         print(json.dumps({'upstream_read': True, 'upstream_read_only': True, 'output_written': True,
                           'terminal_workdir': terminal['cwd'], 'terminal_read': True, 'model_calls': 0}))
