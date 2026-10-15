@@ -154,6 +154,9 @@ def sanitize_tool_result(tool_name: str, raw_result: Any) -> Dict[str, Any]:
         return sanitized
 
     if tool_name == "phagescope" and isinstance(raw_result, dict):
+        if raw_result.get("action") == "gateway":
+            from .phagescope_gateway_results import compact_gateway_result
+            return compact_gateway_result(raw_result)
         sanitized: Dict[str, Any] = {
             "tool": tool_name,
             "action": raw_result.get("action"),
@@ -946,6 +949,9 @@ def summarize_tool_result(tool_name: str, result: Dict[str, Any]) -> str:
         return f"PhageScope research {action} succeeded."
 
     if tool_name == "phagescope":
+        if result.get("action") == "gateway":
+            from .phagescope_gateway_results import summarize_gateway_result
+            return summarize_gateway_result(result)
         action = result.get("action") or "phagescope"
         # Special handling: save_all may return 207 (partial) but still be usable.
         if str(action).strip().lower() == "save_all":

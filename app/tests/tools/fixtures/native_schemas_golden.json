@@ -436,7 +436,7 @@
     },
     {
       "function": {
-        "description": "PhageScope cloud platform for phage genome analysis. ASYNC service. Use for reachability and remote workflow questions: call action=ping first (HTTP check); do not infer connectivity from local file listing. Documented flows center on userid; do not ask users for a generic 'API Token' unless they or platform docs explicitly require Bearer auth. Workflow: submit -> task_list/task_detail -> result. After submit, report the taskid and tell the user to check status later. IMPORTANT: result/quality/task_detail/download return API/JSON (or one file), not a full local folder tree; for a complete on-disk bundle (metadata/, annotation/, raw_api_responses/, summary.json), use action=save_all with the numeric taskid after the remote task succeeds. Batch: action=batch_submit submits multiple phage ids (default strategy multi_one_task = one remote taskid) and writes a manifest JSON under the session work directory; batch_reconcile diffs requested ids vs result/phage rows; batch_retry re-submits missing ids one strain per task. Prefer these over memorizing taskids in chat.",
+        "description": "Agent Gateway: action=gateway, gateway_action=capabilities discovers configured channels. gateway_action supports data_health, analysis_health, overview, datasets, phages, phage, phage_proteins, phage_features, phage_sequence, protein, hosts, families, family, family_members, structures, submit, status, results, save_results. Put inputs in gateway_params. Use phage_id for the numeric catalog id; use job_id for an analysis job. submit accepts modules and exactly one of fasta, file_path, accession; returns a job_id promptly. Then query status and save_results into the current task workspace. API keys come from server configuration. Results may be truncated previews: inspect truncation metadata before using them as full input. No content approval is required. Legacy website actions remain available. PhageScope cloud platform for phage genome analysis. ASYNC service. Use for reachability and remote workflow questions: call action=ping first (HTTP check); do not infer connectivity from local file listing. Documented flows center on userid; do not ask users for a generic 'API Token' unless they or platform docs explicitly require Bearer auth. Workflow: submit -> task_list/task_detail -> result. After submit, report the taskid and tell the user to check status later. IMPORTANT: result/quality/task_detail/download return API/JSON (or one file), not a full local folder tree; for a complete on-disk bundle (metadata/, annotation/, raw_api_responses/, summary.json), use action=save_all with the numeric taskid after the remote task succeeds. Batch: action=batch_submit submits multiple phage ids (default strategy multi_one_task = one remote taskid) and writes a manifest JSON under the session work directory; batch_reconcile diffs requested ids vs result/phage rows; batch_retry re-submits missing ids one strain per task. Prefer these over memorizing taskids in chat.",
         "name": "phagescope",
         "parameters": {
           "properties": {
@@ -458,7 +458,8 @@
                 "batch_submit",
                 "batch_reconcile",
                 "batch_retry",
-                "bulk_download"
+                "bulk_download",
+                "gateway"
               ],
               "type": "string"
             },
@@ -469,6 +470,200 @@
             "batch_id": {
               "description": "Batch manifest id (batch_reconcile, batch_retry; optional on batch_submit to fix the id).",
               "type": "string"
+            },
+            "gateway_action": {
+              "description": "Required with action=gateway. Use capabilities to discover all Agent Gateway operations.",
+              "enum": [
+                "capabilities",
+                "data_health",
+                "analysis_health",
+                "overview",
+                "datasets",
+                "phages",
+                "phage",
+                "phage_proteins",
+                "phage_features",
+                "phage_sequence",
+                "protein",
+                "hosts",
+                "families",
+                "family",
+                "family_members",
+                "structures",
+                "status",
+                "results",
+                "submit",
+                "save_results"
+              ],
+              "type": "string"
+            },
+            "gateway_params": {
+              "additionalProperties": false,
+              "description": "Inputs for gateway_action. phages requires a filter; phage_* needs phage_id; hosts needs rank; families needs protein_id; results needs job_id+module; save_results needs job_id (modules optional).",
+              "properties": {
+                "accession": {
+                  "type": "string"
+                },
+                "cluster": {
+                  "type": "string"
+                },
+                "completeness": {
+                  "type": "string"
+                },
+                "dataset": {
+                  "type": "string"
+                },
+                "family_id": {
+                  "type": "string"
+                },
+                "fasta": {
+                  "description": "Nucleotide FASTA text for submit; do not send a filename here.",
+                  "type": "string"
+                },
+                "file_path": {
+                  "description": "Existing FASTA input file in the current session/task.",
+                  "type": "string"
+                },
+                "gc_max": {
+                  "type": "number"
+                },
+                "gc_min": {
+                  "type": "number"
+                },
+                "host": {
+                  "type": "string"
+                },
+                "include_sequence": {
+                  "type": "boolean"
+                },
+                "job_id": {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "length_max": {
+                  "type": "integer"
+                },
+                "length_min": {
+                  "type": "integer"
+                },
+                "lifestyle": {
+                  "type": "string"
+                },
+                "max_bases": {
+                  "maximum": 200000,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "module": {
+                  "enum": [
+                    "annotation",
+                    "quality",
+                    "host",
+                    "host_cherry",
+                    "lifestyle",
+                    "lifestyle_phatyp",
+                    "viralverify",
+                    "trna",
+                    "crispr",
+                    "taxonomic_phagcn",
+                    "taxonomic",
+                    "alignment",
+                    "anticrispr",
+                    "arvf",
+                    "transmembrane",
+                    "terminator",
+                    "tree",
+                    "cluster"
+                  ],
+                  "type": "string"
+                },
+                "modules": {
+                  "items": {
+                    "enum": [
+                      "annotation",
+                      "quality",
+                      "host",
+                      "host_cherry",
+                      "lifestyle",
+                      "lifestyle_phatyp",
+                      "viralverify",
+                      "trna",
+                      "crispr",
+                      "taxonomic_phagcn",
+                      "taxonomic",
+                      "alignment",
+                      "anticrispr",
+                      "arvf",
+                      "transmembrane",
+                      "terminator",
+                      "tree",
+                      "cluster"
+                    ],
+                    "type": "string"
+                  },
+                  "maxItems": 12,
+                  "minItems": 1,
+                  "type": "array"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "page": {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "pagesize": {
+                  "maximum": 50,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "phage_id": {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "protein_id": {
+                  "type": "string"
+                },
+                "protein_ids": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "maxItems": 20,
+                  "minItems": 1,
+                  "type": "array"
+                },
+                "rank": {
+                  "enum": [
+                    "Phylum",
+                    "Class",
+                    "Order",
+                    "Family",
+                    "Genus",
+                    "Species"
+                  ],
+                  "type": "string"
+                },
+                "save": {
+                  "description": "Save query response (and returned sequence) in the current task workspace.",
+                  "type": "boolean"
+                },
+                "taxonomy": {
+                  "type": "string"
+                },
+                "type": {
+                  "enum": [
+                    "trna",
+                    "crispr",
+                    "anticrispr",
+                    "terminator",
+                    "virulence",
+                    "amr",
+                    "transmembrane"
+                  ],
+                  "type": "string"
+                }
+              },
+              "type": "object"
             },
             "manifest_path": {
               "description": "Optional explicit manifest JSON path.",
@@ -1446,7 +1641,7 @@
     },
     {
       "function": {
-        "description": "PhageScope cloud platform for phage genome analysis. ASYNC service. Use for reachability and remote workflow questions: call action=ping first (HTTP check); do not infer connectivity from local file listing. Documented flows center on userid; do not ask users for a generic 'API Token' unless they or platform docs explicitly require Bearer auth. Workflow: submit -> task_list/task_detail -> result. After submit, report the taskid and tell the user to check status later. IMPORTANT: result/quality/task_detail/download return API/JSON (or one file), not a full local folder tree; for a complete on-disk bundle (metadata/, annotation/, raw_api_responses/, summary.json), use action=save_all with the numeric taskid after the remote task succeeds. Batch: action=batch_submit submits multiple phage ids (default strategy multi_one_task = one remote taskid) and writes a manifest JSON under the session work directory; batch_reconcile diffs requested ids vs result/phage rows; batch_retry re-submits missing ids one strain per task. Prefer these over memorizing taskids in chat.",
+        "description": "Agent Gateway: action=gateway, gateway_action=capabilities discovers configured channels. gateway_action supports data_health, analysis_health, overview, datasets, phages, phage, phage_proteins, phage_features, phage_sequence, protein, hosts, families, family, family_members, structures, submit, status, results, save_results. Put inputs in gateway_params. Use phage_id for the numeric catalog id; use job_id for an analysis job. submit accepts modules and exactly one of fasta, file_path, accession; returns a job_id promptly. Then query status and save_results into the current task workspace. API keys come from server configuration. Results may be truncated previews: inspect truncation metadata before using them as full input. No content approval is required. Legacy website actions remain available. PhageScope cloud platform for phage genome analysis. ASYNC service. Use for reachability and remote workflow questions: call action=ping first (HTTP check); do not infer connectivity from local file listing. Documented flows center on userid; do not ask users for a generic 'API Token' unless they or platform docs explicitly require Bearer auth. Workflow: submit -> task_list/task_detail -> result. After submit, report the taskid and tell the user to check status later. IMPORTANT: result/quality/task_detail/download return API/JSON (or one file), not a full local folder tree; for a complete on-disk bundle (metadata/, annotation/, raw_api_responses/, summary.json), use action=save_all with the numeric taskid after the remote task succeeds. Batch: action=batch_submit submits multiple phage ids (default strategy multi_one_task = one remote taskid) and writes a manifest JSON under the session work directory; batch_reconcile diffs requested ids vs result/phage rows; batch_retry re-submits missing ids one strain per task. Prefer these over memorizing taskids in chat.",
         "name": "phagescope",
         "parameters": {
           "properties": {
@@ -1468,7 +1663,8 @@
                 "batch_submit",
                 "batch_reconcile",
                 "batch_retry",
-                "bulk_download"
+                "bulk_download",
+                "gateway"
               ],
               "type": "string"
             },
@@ -1479,6 +1675,200 @@
             "batch_id": {
               "description": "Batch manifest id (batch_reconcile, batch_retry; optional on batch_submit to fix the id).",
               "type": "string"
+            },
+            "gateway_action": {
+              "description": "Required with action=gateway. Use capabilities to discover all Agent Gateway operations.",
+              "enum": [
+                "capabilities",
+                "data_health",
+                "analysis_health",
+                "overview",
+                "datasets",
+                "phages",
+                "phage",
+                "phage_proteins",
+                "phage_features",
+                "phage_sequence",
+                "protein",
+                "hosts",
+                "families",
+                "family",
+                "family_members",
+                "structures",
+                "status",
+                "results",
+                "submit",
+                "save_results"
+              ],
+              "type": "string"
+            },
+            "gateway_params": {
+              "additionalProperties": false,
+              "description": "Inputs for gateway_action. phages requires a filter; phage_* needs phage_id; hosts needs rank; families needs protein_id; results needs job_id+module; save_results needs job_id (modules optional).",
+              "properties": {
+                "accession": {
+                  "type": "string"
+                },
+                "cluster": {
+                  "type": "string"
+                },
+                "completeness": {
+                  "type": "string"
+                },
+                "dataset": {
+                  "type": "string"
+                },
+                "family_id": {
+                  "type": "string"
+                },
+                "fasta": {
+                  "description": "Nucleotide FASTA text for submit; do not send a filename here.",
+                  "type": "string"
+                },
+                "file_path": {
+                  "description": "Existing FASTA input file in the current session/task.",
+                  "type": "string"
+                },
+                "gc_max": {
+                  "type": "number"
+                },
+                "gc_min": {
+                  "type": "number"
+                },
+                "host": {
+                  "type": "string"
+                },
+                "include_sequence": {
+                  "type": "boolean"
+                },
+                "job_id": {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "length_max": {
+                  "type": "integer"
+                },
+                "length_min": {
+                  "type": "integer"
+                },
+                "lifestyle": {
+                  "type": "string"
+                },
+                "max_bases": {
+                  "maximum": 200000,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "module": {
+                  "enum": [
+                    "annotation",
+                    "quality",
+                    "host",
+                    "host_cherry",
+                    "lifestyle",
+                    "lifestyle_phatyp",
+                    "viralverify",
+                    "trna",
+                    "crispr",
+                    "taxonomic_phagcn",
+                    "taxonomic",
+                    "alignment",
+                    "anticrispr",
+                    "arvf",
+                    "transmembrane",
+                    "terminator",
+                    "tree",
+                    "cluster"
+                  ],
+                  "type": "string"
+                },
+                "modules": {
+                  "items": {
+                    "enum": [
+                      "annotation",
+                      "quality",
+                      "host",
+                      "host_cherry",
+                      "lifestyle",
+                      "lifestyle_phatyp",
+                      "viralverify",
+                      "trna",
+                      "crispr",
+                      "taxonomic_phagcn",
+                      "taxonomic",
+                      "alignment",
+                      "anticrispr",
+                      "arvf",
+                      "transmembrane",
+                      "terminator",
+                      "tree",
+                      "cluster"
+                    ],
+                    "type": "string"
+                  },
+                  "maxItems": 12,
+                  "minItems": 1,
+                  "type": "array"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "page": {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "pagesize": {
+                  "maximum": 50,
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "phage_id": {
+                  "minimum": 1,
+                  "type": "integer"
+                },
+                "protein_id": {
+                  "type": "string"
+                },
+                "protein_ids": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "maxItems": 20,
+                  "minItems": 1,
+                  "type": "array"
+                },
+                "rank": {
+                  "enum": [
+                    "Phylum",
+                    "Class",
+                    "Order",
+                    "Family",
+                    "Genus",
+                    "Species"
+                  ],
+                  "type": "string"
+                },
+                "save": {
+                  "description": "Save query response (and returned sequence) in the current task workspace.",
+                  "type": "boolean"
+                },
+                "taxonomy": {
+                  "type": "string"
+                },
+                "type": {
+                  "enum": [
+                    "trna",
+                    "crispr",
+                    "anticrispr",
+                    "terminator",
+                    "virulence",
+                    "amr",
+                    "transmembrane"
+                  ],
+                  "type": "string"
+                }
+              },
+              "type": "object"
             },
             "manifest_path": {
               "description": "Optional explicit manifest JSON path.",

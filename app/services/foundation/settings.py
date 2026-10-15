@@ -63,6 +63,12 @@ if _USE_PYDANTIC:
 
         base_url: Optional[str] = Field(default=None, env="BASE_URL")
 
+        phagescope_gateway_base_url: Optional[str] = Field(default=None, env="PHAGESCOPE_GATEWAY_BASE_URL")
+        phagescope_gateway_data_url: Optional[str] = Field(default=None, env="PHAGESCOPE_GATEWAY_DATA_URL")
+        phagescope_gateway_analysis_url: Optional[str] = Field(default=None, env="PHAGESCOPE_GATEWAY_ANALYSIS_URL")
+        phagescope_gateway_data_key: Optional[str] = Field(default=None, env="PHAGESCOPE_GATEWAY_DATA_KEY", repr=False)
+        phagescope_gateway_analysis_key: Optional[str] = Field(default=None, env="PHAGESCOPE_GATEWAY_ANALYSIS_KEY", repr=False)
+
         glm_api_key: Optional[str] = Field(default=None, env="GLM_API_KEY")
         glm_api_url: str = Field(
             default="https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
@@ -354,6 +360,11 @@ else:
             self.log_dir = os.getenv("LOG_DIR", "logs")
             self.database_url = os.getenv("DATABASE_URL", "sqlite:///./tasks.db")
             self.base_url = os.getenv("BASE_URL")
+            self.phagescope_gateway_base_url = os.getenv("PHAGESCOPE_GATEWAY_BASE_URL")
+            self.phagescope_gateway_data_url = os.getenv("PHAGESCOPE_GATEWAY_DATA_URL")
+            self.phagescope_gateway_analysis_url = os.getenv("PHAGESCOPE_GATEWAY_ANALYSIS_URL")
+            self.phagescope_gateway_data_key = os.getenv("PHAGESCOPE_GATEWAY_DATA_KEY")
+            self.phagescope_gateway_analysis_key = os.getenv("PHAGESCOPE_GATEWAY_ANALYSIS_KEY")
             self.glm_api_key = os.getenv("GLM_API_KEY")
             self.glm_api_url = os.getenv("GLM_API_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions")
             self.glm_model = os.getenv("GLM_MODEL", "qwen3-max-2026-01-23")
