@@ -94,5 +94,5 @@ def summarize_gateway_result(result):
     state = f" ({result['execution_status']})" if result.get("execution_status") else ""
     files = result.get("produced_files") or []
     saved = f"; saved {len(files)} files" if files else ""
-    preview = "; includes truncated previews" if result.get("truncated_files") else ""
+    preview = "; includes previews" if result.get("truncated_files") or result.get("text_only_files") else ""
     return f"PhageScope gateway {operation}{job}{state}{saved}{preview}"
