@@ -151,8 +151,19 @@ jobs:
           PLATFORM_LLM_ALLOWED_HOSTS=example.com
           CORS_ORIGINS=http://127.0.0.1:18080
           LOG_LEVEL=INFO
+          CODE_MODE_ENABLED=1
+          CODE_MODE_SANDBOX=1
+          CODE_MODE_RPC_BIND=0.0.0.0
+          CODE_MODE_RPC_ADVERTISE=app
+          SANDBOX_PYTHON_IMAGE=gagent-sandbox-python:latest
           COMPOSE_PROFILES=
           EOF
+
+      - name: Build Python sandbox for the task runtime smoke
+        run: >-
+          docker build -f deploy/Dockerfile.sandbox-python -t gagent-sandbox-python:latest
+          --build-arg BASE_IMAGE=python:3.12-slim
+          --build-arg APT_MIRROR_HOST= --build-arg PIP_INDEX_URL=https://pypi.org/simple .
 
       - name: Boot the stack
         run: docker compose -f deploy/docker-compose.yml up -d --no-build
