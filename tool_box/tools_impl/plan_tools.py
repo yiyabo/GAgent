@@ -25,6 +25,7 @@ from app.services.plans.plan_optimizer import (
     resolve_plan_review_result,
 )
 from app.services.plans.task_metadata_generator import ensure_task_metadata
+from app.services.plans.execution_contract import PLAN_EXECUTION_GUIDANCE, execution_target_ids_schema
 
 logger = logging.getLogger(__name__)
 _artifact_preflight_service = ArtifactPreflightService()
@@ -199,13 +200,21 @@ async def plan_operation_handler(
             request={**payload,"expected_manifest_revision":impact["manifest_revision"],"preview_fingerprint":impact["preview_fingerprint"],"idempotency_key":"chat-"+impact["preview_fingerprint"]}
             return {"success":True,"operation":"recompute",**enqueue(repo,resolved,request,owner)}
         elif operation == "execute_all":
+            if kwargs.get("target_task_ids") is not None or kwargs.get("target_task_id") is not None:
+                return {"success": False, "operation": operation, "executed": False,
+                        "error": "execute_all has no task target. Use execute_task for a selected scope."}
             return await _execute_all(plan_id, tool_context=tool_context)
         elif operation == "execute_task":
             ids = kwargs.get("target_task_ids")
+            single_id = kwargs.get("target_task_id")
+            if ids is not None and single_id is not None and ids != [single_id]:
+                return {"success": False, "operation": operation, "executed": False,
+                        "error": "Use one consistent target_task_ids scope; target_task_id conflicts with it."}
             if ids is None and kwargs.get("target_task_id") is not None:
                 ids = [kwargs["target_task_id"]]
             if not isinstance(ids, list) or not ids:
-                return {"success": False, "operation": operation, "error": "target_task_ids is required"}
+                return {"success": False, "operation": operation, "executed": False,
+                        "error": "target_task_ids is required; inspect the Plan or clarify the target with the user."}
             return await _execute_all(plan_id, tool_context=tool_context, task_ids=ids)
         elif operation == "update_task":
             return await _update_task(
@@ -1436,32 +1445,27 @@ async def _execute_all(
         if isinstance(detail, dict) and detail.get("preflight"):
             payload.update(status="artifact_preflight_failed", preflight=detail["preflight"], error=response.message)
         return {**payload, "operation": "execute_task" if task_ids is not None else "execute_all", "job_id": job.get("job_id"),
+                "submitted_task_ids": task_ids,
                 "background_submitted": bool(response.success and job)}
     except Exception as exc:
-        return {"success": False, "operation": "execute_all", "plan_id": plan_id, "error": str(exc)}
+        return {"success": False, "operation": "execute_task" if task_ids is not None else "execute_all",
+                "plan_id": plan_id, "error": str(getattr(exc, "detail", None) or exc), "executed": False}
 
 
 # Tool definition for registration
 plan_operation_tool = {
     "name": "plan_operation",
-    "description": """Plan creation, optimization, and execution tool for DeepThink Agent.
+    "description": """Inspect, create, edit, or execute persistent Plan trees.
 
-Supports creating plans, reviewing them, optimizing, and executing all tasks.
 Create a persistent Plan only when the user explicitly requests one; ordinary discussion, code and analysis do not require Plan nodes.
 get/todo_list/review inspect existing state. Review is read-only. Execution and retry do not authorize edits to tasks or their output contracts.
 
 RECOMPUTE:
 For explicitly requested updates of prior results, update changed task instructions then use recompute. It updates only the requested affected dependency closure. Do not use for status questions.
 
-CRITICAL — EXECUTE_ALL:
-When the user wants to execute the entire plan, run all tasks, or start the plan execution,
-you MUST use operation="execute_all". Do NOT attempt to execute tasks one by one yourself.
-execute_all launches a background job that handles all tasks automatically in dependency order,
-with progress tracking and error handling. It returns a job_id for real-time monitoring.
-For specific tasks use operation="execute_task" and target_task_ids. All plan task execution
-is submitted to background jobs; return the job receipt immediately and let the user keep chatting.
+EXECUTION SCOPE:
+""" + PLAN_EXECUTION_GUIDANCE + """
 For missing-input/file questions use get and file_operations to inspect actual materials. Review scores Plan structure; it does not inspect artifact contents. During task input reconciliation, resolve_input confirms a candidate only after reading it; it never edits the tree.
-Use execute_all only for an explicit whole-plan request. A short "开始吧" or "let's go" follows the established target scope; it does not select all tasks or override a recently named task.
 
 BIND operation:
 - Switches the current session to a different plan
@@ -1537,7 +1541,7 @@ Legacy compatibility:
             },
             "changed_task_ids": {"type":"array","items":{"type":"integer"}},
             "changed_aliases": {"type":"array","items":{"type":"string"}},
-            "target_task_ids": {"type":"array","items":{"type":"integer"}},
+            "target_task_ids": execution_target_ids_schema(),
             "input_alias": {"type":"string", "description":"Pending input alias to confirm during task input reconciliation."},
             "candidate_id": {"type":"string", "description":"Candidate ID from task input inventory; read its contents before resolve_input."},
             "reason": {"type":"string", "description":"Explain why the inspected candidate content satisfies the required input."},

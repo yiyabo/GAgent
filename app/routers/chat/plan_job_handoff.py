@@ -32,12 +32,11 @@ async def enqueue_chat_plan_job(agent: Any, task_id: int | list[int] | None):
 
 
 def submission_text(response: Any, target: int | list[int] | None) -> str:
-    job = response.job if isinstance(response.job, dict) else {}
-    job_id = str(job.get("job_id") or "")
-    if response.success and job_id:
-        label = ("任务 " + "、".join(f"#{tid}" for tid in (target if isinstance(target, list) else [target]))) if target is not None else "整个计划"
-        return f"{label}已交给后台执行（作业 {job_id}）。你可以继续聊天，进度和结果在计划运行记录中查看。"
-    return str(response.message) if response.success else f"未启动后台执行：{response.message}"
+    from app.services.plans.execution_receipt import execution_receipt
+    ids = target if isinstance(target, list) or target is None else [target]
+    payload = {"success": response.success, "message": response.message,
+               "job": response.job, "plan_id": getattr(response, "plan_id", None)}
+    return execution_receipt(payload, ids)
 
 
 def submit_plan_action(agent: Any, action: Any, target: int | None):

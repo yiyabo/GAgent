@@ -4,7 +4,7 @@
 
 Natural-language chat previously selected deterministic execution/status paths and mandatory Plan actions with phrase matching. These shortcuts could confuse discussion, negation, task IDs and stage numbers. When enabled, a new chat turn enters the existing model/tool loop. The model receives the current message, conversation, a bounded Plan reference index and tool schemas; it selects read, execute, edit, or clarification through existing tools. There is no second intent model or new orchestration layer.
 
-Persisted Plan tasks still run in existing background jobs. A successful execute_task/execute_all receipt terminates the chat loop without another synthesis call. Normal code, file, search and analysis tools stay in chat. Background workers keep their independent plan_tree_edit_allowed=False fence, ownership/scope checks, overlapping-run locks, cancellation and independent output verification.
+Persisted Plan tasks still run in existing background jobs. A successful execute_task/execute_all receipt terminates the chat loop without another synthesis call. Normal code, file, search and analysis tools stay in chat. Background workers keep their independent plan_tree_edit_allowed=False fence, ownership/scope checks, overlapping-run locks and cancellation. Independent content acceptance remains disabled by default (PLAN_ACCEPTANCE_ENABLED=0).
 
 ## Implementation
 
@@ -26,8 +26,20 @@ Scripted native/strict tests verify that the model is called, its tool choices r
 
 The model can still misunderstand a user request or choose the wrong tool. Structural validation does not prove semantic intent. Do not claim paraphrase completeness or zero unintended mutations from unit tests. If live semantic checks fail, keep this behavior switch disabled and report the failures.
 
-Hermes source inspected at 0e427d788d253630d38a3a51cd76849e73cd6925: run_agent.py, agent/conversation_loop.py, agent/turn_context.py, agent/turn_tool_round.py and related modules. It feeds user/history/tools into one model loop and appends tool results; it also retains regex for protocol/commands/guards. GAgent keeps its own independent deliverable acceptance.
+Hermes source inspected at 0e427d788d253630d38a3a51cd76849e73cd6925: run_agent.py, agent/conversation_loop.py, agent/turn_context.py, agent/turn_tool_round.py and related modules. It feeds user/history/tools into one model loop and appends tool results; it also retains regex for protocol/commands/guards. That source inspection is historical; this change reuses GAgent's existing model loop.
 
 ## Rollout hold after real probing
 
 The isolated real probe found incorrect stage selection and execute_all on a targetless retry. Full model-selected routing remains disabled. New scope prompt wording is a draft awaiting later validation; the original failing records are retained. Common chat fixes (no keyword-forced review/optimize, no inline execution assignment from the selected Plan task) also apply with the full policy disabled. Details and other independent fixes are in 2026-10-14-input-discovery-and-refresh.md.
+
+## 2026-10-16: explicit model selection and useful receipts
+
+The user selected the pipeline: natural language → the existing model selects exact tasks → the execution tool validates IDs and Plan scope → the existing background worker → a deterministic receipt. There is no phrase-to-job shortcut on the enabled path and no additional classifier call. Typed task-panel actions keep their direct API path.
+
+- The reference index follows tree display order, with an explicit numbered stage index, parent/ancestor IDs and children. A stage ordinal is not a task ID; a composite stage must not become its first leaf. UI selection alone does not authorize a targetless retry.
+- Native schemas, toolbox descriptions and the strict prompt share one execution guidance constant. Invalid/coerced IDs, missing/conflicting scopes and execute_all with a task target fail before submission; existing authorized route checks reject missing tasks and overlapping jobs. No invalid target falls back to the whole Plan.
+- Receipts use names from the job's submission snapshot and distinguish queued/running state. The opaque job ID stays in response metadata. All chat submission adapters use the same receipt renderer. Failed/no-op submissions do not claim a queued job.
+- Successful handoff ends the chat turn without a second synthesis call; later tools in the same native batch are skipped. The existing worker executes the selected dependency closure without changing the task tree.
+- This patch is based on production 6c2c9d49 so it can be deployed independently of the explicitly paused PhageScope gateway work on main. Keep the model-selection flag off until the new isolated semantic probe passes; local scripted tests are transport/contract evidence only. A deployment must respect live-job gates. Rollback is CHAT_MODEL_ACTION_SELECTION_ENABLED=0 and normal service recreation; no database migration is required.
+
+Receipt example: “已提交后台：图表与表格规划（任务 #5），正在排队。你可以继续聊天。进度在计划的「运行记录」查看，生成的文件在「产物」查看。”

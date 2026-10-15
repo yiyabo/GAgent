@@ -7,6 +7,15 @@ from app.services.request_principal import RequestPrincipal
 def submit_plan_execution(plan_id, task_ids, *, owner_id, session_id=None, paper_mode=False):
     if not str(owner_id or "").strip():
         raise ValueError("Cannot determine the owner of this plan execution request.")
+    if type(plan_id) is not int or plan_id <= 0:
+        raise ValueError("plan_id must be a positive integer.")
+    # Do not coerce bools, strings or floats to a different task. None is used
+    # exclusively by the explicit execute_all operation, never by invalid IDs.
+    if task_ids is not None:
+        if not isinstance(task_ids, list) or not 1 <= len(task_ids) <= 64:
+            raise ValueError("target_task_ids must contain 1 to 64 task IDs.")
+        if any(type(tid) is not int or tid <= 0 for tid in task_ids):
+            raise ValueError("Every target task ID must be a positive integer.")
     from app.routers.plan_routes import execute_full_plan, execute_task_with_dependencies
     from app.routers.plan_routes.schemas import ExecuteFullPlanRequest, ExecuteTaskRequest
 

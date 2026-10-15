@@ -68,20 +68,9 @@ def update_model_context(agent, decision):
     index = {"plan_id": plan_id, "referenced_task_id": context.get("referenced_task_id"), "tasks": []}
     if plan_id is not None:
         try:
+            from .plan_reference import plan_reference_index
             tree = agent.plan_session.repo.get_plan_tree(plan_id)
-            nodes = list(tree.nodes.values())
-            index["total_tasks"] = len(nodes)
-            index["truncated"] = len(nodes) > 100
-            index["tasks"] = [
-                {
-                    "id": n.id,
-                    "parent_id": n.parent_id,
-                    "name": n.name,
-                    "status": n.status,
-                    "task_type": (n.metadata or {}).get("task_type"),
-                }
-                for n in nodes[:100]
-            ]
+            index = plan_reference_index(tree, referenced_task_id=context.get("referenced_task_id"))
         except Exception as exc:
             logger.warning("Plan reference index unavailable: %s", type(exc).__name__)
             index["unavailable"] = True  # Read-tool errors remain visible; never infer a new Plan.

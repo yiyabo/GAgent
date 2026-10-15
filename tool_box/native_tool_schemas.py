@@ -16,6 +16,7 @@ base dict and stays next to the generator (app layer) by design.
 from __future__ import annotations
 
 from typing import Any, Dict
+from app.services.plans.execution_contract import PLAN_EXECUTION_GUIDANCE, execution_target_ids_schema
 
 NATIVE_TOOL_CONTENT: Dict[str, Dict[str, Any]] = {
     "web_search": {
@@ -942,10 +943,9 @@ NATIVE_TOOL_CONTENT: Dict[str, Dict[str, Any]] = {
         # native 有意收窄：impl 另有 expand_composites/new_status/note/target_task_id；impl 描述更长 —— 有意调优（参数面收窄）
         "description": (
             "Plan creation, optimization, and execution tool. "
-            "Operations: create, bind, review, optimize, get, execute_all, execute_task, todo_list, recompute. Use execute_task with target_task_ids to submit specific tasks to background jobs. Return the job receipt immediately; do not execute plan tasks inline in chat. Use recompute for explicitly requested updates of stale results after updating changed task instructions. "
-            "CRITICAL: When the user wants to execute the entire plan or all tasks, "
-            "you MUST use operation='execute_all'. Do NOT execute tasks one by one. "
-            "execute_all launches a background job that handles all tasks automatically. "
+            "Operations: create, bind, review, optimize, get, execute_all, execute_task, todo_list, recompute. "
+            + PLAN_EXECUTION_GUIDANCE + " "
+            "Use recompute for explicitly requested updates of stale results after updating changed task instructions. "
             "Use create only for explicitly requested persistent Plans. After creation return its actual structure; do not automatically review, optimize or execute. Review is read-only and does not authorize edits or execution. "
             "Use bind to switch the current session to a different plan (e.g. '切换到 plan X', '绑定 plan X'). "
             "Use get/todo_list for status, review for requested assessment, and optimize only for explicit edits. Execution/retry preserves the original task tree and output requirements. "
@@ -961,13 +961,13 @@ NATIVE_TOOL_CONTENT: Dict[str, Dict[str, Any]] = {
                 "operation": {
                     "type": "string",
                     "enum": ["create", "bind", "review", "optimize", "get", "execute_all", "execute_task", "todo_list", "update_task", "recompute", "resolve_input"],
-                    "description": "Plan operation to perform. Use execute_all to run all pending tasks in background. Use bind to switch to a different plan.",
+                    "description": "Plan operation: get for state, execute_task for selected IDs, execute_all only for the explicitly requested whole Plan. bind switches Plans.",
                 },
                 "title": {"type": "string", "description": "Plan title (for create)."},
                 "description": {"type": "string", "description": "Plan goal description (for create)."},
                 "changed_task_ids": {"type":"array","items":{"type":"integer"}},
                 "changed_aliases": {"type":"array","items":{"type":"string"}},
-                "target_task_ids": {"type":"array","items":{"type":"integer"}},
+                "target_task_ids": execution_target_ids_schema(),
                 "input_alias": {"type":"string", "description":"Pending input alias to confirm during task input reconciliation."},
                 "candidate_id": {"type":"string", "description":"Candidate ID from task input inventory; read its contents before resolve_input."},
                 "reason": {"type":"string", "description":"Explain why the inspected candidate content satisfies the required input."},

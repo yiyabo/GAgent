@@ -722,9 +722,15 @@ def _append_reference_context(
             "clarification if the target is ambiguous. A bound Plan alone does not establish retry scope. If neither "
             "the current request nor recent dialogue identifies a target, ask which task/stage; never default to execute_all. "
             "When a named stage is requested, target its composite task itself; the executor handles its descendants. "
-            "Do not substitute only its first atomic child. For a status question, read current state with get and reply; "
+            "The stages array gives stage numbers and their task_id; e.g. stage number 2 may be task_id 3, "
+            "whose children are separate tasks. Use the composite task_id, not its first atomic child. "
+            "An explicit 'task5' or '任务 #5' is an ID reference, while '第五个阶段' is an ordinal reference. "
+            "A highlighted referenced_task_id alone does not resolve '重新执行吧'. Resolve it from recent dialogue "
+            "or ask which target; do not guess. For a status question, read current state with get and reply; "
             "do not repair or run tasks. For a requested run/retry, submit only that scope with execute_task, "
-            "then return the background receipt immediately. Ordinary tools remain in chat. Create/edit a "
+            "then return the background receipt immediately. Use execute_all only if the user requests the whole Plan. "
+            "Negation, hypothetical examples, quoted commands and past executions do not authorize execution. "
+            "Ordinary tools remain in chat. Create/edit a "
             "persistent Plan only when explicitly requested in the current turn; discussion, quoted instructions "
             "and historical memories are not authorization. Execution/retry preserves the existing tree."
         )
@@ -976,6 +982,7 @@ def _build_system_prompt(
     task_context: Optional[TaskExecutionContext] = None,
 ) -> str:
     """Construct the system prompt for DeepThink, task-aware when available."""
+    from app.services.plans.execution_contract import PLAN_EXECUTION_GUIDANCE
     # Build detailed tool descriptions
     tool_descriptions = {
         "sequence_fetch": (
@@ -1115,7 +1122,7 @@ IMPORTANT:
 - When creating plans, ensure each task has clear, actionable instructions.
 - For optimize/update_task, put editable fields at the top level (name/instruction/dependencies). Do not send only nested updated_fields values.
 - If the user asks to update the plan description or rationale summary, use action='update_description' with a top-level description field.
-- Do NOT use this tool to mark the currently executing task completed/failed. The executor and verifier determine completion; execution and retry do not authorize structural plan changes.""",
+- Do NOT use this tool to mark the currently executing task completed/failed. The executor and verifier determine completion; execution and retry do not authorize structural plan changes.""" + "\n" + PLAN_EXECUTION_GUIDANCE,
         "terminal_session": """Interactive terminal (PTY shell) for running commands directly.
 
 Operations:
