@@ -543,6 +543,8 @@ async def code_executor_handler(
             task_text=task,
             session_id=session_id,
         )
+        from app.services.plans.completion_policy import code_spec
+        execution_spec = code_spec(execution_spec)
 
         # Scratch workspace: execution happens here, results promoted to unified_output_dir
         scratch_root = session_dir / "_scratch"

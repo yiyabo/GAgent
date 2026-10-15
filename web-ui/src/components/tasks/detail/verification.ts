@@ -18,7 +18,7 @@ export interface VerificationView {
 export const getVerificationView = (
   result: PlanResultItem | null | undefined
 ): VerificationView => {
-  const verification = result?.metadata?.verification;
+  const verification = result?.metadata?.execution_policy === 'agent' ? null : result?.metadata?.verification;
   if (!verification || typeof verification !== 'object') {
     return {
       status: null,

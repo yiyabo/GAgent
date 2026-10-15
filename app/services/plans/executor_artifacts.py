@@ -321,7 +321,8 @@ class _ArtifactMethods:
         confirmed = existing_bindings(node, self._get_artifact_manifest(plan_id, session_context),
                                       finalization.payload.get('metadata') or {}) if discovery else {}
         unresolved = [alias for alias in discovery.get('missing', []) if alias not in confirmed]
-        if unresolved and finalization.final_status == 'completed':
+        from .completion_policy import acceptance_enabled
+        if acceptance_enabled() and unresolved and finalization.final_status == 'completed':
             finalization.final_status = 'skipped'
             finalization.payload.update(status='skipped', content='输入材料仍待确认：' + ', '.join(unresolved))
             finalization.payload.setdefault('metadata', {}).update(
@@ -466,7 +467,12 @@ class _ArtifactMethods:
         node: PlanNode,
     ) -> List[PlanNode]:
         deps: List[PlanNode] = []
-        for dep_id in node.dependencies:
+        dependency_ids = node.dependencies
+        from .completion_policy import acceptance_enabled
+        if not acceptance_enabled():
+            from .dependency_validation import normalize_plan_dependencies
+            dependency_ids = normalize_plan_dependencies(tree).dependencies_by_task.get(node.id, dependency_ids)
+        for dep_id in dependency_ids:
             dep = tree.nodes.get(dep_id)
             if dep is not None:
                 deps.append(dep)
@@ -518,6 +524,13 @@ class _ArtifactMethods:
         session_context: Optional[Dict[str, Any]] = None,
         allow_publish_contract_backfill: bool = False,
     ) -> bool:
+        from .completion_policy import acceptance_enabled, execution_status
+        if not acceptance_enabled():
+            try:
+                value = json.loads(node.execution_result) if isinstance(node.execution_result, str) else node.execution_result
+            except (ValueError, TypeError):
+                value = {}
+            return execution_status(node.status, (value or {}).get('metadata')) == 'completed'
         if state_by_task is None and tree is not None:
             state_by_task = self._status_resolver.resolve_plan_states(
                 plan_id,

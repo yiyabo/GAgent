@@ -220,6 +220,8 @@ async def _native_run_setup(
     from app.services.deep_think.acceptance import prepare_acceptance_spec
 
     acceptance_spec = await prepare_acceptance_spec(agent, user_query, context, task_context)
+    if getattr(agent, "_plan_agent_completion", False):
+        expected_outputs = []
     system_prompt = agent._build_native_system_prompt(context, task_context)
     if acceptance_spec is not None:
         from app.services.deep_think.acceptance import build_acceptance_spec_prompt_block

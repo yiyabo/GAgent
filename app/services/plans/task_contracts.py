@@ -62,6 +62,9 @@ def require_declared_delivery(function):
     @wraps(function)
     def wrapped(service, node, *args, **kwargs):
         finalization = function(service, node, *args, **kwargs)
+        from .completion_policy import agent_managed_node
+        if agent_managed_node(node):
+            return finalization
         node_metadata = node.metadata or {}
         requires = node_metadata.get('delivery_contract_required') or (node.parent_id is not None and getattr(get_settings(), 'plan_output_contracts_required', False))
         stopped = bool(finalization.payload.get('metadata', {}).get('termination_reason'))

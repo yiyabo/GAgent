@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+from copy import deepcopy
 from typing import Any, Dict, List, Optional
 
 from app.services.prompt_policy import REFERENCE_SCOPE_POLICY, TASK_EXECUTION_POLICY
@@ -226,6 +227,13 @@ class ExecutorPromptBuilder:
         )
         artifact_contract = node_metadata.get("artifact_contract") if isinstance(node_metadata.get("artifact_contract"), dict) else {}
         acceptance_criteria = node_metadata.get("acceptance_criteria") if isinstance(node_metadata.get("acceptance_criteria"), dict) else {}
+        from .completion_policy import acceptance_enabled, guidance
+        if not acceptance_enabled():
+            acceptance_criteria = {}
+            if output_spec:
+                output_spec = deepcopy(output_spec)
+                output_spec.acceptance_criteria = None
+            lines.append("\n=== AGENT-LED TASK EXECUTION ===\n" + guidance())
         resolved_input_artifacts = (
             (session_context or {}).get("resolved_input_artifacts")
             if isinstance((session_context or {}).get("resolved_input_artifacts"), dict)
@@ -261,12 +269,11 @@ class ExecutorPromptBuilder:
             if isinstance(publishes, list) and publishes:
                 lines.append(f"Published artifact aliases: {publishes}")
                 lines.extend(self._publish_alias_landing_lines(node, publishes, session_context))
-            lines.extend(
-                [
+            if acceptance_enabled():
+                lines.extend([
                     "Contract rule: completion is based on these exact files/artifact aliases, not on similar filenames or prose claims.",
                     "If a required file is named, create that exact file path or explicitly report why it cannot be created.",
-                ]
-            )
+                ])
         if paper_mode:
             lines.append("\n=== PAPER MODE ===")
             if paper_section:

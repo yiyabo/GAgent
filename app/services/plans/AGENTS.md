@@ -16,8 +16,9 @@ Plan services own DAG decomposition/execution, dependency normalization, artifac
 | Background jobs | `decomposition_jobs.py` | Job lifecycle and logging. |
 
 ## CONVENTIONS
-- Canonical artifact manifest is authority for downstream dependencies; local files alone do not satisfy `requires`.
-- Explicit `artifact_contract.publishes` is strict: missing publish aliases demote completed payloads unless manually accepted.
+- Default `PLAN_ACCEPTANCE_ENABLED=0`: completion records execution, not independent output approval. Missing output/alias declarations are guidance for the existing Agent, which may inspect, reuse and supplement upstream materials within its assigned task.
+- Canonical manifests remain the version/provenance store for actual published files. Runtime ownership and immutable publication fences still apply; missing publications do not demote finished executions in the default mode.
+- `PLAN_ACCEPTANCE_ENABLED=1` restores the legacy strict output/alias acceptance and repair pipeline; its tests remain as rollback coverage.
 - Dependency normalization is generic and structural; avoid plan-specific fixes.
 - Composite dependencies should expand to executable leaf tasks; child-to-parent dependencies are invalid.
 - Contract repair should use `failure_kind=contract_mismatch` and `metadata.contract_diff`, not filename-specific hacks.
@@ -30,7 +31,7 @@ pytest app/tests/tools/test_task_verification.py -v
 ```
 
 ## ANTI-PATTERNS
-- Do not mark tasks completed to bypass verification.
+- Keep actual runtime failures, cancellations and uncertain mutations distinct from finished executions. Never describe execution completion as proof of scientific or deliverable quality.
 - Do not guess among multiple producers for the same basename or alias.
 - Do not hard-code task IDs, plan IDs, biological topics, or one-off artifact filenames.
 - Do not add compatibility shims unless persisted external artifacts require them.

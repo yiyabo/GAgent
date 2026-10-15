@@ -223,6 +223,7 @@ const TaskDetailDrawer: React.FC = () => {
     .toLowerCase();
   const canManualAccept = Boolean(
     resultForActions &&
+      resultForActions.metadata?.execution_policy !== 'agent' &&
       !manualAccepted &&
       (verificationStatus === 'failed' ||
         taskStatusForManualAccept === 'failed' ||

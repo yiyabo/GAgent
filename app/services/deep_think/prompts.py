@@ -311,6 +311,9 @@ def _build_request_tier_block(agent: "DeepThinkAgent") -> str:
             "- For immutable source inputs, prefer canonical data-directory paths over same-named session-root `results/` copies, especially when the session copy is empty or malformed.\n"
             "- For single-cell integration tasks, fewer than 2 valid upstream samples means the preconditions are not met; do not claim integration succeeded.\n"
         )
+        from app.services.plans.completion_policy import plan_agent_managed, guidance
+        if plan_agent_managed(agent):
+            execute_note = "- " + guidance() + "\n"
     return (
         "=== EFFICIENCY CONTRACT ===\n"
         "- Be targeted and efficient: spend exactly as much effort as the request needs, no more.\n"
@@ -495,6 +498,11 @@ def _build_session_isolation_block(agent: "DeepThinkAgent") -> str:
 
 
 def _build_shared_strategy_block(agent: "DeepThinkAgent") -> str:
+    from app.services.plans.completion_policy import plan_agent_managed, guidance
+    missing_input_rule = (
+        "- If the current bound task depends on upstream deliverables that are missing, report BLOCKED_DEPENDENCY clearly instead of silently switching to a different upstream task.\n"
+        "- Do not convert an integration/analysis task into full upstream preprocessing unless the task instruction explicitly authorizes backfilling prerequisites.\n"
+    ) if not plan_agent_managed(agent) else "- " + guidance() + "\n"
     return (
         PLAN_SCOPE_POLICY + "\n" + REFERENCE_SCOPE_POLICY + "\n=== EFFORT AND TOOLING POLICY ===\n"
         "1. First classify the request: casual chat, direct answer, evidence-backed research, or execution task.\n"
@@ -527,8 +535,7 @@ def _build_shared_strategy_block(agent: "DeepThinkAgent") -> str:
         "- For plan creation, `plan_operation.create` already performs integrated material collection before decomposition when needed. Do not manually split this into create-then-decompose unless you are explicitly refining an existing plan later.\n"
         "- When executing a currently bound plan task, do NOT use plan_operation or task_operation just to mark that task completed/failed. The executor and verifier determine completion; read-only Plan queries remain available, but execution does not authorize structural plan edits.\n"
         "- When executing a currently bound plan task, observation-only tools (read-only file_operations, document_reader, vision_reader) may clarify one concrete uncertainty, but they are not task completion. Do not loop on probe-only exploration.\n"
-        "- If the current bound task depends on upstream deliverables that are missing, report BLOCKED_DEPENDENCY clearly instead of silently switching to a different upstream task.\n"
-        "- Do not convert an integration/analysis task into full upstream preprocessing unless the task instruction explicitly authorizes backfilling prerequisites.\n"
+        f"{missing_input_rule}"
         "- For immutable source inputs, prefer canonical data-directory paths over same-named session-root `results/` copies; ignore empty or malformed session duplicates.\n"
         "- For single-cell workflows, do not assume `adata.var['mt']` already exists. If mitochondrial flags are needed, derive them from gene_symbols, feature_name, or var_names.\n"
         "- For single-cell integration, fewer than 2 valid samples means the preconditions are not met; do not claim batch integration succeeded or emit placeholder success artifacts.\n"

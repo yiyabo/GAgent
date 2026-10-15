@@ -267,6 +267,11 @@ class _DeepThinkMethods:
             "This submits your answer; PlanExecutor independently checks OutputSpec and determines task completion.",
         ]
         constraints.extend(output_contract_lines)
+        from .completion_policy import acceptance_enabled, guidance
+        if not acceptance_enabled():
+            constraints = [line for line in constraints if "independently checks OutputSpec" not in line]
+            constraints.append("PlanExecutor records this task's execution lifecycle. When finished, use submit_final_answer in native mode or the final_answer field in strict mode to deliver your result and file paths.")
+            constraints.append(guidance())
         from . import input_discovery
         input_prompt = input_discovery.prompt(session_context)
         if input_prompt:
@@ -732,7 +737,8 @@ class _DeepThinkMethods:
                 metadata_payload = payload.get("metadata")
                 if isinstance(metadata_payload, dict):
                     metadata_payload["session_artifact_paths"] = session_artifact_paths[:40]
-            if deep_think_status == "success" and _task_ran_without_output(
+            from .completion_policy import acceptance_enabled
+            if acceptance_enabled() and deep_think_status == "success" and _task_ran_without_output(
                 node=node,
                 result=result,
                 tools_used=tools_used,
@@ -1025,6 +1031,9 @@ class _DeepThinkMethods:
             return None
 
     def _contract_repair_limit(self, config: Optional[ExecutionConfig] = None) -> int:
+        from .completion_policy import acceptance_enabled
+        if not acceptance_enabled():
+            return 0
         value = getattr(config, "contract_repair_attempts", None)
         if value is None:
             value = getattr(self._settings, "contract_repair_attempts", 2)
@@ -1034,6 +1043,9 @@ class _DeepThinkMethods:
 
     @staticmethod
     def _should_repair_contract(finalization: VerificationFinalization) -> bool:
+        from .completion_policy import acceptance_enabled
+        if not acceptance_enabled():
+            return False
         metadata = finalization.payload.get("metadata") or {}
         return (finalization.final_status == "failed"
                 and metadata.get("failure_kind") == "contract_mismatch"

@@ -451,6 +451,9 @@ def enrich_plan_dependencies(tree: PlanTree) -> EnrichmentResult:
     as running it once.  On unexpected errors the tree is left unmodified and
     an ``EnrichmentResult`` with a non-None ``error`` field is returned.
     """
+    from .completion_policy import acceptance_enabled
+    if not acceptance_enabled():
+        return EnrichmentResult()
     try:
         return _enrich_impl(tree)
     except Exception as exc:
@@ -855,6 +858,9 @@ def check_artifact_readiness(
     returns ``None`` (fail-open) so that execution is not blocked.
     """
     if node is None:
+        return None
+    from .completion_policy import acceptance_enabled
+    if not acceptance_enabled():
         return None
     try:
         return _check_readiness_impl(node, tree, manifest, state_by_task)

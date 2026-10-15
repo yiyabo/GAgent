@@ -3,7 +3,7 @@ import { parseServerTimestampMs } from '@utils/serverTime';
 
 export const statusLabels: Record<string, string> = {
   pending: '待执行', queued: '排队中', running: '执行中', in_progress: '执行中',
-  completed: '已完成', succeeded: '已完成', failed: '失败', error: '失败',
+  completed: '已执行', succeeded: '已执行', failed: '失败', error: '失败',
   blocked: '等待依赖', skipped: '已跳过', cancelled: '已取消', canceled: '已取消',
   paused: '已暂停', stale: '待更新', unknown: '来源未追踪', reconciling: '同步中',
   needs_review: '待验收',

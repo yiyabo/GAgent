@@ -107,6 +107,9 @@ class TaskVerificationService(_CueMethods, _PathMethods, _CheckMethods, _Discove
         """
         if not isinstance(metadata, dict) or cls.is_manual_acceptance_active(metadata):
             return False
+        from .completion_policy import agent_managed_node
+        if agent_managed_node(node):
+            return False
         verification = metadata.get("verification")
         verification = verification if isinstance(verification, dict) else {}
         status = str(verification.get("status") or metadata.get("verification_status") or "").strip().lower()
@@ -233,9 +236,13 @@ class TaskVerificationService(_CueMethods, _PathMethods, _CheckMethods, _Discove
             or payload.get("status")
             or node.status
         )
+        from .completion_policy import agent_managed_node, finalize
+        if agent_managed_node(node):
+            return finalize(self, node, payload, normalized_execution_status)
 
         normalized_payload = self._coerce_payload(payload, fallback_status=normalized_execution_status)
         metadata = dict(normalized_payload.get("metadata") or {})
+        metadata.pop("execution_policy", None)
         metadata["execution_status"] = normalized_execution_status
         metadata["repair_attempts"] = self._coerce_repair_attempts(metadata.get("repair_attempts"))
         metadata["verification_status"] = "not_run"
@@ -1103,6 +1110,9 @@ class TaskVerificationService(_CueMethods, _PathMethods, _CheckMethods, _Discove
         Publish check: did this task produce all explicitly declared outputs?
         Require check: are all explicitly declared inputs available in the manifest?
         """
+        from .completion_policy import agent_managed_node
+        if agent_managed_node(node):
+            return finalization
         payload = finalization.payload if isinstance(finalization.payload, dict) else {}
         payload_metadata = payload.get("metadata")
         metadata = payload_metadata if isinstance(payload_metadata, dict) else {}

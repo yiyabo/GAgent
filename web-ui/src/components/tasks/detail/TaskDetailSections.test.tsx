@@ -27,6 +27,18 @@ vi.mock('@api/artifacts', async () => {
 const mockedArtifactsApi = vi.mocked(artifactsApi);
 
 describe('ExecutionResult', () => {
+  it('shows execution only and hides historical acceptance actions in agent mode', () => {
+    render(<ExecutionResult resultLoading={false} canVerify canManualAccept onReverify={vi.fn()} onManualAccept={vi.fn()}
+      taskResult={{task_id: 1, status: 'completed', content: 'Existing corpus is available.', metadata: {
+        execution_policy: 'agent', execution_status: 'completed', failure_kind: 'verification_config_error',
+        verification: {status: 'config_error', checks_total: 4, checks_passed: 3, failures: []},
+      }}} />);
+    expect(screen.getByText('已执行')).toBeInTheDocument();
+    expect(screen.queryByRole('button', {name: 'Re-verify'})).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', {name: 'Accept manually'})).not.toBeInTheDocument();
+    expect(screen.queryByText('验收规则需修正')).not.toBeInTheDocument();
+    expect(screen.queryByText('No published artifact')).toBeInTheDocument();
+  });
   it('shows retained outputs awaiting rule correction without asking for a rerun', () => {
     render(<ExecutionResult resultLoading={false} taskResult={{ task_id: 1,
       status: 'needs_review', content: 'Corpus saved.', metadata: {

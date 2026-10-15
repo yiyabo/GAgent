@@ -706,12 +706,13 @@ class PlanExecutor(_ArtifactMethods, _DelegateMethods, _DeepThinkMethods):
                 from app.services.skill_learning.context import hydrate_context as hydrate_skills
                 hydrate_skills(session_context, session_context.get("session_id"), node.instruction or node.display_name())
             delegation_mode = self._should_delegate_plan_task(config)
+            from .completion_policy import acceptance_enabled
             from .input_discovery import enabled as discovery_enabled, prepare as prepare_input_discovery
             discovering_inputs = bool(missing_aliases and discovery_enabled() and
                 self._should_use_deep_think(config) and not delegation_mode and
                 prepare_input_discovery(node, tree, self._get_artifact_manifest(plan_id, session_context),
                                         missing_aliases, session_context))
-            if missing_aliases and config.enforce_dependencies and (not delegation_mode or discovery_enabled()) and not discovering_inputs:
+            if acceptance_enabled() and missing_aliases and config.enforce_dependencies and (not delegation_mode or discovery_enabled()) and not discovering_inputs:
                 _log_job(
                     "warning",
                     f"Task {node.id} blocked: required artifacts not published",
@@ -1193,6 +1194,9 @@ class PlanExecutor(_ArtifactMethods, _DelegateMethods, _DeepThinkMethods):
         Returns the (possibly reloaded) tree.  On any error, returns the
         original tree unchanged.
         """
+        from .completion_policy import acceptance_enabled
+        if not acceptance_enabled():
+            return tree
         try:
             # Step 1: Build producer_map {basename|artifact_alias → task_id}
             producer_map: Dict[str, int] = {}
@@ -1341,6 +1345,9 @@ class PlanExecutor(_ArtifactMethods, _DelegateMethods, _DeepThinkMethods):
         ancestor/descendant/self/cyclic dependencies and expands dependencies on
         composite nodes to executable leaf tasks.
         """
+        from .completion_policy import acceptance_enabled
+        if not acceptance_enabled():
+            return tree
         try:
             normalization = normalize_plan_dependencies(tree)
         except Exception as exc:
