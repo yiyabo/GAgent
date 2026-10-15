@@ -37,6 +37,9 @@ writes an output, confirms upstream read-only access, uses the terminal to read
 the same file, and removes its test containers/files. It makes zero model calls.
 The smoke is part of main CI's real-stack verification as well as the production
 candidate check, so ordinary mocks cannot hide Docker namespace errors again.
+CI uses a stdlib-only Python image for this transport probe; the production
+candidate uses the deployed scientific sandbox image. The independent sandbox
+image CI still builds and scans the full scientific recipe.
 
 Deploy the application image only after CI, idle gate and backups. Keep the old
 application image for rollback. No Plan definitions, research files, model

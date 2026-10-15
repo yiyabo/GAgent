@@ -155,15 +155,14 @@ jobs:
           CODE_MODE_SANDBOX=1
           CODE_MODE_RPC_BIND=0.0.0.0
           CODE_MODE_RPC_ADVERTISE=app
-          SANDBOX_PYTHON_IMAGE=gagent-sandbox-python:latest
+          SANDBOX_PYTHON_IMAGE=python:3.12-slim
           COMPOSE_PROFILES=
           EOF
 
-      - name: Build Python sandbox for the task runtime smoke
-        run: >-
-          docker build -f deploy/Dockerfile.sandbox-python -t gagent-sandbox-python:latest
-          --build-arg BASE_IMAGE=python:3.12-slim
-          --build-arg APT_MIRROR_HOST= --build-arg PIP_INDEX_URL=https://pypi.org/simple .
+      # This transport/filesystem probe uses only stdlib. The independent
+      # sandbox-image job still builds/scans the full scientific image.
+      - name: Fetch stdlib sandbox fixture for the task runtime smoke
+        run: docker pull python:3.12-slim
 
       - name: Boot the stack
         run: docker compose -f deploy/docker-compose.yml up -d --no-build
