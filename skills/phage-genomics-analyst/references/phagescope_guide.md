@@ -22,6 +22,8 @@ from legacy website userid or asked for as model/tool arguments.
   previews at 2,000 characters. Check `truncated`/`truncated_files`; `.preview`
   files are incomplete source material. Full-file download, remote cancellation
   and remote job listing are not provided by this gateway contract.
+  Binary filenames returned as decoded text use `.text-preview.txt` and appear
+  in `text_only_files`; they cannot be opened as the original image/archive.
 
 All 18 analysis modules are exposed: annotation, quality, host, host_cherry,
 lifestyle, lifestyle_phatyp, viralverify, trna, crispr, taxonomic_phagcn,

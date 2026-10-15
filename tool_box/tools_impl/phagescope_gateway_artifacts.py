@@ -7,6 +7,8 @@ import uuid
 from .phagescope_artifacts import _attach_local_bundle_artifact_fields
 from .phagescope_gateway_client import GatewayError
 
+BINARY_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".tif", ".tiff", ".pdf",
+                   ".zip", ".gz", ".bz2", ".xz", ".7z", ".bam", ".bai", ".npy", ".npz", ".pkl", ".pickle"}
 
 def workspace(context):
     from app.services.session_paths import get_runtime_session_dir
@@ -52,6 +54,7 @@ class Output:
         self.directory = workspace(context) / kind / uuid.uuid4().hex
         self.files = {}
         self.truncated = []
+        self.text_only = []
         self.missing = []
 
     def write(self, name, content):
@@ -86,6 +89,12 @@ class Output:
                 raise GatewayError("invalid_gateway_response", "Gateway file text must be a string.", 502)
             if item.get("truncated"):
                 self.truncated.append(key)
+            if Path(name).suffix.lower() in BINARY_SUFFIXES or "\x00" in text:
+                # The server UTF-8-decodes bytes with replacement. This is not
+                # a transport from which an image/archive can be reconstructed.
+                self.text_only.append(key)
+                name += ".text-preview.txt"
+            elif item.get("truncated"):
                 name += ".preview"
             self.write(f"modules/{module}/{name}", text)
 
@@ -107,6 +116,6 @@ class Output:
             records.append({"path": name, "bytes": path.stat().st_size,
                             "sha256": hashlib.sha256(path.read_bytes()).hexdigest()})
         value = {**value, "files": records, "truncated_files": self.truncated,
-                 "missing_files": self.missing, "content_review": "not_requested"}
+                 "text_only_files": self.text_only, "missing_files": self.missing, "content_review": "not_requested"}
         self.json("manifest.json", value)
         return value

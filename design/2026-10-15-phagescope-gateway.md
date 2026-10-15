@@ -105,7 +105,11 @@ The server supplies text previews, not complete file downloads: 1 MiB per
 analysis file, up to 20 files for directory modules, 200,000 genome bases and
 2,000 protein characters. Remote `truncated` flags are preserved. Truncated
 analysis files end in `.preview`; truncated genome files use
-`sequence.preview.fasta`. The manifest records missing/truncated files, with
+`sequence.preview.fasta`. Directory responses can contain binary filenames even
+though their bytes were UTF-8-decoded by the server. Such entries (and returned
+text containing NUL) use `.text-preview.txt`, with `text_only_files` metadata;
+they are never saved as apparently valid images/archives. This does not block
+collection or review their content. The manifest records missing/truncated files, with
 `content_review="not_requested"`. A collection can succeed with missing or
 preview files; no scientific acceptance is inferred.
 

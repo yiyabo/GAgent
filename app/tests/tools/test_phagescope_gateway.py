@@ -249,6 +249,27 @@ async def test_query_save_preserves_sequence_preview_scope(gateway):
     assert any(Path(p).name=="sequence.preview.fasta" for p in result["artifact_paths"])
 
 
+async def test_directory_binary_text_is_saved_as_preview_without_quality_gate(gateway):
+    def handler(request):
+        if request.url.path.endswith("/jobs/7/"):
+            return httpx.Response(200,json={"status":"completed","modules":[{"module":"cluster"}]})
+        return httpx.Response(200,json={"module":"cluster","files":{
+            "plot.png":{"present":True,"truncated":False,"text":"\ufffdPNG\r\n\x00fixture"},
+            "data.zip":{"present":True,"truncated":True,"text":"PK\x00fixture"},
+            "clusters.tsv":{"present":True,"truncated":False,"text":"id\tcluster\np1\t1\n"}}})
+    gateway.install(handler)
+    result=await gateway.call("save_results",{"job_id":7})
+    assert result["success"] and result["execution_status"]=="completed"
+    assert result["text_only_files"]==["cluster/plot.png","cluster/data.zip"]
+    assert result["truncated_files"]==["cluster/data.zip"]
+    names={Path(p).name for p in result["artifact_paths"]}
+    assert {"plot.png.text-preview.txt","data.zip.text-preview.txt","clusters.tsv"}<=names
+    assert not {"plot.png","data.zip"}&names
+    manifest=json.loads(next(Path(p) for p in result["artifact_paths"] if Path(p).name=="manifest.json").read_text())
+    assert manifest["text_only_files"]==result["text_only_files"]
+    assert manifest["content_review"]=="not_requested"
+
+
 async def test_collection_uses_one_deadline_and_keeps_earlier_files(gateway):
     async def handler(request):
         if request.url.path.endswith("/jobs/7/"):

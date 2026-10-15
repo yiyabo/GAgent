@@ -109,6 +109,7 @@ async def query(operation, params, context, timeout):
         manifest = output.manifest({"operation": operation, "source": "phagescope_agent_gateway"})
         result = output.attach(result)
         result["truncated_files"] = manifest["truncated_files"]
+        result["text_only_files"] = manifest["text_only_files"]
     return result
 
 
@@ -151,8 +152,9 @@ async def save_results(params, context, timeout):
                           "gateway_action": "save_results", "job_id": params["job_id"],
                           "execution_status": status.get("execution_status"), "collection_errors": errors,
                           "truncated_files": manifest["truncated_files"], "missing_files": manifest["missing_files"],
+                          "text_only_files": manifest["text_only_files"],
                           "full_file_download_supported": False,
-                          "note": "Saved the files/text returned by the gateway. Truncated entries are .preview files; full downloads are not exposed by this gateway contract."})
+                          "note": "Saved gateway-returned text. Truncated text uses .preview; binary names/text containing NUL use .text-preview.txt, not the original binary format. Full downloads are not exposed by this gateway contract."})
 
 
 async def gateway_handler(operation, params=None, *, timeout=60, context=None):
