@@ -940,7 +940,7 @@ NATIVE_TOOL_CONTENT: Dict[str, Dict[str, Any]] = {
         },
     },
     "plan_operation": {
-        # native 有意收窄：impl 另有 expand_composites/new_status/note/target_task_id；impl 描述更长 —— 有意调优（参数面收窄）
+        # native 有意收窄：impl 另有 expand_composites/new_status/note；todo_list 的必填 target_task_id 必须在两处提供。
         "description": (
             "Plan creation, optimization, and execution tool. "
             "Operations: create, bind, review, optimize, get, execute_all, execute_task, todo_list, recompute. "
@@ -968,6 +968,8 @@ NATIVE_TOOL_CONTENT: Dict[str, Dict[str, Any]] = {
                 "changed_task_ids": {"type":"array","items":{"type":"integer"}},
                 "changed_aliases": {"type":"array","items":{"type":"string"}},
                 "target_task_ids": execution_target_ids_schema(),
+                "target_task_id": {"type": "integer", "minimum": 1,
+                                   "description": "Exact existing target ID whose dependency subgraph to inspect (required for todo_list)."},
                 "input_alias": {"type":"string", "description":"Pending input alias to confirm during task input reconciliation."},
                 "candidate_id": {"type":"string", "description":"Candidate ID from task input inventory; read its contents before resolve_input."},
                 "reason": {"type":"string", "description":"Explain why the inspected candidate content satisfies the required input."},

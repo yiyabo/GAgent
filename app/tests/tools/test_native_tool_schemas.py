@@ -146,6 +146,7 @@ def test_plan_execution_contract_matches_toolbox_and_native_surfaces():
     assert PLAN_EXECUTION_GUIDANCE in plan_operation_tool["description"]
     assert native["parameters"]["properties"]["target_task_ids"] == execution_target_ids_schema()
     assert plan_operation_tool["parameters_schema"]["properties"]["target_task_ids"] == execution_target_ids_schema()
+    assert native["parameters"]["properties"]["target_task_id"] == plan_operation_tool["parameters_schema"]["properties"]["target_task_id"]
 
 
 def test_bio_tools_enum_stays_dynamic_from_tools_config() -> None:

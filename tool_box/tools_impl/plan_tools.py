@@ -1195,12 +1195,13 @@ async def _get_todo_list(
     if target_task_id is None:
         return {
             "success": False,
+            "executed": False,
             "error": (
-                "target_task_id is required for todo_list. "
-                "If you want to execute ALL tasks in the plan, "
-                "use operation='execute_all' instead (no target_task_id needed)."
+                "target_task_id is required for todo_list. Use get to inspect task IDs "
+                "and current state; ask the user if the intended target is unclear. "
+                "This read request does not authorize execution."
             ),
-            "hint": "operation='execute_all'",
+            "hint": "operation='get'",
         }
 
     try:
@@ -1551,7 +1552,8 @@ Legacy compatibility:
             },
             "target_task_id": {
                 "type": "integer",
-                "description": "Target task ID whose dependency subgraph to resolve (required for todo_list)",
+                "minimum": 1,
+                "description": "Exact existing target ID whose dependency subgraph to inspect (required for todo_list).",
             },
             "expand_composites": {
                 "type": "boolean",

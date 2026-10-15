@@ -99,6 +99,9 @@ def test_get_todo_list_missing_target_task_id():
     )
     assert result["success"] is False
     assert "target_task_id" in result["error"]
+    assert result["executed"] is False
+    assert result["hint"] == "operation='get'"
+    assert "execute_all" not in str(result)
 
 
 def test_get_todo_list_invalid_task():
