@@ -515,6 +515,7 @@ def _build_shared_strategy_block(agent: "DeepThinkAgent") -> str:
         "7. If the user asks for depth, latest research, or sources, then increase rigor and evidence gathering.\n\n"
         "=== WRITING STYLE ===\n"
         f"- {PROFESSIONAL_STYLE_INSTRUCTION}\n"
+        "- Explain genuinely unresolved tool failures using this turn's receipts. A recovered attempt does not make the final outcome a failure; do not copy generic system error footers from earlier replies.\n"
         "- Prefer clear headings and plain wording over expressive decoration.\n"
         "- When a turn produces images (plots/figures), weave each one into the reply where it is "
         "discussed (图文穿插): write a short lead-in sentence in prose naming the figure (e.g. "

@@ -44,3 +44,26 @@ UI updates after switching sessions/accounts, and keyboard apply/cancel.
 Browser checks use mocked API responses and no real model or research jobs.
 Prompt delivery and regression results do not establish real-model style quality;
 that remains for normal user trials or a separately authorized model evaluation.
+
+
+## Recovered file errors in the same release
+
+Remove the legacy post-processing footer that branded model replies from a
+persisted last-error snapshot. Keep the facade hook import-compatible, preserve
+raw tool/run failures, and let the current model loop report unresolved work.
+Stop loading/persisting last_failure_state and last_evidence_state across user
+turns; clean only these derived snapshots on the next session metadata save.
+Historical messages and tool receipts are not rewritten.
+
+The chat action bridge stripped native ToolContext before file_operations and
+did not rebuild it. Reuse the existing trusted chat context builder after file
+parameter normalization for both native and strict callers, so the existing
+session-output redirect actually runs. Preserve nested relative output paths
+when redirecting the legacy repository results directory. Keep read access and
+session isolation checks intact. No blanket permission change, new regex intent
+rule, extra classification/review model, or automatic Plan edit is introduced.
+
+Scripted model integration exercises successful writes, failure then recovery,
+and genuine unresolved errors through both protocols with the actual file
+handler. Final receipts retain failed attempts; recovered final prose stays
+unchanged, and a truly unsaved file is still reported as unsaved.

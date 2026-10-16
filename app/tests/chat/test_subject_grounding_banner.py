@@ -1,4 +1,4 @@
-"""User-facing failure caveat: raw tracebacks must become one readable line.
+"""Legacy error summarization and model-owned final prose.
 
 The 2026-09-27 AML session case: the caveat banner appended the full pandas
 stack wall (truncated mid-word) — unreadable for users. The full traceback
@@ -73,15 +73,14 @@ def test_empty_message_stays_empty() -> None:
     assert _humanize_failure_message("") == ""
 
 
-def test_banner_carries_summary_not_the_stack_wall() -> None:
+def test_historical_traceback_is_not_appended_to_model_prose() -> None:
     agent = SimpleNamespace(
         history=[],
         extra_context={"last_failure_state": {"error_message": _PANDAS_TRACEBACK}},
     )
     out = _apply_grounded_local_answer(agent, "分析已完成。", SimpleNamespace())
-    assert "⚠️ 本次操作未被验证成功：IntCastingNaNError: Cannot convert non-finite values" in out
-    assert "Traceback" not in out
-    assert "site-packages" not in out
+    assert out == "分析已完成。"
+    assert agent.extra_context["last_failure_state"]["error_message"] == _PANDAS_TRACEBACK
 
 
 _NO_OUTPUT_SCRATCH = (
@@ -107,14 +106,15 @@ def test_scratch_only_no_output_failure_never_banners() -> None:
     assert "未被验证成功" not in out
 
 
-def test_core_deliverable_no_output_failure_still_banners() -> None:
-    """Missing files under results/ are real deliverables — banner stands."""
+def test_legacy_missing_output_snapshot_cannot_rewrite_current_reply() -> None:
+    """Current tool/run receipts own completion; an old snapshot does not."""
     agent = SimpleNamespace(
         history=[],
         extra_context={"last_failure_state": {"error_message": _NO_OUTPUT_CORE}},
     )
     out = _apply_grounded_local_answer(agent, "分析完成，结论如下。", SimpleNamespace())
-    assert "未被验证成功" in out
+    assert out == "分析完成，结论如下。"
+    assert agent.extra_context["last_failure_state"]["error_message"] == _NO_OUTPUT_CORE
 
 
 def test_self_disclosed_limitation_is_not_rebranded() -> None:

@@ -1,27 +1,8 @@
-"""Subject seeding and grounded-answer cluster of ``agent`` (W5a cluster ⑨).
+"""Subject seeding and legacy answer-hook compatibility.
 
-Moved out of ``agent.py`` per
-design/2026-09-24-backend-godfiles-refactor-plan.md §4.8.  The plan's ⑨ was
-``action_loop.py``; no module-level action-loop cluster exists (the action loop
-is class-body code, ``StructuredChatAgent.process_unified_stream`` territory for
-W5c), so ⑨ is realised as this module instead — the two self-contained
-module-level helpers that carry subject identity and evidence grounding across
-turns: `_seed_active_subject_from_routing` (turn bookkeeping for the active
-subject) and `_apply_grounded_local_answer` (failure-caveat append).  ``agent.py``
-re-exports both, so the class call sites and
-app/tests/tools/test_execution_semantics_regressions.py's direct import of
-``_apply_grounded_local_answer`` are unchanged.
-
-Patch surface: **zero body deviations**.  Neither name is patched in ``app/`` or
-``app/tests/``; the facade aliases this cluster read (`canonicalize_subject_ref`,
-`build_subject_aliases`, `subject_identity_matches` from ``subject_identity``) are
-imported here directly from that source module, and
-``_current_user_turn_index_from_history`` is imported from its new home
-``continuation_hints.py`` — so every call expression stays verbatim.
-
-No logger is used in this cluster; both user-visible strings
-("⚠️ 本次操作未被验证成功：...") and every metadata key/status literal are
-byte-identical.
+Real errors remain in tool receipts and run history. Final prose is produced by
+this turn's model loop; historical last-error snapshots never append a footer.
+The facade names remain available to existing imports and monkeypatches.
 """
 
 from __future__ import annotations
@@ -36,7 +17,6 @@ from .subject_identity import (
     canonicalize_subject_ref,
     subject_identity_matches,
 )
-from app.services.deep_think.text_utils import _answer_discloses_limitation
 
 
 _TRACEBACK_MARKER = "Traceback (most recent call last)"
@@ -82,27 +62,6 @@ def _humanize_failure_message(message: str, *, limit: int = 240) -> str:
         # the user's failing line.
         summary = f"{summary}（cell 第 {cell_frames[-1]} 行）"
     return summary if len(summary) <= limit else summary[: limit - 1] + "…"
-
-
-_NO_OUTPUT_PATH_RE = re.compile(r"/[^\s,，;；]+")
-
-
-def _failure_is_scratch_only(message: str) -> bool:
-    """NO_OUTPUT contract failures whose referenced paths all live in scratch
-    areas (raw_files/, /tmp/, /scratch/). Scratch intermediates are not
-    deliverables and must never brand the user-facing answer (2026-10-08 geo
-    case: a timed-out code cell's guessed contract files under raw_files/
-    branded an otherwise successful, self-disclosed answer)."""
-    text = str(message or "")
-    if "NO_OUTPUT" not in text:
-        return False
-    paths = _NO_OUTPUT_PATH_RE.findall(text)
-    if not paths:
-        return False
-    return all(
-        ("raw_files/" in path) or path.startswith("/tmp/") or ("/scratch/" in path)
-        for path in paths
-    )
 
 
 def _seed_active_subject_from_routing(
@@ -161,48 +120,11 @@ def _apply_grounded_local_answer(
     answer: str,
     routing_decision: RequestRoutingDecision,
 ) -> str:
-    """Lightweight evidence-based grounding for local tool results.
+    """Compatibility hook: final prose belongs to the current model turn.
 
-    Phase 2 removed the full intent-type-driven grounding. This version only
-    appends a caveat when there is concrete failure evidence that contradicts
-    the LLM's answer, regardless of intent_type.
-
-    Caveat grading (2026-10-09): scratch-only NO_OUTPUT contract failures
-    (missing files under raw_files//tmp/scratch — intermediates, not
-    deliverables) never brand the answer, and neither does a failure the
-    answer already disclosed in its own words (see
-    text_utils._answer_discloses_limitation).
+    Tool failures remain in tool results, run events and model context. A
+    persisted last-error snapshot cannot establish whether the current goal
+    failed: recovery can succeed at a corrected path, or in a later turn.
+    Do not append historical error banners after the model has answered.
     """
-    text = str(answer or "").strip()
-    if not text:
-        return text
-
-    extra = getattr(agent, "extra_context", {}) or {}
-    failure_state = extra.get("last_failure_state")
-    evidence_state = extra.get("last_evidence_state")
-
-    # If the last evidence shows verified success, trust the answer
-    if isinstance(evidence_state, dict):
-        if str(evidence_state.get("status") or "").strip().lower() == "verified":
-            verified_facts = evidence_state.get("verified_facts")
-            if isinstance(verified_facts, list) and verified_facts:
-                return text
-
-    already_disclosed = _answer_discloses_limitation(text)
-
-    if isinstance(failure_state, dict) and str(failure_state.get("error_message") or "").strip():
-        raw_message = str(failure_state.get("error_message") or "")
-        if not _failure_is_scratch_only(raw_message) and not already_disclosed:
-            message = _humanize_failure_message(raw_message)
-            if message and message.lower() not in text.lower():
-                return f"{text}\n\n⚠️ 本次操作未被验证成功：{message}"
-
-    if isinstance(evidence_state, dict) and str(evidence_state.get("status") or "").strip().lower() == "failed":
-        unresolved = evidence_state.get("unresolved")
-        if isinstance(unresolved, list) and not already_disclosed:
-            details = "；".join(str(item).strip() for item in unresolved if str(item).strip())
-            details = _humanize_failure_message(details)
-            if details and details.lower() not in text.lower():
-                return f"{text}\n\n⚠️ 本次操作未被验证成功：{details}"
-
-    return text
+    return str(answer or "").strip()

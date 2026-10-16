@@ -282,8 +282,10 @@ def _redirect_mutation_path_to_session(
     # Project-level results/ sits outside every session workspace, so writes
     # landing there are invisible to the session-scoped Artifacts UI.  Redirect
     # them into the session output dir just like other project-root mutations.
-    if _path_is_within(resolved, _get_project_root() / "results"):
-        redirected = (base / resolved.name).resolve(strict=False)
+    legacy_results = (_get_project_root() / "results").resolve(strict=False)
+    if _path_is_within(resolved, legacy_results):
+        relative_output = resolved.relative_to(legacy_results)
+        redirected = (base / relative_output).resolve(strict=False)
         logger.info(
             "Redirecting project-root results write into session output: %s -> %s",
             resolved,

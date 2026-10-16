@@ -24,8 +24,6 @@ VALID_BASE_MODELS = {
 VALID_LLM_PROVIDERS = {"qwen", "mimo", "kimi"}
 SESSION_RUNTIME_CONTEXT_KEYS = (
     "active_subject",
-    "last_failure_state",
-    "last_evidence_state",
     "last_subject_action_class",
     "recent_image_artifacts",
 )

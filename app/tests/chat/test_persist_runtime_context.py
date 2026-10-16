@@ -47,7 +47,7 @@ def test_agent_module_reexports_action_handlers_source():
 
 
 def test_both_entry_points_persist_identical_metadata(monkeypatch):
-    seed = {"last_evidence_state": "stale-value", "unrelated": "keep-me"}
+    seed = {"last_evidence_state": "stale-value", "last_failure_state": {"error_message": "old failure"}, "unrelated": "keep-me"}
     via_agent, agent_obj = _capture_metadata(monkeypatch, seed)
     agent_module._persist_runtime_context(agent_obj)
 
@@ -58,7 +58,6 @@ def test_both_entry_points_persist_identical_metadata(monkeypatch):
         {
             "unrelated": "keep-me",
             "active_subject": {"path": "data/a.tsv", "kind": "file"},
-            "last_failure_state": {"tool": "code_executor", "count": 2},
             "recent_image_artifacts": [
                 {"path": "runtime/sess-d1/plot.png"},
                 {"path": "runtime/sess-d1/chart.svg"},
@@ -79,3 +78,12 @@ def test_missing_session_id_skips_persistence(monkeypatch):
     agent_module._persist_runtime_context(SimpleNamespace(session_id=None, extra_context={}))
     action_handlers._persist_runtime_context(SimpleNamespace(session_id="", extra_context={}))
     assert calls == []
+
+
+def test_new_turn_does_not_hydrate_legacy_failure_snapshots():
+    from app.routers.chat.session_helpers import _extract_session_runtime_context
+    assert _extract_session_runtime_context({
+        "last_failure_state": {"error_message": "old Permission denied"},
+        "last_evidence_state": {"status": "failed"},
+        "active_subject": {"canonical_ref": "report.md"},
+    }) == {"active_subject": {"canonical_ref": "report.md"}}
