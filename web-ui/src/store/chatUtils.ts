@@ -468,6 +468,7 @@ export const summaryToChatSession = (summary: ChatSessionSummary): ChatSession =
 
     return {
         id: summary.id,
+        settings: summary.settings,
         title,
         messages: [],
         created_at: createdAt,

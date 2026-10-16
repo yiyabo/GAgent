@@ -1,3 +1,4 @@
+import ResponseStyleSelector from '../chat/ResponseStyleSelector';
 import React, { useRef, useEffect, useState, useMemo, useCallback } from 'react';
 import {
   App as AntdApp,
@@ -732,6 +733,7 @@ const ChatMainArea: React.FC = () => {
                 </Button>
               </div>
             </div>
+            <div className="response-style-composer-toolbar"><ResponseStyleSelector /></div>
           </div>
         </div>
       )}

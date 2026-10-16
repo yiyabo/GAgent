@@ -1,4 +1,5 @@
 import { StateCreator } from 'zustand';
+import type { ResponsePreferences } from '@/types/responseStyle';
 import {
     ChatSession,
     ChatMessage,
@@ -9,6 +10,13 @@ import {
 } from '@/types';
 
 export interface ChatState {
+    responseDefaults: ResponsePreferences | null;
+    responseDefaultsOwner: string | null;
+    responseDefaultsRequest: string | null;
+    responsePreferenceRevisions: Record<string, number>;
+    responsePreferenceSaving: Set<string>;
+    loadResponseDefaults: () => Promise<void>;
+    updateResponsePreferences: (sessionId: string, preferences: ResponsePreferences, saveDefault?: boolean) => Promise<void>;
     // Session Slice State
     currentSession: ChatSession | null;
     sessions: ChatSession[];

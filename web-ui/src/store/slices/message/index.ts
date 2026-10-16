@@ -505,6 +505,8 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => {
   history: recentMessages,
   session_id: currentSession?.session_id ?? currentSession?.id,
   client_message_id: clientMessageId,
+  response_style: currentSession?.settings?.response_style,
+  response_length: currentSession?.settings?.response_length,
   context: {
   plan_id: mergedMetadata.plan_id,
   task_id: mergedMetadata.task_id,

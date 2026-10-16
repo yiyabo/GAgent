@@ -1,4 +1,5 @@
 import { BaseApi } from './client';
+import type { ResponsePreferences } from '@/types/responseStyle';
 import type {
   ActionStatusResponse,
   ChatProjectsResponse,
@@ -60,6 +61,7 @@ export interface ChatRunResumeInfo {
 }
 
 export class ChatApi extends BaseApi {
+  getResponsePreferences = (): Promise<ResponsePreferences> => this.get('/chat/response-preferences');
   getResumeInfo = (runId: string, sessionId: string): Promise<ChatRunResumeInfo> =>
     this.get(`/chat/runs/${encodeURIComponent(runId)}/resume`, { session_id: sessionId });
 

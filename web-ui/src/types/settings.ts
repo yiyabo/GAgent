@@ -1,4 +1,8 @@
+import type { ResponseStyle, ResponseLength } from './responseStyle';
+
 export interface ChatSessionSettings {
+  response_style?: ResponseStyle;
+  response_length?: ResponseLength;
   [key: string]: unknown;
 }
 

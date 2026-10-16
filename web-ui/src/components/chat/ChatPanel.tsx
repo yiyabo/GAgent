@@ -18,6 +18,7 @@ import { resolveChatSessionProcessingKey } from '@/utils/chatSessionKeys';
 import { useTasksStore } from '@store/tasks';
 import ChatMessage from './ChatMessage';
 import FileUploadButton from './FileUploadButton';
+import ResponseStyleSelector from './ResponseStyleSelector';
 import UploadedFilesList from './UploadedFilesList';
 import FigureCatalogDrawer from './FigureCatalogDrawer';
 import PdfViewerDrawer from './PdfViewerDrawer';
@@ -419,6 +420,7 @@ const ChatPanel: React.FC = () => {
 
       {/* Input area */}
       <div className="chat-input-area">
+        <div className="response-style-composer-toolbar"><ResponseStyleSelector /></div>
         {/* Uploaded files list */}
         <UploadedFilesList />
 

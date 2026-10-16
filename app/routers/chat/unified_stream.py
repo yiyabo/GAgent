@@ -457,6 +457,8 @@ async def _stream_direct_image_response(
     """
     from app.services.memory.context_recall import attach_recall_metadata
     attach_recall_metadata(response_metadata, agent.extra_context)
+    from app.services.response_style import attach_response_preferences
+    attach_response_preferences(response_metadata, agent.extra_context)
     if agent.session_id and response_text:
         try:
             _ag()._persist_runtime_context(agent)
@@ -616,6 +618,8 @@ async def _drain_unified_stream_events(
 
             from app.services.memory.context_recall import attach_recall_metadata
             attach_recall_metadata(final_metadata, agent.extra_context)
+            from app.services.response_style import attach_response_preferences
+            attach_response_preferences(final_metadata, agent.extra_context)
 
             # 🚀 Emit final event to client FIRST (before DB save)
             payload = {

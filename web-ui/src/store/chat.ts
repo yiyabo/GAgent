@@ -7,6 +7,7 @@ import { createUISlice } from './slices/createUISlice';
 import { createContextSlice } from './slices/createContextSlice';
 import { createMemorySlice } from './slices/createMemorySlice';
 import { createFileSlice } from './slices/createFileSlice';
+import { createResponseStyleSlice } from './slices/createResponseStyleSlice';
 
 /**
  * Refactored Chat Store
@@ -27,5 +28,6 @@ export const useChatStore = create<ChatState>()(
         ...createContextSlice(set, get, store),
         ...createMemorySlice(set, get, store),
         ...createFileSlice(set, get, store),
+        ...createResponseStyleSlice(set, get, store),
     } as ChatState))
 );
