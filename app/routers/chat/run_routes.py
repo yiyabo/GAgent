@@ -96,6 +96,9 @@ def _save_run_user_message(
         if request.client_message_id
         else None
     )
+    from app.services.response_style import attach_response_preferences
+    user_message_metadata = user_message_metadata or {}
+    attach_response_preferences(user_message_metadata, request.context)
     if (request.context or {}).get("resume_from_run_id"):
         user_message_metadata = {**(user_message_metadata or {}), "resume_from_run_id": request.context["resume_from_run_id"]}
     user_message_id = _save_chat_message(
@@ -186,6 +189,9 @@ def start_background_chat_run(
                 request, existing, session_id=session_id, owner_id=owner_id
             )
 
+    from app.services.response_style import snapshot_response_preferences
+    from .session_helpers import _get_session_settings
+    snapshot_response_preferences(request, _get_session_settings(session_id, owner_id=owner_id))
     run_id = new_chat_run_id()
     request_json = request.model_dump_json()
     try:

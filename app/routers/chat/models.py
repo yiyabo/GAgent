@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.services.llm.structured_response import LLMAction
+from app.services.response_style import ResponseStyle, ResponseLength
 
 
 # ---------------------------------------------------------------------------
@@ -139,6 +140,8 @@ class ChatRequest(BaseModel):
     project_id: Optional[int] = None
     user_id: Optional[int] = None
     attachments: Optional[List[Dict[str, Any]]] = None
+    response_style: Optional[ResponseStyle] = None
+    response_length: Optional[ResponseLength] = None
 
 
 class ChatResponse(BaseModel):
@@ -168,6 +171,8 @@ class ActionStatusResponse(BaseModel):
 class ChatSessionSettings(BaseModel):
     """Session-level customization settings."""
 
+    response_style: Optional[ResponseStyle] = None
+    response_length: Optional[ResponseLength] = None
     default_search_provider: Optional[Literal["builtin", "perplexity", "tavily"]] = None
     default_base_model: Optional[
         Literal[
@@ -235,6 +240,7 @@ class ChatSessionUpdateRequest(BaseModel):
     current_task_id: Optional[int] = None
     current_task_name: Optional[str] = None
     settings: Optional[ChatSessionSettings] = None
+    save_response_defaults: bool = False
     project_id: Optional[int] = None
 
 

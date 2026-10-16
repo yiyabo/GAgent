@@ -9,7 +9,7 @@ from app.config.tool_policy import get_tool_policy, is_tool_allowed
 from app.prompts import prompt_manager
 from app.services.foundation.settings import CHAT_HISTORY_ABS_MAX, get_settings
 from app.services.response_style import (
-    PROFESSIONAL_STYLE_INSTRUCTION,
+    response_style_instruction,
     sanitize_professional_response_text,
 )
 from .model_selection import resolve_model_routing
@@ -97,6 +97,7 @@ def build_prompt(agent: Any, user_message: str) -> str:
 
     prompt_parts = [
         "You are a research assistant. Answer the user's request in chat; manage persistent task trees only when explicitly requested.",
+        response_style_instruction(agent.extra_context),
         f"Current mode: {agent.mode}",
         f"Conversation ID: {agent.conversation_id or 'N/A'}",
         f"Session binding: {plan_status}",
@@ -164,7 +165,7 @@ def build_simple_stream_chat_prompt(agent: Any, user_message: str) -> str:
         "This channel does NOT execute tools (no web_search, no file access, no APIs).",
         "Reply in plain natural language only. Markdown is allowed.",
         "Match the user's language by default, unless they explicitly ask you to switch languages.",
-        PROFESSIONAL_STYLE_INSTRUCTION,
+        response_style_instruction(agent.extra_context),
         "Do NOT output JSON, YAML, or XML. Do NOT wrap the reply in code fences unless showing a short code sample.",
         "Do NOT emit tool call payloads or {\"llm_reply\": ...} schemas — they will be shown raw to the user and will break the UI.",
         "If the user needs live web data, local file inspection, or any tool-backed verification, say clearly that this plain chat channel cannot verify those facts directly.",

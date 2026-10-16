@@ -205,6 +205,7 @@ export const createSessionSlice: ChatSliceCreator = (set, get) => ({
   last_message_at: null,
   is_active: true,
   titleSource: 'local',
+  settings: get().responseDefaults ? { ...get().responseDefaults! } : undefined,
   isUserNamed: false,
   };
 
@@ -275,6 +276,7 @@ export const createSessionSlice: ChatSliceCreator = (set, get) => ({
   loadSessions: async () => {
     try {
       const projectId = useAuthStore.getState().projectId ?? undefined;
+      const preferenceRevisions = get().responsePreferenceRevisions;
       const response = await chatApi.getSessions({ limit: 100, offset: 0, project_id: projectId });
   const summaries = response.sessions ?? [];
   const existingSessions = get().sessions;
@@ -288,6 +290,9 @@ export const createSessionSlice: ChatSliceCreator = (set, get) => ({
   }
   return {
   ...base,
+  settings: (get().responsePreferenceSaving?.has(summary.id) ||
+    (get().responsePreferenceRevisions?.[summary.id] ?? 0) !== (preferenceRevisions?.[summary.id] ?? 0))
+    ? existing.settings : base.settings,
   messages: existing.messages,
   workflow_id: existing.workflow_id ?? base.workflow_id,
   created_at: existing.created_at ?? base.created_at,

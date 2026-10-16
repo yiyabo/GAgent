@@ -753,6 +753,11 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
         if isinstance(normalized, AgentStep):
             return normalized
         params = normalized
+        # The DeepThink action bridge strips native ToolContext. Rebuild the
+        # trusted chat scope for both protocols, as for execute_code/delegation.
+        tool_context = _build_chat_tool_context(agent, tool_name)
+        if tool_context is not None:
+            params["tool_context"] = tool_context
 
     elif tool_name == "lightrag_query":
         normalized = _normalize_lightrag_query_params(agent, action, tool_name, params)

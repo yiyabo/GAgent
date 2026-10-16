@@ -24,8 +24,6 @@ VALID_BASE_MODELS = {
 VALID_LLM_PROVIDERS = {"qwen", "mimo", "kimi"}
 SESSION_RUNTIME_CONTEXT_KEYS = (
     "active_subject",
-    "last_failure_state",
-    "last_evidence_state",
     "last_subject_action_class",
     "recent_image_artifacts",
 )
@@ -113,6 +111,9 @@ def _extract_session_settings(
     if not metadata:
         return None
     settings: Dict[str, Any] = {}
+    from app.services.response_style import preferences_from_settings
+    normalized = preferences_from_settings(metadata).model_dump()
+    settings.update({key: value for key, value in normalized.items() if key in metadata})
     provider = _normalize_search_provider(metadata.get("default_search_provider"))
     if provider:
         settings["default_search_provider"] = provider
@@ -890,6 +891,8 @@ def _ensure_session_exists(
     row = cursor.fetchone()
     if not row:
         plan_title = _lookup_plan_title(conn, plan_id)
+        from app.repository.response_preferences import get_preferences
+        initial_settings = get_preferences(conn, normalized_owner_id).model_dump()
         cursor.execute(
             """
             INSERT INTO chat_sessions (
@@ -917,7 +920,7 @@ def _ensure_session_exists(
                 f"Session {session_id[:8]}",
                 "default",
                 0,
-                None,
+                _dump_metadata(initial_settings),
                 plan_id,
                 plan_title,
                 project_id,

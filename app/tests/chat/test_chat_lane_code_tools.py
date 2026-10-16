@@ -234,11 +234,11 @@ def test_tool_outside_the_pool_is_rejected_before_the_chain(
     assert calls == []
 
 
-def test_normalizer_path_tools_do_not_receive_tool_context(
+def test_file_operations_receive_trusted_chat_context(
     chat_lane: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The context injection stays scoped to the three generic-execution tools."""
+    """File operations need the trusted session scope after normalization too."""
     calls = _record_executor(
         monkeypatch,
         {
@@ -259,7 +259,11 @@ def test_normalizer_path_tools_do_not_receive_tool_context(
     )
 
     assert calls[0][0] == "file_operations"
-    assert "tool_context" not in calls[0][1]
+    context = calls[0][1]["tool_context"]
+    assert isinstance(context, ToolContext)
+    assert context.session_id == _SESSION_ID
+    assert "raw_files/chat_tools/file_operations" in context.work_dir
+    assert calls[0][1]["operation"] == "exists"
 
 
 # ---------------------------------------------------------------------------

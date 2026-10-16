@@ -278,6 +278,7 @@ export interface ThinkingProcess {
 }
 
 export interface ChatSession {
+  settings?: ChatSessionSettings | null;
   id: string;
   title: string;
   messages: ChatMessage[];
@@ -297,6 +298,7 @@ export interface ChatSession {
 }
 
 export interface ChatSessionUpdatePayload {
+  save_response_defaults?: boolean;
   name?: string | null;
   is_active?: boolean | null;
   plan_id?: number | null;

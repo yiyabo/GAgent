@@ -43,8 +43,6 @@ logger = logging.getLogger(__name__)
 
 _RUNTIME_CONTEXT_KEYS = (
     "active_subject",
-    "last_failure_state",
-    "last_evidence_state",
     "last_subject_action_class",
     "recent_image_artifacts",
 )
@@ -71,6 +69,10 @@ def _persist_runtime_context(agent: Any) -> None:
         return
 
     def _updater(metadata: Dict[str, Any]) -> Dict[str, Any]:
+        # Last-error snapshots describe one attempt, not the next user turn.
+        # Authoritative tool/run history remains intact.
+        metadata.pop("last_failure_state", None)
+        metadata.pop("last_evidence_state", None)
         for key in _RUNTIME_CONTEXT_KEYS:
             value = (getattr(agent, "extra_context", {}) or {}).get(key)
             if isinstance(value, dict):
@@ -274,9 +276,17 @@ def _update_runtime_context_from_tool(
 ) -> None:
     extra_context = getattr(agent, "extra_context", {}) or {}
     current_turn = _current_user_turn(agent)
+    subject_params = params
+    if (tool_name == "file_operations" and params.get("operation") == "write"
+            and sanitized.get("success") is not False
+            and isinstance(sanitized.get("path"), str) and sanitized["path"].strip()):
+        # A write may be redirected into the trusted session directory. The
+        # receipt's actual path is authoritative; retain the requested alias so
+        # this successful correction can clear the earlier same-file failure.
+        subject_params = {**params, "path": sanitized["path"]}
     subject = _extract_subject_from_tool_call(
         tool_name,
-        params,
+        subject_params,
         active_subject=extra_context.get("active_subject") if isinstance(extra_context.get("active_subject"), dict) else None,
     )
     active_subject = extra_context.get("active_subject")
@@ -288,6 +298,8 @@ def _update_runtime_context_from_tool(
     subject_aliases: List[str] = []
     last_tool_scope = tool_name
     if isinstance(subject, dict):
+        if subject_params is not params:
+            subject["aliases"] = build_subject_aliases(subject.get("aliases"), params.get("path"))
         subject_ref = canonicalize_subject_ref(
             subject.get("canonical_ref") or subject.get("display_ref")
         )

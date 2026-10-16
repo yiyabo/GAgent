@@ -515,6 +515,7 @@ def _build_shared_strategy_block(agent: "DeepThinkAgent") -> str:
         "7. If the user asks for depth, latest research, or sources, then increase rigor and evidence gathering.\n\n"
         "=== WRITING STYLE ===\n"
         f"- {PROFESSIONAL_STYLE_INSTRUCTION}\n"
+        "- Explain genuinely unresolved tool failures using this turn's receipts. A recovered attempt does not make the final outcome a failure; do not copy generic system error footers from earlier replies.\n"
         "- Prefer clear headings and plain wording over expressive decoration.\n"
         "- When a turn produces images (plots/figures), weave each one into the reply where it is "
         "discussed (图文穿插): write a short lead-in sentence in prose naming the figure (e.g. "
@@ -707,6 +708,10 @@ def _append_reference_context(
     if not context:
         return prompt
 
+    from app.services.response_style import response_style_instruction, SNAPSHOT_KEY
+    if SNAPSHOT_KEY in context:
+        prompt += "\n=== CHAT REPLY PREFERENCES ===\n" + response_style_instruction(context)
+
     from app.services.memory.context_recall import format_recall_context
     recall_block = format_recall_context(context)
     from app.services.skill_learning.context import format_skill_context
@@ -853,6 +858,9 @@ def _build_native_system_prompt(
     task_context: Optional[TaskExecutionContext] = None,
 ) -> str:
     """System prompt for native tool calling mode (no JSON formatting rules)."""
+    from app.services.response_style import SNAPSHOT_KEY
+    snapshot = (context or {}).get(SNAPSHOT_KEY)
+    agent._chat_response_preferences = dict(snapshot) if isinstance(snapshot, dict) else {}
     task_preamble = ""
     if task_context and task_context.task_instruction:
         lines = [
@@ -982,6 +990,9 @@ def _build_system_prompt(
     task_context: Optional[TaskExecutionContext] = None,
 ) -> str:
     """Construct the system prompt for DeepThink, task-aware when available."""
+    from app.services.response_style import SNAPSHOT_KEY
+    snapshot = (context or {}).get(SNAPSHOT_KEY)
+    agent._chat_response_preferences = dict(snapshot) if isinstance(snapshot, dict) else {}
     from app.services.plans.execution_contract import PLAN_EXECUTION_GUIDANCE
     # Build detailed tool descriptions
     tool_descriptions = {

@@ -578,6 +578,10 @@ async def chat_message(
                 context["default_llm_provider"] = session_llm_provider
         context.setdefault("owner_id", owner_id)
 
+        from app.services.response_style import snapshot_response_preferences
+        snapshot = snapshot_response_preferences(request, session_settings)
+        context["chat_response_preferences"] = snapshot
+
         from app.services.memory.context_recall import hydrate_chat_context
         await hydrate_chat_context(context, request.session_id, request.message,
                                    client_message_id=request.client_message_id)
@@ -673,7 +677,7 @@ async def chat_message(
                 response=agent_result.reply,
                 suggestions=agent_result.suggestions,
                 actions=[step.action_payload for step in agent_result.steps],
-                metadata={**metadata_payload, "recall_context": context.get("recall_context")},
+                metadata={**metadata_payload, "recall_context": context.get("recall_context"), "chat_response_preferences": snapshot},
             )
             return _save_assistant_response(
                 request.session_id,
@@ -792,6 +796,7 @@ async def chat_message(
             actions=pending_actions,
             metadata={
                 "status": "pending",
+                "chat_response_preferences": snapshot,
                 "unified_stream": True,
                 "tracking_id": tracking_id,
                 "plan_id": plan_session.plan_id,
@@ -983,7 +988,13 @@ async def update_chat_session(
 
     updates = payload.model_dump(exclude_unset=True)
     settings_update = updates.pop("settings", None)
+    save_defaults = updates.pop("save_response_defaults", False)
     owner_id = get_request_owner_id(raw_request)
+    if save_defaults:
+        from app.services.request_principal import require_authenticated_principal
+        require_authenticated_principal(raw_request)
+        if not settings_update or any(settings_update.get(key) is None for key in ("response_style", "response_length")):
+            raise HTTPException(status_code=422, detail="Both reply preferences are required when saving defaults")
 
     if not updates and settings_update is None:
         raise HTTPException(status_code=400, detail="No fields to update")
@@ -1045,6 +1056,13 @@ async def update_chat_session(
                         metadata_dict["default_llm_provider"] = normalized
                     else:
                         metadata_dict.pop("default_llm_provider", None)
+                from app.services.response_style import ResponsePreferences
+                for key in ResponsePreferences.model_fields:
+                    if key in settings_update:
+                        if settings_update[key] is None:
+                            metadata_dict.pop(key, None)
+                        else:
+                            metadata_dict[key] = settings_update[key]
                 set_clauses.append("metadata=?")
                 params.append(_dump_metadata(metadata_dict))
 
@@ -1116,6 +1134,14 @@ async def update_chat_session(
                 "WHERE id=? AND owner_id=?"
             )
             params.extend([session_id, owner_id])
+            if save_defaults:
+                # The pool uses autocommit: start an explicit short transaction
+                # so defaults and this session's choice cannot partially apply.
+                from app.repository.response_preferences import save_preferences
+                conn.execute("BEGIN IMMEDIATE")
+                save_preferences(conn, owner_id, ResponsePreferences(**{
+                    key: settings_update[key] for key in ResponsePreferences.model_fields
+                }))
             conn.execute(sql, params)
             conn.commit()
 
@@ -1603,6 +1629,8 @@ router.add_api_route(
     methods=["POST"],
 )
 
+from .response_preferences import mount_response_preferences_routes
+mount_response_preferences_routes(router)
 mount_run_routes(router)
 
 # Action routes

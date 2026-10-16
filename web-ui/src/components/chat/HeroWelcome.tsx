@@ -13,6 +13,7 @@ import {
 } from '@ant-design/icons';
 import { useAuthStore } from '@store/auth';
 import FileUploadButton from './FileUploadButton';
+import ResponseStyleSelector from './ResponseStyleSelector';
 import UploadedFilesList from './UploadedFilesList';
 
 const { TextArea } = Input;
@@ -128,6 +129,7 @@ export const HeroWelcome: React.FC<HeroWelcomeProps> = ({
         <div className="hero-prompt-toolbar">
           <div className="hero-prompt-toolbar-left">
             <FileUploadButton size="small" />
+            <ResponseStyleSelector />
           </div>
 
           <div className="hero-prompt-toolbar-right">

@@ -389,9 +389,10 @@ def test_grounded_local_answer_overrides_unverified_success_claim() -> None:
         ),
     )
 
-    # Grounding appends a caveat when failure evidence contradicts the answer
-    assert "Directory not found" in grounded
-    assert "⚠️" in grounded
+    # Historical snapshots cannot rewrite the current model response. Real
+    # failures stay in the tool receipt and must reach the current model loop.
+    assert grounded == "我已经读取了目录内容，并看到了 result.json 和 preview.json。"
+    assert agent.extra_context["last_failure_state"]["error_message"] == "Directory not found"
 
 
 def test_local_tool_path_alias_is_normalized_to_active_subject(
@@ -505,9 +506,8 @@ def test_grounded_local_mutation_failure_overrides_plain_success_claim() -> None
         ),
     )
 
-    # Grounding appends a caveat when failure evidence contradicts the answer
-    assert "zip file not found" in grounded
-    assert "⚠️" in grounded
+    assert grounded == "我已经完成了解压，文件都放在原目录里了。"
+    assert agent.extra_context["last_failure_state"]["error_message"] == "zip file not found"
 
 
 def test_bio_tools_is_supported_in_tool_action_handler(

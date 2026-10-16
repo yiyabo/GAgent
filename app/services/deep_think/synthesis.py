@@ -38,7 +38,7 @@ from app.services.deep_think.text_utils import (
 )
 from app.services.foundation.settings import get_settings
 from app.services.response_style import (
-    PROFESSIONAL_STYLE_INSTRUCTION,
+    response_style_instruction,
     sanitize_professional_response_text,
 )
 from app.services.run_budget import RunDeadlineExceeded, iterate_stage, run_stage
@@ -757,7 +757,7 @@ async def _generate_fallback_from_evidence(
         "or status counts, state those limits and do not convert them into all/every/global success claims.\n"
         f"{focus_instruction}"
         f"{bound_task_instruction}"
-        f"{PROFESSIONAL_STYLE_INSTRUCTION}"
+        f"{response_style_instruction({'chat_response_preferences': getattr(agent, '_chat_response_preferences', {})})}"
     )
 
     last_exc: Optional[Exception] = None
@@ -948,6 +948,7 @@ async def _forced_synthesis_from_steps(
                     "State this explicitly at the top of the answer with the reason; do not pretend everything completed."
                 )
 
+        instruction += "\n" + response_style_instruction({"chat_response_preferences": getattr(agent, "_chat_response_preferences", {})})
         prompt = (
             f"{instruction}\n\n"
             f"User question: {uq}\n\n"
