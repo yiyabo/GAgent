@@ -37,6 +37,7 @@ from app.services.deep_think.text_utils import (
     _strip_cli_stream_noise,
 )
 from app.services.foundation.settings import get_settings
+from app.services.execution.llm_observation import ObserverRejected
 from app.services.response_style import (
     response_style_instruction,
     sanitize_professional_response_text,
@@ -675,13 +676,23 @@ async def _chat_text_streaming(agent: "DeepThinkAgent", prompt: str, *, max_toke
     keeps bytes flowing and survives multi-minute generations.
     ``max_tokens`` and the thinking switch are both sent explicitly (§109).
     """
-    stream_fn = getattr(agent.llm_client, "stream_chat_async", None)
-    if callable(stream_fn):
-        chunks: List[str] = []
-        async for chunk in iterate_stage(stream_fn(prompt=prompt, max_tokens=max_tokens, enable_thinking=_synthesis_thinking_enabled()), stage="deepthink-synthesis-llm", cancel_event=getattr(agent, "cancel_event", None)):
-            chunks.append(str(chunk))
-        return "".join(chunks)
-    return await run_stage(agent.llm_client.chat_async(prompt=prompt, max_tokens=max_tokens), stage="deepthink-synthesis-llm", cancel_event=getattr(agent, "cancel_event", None))
+    from .model_failure import remember_failure, recovered
+    try:
+        stream_fn = getattr(agent.llm_client, "stream_chat_async", None)
+        if callable(stream_fn):
+            chunks: List[str] = []
+            async for chunk in iterate_stage(stream_fn(prompt=prompt, max_tokens=max_tokens, enable_thinking=_synthesis_thinking_enabled()), stage="deepthink-synthesis-llm", cancel_event=getattr(agent, "cancel_event", None)):
+                chunks.append(str(chunk))
+            result = "".join(chunks)
+        else:
+            result = await run_stage(agent.llm_client.chat_async(prompt=prompt, max_tokens=max_tokens), stage="deepthink-synthesis-llm", cancel_event=getattr(agent, "cancel_event", None))
+    except (RunDeadlineExceeded, ObserverRejected):
+        raise
+    except Exception as exc:
+        remember_failure(agent, exc)
+        raise
+    recovered(agent)
+    return result
 
 
 async def _generate_fallback_from_evidence(
@@ -774,7 +785,7 @@ async def _generate_fallback_from_evidence(
                 _ensure_inline_images(cleaned, agent._collect_inline_image_relpaths())
             )
             return cleaned
-        except RunDeadlineExceeded:
+        except (RunDeadlineExceeded, ObserverRejected):
             raise
         except Exception as exc:
             last_exc = exc
@@ -993,7 +1004,7 @@ async def _forced_synthesis_from_steps(
         )
         logger.info("[DEEP_THINK_NATIVE] Forced synthesis succeeded (%d chars)", len(cleaned))
         return cleaned
-    except RunDeadlineExceeded:
+    except (RunDeadlineExceeded, ObserverRejected):
         raise
     except Exception as exc:
         logger.warning("[DEEP_THINK_NATIVE] Forced synthesis failed: %r", exc, exc_info=True)
@@ -1037,7 +1048,7 @@ async def _fallback_answer_from_steps(
                 task_context=task_context,
             ):
                 return generated
-        except RunDeadlineExceeded:
+        except (RunDeadlineExceeded, ObserverRejected):
             raise
         except Exception:
             logger.warning(

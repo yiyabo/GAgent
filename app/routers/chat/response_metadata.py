@@ -250,6 +250,9 @@ def _build_deep_think_response_metadata(
     if structured_plan_contract_failed(result):
         metadata.update(status="failed", goal_status="incomplete", failure_kind="structured_plan_contract_mismatch")
     issues = getattr(result, "execution_issues", [])
+    if getattr(result, 'termination_reason', None) == 'llm_unavailable':
+        metadata.update(status='failed', goal_status='incomplete',
+                        failure_kind='llm_unavailable', termination_reason='llm_unavailable')
     if issues:
         metadata["execution_issues"] = _sanitize_chat_metadata_value(issues)
         metadata["status"] = "failed"
