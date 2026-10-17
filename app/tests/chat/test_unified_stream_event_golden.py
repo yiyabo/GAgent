@@ -409,6 +409,49 @@ def test_deep_think_visible_thinking_event_sequence(monkeypatch) -> None:
     assert final["metadata"]["thinking_process"]["steps"][0]["iteration"] == 1
 
 
+def test_replaced_image_final_and_saved_message_share_content_revision(tmp_path, monkeypatch):
+    import hashlib
+    from dataclasses import replace
+
+    _patch_runtime(monkeypatch)
+    monkeypatch.setenv('APP_RUNTIME_ROOT', str(tmp_path))
+    root = tmp_path / 'session_sess-golden' / 'results'; root.mkdir(parents=True)
+    image = root / 'chart.png'; image.write_bytes(b'Chinese chart')
+    saved = []
+    monkeypatch.setattr(agent_module, '_save_chat_message', lambda *args, **kwargs: saved.append(args))
+    class FigureAgent(_ThinkingStub):
+        def __init__(self, **kwargs): super().__init__([], **kwargs)
+        async def think(self, *args, **kwargs):
+            image.write_bytes(b'English chart')
+            return replace(await super().think(*args, **kwargs), final_answer='![English](results/chart.png)')
+    monkeypatch.setattr(chat_routes, 'DeepThinkAgent', FigureAgent)
+    agent = _build_agent()
+    agent._resolve_request_routing = lambda _: (_decision('Translate chart', visibility='visible'), _profile())
+    events = _run(agent, 'Translate chart')
+    assert _types(events) == ['control_ack', 'final']
+    expected = '![English](results/chart.png?v=' + hashlib.sha256(b'English chart').hexdigest() + ')'
+    assert events[-1]['payload']['response'] == expected
+    assert saved[-1][2] == expected
+
+
+def test_provider_failure_final_is_a_failed_job_without_restarting_acceptance(monkeypatch):
+    from dataclasses import replace
+    jobs = _patch_runtime(monkeypatch)
+    class FailedAgent(_ThinkingStub):
+        def __init__(self, **kwargs): super().__init__([], **kwargs)
+        async def think(self, *args, **kwargs):
+            return replace(await super().think(*args, **kwargs),
+                           final_answer='The model service is unavailable; existing files were retained.',
+                           termination_reason='llm_unavailable')
+    monkeypatch.setattr(chat_routes, 'DeepThinkAgent', FailedAgent)
+    agent = _build_agent()
+    agent._resolve_request_routing = lambda _: (_decision('Continue'), _profile())
+    events = _run(agent, 'Continue')
+    metadata = events[-1]['payload']['metadata']
+    assert metadata['status'] == 'failed' and metadata['failure_kind'] == 'llm_unavailable'
+    assert 'mark_failure' in jobs.names() and 'mark_success' not in jobs.names()
+
+
 def test_closing_unified_stream_joins_agent_and_prevents_late_events(monkeypatch) -> None:
     _patch_runtime(monkeypatch)
     settled = asyncio.Event()

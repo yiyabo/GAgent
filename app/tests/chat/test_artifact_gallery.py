@@ -1,3 +1,5 @@
+import hashlib
+
 from app.routers.chat.artifact_gallery import (
     extract_artifact_gallery_from_result,
     filter_user_uploads_out,
@@ -29,6 +31,7 @@ def test_extract_artifact_gallery_accepts_saved_image_path(tmp_path, monkeypatch
             "origin": "artifact",
             "created_at": "2026-04-19T00:00:00Z",
             "tracking_id": "track_demo",
+            "content_hash": hashlib.sha256(b"png").hexdigest(),
         }
     ]
 

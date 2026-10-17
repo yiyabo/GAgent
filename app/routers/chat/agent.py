@@ -2814,10 +2814,11 @@ class StructuredChatAgent:
                                 "total_iterations": result.total_iterations,
                                 "tools_used": result.tools_used,
                                 "confidence": result.confidence,
+                                "termination_reason": getattr(result, 'termination_reason', None),
                         }
                         verification = getattr(result, "output_verification", None) or {}
                         execution_issues = getattr(result, "execution_issues", None) or []
-                        if structured_plan_contract_failed(result) or execution_issues or (verification.get("authoritative") and verification.get("status") == "failed"):
+                        if getattr(result, 'termination_reason', None) == 'llm_unavailable' or structured_plan_contract_failed(result) or execution_issues or (verification.get("authoritative") and verification.get("status") == "failed"):
                             plan_decomposition_jobs.mark_failure(
                                 deep_think_job_id, "Execution or output verification did not complete successfully.",
                                 result={**job_result, "output_verification": verification, "execution_issues": execution_issues},

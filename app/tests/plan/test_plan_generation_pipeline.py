@@ -313,7 +313,7 @@ def test_create_plan_uses_integrated_generation_and_allows_missing_seed_tasks(mo
 
 
 
-def test_structured_create_plan_auto_reviews_and_optimizes(monkeypatch) -> None:
+def test_structured_create_preserves_seeds_without_hidden_review(monkeypatch) -> None:
     repo = _GenerationRepoStub()
     captured: dict[str, object] = {}
 
@@ -396,11 +396,9 @@ def test_structured_create_plan_auto_reviews_and_optimizes(monkeypatch) -> None:
     step = asyncio.run(handle_plan_action(agent, action))
 
     assert step.success is True
-    assert step.details["auto_review"]["status"] == "optimized"
-    assert step.details["auto_optimize"]["applied_changes"] == 1
-    assert captured["plan_id"] == 1
-    assert captured["repo"] is repo
-    assert captured["trigger"] == "plan_generation.create"
+    assert step.details["auto_review"]["status"] == "skipped_explicit_structure"
+    assert "auto_optimize" not in step.details
+    assert captured == {}
     assert agent.plan_session.plan_id == 1
 
 
@@ -460,7 +458,7 @@ def test_create_plan_and_generate_skips_decomposition_for_seeded_plan(monkeypatc
     assert outcome.plan_tree.metadata["plan_generation"]["decomposition_status"] == "skipped_seeded"
     assert outcome.plan_tree.metadata["plan_generation"]["seed_task_count"] == 2
     assert outcome.auto_review is not None
-    assert outcome.auto_review["status"] == "completed"
+    assert outcome.auto_review["status"] == "skipped_explicit_structure"
     assert outcome.seeded_tasks[0].metadata["source"] == "phagescope_research_seed_plan"
     assert outcome.seeded_tasks[1].dependencies == [outcome.seeded_tasks[0].id]
 

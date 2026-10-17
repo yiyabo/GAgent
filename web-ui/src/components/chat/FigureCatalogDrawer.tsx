@@ -294,11 +294,8 @@ export const FigureCatalogDrawer: React.FC<FigureCatalogDrawerProps> = ({
             'raw'
           )}
           imageAlt={activeFineTuneFigure.displayTitle}
-          imagePath={activeFineTuneFigure.baseName}
+          imagePath={activeFineTuneFigure.pngPath || activeFineTuneFigure.svgPath || ''}
           sessionId={sessionId}
-          onSubmitPrompt={(prompt) => {
-            window.dispatchEvent(new CustomEvent('phage:send-chat-prompt', { detail: { prompt, autoSend: true } }));
-          }}
         />
       )}
     </>

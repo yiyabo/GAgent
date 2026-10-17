@@ -454,63 +454,31 @@ def _create_seed_tasks(
     if not isinstance(tasks, list) or not tasks:
         return []
 
+    from .seed_structure import prepare
+    from .task_contracts import seed_metadata
+    seeds = prepare(tasks)
     created_nodes: List[PlanNode] = []
-    name_to_id: Dict[str, int] = {}
-    pending_dependency_names: List[Tuple[int, List[Any]]] = []
-
-    for index, raw_task in enumerate(tasks, start=1):
-        if not isinstance(raw_task, dict):
-            continue
-        name = str(raw_task.get("name") or raw_task.get("title") or f"Task {index}").strip()
-        instruction = str(raw_task.get("instruction") or raw_task.get("description") or "").strip()
-        status = str(raw_task.get("status") or "pending").strip() or "pending"
-        from .task_contracts import seed_metadata
-        metadata = seed_metadata(raw_task)
-        metadata.setdefault("task_type", metadata.get("task_type") or "composite")
-        metadata = ensure_task_metadata(
-            metadata=metadata,
-            task_name=name,
-            instruction=instruction,
-        )
-
-        parent_id = raw_task.get("parent_id")
-        try:
-            parent_id_int = int(parent_id) if parent_id is not None else root_task_id
-        except (TypeError, ValueError):
-            parent_id_int = root_task_id
-        if parent_id_int is None:
-            parent_id_int = root_task_id
-
-        node = repo.create_task(
-            plan_id,
-            name=name,
-            status=status,
-            instruction=instruction or None,
-            parent_id=parent_id_int,
-            metadata=metadata,
-        )
+    key_to_id = {}
+    for raw in seeds:
+        name = raw['name']
+        instruction = str(raw.get('instruction') or raw.get('description') or '').strip()
+        metadata = seed_metadata(raw)
+        metadata['task_type'] = raw['task_type']
+        metadata = ensure_task_metadata(metadata=metadata, task_name=name, instruction=instruction)
+        parent_key = raw['parent_key']
+        parent_id = key_to_id[parent_key] if parent_key else raw.get('parent_id', root_task_id)
+        node = repo.create_task(plan_id, name=name,
+            status=str(raw.get('status') or 'pending'), instruction=instruction or None,
+            parent_id=int(parent_id) if parent_id is not None else root_task_id, metadata=metadata)
         created_nodes.append(node)
-        name_to_id[name] = node.id
-        pending_dependency_names.append((node.id, list(raw_task.get("dependencies") or [])))
-
-    for task_id, dependency_values in pending_dependency_names:
-        dep_ids: List[int] = []
-        for value in dependency_values:
-            if isinstance(value, int):
-                dep_ids.append(value)
-                continue
-            text = str(value or "").strip()
-            if not text:
-                continue
-            if text.isdigit():
-                dep_ids.append(int(text))
-                continue
-            dep_id = name_to_id.get(text)
-            if dep_id is not None:
-                dep_ids.append(dep_id)
-        deduped = [dep for dep in dep_ids if dep != task_id]
-        if deduped:
-            repo.update_task(plan_id, task_id, dependencies=deduped)
+        key_to_id[raw['key']] = node.id
+    for raw, node in zip(seeds, created_nodes):
+        dependencies = list(dict.fromkeys(dep if isinstance(dep, int) else key_to_id[dep]
+                                         for dep in raw['dependencies']))
+        if node.id in dependencies:
+            raise ValueError('A task cannot depend on itself')
+        if dependencies:
+            repo.update_task(plan_id, node.id, dependencies=dependencies)
 
     return created_nodes
 
@@ -585,6 +553,8 @@ async def create_plan_and_generate(
     decomposer: Optional[PlanDecomposer] = None,
     session_context: Optional[Dict[str, Any]] = None,
 ) -> PlanGenerationOutcome:
+    from .seed_structure import prepare, complete
+    prepare(tasks)
     repo = repo or PlanRepository()
     effective_metadata = dict(metadata or {})
     plan_tree = repo.create_plan(
@@ -615,6 +585,15 @@ async def create_plan_and_generate(
         node.metadata.get("delivery_contract_required") and has_declared_acceptance(node.metadata)
         for node in seeded_tasks
     )
+    preserve_seeds = bool(seeded_tasks)
+    if preserve_seeds:
+        effective_metadata['explicit_seed_structure'] = {
+            'source_request': str((session_context or {}).get('user_message') or description or ''),
+            'task_ids': [node.id for node in seeded_tasks],
+        }
+        if complete(repo.get_plan_tree(plan_id), seeded_tasks):
+            effective_metadata['skip_auto_decomposition'] = True
+        repo.update_plan_metadata(plan_id, effective_metadata)
     if explicit_seed_contract:
         # The caller supplied executable tasks and authoritative deliverables.
         # Automatic rubric improvement cannot rewrite the agreed method.
@@ -633,7 +612,7 @@ async def create_plan_and_generate(
     if decomposer is None:
         decomposer = PlanDecomposer(repo=repo)
 
-    effective_context, collected_materials = (effective_context, []) if explicit_seed_contract else await collect_plan_generation_materials(
+    effective_context, collected_materials = (effective_context, []) if preserve_seeds else await collect_plan_generation_materials(
         title=title,
         description=description,
         tasks=tasks,
@@ -672,12 +651,12 @@ async def create_plan_and_generate(
 
     auto_review_payload: Optional[Dict[str, Any]] = None
     try:
-        auto_review = None if explicit_seed_contract else await _auto_review_and_optimize_plan(
+        auto_review = None if preserve_seeds else await _auto_review_and_optimize_plan(
             plan_id=plan_id,
             repo=repo,
             trigger="plan_generation.create",
         )
-        auto_review_payload = auto_review.to_dict() if auto_review else {"status": "skipped_explicit_contract", "optimization_attempted": False}
+        auto_review_payload = auto_review.to_dict() if auto_review else {"status": "skipped_explicit_contract" if explicit_seed_contract else "skipped_explicit_structure", "optimization_attempted": False}
         updated_tree = repo.get_plan_tree(plan_id)
     except Exception as exc:
         logger.warning("Automatic post-create review failed for plan %s: %s", plan_id, exc)
@@ -691,7 +670,7 @@ async def create_plan_and_generate(
         }
 
     try:
-        phase_titles = None if explicit_seed_contract else await generate_phase_titles(updated_tree)
+        phase_titles = None if preserve_seeds else await generate_phase_titles(updated_tree)
         if phase_titles:
             repo.update_plan_metadata(
                 plan_id,

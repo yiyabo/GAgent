@@ -108,6 +108,7 @@ export interface PlanSyncEventDetail {
 
 export interface ArtifactGalleryItem {
   path: string;
+  content_hash?: string | null;
   display_name?: string | null;
   source_tool?: string | null;
   mime_family?: string | null;

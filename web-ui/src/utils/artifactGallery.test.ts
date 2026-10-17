@@ -5,6 +5,7 @@ import {
   collectInlineImageKeys,
   filterInlinedGalleryItems,
   isUserUploadPath,
+  resolveArtifactGalleryItemSrc,
   type ArtifactGalleryItem,
 } from './artifactGallery';
 
@@ -15,6 +16,13 @@ const item = (path: string, display_name?: string): ArtifactGalleryItem => ({
 });
 
 describe('collectInlineImageKeys', () => {
+  it('dedupes a revised inline image against its gallery export', () => {
+    const items = collectArtifactGallery([{path:'results/AB.png',content_hash:'new'}]);
+    const url = resolveArtifactGalleryItemSrc(items[0], 's1');
+    expect(new URL(url, 'http://localhost').searchParams.get('v')).toBe('new');
+    expect(filterInlinedGalleryItems(items, '![English](results/AB.png?v=new)')).toEqual([]);
+    expect(filterInlinedGalleryItems(items, `![English](${url})`)).toEqual([]);
+  });
   it('collects basenames and stems from inline image refs', () => {
     const keys = collectInlineImageKeys(
       '前文\n![柱状图](deliverables/latest/image_tabular/group_bar.png)\n后文',

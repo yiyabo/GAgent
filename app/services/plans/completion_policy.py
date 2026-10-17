@@ -28,7 +28,7 @@ def execution_status(raw_status: Any, metadata: dict | None = None) -> str:
     status = str(metadata.get("execution_status") or raw_status or "pending").strip().lower()
     if metadata.get("execution_issues"):
         return "failed"
-    if metadata.get("termination_reason") in {"cancelled", "canceled", "run_deadline_exceeded"}:
+    if metadata.get("termination_reason") in {"cancelled", "canceled", "run_deadline_exceeded", "llm_unavailable"}:
         return "cancelled" if metadata["termination_reason"] in {"cancelled", "canceled"} else "failed"
     if status in {"completed", "success", "succeeded", "done", "needs_review"}:
         return "completed"

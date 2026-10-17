@@ -4,7 +4,7 @@ import {
   buildDeliverableFileUrl,
   buildWorkspaceFileUrl,
 } from '@api/artifacts';
-import { resolveArtifactImageSrc } from './artifactImageUrl';
+import { parseSessionArtifactImageUrl, resolveArtifactImageSrc, withArtifactImageVersion } from './artifactImageUrl';
 import { normalizeArtifactImagePath } from './artifactImageUrl';
 
 const IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp|svg)$/i;
@@ -28,6 +28,7 @@ export const normalizeArtifactGalleryItem = (raw: any): ArtifactGalleryItem | nu
   }
   return {
     path,
+    content_hash: isNonEmptyString(raw.content_hash) ? raw.content_hash.trim() : undefined,
     display_name: isNonEmptyString(raw.display_name) ? raw.display_name.trim() : undefined,
     source_tool: isNonEmptyString(raw.source_tool) ? raw.source_tool.trim() : undefined,
     mime_family: isNonEmptyString(raw.mime_family) ? raw.mime_family.trim() : 'image',
@@ -89,7 +90,7 @@ export const collectInlineImageKeys = (markdown: string | null | undefined): Set
     if (!target) {
       continue;
     }
-    const base = _baseName(target);
+    const base = _baseName(parseSessionArtifactImageUrl(target)?.path || target.split(/[?#]/, 1)[0]);
     if (!base) {
       continue;
     }
@@ -172,11 +173,11 @@ export const resolveArtifactGalleryItemSrc = (
       // or results). The deliverables endpoint prepends its own root, so
       // serve them through the session file endpoint which resolves
       // session-relative paths as-is.
-      return buildArtifactFileUrl(sid, normalized);
+      return withArtifactImageVersion(buildArtifactFileUrl(sid, normalized), item.content_hash);
     }
-    return buildDeliverableFileUrl(sid, normalized);
+    return withArtifactImageVersion(buildDeliverableFileUrl(sid, normalized), item.content_hash);
   }
-  return resolveArtifactImageSrc(item.path, sessionId);
+  return withArtifactImageVersion(resolveArtifactImageSrc(item.path, sessionId), item.content_hash);
 };
 
 // ---------------------------------------------------------------------------

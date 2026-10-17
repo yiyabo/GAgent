@@ -653,6 +653,8 @@ class _DeepThinkMethods:
                 or _deep_think_has_failed_primary_execution_tool(result)
             )
             deep_think_status = "failed" if primary_tool_failed else "success"
+            if getattr(result, 'termination_reason', None) == 'llm_unavailable':
+                deep_think_status = 'failed'
             execution_issues = list(getattr(result, "execution_issues", None) or [])
             if execution_issues:
                 deep_think_status = "failed"
@@ -1051,7 +1053,7 @@ class _DeepThinkMethods:
                 and metadata.get("failure_kind") == "contract_mismatch"
                 and isinstance(metadata.get("contract_diff"), dict)
                 and not metadata.get("blocked_by_dependencies")
-                and metadata.get("termination_reason") not in {"cancelled", "run_deadline_exceeded"})
+                and metadata.get("termination_reason") not in {"cancelled", "run_deadline_exceeded", "llm_unavailable"})
 
     def _attempt_contract_repair_with_deep_think(
         self, *, plan_id: int, node: PlanNode, task_context: TaskExecutionContext,

@@ -44,6 +44,8 @@ from app.services.deep_think.text_utils import (
     _resolve_context_budget_tokens,
 )
 from app.services.execution.tool_executor import UnifiedToolExecutor
+from app.services.execution.llm_observation import ObserverRejected
+from .model_failure import remember_failure, recovered, terminate, observed_stream
 from app.services.foundation.settings import get_settings
 from app.services.response_style import sanitize_professional_response_text
 from app.services.run_budget import RunDeadlineExceeded, SoftFinalize, iterate_work_stage, iterate_stage, run_stage
@@ -87,6 +89,7 @@ async def think(
         )
 
     agent._termination_reason = None
+    recovered(agent)
     if agent._supports_native_tools():
         logger.info("[DEEP_THINK] Using native tool calling path")
         return await agent._think_native(user_query.strip(), context, task_context)
@@ -1615,6 +1618,8 @@ async def _think_native(
                 ),
             })
 
+    if not final_answer and consecutive_llm_failures:
+        final_answer, llm_fatal_abort = terminate(agent), True
     finalized = await _native_finalize(
         agent,
         user_query=user_query,
@@ -1701,6 +1706,8 @@ async def _native_llm_step(
         return "break",None,consecutive_llm_failures,""
     except RunDeadlineExceeded:
         raise
+    except ObserverRejected:
+        raise
     except Exception as exc:
         error_detail = _dta()._describe_exception(exc)
         logger.exception(
@@ -1714,7 +1721,7 @@ async def _native_llm_step(
         thinking_steps.append(current_step)
         if agent.on_thinking:
             await agent._safe_callback(current_step)
-        classified = _dta()._classify_llm_provider_error(exc)
+        classified = remember_failure(agent, exc)
         if classified is not None and not classified.retryable:
             logger.error(
                 "[DEEP_THINK_NATIVE] Non-retryable LLM provider error (%s); aborting run",
@@ -1724,7 +1731,7 @@ async def _native_llm_step(
         else:
             consecutive_llm_failures += 1
         if consecutive_llm_failures >= max_consecutive_llm_failures:
-            fatal_answer = _dta()._build_llm_unavailable_final_answer(classified)
+            fatal_answer = terminate(agent)
             logger.error(
                 "[DEEP_THINK_NATIVE] Circuit breaker tripped after %d consecutive LLM failure(s); aborting run",
                 consecutive_llm_failures,
@@ -1732,6 +1739,7 @@ async def _native_llm_step(
             return "break", None, consecutive_llm_failures, fatal_answer
         return "continue", None, consecutive_llm_failures, ""
 
+    recovered(agent)
     consecutive_llm_failures = 0
     return "ok", result, consecutive_llm_failures, ""
 
@@ -1894,6 +1902,8 @@ async def _native_finalize(
     except Exception:
         summary = _dta()._default_deepthink_summary(user_query)
 
+    if getattr(agent, '_model_call_failed', False):
+        final_answer, fallback_used = terminate(agent), True
     final_answer, output_fields = await checkpointing.finalize_output_spec(agent, user_query, final_answer)
     return DeepThinkResult(
         final_answer=final_answer,
@@ -1951,6 +1961,8 @@ async def _think_prompt_based(
     confidence = 0.0
     last_tool_cycle_signature: Optional[str] = None
     identical_tool_cycle_count = 0
+    recovered(agent)
+    consecutive_llm_failures = 0
 
     logger.info(f"Starting DeepThink for query: {user_query[:50]}...")
 
@@ -1988,7 +2000,7 @@ async def _think_prompt_based(
             from .native_validation import compact_strict
             messages=await compact_strict(agent,messages,user_query)
             logger.info("[DEEP_THINK] Using streaming LLM call")
-            async for delta in iterate_work_stage(agent.llm_client.stream_chat_async(
+            async for delta in iterate_work_stage(observed_stream(agent, agent.llm_client.stream_chat_async(
                 prompt="", messages=messages,
                 enable_thinking=agent.enable_thinking,
                 thinking_budget=agent.thinking_budget,
@@ -1996,12 +2008,13 @@ async def _think_prompt_based(
                     agent.on_reasoning_delta(iteration, chunk)
                     if agent.on_reasoning_delta else None
                 ),
-            ), stage="deepthink-prompt-llm", cancel_event=agent.cancel_event):
+            )), stage="deepthink-prompt-llm", cancel_event=agent.cancel_event):
                 response_text += delta
                 if agent.on_thinking_delta:
                     await agent._safe_delta_callback(iteration, delta)
 
             parsed, parse_error = agent._parse_llm_response_safe(response_text)
+            consecutive_llm_failures = 0
             if parse_error:
                 logger.warning(
                     "DeepThink parse error at iteration %s: %s",
@@ -2279,6 +2292,8 @@ async def _think_prompt_based(
             break
         except RunDeadlineExceeded:
             raise
+        except ObserverRejected:
+            raise
         except Exception as e:
             logger.exception("Error in deep thinking loop")
             current_step.status = "error"
@@ -2286,6 +2301,13 @@ async def _think_prompt_based(
             thinking_steps.append(current_step)
             if agent.on_thinking:
                 await agent._safe_callback(current_step)
+            if getattr(agent, '_model_call_failed', False):
+                consecutive_llm_failures += 1
+                classified = getattr(agent, '_last_model_failure', None)
+                if (consecutive_llm_failures >= _default_max_consecutive_llm_failures()
+                        or (classified is not None and not classified.retryable)):
+                    final_answer, fallback_used = terminate(agent), True
+                    break
             messages.append(
                 {
                     "role": "user",
@@ -2303,6 +2325,8 @@ async def _think_prompt_based(
                 }
             )
 
+    if not final_answer and getattr(agent, '_model_call_failed', False):
+        final_answer, fallback_used = terminate(agent), True
     if not final_answer and thinking_steps:
         logger.info("[DEEP_THINK] Iterations exhausted, requesting strict final conclusion")
 
@@ -2326,7 +2350,7 @@ Respond with ONLY a JSON object:
 
             agent._synthesis_attempted=True
             response_text = ""
-            async for delta in iterate_stage(agent.llm_client.stream_chat_async(
+            async for delta in iterate_stage(observed_stream(agent, agent.llm_client.stream_chat_async(
                 prompt="", messages=messages,
                 enable_thinking=agent.enable_thinking,
                 thinking_budget=agent.thinking_budget,
@@ -2334,7 +2358,7 @@ Respond with ONLY a JSON object:
                     agent.on_reasoning_delta(iteration + 1, chunk)
                     if agent.on_reasoning_delta else None
                 ),
-            ), stage="deepthink-conclusion-llm", cancel_event=agent.cancel_event):
+            )), stage="deepthink-conclusion-llm", cancel_event=agent.cancel_event):
                 response_text += delta
                 if agent.on_thinking_delta:
                     await agent._safe_delta_callback(iteration + 1, delta)
@@ -2369,12 +2393,12 @@ Respond with ONLY a JSON object:
                 confidence = 0.5
                 if agent.on_final_delta and final_answer:
                     await agent._stream_final_answer(final_answer)
-        except RunDeadlineExceeded:
+        except (RunDeadlineExceeded, ObserverRejected):
             raise
         except Exception as e:
             logger.exception("Failed to generate strict forced conclusion")
             fallback_used = True
-            final_answer = await agent._fallback_answer_from_steps(thinking_steps, user_query)
+            final_answer = terminate(agent) if getattr(agent, '_model_call_failed', False) else await agent._fallback_answer_from_steps(thinking_steps, user_query)
             confidence = 0.4
 
     if final_answer and not agent._is_valid_final_answer(final_answer, user_query=user_query):
@@ -2437,6 +2461,8 @@ Respond with ONLY a JSON object:
     except Exception:
         summary = _dta()._default_deepthink_summary(user_query)
 
+    if getattr(agent, '_model_call_failed', False):
+        final_answer, fallback_used = terminate(agent), True
     final_answer, output_fields = await checkpointing.finalize_output_spec(agent, user_query, final_answer)
     return DeepThinkResult(
         final_answer=final_answer,

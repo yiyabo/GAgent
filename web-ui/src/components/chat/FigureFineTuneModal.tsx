@@ -6,6 +6,7 @@ import {
   ClearOutlined,
 } from '@ant-design/icons';
 import { useChatStore } from '@store/chat';
+import { artifactImageFileName, parseSessionArtifactImageUrl } from '@utils/artifactImageUrl';
 
 const { TextArea } = Input;
 const { Text } = Typography;
@@ -44,10 +45,8 @@ export const FigureFineTuneModal: React.FC<FigureFineTuneModalProps> = ({
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
 
-  const rawName = imagePath
-    ? imagePath.split('/').pop() || imagePath
-    : (imageUrl.split('?')[0].split('/').pop() || 'figure.png');
-  const fileName = rawName.replace(/\.[^/.]+$/, '');
+  const fileName = artifactImageFileName(imageUrl, imagePath, imageAlt);
+  const sourcePath = imagePath || parseSessionArtifactImageUrl(imageUrl)?.path || fileName;
 
   useEffect(() => {
     if (visible) {
@@ -150,6 +149,7 @@ export const FigureFineTuneModal: React.FC<FigureFineTuneModalProps> = ({
     }
 
     let finalPrompt = `【图表局部微调】针对目标图表 \`${fileName}\` (${imageAlt || '未命名图表'}):\n`;
+    finalPrompt += `- 原图文件: \`${sourcePath}\`\n`;
     if (rects.length > 0) {
       finalPrompt += `- 用户在图上框选了 ${rects.length} 处关键区域（已标红框）。\n`;
     }

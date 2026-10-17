@@ -256,6 +256,7 @@ async def get_session_artifact_file(
         media_type=media_type or "application/octet-stream",
         filename=target.name if not is_inline_type else None,
         content_disposition_type="inline" if is_inline_type else "attachment",
+        headers={'Cache-Control': 'private, no-cache'},
     )
 
 
@@ -290,6 +291,7 @@ async def get_session_workspace_file(
         media_type=media_type or "application/octet-stream",
         filename=target.name if not is_inline_type else None,
         content_disposition_type="inline" if is_inline_type else "attachment",
+        headers={'Cache-Control': 'private, no-cache'},
     )
 
 
@@ -473,6 +475,7 @@ async def get_session_deliverable_file(
         media_type=media_type or "application/octet-stream",
         filename=target.name if not is_inline_type else None,
         content_disposition_type="inline" if is_inline_type else "attachment",
+        headers={'Cache-Control': 'private, no-cache'} if not version else None,
     )
 
 
