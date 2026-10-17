@@ -3,6 +3,9 @@ import {
   collectArtifactImagePathsFromResult,
   isWorkspaceAbsoluteImagePath,
   resolveArtifactImageSrc,
+  artifactImageFileName,
+  artifactImageFormatUrl,
+  parseSessionArtifactImageUrl,
 } from './artifactImageUrl';
 
 vi.mock('@api/artifacts', () => ({
@@ -13,6 +16,31 @@ vi.mock('@api/artifacts', () => ({
 }));
 
 describe('resolveArtifactImageSrc', () => {
+  it('keeps content revisions separate from the encoded file path', () => {
+    const url = resolveArtifactImageSrc('results/AB.png?v=new#panel', 's1');
+    const parsed = new URL(url);
+    expect(parsed.searchParams.get('path')).toBe('results/AB.png');
+    expect(parsed.searchParams.get('v')).toBe('new');
+    expect(parsed.hash).toBe('#panel');
+    const endpoint = '/api/artifacts/sessions/s1/file?path=results%2FAB.png&v=new';
+    expect(resolveArtifactImageSrc(endpoint, 's1')).toBe(endpoint);
+    expect(parseSessionArtifactImageUrl(endpoint)).toEqual({sessionId:'s1', path:'results/AB.png'});
+    expect(artifactImageFileName(endpoint)).toBe('AB.png');
+    expect(artifactImageFileName(endpoint, 'AB')).toBe('AB.png');
+    const spaced = new URL(resolveArtifactImageSrc('results/chart%20name.png?v=new', 's1'));
+    expect(spaced.searchParams.get('path')).toBe('results/chart name.png');
+    expect(resolveArtifactImageSrc('%2e%2e/private.png?v=x', 's1')).toBe('%2e%2e/private.png?v=x');
+  });
+
+  it('keeps API base and history version for downloads without reusing another format hash', () => {
+    const endpoint = '/api/artifacts/sessions/s1/deliverables/file?path=image_tabular%2FAB.png&version=history-1&v=pnghash';
+    const pdf = new URL(artifactImageFormatUrl(endpoint, 'pdf'), 'http://localhost');
+    expect(pdf.pathname).toBe('/api/artifacts/sessions/s1/deliverables/file');
+    expect(pdf.searchParams.get('path')).toBe('image_tabular/AB.pdf');
+    expect(pdf.searchParams.get('version')).toBe('history-1');
+    expect(pdf.searchParams.has('v')).toBe(false);
+    expect(artifactImageFormatUrl(endpoint, 'png')).toContain('v=pnghash');
+  });
   it('returns http(s) URLs unchanged', () => {
     expect(resolveArtifactImageSrc('https://x.com/a.png', 's1')).toBe('https://x.com/a.png');
     expect(resolveArtifactImageSrc('http://x.com/a.png', null)).toBe('http://x.com/a.png');

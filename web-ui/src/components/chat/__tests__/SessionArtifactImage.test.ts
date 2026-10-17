@@ -6,6 +6,8 @@ describe('isSessionArtifactFileUrl', () => {
     expect(
       isSessionArtifactFileUrl('http://localhost:9000/artifacts/sessions/session_abc/file?path=results%2Fx.png'),
     ).toBe(true);
+    expect(isSessionArtifactFileUrl('/api/artifacts/sessions/session_abc/file?path=results%2Fx.png&v=new')).toBe(true);
+    expect(isSessionArtifactFileUrl('/artifacts/sessions/session_abc/deliverables/file?path=image_tabular%2Fx.png')).toBe(true);
   });
 
   it('returns false for external images', () => {

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
 from app.services.upload_storage import get_session_root_dir
+from app.services.artifact_image_versions import revision
 from .subject_identity import _workspace_root
 
 logger = logging.getLogger(__name__)
@@ -135,7 +136,7 @@ def build_artifact_gallery_item(
         normalized_path = _normalize_workspace_absolute_path(path)
     if not normalized_path:
         return None
-    return {
+    item = {
         "path": normalized_path,
         "display_name": _display_name_for_path(normalized_path, display_name),
         "source_tool": str(source_tool or "unknown").strip() or "unknown",
@@ -144,6 +145,10 @@ def build_artifact_gallery_item(
         "created_at": _default_created_at(created_at),
         "tracking_id": str(tracking_id or "").strip() or None,
     }
+    token = revision(normalized_path, session_id)
+    if token:
+        item['content_hash'] = token
+    return item
 
 
 def merge_artifact_gallery(
@@ -175,6 +180,7 @@ def merge_artifact_gallery(
                 "origin": origin,
                 "created_at": _default_created_at(item.get("created_at")),
                 "tracking_id": str(item.get("tracking_id") or "").strip() or None,
+                **({'content_hash': item['content_hash']} if item.get('content_hash') else {}),
             }
         )
 
@@ -525,13 +531,11 @@ def filter_gallery_new_images_only(
     *,
     session_id: Optional[str],
 ) -> List[Dict[str, Any]]:
-    """Keep an image in the gallery of the message that FIRST produced it.
+    """Show each image revision once, on the reply that produced it.
 
-    Two rules, per product decision: an image renders exactly once in a
-    session — on the reply that created it — and gallery entries must be
-    scoped to this session's own runtime directory (delegated runs often
-    re-verify files, and global results dirs of other sessions must never
-    leak into the chat).
+    Replacing a file with new content is a new revision, even at the same
+    path. Entries remain scoped to this session's own runtime directory;
+    re-verifying unchanged files must not repeat earlier gallery entries.
     """
     if not gallery:
         return []
@@ -557,7 +561,7 @@ def filter_gallery_new_images_only(
                     if isinstance(item, dict):
                         path = str(item.get("path") or "").strip()
                         if path:
-                            shown.add(path)
+                            shown.add((path, str(item.get('content_hash') or '')))
         except Exception:
             logger.warning("gallery history lookup failed; dedupe skipped", exc_info=True)
 
@@ -566,11 +570,12 @@ def filter_gallery_new_images_only(
         if not isinstance(item, dict):
             continue
         path = str(item.get("path") or "").strip()
-        if not path or path in shown:
+        key = (path, str(item.get('content_hash') or ''))
+        if not path or key in shown:
             continue
         if not _path_in_session_scope(path, session_id):
             continue
-        shown.add(path)
+        shown.add(key)
         kept.append(item)
     return kept
 

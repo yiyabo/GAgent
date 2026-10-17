@@ -568,6 +568,8 @@ async def _drain_unified_stream_events(
                 res.final_answer,
                 routing_decision,
             )
+            from app.services.artifact_image_versions import version_inline_images
+            grounded_answer = version_inline_images(grounded_answer, agent.session_id)
             if grounded_answer != str(res.final_answer or "").strip():
                 res = replace(res, final_answer=grounded_answer)
             result_job_id = (

@@ -8,19 +8,13 @@ import {
   EyeOutlined,
 } from '@ant-design/icons';
 import { FigureFineTuneModal } from './FigureFineTuneModal';
+import { artifactImageFormatUrl, parseSessionArtifactImageUrl } from '@utils/artifactImageUrl';
 
 const RETRY_DELAY_MS = 600;
 const MAX_RETRY_INDEX = 5;
 
 export function isSessionArtifactFileUrl(url: string): boolean {
-  if (!url || typeof url !== 'string') return false;
-  if (!/^https?:\/\//i.test(url.trim())) return false;
-  try {
-    const path = new URL(url.trim()).pathname;
-    return path.includes('/artifacts/sessions/') && path.endsWith('/file');
-  } catch {
-    return false;
-  }
+  return Boolean(parseSessionArtifactImageUrl(url));
 }
 
 export interface SessionArtifactImageProps {
@@ -71,27 +65,9 @@ export const SessionArtifactImage: React.FC<SessionArtifactImageProps> = ({
     return `${u}${sep}_retry=${attempt}`;
   }, [url, attempt]);
 
-  const filePath = useMemo(() => {
-    try {
-      if (!isSessionArtifactFileUrl(url)) return '';
-      const parsed = new URL(url.trim());
-      return parsed.searchParams.get('path') || '';
-    } catch {
-      return '';
-    }
-  }, [url]);
-
-  const sessionId = useMemo(() => {
-    try {
-      if (!isSessionArtifactFileUrl(url)) return null;
-      const parsed = new URL(url.trim());
-      const parts = parsed.pathname.split('/');
-      const idx = parts.indexOf('sessions');
-      return idx >= 0 && parts[idx + 1] ? parts[idx + 1] : null;
-    } catch {
-      return null;
-    }
-  }, [url]);
+  const artifact = useMemo(() => parseSessionArtifactImageUrl(url), [url]);
+  const filePath = artifact?.path || '';
+  const sessionId = artifact?.sessionId || null;
 
   const handleError = useCallback(() => {
     if (timerRef.current !== null) {
@@ -132,7 +108,7 @@ export const SessionArtifactImage: React.FC<SessionArtifactImageProps> = ({
 
     const base = filePath.replace(/\.[^/.]+$/, '');
     const downloadPath = `${base}.${ext}`;
-    const downloadUrl = `/artifacts/sessions/${sessionId}/file?path=${encodeURIComponent(downloadPath)}`;
+    const downloadUrl = artifactImageFormatUrl(url, ext);
     const a = document.createElement('a');
     a.href = downloadUrl;
     a.download = downloadPath.split('/').pop() || `figure.${ext}`;
@@ -150,7 +126,7 @@ export const SessionArtifactImage: React.FC<SessionArtifactImageProps> = ({
           if (!sessionId || !filePath) return;
           const base = filePath.replace(/\.[^/.]+$/, '');
           const pdfPath = `${base}.pdf`;
-          const pdfUrl = `/artifacts/sessions/${sessionId}/file?path=${encodeURIComponent(pdfPath)}`;
+          const pdfUrl = artifactImageFormatUrl(url, 'pdf');
           window.dispatchEvent(
             new CustomEvent('phage:open-pdf-viewer', {
               detail: {
@@ -286,13 +262,6 @@ export const SessionArtifactImage: React.FC<SessionArtifactImageProps> = ({
           imageAlt={alt}
           imagePath={filePath}
           sessionId={sessionId}
-          onSubmitPrompt={(prompt) => {
-            window.dispatchEvent(
-              new CustomEvent('phage:send-chat-prompt', {
-                detail: { prompt, autoSend: true },
-              })
-            );
-          }}
         />
       )}
     </div>
