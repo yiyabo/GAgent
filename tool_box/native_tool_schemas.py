@@ -980,16 +980,20 @@ NATIVE_TOOL_CONTENT: Dict[str, Dict[str, Any]] = {
                         "type": "object",
                         "properties": {
                             "name": {"type": "string"},
+                            "key": {"type": "string", "description": "Unique local reference used by parent_key/dependencies; defaults to the unique task name."},
+                            "parent_key": {"type": "string", "description": "Key or unique name of another seed task containing this task; omit for root children."},
+                            "task_type": {"type": "string", "enum": ["atomic", "composite"], "description": "Use composite for stages and atomic for fully defined executable leaves."},
                             "instruction": {"type": "string"},
-                            "metadata": {"type": "object", "description": "Output contract: required_outputs entries contain kind, target_path, min_count and extensions; artifact_contract contains requires/publishes aliases. File-producing seed tasks must declare these. Text-only tasks use delivery_mode=text and remain subject to content review."},
+                            "metadata": {"type": "object", "description": "Output guidance: required_outputs entries contain kind, target_path, min_count and extensions; artifact_contract contains requires/publishes aliases. File-producing seed tasks declare intended outputs. Text-only tasks use delivery_mode=text. Keep the user's requirements; do not invent acceptance rules."},
                             "dependencies": {
                                 "type": "array",
                                 "items": {"type": "string"},
+                                "description": "Stable keys or unique names of prerequisite tasks",
                             },
                         },
                         "required": ["name", "instruction"],
                     },
-                    "description": "Task list (for create).",
+                    "description": "Explicit tasks to preserve. Use stable key/parent_key references for root→composite→atomic hierarchy; omit parent_key to attach to root. Atomic leaves are not decomposed or automatically rewritten. Unfinished composite stages may be expanded. No hidden review/optimization rewrites supplied tasks.",
                 },
                 "changes": {
                     "type": "array",
