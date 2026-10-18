@@ -4,6 +4,9 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { App as AntdApp } from 'antd';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+// Full antd page + real user-event clicks: ~2 s locally, several times that on a loaded CI runner.
+vi.setConfig({ testTimeout: 30_000 });
+
 import Extensions from './Extensions';
 import { extensionsApi } from '@api/extensions';
 import type { McpListResponse, McpServer, SkillEntry, SkillListResponse } from '@api/extensions';
