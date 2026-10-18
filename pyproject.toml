@@ -97,6 +97,9 @@ dependencies = [
     "Pygments>=2.18.0",
     "tomli>=2.0.0",
     "backports-asyncio-runner>=1.2.0",
+    # --- MCP ---
+    # tool_box/mcp_server.py：官方 SDK 的 stdio MCP 服务器（只读白名单）。
+    "mcp>=2.3.0,<3",
     # --- 测试（容器内验证纪律依赖它们，因此保留在主依赖）---
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",

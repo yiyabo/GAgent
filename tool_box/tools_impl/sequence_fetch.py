@@ -315,8 +315,14 @@ async def sequence_fetch_handler(
     output_name: Optional[str] = None,
     timeout_sec: Optional[float] = None,
     max_bytes: Optional[Any] = None,
+    persist: bool = True,
 ) -> Dict[str, Any]:
-    """Download FASTA records for accession(s) and persist to runtime output."""
+    """Download FASTA records for accession(s).
+
+    By default the FASTA is persisted to the runtime output directory. With
+    ``persist=False`` nothing is written: no output directory is resolved or
+    created, and the FASTA is returned inline as ``fasta`` instead.
+    """
 
     try:
         normalized_accessions = _normalize_accessions(accession, accessions)
@@ -332,15 +338,17 @@ async def sequence_fetch_handler(
                 stage="input_validation",
             )
 
-        output_dir = _resolve_output_dir(session_id)
-        filename = _safe_output_name(output_name, normalized_accessions[0])
-        output_path = (output_dir / filename).resolve()
-        if output_path.parent != output_dir:
-            raise SequenceFetchError(
-                "Resolved output path escapes target directory.",
-                code="invalid_output_name",
-                stage="output_preparation",
-            )
+        output_path: Optional[Path] = None
+        if persist:
+            output_dir = _resolve_output_dir(session_id)
+            filename = _safe_output_name(output_name, normalized_accessions[0])
+            output_path = (output_dir / filename).resolve()
+            if output_path.parent != output_dir:
+                raise SequenceFetchError(
+                    "Resolved output path escapes target directory.",
+                    code="invalid_output_name",
+                    stage="output_preparation",
+                )
 
         provider = "ncbi_efetch"
         fasta_text = ""
@@ -406,13 +414,14 @@ async def sequence_fetch_handler(
                     stage="network_request",
                 )
 
-        output_path.write_text(fasta_text, encoding="utf-8")
+        if output_path is not None:
+            output_path.write_text(fasta_text, encoding="utf-8")
 
         sha256 = hashlib.sha256(fasta_text.encode("utf-8", errors="replace")).hexdigest()
         record_count = _count_fasta_records(fasta_text)
 
         output_file_rel: Optional[str] = None
-        if isinstance(session_id, str) and session_id.strip():
+        if output_path is not None and isinstance(session_id, str) and session_id.strip():
             try:
                 from app.services.session_paths import get_runtime_session_dir
 
@@ -428,12 +437,15 @@ async def sequence_fetch_handler(
             "database": normalized_database,
             "format": "fasta",
             "provider": provider,
-            "output_file": str(output_path),
             "record_count": record_count,
             "bytes": byte_count,
             "sha256": sha256,
             "no_claude_fallback": False,
         }
+        if output_path is not None:
+            payload["output_file"] = str(output_path)
+        else:
+            payload["fasta"] = fasta_text
         if output_file_rel:
             payload["output_file_rel"] = output_file_rel
         return payload
