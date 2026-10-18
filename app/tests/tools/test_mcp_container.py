@@ -77,6 +77,20 @@ def test_run_args_are_hardened_and_carry_no_host_state(monkeypatch):
     assert argv[-2:] == ["img:1", "srv"] or argv[-1] == "srv"
 
 
+def test_containers_get_a_dead_resolver_so_dns_cannot_carry_data_out(monkeypatch):
+    """Docker's embedded resolver forwards outside names even on an internal network."""
+    from app.ops import sandbox as sandbox_ops
+
+    monkeypatch.delenv("MCP_CONTAINER_HOST_GATEWAY", raising=False)
+    spec = parse_entry("s", _entry(egress=["rest.uniprot.org"]))
+    run = container_module.build_run_spec(spec, name="n", endpoint="tcp://a:1", token="t", proxy_url="http://mcp:t@a:2")
+    argv = sandbox_ops.build_sandbox_run_args(run)
+    assert argv[argv.index("--dns") + 1] == "127.0.0.1"
+    monkeypatch.setenv("MCP_CONTAINER_HOST_GATEWAY", "1")
+    argv = sandbox_ops.build_sandbox_run_args(container_module.build_run_spec(spec, name="n", endpoint="tcp://a:1", token="t", proxy_url=None))
+    assert "--dns" in argv and "--add-host=host.docker.internal:host-gateway" in argv
+
+
 def test_no_proxy_variables_without_egress():
     spec = parse_entry("s", _entry())
     run = container_module.build_run_spec(spec, name="n", endpoint="tcp://a:1", token="t", proxy_url=None)
