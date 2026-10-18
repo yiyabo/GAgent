@@ -308,7 +308,7 @@ const MemoryPage: React.FC = () => {
   {}
   <div className="content-header">
   <h2 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
-  <DatabaseOutlined style={{ color: '#1890ff' }} />
+  <DatabaseOutlined style={{ color: 'var(--color-action)' }} />
   Memory
   </h2>
   <p style={{ margin: '8px 0 0 0', color: '#666' }}>
@@ -362,7 +362,7 @@ const MemoryPage: React.FC = () => {
   title="Memories"
   value={stats.total_memories}
   prefix={<DatabaseOutlined />}
-  valueStyle={{ color: '#1890ff' }}
+  valueStyle={{ color: 'var(--color-action)' }}
   />
   </Card>
   </Col>

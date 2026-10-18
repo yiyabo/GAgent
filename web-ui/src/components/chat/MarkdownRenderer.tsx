@@ -171,7 +171,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, cla
                                         href={downloadUrl}
                                         onClick={handlePdfOrFileClick}
                                         download={isPdf ? undefined : file.name}
-                                        style={{ color: '#1677ff', fontWeight: 500, cursor: 'pointer' }}
+                                        style={{ color: 'var(--color-action)', fontWeight: 500, cursor: 'pointer' }}
                                         title={isPdf ? `点击在侧边栏预览 ${file.name}` : file.path}
                                     >
                                         {children}
@@ -190,7 +190,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, cla
                                             borderRadius: 4,
                                             border: '1px solid #91caff',
                                             background: '#e6f4ff',
-                                            color: '#1677ff',
+                                            color: 'var(--color-action)',
                                             fontSize: 12,
                                             lineHeight: 1,
                                             textDecoration: 'none',
@@ -206,7 +206,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, cla
                                 href={href}
                                 target="_blank"
                                 rel="noopener noreferrer"
-                                style={{ color: '#1677ff' }}
+                                style={{ color: 'var(--color-action)' }}
                             >
                                 {children}
                             </a>

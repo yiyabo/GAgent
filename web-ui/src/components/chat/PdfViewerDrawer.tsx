@@ -107,7 +107,7 @@ export const PdfViewerDrawer: React.FC = () => {
                 display: 'flex',
                 justifyContent: 'center',
                 alignItems: 'center',
-                background: '#f0f2f5',
+                background: 'var(--surface-page)',
                 zIndex: 2,
               }}
             >

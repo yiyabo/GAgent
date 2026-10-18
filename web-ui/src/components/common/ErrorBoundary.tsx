@@ -138,7 +138,7 @@ class ErrorBoundary extends Component<Props, State> {
   )}
   {this.state.errorInfo && (
   <details style={{ marginTop: '12px' }}>
-  <summary style={{ cursor: 'pointer', color: '#1890ff', fontWeight: 'bold' }}>
+  <summary style={{ cursor: 'pointer', color: 'var(--color-action)', fontWeight: 'bold' }}>
   Component stack
   </summary>
   <pre

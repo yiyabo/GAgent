@@ -330,7 +330,7 @@ const ChatPanel: React.FC = () => {
           <Tooltip title="查看文档图表全景索引与批量导出 (PNG/SVG/PDF)">
             <Button
               size="small"
-              icon={<FileImageOutlined style={{ color: '#1677ff' }} />}
+              icon={<FileImageOutlined style={{ color: 'var(--color-action)' }} />}
               onClick={() => setFigureCatalogOpen(true)}
             >
               图表索引

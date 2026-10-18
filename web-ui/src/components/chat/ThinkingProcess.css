@@ -13,8 +13,8 @@
 }
 
 .tp-container.tp-active {
-  border-color: var(--primary-color, #3080ff);
-  border-color: color-mix(in srgb, var(--primary-color, #3080ff) 30%, var(--border-color));
+  border-color: var(--color-action);
+  border-color: color-mix(in srgb, var(--color-action) 30%, var(--border-color));
 }
 
 /* ================================================================
@@ -376,7 +376,7 @@
   display: inline-block;
   width: 2px;
   height: 14px;
-  background: var(--primary-color, #3080ff);
+  background: var(--color-action);
   margin-left: 1px;
   vertical-align: text-bottom;
   animation: tp-cursor-blink 0.8s ease-in-out infinite;

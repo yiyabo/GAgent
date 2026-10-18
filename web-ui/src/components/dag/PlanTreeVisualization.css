@@ -98,7 +98,7 @@
 }
 
 .tree-status.status-running {
-  background: #3b82f6;
+  background: var(--color-action);
   box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
   animation: pulse 2s ease-in-out infinite;
 }

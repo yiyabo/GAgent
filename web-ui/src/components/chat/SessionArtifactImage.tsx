@@ -216,7 +216,7 @@ export const SessionArtifactImage: React.FC<SessionArtifactImageProps> = ({
             type='text'
             icon={<EditOutlined />}
             onClick={() => setFineTuneOpen(true)}
-            style={{ color: '#1677ff', fontWeight: 500, fontSize: 12 }}
+            style={{ color: 'var(--color-action)', fontWeight: 500, fontSize: 12 }}
           >
             微调此图
           </Button>

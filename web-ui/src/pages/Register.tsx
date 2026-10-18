@@ -33,7 +33,7 @@ const Register: React.FC = () => {
         justifyContent: 'center',
         padding: 24,
         background:
-          'radial-gradient(circle at 80% 0%, rgba(201,100,66,0.10), transparent 46%), var(--bg-primary)',
+          'radial-gradient(circle at 80% 0%, color-mix(in srgb, var(--color-action) 8%, transparent), transparent 46%), var(--bg-primary)',
       }}
     >
       <Card

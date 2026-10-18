@@ -45,7 +45,7 @@ export const ArtifactFileList: React.FC<ArtifactFileListProps> = ({ items, sessi
           >
             <Button size="small" icon={<FileTextOutlined />}>
               {item.display_name || item.path.split('/').pop()}
-              <DownloadOutlined style={{ marginLeft: 6, color: '#1677ff' }} />
+              <DownloadOutlined style={{ marginLeft: 6, color: 'var(--color-action)' }} />
             </Button>
           </a>
         </Tooltip>

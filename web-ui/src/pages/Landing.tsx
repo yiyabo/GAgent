@@ -112,7 +112,7 @@ const Landing: React.FC = () => {
           padding: '120px 24px 80px',
           textAlign: 'center',
           background:
-            'radial-gradient(circle at 50% 0%, rgba(201,100,66,0.10), transparent 60%), var(--bg-primary)',
+            'radial-gradient(circle at 50% 0%, color-mix(in srgb, var(--color-action) 8%, transparent), transparent 60%), var(--bg-primary)',
         }}
       >
         <Space direction="vertical" size={24} style={{ maxWidth: 720, margin: '0 auto' }}>
@@ -225,7 +225,7 @@ const Landing: React.FC = () => {
           padding: '80px 24px',
           textAlign: 'center',
           background:
-            'radial-gradient(circle at 50% 100%, rgba(201,100,66,0.08), transparent 60%), var(--bg-tertiary)',
+            'radial-gradient(circle at 50% 100%, color-mix(in srgb, var(--color-action) 6%, transparent), transparent 60%), var(--bg-tertiary)',
         }}
       >
         <Space direction="vertical" size={24} style={{ maxWidth: 560, margin: '0 auto' }}>

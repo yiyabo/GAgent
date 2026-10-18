@@ -31,7 +31,7 @@ const STARTER_PROMPTS = [
     prompt: '请帮我对上传的噬菌体 FASTA 基因组序列进行完整的结构与功能注释，识别裂解酶、穿孔素及尾部纤维蛋白，并生成基因组特征概览。',
   },
   {
-    icon: <CompassOutlined style={{ color: '#3b82f6' }} />,
+    icon: <CompassOutlined style={{ color: 'var(--color-action)' }} />,
     title: '噬菌体-宿主互作预测',
     desc: '分析受体结合蛋白(RBP)与细菌特异性受体结合位点',
     prompt: '请分析目标噬菌体的受体结合蛋白 (RBP / Tail Fiber) 结构域，预测其对铜绿假单胞菌/鲍曼不动杆菌等临床耐药菌的宿主谱特异性。',
