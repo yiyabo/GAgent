@@ -75,6 +75,22 @@ def _listener_addresses() -> Tuple[str, str]:
     return bind, _advertise_host(bind)
 
 
+def _extra_args() -> Tuple[str, ...]:
+    """Run flags beyond the shared sandbox profile.
+
+    ``--dns 127.0.0.1``: Docker's embedded resolver answers *external* names even
+    on an ``internal`` network (it forwards to the host's resolver), which would
+    let a server leak data in DNS queries while having no route out. Pointing the
+    resolver at an address with nothing behind it makes outside names fail, while
+    Docker's own service names (``app``) still resolve. The egress proxy resolves
+    names itself, so allowed hosts keep working.
+    """
+    args = ["--dns", "127.0.0.1"]
+    if host_gateway_enabled():
+        args.append("--add-host=host.docker.internal:host-gateway")
+    return tuple(args)
+
+
 def build_run_spec(spec: MountSpec, *, name: str, endpoint: str, token: str, proxy_url: Optional[str]) -> sandbox_ops.SandboxRunSpec:
     assert spec.container is not None
     extra = dict(spec.env)
@@ -95,7 +111,7 @@ def build_run_spec(spec: MountSpec, *, name: str, endpoint: str, token: str, pro
         cpus=spec.container.cpus,
         pids_limit=spec.container.pids_limit,
         tmpfs_size=TMPFS_SIZE,
-        extra_args=("--add-host=host.docker.internal:host-gateway",) if host_gateway_enabled() else (),
+        extra_args=_extra_args(),
     )
 
 
