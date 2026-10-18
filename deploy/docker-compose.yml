@@ -83,7 +83,7 @@ services:
       timeout: 5s
       start_period: 30s
       retries: 3
-    networks: [front, sandbox]
+    networks: [front, sandbox, dockerapi]
     logging: *logging
 
   proxy:
@@ -101,6 +101,16 @@ services:
       DOCKER_PROXY_SOCKET: /var/run/docker.sock
       DOCKER_PROXY_PORT: "2375"
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # Payload-policy inputs (app/ops/docker_policy.py). The proxy has no
+      # env_file on purpose, so every value it needs is listed explicitly here;
+      # never the whole .env, which carries provider keys.
+      HOST_RUNTIME_ROOT: ${GAGENT_RUNTIME_DIR}
+      GAGENT_REFDATA_DIR: ${GAGENT_REFDATA_DIR:-/data}
+      SANDBOX_PYTHON_IMAGE: ${SANDBOX_PYTHON_IMAGE:-gagent-sandbox-python:latest}
+      SANDBOX_QWEN_IMAGE: ${SANDBOX_QWEN_IMAGE:-gagent-sandbox-qwen:latest}
+      DOCKER_PROXY_POLICY_ENFORCE: ${DOCKER_PROXY_POLICY_ENFORCE:-0}
+      DOCKER_PROXY_ALLOWED_RO_ROOTS: ${DOCKER_PROXY_ALLOWED_RO_ROOTS:-}
+      DOCKER_PROXY_ALLOWED_IMAGE_PREFIXES: ${DOCKER_PROXY_ALLOWED_IMAGE_PREFIXES:-}
     volumes:
       # The daemon socket is mounted into THIS container only, never the app's.
       - /var/run/docker.sock:/var/run/docker.sock:ro
@@ -113,7 +123,7 @@ services:
       timeout: 5s
       start_period: 10s
       retries: 3
-    networks: [sandbox]
+    networks: [dockerapi]
     logging: *logging
 
   ops:
@@ -209,3 +219,13 @@ networks:
     ipam:
       config:
         - subnet: 172.29.0.0/24
+  # The Docker API proxy must NOT share the sandbox network: sandboxes run
+  # model-written code, and a shared network would let that code call the proxy
+  # (which holds the daemon socket) and create containers with arbitrary binds.
+  # Keep the proxy reachable from the app only.
+  dockerapi:
+    name: gagent-dockerapi
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24

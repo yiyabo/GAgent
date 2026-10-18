@@ -85,6 +85,10 @@ def run_once(
         retention_days=settings.runtime_retention_days,
         max_gb=settings.runtime_max_gb,
         archive_before_delete=settings.runtime_archive_before_delete,
+        archive_keep_days=settings.runtime_archive_keep_days,
+        free_floor_gb=settings.runtime_free_floor_gb,
+        disk_warn_pct=settings.runtime_disk_warn_pct,
+        disk_error_pct=settings.runtime_disk_error_pct,
         event_retention_days=settings.event_retention_days,
         usage_retention_days=settings.usage_retention_days,
         job_log_retention_days=settings.job_log_retention_days,
@@ -116,6 +120,15 @@ def main(argv: Optional[list] = None) -> int:
                 backup_report.get("ts"),  # type: ignore[union-attr]
                 backup_report.get("files"),  # type: ignore[union-attr]
                 backup_report.get("pruned"),  # type: ignore[union-attr]
+            )
+            logger.info(
+                "ops cron: retention disk_free=%s%% level=%s cap_effective=%s GiB "
+                "archives_deleted=%s archives_freed=%s B",
+                retention_report.get("disk_free_pct"),  # type: ignore[union-attr]
+                retention_report.get("disk_level"),  # type: ignore[union-attr]
+                retention_report.get("cap_gb_effective"),  # type: ignore[union-attr]
+                retention_report.get("archives_deleted"),  # type: ignore[union-attr]
+                retention_report.get("archive_bytes_freed"),  # type: ignore[union-attr]
             )
             logger.info(
                 "ops cron: retention sessions_deleted=%s bytes_freed=%s usage_rows=%s",

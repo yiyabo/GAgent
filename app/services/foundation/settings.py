@@ -224,6 +224,14 @@ if _USE_PYDANTIC:
         runtime_archive_before_delete: bool = Field(
             default=True, env="RUNTIME_ARCHIVE_BEFORE_DELETE"
         )
+        # Archive batches under <backup_dir>/archive/<ts>/ are pruned after this
+        # window; the newest batches always survive. The free floor bounds the
+        # effective size cap by real headroom (see retention.effective_cap_gb),
+        # and the two percentages drive the low-water log levels.
+        runtime_archive_keep_days: int = Field(default=90, env="RUNTIME_ARCHIVE_KEEP_DAYS")
+        runtime_free_floor_gb: float = Field(default=40.0, env="RUNTIME_FREE_FLOOR_GB")
+        runtime_disk_warn_pct: float = Field(default=20.0, env="RUNTIME_DISK_WARN_PCT")
+        runtime_disk_error_pct: float = Field(default=10.0, env="RUNTIME_DISK_ERROR_PCT")
         event_retention_days: int = Field(default=30, env="EVENT_RETENTION_DAYS")
         usage_retention_days: int = Field(default=365, env="USAGE_RETENTION_DAYS")
         backup_keep_daily: int = Field(default=14, env="BACKUP_KEEP_DAILY")
@@ -601,6 +609,22 @@ else:
             self.runtime_archive_before_delete = os.getenv(
                 "RUNTIME_ARCHIVE_BEFORE_DELETE", "1"
             ).strip().lower() in {"1", "true", "yes", "on"}
+            try:
+                self.runtime_archive_keep_days = int(os.getenv("RUNTIME_ARCHIVE_KEEP_DAYS", "90"))
+            except Exception:
+                self.runtime_archive_keep_days = 90
+            try:
+                self.runtime_free_floor_gb = float(os.getenv("RUNTIME_FREE_FLOOR_GB", "40"))
+            except Exception:
+                self.runtime_free_floor_gb = 40.0
+            try:
+                self.runtime_disk_warn_pct = float(os.getenv("RUNTIME_DISK_WARN_PCT", "20"))
+            except Exception:
+                self.runtime_disk_warn_pct = 20.0
+            try:
+                self.runtime_disk_error_pct = float(os.getenv("RUNTIME_DISK_ERROR_PCT", "10"))
+            except Exception:
+                self.runtime_disk_error_pct = 10.0
             try:
                 self.event_retention_days = int(os.getenv("EVENT_RETENTION_DAYS", "30"))
             except Exception:
