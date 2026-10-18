@@ -484,3 +484,101 @@ def test_cli_exit_codes_and_json(tmp_path: Path) -> None:
 
 def test_cli_without_arguments_is_a_usage_error() -> None:
     assert run_cli().returncode == 2
+
+
+# --------------------------------------------------------------------------
+# the shipped skills/ tree
+# --------------------------------------------------------------------------
+
+def _skill_dirs() -> list:
+    return sorted(p for p in SKILLS_DIR.iterdir() if p.is_dir() and not p.name.startswith("."))
+
+
+def _catalog() -> Dict[str, Any]:
+    return json.loads((SKILLS_DIR / "CATALOG.json").read_text(encoding="utf-8"))
+
+
+def test_every_shipped_skill_passes_the_scanner() -> None:
+    failures = {}
+    for skill in _skill_dirs():
+        result = scan_skill_dir(skill)
+        if not result["ok"]:
+            failures[skill.name] = [f for f in result["findings"] if f["severity"] == "block"]
+    assert not failures, failures
+
+
+def test_loader_loads_every_shipped_skill_without_errors(tmp_path: Path) -> None:
+    empty_runtime = tmp_path / "runtime"
+    empty_runtime.mkdir()
+    loader = SkillsLoader(skills_dir=str(empty_runtime), project_skills_dir=str(SKILLS_DIR), auto_sync=False)
+
+    assert loader.validate_skills()["invalid_skills"] == {}
+
+    catalog = _catalog()["skills"]
+    loaded = {info["name"]: info for info in loader.list_skills()}
+    assert set(loaded) == set(catalog)
+    for skill in _skill_dirs():
+        spec = loaded[skill.name]
+        frontmatter = naive_frontmatter((skill / "SKILL.md").read_text(encoding="utf-8"))
+        assert frontmatter["name"] == skill.name
+        assert spec["description"] == frontmatter["description"][:500]
+        assert spec["description"] != "No description available"
+
+
+def test_catalog_and_skill_directories_match() -> None:
+    catalog = _catalog()
+    assert catalog["schema"] == 1
+    assert set(catalog["skills"]) == {p.name for p in _skill_dirs()}
+
+
+def test_catalog_entries_are_well_formed_and_honest() -> None:
+    required_origin = {"kind", "source", "path", "commit", "license"}
+    required_review = {"scanner", "scanner_version", "reviewed_by", "reviewed_at", "human_signoff", "notes"}
+    sources = {"anthropics/skills", "NousResearch/hermes-agent", "affaan-m/everything-claude-code", "gagent"}
+    for name, entry in _catalog()["skills"].items():
+        assert set(entry) == {"origin", "modified", "modifications", "review"}, name
+        origin, review = entry["origin"], entry["review"]
+        assert set(origin) == required_origin, name
+        assert set(review) == required_review, name
+        assert origin["kind"] in {"internal", "third_party"}, name
+        assert origin["source"] in sources, name
+        assert len(origin["commit"]) == 40, name
+        assert isinstance(entry["modified"], bool) and isinstance(entry["modifications"], list), name
+        if entry["modified"]:
+            assert entry["modifications"], f"{name}: modified skills must list their changes"
+        assert review["scanner_version"] == SCANNER_VERSION, name
+        if origin["kind"] == "third_party":
+            # No human has read the third-party skills; the catalog must never claim otherwise.
+            assert review["human_signoff"] is False, name
+            assert (SKILLS_DIR / name / "LICENSE.txt").is_file(), f"{name}: third-party skill without LICENSE.txt"
+        else:
+            assert origin["source"] == "gagent" and origin["license"] == "internal", name
+
+
+def test_catalog_scanner_status_matches_a_fresh_scan() -> None:
+    stale = {}
+    for name, entry in _catalog()["skills"].items():
+        status = scan_skill_dir(SKILLS_DIR / name)["status"]
+        if entry["review"]["scanner"] != status:
+            stale[name] = (entry["review"]["scanner"], status)
+    assert not stale, f"re-run scripts/vet_skill.py --all skills and update CATALOG.json: {stale}"
+
+
+def test_third_party_license_text_is_kept() -> None:
+    for name, entry in _catalog()["skills"].items():
+        if entry["origin"]["kind"] != "third_party":
+            continue
+        text = (SKILLS_DIR / name / "LICENSE.txt").read_text(encoding="utf-8")
+        licence = entry["origin"]["license"]
+        if licence == "Apache-2.0":
+            assert "Apache License" in text and "Version 2.0" in text, name
+        elif licence == "MIT":
+            assert "Permission is hereby granted, free of charge" in text and "Copyright (c)" in text, name
+        else:
+            assert "All rights reserved" in text, name
+
+
+def test_modified_apache_skills_carry_a_change_notice() -> None:
+    for name, entry in _catalog()["skills"].items():
+        if entry["origin"]["license"] == "Apache-2.0" and entry["modified"]:
+            assert "Modified copy" in (SKILLS_DIR / name / "SKILL.md").read_text(encoding="utf-8"), name
