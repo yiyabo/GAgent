@@ -83,7 +83,7 @@ services:
       timeout: 5s
       start_period: 30s
       retries: 3
-    networks: [front, sandbox]
+    networks: [front, sandbox, dockerapi]
     logging: *logging
 
   proxy:
@@ -113,7 +113,7 @@ services:
       timeout: 5s
       start_period: 10s
       retries: 3
-    networks: [sandbox]
+    networks: [dockerapi]
     logging: *logging
 
   ops:
@@ -209,3 +209,13 @@ networks:
     ipam:
       config:
         - subnet: 172.29.0.0/24
+  # The Docker API proxy must NOT share the sandbox network: sandboxes run
+  # model-written code, and a shared network would let that code call the proxy
+  # (which holds the daemon socket) and create containers with arbitrary binds.
+  # Keep the proxy reachable from the app only.
+  dockerapi:
+    name: gagent-dockerapi
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
