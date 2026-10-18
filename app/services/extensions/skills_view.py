@@ -88,8 +88,8 @@ def list_skills(*, can_manage: bool, skills_dir: Path = PROJECT_SKILLS_DIR) -> D
 
     catalog = _load_catalog(skills_dir)
     disabled = {n for n, e in (read_state().get("skills") or {}).items() if isinstance(e, dict) and e.get("enabled") is False}
-    # A throwaway loader with the overlay bypassed so disabled skills still appear in the list.
-    loader = SkillsLoader(skills_dir=str(skills_dir / ".none"), project_skills_dir=str(skills_dir))
+    # Same directory for both roots, so the loader scans it once and does not warn about a missing overlay.
+    loader = SkillsLoader(skills_dir=str(skills_dir), project_skills_dir=str(skills_dir))
     rows: List[Dict[str, Any]] = []
     seen = set()
     for spec in loader.list_skills():
@@ -97,8 +97,12 @@ def list_skills(*, can_manage: bool, skills_dir: Path = PROJECT_SKILLS_DIR) -> D
         rows.append(_describe(spec["name"], Path(spec["directory"]), spec["description"], catalog.get(spec["name"]), spec["name"] not in disabled))
     for name in sorted(disabled - seen):
         directory = skills_dir / name
-        if (directory / "SKILL.md").exists():
-            rows.append(_describe(name, directory, "(已关闭)", catalog.get(name), False))
+        skill_md = directory / "SKILL.md"
+        if skill_md.exists():
+            # The loader hides admin-disabled skills; read their description ourselves.
+            text = skill_md.read_text(encoding="utf-8", errors="replace")
+            description = loader._extract_description(text, loader._extract_frontmatter(text))
+            rows.append(_describe(name, directory, description, catalog.get(name), False))
     rows.sort(key=lambda row: row["name"])
     return {"can_manage": can_manage, "skills": rows}
 

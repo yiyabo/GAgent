@@ -278,6 +278,7 @@ def test_disabling_a_skill_hides_it_from_the_agent_but_not_from_the_page(tmp_pat
     assert {s["name"] for s in loader.list_skills()} == {"beta"}
     page = {r["name"]: r for r in skills_view.list_skills(can_manage=True, skills_dir=root)["skills"]}
     assert page["alpha"]["enabled"] is False and page["beta"]["enabled"] is True
+    assert page["alpha"]["description"] == "Skill alpha."  # a disabled skill keeps its description on the page
     assert skills_view.set_skill_enabled("alpha", True, skills_dir=root)["enabled"] is True
     assert {s["name"] for s in SkillsLoader(skills_dir=str(tmp_path / "none"), project_skills_dir=str(root)).list_skills()} == {"alpha", "beta"}
 
