@@ -10,6 +10,8 @@ naive-local isoformat for llm_usage_log, UTC+8 for the shard log tables).
 
 from __future__ import annotations
 
+from collections import namedtuple
+
 import os
 import sqlite3
 import tarfile
@@ -19,6 +21,9 @@ from pathlib import Path
 
 from app.ops.retention import (
     SessionRecord,
+    disk_usage_report,
+    effective_cap_gb,
+    prune_session_archives,
     run_retention,
     select_expired,
     select_for_size_cap,
@@ -279,3 +284,106 @@ def test_open_sqlite_roundtrip_guard() -> None:
         conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         conn.close()
         assert path.exists()
+
+
+# --- archive batches, free-space floor, disk levels ------------------------
+
+def _archive_batch(root: Path, name: str, *, files: int = 1) -> Path:
+    batch = root / name
+    batch.mkdir(parents=True, exist_ok=True)
+    for index in range(files):
+        (batch / f"session_x{index}.tar.gz").write_bytes(b"x" * 1024)
+    return batch
+
+
+def test_prune_session_archives_keeps_window_newest_and_unknown(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive"
+    now = datetime.now(_UTC8)
+    old = _archive_batch(archive_root, (now - timedelta(days=40)).strftime("%Y%m%dT%H%M%S"))
+    recent = _archive_batch(archive_root, (now - timedelta(days=5)).strftime("%Y%m%dT%H%M%S"))
+    today = _archive_batch(archive_root, now.strftime("%Y%m%dT%H%M%S"))
+    unknown = _archive_batch(archive_root, "manual-2026-09-01")
+
+    report = prune_session_archives(archive_root, keep_days=30, keep_min=2, now=now, apply=False)
+    assert report["archives_total"] == 3  # the unrecognized name is never a candidate
+    assert report["archives_selected"] == 1
+    assert report["archives_deleted"] == 0  # dry-run deletes nothing
+    assert old.exists()
+
+    report = prune_session_archives(archive_root, keep_days=30, keep_min=2, now=now, apply=True)
+    assert report["archives_deleted"] == 1
+    assert report["archive_bytes_freed"] > 0
+    assert not old.exists()
+    assert recent.exists() and today.exists() and unknown.exists()
+
+
+def test_prune_session_archives_always_keeps_the_newest_batches(tmp_path: Path) -> None:
+    archive_root = tmp_path / "archive"
+    now = datetime.now(_UTC8)
+    first = _archive_batch(archive_root, (now - timedelta(days=90)).strftime("%Y%m%dT%H%M%S"))
+    second = _archive_batch(archive_root, (now - timedelta(days=80)).strftime("%Y%m%dT%H%M%S"))
+    report = prune_session_archives(archive_root, keep_days=1, keep_min=2, now=now, apply=True)
+    assert report["archives_deleted"] == 0
+    assert first.exists() and second.exists()
+
+
+def test_prune_session_archives_missing_root_is_a_noop(tmp_path: Path) -> None:
+    report = prune_session_archives(
+        tmp_path / "absent", keep_days=30, now=datetime.now(_UTC8), apply=True
+    )
+    assert report["archives_total"] == 0 and report["archives_deleted"] == 0
+
+
+def test_effective_cap_prefers_the_free_floor_when_headroom_shrinks() -> None:
+    gib = 1024**3
+    # Roomy disk: the static cap stands.
+    assert effective_cap_gb(
+        runtime_bytes=127 * gib, free_bytes=185 * gib, max_gb=200, free_floor_gb=40
+    ) == 200
+    # Tight disk: the floor binds (127 + 20 - 40 = 107).
+    assert effective_cap_gb(
+        runtime_bytes=127 * gib, free_bytes=20 * gib, max_gb=200, free_floor_gb=40
+    ) == 107
+    # No floor configured: unchanged static cap.
+    assert effective_cap_gb(
+        runtime_bytes=10 * gib, free_bytes=1 * gib, max_gb=200, free_floor_gb=0
+    ) == 200
+    # Never negative, even with nothing free.
+    assert effective_cap_gb(runtime_bytes=0, free_bytes=0, max_gb=200, free_floor_gb=40) == 0
+
+
+def test_disk_usage_report_levels(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    usage = namedtuple("usage", "total used free")
+    monkeypatch.setattr(
+        "app.ops.retention.shutil.disk_usage",
+        lambda _path: usage(total=100 * 1024**3, used=90 * 1024**3, free=10 * 1024**3),
+    )
+    report = disk_usage_report(tmp_path, warn_pct=20, error_pct=10)
+    assert report["disk_level"] == "warn"
+    assert report["disk_free_pct"] == 10.0
+
+    monkeypatch.setattr(
+        "app.ops.retention.shutil.disk_usage",
+        lambda _path: usage(total=100 * 1024**3, used=95 * 1024**3, free=5 * 1024**3),
+    )
+    assert disk_usage_report(tmp_path, warn_pct=20, error_pct=10)["disk_level"] == "error"
+
+
+def test_run_retention_prunes_expired_archives_only(isolated_app_env) -> None:
+    from app.database import init_db
+
+    init_db()
+    backup_dir = isolated_app_env["db_root"] / "ops_backups"
+    archive_root = backup_dir / "archive"
+    now = datetime.now(_UTC8)
+    stale = _archive_batch(archive_root, (now - timedelta(days=45)).strftime("%Y%m%dT%H%M%S"))
+    middle = _archive_batch(archive_root, (now - timedelta(days=20)).strftime("%Y%m%dT%H%M%S"))
+    recent = _archive_batch(archive_root, (now - timedelta(days=3)).strftime("%Y%m%dT%H%M%S"))
+
+    report = run_retention(
+        apply=True, archive_keep_days=30, **_retention_kwargs(isolated_app_env, backup_dir)
+    )
+
+    assert report["archives_deleted"] == 1
+    assert not stale.exists() and middle.exists() and recent.exists()
+    assert "disk_free_pct" in report and "cap_gb_effective" in report

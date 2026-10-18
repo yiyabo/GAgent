@@ -301,6 +301,131 @@ def archive_session_dir(session_dir: Path, archive_dir: Path) -> Path:
     return target
 
 
+def _parse_archive_ts(name: str) -> Optional[float]:
+    """Epoch seconds for a ``<backup>/archive/<ts>`` batch name, or None."""
+    try:
+        return datetime.strptime(name, "%Y%m%dT%H%M%S").replace(tzinfo=_UTC8).timestamp()
+    except ValueError:
+        return None
+
+
+def prune_session_archives(
+    archive_root: Path,
+    *,
+    keep_days: int,
+    keep_min: int = 2,
+    now: Optional[datetime] = None,
+    apply: bool = False,
+) -> Dict[str, object]:
+    """Delete session-archive batches older than *keep_days*; newest *keep_min* stay.
+
+    ``run_retention`` archives every expired session directory into
+    ``<backup_dir>/archive/<ts>/`` before removing the original, and nothing
+    ever removed those batches afterwards: retention moved the bytes off the
+    runtime tree but never freed them. Batch names are ``%Y%m%dT%H%M%S`` in
+    UTC+8 (the cron clock). Names that do not parse are never deleted, and the
+    newest batches are always kept so the pass that just wrote one cannot race
+    itself. Dry-run unless *apply*.
+    """
+    now = now or datetime.now(_UTC8)
+    report: Dict[str, object] = {
+        "archives_total": 0,
+        "archives_selected": 0,
+        "archives_deleted": 0,
+        "archive_bytes_freed": 0,
+    }
+    if not archive_root.is_dir():
+        return report
+
+    batches: List[tuple[float, Path]] = []
+    for entry in sorted(archive_root.iterdir()):
+        if not entry.is_dir():
+            continue
+        stamp = _parse_archive_ts(entry.name)
+        if stamp is None:
+            logger.warning("retention: unrecognized archive batch name %s; keeping", entry.name)
+            continue
+        batches.append((stamp, entry))
+    report["archives_total"] = len(batches)
+    if not batches:
+        return report
+
+    batches.sort(key=lambda item: item[0])
+    protected = {entry for _stamp, entry in batches[-max(0, int(keep_min)):]} if keep_min else set()
+    cutoff = now.timestamp() - max(0, int(keep_days)) * 86400
+    selected = [entry for stamp, entry in batches if stamp < cutoff and entry not in protected]
+    report["archives_selected"] = len(selected)
+
+    for entry in selected:
+        size = _dir_size_bytes(entry)
+        if not apply:
+            logger.info(
+                "retention: would prune archive batch %s (%.1f MiB)", entry.name, size / 1024**2
+            )
+            continue
+        try:
+            shutil.rmtree(entry)
+        except OSError as exc:
+            logger.error("retention: archive prune failed for %s: %s", entry.name, exc)
+            continue
+        report["archives_deleted"] = int(report["archives_deleted"]) + 1
+        report["archive_bytes_freed"] = int(report["archive_bytes_freed"]) + size
+        logger.info("retention: pruned archive batch %s (%.1f MiB)", entry.name, size / 1024**2)
+    return report
+
+
+def effective_cap_gb(
+    *,
+    runtime_bytes: int,
+    free_bytes: int,
+    max_gb: float,
+    free_floor_gb: float,
+) -> float:
+    """The size cap the pass should use: ``RUNTIME_MAX_GB`` bounded by free space.
+
+    A static cap cannot protect a disk it was not calibrated for. On .8 the
+    runtime tree shares a 500 GiB filesystem with the course platform and the
+    Docker root, so ``RUNTIME_MAX_GB=300`` can only fire after the disk is
+    nearly full. The effective cap is therefore also bounded by what the tree
+    may grow into while still leaving *free_floor_gb* of headroom.
+    """
+    if free_floor_gb <= 0:
+        return max(0.0, float(max_gb))
+    headroom_gb = max(0.0, (int(runtime_bytes) + int(free_bytes)) / 1024**3 - float(free_floor_gb))
+    return max(0.0, min(float(max_gb), headroom_gb))
+
+
+def disk_usage_report(
+    runtime_root: Path,
+    *,
+    warn_pct: float = 20.0,
+    error_pct: float = 10.0,
+) -> Dict[str, object]:
+    """Free-space facts for the filesystem holding the runtime tree.
+
+    Retention is the only component that ever looks at this disk, so it is also
+    the natural place to say something before the disk fills.
+    """
+    try:
+        usage = shutil.disk_usage(runtime_root)
+    except OSError as exc:
+        return {"disk_error": str(exc)}
+    free_pct = (usage.free / usage.total * 100.0) if usage.total else 0.0
+    if free_pct < float(error_pct):
+        level = "error"
+    elif free_pct < float(warn_pct):
+        level = "warn"
+    else:
+        level = "ok"
+    return {
+        "disk_total_bytes": usage.total,
+        "disk_used_bytes": usage.used,
+        "disk_free_bytes": usage.free,
+        "disk_free_pct": round(free_pct, 1),
+        "disk_level": level,
+    }
+
+
 def _open_maintenance_connection(path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(path)
     apply_sqlite_pragmas(conn)
@@ -536,6 +661,11 @@ def run_retention(
     retention_days: int = 60,
     max_gb: float = 300.0,
     archive_before_delete: bool = True,
+    archive_keep_days: int = 30,
+    archive_keep_min: int = 2,
+    free_floor_gb: float = 40.0,
+    disk_warn_pct: float = 20.0,
+    disk_error_pct: float = 10.0,
     event_retention_days: int = 30,
     usage_retention_days: int = 365,
     job_log_retention_days: int = 30,
@@ -560,6 +690,12 @@ def run_retention(
         "sessions_kept_by_archive_failure": 0,
         "bytes_selected": 0,
         "bytes_freed": 0,
+        "runtime_bytes": 0,
+        "cap_gb_effective": 0.0,
+        "archives_total": 0,
+        "archives_selected": 0,
+        "archives_deleted": 0,
+        "archive_bytes_freed": 0,
         "events_rows": 0,
         "signals_rows": 0,
         "usage_rows": 0,
@@ -581,11 +717,25 @@ def run_retention(
         report["abort_reason"] = abort_reason
         logger.warning("retention: session GC aborted (%s)", abort_reason)
     else:
+        runtime_bytes = sum(r.size_bytes for r in records)
+        free_bytes = 0
+        try:
+            free_bytes = shutil.disk_usage(runtime_root).free
+        except OSError as exc:
+            logger.warning("retention: disk usage unavailable for %s: %s", runtime_root, exc)
+        cap_gb = effective_cap_gb(
+            runtime_bytes=runtime_bytes,
+            free_bytes=free_bytes,
+            max_gb=max_gb,
+            free_floor_gb=free_floor_gb,
+        )
+        report["runtime_bytes"] = runtime_bytes
+        report["cap_gb_effective"] = round(cap_gb, 1)
         by_age = select_expired(records, retention_days=retention_days, now_epoch=now_epoch)
         by_cap = select_for_size_cap(
             records,
             already_selected=by_age,
-            max_bytes=int(max(0.0, float(max_gb)) * 1024**3),
+            max_bytes=int(cap_gb * 1024**3),
             now_epoch=now_epoch,
         )
         selected = sorted(
@@ -638,7 +788,21 @@ def run_retention(
             report["sessions_deleted"] = int(report["sessions_deleted"]) + 1
             report["bytes_freed"] = int(report["bytes_freed"]) + record.size_bytes
 
-    # ---- 2. main DB log tables --------------------------------------------
+    # ---- 2. expired session archives --------------------------------------
+    # Sessions deleted by earlier passes were archived and never pruned, so the
+    # bytes only moved off the runtime tree. Apply the same window to them.
+    if backup_dir is not None:
+        report.update(
+            prune_session_archives(
+                backup_dir / "archive",
+                keep_days=archive_keep_days,
+                keep_min=archive_keep_min,
+                now=now,
+                apply=apply,
+            )
+        )
+
+    # ---- 3. main DB log tables --------------------------------------------
     # A corrupt/locked main DB must not take the shard cleanup (or the report)
     # down with it; the failure is surfaced in the report and logs instead.
     try:
@@ -656,7 +820,7 @@ def run_retention(
         logger.error("retention: main DB retention failed: %s", exc)
         report["main_db_error"] = str(exc)
 
-    # ---- 3. plan shard logs ------------------------------------------------
+    # ---- 4. plan shard logs ------------------------------------------------
     report.update(
         _retain_shard_logs(
             plan_store_dir,
@@ -667,7 +831,7 @@ def run_retention(
         )
     )
 
-    # ---- 4. WAL checkpoint + weekly VACUUM (apply only) --------------------
+    # ---- 5. WAL checkpoint + weekly VACUUM (apply only) --------------------
     if apply:
         checkpointed = 0
         vacuumed = 0
@@ -683,6 +847,24 @@ def run_retention(
     elif vacuum:
         logger.info("retention: --vacuum ignored in dry-run (needs --apply)")
 
+    report.update(
+        disk_usage_report(runtime_root, warn_pct=disk_warn_pct, error_pct=disk_error_pct)
+    )
+    free_gib = float(report.get("disk_free_bytes") or 0) / 1024**3
+    free_pct = float(report.get("disk_free_pct") or 0.0)
+    if report.get("disk_level") == "error":
+        logger.error(
+            "retention: data disk free %.1f%% (%.1f GiB) is below the error threshold",
+            free_pct,
+            free_gib,
+        )
+    elif report.get("disk_level") == "warn":
+        logger.warning(
+            "retention: data disk free %.1f%% (%.1f GiB) is below the warning threshold",
+            free_pct,
+            free_gib,
+        )
+
     mode = "apply" if apply else "DRY-RUN"
     logger.info(
         "retention[%s]: sessions total=%s active=%s selected(age=%s cap=%s) "
@@ -695,6 +877,18 @@ def run_retention(
         report["sessions_deleted"],
         report["sessions_kept_by_archive_failure"],
         int(report["bytes_freed"]) / 1024**2,
+    )
+    logger.info(
+        "retention[%s]: runtime=%.1f GiB cap_effective=%.1f GiB archives "
+        "total=%s selected=%s deleted=%s freed=%.1f MiB disk_free=%.1f%%",
+        mode,
+        float(report.get("runtime_bytes") or 0) / 1024**3,
+        float(report.get("cap_gb_effective") or 0.0),
+        report.get("archives_total"),
+        report.get("archives_selected"),
+        report.get("archives_deleted"),
+        float(report.get("archive_bytes_freed") or 0) / 1024**2,
+        free_pct,
     )
     logger.info(
         "retention[%s]: db events=%s signals=%s usage=%s shard_log_rows=%s "
@@ -744,6 +938,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         retention_days=settings.runtime_retention_days,
         max_gb=settings.runtime_max_gb,
         archive_before_delete=settings.runtime_archive_before_delete,
+        archive_keep_days=settings.runtime_archive_keep_days,
+        free_floor_gb=settings.runtime_free_floor_gb,
+        disk_warn_pct=settings.runtime_disk_warn_pct,
+        disk_error_pct=settings.runtime_disk_error_pct,
         event_retention_days=settings.event_retention_days,
         usage_retention_days=settings.usage_retention_days,
         job_log_retention_days=settings.job_log_retention_days,
