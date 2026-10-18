@@ -2,50 +2,134 @@
   "schema": 1,
   "skills": {
     "bio-data-interpreter": {
-      "origin": {"kind": "internal", "source": "gagent", "path": "skills/bio-data-interpreter", "commit": "07947a91014b6318d7b2e1e0a4221be8a22413ea", "license": "internal"},
+      "origin": {
+        "kind": "internal",
+        "source": "gagent",
+        "path": "skills/bio-data-interpreter",
+        "commit": "07947a91014b6318d7b2e1e0a4221be8a22413ea",
+        "license": "internal"
+      },
       "modified": false,
       "modifications": [],
-      "review": {"scanner": "passed", "scanner_version": 1, "reviewed_by": "claude (AI), full text read", "reviewed_at": "2026-10-18", "human_signoff": false, "notes": "Written in-house; commit is the one that added the skill to this repository. Not a third-party import."}
+      "review": {
+        "scanner": "passed",
+        "scanner_version": 1,
+        "reviewed_by": "claude (AI), full text read",
+        "reviewed_at": "2026-10-18",
+        "human_signoff": false,
+        "notes": "Written in-house; commit is the one that added the skill to this repository. Not a third-party import."
+      }
     },
     "bio-tools-execution-playbook": {
-      "origin": {"kind": "internal", "source": "gagent", "path": "skills/bio-tools-execution-playbook", "commit": "bad644501a616ac9121249830190c250b5bd8ce2", "license": "internal"},
+      "origin": {
+        "kind": "internal",
+        "source": "gagent",
+        "path": "skills/bio-tools-execution-playbook",
+        "commit": "bad644501a616ac9121249830190c250b5bd8ce2",
+        "license": "internal"
+      },
       "modified": false,
       "modifications": [],
-      "review": {"scanner": "passed", "scanner_version": 1, "reviewed_by": "claude (AI), full text read", "reviewed_at": "2026-10-18", "human_signoff": false, "notes": "Written in-house; commit is the one that added the skill to this repository. Not a third-party import."}
+      "review": {
+        "scanner": "passed",
+        "scanner_version": 1,
+        "reviewed_by": "claude (AI), full text read",
+        "reviewed_at": "2026-10-18",
+        "human_signoff": false,
+        "notes": "Written in-house; commit is the one that added the skill to this repository. Not a third-party import."
+      }
     },
     "bio-tools-router": {
-      "origin": {"kind": "internal", "source": "gagent", "path": "skills/bio-tools-router", "commit": "bad644501a616ac9121249830190c250b5bd8ce2", "license": "internal"},
+      "origin": {
+        "kind": "internal",
+        "source": "gagent",
+        "path": "skills/bio-tools-router",
+        "commit": "bad644501a616ac9121249830190c250b5bd8ce2",
+        "license": "internal"
+      },
       "modified": false,
       "modifications": [],
-      "review": {"scanner": "passed", "scanner_version": 1, "reviewed_by": "claude (AI), full text read", "reviewed_at": "2026-10-18", "human_signoff": false, "notes": "Written in-house; commit is the one that added the skill to this repository. Not a third-party import."}
+      "review": {
+        "scanner": "passed",
+        "scanner_version": 1,
+        "reviewed_by": "claude (AI), full text read",
+        "reviewed_at": "2026-10-18",
+        "human_signoff": false,
+        "notes": "Written in-house; commit is the one that added the skill to this repository. Not a third-party import."
+      }
     },
     "bio-tools-troubleshooting": {
-      "origin": {"kind": "internal", "source": "gagent", "path": "skills/bio-tools-troubleshooting", "commit": "bad644501a616ac9121249830190c250b5bd8ce2", "license": "internal"},
+      "origin": {
+        "kind": "internal",
+        "source": "gagent",
+        "path": "skills/bio-tools-troubleshooting",
+        "commit": "bad644501a616ac9121249830190c250b5bd8ce2",
+        "license": "internal"
+      },
       "modified": false,
       "modifications": [],
-      "review": {"scanner": "passed", "scanner_version": 1, "reviewed_by": "claude (AI), full text read", "reviewed_at": "2026-10-18", "human_signoff": false, "notes": "Written in-house; commit is the one that added the skill to this repository. Not a third-party import."}
+      "review": {
+        "scanner": "passed",
+        "scanner_version": 1,
+        "reviewed_by": "claude (AI), full text read",
+        "reviewed_at": "2026-10-18",
+        "human_signoff": false,
+        "notes": "Written in-house; commit is the one that added the skill to this repository. Not a third-party import."
+      }
     },
     "bioinformatics": {
-      "origin": {"kind": "third_party", "source": "NousResearch/hermes-agent", "path": "optional-skills/research/bioinformatics", "commit": "1c9433897c7b8a3b2754a84875e8f86d0a42991a", "license": "MIT"},
+      "origin": {
+        "kind": "third_party",
+        "source": "NousResearch/hermes-agent",
+        "path": "optional-skills/research/bioinformatics",
+        "commit": "1c9433897c7b8a3b2754a84875e8f86d0a42991a",
+        "license": "MIT"
+      },
       "modified": false,
       "modifications": [
         "SKILL.md is byte-identical to hermes-agent commit 1c9433897c7b8a3b2754a84875e8f86d0a42991a (vendored 2026-08-22, GAgent commit 0143a28f). Later upstream revisions changed the clone paths from /tmp to ~/.hermes/cache; GAgent kept the /tmp revision.",
         "LICENSE.txt (MIT, Copyright (c) 2025 Nous Research) was added in this change; it was not vendored with the skill originally. The recorded `commit` is the revision the text matches, not the current upstream HEAD (354ad3d4).",
         "Note: the skill tells the model to `git clone` two external repositories at run time (bioSkills, ClawBio); those repositories are NOT vetted by this catalog."
       ],
-      "review": {"scanner": "warnings", "scanner_version": 1, "reviewed_by": "claude (AI), full text read", "reviewed_at": "2026-10-18", "human_signoff": false, "notes": "Scanner warns on run-time `git clone` of two third-party repos and on `sudo apt install` in the environment setup section. Content fetched at run time is outside the vetted tree. Pre-existing skill; not imported in this change."}
+      "review": {
+        "scanner": "warnings",
+        "scanner_version": 1,
+        "reviewed_by": "claude (AI), full text read",
+        "reviewed_at": "2026-10-18",
+        "human_signoff": false,
+        "notes": "Scanner warns on run-time `git clone` of two third-party repos and on `sudo apt install` in the environment setup section. Content fetched at run time is outside the vetted tree. Pre-existing skill; not imported in this change."
+      }
     },
     "frontend-design": {
-      "origin": {"kind": "third_party", "source": "anthropics/skills", "path": "skills/frontend-design", "commit": "dbd4588f9e1033efb41dad4bef2f7947c8993d44", "license": "Apache-2.0"},
+      "origin": {
+        "kind": "third_party",
+        "source": "anthropics/skills",
+        "path": "skills/frontend-design",
+        "commit": "dbd4588f9e1033efb41dad4bef2f7947c8993d44",
+        "license": "Apache-2.0"
+      },
       "modified": false,
       "modifications": [
         "SKILL.md and LICENSE.txt are byte-identical to upstream.",
         "A GAgent `config.json` (selection keywords, summary injection) was added; it is not part of upstream."
       ],
-      "review": {"scanner": "passed", "scanner_version": 1, "reviewed_by": "claude (AI), full text read", "reviewed_at": "2026-10-18", "human_signoff": false, "notes": "Pure design guidance, no scripts, no URLs. Only relevant when the agent is asked to build a UI; the SKILL.md refers to screenshots 'if your environment supports it', which the agent usually cannot take."}
+      "review": {
+        "scanner": "passed",
+        "scanner_version": 1,
+        "reviewed_by": "claude (AI), full text read",
+        "reviewed_at": "2026-10-18",
+        "human_signoff": false,
+        "notes": "Pure design guidance, no scripts, no URLs. Only relevant when the agent is asked to build a UI; the SKILL.md refers to screenshots 'if your environment supports it', which the agent usually cannot take."
+      }
     },
     "gget": {
-      "origin": {"kind": "third_party", "source": "affaan-m/everything-claude-code", "path": "skills/scientific-pkg-gget", "commit": "d29cf651c795869f733669c33e3d33dfd8307d10", "license": "MIT"},
+      "origin": {
+        "kind": "third_party",
+        "source": "affaan-m/everything-claude-code",
+        "path": "skills/scientific-pkg-gget",
+        "commit": "d29cf651c795869f733669c33e3d33dfd8307d10",
+        "license": "MIT"
+      },
       "modified": true,
       "modifications": [
         "Vendored 2026-09-23 (GAgent commit a0878793) from upstream revision d29cf651. The upstream directory is `skills/scientific-pkg-gget`; at this revision its frontmatter `name` was still `gget` (upstream changed the name to `scientific-pkg-gget` later, in 8115a5e4, so a fresh upstream copy would not match our directory name).",
@@ -53,28 +137,68 @@
         "LICENSE.txt (MIT, Copyright (c) 2026 Affaan Mustafa) was added in this change; it was not vendored with the skill originally.",
         "The upstream repository's origin attribution is in the frontmatter as `metadata.origin: community`."
       ],
-      "review": {"scanner": "passed", "scanner_version": 1, "reviewed_by": "claude (AI), full text read", "reviewed_at": "2026-10-18", "human_signoff": false, "notes": "The skill instructs the model to `pip install gget` (info only). Third-party package installed at run time is outside the vetted tree."}
+      "review": {
+        "scanner": "passed",
+        "scanner_version": 1,
+        "reviewed_by": "claude (AI), full text read",
+        "reviewed_at": "2026-10-18",
+        "human_signoff": false,
+        "notes": "The skill instructs the model to `pip install gget` (info only). Third-party package installed at run time is outside the vetted tree."
+      }
     },
     "mcp-builder": {
-      "origin": {"kind": "third_party", "source": "anthropics/skills", "path": "skills/mcp-builder", "commit": "dbd4588f9e1033efb41dad4bef2f7947c8993d44", "license": "Apache-2.0"},
+      "origin": {
+        "kind": "third_party",
+        "source": "anthropics/skills",
+        "path": "skills/mcp-builder",
+        "commit": "dbd4588f9e1033efb41dad4bef2f7947c8993d44",
+        "license": "Apache-2.0"
+      },
       "modified": true,
       "modifications": [
         "SKILL.md edited: added a modified-copy notice and an environment-notes block (prefer Python, check Node first, SDK 2.x rename, url_fetch instead of WebFetch, mounts are deployer-controlled); `WebFetch` references replaced with `url_fetch` + `file_operations`; Python marked as preferred in GAgent; the `npx @modelcontextprotocol/inspector` testing advice replaced by a client-script test; entire Phase 4 'Create Evaluations' and the evaluation reference entry removed (it depends on an Anthropic API key and on parallel sub-agents).",
         "reference/python_mcp_server.md edited: added a modified-file notice and an `mcp` 2.x note (`FastMCP` is `MCPServer` in `mcp.server.mcpserver`; `streamable-http` transport spelling); `WebFetch` replaced by `url_fetch`.",
         "reference/mcp_best_practices.md, reference/node_mcp_server.md and LICENSE.txt are byte-identical to upstream.",
         "Dropped upstream files: reference/evaluation.md (601 lines; describes the evaluation harness, needs ANTHROPIC_API_KEY and sub-agents), scripts/evaluation.py (373 lines; calls the Anthropic API), scripts/connections.py (151 lines; MCP client connection helper used only by evaluation.py), scripts/example_evaluation.xml, scripts/requirements.txt (anthropic, mcp).",
-        "A GAgent `config.json` (selection keywords, summary injection) was added; it is not part of upstream."
+        "A GAgent `config.json` (selection keywords, summary injection) was added; it is not part of upstream.",
+        "directory renamed reference/ -> references/ (repo .gitignore ignores 'reference/'; matches our other skills)"
       ],
-      "review": {"scanner": "passed", "scanner_version": 1, "reviewed_by": "claude (AI), full text read", "reviewed_at": "2026-10-18", "human_signoff": false, "notes": "The examples in reference/node_mcp_server.md still use the `mcp` 1.x TypeScript SDK API and reference/python_mcp_server.md examples still use the 1.x `FastMCP` import (flagged at the top of the file); both are guidance for code the model writes in a workspace, not code that runs in the platform. Not verified against a real build in this change."}
+      "review": {
+        "scanner": "passed",
+        "scanner_version": 1,
+        "reviewed_by": "claude (AI), full text read",
+        "reviewed_at": "2026-10-18",
+        "human_signoff": false,
+        "notes": "The examples in reference/node_mcp_server.md still use the `mcp` 1.x TypeScript SDK API and reference/python_mcp_server.md examples still use the 1.x `FastMCP` import (flagged at the top of the file); both are guidance for code the model writes in a workspace, not code that runs in the platform. Not verified against a real build in this change."
+      }
     },
     "phage-genomics-analyst": {
-      "origin": {"kind": "internal", "source": "gagent", "path": "skills/phage-genomics-analyst", "commit": "bf4bd949c71e68c775423c0ba76d31160d8b8dcd", "license": "internal"},
+      "origin": {
+        "kind": "internal",
+        "source": "gagent",
+        "path": "skills/phage-genomics-analyst",
+        "commit": "bf4bd949c71e68c775423c0ba76d31160d8b8dcd",
+        "license": "internal"
+      },
       "modified": false,
       "modifications": [],
-      "review": {"scanner": "passed", "scanner_version": 1, "reviewed_by": "claude (AI), full text read", "reviewed_at": "2026-10-18", "human_signoff": false, "notes": "Written in-house; commit is the one that added the skill to this repository. Not a third-party import. Lists external reference URLs (databases) only as information."}
+      "review": {
+        "scanner": "passed",
+        "scanner_version": 1,
+        "reviewed_by": "claude (AI), full text read",
+        "reviewed_at": "2026-10-18",
+        "human_signoff": false,
+        "notes": "Written in-house; commit is the one that added the skill to this repository. Not a third-party import. Lists external reference URLs (databases) only as information."
+      }
     },
     "requesting-code-review": {
-      "origin": {"kind": "third_party", "source": "NousResearch/hermes-agent", "path": "skills/software-development/requesting-code-review", "commit": "354ad3d48786f2978c49be88f28c13d78fa0b6e0", "license": "MIT"},
+      "origin": {
+        "kind": "third_party",
+        "source": "NousResearch/hermes-agent",
+        "path": "skills/software-development/requesting-code-review",
+        "commit": "354ad3d48786f2978c49be88f28c13d78fa0b6e0",
+        "license": "MIT"
+      },
       "modified": true,
       "modifications": [
         "Frontmatter flattened: the `metadata.hermes` block was removed, `tags` and `related_skills` moved to top level, and related skills that are not shipped (`subagent-driven-development`, `github`) dropped.",
@@ -86,16 +210,42 @@
         "A GAgent `config.json` (selection keywords, summary injection) was added; it is not part of upstream.",
         "LICENSE.txt contains the Nous Research MIT notice followed by the obra/superpowers MIT notice (the skill says it is adapted from obra/superpowers)."
       ],
-      "review": {"scanner": "warnings", "scanner_version": 1, "reviewed_by": "claude (AI), full text read", "reviewed_at": "2026-10-18", "human_signoff": false, "notes": "Scanner warns on the word `eval(` in a grep pattern used to *detect* dangerous code in a diff (SKILL.md line ~153); that is a documentation false positive. The `git add -A && git commit` step is now conditional on the user asking for a commit. The skill is only useful if the agent actually has a git working copy in its terminal; in the hosted chat environment it usually will not."}
+      "review": {
+        "scanner": "warnings",
+        "scanner_version": 1,
+        "reviewed_by": "claude (AI), full text read",
+        "reviewed_at": "2026-10-18",
+        "human_signoff": false,
+        "notes": "Scanner warns on the word `eval(` in a grep pattern used to *detect* dangerous code in a diff (SKILL.md line ~153); that is a documentation false positive. The `git add -A && git commit` step is now conditional on the user asking for a commit. The skill is only useful if the agent actually has a git working copy in its terminal; in the hosted chat environment it usually will not."
+      }
     },
     "scientific-report-writer": {
-      "origin": {"kind": "internal", "source": "gagent", "path": "skills/scientific-report-writer", "commit": "07947a91014b6318d7b2e1e0a4221be8a22413ea", "license": "internal"},
+      "origin": {
+        "kind": "internal",
+        "source": "gagent",
+        "path": "skills/scientific-report-writer",
+        "commit": "07947a91014b6318d7b2e1e0a4221be8a22413ea",
+        "license": "internal"
+      },
       "modified": false,
       "modifications": [],
-      "review": {"scanner": "passed", "scanner_version": 1, "reviewed_by": "claude (AI), full text read", "reviewed_at": "2026-10-18", "human_signoff": false, "notes": "Written in-house; commit is the one that added the skill to this repository. Not a third-party import."}
+      "review": {
+        "scanner": "passed",
+        "scanner_version": 1,
+        "reviewed_by": "claude (AI), full text read",
+        "reviewed_at": "2026-10-18",
+        "human_signoff": false,
+        "notes": "Written in-house; commit is the one that added the skill to this repository. Not a third-party import."
+      }
     },
     "simplify-code": {
-      "origin": {"kind": "third_party", "source": "NousResearch/hermes-agent", "path": "skills/software-development/simplify-code", "commit": "354ad3d48786f2978c49be88f28c13d78fa0b6e0", "license": "MIT"},
+      "origin": {
+        "kind": "third_party",
+        "source": "NousResearch/hermes-agent",
+        "path": "skills/software-development/simplify-code",
+        "commit": "354ad3d48786f2978c49be88f28c13d78fa0b6e0",
+        "license": "MIT"
+      },
       "modified": true,
       "modifications": [
         "Description and title changed from 'Parallel 4-agent' to 'Four-angle': the skill no longer fans out four parallel sub-agents.",
@@ -107,10 +257,23 @@
         "A GAgent `config.json` (selection keywords, summary injection) was added; it is not part of upstream.",
         "LICENSE.txt is the Nous Research MIT licence."
       ],
-      "review": {"scanner": "passed", "scanner_version": 1, "reviewed_by": "claude (AI), full text read", "reviewed_at": "2026-10-18", "human_signoff": false, "notes": "The skill is inspired by Claude Code's `/simplify` command but contains no Anthropic text. Like requesting-code-review it needs a git working copy in the terminal."}
+      "review": {
+        "scanner": "passed",
+        "scanner_version": 1,
+        "reviewed_by": "claude (AI), full text read",
+        "reviewed_at": "2026-10-18",
+        "human_signoff": false,
+        "notes": "The skill is inspired by Claude Code's `/simplify` command but contains no Anthropic text. Like requesting-code-review it needs a git working copy in the terminal."
+      }
     },
     "spike": {
-      "origin": {"kind": "third_party", "source": "NousResearch/hermes-agent", "path": "skills/software-development/spike", "commit": "354ad3d48786f2978c49be88f28c13d78fa0b6e0", "license": "MIT"},
+      "origin": {
+        "kind": "third_party",
+        "source": "NousResearch/hermes-agent",
+        "path": "skills/software-development/spike",
+        "commit": "354ad3d48786f2978c49be88f28c13d78fa0b6e0",
+        "license": "MIT"
+      },
       "modified": true,
       "modifications": [
         "Frontmatter flattened: the `metadata.hermes` block removed, `tags` moved to top level; `related_skills` dropped (it pointed at skills that are not shipped).",
@@ -121,10 +284,23 @@
         "A GAgent `config.json` (selection keywords, summary injection) was added; it is not part of upstream.",
         "LICENSE.txt contains the Nous Research MIT notice followed by the gsd-build/get-shit-done MIT notice (Lex Christopherson)."
       ],
-      "review": {"scanner": "passed", "scanner_version": 1, "reviewed_by": "claude (AI), full text read", "reviewed_at": "2026-10-18", "human_signoff": false, "notes": "The word 'spike' is also common in biology (spike protein); the selection keywords were therefore restricted to multi-word phrases ('spike out', 'spike this', 'proof of concept', 'throwaway prototype')."}
+      "review": {
+        "scanner": "passed",
+        "scanner_version": 1,
+        "reviewed_by": "claude (AI), full text read",
+        "reviewed_at": "2026-10-18",
+        "human_signoff": false,
+        "notes": "The word 'spike' is also common in biology (spike protein); the selection keywords were therefore restricted to multi-word phrases ('spike out', 'spike this', 'proof of concept', 'throwaway prototype')."
+      }
     },
     "systematic-debugging": {
-      "origin": {"kind": "third_party", "source": "NousResearch/hermes-agent", "path": "skills/software-development/systematic-debugging", "commit": "354ad3d48786f2978c49be88f28c13d78fa0b6e0", "license": "MIT"},
+      "origin": {
+        "kind": "third_party",
+        "source": "NousResearch/hermes-agent",
+        "path": "skills/software-development/systematic-debugging",
+        "commit": "354ad3d48786f2978c49be88f28c13d78fa0b6e0",
+        "license": "MIT"
+      },
       "modified": true,
       "modifications": [
         "Frontmatter flattened: the `metadata.hermes` block removed, `tags` and `related_skills` moved to top level; the unshipped `subagent-driven-development` related skill dropped.",
@@ -135,10 +311,23 @@
         "A GAgent `config.json` (selection keywords, summary injection) was added; it is not part of upstream.",
         "LICENSE.txt contains the Nous Research MIT notice followed by the obra/superpowers MIT notice (the skill says it is adapted from obra/superpowers)."
       ],
-      "review": {"scanner": "passed", "scanner_version": 1, "reviewed_by": "claude (AI), full text read", "reviewed_at": "2026-10-18", "human_signoff": false, "notes": "Upstream also contains an unsubstantiated 'Real-World Impact' statistics paragraph (15-30 minutes vs 2-3 hours, 95% vs 40%); kept unchanged because it is upstream text, but a human may want to cut it."}
+      "review": {
+        "scanner": "passed",
+        "scanner_version": 1,
+        "reviewed_by": "claude (AI), full text read",
+        "reviewed_at": "2026-10-18",
+        "human_signoff": false,
+        "notes": "Upstream also contains an unsubstantiated 'Real-World Impact' statistics paragraph (15-30 minutes vs 2-3 hours, 95% vs 40%); kept unchanged because it is upstream text, but a human may want to cut it."
+      }
     },
     "test-driven-development": {
-      "origin": {"kind": "third_party", "source": "NousResearch/hermes-agent", "path": "skills/software-development/test-driven-development", "commit": "354ad3d48786f2978c49be88f28c13d78fa0b6e0", "license": "MIT"},
+      "origin": {
+        "kind": "third_party",
+        "source": "NousResearch/hermes-agent",
+        "path": "skills/software-development/test-driven-development",
+        "commit": "354ad3d48786f2978c49be88f28c13d78fa0b6e0",
+        "license": "MIT"
+      },
       "modified": true,
       "modifications": [
         "Frontmatter flattened: the `metadata.hermes` block removed, `tags` and `related_skills` moved to top level; the unshipped `subagent-driven-development` related skill dropped.",
@@ -147,23 +336,56 @@
         "A GAgent `config.json` (selection keywords, summary injection) was added; it is not part of upstream.",
         "LICENSE.txt contains the Nous Research MIT notice followed by the obra/superpowers MIT notice (the skill says it is adapted from obra/superpowers)."
       ],
-      "review": {"scanner": "passed", "scanner_version": 1, "reviewed_by": "claude (AI), full text read", "reviewed_at": "2026-10-18", "human_signoff": false, "notes": "Strongly worded absolutist rules ('delete the code and start over') are upstream's own style and were kept; a human may want to soften them for non-code tasks."}
+      "review": {
+        "scanner": "passed",
+        "scanner_version": 1,
+        "reviewed_by": "claude (AI), full text read",
+        "reviewed_at": "2026-10-18",
+        "human_signoff": false,
+        "notes": "Strongly worded absolutist rules ('delete the code and start over') are upstream's own style and were kept; a human may want to soften them for non-code tasks."
+      }
     },
     "visualization-generator": {
-      "origin": {"kind": "internal", "source": "gagent", "path": "skills/visualization-generator", "commit": "07947a91014b6318d7b2e1e0a4221be8a22413ea", "license": "internal"},
+      "origin": {
+        "kind": "internal",
+        "source": "gagent",
+        "path": "skills/visualization-generator",
+        "commit": "07947a91014b6318d7b2e1e0a4221be8a22413ea",
+        "license": "internal"
+      },
       "modified": false,
       "modifications": [],
-      "review": {"scanner": "passed", "scanner_version": 1, "reviewed_by": "claude (AI), full text read", "reviewed_at": "2026-10-18", "human_signoff": false, "notes": "Written in-house; commit is the one that added the skill to this repository. Not a third-party import."}
+      "review": {
+        "scanner": "passed",
+        "scanner_version": 1,
+        "reviewed_by": "claude (AI), full text read",
+        "reviewed_at": "2026-10-18",
+        "human_signoff": false,
+        "notes": "Written in-house; commit is the one that added the skill to this repository. Not a third-party import."
+      }
     },
     "xlsx": {
-      "origin": {"kind": "third_party", "source": "anthropics/skills", "path": "document-skills/xlsx", "commit": "ef740771ac901e03fbca3ce4e1c453a96010f30a", "license": "proprietary (all rights reserved)"},
+      "origin": {
+        "kind": "third_party",
+        "source": "anthropics/skills",
+        "path": "document-skills/xlsx",
+        "commit": "ef740771ac901e03fbca3ce4e1c453a96010f30a",
+        "license": "proprietary (all rights reserved)"
+      },
       "modified": false,
       "modifications": [
         "SKILL.md, recalc.py and LICENSE.txt were copied on 2026-01-30 (GAgent commit 07f2c906) from the document-skills/xlsx directory of anthropics/skills (that path was later moved to skills/xlsx upstream). The copies are byte-identical to the upstream revision ef740771; the same text was already present at 83291af582d21f5418854fa628a76686203c2f7a.",
         "A GAgent `config.json` (selection keywords, `recalc.py` listed as script) was added in commit 32e33fce; it is not part of upstream.",
         "Upstream has since replaced these files (current upstream xlsx is substantially different, including a rewritten recalc.py under scripts/); GAgent keeps the older revision."
       ],
-      "review": {"scanner": "warnings", "scanner_version": 1, "reviewed_by": "claude (AI), full text read", "reviewed_at": "2026-10-18", "human_signoff": false, "notes": "LICENSE.txt reads literally: 'All rights reserved' (Copyright 2025 Anthropic, PBC). It additionally says users may not extract these materials from the Services or retain copies of them outside the Services, reproduce or copy them, create derivative works, or distribute, sublicense or transfer them to a third party. This skill is NOT open source and its presence in this repository is a licensing risk the owner should resolve (obtain permission, replace it with an own implementation, or remove it). The scanner warns because recalc.py is a bundled script that launches LibreOffice."}
+      "review": {
+        "scanner": "warnings",
+        "scanner_version": 1,
+        "reviewed_by": "claude (AI), full text read",
+        "reviewed_at": "2026-10-18",
+        "human_signoff": false,
+        "notes": "LICENSE.txt reads literally: 'All rights reserved' (Copyright 2025 Anthropic, PBC). It additionally says users may not extract these materials from the Services or retain copies of them outside the Services, reproduce or copy them, create derivative works, or distribute, sublicense or transfer them to a third party. This skill is NOT open source and its presence in this repository is a licensing risk the owner should resolve (obtain permission, replace it with an own implementation, or remove it). The scanner warns because recalc.py is a bundled script that launches LibreOffice."
+      }
     }
   }
 }

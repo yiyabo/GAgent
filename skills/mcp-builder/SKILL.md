@@ -20,8 +20,8 @@ Creating a high-quality MCP server involves three main phases:
 
 > **Modified copy.** Adapted by GAgent from `skills/mcp-builder` of anthropics/skills
 > (Apache-2.0, commit dbd4588f9e1033efb41dad4bef2f7947c8993d44). The files changed are
-> `SKILL.md` and `reference/python_mcp_server.md`; `scripts/` and
-> `reference/evaluation.md` were removed. See `skills/NOTICE.md`.
+> `SKILL.md` and `references/python_mcp_server.md`; `scripts/` and
+> `references/evaluation.md` were removed. See `skills/NOTICE.md`.
 >
 > **Environment notes (GAgent).** This copy was adapted for the GAgent runtime:
 > - The agent cannot run an MCP inspector UI, a browser, or an LLM evaluation harness
@@ -74,15 +74,15 @@ Key pages to review:
 
 **Load framework documentation:**
 
-- **MCP Best Practices**: [📋 View Best Practices](./reference/mcp_best_practices.md) - Core guidelines
+- **MCP Best Practices**: [📋 View Best Practices](./references/mcp_best_practices.md) - Core guidelines
 
 **For TypeScript (recommended):**
 - **TypeScript SDK**: Download `https://raw.githubusercontent.com/modelcontextprotocol/typescript-sdk/main/README.md` with `url_fetch`
-- [⚡ TypeScript Guide](./reference/node_mcp_server.md) - TypeScript patterns and examples
+- [⚡ TypeScript Guide](./references/node_mcp_server.md) - TypeScript patterns and examples
 
 **For Python:**
 - **Python SDK**: Download `https://raw.githubusercontent.com/modelcontextprotocol/python-sdk/main/README.md` with `url_fetch`
-- [🐍 Python Guide](./reference/python_mcp_server.md) - Python patterns and examples
+- [🐍 Python Guide](./references/python_mcp_server.md) - Python patterns and examples
 
 #### 1.4 Plan Your Implementation
 
@@ -99,8 +99,8 @@ Prioritize comprehensive API coverage. List endpoints to implement, starting wit
 #### 2.1 Set Up Project Structure
 
 See language-specific guides for project setup:
-- [⚡ TypeScript Guide](./reference/node_mcp_server.md) - Project structure, package.json, tsconfig.json
-- [🐍 Python Guide](./reference/python_mcp_server.md) - Module organization, dependencies
+- [⚡ TypeScript Guide](./references/node_mcp_server.md) - Project structure, package.json, tsconfig.json
+- [🐍 Python Guide](./references/python_mcp_server.md) - Module organization, dependencies
 
 #### 2.2 Implement Core Infrastructure
 
@@ -177,7 +177,7 @@ Load these resources as needed during development:
 
 ### Core MCP Documentation (Load First)
 - **MCP Protocol**: Start with sitemap at `https://modelcontextprotocol.io/sitemap.xml`, then fetch specific pages with `.md` suffix
-- [📋 MCP Best Practices](./reference/mcp_best_practices.md) - Universal MCP guidelines including:
+- [📋 MCP Best Practices](./references/mcp_best_practices.md) - Universal MCP guidelines including:
   - Server and tool naming conventions
   - Response format guidelines (JSON vs Markdown)
   - Pagination best practices
@@ -189,14 +189,14 @@ Load these resources as needed during development:
 - **TypeScript SDK**: Download from `https://raw.githubusercontent.com/modelcontextprotocol/typescript-sdk/main/README.md`
 
 ### Language-Specific Implementation Guides (Load During Phase 2)
-- [🐍 Python Implementation Guide](./reference/python_mcp_server.md) - Complete Python/FastMCP guide with:
+- [🐍 Python Implementation Guide](./references/python_mcp_server.md) - Complete Python/FastMCP guide with:
   - Server initialization patterns
   - Pydantic model examples
   - Tool registration with `@mcp.tool`
   - Complete working examples
   - Quality checklist
 
-- [⚡ TypeScript Implementation Guide](./reference/node_mcp_server.md) - Complete TypeScript guide with:
+- [⚡ TypeScript Implementation Guide](./references/node_mcp_server.md) - Complete TypeScript guide with:
   - Project structure
   - Zod schema patterns
   - Tool registration with `server.registerTool`

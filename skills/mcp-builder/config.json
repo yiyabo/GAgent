@@ -17,7 +17,7 @@
     "max_chars": 1200
   },
   "references": [
-    "reference/mcp_best_practices.md"
+    "references/mcp_best_practices.md"
   ],
   "scripts": []
 }
