@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "category": "generic",
+  "scope": "task",
+  "priority": 30,
+  "selection": {
+    "keywords": [
+      "code review",
+      "review my changes",
+      "pre-commit",
+      "before i commit"
+    ],
+    "path_suffixes": [],
+    "tool_hints": []
+  },
+  "injection": {
+    "mode": "summary",
+    "max_chars": 1200
+  },
+  "references": [],
+  "scripts": []
+}
