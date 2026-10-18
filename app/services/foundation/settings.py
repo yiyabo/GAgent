@@ -228,7 +228,7 @@ if _USE_PYDANTIC:
         # window; the newest batches always survive. The free floor bounds the
         # effective size cap by real headroom (see retention.effective_cap_gb),
         # and the two percentages drive the low-water log levels.
-        runtime_archive_keep_days: int = Field(default=30, env="RUNTIME_ARCHIVE_KEEP_DAYS")
+        runtime_archive_keep_days: int = Field(default=90, env="RUNTIME_ARCHIVE_KEEP_DAYS")
         runtime_free_floor_gb: float = Field(default=40.0, env="RUNTIME_FREE_FLOOR_GB")
         runtime_disk_warn_pct: float = Field(default=20.0, env="RUNTIME_DISK_WARN_PCT")
         runtime_disk_error_pct: float = Field(default=10.0, env="RUNTIME_DISK_ERROR_PCT")
@@ -610,9 +610,9 @@ else:
                 "RUNTIME_ARCHIVE_BEFORE_DELETE", "1"
             ).strip().lower() in {"1", "true", "yes", "on"}
             try:
-                self.runtime_archive_keep_days = int(os.getenv("RUNTIME_ARCHIVE_KEEP_DAYS", "30"))
+                self.runtime_archive_keep_days = int(os.getenv("RUNTIME_ARCHIVE_KEEP_DAYS", "90"))
             except Exception:
-                self.runtime_archive_keep_days = 30
+                self.runtime_archive_keep_days = 90
             try:
                 self.runtime_free_floor_gb = float(os.getenv("RUNTIME_FREE_FLOOR_GB", "40"))
             except Exception:

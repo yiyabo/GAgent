@@ -661,7 +661,7 @@ def run_retention(
     retention_days: int = 60,
     max_gb: float = 300.0,
     archive_before_delete: bool = True,
-    archive_keep_days: int = 30,
+    archive_keep_days: int = 90,
     archive_keep_min: int = 2,
     free_floor_gb: float = 40.0,
     disk_warn_pct: float = 20.0,
