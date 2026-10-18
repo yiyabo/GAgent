@@ -75,7 +75,43 @@ async def test_caller_cannot_choose_server_side_arguments(monkeypatch):
     monkeypatch.setattr(tool, "handler", spy)
     async with Client(server) as client:
         await client.call_tool("sequence_fetch", {"accession": "NC_001416.1", "output_name": "x", "session_id": "s"})
-    assert seen == {"accession": "NC_001416.1"}
+    assert seen == {"accession": "NC_001416.1", "persist": False}
+
+
+async def test_caller_cannot_turn_persistence_back_on(monkeypatch):
+    seen = {}
+
+    async def spy(**kwargs):
+        seen.update(kwargs)
+        return {"success": True}
+
+    server = mcp_server.build_server()
+    tool = next(t for t in get_tool_registry().list_tools() if t.name == "sequence_fetch")
+    monkeypatch.setattr(tool, "handler", spy)
+    async with Client(server) as client:
+        await client.call_tool("sequence_fetch", {"accession": "NC_001416.1", "persist": True})
+    assert seen["persist"] is False
+
+
+async def test_sequence_fetch_over_mcp_writes_nothing(monkeypatch, tmp_path):
+    from tool_box.tools_impl import sequence_fetch as sf
+
+    def must_not_resolve(_sid):
+        raise AssertionError("output directory must not be resolved when persist=False")
+
+    async def fake_ncbi(_client, _accessions, *, database, timeout_sec):
+        return ">NC_001416.1\nACGT\n"
+
+    monkeypatch.setattr(sf, "_resolve_output_dir", must_not_resolve)
+    monkeypatch.setattr(sf, "_fetch_ncbi_fasta", fake_ncbi)
+    monkeypatch.chdir(tmp_path)
+    server = mcp_server.build_server()
+    async with Client(server) as client:
+        result = await client.call_tool("sequence_fetch", {"accession": "NC_001416.1"})
+    assert not result.is_error
+    assert ">NC_001416.1" in result.content[0].text
+    assert "output_file" not in result.content[0].text
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_oversized_result_is_truncated():

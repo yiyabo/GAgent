@@ -250,3 +250,62 @@ def test_sequence_fetch_route_passthrough(
     assert captured["name"] == "sequence_fetch"
     assert captured["kwargs"]["accession"] == "NC_001416.1"
     assert captured["kwargs"]["session_id"] == "session_demo"
+
+
+def test_sequence_fetch_persist_false_returns_fasta_without_writing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _must_not_resolve(_sid: Any) -> Path:
+        raise AssertionError("output directory must not be resolved when persist=False")
+
+    monkeypatch.setattr(sequence_fetch_module, "_resolve_output_dir", _must_not_resolve)
+
+    async def _fake_ncbi(
+        _client: Any,
+        _accessions: Sequence[str],
+        *,
+        database: str,
+        timeout_sec: float,
+    ) -> str:
+        _ = (database, timeout_sec)
+        return ">NC_001416.1\nACGTACGT\n"
+
+    monkeypatch.setattr(sequence_fetch_module, "_fetch_ncbi_fasta", _fake_ncbi)
+
+    result = asyncio.run(
+        sequence_fetch_module.sequence_fetch_handler(accession="NC_001416.1", persist=False)
+    )
+
+    assert result["success"] is True
+    assert result["fasta"].startswith(">NC_001416.1")
+    assert result["record_count"] == 1
+    assert "output_file" not in result
+    assert "output_file_rel" not in result
+
+
+def test_sequence_fetch_default_still_persists_and_omits_inline_fasta(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(sequence_fetch_module, "_resolve_output_dir", lambda _sid: tmp_path)
+
+    async def _fake_ncbi(
+        _client: Any,
+        _accessions: Sequence[str],
+        *,
+        database: str,
+        timeout_sec: float,
+    ) -> str:
+        _ = (database, timeout_sec)
+        return ">NC_001416.1\nACGT\n"
+
+    monkeypatch.setattr(sequence_fetch_module, "_fetch_ncbi_fasta", _fake_ncbi)
+
+    result = asyncio.run(sequence_fetch_module.sequence_fetch_handler(accession="NC_001416.1"))
+
+    assert Path(result["output_file"]).exists()
+    assert "fasta" not in result
+
+
+def test_sequence_fetch_tool_schema_does_not_advertise_persist() -> None:
+    assert "persist" not in sequence_fetch_module.sequence_fetch_tool["parameters_schema"]["properties"]

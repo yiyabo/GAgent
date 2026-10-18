@@ -44,7 +44,11 @@ SERVER_NAME = "gagent-toolbox"
 EXPOSED_TOOLS = frozenset({"sequence_fetch", "load_skill"})
 
 # Arguments that name server-side state; a remote caller must not choose them.
-_HIDDEN_ARGUMENTS = frozenset({"session_id", "tool_context", "output_name"})
+_HIDDEN_ARGUMENTS = frozenset({"session_id", "tool_context", "output_name", "persist"})
+
+# Arguments the server fixes for every call, whatever the caller sends. A caller
+# over MCP gets results inline and never causes a write on this machine.
+_FORCED_ARGUMENTS: Dict[str, Dict[str, Any]] = {"sequence_fetch": {"persist": False}}
 
 MAX_RESULT_CHARS = 30_000
 
@@ -99,6 +103,7 @@ async def _call_tool(ctx: ServerRequestContext, params: CallToolRequestParams) -
     if tool is None:
         return CallToolResult(content=[TextContent(type="text", text=f"Unknown tool: {params.name}")], is_error=True)
     arguments = {k: v for k, v in (params.arguments or {}).items() if k not in _HIDDEN_ARGUMENTS}
+    arguments.update(_FORCED_ARGUMENTS.get(params.name, {}))
     try:
         result = await tool.handler(**prepare_handler_kwargs(tool.handler, arguments))
     except Exception as exc:  # the protocol needs an error result, not a crashed server
