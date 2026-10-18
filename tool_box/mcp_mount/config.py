@@ -16,6 +16,14 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$")
 TOOL_PREFIX = "mcp__"
 
+HOST_RE = re.compile(r"^(\*\.)?[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$")
+IMAGE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:/@-]{0,199}$")
+MEMORY_RE = re.compile(r"^[1-9][0-9]{0,5}[kmg]$")
+
+DEFAULT_CONTAINER_MEMORY = "512m"
+DEFAULT_CONTAINER_CPUS = "1"
+DEFAULT_CONTAINER_PIDS = 128
+
 DEFAULT_TIMEOUT_SEC = 60.0
 MAX_TIMEOUT_SEC = 600.0
 DEFAULT_MAX_RESULT_CHARS = 20_000
@@ -24,6 +32,22 @@ MAX_RESULT_CHARS_CAP = 200_000
 
 class MountConfigError(ValueError):
     """The mount file is unusable as a whole (unreadable or not a JSON object)."""
+
+
+@dataclass(frozen=True)
+class ContainerSpec:
+    """Run a stdio server inside a hardened sibling container instead of on the host.
+
+    ``egress`` lists the HTTPS hosts the server may reach (``*.example.org``
+    allowed). Empty means no outbound access at all. The container never gets
+    host mounts, and its environment is exactly ``MountSpec.env``.
+    """
+
+    image: str
+    egress: Tuple[str, ...] = ()
+    memory: str = DEFAULT_CONTAINER_MEMORY
+    cpus: str = DEFAULT_CONTAINER_CPUS
+    pids_limit: int = DEFAULT_CONTAINER_PIDS
 
 
 @dataclass(frozen=True)
@@ -42,6 +66,14 @@ class MountSpec:
     timeout_sec: float = DEFAULT_TIMEOUT_SEC
     max_result_chars: int = DEFAULT_MAX_RESULT_CHARS
     enabled: bool = True
+    container: Optional[ContainerSpec] = None
+
+    @property
+    def isolation(self) -> str:
+        """Where the third-party code runs: ``container``, ``host`` or ``remote``."""
+        if self.transport == "http":
+            return "remote"
+        return "container" if self.container is not None else "host"
 
 
 def tool_name(server: str, tool: str) -> str:
@@ -65,6 +97,37 @@ def _clamp(value: Any, default: float, low: float, high: float, field_name: str)
     if not low <= float(value) <= high:
         raise ValueError(f"{field_name} must be between {low:g} and {high:g}")
     return float(value)
+
+
+def parse_container(raw: Any) -> ContainerSpec:
+    if not isinstance(raw, dict):
+        raise ValueError("container must be an object")
+    unknown = set(raw) - {"image", "egress", "memory", "cpus", "pids_limit"}
+    if unknown:
+        raise ValueError(f"container has unknown field(s): {', '.join(sorted(unknown))}")
+    image = raw.get("image")
+    if not isinstance(image, str) or not IMAGE_RE.match(image):
+        raise ValueError("container.image must be an image reference")
+    if image.endswith(":latest") or (":" not in image.rsplit("/", 1)[-1] and "@" not in image):
+        raise ValueError("container.image must be pinned to a tag or digest, not 'latest'")
+    egress = []
+    for host in _str_list(raw.get("egress"), "container.egress"):
+        host = host.strip().lower()
+        if not HOST_RE.match(host):
+            raise ValueError(f"container.egress entry {host!r} must be a DNS name such as 'rest.uniprot.org' or '*.example.org'")
+        egress.append(host)
+    memory = raw.get("memory", DEFAULT_CONTAINER_MEMORY)
+    if not isinstance(memory, str) or not MEMORY_RE.match(memory.lower()):
+        raise ValueError("container.memory must look like '512m' or '2g'")
+    cpus = _clamp(raw.get("cpus"), float(DEFAULT_CONTAINER_CPUS), 0.1, 4.0, "container.cpus")
+    pids = int(_clamp(raw.get("pids_limit"), float(DEFAULT_CONTAINER_PIDS), 16.0, 512.0, "container.pids_limit"))
+    return ContainerSpec(
+        image=image,
+        egress=tuple(dict.fromkeys(egress)),
+        memory=memory.lower(),
+        cpus=f"{cpus:g}",
+        pids_limit=pids,
+    )
 
 
 def parse_entry(name: str, raw: Any) -> MountSpec:
@@ -91,7 +154,11 @@ def parse_entry(name: str, raw: Any) -> MountSpec:
             raise ValueError("stdio mounts need a non-empty 'command'")
         if url or token_env:
             raise ValueError("'url' and 'bearer_token_env' apply to http mounts only")
+        if raw.get("container") is not None and raw.get("cwd"):
+            raise ValueError("'cwd' is a host path and cannot be combined with 'container'")
     else:
+        if raw.get("container") is not None:
+            raise ValueError("'container' applies to stdio mounts only")
         if not isinstance(url, str) or not re.match(r"^https?://", url):
             raise ValueError("http mounts need an http(s) 'url'")
         if command or raw.get("args") or env:
@@ -114,6 +181,7 @@ def parse_entry(name: str, raw: Any) -> MountSpec:
             _clamp(raw.get("max_result_chars"), DEFAULT_MAX_RESULT_CHARS, 200, MAX_RESULT_CHARS_CAP, "max_result_chars")
         ),
         enabled=bool(raw.get("enabled", True)),
+        container=parse_container(raw["container"]) if raw.get("container") is not None else None,
     )
 
 
