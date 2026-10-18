@@ -258,6 +258,18 @@ async def lifespan(_fastapi_app: FastAPI):
     except Exception as e:
         logging.getLogger("app.main").warning("Failed to start conversation quality runner: %s", e)
 
+    # External MCP servers (opt-in via MCP_MOUNTS_FILE): never blocks or fails startup.
+    try:
+        from tool_box.mcp_mount import get_mount_manager
+
+        # `os` is rebound by a function-local import further down in this
+        # lifespan, so `os.getenv` here would raise UnboundLocalError.
+        from os import environ as _environ
+
+        await get_mount_manager().load(_environ.get("MCP_MOUNTS_FILE"))
+    except Exception as e:
+        logging.getLogger("app.main").warning("MCP mounts failed to load: %s", e)
+
     # Consul 服务注册放在 lifespan 末尾：健康端点所属的 app 此时即将就绪，
     # 注册过早会造成「Consul 已能查到但服务还没起完」的窗口。
     # 默认关闭、失败不阻塞启动，详见 app/consul_registration.py
@@ -268,6 +280,12 @@ async def lifespan(_fastapi_app: FastAPI):
     finally:
         # 先摘除 Consul 注册再关下游资源，避免关闭窗口内网关把请求路由到半死实例
         stop_consul_registration()
+        try:
+            from tool_box.mcp_mount import get_mount_manager
+
+            await get_mount_manager().shutdown()
+        except Exception as e:
+            logging.getLogger("app.main").warning("MCP mounts failed to shut down: %s", e)
         chat_run_sweeper_stop.set()
         chat_run_sweeper_task.cancel()
         try:

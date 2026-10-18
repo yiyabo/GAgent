@@ -345,6 +345,19 @@ EXECUTOR_AVAILABLE_TOOLS: List[str] = [
 ]
 
 
+def _mounted_schema(name: str) -> Optional[Dict[str, Any]]:
+    """Schema of a tool mounted from an external MCP server, if ``name`` is one.
+
+    Mounted tools come and go at runtime, so they are never cached in the static
+    registry above (which would also change the golden master).
+    """
+    if not name.startswith("mcp__"):
+        return None
+    from tool_box.mcp_mount import get_mount_manager
+
+    return get_mount_manager().schema_for(name)
+
+
 def build_tool_schemas(available_tools: List[str]) -> List[Dict[str, Any]]:
     """Build the tools payload for native tool calling from available tool names."""
     registry = _get_tool_registry()
@@ -365,7 +378,7 @@ def build_tool_schemas(available_tools: List[str]) -> List[Dict[str, Any]]:
         names.append("delegate_task")
     schemas = []
     for name in names:
-        schema = registry.get(name)
+        schema = registry.get(name) or _mounted_schema(name)
         if schema is not None:
             schemas.append(schema)
     schemas.append(SUBMIT_FINAL_ANSWER_SCHEMA)

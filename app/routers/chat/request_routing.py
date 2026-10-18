@@ -1092,6 +1092,10 @@ def get_all_tools() -> List[str]:
         # Default off (2026-09-27): delegated-coding harness is opt-in only;
         # execute_code owns one-script coding, delegate_task owns goals.
         tools.append("code_executor")
+    # Tools mounted from external MCP servers (empty unless MCP_MOUNTS_FILE is set).
+    from tool_box.mcp_mount import get_mount_manager
+
+    tools.extend(n for n in get_mount_manager().tool_names() if n not in tools)
     return tools
 
 
