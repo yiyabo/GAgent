@@ -78,7 +78,14 @@ class MountConnection:
     async def _run(self) -> None:
         http_client = None
         try:
-            transport = self._transport if self._transport is not None else _transport_for(self.spec)
+            if self._transport is not None:
+                transport = self._transport
+            elif self.spec.container is not None:
+                from .container import container_transport
+
+                transport = container_transport(self.spec)
+            else:
+                transport = _transport_for(self.spec)
             http_client = _http_client(self.spec) if self.spec.transport == "http" else None
             if http_client is not None:
                 from mcp.client.streamable_http import streamable_http_client

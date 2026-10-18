@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Mapping, Optional, Tuple
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$")
 TOOL_PREFIX = "mcp__"
 
-HOST_RE = re.compile(r"^(\*\.)?[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$")
+HOST_RE = re.compile(r"^(\*\.)?([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}$")  # DNS names only: no IP literals, any spelling
 IMAGE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:/@-]{0,199}$")
 MEMORY_RE = re.compile(r"^[1-9][0-9]{0,5}[kmg]$")
 
@@ -39,12 +39,15 @@ class ContainerSpec:
     """Run a stdio server inside a hardened sibling container instead of on the host.
 
     ``egress`` lists the HTTPS hosts the server may reach (``*.example.org``
-    allowed). Empty means no outbound access at all. The container never gets
+    allowed). Empty and not ``public_web`` means no outbound access. The container never gets
     host mounts, and its environment is exactly ``MountSpec.env``.
     """
 
     image: str
     egress: Tuple[str, ...] = ()
+    # Any globally routable host on :443 (for web fetchers). Private, loopback and
+    # link-local targets stay refused either way.
+    public_web: bool = False
     memory: str = DEFAULT_CONTAINER_MEMORY
     cpus: str = DEFAULT_CONTAINER_CPUS
     pids_limit: int = DEFAULT_CONTAINER_PIDS
@@ -102,7 +105,7 @@ def _clamp(value: Any, default: float, low: float, high: float, field_name: str)
 def parse_container(raw: Any) -> ContainerSpec:
     if not isinstance(raw, dict):
         raise ValueError("container must be an object")
-    unknown = set(raw) - {"image", "egress", "memory", "cpus", "pids_limit"}
+    unknown = set(raw) - {"image", "egress", "public_web", "memory", "cpus", "pids_limit"}
     if unknown:
         raise ValueError(f"container has unknown field(s): {', '.join(sorted(unknown))}")
     image = raw.get("image")
@@ -116,6 +119,11 @@ def parse_container(raw: Any) -> ContainerSpec:
         if not HOST_RE.match(host):
             raise ValueError(f"container.egress entry {host!r} must be a DNS name such as 'rest.uniprot.org' or '*.example.org'")
         egress.append(host)
+    public_web = raw.get("public_web", False)
+    if not isinstance(public_web, bool):
+        raise ValueError("container.public_web must be true or false")
+    if public_web and egress:
+        raise ValueError("container.public_web and container.egress are mutually exclusive")
     memory = raw.get("memory", DEFAULT_CONTAINER_MEMORY)
     if not isinstance(memory, str) or not MEMORY_RE.match(memory.lower()):
         raise ValueError("container.memory must look like '512m' or '2g'")
@@ -124,6 +132,7 @@ def parse_container(raw: Any) -> ContainerSpec:
     return ContainerSpec(
         image=image,
         egress=tuple(dict.fromkeys(egress)),
+        public_web=public_web,
         memory=memory.lower(),
         cpus=f"{cpus:g}",
         pids_limit=pids,
