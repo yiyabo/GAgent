@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "category": "generic",
+  "scope": "task",
+  "priority": 30,
+  "selection": {
+    "keywords": [
+      "test-driven",
+      "red-green",
+      "write a failing test",
+      "tdd"
+    ],
+    "path_suffixes": [],
+    "tool_hints": []
+  },
+  "injection": {
+    "mode": "summary",
+    "max_chars": 1200
+  },
+  "references": [],
+  "scripts": []
+}

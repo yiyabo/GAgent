@@ -8,6 +8,7 @@ import {
   UnorderedListOutlined,
   AppstoreOutlined,
   ExperimentOutlined,
+  ApiOutlined,
 } from '@ant-design/icons';
 import { useSystemStore } from '@store/system';
 import { useLayoutStore } from '@store/layout';
@@ -76,6 +77,17 @@ const AppHeader: React.FC = () => {
             ], onClick: ({ key }) => setWorkspaceMode(key as 'plan' | 'classic') }}>
               <Button type="text" icon={<AppstoreOutlined />} aria-label="切换界面布局">布局</Button>
             </Dropdown>}
+            <Tooltip title="扩展：MCP 服务器与技能">
+              <Button
+                type="text"
+                icon={<ApiOutlined />}
+                aria-label="扩展"
+                style={{ color: location.pathname.startsWith('/extensions') ? 'var(--text-primary)' : 'var(--text-secondary)' }}
+                onClick={() => navigate('/extensions')}
+              >
+                扩展
+              </Button>
+            </Tooltip>
             <Text className="workspace-account-email" style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
               {user?.email || 'anonymous'}
             </Text>
