@@ -39,9 +39,16 @@ import logging
 import os
 import re
 import sys
-from typing import List, Pattern, Tuple
+from typing import Dict, List, Optional, Pattern, Tuple
 
 import httpx
+
+from app.ops.docker_policy import (
+    evaluate_container_create,
+    evaluate_container_operation,
+    evaluate_containers_list,
+    load_policy_from_env,
+)
 
 logger = logging.getLogger("app.ops.docker_proxy")
 
@@ -58,6 +65,16 @@ _NAME = r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,200}"
 # Strip the prefix for MATCHING only; the request is forwarded verbatim, since
 # the daemon accepts versioned paths.
 _VERSION_PREFIX = re.compile(r"^/v\d+(?:\.\d+)?")
+
+# Payload policy (app/ops/docker_policy.py): the allowlist above decides WHICH
+# endpoints are reachable; the policy decides WHICH containers may exist and
+# which of them these calls may touch. Report-only until
+# DOCKER_PROXY_POLICY_ENFORCE=1 (LOCAL_INFRA §164).
+_POLICY = load_policy_from_env()
+_CREATE_PATH = re.compile(r"^/containers/create$")
+_LIST_PATH = re.compile(r"^/containers/json$")
+_CONTAINER_OP_PATH = re.compile(rf"^/containers/({_ID})/(start|stop|kill|wait)$")
+_CONTAINER_DELETE_PATH = re.compile(rf"^/containers/({_ID})$")
 
 # (method, compiled path regex) — everything not listed is refused.
 _ALLOW: List[Tuple[str, Pattern[str]]] = [
@@ -104,6 +121,39 @@ def _client() -> httpx.AsyncClient:
     )
 
 
+async def _inspect_container(container_id: str) -> Optional[Dict[str, object]]:
+    """Container inspect for the lifecycle policy; None when the daemon can't say."""
+    try:
+        async with _client() as client:
+            response = await client.get(f"/containers/{container_id}/json")
+        if response.status_code != 200:
+            return None
+        payload = response.json()
+        return payload if isinstance(payload, dict) else None
+    except Exception as exc:  # transport/parse failures are not policy questions
+        logger.warning("docker_proxy: inspect failed for %s: %s", container_id, type(exc).__name__)
+        return None
+
+
+async def _policy_decision(method: str, path: str, body: bytes, query: bytes):
+    """The payload policy for this request; None means no policy applies."""
+    normalized = _strip_version(path)
+    if method == "POST" and _CREATE_PATH.match(normalized):
+        return evaluate_container_create(body, _POLICY)
+    if method == "GET" and _LIST_PATH.match(normalized):
+        return evaluate_containers_list(query, _POLICY)
+    operation = _CONTAINER_OP_PATH.match(normalized)
+    if operation:
+        inspect = await _inspect_container(operation.group(1))
+        return evaluate_container_operation(operation.group(2), inspect, _POLICY)
+    if method == "DELETE":
+        removal = _CONTAINER_DELETE_PATH.match(normalized)
+        if removal:
+            inspect = await _inspect_container(removal.group(1))
+            return evaluate_container_operation("delete", inspect, _POLICY)
+    return None
+
+
 async def app(scope, receive, send) -> None:
     """Pure-ASGI app (no framework): forward allowlisted requests to the daemon."""
     if scope["type"] != "http":
@@ -127,6 +177,13 @@ async def app(scope, receive, send) -> None:
         body += message.get("body", b"")
         if not message.get("more_body", False):
             break
+
+    decision = await _policy_decision(method, path, body, query)
+    if decision is not None and not decision.allowed:
+        logger.warning("docker_proxy: policy would-deny (%s) %s %s", decision.reason, method, path)
+        if _POLICY.enforce:
+            await _send_json(send, 403, {"message": f"Forbidden by docker_proxy policy: {decision.reason}"})
+            return
 
     headers = {
         k.decode("latin-1"): v.decode("latin-1")

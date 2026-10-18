@@ -101,6 +101,16 @@ services:
       DOCKER_PROXY_SOCKET: /var/run/docker.sock
       DOCKER_PROXY_PORT: "2375"
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      # Payload-policy inputs (app/ops/docker_policy.py). The proxy has no
+      # env_file on purpose, so every value it needs is listed explicitly here;
+      # never the whole .env, which carries provider keys.
+      HOST_RUNTIME_ROOT: ${GAGENT_RUNTIME_DIR}
+      GAGENT_REFDATA_DIR: ${GAGENT_REFDATA_DIR:-/data}
+      SANDBOX_PYTHON_IMAGE: ${SANDBOX_PYTHON_IMAGE:-gagent-sandbox-python:latest}
+      SANDBOX_QWEN_IMAGE: ${SANDBOX_QWEN_IMAGE:-gagent-sandbox-qwen:latest}
+      DOCKER_PROXY_POLICY_ENFORCE: ${DOCKER_PROXY_POLICY_ENFORCE:-0}
+      DOCKER_PROXY_ALLOWED_RO_ROOTS: ${DOCKER_PROXY_ALLOWED_RO_ROOTS:-}
+      DOCKER_PROXY_ALLOWED_IMAGE_PREFIXES: ${DOCKER_PROXY_ALLOWED_IMAGE_PREFIXES:-}
     volumes:
       # The daemon socket is mounted into THIS container only, never the app's.
       - /var/run/docker.sock:/var/run/docker.sock:ro
