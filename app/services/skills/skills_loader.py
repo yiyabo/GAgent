@@ -23,6 +23,17 @@ _SKILL_RELOAD_TTL_ENV = "SKILL_RELOAD_TTL_SECONDS"
 _DEFAULT_RELOAD_TTL_SECONDS = 5.0
 
 
+def _admin_disabled_skills() -> Set[str]:
+    """Skills an admin switched off through the extensions page (persisted outside the image)."""
+    try:
+        from app.services.extensions.state import disabled_skill_names
+
+        return disabled_skill_names()
+    except Exception as exc:  # the loader must keep working without the extensions layer
+        logger.debug("admin skill overlay unavailable: %s", exc)
+        return set()
+
+
 @dataclass(frozen=True)
 class SkillSelectionConfig:
     keywords: List[str] = field(default_factory=list)
@@ -178,6 +189,7 @@ class SkillsLoader:
         # within one root, directory-name order decides. Shadowed skills are
         # skipped with an info log instead of a hard validation error.
         discovered: Dict[str, str] = {}
+        admin_disabled = _admin_disabled_skills()
         for root_tag, root in self._scan_roots():
             if not root.exists() or not root.is_dir():
                 if root_tag == "runtime":
@@ -234,6 +246,8 @@ class SkillsLoader:
 
                 enabled_raw = config_payload.get("enabled", True)
                 enabled = enabled_raw if isinstance(enabled_raw, bool) else bool(enabled_raw)
+                if skill_name in admin_disabled:
+                    enabled = False
                 if not enabled:
                     # A disabled project entry still wins the name so a runtime
                     # same-name skill stays shadowed (project root wins).
@@ -307,6 +321,10 @@ class SkillsLoader:
                     continue
                 fingerprints[f"{root_tag}:{item.name}"] = self._skill_dir_fingerprint(item)
         return fingerprints
+
+    def rescan(self) -> None:
+        """Re-read the skill directories now (used after an admin toggles a skill)."""
+        self._scan_skills()
 
     def reload_if_changed(self) -> bool:
         """Re-scan only when a skill dir fingerprint changed (L2 hot reload)."""

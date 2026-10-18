@@ -128,6 +128,8 @@ class _DialBack:
                 return
             self._conn.set_result((reader, writer))
             keep = True
+            if self._server is not None:  # one container, one connection: stop listening at once
+                self._server.close()
         except (asyncio.TimeoutError, ConnectionError, asyncio.LimitOverrunError):
             return
         finally:

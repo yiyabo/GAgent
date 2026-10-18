@@ -267,6 +267,10 @@ async def lifespan(_fastapi_app: FastAPI):
         from os import environ as _environ
 
         await get_mount_manager().load(_environ.get("MCP_MOUNTS_FILE"))
+        # Catalog servers an admin left switched on (EXTENSIONS_MCP_ENABLED=1).
+        from .services.extensions.service import restore_enabled_servers
+
+        await restore_enabled_servers()
     except Exception as e:
         logging.getLogger("app.main").warning("MCP mounts failed to load: %s", e)
 
@@ -284,6 +288,9 @@ async def lifespan(_fastapi_app: FastAPI):
             from tool_box.mcp_mount import get_mount_manager
 
             await get_mount_manager().shutdown()
+            from tool_box.mcp_mount.egress import get_egress_proxy
+
+            await get_egress_proxy().stop()
         except Exception as e:
             logging.getLogger("app.main").warning("MCP mounts failed to shut down: %s", e)
         chat_run_sweeper_stop.set()

@@ -35,6 +35,7 @@ import json
 import logging
 import os
 import posixpath
+from pathlib import Path
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 from urllib.parse import parse_qs
@@ -75,6 +76,11 @@ DEFAULT_RUNTIME_IMAGES: Tuple[str, ...] = (
     "gagent-sandbox-qwen",
     "gagent-python-runtime",
 )
+
+#: Catalog MCP servers (app/services/extensions/catalog.json) run from images the
+#: operator builds locally from deploy/mcp/. They are allowlisted by exact tag, so
+#: a new version needs an explicit catalog change.
+DEFAULT_EXTENSIONS_CATALOG = str(Path(__file__).resolve().parents[1] / "services" / "extensions" / "catalog.json")
 
 DEFAULT_BIO_TOOLS_CONFIG = "/app/tool_box/bio_tools/tools_config.json"
 
@@ -121,6 +127,21 @@ def normalize_image(ref: str) -> str:
     if ":" not in last:
         text = f"{text}:latest"
     return text
+
+
+def load_catalog_images(catalog_path: str) -> Tuple[str, ...]:
+    """Container images of the vetted MCP catalog; unreadable file means none."""
+    try:
+        with open(catalog_path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError):
+        return ()
+    images = []
+    for entry in (data.get("servers") or {}).values() if isinstance(data, dict) else []:
+        container = ((entry or {}).get("mount") or {}).get("container") or {}
+        if isinstance(container.get("image"), str):
+            images.append(container["image"])
+    return tuple(images)
 
 
 def load_bio_tool_images(config_path: str) -> Tuple[str, ...]:
@@ -170,6 +191,9 @@ def load_policy_from_env() -> ProxyPolicy:
         images.add(normalize_image(value))
     config_path = str(os.getenv("DOCKER_PROXY_BIO_TOOLS_CONFIG") or DEFAULT_BIO_TOOLS_CONFIG).strip()
     for value in load_bio_tool_images(config_path):
+        images.add(normalize_image(value))
+    catalog_path = str(os.getenv("DOCKER_PROXY_EXTENSIONS_CATALOG") or DEFAULT_EXTENSIONS_CATALOG).strip()
+    for value in load_catalog_images(catalog_path):
         images.add(normalize_image(value))
 
     requested = str(os.getenv("DOCKER_PROXY_POLICY_ENFORCE", "0")).strip().lower() in {
@@ -399,6 +423,7 @@ __all__ = [
     "evaluate_containers_list",
     "image_allowed",
     "load_bio_tool_images",
+    "load_catalog_images",
     "load_policy_from_env",
     "normalize_image",
 ]

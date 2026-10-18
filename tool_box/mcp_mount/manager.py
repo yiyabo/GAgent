@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from typing import Any, Awaitable, Callable, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Mapping, Optional
 
 from ..tools import get_tool_registry, register_tool, unregister_tool
 from .config import MountConfigError, MountSpec, load_mounts, tool_name
@@ -44,6 +44,10 @@ class MountManager:
         self._schemas: Dict[str, Dict[str, Any]] = {}  # registered name -> function schema
         self._rejected: Dict[str, str] = {}
         self._skipped: Dict[str, str] = {}
+        # Servers enabled through the extensions catalog. They are mounted in
+        # addition to the hand-written file and win a name clash with it.
+        self._managed: Dict[str, MountSpec] = {}
+        self._path: Optional[str] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._lock = asyncio.Lock()
 
@@ -62,6 +66,8 @@ class MountManager:
                 {
                     "server": name,
                     "transport": spec.transport,
+                    "isolation": spec.isolation,
+                    "managed": name in self._managed,
                     "connected": bool(conn and conn.connected),
                     "tools": list(self._tools.get(name, [])),
                     "error": conn.error if conn else None,
@@ -72,26 +78,52 @@ class MountManager:
         return rows
 
     # ----------------------------------------------------------------- lifecycle
-    async def load(self, path: Optional[str]) -> List[Dict[str, Any]]:
-        """Apply the mount file: add new servers, drop removed ones, restart changed ones."""
+    async def load(
+        self, path: Optional[str], managed: Optional[Mapping[str, MountSpec]] = None
+    ) -> List[Dict[str, Any]]:
+        """Apply the mount file (plus managed servers): add new, drop removed, restart changed."""
         async with self._lock:
-            self._loop = asyncio.get_running_loop()
-            try:
-                specs, self._rejected = load_mounts(path)
-            except MountConfigError as exc:
-                # A broken file must not silently unmount a working setup, nor stop startup.
-                logger.error("MCP mounts: %s; keeping the current mounts", exc)
-                return self.status()
-            wanted = {s.name: s for s in specs if s.enabled}
+            return await self._apply(path, managed)
 
-            for name in list(self._specs):
-                conn = self._connections.get(name)
-                if name not in wanted or wanted[name] != self._specs[name] or not (conn and conn.connected):
-                    await self._drop(name)
-            for name, spec in wanted.items():
-                if name not in self._specs:
-                    await self._attach(spec)
-            return self.status()
+    async def set_managed(self, name: str, spec: Optional[MountSpec]) -> List[Dict[str, Any]]:
+        """Enable (``spec``) or disable (``None``) one catalog server without touching the others."""
+        async with self._lock:
+            managed = dict(self._managed)
+            if spec is None:
+                managed.pop(name, None)
+            else:
+                managed[name] = spec
+            return await self._apply(self._path, managed)
+
+    def connection_error(self, name: str) -> Optional[str]:
+        conn = self._connections.get(name)
+        return conn.error if conn is not None else None
+
+    async def _apply(self, path: Optional[str], managed: Optional[Mapping[str, MountSpec]]) -> List[Dict[str, Any]]:
+        self._loop = asyncio.get_running_loop()
+        if managed is not None:
+            self._managed = dict(managed)
+        self._path = path
+        try:
+            specs, self._rejected = load_mounts(path)
+            wanted = {s.name: s for s in specs if s.enabled}
+        except MountConfigError as exc:
+            # A broken file must not silently unmount a working setup, nor stop startup.
+            logger.error("MCP mounts: %s; keeping the current file-defined mounts", exc)
+            wanted = {n: sp for n, sp in self._specs.items() if n not in self._managed}
+        for name, spec in self._managed.items():
+            if name in wanted:
+                self._rejected[name] = "name is reserved by the extensions catalog"
+            wanted[name] = spec
+
+        for name in list(self._specs):
+            conn = self._connections.get(name)
+            if name not in wanted or wanted[name] != self._specs[name] or not (conn and conn.connected):
+                await self._drop(name)
+        for name, spec in wanted.items():
+            if name not in self._specs:
+                await self._attach(spec)
+        return self.status()
 
     async def shutdown(self) -> None:
         async with self._lock:
