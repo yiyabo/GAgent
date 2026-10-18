@@ -97,7 +97,7 @@ export const SeverityIcon: React.FC<{ severity: SkillFindingSeverity | string }>
   if (severity === 'warn') {
     return <ExclamationCircleOutlined style={{ color: '#faad14' }} aria-label="严重程度：警告" role="img" />;
   }
-  return <InfoCircleOutlined style={{ color: '#1677ff' }} aria-label="严重程度：提示" role="img" />;
+  return <InfoCircleOutlined style={{ color: 'var(--color-action)' }} aria-label="严重程度：提示" role="img" />;
 };
 
 /** Only http(s) links are rendered as anchors; anything else stays plain text. */

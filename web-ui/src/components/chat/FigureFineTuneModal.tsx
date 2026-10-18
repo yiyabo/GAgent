@@ -180,7 +180,7 @@ export const FigureFineTuneModal: React.FC<FigureFineTuneModalProps> = ({
       onCancel={onClose}
       title={
         <Space>
-          <EditOutlined style={{ color: '#1677ff' }} />
+          <EditOutlined style={{ color: 'var(--color-action)' }} />
           <span>图表定向微调 — {imageAlt || fileName}</span>
         </Space>
       }

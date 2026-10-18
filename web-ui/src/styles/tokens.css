@@ -1,0 +1,172 @@
+/* GAgent design tokens: the single source of truth for colour, type, radius, space.
+ *
+ * Rules
+ *  - New code uses the semantic names (--color-*, --surface-*, --text-*, --status-*).
+ *  - The older names (--primary-color, --bg-primary, ...) are kept as aliases at the bottom so
+ *    existing components keep working; do not add new uses of them.
+ *  - antd reads the same values from src/theme/antdTheme.ts; theme.test.ts fails if the two drift.
+ *  - Dark theme: [data-theme="dark"] redefines the same names. Nothing else should branch on theme.
+ */
+
+:root {
+  color-scheme: light;
+
+  /* brand and action */
+  --color-brand: #122c6f;          /* wordmark, page titles */
+  --color-action: #1a64c8;         /* primary buttons, links, selected, running */
+  --color-action-hover: #1555ad;
+  --color-action-bg: #e8f1fd;
+  --color-action-border: #a9c8f2;
+  --color-on-action: #ffffff;
+
+  /* surfaces */
+  --surface-page: #fafbfd;
+  --surface-sidebar: #f2f5fa;
+  --surface-card: #ffffff;
+  --surface-raised: #ffffff;       /* drawers, modals, popovers */
+  --surface-sunken: #eff3f9;       /* code blocks, user bubble, table header */
+  --surface-hover: #e9eff8;
+  --surface-selected: #e1ebfa;
+  --surface-scrim: rgba(22, 33, 58, 0.36);
+  --surface-log: #0f1a33;          /* terminal-style log blocks stay dark in both themes */
+  --on-log: #cfd8ea;
+
+  /* text (all pass 4.5:1 on --surface-page) */
+  --text-primary: #16213a;
+  --text-secondary: #46526c;
+  --text-tertiary: #56627d;
+  --text-quaternary: #5f6c86;
+  --text-disabled: #8a94aa;
+
+  /* borders */
+  --border-subtle: #e3e8f1;
+  --border-default: #d6ddea;
+  --border-strong: #c3ccdd;
+
+  /* status: fg / bg / border. Always shown with an icon and a label, never colour alone. */
+  --status-success-fg: #2b6e4a; --status-success-bg: #e8f3ec; --status-success-border: #a9d3b8;
+  --status-warning-fg: #8a5a00; --status-warning-bg: #fbf3e0; --status-warning-border: #e6cb8a;
+  --status-error-fg:   #a3322b; --status-error-bg:   #f9e9e7; --status-error-border:   #e7b1ab;
+  --status-info-fg:    #1a64c8; --status-info-bg:    #e8f1fd; --status-info-border:    #a9c8f2;
+  --status-running-fg: #1a64c8; --status-running-bg: #e8f1fd; --status-running-border: #a9c8f2;
+  --status-blocked-fg: #7a3e8c; --status-blocked-bg: #f3e9f6; --status-blocked-border: #cfaedb;
+  --status-skipped-fg: #5c636b; --status-skipped-bg: #f1f3f5; --status-skipped-border: #ced4da;
+  --status-pending-fg: #46526c; --status-pending-bg: #ffffff; --status-pending-border: #d6ddea;
+
+  /* type: Chinese-first stacks. The *Variable families are the self-hosted fonts (see styles/fonts.css). */
+  --font-sans: 'Inter Variable', 'Noto Sans SC Variable', 'PingFang SC', 'Microsoft YaHei', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-serif: 'Source Serif 4 Variable', 'Noto Serif SC Variable', 'Songti SC', Georgia, serif;
+  --font-mono: 'JetBrains Mono Variable', 'SF Mono', ui-monospace, Menlo, Consolas, monospace;
+
+  --fs-caption: 12px;
+  --fs-small: 13px;
+  --fs-body: 15px;
+  --fs-h4: 15px;
+  --fs-h3: 17px;
+  --fs-h2: 20px;
+  --fs-h1: 24px;
+  --lh-body: 1.7;
+  --lh-tight: 1.4;
+  --letter-spacing: 0;
+
+  /* radius: three steps */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-pill: 999px;
+
+  /* space (4px scale) */
+  --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px;
+  --space-5: 20px; --space-6: 24px; --space-8: 32px; --space-10: 40px;
+
+  /* elevation */
+  --shadow-1: 0 1px 2px rgba(22, 33, 58, 0.06);
+  --shadow-2: 0 4px 12px rgba(22, 33, 58, 0.08);
+  --shadow-3: 0 12px 32px rgba(22, 33, 58, 0.12);
+
+  /* motion */
+  --motion-fast: 150ms;
+  --motion-base: 220ms;
+  --ease-out: cubic-bezier(0.2, 0, 0, 1);
+
+  /* layout */
+  --header-height: 48px;
+  --focus-ring: 0 0 0 2px var(--surface-card), 0 0 0 4px var(--color-action);
+
+  /* ---- legacy aliases: existing components read these names ---- */
+  --primary-color: var(--color-action);
+  --primary-hover: var(--color-action-hover);
+  --primary-gradient: var(--color-action);
+  --accent-color: var(--color-action);
+  --success-color: var(--status-success-fg);
+  --success-bg: var(--status-success-bg);
+  --warning-color: var(--status-warning-fg);
+  --warning-bg: var(--status-warning-bg);
+  --error-color: var(--status-error-fg);
+  --error-bg: var(--status-error-bg);
+  --info-color: var(--status-info-fg);
+  --info-bg: var(--status-info-bg);
+  --bg-primary: var(--surface-page);
+  --bg-secondary: var(--surface-card);
+  --bg-tertiary: var(--surface-sunken);
+  --bg-user: var(--surface-sunken);
+  --bg-assistant: var(--surface-page);
+  --border-color: var(--border-subtle);
+  --border-light: var(--border-subtle);
+  --shadow-sm: var(--shadow-1);
+  --shadow-md: var(--shadow-2);
+  --shadow-lg: var(--shadow-3);
+  --radius-xl: var(--radius-lg);
+  --radius-full: var(--radius-pill);
+  --transition-fast: var(--motion-fast) ease;
+  --transition-normal: var(--motion-base) var(--ease-out);
+}
+
+[data-theme='dark'] {
+  color-scheme: dark;
+
+  --color-brand: #cfe0ff;
+  --color-action: #5aa2ff;
+  --color-action-hover: #7ab5ff;
+  --color-action-bg: #12264a;
+  --color-action-border: #2b4c85;
+  --color-on-action: #0a1120;
+
+  --surface-page: #0d1526;
+  --surface-sidebar: #0a1120;
+  --surface-card: #121c32;
+  --surface-raised: #162139;
+  --surface-sunken: #162139;
+  --surface-hover: #16233f;
+  --surface-selected: #1b2c52;
+  --surface-scrim: rgba(3, 7, 16, 0.6);
+  --surface-log: #0a1020;
+  --on-log: #cfd8ea;
+
+  --text-primary: #e6ecf8;
+  --text-secondary: #8fa0c2;
+  --text-tertiary: #8294b8;
+  --text-quaternary: #7d8db0;
+  --text-disabled: #5d6c8c;
+
+  --border-subtle: #1d2a45;
+  --border-default: #273656;
+  --border-strong: #34456b;
+
+  --status-success-fg: #8fd1b3; --status-success-bg: #12302a; --status-success-border: #2c5a4b;
+  --status-warning-fg: #e6c57a; --status-warning-bg: #2e2512; --status-warning-border: #5e4a1d;
+  --status-error-fg:   #f0a39c; --status-error-bg:   #33191a; --status-error-border:   #6b2f2c;
+  --status-info-fg:    #5aa2ff; --status-info-bg:    #12264a; --status-info-border:    #2b4c85;
+  --status-running-fg: #5aa2ff; --status-running-bg: #12264a; --status-running-border: #2b4c85;
+  --status-blocked-fg: #d3a9e6; --status-blocked-bg: #2a1c33; --status-blocked-border: #593a6b;
+  --status-skipped-fg: #9aa5bd; --status-skipped-bg: #1a2338; --status-skipped-border: #33415f;
+  --status-pending-fg: #8fa0c2; --status-pending-bg: #121c32; --status-pending-border: #273656;
+
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-2: 0 4px 12px rgba(0, 0, 0, 0.45);
+  --shadow-3: 0 12px 32px rgba(0, 0, 0, 0.55);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root { --motion-fast: 0ms; --motion-base: 0ms; }
+}

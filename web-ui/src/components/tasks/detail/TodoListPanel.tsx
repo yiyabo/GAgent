@@ -41,7 +41,7 @@ const taskStatusIcon: Record<string, React.ReactNode> = {
   pending: <ClockCircleOutlined style={{ color: '#faad14' }} />,
   failed: <CloseCircleOutlined style={{ color: '#ff4d4f' }} />,
   skipped: <MinusCircleOutlined style={{ color: '#d9d9d9' }} />,
-  running: <ExclamationCircleOutlined style={{ color: '#1890ff' }} />,
+  running: <ExclamationCircleOutlined style={{ color: 'var(--color-action)' }} />,
   blocked: <MinusCircleOutlined style={{ color: '#fa8c16' }} />,
 };
 

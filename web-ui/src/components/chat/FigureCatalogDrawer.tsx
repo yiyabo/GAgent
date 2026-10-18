@@ -138,7 +138,7 @@ export const FigureCatalogDrawer: React.FC<FigureCatalogDrawerProps> = ({
         title={
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <Space>
-              <FileImageOutlined style={{ color: '#1677ff' }} />
+              <FileImageOutlined style={{ color: 'var(--color-action)' }} />
               <span>文档图表全景索引 ({figureList.length})</span>
             </Space>
             <Button size='small' icon={<ReloadOutlined />} onClick={fetchFigures} loading={loading}>

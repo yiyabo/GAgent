@@ -46,7 +46,7 @@
 
 .tree-node-content.task-type-composite {
   background: linear-gradient(90deg, rgba(24, 144, 255, 0.08) 0%, rgba(24, 144, 255, 0.03) 100%);
-  border-left: 3px solid #1890ff;
+  border-left: 3px solid var(--color-action);
 }
 
 .tree-node-content.task-type-atomic {
@@ -72,7 +72,7 @@
   height: 20px;
   margin: 0 8px 0 4px;
   font-size: 10px;
-  color: #1890ff;
+  color: var(--color-action);
   background: rgba(24, 144, 255, 0.1);
   border-radius: 4px;
   cursor: pointer;
@@ -109,7 +109,7 @@
 }
 
 .tree-node-content:hover .node-name {
-  color: #1890ff !important;
+  color: var(--color-action) !important;
 }
 
 .node-id {

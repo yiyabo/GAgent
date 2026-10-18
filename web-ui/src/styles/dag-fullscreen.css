@@ -1,16 +1,16 @@
 /* DAG  - Claude Style */
 
 :root {
-  --dag-bg: #faf9f7;
-  --dag-bg-secondary: #f3f4f6;
-  --dag-text-primary: #1a1a1a;
-  --dag-text-secondary: #666666;
-  --dag-text-muted: #999999;
-  --dag-border: rgba(0, 0, 0, 0.08);
-  --dag-border-hover: rgba(0, 0, 0, 0.15);
-  --dag-accent: #d97706;
-  --dag-accent-light: rgba(217, 119, 6, 0.1);
-  --dag-surface: #ffffff;
+  --dag-bg: var(--surface-page);
+  --dag-bg-secondary: var(--surface-sunken);
+  --dag-text-primary: var(--text-primary);
+  --dag-text-secondary: var(--text-secondary);
+  --dag-text-muted: var(--text-tertiary);
+  --dag-border: var(--border-subtle);
+  --dag-border-hover: var(--border-strong);
+  --dag-accent: var(--color-action);
+  --dag-accent-light: var(--color-action-bg);
+  --dag-surface: var(--surface-card);
   --dag-shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
   --dag-shadow-lg: 0 4px 12px rgba(0, 0, 0, 0.08);
   --dag-radius: 8px;
@@ -287,7 +287,7 @@
 }
 
 .dag-stats-dot.running {
-  background: #3b82f6;
+  background: var(--color-action);
   animation: pulse 2s ease-in-out infinite;
 }
 
@@ -641,7 +641,7 @@
 
 /* 3D status - Claude  */
 .dag-3d-stats .dag-stats-dot.pending {
-  background: #d97706;
+  background: var(--color-action);
 }
 
 .dag-3d-stats .dag-stats-dot.running {
@@ -740,7 +740,7 @@
 }
 
 .dag-task-drawer .ant-drawer-close:hover {
-  color: #1890ff;
+  color: var(--color-action);
   background: rgba(0, 0, 0, 0.04);
 }
 

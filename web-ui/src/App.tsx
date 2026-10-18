@@ -67,7 +67,7 @@ const ProtectedLayout = () => (
     <Layout style={{ minHeight: '100vh' }}>
       <AppHeader />
       <Layout>
-        <Layout.Content style={{ padding: '24px', background: '#f0f2f5' }}>
+        <Layout.Content style={{ padding: '24px', background: 'var(--surface-page)' }}>
           <ErrorBoundary>
             <Outlet />
           </ErrorBoundary>
