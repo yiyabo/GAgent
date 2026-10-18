@@ -9,6 +9,7 @@ import {
   AppstoreOutlined,
   ExperimentOutlined,
   ApiOutlined,
+  MessageOutlined,
 } from '@ant-design/icons';
 import { useSystemStore } from '@store/system';
 import { useLayoutStore } from '@store/layout';
@@ -53,7 +54,7 @@ const AppHeader: React.FC = () => {
   return (
     <>
       <Header className={`app-header ${isChatRoute && workspaceMode === 'plan' ? 'workspace-header' : ''}`}>
-        <div className="app-logo">
+        <div className="app-logo" role="link" aria-label="GAgent 首页" style={{ cursor: 'pointer' }} onClick={() => navigate('/chat')}>
           <ExperimentOutlined className="logo-icon" />
           <span style={{ fontWeight: 650, fontSize: 18, color: 'var(--text-primary)' }}>GAgent</span>
         </div>
@@ -77,6 +78,13 @@ const AppHeader: React.FC = () => {
             ], onClick: ({ key }) => setWorkspaceMode(key as 'plan' | 'classic') }}>
               <Button type="text" icon={<AppstoreOutlined />} aria-label="切换界面布局">布局</Button>
             </Dropdown>}
+            {!isChatRoute && (
+              <Tooltip title="回到聊天">
+                <Button type="text" icon={<MessageOutlined />} aria-label="聊天" style={{ color: 'var(--text-secondary)' }} onClick={() => navigate('/chat')}>
+                  聊天
+                </Button>
+              </Tooltip>
+            )}
             <Tooltip title="扩展：MCP 服务器与技能">
               <Button
                 type="text"
