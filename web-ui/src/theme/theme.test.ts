@@ -347,3 +347,15 @@ describe('stylesheets follow the theme', () => {
     expect(found).toEqual([]);
   });
 });
+
+describe('chat composer', () => {
+  const source = readFileSync(resolve(__dirname, '../components/layout/ChatMainArea.tsx'), 'utf8');
+
+  it('takes its surface from the theme, not a literal colour', () => {
+    // A literal white here made the input a white slab on the dark theme.
+    const box = source.slice(source.indexOf('className="workspace-input-box"'));
+    const style = box.slice(0, box.indexOf('<TextArea'));
+    expect(style).toMatch(/background:\s*'var\(--surface-card\)'/);
+    expect(style).not.toMatch(/#[0-9a-fA-F]{3,8}|rgba?\(|\bwhite\b/);
+  });
+});
