@@ -1492,5 +1492,25 @@
     "skillsFilterAria": "Filter skills",
     "skillsEmpty": "No skills yet",
     "skillsNoMatch": "No skills match the filter"
+  },
+  "landing": {
+    "signIn": "Sign in",
+    "signUp": "Sign up",
+    "heroLine1": "AI-powered phage genome analysis and task orchestration platform",
+    "heroLine2": "Turns natural-language requests into plans, tool calls and streaming chat responses",
+    "getStarted": "Get started",
+    "signUpFree": "Sign up free",
+    "coreTitle": "Core capabilities",
+    "f1Title": "Natural-language interaction",
+    "f1Body": "Describe your analysis needs in plain language and the system breaks them into an executable plan, with no complex commands to write.",
+    "f2Title": "Intelligent task orchestration",
+    "f2Body": "A DAG-based scheduling engine that manages dependencies, parallel execution and result aggregation automatically.",
+    "f3Title": "Phage genome analysis",
+    "f3Body": "Integrates professional tools such as PhageScope for annotation, classification, phylogeny and functional analysis.",
+    "f4Title": "Secure and controlled",
+    "f4Body": "Strict permission isolation and audit trails keep data safe and results traceable.",
+    "ctaTitle": "Ready to get started?",
+    "ctaBody": "Sign up now to try AI-powered phage genome analysis and task orchestration.",
+    "copyright": "© {{year}} Phage-Agent. All rights reserved."
   }
 }

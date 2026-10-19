@@ -18,5 +18,4 @@ export const HARDCODED_BASELINE: Record<string, number> = {
   'components/chat/message/index.tsx': 1,
   'components/layout/artifactPreview.tsx': 1,
   'components/layout/planWorkspace/PlanWorkspace.tsx': 1,
-  'pages/Landing.tsx': 20,
 };

@@ -1492,5 +1492,25 @@
     "skillsFilterAria": "过滤技能",
     "skillsEmpty": "暂无技能",
     "skillsNoMatch": "没有符合过滤条件的技能"
+  },
+  "landing": {
+    "signIn": "登录",
+    "signUp": "注册",
+    "heroLine1": "AI 驱动的噬菌体基因组分析与任务编排平台",
+    "heroLine2": "让自然语言请求自动转化为计划、工具调用与流式对话响应",
+    "getStarted": "开始使用",
+    "signUpFree": "免费注册",
+    "coreTitle": "核心能力",
+    "f1Title": "自然语言交互",
+    "f1Body": "用自然语言描述分析需求，系统将自动拆解为可执行计划，无需编写复杂命令。",
+    "f2Title": "智能任务编排",
+    "f2Body": "基于 DAG 的任务调度引擎，自动管理依赖关系、并行执行与结果汇聚。",
+    "f3Title": "噬菌体基因组分析",
+    "f3Body": "集成 PhageScope 等专业工具，支持注释、分类、系统发育与功能分析。",
+    "f4Title": "安全可控",
+    "f4Body": "严格的权限隔离与审计追踪，确保数据安全与实验结果的可追溯性。",
+    "ctaTitle": "准备好开始了吗？",
+    "ctaBody": "立即注册，体验 AI 驱动的噬菌体基因组分析与任务编排。",
+    "copyright": "© {{year}} Phage-Agent. 保留所有权利。"
   }
 }
