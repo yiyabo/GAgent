@@ -3,7 +3,7 @@
   overflow-y: auto;
   overflow-x: auto;
   padding: 20px;
-  background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+  background: var(--surface-sunken);
   border-radius: 8px;
   font-family: var(--font-mono);
 }
@@ -11,9 +11,9 @@
 .tree-content {
   min-width: fit-content;
   padding: 10px;
-  background: rgba(255, 255, 255, 0.9);
+  background: var(--surface-card);
   border-radius: 6px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  box-shadow: var(--shadow-2);
 }
 
 .tree-node {
@@ -34,28 +34,28 @@
 }
 
 .tree-node-content:hover {
-  background: rgba(24, 144, 255, 0.08);
+  background: var(--surface-hover);
   transform: translateX(4px);
 }
 
 .tree-node-content.task-type-root {
-  background: linear-gradient(90deg, rgba(114, 46, 209, 0.1) 0%, rgba(114, 46, 209, 0.05) 100%);
-  border-left: 4px solid #722ed1;
+  background: var(--status-blocked-bg);
+  border-left: 4px solid var(--status-blocked-fg);
   font-weight: bold;
 }
 
 .tree-node-content.task-type-composite {
-  background: linear-gradient(90deg, rgba(24, 144, 255, 0.08) 0%, rgba(24, 144, 255, 0.03) 100%);
+  background: var(--color-action-bg);
   border-left: 3px solid var(--color-action);
 }
 
 .tree-node-content.task-type-atomic {
-  background: linear-gradient(90deg, rgba(82, 196, 26, 0.06) 0%, rgba(82, 196, 26, 0.02) 100%);
-  border-left: 2px solid #52c41a;
+  background: var(--status-success-bg);
+  border-left: 2px solid var(--status-success-fg);
 }
 
 .tree-connector {
-  color: #8c8c8c;
+  color: var(--text-tertiary);
   font-weight: normal;
   white-space: pre;
   user-select: none;
@@ -73,7 +73,7 @@
   margin: 0 8px 0 4px;
   font-size: 10px;
   color: var(--color-action);
-  background: rgba(24, 144, 255, 0.1);
+  background: var(--color-action-bg);
   border-radius: 4px;
   cursor: pointer;
   transition: all 0.2s ease;
@@ -81,7 +81,7 @@
 }
 
 .tree-collapse-btn:hover {
-  background: rgba(24, 144, 255, 0.2);
+  background: var(--color-action-border);
   transform: scale(1.1);
 }
 
@@ -114,8 +114,8 @@
 
 .node-id {
   font-size: var(--fs-caption);
-  color: #8c8c8c;
-  background: rgba(0, 0, 0, 0.04);
+  color: var(--text-tertiary);
+  background: var(--surface-sunken);
   padding: 2px 6px;
   border-radius: 3px;
   font-family: var(--font-mono);
@@ -141,18 +141,18 @@
 }
 
 .tree-visualization-container::-webkit-scrollbar-track {
-  background: rgba(0, 0, 0, 0.05);
+  background: var(--surface-sunken);
   border-radius: 5px;
 }
 
 .tree-visualization-container::-webkit-scrollbar-thumb {
-  background: rgba(24, 144, 255, 0.3);
+  background: var(--color-action-border);
   border-radius: 5px;
   transition: background 0.2s ease;
 }
 
 .tree-visualization-container::-webkit-scrollbar-thumb:hover {
-  background: rgba(24, 144, 255, 0.5);
+  background: var(--color-action);
 }
 
 /*  */

@@ -714,7 +714,7 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
             overflow: 'hidden',
             background: 'var(--bg-primary)',
             borderLeft: isFocusedPreview ? 'none' : '1px solid var(--border-color)',
-            boxShadow: isFocusedPreview ? 'none' : '-4px 0 16px rgba(0, 0, 0, 0.08)',
+            boxShadow: isFocusedPreview ? 'none' : 'var(--shadow-2)',
             transition: 'flex 320ms cubic-bezier(0.22, 1, 0.36, 1), min-width 320ms cubic-bezier(0.22, 1, 0.36, 1), opacity 220ms ease, transform 320ms cubic-bezier(0.22, 1, 0.36, 1), box-shadow 220ms ease, border-left-color 220ms ease',
             display: 'flex',
             flexDirection: 'column',
@@ -962,7 +962,7 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
                       }}
                     />
                   ) : selectedItem?.path?.endsWith('.md') && textPreview?.content ? (
-                    <div style={{ flex: 1, overflow: 'auto', padding: 16, background: '#fff' }}>
+                    <div style={{ flex: 1, overflow: 'auto', padding: 16, background: 'var(--surface-card)' }}>
                       <MarkdownRenderer
                         content={textPreview.content}
                         sessionId={sessionId}
@@ -980,6 +980,7 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
                         minHeight: isFocusedPreview ? 0 : 500,
                         border: isFocusedPreview ? 'none' : '1px solid var(--border-color)',
                         borderRadius: isFocusedPreview ? 0 : 8,
+                        // The sandboxed iframe shows the user's own HTML, which assumes a white page; it does not follow the theme.
                         background: '#fff',
                       }}
                     />

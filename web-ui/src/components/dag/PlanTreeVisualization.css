@@ -23,11 +23,11 @@
 }
 
 .tree-item:hover {
-  background: rgba(0, 0, 0, 0.04);
+  background: var(--surface-hover);
 }
 
 .tree-item.selected {
-  background: rgba(0, 0, 0, 0.06);
+  background: var(--surface-selected);
 }
 
 .tree-item.root {
@@ -53,7 +53,7 @@
   top: 0;
   bottom: 0;
   width: 1px;
-  background: rgba(0, 0, 0, 0.06);
+  background: var(--border-default);
 }
 
 /* Expand/collapse toggle */
@@ -69,13 +69,13 @@
 }
 
 .tree-toggle.has-children:hover {
-  background: rgba(0, 0, 0, 0.06);
+  background: var(--surface-hover);
 }
 
 .tree-chevron {
   width: 12px;
   height: 12px;
-  color: rgba(0, 0, 0, 0.35);
+  color: var(--text-tertiary);
   transition: transform 0.2s ease;
 }
 
@@ -94,25 +94,25 @@
 }
 
 .tree-status.status-pending {
-  background: #d1d5db;
+  background: var(--text-disabled);
 }
 
 .tree-status.status-running {
   background: var(--color-action);
-  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+  box-shadow: 0 0 0 2px var(--color-action-border);
   animation: pulse 2s ease-in-out infinite;
 }
 
 .tree-status.status-completed {
-  background: #22c55e;
+  background: var(--status-success-fg);
 }
 
 .tree-status.status-failed {
-  background: #ef4444;
+  background: var(--status-error-fg);
 }
 
 .tree-status.status-blocked {
-  background: #f97316;
+  background: var(--status-blocked-fg);
 }
 
 @keyframes pulse {
@@ -124,7 +124,7 @@
 .tree-name {
   flex: 1;
   font-size: var(--fs-small);
-  color: #374151;
+  color: var(--text-secondary);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -132,18 +132,18 @@
 }
 
 .tree-item:hover .tree-name {
-  color: #111827;
+  color: var(--text-primary);
 }
 
 .tree-item.selected .tree-name {
-  color: #111827;
+  color: var(--text-primary);
 }
 
 /* Duration label */
 .tree-duration {
   font-size: var(--fs-caption);
   font-variant-numeric: tabular-nums;
-  color: rgba(0, 0, 0, 0.35);
+  color: var(--text-tertiary);
   margin-left: 6px;
   flex-shrink: 0;
   white-space: nowrap;
@@ -154,8 +154,8 @@
   font-size: var(--fs-caption);
   font-weight: 600;
   letter-spacing: 0.05em;
-  color: rgba(0, 0, 0, 0.35);
-  background: rgba(0, 0, 0, 0.04);
+  color: var(--text-tertiary);
+  background: var(--surface-sunken);
   padding: 2px 5px;
   border-radius: 3px;
   margin-left: 8px;
@@ -170,7 +170,7 @@
   justify-content: center;
   height: 100%;
   gap: 12px;
-  color: #9ca3af;
+  color: var(--text-tertiary);
   font-size: var(--fs-caption);
 }
 
@@ -182,7 +182,7 @@
   justify-content: center;
   height: 100%;
   gap: 10px;
-  color: #9ca3af;
+  color: var(--text-tertiary);
   font-size: var(--fs-caption);
 }
 
@@ -190,7 +190,7 @@
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: #e5e7eb;
+  background: var(--border-default);
 }
 
 /* Scrollbar */
@@ -203,10 +203,10 @@
 }
 
 .tree-container::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.1);
+  background: var(--border-default);
   border-radius: 2px;
 }
 
 .tree-container::-webkit-scrollbar-thumb:hover {
-  background: rgba(0, 0, 0, 0.2);
+  background: var(--border-strong);
 }

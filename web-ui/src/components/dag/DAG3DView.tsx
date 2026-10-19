@@ -404,7 +404,7 @@ const DAG3DView: React.FC<DAGViewProps> = ({ onClose, onNodeSelect }) => {
   fontSize: 12, 
   margin: 0, 
   whiteSpace: 'pre-wrap',
-  background: '#f5f5f5',
+  background: 'var(--surface-sunken)',
   padding: 8,
   borderRadius: 4,
   }}>
@@ -600,12 +600,12 @@ const DAG3DView: React.FC<DAGViewProps> = ({ onClose, onNodeSelect }) => {
   position: 'absolute',
   },
   header: { 
-  borderBottom: '1px solid #f0f0f0',
+  borderBottom: '1px solid var(--border-subtle)',
   padding: '12px 16px',
   },
   body: { 
   padding: '12px 16px',
-  background: '#fafafa',
+  background: 'var(--surface-sunken)',
   },
   }}
   >

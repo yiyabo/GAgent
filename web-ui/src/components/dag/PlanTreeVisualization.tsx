@@ -161,9 +161,9 @@ const PlanTreeVisualization: React.FC<PlanTreeVisualizationProps> = ({
   const displayName = cleanName.length > 36 ? cleanName.substring(0, 36) + '…' : cleanName;
   const duration = getTaskDuration(task);
   const statusTooltip = task.status === 'failed'
-  ? { title: 'Task failed · Click to view details', color: '#ff4d4f' }
+  ? { title: 'Task failed · Click to view details', color: 'var(--status-error-fg)' }
   : task.status === 'blocked'
-  ? { title: 'Task blocked · Click to view details', color: '#f97316' }
+  ? { title: 'Task blocked · Click to view details', color: 'var(--status-blocked-fg)' }
   : undefined;
 
   const nodeInner = (

@@ -85,19 +85,19 @@ const TreeVisualization: React.FC<TreeVisualizationProps> = ({
   switch (status) {
   case 'completed':
   case 'done':
-  return '#52c41a';
+  return 'var(--status-success-fg)';
   case 'running':
   case 'executing':
-  return '#1890ff';
+  return 'var(--color-action)';
   case 'pending':
-  return '#faad14';
+  return 'var(--status-warning-fg)';
   case 'failed':
   case 'error':
-  return '#ff4d4f';
+  return 'var(--status-error-fg)';
   case 'blocked':
-  return '#fa8c16';
+  return 'var(--status-blocked-fg)';
   default:
-  return '#d9d9d9';
+  return 'var(--text-disabled)';
   }
   };
 
@@ -317,7 +317,7 @@ const TreeVisualization: React.FC<TreeVisualizationProps> = ({
   <Space>
   <span>Task Tree</span>
   {stats && (
-  <Badge count={stats.total} style={{ backgroundColor: '#52c41a' }} />
+  <Badge count={stats.total} style={{ backgroundColor: 'var(--status-success-fg)' }} />
   )}
   </Space>
   }
@@ -375,7 +375,7 @@ const TreeVisualization: React.FC<TreeVisualizationProps> = ({
   </div>
   ) : (
   <div className="tree-empty">
-  <div style={{ textAlign: 'center', padding: '60px 20px', color: '#999' }}>
+  <div style={{ textAlign: 'center', padding: '60px 20px', color: 'var(--text-tertiary)' }}>
   <div style={{ fontSize: '48px', marginBottom: '16px' }}>🌳</div>
   <div style={{ fontSize: '16px' }}>No tasks</div>
   <div style={{ fontSize: '12px', marginTop: '8px' }}>

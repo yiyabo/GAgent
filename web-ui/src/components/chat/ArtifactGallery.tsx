@@ -93,10 +93,10 @@ export const ArtifactGallery: React.FC<ArtifactGalleryProps> = ({ items, session
             <div
               key={fig.baseName}
               style={{
-                border: '1px solid var(--border-color, #e8e8e8)',
+                border: '1px solid var(--border-color)',
                 borderRadius: 8,
-                background: '#ffffff',
-                boxShadow: '0 2px 6px rgba(0, 0, 0, 0.04)',
+                background: 'var(--surface-card)',
+                boxShadow: 'var(--shadow-1)',
                 padding: 10,
                 display: 'flex',
                 flexDirection: 'column',
@@ -112,10 +112,10 @@ export const ArtifactGallery: React.FC<ArtifactGalleryProps> = ({ items, session
                   display: 'block',
                   borderRadius: 6,
                   objectFit: 'contain',
-                  background: '#fafafa',
+                  background: 'var(--surface-sunken)',
                 }}
               />
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid #f0f0f0', paddingTop: 6 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderTop: '1px solid var(--border-subtle)', paddingTop: 6 }}>
                 <div>
                   <Text strong style={{ fontSize: 13, display: 'block' }}>
                     {fig.baseName}

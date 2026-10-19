@@ -5,7 +5,7 @@
 .response-style-heading { font-weight: 600; font-size: var(--fs-small); margin: 0 0 10px; }
 .response-style-options { display: flex; flex-direction: column; width: 100%; gap: 4px; }
 .response-style-option.ant-radio-wrapper { margin: 0; padding: 8px; border-radius: 6px; align-items: flex-start; }
-.response-style-option.ant-radio-wrapper-checked { background: var(--bg-tertiary, #f5f7fb); }
+.response-style-option.ant-radio-wrapper-checked { background: var(--surface-sunken); }
 .response-style-option .ant-radio { margin-top: 3px; }
 .response-style-name { display: block; font-weight: 500; font-size: var(--fs-small); }
 .response-style-description { display: block; font-size: var(--fs-caption); color: var(--text-secondary); margin-top: 2px; }

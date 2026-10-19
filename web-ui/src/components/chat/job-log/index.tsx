@@ -254,7 +254,7 @@ const JobLogPanel: React.FC<JobLogPanelProps> = ({ jobId, initialJob, targetTask
             <ResultSummary result={result} jobType={jobType} />
 
             {!compact && Object.keys(stats || {}).length > 0 && (
-              <div style={{ fontSize: 12, color: '#999' }}>
+              <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
                 <Divider plain style={{ margin: '12px 0' }}>
                   运行统计
                 </Divider>
@@ -309,8 +309,8 @@ const JobLogPanel: React.FC<JobLogPanelProps> = ({ jobId, initialJob, targetTask
               marginTop: 12,
               maxHeight: 360,
               overflow: 'auto',
-              background: '#111827',
-              color: '#E5E7EB',
+              background: 'var(--surface-log)',
+              color: 'var(--on-log)',
               padding: 12,
               borderRadius: 6,
               fontSize: 12,

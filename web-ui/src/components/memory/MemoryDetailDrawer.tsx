@@ -57,7 +57,7 @@ const MemoryDetailDrawer: React.FC<MemoryDetailDrawerProps> = ({ open, onClose }
   <Drawer
   title={
   <Space>
-  <FileTextOutlined style={{ color: '#1890ff' }} />
+  <FileTextOutlined style={{ color: 'var(--color-action)' }} />
   <span>Memory Detail</span>
   </Space>
   }
@@ -75,7 +75,7 @@ const MemoryDetailDrawer: React.FC<MemoryDetailDrawerProps> = ({ open, onClose }
   title="Retrieval Count"
   value={memory.retrieval_count}
   prefix={<EyeOutlined />}
-  valueStyle={{ color: '#1890ff', fontSize: '20px' }}
+  valueStyle={{ color: 'var(--color-action)', fontSize: '20px' }}
   />
   </Card>
   </Col>
@@ -87,8 +87,8 @@ const MemoryDetailDrawer: React.FC<MemoryDetailDrawerProps> = ({ open, onClose }
   suffix={memory.similarity ? '%' : ''}
   valueStyle={{
   color: memory.similarity
-  ? memory.similarity > 0.8 ? '#52c41a' : memory.similarity > 0.6 ? '#1890ff' : '#faad14'
-  : '#999',
+  ? memory.similarity > 0.8 ? 'var(--status-success-fg)' : memory.similarity > 0.6 ? 'var(--color-action)' : 'var(--status-warning-fg)'
+  : 'var(--text-tertiary)',
   fontSize: '20px'
   }}
   />
@@ -100,7 +100,7 @@ const MemoryDetailDrawer: React.FC<MemoryDetailDrawerProps> = ({ open, onClose }
   title="Connections"
   value={memory.links?.length || 0}
   prefix={<LinkOutlined />}
-  valueStyle={{ color: '#722ed1', fontSize: '20px' }}
+  valueStyle={{ color: 'var(--status-blocked-fg)', fontSize: '20px' }}
   />
   </Card>
   </Col>
@@ -149,7 +149,7 @@ const MemoryDetailDrawer: React.FC<MemoryDetailDrawerProps> = ({ open, onClose }
   <Card title="Memory Content" size="small" style={{ marginBottom: 16 }}>
   <Paragraph
   style={{
-  background: '#fafafa',
+  background: 'var(--surface-sunken)',
   padding: '12px',
   borderRadius: '6px',
   whiteSpace: 'pre-wrap',
@@ -197,7 +197,7 @@ const MemoryDetailDrawer: React.FC<MemoryDetailDrawerProps> = ({ open, onClose }
   key={index}
   style={{
   padding: '8px 12px',
-  background: '#f5f5f5',
+  background: 'var(--surface-sunken)',
   borderRadius: '4px',
   display: 'flex',
   justifyContent: 'space-between',
@@ -248,10 +248,10 @@ const MemoryDetailDrawer: React.FC<MemoryDetailDrawerProps> = ({ open, onClose }
   {}
   <div style={{
   padding: '12px',
-  background: '#f0f5ff',
+  background: 'var(--color-action-bg)',
   borderRadius: '6px',
   fontSize: '12px',
-  color: '#666'
+  color: 'var(--text-secondary)'
   }}>
   <div><strong>Hint:</strong></div>
   <ul style={{ marginTop: '8px', marginBottom: 0, paddingLeft: '20px' }}>

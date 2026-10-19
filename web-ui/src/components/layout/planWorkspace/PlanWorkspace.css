@@ -15,8 +15,8 @@
 .pw-separator { opacity: .5; }
 .pw-live-indicator { color: var(--primary-color); display: inline-flex; align-items: center; gap: 5px; }
 .pw-live-indicator::before { content: ''; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
-.pw-error-text { color: #bf5655; }
-.pw-review-text { color: #9a701f; }
+.pw-error-text { color: var(--status-error-fg); }
+.pw-review-text { color: var(--status-warning-fg); }
 .pw-muted { color: var(--text-secondary); }
 .pw-small { font-size: var(--fs-small); line-height: 1.7; }
 .pw-tabs { flex: 1; min-height: 0; min-width: 0; }
@@ -46,10 +46,10 @@
 .pw-task-row.is-selected .pw-task-name { color: var(--primary-color); }
 .pw-status-icon { display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; width: 17px; height: 19px; font-size: 11px; color: var(--text-tertiary); }
 .pw-status-ring { display: inline-block; width: 10px; height: 10px; border-radius: 50%; border: 1.4px solid currentColor; opacity: .65; }
-.pw-status-completed, .pw-status-succeeded { color: #43886f; }
+.pw-status-completed, .pw-status-succeeded { color: var(--status-success-fg); }
 .pw-status-running, .pw-status-in_progress { color: var(--primary-color); }
-.pw-status-failed, .pw-status-error { color: #bf5655; }
-.pw-status-blocked, .pw-status-needs_review { color: #b18b43; }
+.pw-status-failed, .pw-status-error { color: var(--status-error-fg); }
+.pw-status-blocked, .pw-status-needs_review { color: var(--status-warning-fg); }
 .pw-detail { min-width: 0; display: flex; flex-direction: column; min-height: 0; }
 .pw-detail-header { padding: 22px 24px 19px; border-bottom: 1px solid var(--pw-line); }
 .pw-detail h2 { font-family: var(--font-serif); font-size: var(--fs-h3); line-height: 1.6; font-weight: 600; margin: 12px 0 15px; overflow-wrap: anywhere; color: var(--text-primary); }

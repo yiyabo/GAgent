@@ -37,7 +37,7 @@ const UploadedFilesList: React.FC = () => {
   };
 
   return (
-    <div style={{ padding: '8px 0', borderBottom: '1px solid #f0f0f0' }}>
+    <div style={{ padding: '8px 0', borderBottom: '1px solid var(--border-subtle)' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
           <CloudServerOutlined style={{ marginRight: 4 }} />

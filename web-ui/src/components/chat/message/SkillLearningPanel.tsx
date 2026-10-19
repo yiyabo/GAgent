@@ -55,10 +55,10 @@ export default function SkillLearningPanel({runId,sessionId,status}:{runId?:stri
       <Input.Search placeholder="搜索方法：清洗数据、序列去重…" onSearch={query=>void perform(async()=>{const data=await skillLearningApi.list(sessionId,query);setSkills(query?data.recommended_skills??data.skills:data.skills);})} style={{marginBottom:12}}/>
       {skills.map(skill=><Card key={skill.id} size="small" style={{marginBottom:8}} title={<Space><span>{skill.draft.name}</span><Tag>{labels[skill.state]}</Tag><span>v{skill.current_version}</span></Space>}>
         <div>{skill.draft.description}</div>
-        <div style={{fontSize:12,color:'#777',margin:'6px 0'}}>来源任务：{skill.evidence.run_status}；已检查：{skill.evidence.validated_dimensions.join('、')||'尚无程序验收'}{skill.evidence.requires_human_review&&skill.review_status!=='accepted'?'；方法或内容还需要用户确认':skill.review_status==='accepted'?'；方法已由用户确认':''}</div>
+        <div style={{fontSize:12,color:'var(--text-secondary)',margin:'6px 0'}}>来源任务：{skill.evidence.run_status}；已检查：{skill.evidence.validated_dimensions.join('、')||'尚无程序验收'}{skill.evidence.requires_human_review&&skill.review_status!=='accepted'?'；方法或内容还需要用户确认':skill.review_status==='accepted'?'；方法已由用户确认':''}</div>
         <Button size="small" onClick={()=>void perform(async()=>{const detail=await skillLearningApi.detail(skill.id,sessionId);setActive(detail);setDraft(detail.draft);setEditing(false);setTrialQuery('');})}>查看、修正或试用</Button>
       </Card>)}
-      {!skills.length&&!error&&<div style={{color:'#777'}}>暂时没有候选技能。可以主动保存这次任务的方法。</div>}
+      {!skills.length&&!error&&<div style={{color:'var(--text-secondary)'}}>暂时没有候选技能。可以主动保存这次任务的方法。</div>}
       {active&&<Card title={`${active.draft.name} · v${active.current_version}`} style={{marginTop:12}}>
         <div>{active.draft.when_to_use}</div>
         <ol>{active.draft.steps.map((step,i)=><li key={i}>{step.instruction}</li>)}</ol>

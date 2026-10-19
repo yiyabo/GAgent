@@ -454,15 +454,15 @@ const ToolProgressCard: React.FC<ToolProgressCardProps> = ({
                 borderRadius: 999,
                 background:
                   compactStatus === 'Failed'
-                    ? '#ff7875'
+                    ? 'var(--status-error-fg)'
                     : compactStatus === 'Retrying'
-                      ? '#faad14'
+                      ? 'var(--status-warning-fg)'
                       : 'var(--primary-color)',
                 boxShadow:
                   compactStatus === 'Failed'
-                    ? '0 0 0 4px rgba(255, 120, 117, 0.12)'
+                    ? '0 0 0 4px var(--status-error-bg)'
                     : compactStatus === 'Retrying'
-                      ? '0 0 0 4px rgba(250, 173, 20, 0.12)'
+                      ? '0 0 0 4px var(--status-warning-bg)'
                       : '0 0 0 4px color-mix(in srgb, var(--primary-color) 16%, transparent)',
                 flexShrink: 0,
               }}

@@ -429,7 +429,7 @@ export const ArtifactPreviewModal: React.FC<ArtifactPreviewModalProps> = ({
                 }}
               />
             ) : name.endsWith('.md') && textPreview?.content ? (
-              <div style={{ flex: 1, overflow: 'auto', padding: 16, background: '#fff' }}>
+              <div style={{ flex: 1, overflow: 'auto', padding: 16, background: 'var(--surface-card)' }}>
                 <MarkdownRenderer
                   content={textPreview.content}
                   sessionId={sid}
@@ -447,6 +447,7 @@ export const ArtifactPreviewModal: React.FC<ArtifactPreviewModalProps> = ({
                   minHeight: 500,
                   border: '1px solid var(--border-color)',
                   borderRadius: 8,
+                  // The sandboxed iframe shows the user's own HTML, which assumes a white page; it does not follow the theme.
                   background: '#fff',
                 }}
               />

@@ -23,16 +23,16 @@
   width: 36px;
   height: 36px;
   border-radius: 50%;
-  background: linear-gradient(135deg, var(--primary-color) 0%, #155dfc 100%);
+  background: var(--color-action);
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  box-shadow: 0 2px 8px rgba(201, 100, 66, 0.25);
+  box-shadow: var(--shadow-2);
 }
 
 .typing-indicator-avatar .anticon {
-  color: #fff !important;
+  color: var(--color-on-action) !important;
 }
 
 .typing-indicator-bubble {
@@ -43,7 +43,7 @@
   border: 1px solid var(--border-color);
   border-radius: 18px;
   padding: 12px 18px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+  box-shadow: var(--shadow-1);
 }
 
 .typing-indicator-dots {
@@ -98,9 +98,9 @@
 
 @keyframes pulse {
   0%, 100% {
-    box-shadow: 0 2px 8px rgba(201, 100, 66, 0.25);
+    box-shadow: var(--shadow-1);
   }
   50% {
-    box-shadow: 0 4px 16px rgba(201, 100, 66, 0.4);
+    box-shadow: var(--shadow-2);
   }
 }
