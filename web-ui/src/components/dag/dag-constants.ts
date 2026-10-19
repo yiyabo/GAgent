@@ -1,4 +1,5 @@
 import type { Task as TaskType } from '@/types';
+import type { CanvasPalette } from '@/theme/canvasPalette';
 
 export interface GraphNode {
   id: number;
@@ -9,7 +10,6 @@ export interface GraphNode {
   fx?: number;  //  x 
   fy?: number;  //  y 
   rotation: number;  // 
-  noteColor: string; // 
 }
 
 export interface GraphLink {
@@ -22,47 +22,43 @@ export const CARD_WIDTH = 130;
 export const CARD_HEIGHT = 48;
 export const CARD_RADIUS = 3;
 
-export const CARD_COLORS = {
-  ROOT: {
-  bg: '#fffef8',  // 
-  line: '#c9a87c',  // 
-  accent: '#b8860b',  // 
-  },
-  COMPOSITE: {
-  bg: '#fdfcf9',  // 
-  line: '#8fa3b1',  // 
-  accent: '#5c7a8a',  // 
-  },
-  ATOMIC: {
-  bg: '#fffffe',  // 
-  line: '#a8b5a0',  // 
-  accent: '#6b7c63',  // 
-  },
-  DEFAULT: {
-  bg: '#fafaf8',
-  line: '#c0c0c0',
-  accent: '#888888',
-  },
-};
+/** Everything a card needs, resolved from the active theme. The graph is drawn on a canvas that
+ *  cannot read CSS variables, so callers pass in the palette read by `useCanvasPalette`. */
+export interface CardColors {
+  /** Card face. */
+  bg: string;
+  /** Hairline around the card. */
+  line: string;
+  /** The left bar and the selection ring: marks the task type. */
+  accent: string;
+}
 
-export const STATUS_COLORS_MAP: Record<string, { color: string; bg: string }> = {
-  completed: { color: '#2d6a4f', bg: '#d8f3dc' },
-  done: { color: '#2d6a4f', bg: '#d8f3dc' },
-  running: { color: '#1d4e89', bg: '#cfe2f3' },
-  executing: { color: '#1d4e89', bg: '#cfe2f3' },
-  pending: { color: '#9a6b00', bg: '#fff3cd' },
-  blocked: { color: '#ad4e00', bg: '#fff7e6' },
-  failed: { color: '#9c2230', bg: '#f8d7da' },
-  error: { color: '#9c2230', bg: '#f8d7da' },
-  default: { color: '#666666', bg: '#f0f0f0' },
-};
+export interface StatusColors {
+  /** The status dot. */
+  color: string;
+  /** A tint of the same hue, for chips and legends. */
+  bg: string;
+}
 
-export function getCardColors(taskType?: string) {
-  const type = taskType?.toUpperCase();
-  switch (type) {
-  case 'ROOT': return CARD_COLORS.ROOT;
-  case 'COMPOSITE': return CARD_COLORS.COMPOSITE;
-  case 'ATOMIC': return CARD_COLORS.ATOMIC;
-  default: return CARD_COLORS.DEFAULT;
+export function getCardColors(p: CanvasPalette, taskType?: string): CardColors {
+  switch (taskType?.toUpperCase()) {
+  case 'ROOT': return { bg: p.card, line: p.borderStrong, accent: p.action };
+  case 'COMPOSITE': return { bg: p.card, line: p.borderDefault, accent: p.textSecondary };
+  case 'ATOMIC': return { bg: p.card, line: p.borderSubtle, accent: p.textTertiary };
+  default: return { bg: p.sunken, line: p.borderSubtle, accent: p.textTertiary };
+  }
+}
+
+export function getStatusColors(p: CanvasPalette, status?: string): StatusColors {
+  switch (status) {
+  case 'completed':
+  case 'done': return { color: p.success, bg: p.successBg };
+  case 'running':
+  case 'executing': return { color: p.action, bg: p.actionBg };
+  case 'pending': return { color: p.warning, bg: p.warningBg };
+  case 'blocked': return { color: p.blocked, bg: p.blockedBg };
+  case 'failed':
+  case 'error': return { color: p.error, bg: p.errorBg };
+  default: return { color: p.skipped, bg: p.sunken };
   }
 }

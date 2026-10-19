@@ -1,23 +1,19 @@
-import {
-  CARD_WIDTH,
-  CARD_HEIGHT,
-  CARD_RADIUS,
-  STATUS_COLORS_MAP,
-  getCardColors,
-} from './dag-constants';
+import { CARD_WIDTH, CARD_HEIGHT, CARD_RADIUS, getCardColors, getStatusColors } from './dag-constants';
 import type { GraphNode } from './dag-constants';
+import { withAlpha, type CanvasPalette } from '@/theme/canvasPalette';
 
 export function drawNote(
   ctx: CanvasRenderingContext2D,
   node: GraphNode,
   isSelected: boolean,
   isHovered: boolean,
-  isHighlighted: boolean
+  isHighlighted: boolean,
+  palette: CanvasPalette
 ) {
   const x = node.x || 0;
   const y = node.y || 0;
-  const colors = getCardColors(node.task.task_type);
-  const statusInfo = STATUS_COLORS_MAP[node.task.status] || STATUS_COLORS_MAP.default;
+  const colors = getCardColors(palette, node.task.task_type);
+  const statusInfo = getStatusColors(palette, node.task.status);
   
   ctx.save();
   ctx.translate(x, y);
@@ -26,7 +22,7 @@ export function drawNote(
   const isActive = isSelected || isHovered;
 
   if (isHighlighted) {
-    ctx.shadowColor = isActive ? 'rgba(0, 0, 0, 0.15)' : 'rgba(0, 0, 0, 0.06)';
+    ctx.shadowColor = isActive ? palette.shadow : withAlpha(palette.shadow, 0.5);
     ctx.shadowBlur = isActive ? 10 : 4;
     ctx.shadowOffsetX = 0;
     ctx.shadowOffsetY = isActive ? 4 : 2;
@@ -49,8 +45,8 @@ export function drawNote(
 
   ctx.beginPath();
   ctx.roundRect(-CARD_WIDTH / 2, -CARD_HEIGHT / 2, CARD_WIDTH, CARD_HEIGHT, CARD_RADIUS);
-  ctx.strokeStyle = isActive ? colors.accent : 'rgba(0, 0, 0, 0.08)';
-  ctx.lineWidth = isActive ? 1.5 : 0.5;
+  ctx.strokeStyle = isActive ? colors.accent : colors.line;
+  ctx.lineWidth = isActive ? 1.5 : 1;
   ctx.globalAlpha = opacity;
   ctx.stroke();
 
@@ -61,10 +57,9 @@ export function drawNote(
   ctx.fill();
 
   ctx.globalAlpha = opacity;
-  ctx.fillStyle = '#2c2c2c';
-  ctx.font = node.task.task_type?.toUpperCase() === 'ROOT' 
-    ? 'bold 10px Georgia, "Times New Roman", serif'
-    : '10px Georgia, "Times New Roman", serif';
+  ctx.fillStyle = palette.textPrimary;
+  // Canvas takes a literal font string, so use the resolved stack; 12px is the type floor.
+  ctx.font = `${node.task.task_type?.toUpperCase() === 'ROOT' ? '600 ' : ''}12px ${palette.fontSans}`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   
@@ -111,7 +106,8 @@ export function drawNote(
 export function drawLink(
   ctx: CanvasRenderingContext2D,
   link: any,
-  isHighlighted: boolean
+  isHighlighted: boolean,
+  palette: CanvasPalette
 ) {
   const source = link.source;
   const target = link.target;
@@ -137,12 +133,12 @@ export function drawLink(
   
   if (isDependency) {
     ctx.globalAlpha = 0.8;
-    ctx.strokeStyle = '#d4956a';
+    ctx.strokeStyle = palette.warning;
     ctx.lineWidth = 1.5;
     ctx.setLineDash([5, 3]);
   } else {
     ctx.globalAlpha = isHighlighted ? 0.4 : 0.12;
-    ctx.strokeStyle = '#8a9099';
+    ctx.strokeStyle = palette.textTertiary;
     ctx.lineWidth = isHighlighted ? 1 : 0.6;
   }
 
@@ -170,7 +166,7 @@ export function drawLink(
   if (isDependency) {
     const arrowSize = 4;
     ctx.globalAlpha = 0.9;
-    ctx.fillStyle = '#d4956a';
+    ctx.fillStyle = palette.warning;
     ctx.setLineDash([]);
     
     ctx.beginPath();

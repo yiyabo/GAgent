@@ -38,6 +38,7 @@ for (const mode of ['light', 'dark'] as const) {
           await page.locator('.ant-select').first().click();
           await page.locator('.ant-select-item-option').first().click();
         }
+        if (route === '/memory') await page.getByRole('tab', { name: /Graph/ }).click();
         await page.waitForLoadState('networkidle');
         await page.waitForTimeout(800);
 
@@ -49,5 +50,45 @@ for (const mode of ['light', 'dark'] as const) {
         expect(findings.map((f) => `${f.kind}: ${f.detail}`)).toEqual([]);
       });
     }
+  });
+}
+
+/**
+ * The relationship graph's full-screen card view is drawn on a <canvas>, which text scans cannot
+ * read. This checks the DOM around it (legend, stats bar, toolbar) and that the canvas actually
+ * painted something that follows the theme.
+ */
+for (const mode of ['light', 'dark'] as const) {
+  test(`${mode}: 3D relationship view paints with theme colours`, async ({ page }) => {
+    await mockApi(page);
+    await page.addInitScript((value) => window.localStorage.setItem('gagent.theme', value), mode);
+    await page.goto('/chat');
+    await page.waitForLoadState('networkidle');
+    await page.getByRole('tab', { name: /关系图/ }).click();
+    await page.getByRole('button', { name: /3D 全屏/ }).click();
+    await page.waitForSelector('canvas');
+    await page.waitForTimeout(1500);
+
+    const findings = await scanPage(page, mode);
+    expect(findings.map((f) => `${f.kind}: ${f.detail}`)).toEqual([]);
+
+    // Sample the canvas: its card faces must be the theme's card colour, not a fixed cream.
+    const sample = await page.evaluate(() => {
+      const canvas = document.querySelector('canvas') as HTMLCanvasElement;
+      const ctx = canvas.getContext('2d')!;
+      const counts = new Map<string, number>();
+      const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height);
+      for (let i = 0; i < data.length; i += 4 * 97) {
+        if (data[i + 3] < 250) continue;
+        const key = `${data[i]},${data[i + 1]},${data[i + 2]}`;
+        counts.set(key, (counts.get(key) ?? 0) + 1);
+      }
+      const top = [...counts.entries()].sort((a, b) => b[1] - a[1])[0];
+      return top ? top[0].split(',').map(Number) : [];
+    });
+    expect(sample.length, 'the canvas painted nothing').toBe(3);
+    const luminance = (0.2126 * sample[0] + 0.7152 * sample[1] + 0.0722 * sample[2]) / 255;
+    if (mode === 'dark') expect(luminance, `dominant canvas colour ${sample} is too bright for dark`).toBeLessThan(0.3);
+    else expect(luminance, `dominant canvas colour ${sample} is too dark for light`).toBeGreaterThan(0.7);
   });
 }

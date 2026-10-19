@@ -22,6 +22,7 @@ const TABLE: Record<string, string> = {
   'GET /extensions/mcp': 'ext-mcp',
   'GET /extensions/skills': 'ext-skills',
   'GET /mcp/memory/stats': 'memory-stats',
+  'POST /mcp/query_memory': 'query-memory',
   'GET /upload/list': 'upload-list',
 };
 
