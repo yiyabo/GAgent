@@ -272,13 +272,6 @@ export default defineConfig(({ mode }) => {
             if (id.includes('/katex/')) {
               return 'markdown-math';
             }
-            if (
-              id.includes('/xterm/') ||
-              id.includes('/xterm-addon-fit/') ||
-              id.includes('/xterm-addon-web-links/')
-            ) {
-              return 'terminal';
-            }
             return undefined;
           },
         },

@@ -1,13 +1,13 @@
 # FRONTEND SRC
 
 ## OVERVIEW
-React 18 + TypeScript UI for chat, plans, terminal, artifacts, and DAG visualization. Uses Ant Design 5, Zustand, React Query, Axios, Vite aliases.
+React 18 + TypeScript UI for chat, plans, artifacts, and DAG visualization. Uses Ant Design 5, Zustand, React Query, Axios, Vite aliases.
 
 ## STRUCTURE
 ```
 src/
 ├── api/          # Axios client, timeout tiers, auth events
-├── components/   # Chat, layout, DAG, terminal, markdown/rendering UI
+├── components/   # Chat, layout, DAG, markdown/rendering UI
 ├── hooks/        # React Query and UI hooks
 ├── pages/        # Route-level screens
 ├── store/        # Zustand stores and slices
@@ -23,7 +23,6 @@ src/
 | Message loading | `store/slices/message/` (loadChatHistory/loadMoreHistory) | Single-source store loading with cursor pagination. |
 | Main chat UI | `components/layout/ChatMainArea.tsx`, `components/chat/` | Uploads, streaming display, message rendering. |
 | DAG/plan UI | `components/dag/` | Graph visualization and plan interaction. |
-| Terminal UI | `components/terminal/` | WebSocket/xterm integration. |
 
 ## CONVENTIONS
 - Prefer configured aliases: `@components`, `@api`, `@store`, `@hooks`, `@utils`, `@types`.

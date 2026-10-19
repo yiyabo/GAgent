@@ -35,8 +35,6 @@ export const ENV = {
     ? rawWsUrl
     : (import.meta.env.DEV ? '' : defaultWsBaseUrl),
 
-  TERMINAL_ENABLED: String(import.meta.env.VITE_TERMINAL_ENABLED || 'true').toLowerCase() === 'true',
-
   DEV_SERVER_PORT: import.meta.env.VITE_DEV_SERVER_PORT || 3000,
 
   isDevelopment: import.meta.env.DEV,
@@ -50,7 +48,6 @@ if (ENV.isDevelopment) {
   console.log('🌍 Environment Configuration:', {
   API_BASE_URL: ENV.API_BASE_URL,
   WS_BASE_URL: ENV.WS_BASE_URL,
-  TERMINAL_ENABLED: ENV.TERMINAL_ENABLED,
   mode: ENV.mode,
   });
 }
@@ -59,7 +56,6 @@ declare global {
   interface ImportMetaEnv {
   readonly VITE_API_BASE_URL?: string;
   readonly VITE_WS_BASE_URL?: string;
-  readonly VITE_TERMINAL_ENABLED?: string;
   readonly VITE_DEV_SERVER_PORT?: string;
   }
 
