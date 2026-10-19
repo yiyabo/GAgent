@@ -1,7 +1,7 @@
 import { theme as antdTheme, type ThemeConfig } from 'antd';
 
 /**
- * antd theme for GAgent. The values mirror src/styles/tokens.css one to one:
+ * antd theme for Phage-Agent. The values mirror src/styles/tokens.css one to one:
  * antd's colour algorithm needs literal colours, so they are repeated here, and
  * theme.test.ts fails if a value stops matching its CSS variable.
  */
