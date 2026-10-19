@@ -36,7 +36,7 @@ describe('AppHeader navigation between chat and extensions', () => {
     unmount();
 
     renderAt('/extensions');
-    fireEvent.click(screen.getByRole('link', { name: 'GAgent 首页' }));
+    fireEvent.click(screen.getByRole('link', { name: 'Phage-Agent 首页' }));
     expect(screen.getByTestId('where').textContent).toBe('/chat');
   });
 });
