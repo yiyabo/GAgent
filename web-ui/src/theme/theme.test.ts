@@ -1,5 +1,5 @@
-import { readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { join, relative, resolve } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { PALETTES, buildAntdTheme, type ThemePalette } from './antdTheme';
 import { THEME_STORAGE_KEY, applyMode, readStoredPreference, resolveMode, useThemeStore } from './themeMode';
@@ -174,5 +174,112 @@ describe('theme preference', () => {
     useThemeStore.getState().setPreference('light');
     useThemeStore.getState().syncSystem(true);
     expect(useThemeStore.getState().mode).toBe('light');
+  });
+});
+
+/** Every source file that can take part in the token layer. */
+function tokenSources(dir: string = resolve(__dirname, '..')): string[] {
+  return readdirSync(dir).flatMap((entry) => {
+    const path = join(dir, entry);
+    if (statSync(path).isDirectory()) return tokenSources(path);
+    // Tests are excluded: they quote token names as data, which would count as use.
+    return /\.(css|ts|tsx)$/.test(path) && !/\.test\.tsx?$/.test(path) ? [path] : [];
+  });
+}
+
+const SOURCE_FILES = tokenSources();
+const TOKENS_CSS = resolve(__dirname, '../styles/tokens.css');
+
+/** Names declared anywhere: stylesheet declarations, or custom properties set inline from TSX. */
+const DECLARED = new Set(
+  SOURCE_FILES.flatMap((file) => {
+    const text = readFileSync(file, 'utf8');
+    return [
+      ...[...text.matchAll(/(--[a-z0-9-]+)\s*:/g)].map((match) => match[1]),
+      ...[...text.matchAll(/'(--[a-z0-9-]+)'/g)].map((match) => match[1]),
+    ];
+  }),
+);
+
+/** Every `var(--x)` reference in the source. */
+const REFERENCED = new Set(
+  SOURCE_FILES.flatMap((file) => [...readFileSync(file, 'utf8').matchAll(/var\(\s*(--[a-z0-9-]+)/g)].map((match) => match[1])),
+);
+
+/**
+ * Tokens that are decided but not wired into a component yet. Each is scheduled for a later step of
+ * the redesign; this list may only shrink. `--font-serif` and the type/space scales go in with the
+ * typography pass, the status sets with the per-page pass.
+ */
+const UNWIRED = [
+  '--ease-out',
+  '--focus-ring',
+  '--font-serif',
+  '--fs-caption',
+  '--fs-h1',
+  '--fs-h2',
+  '--fs-h3',
+  '--fs-h4',
+  '--fs-small',
+  '--info-bg',
+  '--lh-tight',
+  '--on-log',
+  '--shadow-md',
+  '--space-1',
+  '--space-2',
+  '--space-3',
+  '--space-4',
+  '--space-5',
+  '--space-6',
+  '--space-8',
+  '--space-10',
+  '--status-blocked-bg',
+  '--status-blocked-border',
+  '--status-blocked-fg',
+  '--status-info-border',
+  '--status-pending-bg',
+  '--status-pending-border',
+  '--status-pending-fg',
+  '--status-running-bg',
+  '--status-running-border',
+  '--status-running-fg',
+  '--status-skipped-bg',
+  '--status-skipped-border',
+  '--status-skipped-fg',
+  '--surface-log',
+  '--surface-scrim',
+];
+
+describe('the token layer stays honest', () => {
+  it('never references a token that nothing declares', () => {
+    const missing = [...REFERENCED].filter((name) => !DECLARED.has(name)).sort();
+    expect(missing, 'add the declaration, or fix the typo in the reference').toEqual([]);
+  });
+
+  it('has no declaration whose property name is a var() reference', () => {
+    // A find/replace over colour literals once turned `white-space: nowrap` into
+    // `var(--surface-card)-space: nowrap`, which the browser drops in silence.
+    const mangled: string[] = [];
+    for (const file of SOURCE_FILES.filter((name) => name.endsWith('.css'))) {
+      const text = readFileSync(file, 'utf8');
+      for (const match of text.matchAll(/\n[ \t]*(var\([^)]*\)[a-z-]*)\s*:/g)) {
+        mangled.push(`${relative(resolve(__dirname, '..'), file)}: ${match[1]}`);
+      }
+    }
+    expect(mangled).toEqual([]);
+  });
+
+  it('carries no token beyond the ones still scheduled to be wired up', () => {
+    const consumed = new Set(Object.values(MIRROR).map((variable) => `--${variable}`));
+    for (const file of SOURCE_FILES) {
+      if (file === TOKENS_CSS) continue;
+      const text = readFileSync(file, 'utf8');
+      for (const match of text.matchAll(/var\(\s*(--[a-z0-9-]+)/g)) consumed.add(match[1]);
+      for (const match of text.matchAll(/'(--[a-z0-9-]+)'/g)) consumed.add(match[1]);
+    }
+    // An alias defined inside tokens.css counts as consumption too.
+    for (const match of tokensCss.matchAll(/:\s*var\(\s*(--[a-z0-9-]+)/g)) consumed.add(match[1]);
+    const unwired = Object.keys(light).filter((name) => !consumed.has(`--${name}`)).sort();
+    expect(unwired).toEqual(UNWIRED.map((name) => name.slice(2)).sort());
   });
 });
