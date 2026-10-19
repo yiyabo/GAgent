@@ -6,6 +6,7 @@ import {
   DownloadOutlined,
   AimOutlined,
 } from '@ant-design/icons';
+import { useT } from '@/i18n/useT';
 
 interface DAGToolbarProps {
   onFitView: () => void;
@@ -21,24 +22,27 @@ export const DAGToolbar: React.FC<DAGToolbarProps> = ({
   onRefresh,
   onExport,
   onExitFullscreen,
-}) => (
+}) => {
+  const t = useT();
+  return (
   <div className="dag-toolbar">
-  <button className="dag-toolbar-btn" onClick={onFitView} title="Fit to view" aria-label="Fit to view">
+  <button className="dag-toolbar-btn" onClick={onFitView} title={t('dag.fit')} aria-label={t('dag.fit')}>
   <ExpandOutlined />
   </button>
-  <button className="dag-toolbar-btn" onClick={onResetView} title="Reset view" aria-label="Reset view">
+  <button className="dag-toolbar-btn" onClick={onResetView} title={t('dag.reset')} aria-label={t('dag.reset')}>
   <AimOutlined />
   </button>
   <div className="dag-toolbar-divider" />
-  <button className="dag-toolbar-btn" onClick={onRefresh} title="Refresh" aria-label="Refresh">
+  <button className="dag-toolbar-btn" onClick={onRefresh} title={t('common.refresh')} aria-label={t('common.refresh')}>
   <ReloadOutlined />
   </button>
-  <button className="dag-toolbar-btn" onClick={onExport} title="Export image" aria-label="Export image">
+  <button className="dag-toolbar-btn" onClick={onExport} title={t('dag.exportImage')} aria-label={t('dag.exportImage')}>
   <DownloadOutlined />
   </button>
   <div className="dag-toolbar-divider" />
-  <button className="dag-toolbar-btn" onClick={onExitFullscreen} title="Exit fullscreen" aria-label="Exit fullscreen">
+  <button className="dag-toolbar-btn" onClick={onExitFullscreen} title={t('dag.exitFullscreen')} aria-label={t('dag.exitFullscreen')}>
   <FullscreenExitOutlined />
   </button>
   </div>
-);
+  );
+};

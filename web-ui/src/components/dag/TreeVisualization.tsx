@@ -9,6 +9,7 @@ import { useTasksStore } from '@store/tasks';
 import { shouldHandlePlanSyncEvent } from '@utils/planSyncEvents';
 import './TreeVisualization.css';
 
+import { useT } from '@/i18n/useT';
 interface TreeVisualizationProps {
   onNodeClick?: (taskId: number, taskData: any) => void;
   onNodeDoubleClick?: (taskId: number, taskData: any) => void;
@@ -35,6 +36,7 @@ const TreeVisualization: React.FC<TreeVisualizationProps> = ({
   onNodeDoubleClick,
 }) => {
   const [tasks, setTasks] = useState<TaskType[]>([]);
+  const t = useT();
   const [loading, setLoading] = useState(true);
   const [searchText, setSearchText] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
@@ -133,7 +135,7 @@ const TreeVisualization: React.FC<TreeVisualizationProps> = ({
   setTaskStats(computedStats);
   } catch (error: any) {
   console.error('❌ Failed to load tasks:', error);
-  message.error(`Failed to load tasks: ${error.message}`);
+  message.error(t('tree.loadFailed', { message: error.message }));
   } finally {
   setLoading(false);
   }
@@ -220,7 +222,7 @@ const TreeVisualization: React.FC<TreeVisualizationProps> = ({
   )}
   
   {}
-  <Tooltip title={`ID: ${task.id} | Status: ${task.status} | Type: ${task.task_type} | Depth: ${task.depth}`}>
+  <Tooltip title={t('tree.nodeTip', { id: task.id, status: task.status, type: task.task_type, depth: task.depth ?? '-' })}>
   <span className="tree-node-info">
   <span className="node-type-icon">{getTypeIcon(task.task_type)}</span>
   <span className="node-status-icon">{getStatusIcon(task.status)}</span>
@@ -315,7 +317,7 @@ const TreeVisualization: React.FC<TreeVisualizationProps> = ({
   <Card 
   title={
   <Space>
-  <span>Task Tree</span>
+  <span>{t('tree.title')}</span>
   {stats && (
   <Badge count={stats.total} style={{ backgroundColor: 'var(--status-success-bg)', color: 'var(--status-success-fg)', boxShadow: '0 0 0 1px var(--status-success-border)' }} />
   )}
@@ -325,36 +327,36 @@ const TreeVisualization: React.FC<TreeVisualizationProps> = ({
   extra={
   <Space wrap>
   <Input.Search
-  placeholder="Search tasks"
+  placeholder={t('tree.search')}
   style={{ width: 200 }}
   value={searchText}
   onChange={(e) => setSearchText(e.target.value)}
   allowClear
   />
   <Select
-  placeholder="status"
+  placeholder={t('tree.statusPlaceholder')}
   style={{ width: 120 }}
   value={statusFilter}
   onChange={setStatusFilter}
   options={[
-  { label: 'All', value: 'all' },
-  { label: 'Pending', value: 'pending' },
-  { label: 'Running', value: 'running' },
-  { label: 'Completed', value: 'completed' },
-  { label: 'Failed', value: 'failed' },
-  { label: 'Blocked', value: 'blocked' },
+  { label: t('common.all'), value: 'all' },
+  { label: t('status.pending'), value: 'pending' },
+  { label: t('status.running'), value: 'running' },
+  { label: t('status.completed'), value: 'completed' },
+  { label: t('status.failed'), value: 'failed' },
+  { label: t('status.blocked'), value: 'blocked' },
   ]}
   />
   <Button 
   icon={<ExpandOutlined />} 
   onClick={handleExpandAll}
-  title="Expand all"
+  title={t('tree.expandAll')}
   size="small"
   />
   <Button 
   icon={<CompressOutlined />} 
   onClick={handleCollapseAll}
-  title="Collapse all"
+  title={t('tree.collapseAll')}
   size="small"
   />
   <Button 
@@ -362,12 +364,12 @@ const TreeVisualization: React.FC<TreeVisualizationProps> = ({
   onClick={handleRefresh}
   loading={loading}
   >
-  Refresh
+  {t('common.refresh')}
   </Button>
   </Space>
   }
   >
-  <Spin spinning={loading} tip="Loading tasks...">
+  <Spin spinning={loading} tip={t('tree.loading')}>
   <div className="tree-visualization-container">
   {treeData.length > 0 ? (
   <div className="tree-content">
@@ -377,9 +379,9 @@ const TreeVisualization: React.FC<TreeVisualizationProps> = ({
   <div className="tree-empty">
   <div style={{ textAlign: 'center', padding: '60px 20px', color: 'var(--text-tertiary)' }}>
   <div style={{ fontSize: '48px', marginBottom: '16px' }}>🌳</div>
-  <div style={{ fontSize: '16px' }}>No tasks</div>
+  <div style={{ fontSize: '16px' }}>{t('tree.empty')}</div>
   <div style={{ fontSize: '12px', marginTop: '8px' }}>
-  Create a ROOT task first.
+  {t('tree.emptyHint')}
   </div>
   </div>
   </div>

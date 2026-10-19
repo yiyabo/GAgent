@@ -4,6 +4,7 @@
  */
 
 import type { Task as TaskType } from '@/types';
+import type { TFn } from '@/i18n/useT';
 
 /** antd preset tag colours; index.css maps each preset onto the theme's status tokens. */
 export type TagPreset = 'blue' | 'geekblue' | 'green' | 'gold' | 'red' | 'purple' | 'default';
@@ -55,25 +56,27 @@ export function formatTaskName(task: TaskType): string {
   return truncateText(task.name, 30);
 }
 
-export function getTaskTypeName(taskType?: string): string {
+/** Display name of a task type, in the current language. */
+export function getTaskTypeName(t: TFn, taskType?: string): string {
   switch (taskType?.toUpperCase()) {
-  case 'ROOT': return 'ROOT';
-  case 'COMPOSITE': return 'COMPOSITE';
-  case 'ATOMIC': return 'ATOMIC';
-  default: return 'UNKNOWN';
+  case 'ROOT': return t('dag.type.root');
+  case 'COMPOSITE': return t('dag.type.composite');
+  case 'ATOMIC': return t('dag.type.atomic');
+  default: return t('dag.type.unknown');
   }
 }
 
-export function getStatusName(status?: string): string {
+/** Display name of a task status, in the current language. */
+export function getStatusName(t: TFn, status?: string): string {
   switch (status) {
   case 'completed':
-  case 'done': return 'completed';
+  case 'done': return t('dag.status.completed');
   case 'running':
-  case 'executing': return 'running';
-  case 'pending': return 'pending';
+  case 'executing': return t('dag.status.running');
+  case 'pending': return t('dag.status.pending');
   case 'failed':
-  case 'error': return 'failed';
-  case 'blocked': return 'blocked';
-  default: return '';
+  case 'error': return t('dag.status.failed');
+  case 'blocked': return t('dag.status.blocked');
+  default: return t('dag.status.unknown');
   }
 }

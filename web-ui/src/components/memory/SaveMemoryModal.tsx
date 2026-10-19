@@ -5,6 +5,8 @@ import { memoryApi } from '@api/memory';
 import { useMemoryStore } from '@store/memory';
 import type { SaveMemoryRequest } from '@/types';
 
+import { useT } from '@/i18n/useT';
+import { memoryTypeLabel } from '@/i18n/memoryLabels';
 const { TextArea } = Input;
 const { Option } = Select;
 
@@ -14,6 +16,7 @@ interface SaveMemoryModalProps {
 }
 
 const SaveMemoryModal: React.FC<SaveMemoryModalProps> = ({ open, onCancel }) => {
+  const t = useT();
   const [form] = Form.useForm();
   const queryClient = useQueryClient();
   const { addMemory } = useMemoryStore();
@@ -21,7 +24,7 @@ const SaveMemoryModal: React.FC<SaveMemoryModalProps> = ({ open, onCancel }) => 
   const saveMutation = useMutation({
   mutationFn: (values: SaveMemoryRequest) => memoryApi.saveMemory(values),
   onSuccess: (newMemory) => {
-  message.success('Memory saved successfully.');
+  message.success(t('memory.saved'));
   addMemory(newMemory);
   queryClient.invalidateQueries(['memories']);
   queryClient.invalidateQueries(['memory-stats']);
@@ -29,7 +32,7 @@ const SaveMemoryModal: React.FC<SaveMemoryModalProps> = ({ open, onCancel }) => 
   onCancel();
   },
   onError: (error: any) => {
-  message.error(`Failed to save memory: ${error.message}`);
+  message.error(t('memory.saveFailed', { message: error.message }));
   },
   });
 
@@ -57,14 +60,14 @@ const SaveMemoryModal: React.FC<SaveMemoryModalProps> = ({ open, onCancel }) => 
 
   return (
   <Modal
-  title="Save Memory"
+  title={t('memory.form.title')}
   open={open}
   onOk={handleSubmit}
   onCancel={onCancel}
   confirmLoading={saveMutation.isPending}
   width={700}
-  okText="Save"
-  cancelText="Cancel"
+  okText={t('common.save')}
+  cancelText={t('common.cancel')}
   destroyOnClose
   >
   <Form
@@ -78,16 +81,16 @@ const SaveMemoryModal: React.FC<SaveMemoryModalProps> = ({ open, onCancel }) => 
   >
   {}
   <Form.Item
-  label="Memory Content"
+  label={t('memory.form.content')}
   name="content"
   rules={[
-  { required: true, message: 'Please enter memory content.' },
-  { min: 10, message: 'Memory content must be at least 10 characters.' },
-  { max: 5000, message: 'Memory content cannot exceed 5000 characters.' },
+  { required: true, message: t('memory.form.contentRequired') },
+  { min: 10, message: t('memory.form.contentMin') },
+  { max: 5000, message: t('memory.form.contentMax') },
   ]}
   >
   <TextArea
-  placeholder="Enter memory content to save..."
+  placeholder={t('memory.form.contentPlaceholder')}
   rows={6}
   showCount
   maxLength={5000}
@@ -96,33 +99,33 @@ const SaveMemoryModal: React.FC<SaveMemoryModalProps> = ({ open, onCancel }) => 
 
   {}
   <Form.Item
-  label="Memory Type"
+  label={t('memory.form.type')}
   name="memory_type"
-  rules={[{ required: true, message: 'Please select a memory type.' }]}
+  rules={[{ required: true, message: t('memory.form.typeRequired') }]}
   >
-  <Select placeholder="Select memory type">
+  <Select placeholder={t('memory.form.typePlaceholder')}>
   <Option value="conversation">
   <Space>
   <Tag color="blue">conversation</Tag>
-  <span>Conversation</span>
+  <span>{memoryTypeLabel(t, 'conversation')}</span>
   </Space>
   </Option>
   <Option value="experience">
   <Space>
   <Tag color="green">experience</Tag>
-  <span>Experience</span>
+  <span>{memoryTypeLabel(t, 'experience')}</span>
   </Space>
   </Option>
   <Option value="knowledge">
   <Space>
   <Tag color="purple">knowledge</Tag>
-  <span>Knowledge</span>
+  <span>{memoryTypeLabel(t, 'knowledge')}</span>
   </Space>
   </Option>
   <Option value="context">
   <Space>
   <Tag color="orange">context</Tag>
-  <span>Context Snapshot</span>
+  <span>{t('memory.form.typeContextSnapshot')}</span>
   </Space>
   </Option>
   </Select>
@@ -130,39 +133,39 @@ const SaveMemoryModal: React.FC<SaveMemoryModalProps> = ({ open, onCancel }) => 
 
   {}
   <Form.Item
-  label="Importance"
+  label={t('memory.form.importance')}
   name="importance"
-  rules={[{ required: true, message: 'Please select an importance level.' }]}
+  rules={[{ required: true, message: t('memory.form.importanceRequired') }]}
   >
-  <Select placeholder="Select importance">
+  <Select placeholder={t('memory.form.importancePlaceholder')}>
   <Option value="critical">
   <Space>
   <Tag color="red">critical</Tag>
-  <span>Critical long-term value</span>
+  <span>{t('memory.form.importanceCritical')}</span>
   </Space>
   </Option>
   <Option value="high">
   <Space>
   <Tag color="orange">high</Tag>
-  <span>High value</span>
+  <span>{t('memory.form.importanceHigh')}</span>
   </Space>
   </Option>
   <Option value="medium">
   <Space>
   <Tag color="blue">medium</Tag>
-  <span>Medium value</span>
+  <span>{t('memory.form.importanceMedium')}</span>
   </Space>
   </Option>
   <Option value="low">
   <Space>
   <Tag color="default">low</Tag>
-  <span>Low value</span>
+  <span>{t('memory.form.importanceLow')}</span>
   </Space>
   </Option>
   <Option value="temporary">
   <Space>
   <Tag color="default">temporary</Tag>
-  <span>Temporary reference</span>
+  <span>{t('memory.form.importanceTemporary')}</span>
   </Space>
   </Option>
   </Select>
@@ -170,13 +173,13 @@ const SaveMemoryModal: React.FC<SaveMemoryModalProps> = ({ open, onCancel }) => 
 
   {}
   <Form.Item
-  label="Tags"
+  label={t('memory.form.tags')}
   name="tags"
-  tooltip="Enter tags; press Enter to add."
+  tooltip={t('memory.form.tagsTip')}
   >
   <Select
   mode="tags"
-  placeholder="Enter tags..."
+  placeholder={t('memory.form.tagsPlaceholder')}
   tokenSeparators={[',']}
   maxTagCount="responsive"
   style={{ width: '100%' }}
@@ -185,13 +188,13 @@ const SaveMemoryModal: React.FC<SaveMemoryModalProps> = ({ open, onCancel }) => 
 
   {}
   <Form.Item
-  label="Keywords"
+  label={t('memory.form.keywords')}
   name="keywords"
-  tooltip="Enter searchable keywords."
+  tooltip={t('memory.form.keywordsTip')}
   >
   <Select
   mode="tags"
-  placeholder="Enter keywords..."
+  placeholder={t('memory.form.keywordsPlaceholder')}
   tokenSeparators={[',']}
   maxTagCount="responsive"
   style={{ width: '100%' }}
@@ -200,22 +203,22 @@ const SaveMemoryModal: React.FC<SaveMemoryModalProps> = ({ open, onCancel }) => 
 
   {}
   <Form.Item
-  label="Context"
+  label={t('memory.form.context')}
   name="context"
-  tooltip="Optional context or domain for this memory."
+  tooltip={t('memory.form.contextTip')}
   >
-  <Input placeholder="e.g., project, issue, experiment" />
+  <Input placeholder={t('memory.form.contextPlaceholder')} />
   </Form.Item>
 
   {}
   <Form.Item
-  label="Task ID"
+  label={t('memory.form.taskId')}
   name="related_task_id"
-  tooltip="Optional: link this memory to a related task ID."
+  tooltip={t('memory.form.taskIdTip')}
   >
   <Input
   type="number"
-  placeholder="Enter task ID (optional)"
+  placeholder={t('memory.form.taskIdPlaceholder')}
   min={1}
   />
   </Form.Item>
@@ -230,11 +233,11 @@ const SaveMemoryModal: React.FC<SaveMemoryModalProps> = ({ open, onCancel }) => 
   fontSize: '13px',
   color: 'var(--text-secondary)'
   }}>
-  <div><strong>Hint:</strong></div>
+  <div><strong>{t('memory.form.hint')}</strong></div>
   <ul style={{ marginTop: '8px', marginBottom: 0, paddingLeft: '20px' }}>
-  <li>Write specific content that is easy to search later.</li>
-  <li>Add tags and keywords to improve retrieval quality.</li>
-  <li>Choose an importance level based on long-term value.</li>
+  <li>{t('memory.form.hint1')}</li>
+  <li>{t('memory.form.hint2')}</li>
+  <li>{t('memory.form.hint3')}</li>
   </ul>
   </div>
   </Modal>

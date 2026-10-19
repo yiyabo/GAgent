@@ -1,6 +1,7 @@
 import React from 'react';
 import { render, screen, waitFor } from '@testing-library/react';
-import { vi } from 'vitest';
+import { afterEach, vi } from 'vitest';
+import { useLanguageStore } from '@/i18n/language';
 import { App as AntdApp } from 'antd';
 
 import QualityAnalytics from './QualityAnalytics';
@@ -16,8 +17,11 @@ vi.mock('@api/quality', () => ({
 const mockedQualityApi = vi.mocked(qualityApi);
 
 describe('QualityAnalytics', () => {
+  afterEach(() => useLanguageStore.setState({ language: 'zh-CN' }));
+
   beforeEach(() => {
     vi.clearAllMocks();
+    useLanguageStore.setState({ language: 'en' });
     mockedQualityApi.getSummary.mockResolvedValue({
       total: 4,
       pending: 1,
@@ -59,5 +63,17 @@ describe('QualityAnalytics', () => {
     expect(screen.getByText('execute task')).toBeInTheDocument();
     expect(screen.getByText('Run a real analysis')).toBeInTheDocument();
     expect(screen.getByText('90% confidence')).toBeInTheDocument();
+  });
+
+  it('renders the same page in Chinese, including the confidence sentence and the status words', async () => {
+    useLanguageStore.setState({ language: 'zh-CN' });
+    render(<AntdApp><QualityAnalytics /></AntdApp>);
+
+    expect(await screen.findByText('对话质量')).toBeInTheDocument();
+    expect(screen.getByText('仅观察模式')).toBeInTheDocument();
+    expect(screen.getByText('用户目标')).toBeInTheDocument();
+    expect(screen.getByText('置信度 90%')).toBeInTheDocument();
+    // The raw data value is shown as data, untranslated.
+    expect(screen.getByText('Run a real analysis')).toBeInTheDocument();
   });
 });

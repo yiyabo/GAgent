@@ -15,9 +15,11 @@ import { useChatStore } from '@store/chat';
 import TreeVisualization from '@components/dag/TreeVisualization';
 import { ENV } from '@/config/env';
 
+import { useT } from '@/i18n/useT';
 const { Title, Text } = Typography;
 
 const Dashboard: React.FC = () => {
+  const t = useT();
   const { systemStatus } = useSystemStore();
   const { tasks, getTaskStats } = useTasksStore();
   const { currentWorkflowId, currentSession, currentPlanId } = useChatStore((state) => ({
@@ -69,10 +71,10 @@ const Dashboard: React.FC = () => {
       {/* Page title */}
       <div className="content-header">
         <Title level={3} style={{ margin: 0 }}>
-          Dashboard
+          {t('dashboard.title')}
         </Title>
         <Text type="secondary" style={{ fontSize: 12 }}>
-          System Overview
+          {t('dashboard.overview')}
         </Text>
       </div>
 
@@ -91,7 +93,7 @@ const Dashboard: React.FC = () => {
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                 <DatabaseOutlined style={{ color: 'var(--text-secondary)', fontSize: 16 }} />
                 <div>
-                  <Text type="secondary" style={{ fontSize: 12 }}>Tasks</Text>
+                  <Text type="secondary" style={{ fontSize: 12 }}>{t('dashboard.tasks')}</Text>
                   <div style={{ fontSize: 20, fontWeight: 500, color: 'var(--text-primary)' }}>
                     {stats.total}
                   </div>
@@ -112,7 +114,7 @@ const Dashboard: React.FC = () => {
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                 <ClockCircleOutlined style={{ color: 'var(--warning-color)', fontSize: 16 }} />
                 <div>
-                  <Text type="secondary" style={{ fontSize: 12 }}>Pending</Text>
+                  <Text type="secondary" style={{ fontSize: 12 }}>{t('status.pending')}</Text>
                   <div style={{ fontSize: 20, fontWeight: 500, color: 'var(--warning-color)' }}>
                     {stats.pending}
                   </div>
@@ -133,7 +135,7 @@ const Dashboard: React.FC = () => {
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                 <PlayCircleOutlined style={{ color: 'var(--info-color)', fontSize: 16 }} />
                 <div>
-                  <Text type="secondary" style={{ fontSize: 12 }}>Running</Text>
+                  <Text type="secondary" style={{ fontSize: 12 }}>{t('status.running')}</Text>
                   <div style={{ fontSize: 20, fontWeight: 500, color: 'var(--info-color)' }}>
                     {stats.running}
                   </div>
@@ -154,13 +156,13 @@ const Dashboard: React.FC = () => {
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                 <CheckCircleOutlined style={{ color: 'var(--success-color)', fontSize: 16 }} />
                 <div>
-                  <Text type="secondary" style={{ fontSize: 12 }}>Completed</Text>
+                  <Text type="secondary" style={{ fontSize: 12 }}>{t('status.completed')}</Text>
                   <div style={{ fontSize: 20, fontWeight: 500, color: 'var(--success-color)' }}>
                     {stats.completed}
                   </div>
                   {stats.failed > 0 && (
                     <Text type="danger" style={{ fontSize: 12, marginTop: 2 }}>
-                      {stats.failed} Failed
+                      {t('dashboard.failedCount', { count: stats.failed })}
                     </Text>
                   )}
                 </div>
@@ -173,7 +175,7 @@ const Dashboard: React.FC = () => {
         <Row gutter={[16, 16]} style={{ marginBottom: 20 }}>
           <Col xs={24} lg={12}>
             <Card
-              title="System Status"
+              title={t('dashboard.systemStatus')}
               size="small"
               style={{
                 borderRadius: 'var(--radius-md)',
@@ -184,9 +186,9 @@ const Dashboard: React.FC = () => {
               <Space direction="vertical" style={{ width: '100%' }} size="middle">
                 <div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
-                    <Text>API Connection</Text>
+                    <Text>{t('dashboard.apiConnection')}</Text>
                     <Text strong style={{ color: systemStatus.api_connected ? 'var(--status-success-fg)' : 'var(--status-error-fg)' }}>
-                      {systemStatus.api_connected ? 'Connected' : 'Disconnected'}
+                      {systemStatus.api_connected ? t('dashboard.connected') : t('dashboard.disconnected')}
                     </Text>
                   </div>
                   <Progress
@@ -199,11 +201,11 @@ const Dashboard: React.FC = () => {
 
                 <div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
-                    <Text>Database Status</Text>
+                    <Text>{t('dashboard.databaseStatus')}</Text>
                     <Text strong style={{
                       color: systemStatus.database_status === 'connected' ? 'var(--status-success-fg)' : 'var(--status-error-fg)'
                     }}>
-                      {systemStatus.database_status === 'connected' ? 'Normal' : 'Error'}
+                      {systemStatus.database_status === 'connected' ? t('dashboard.dbNormal') : t('dashboard.dbError')}
                     </Text>
                   </div>
                   <Progress
@@ -216,9 +218,9 @@ const Dashboard: React.FC = () => {
 
                 <div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
-                    <Text>System Load</Text>
+                    <Text>{t('dashboard.systemLoad')}</Text>
                     <Text strong>
-                      {systemStatus.system_load.cpu}% CPU
+                      {t('dashboard.cpu', { percent: systemStatus.system_load.cpu })}
                     </Text>
                   </div>
                   <Progress
@@ -242,7 +244,7 @@ const Dashboard: React.FC = () => {
                   fontSize: 15,
                 }}>
                   <span>📈</span>
-                  <span>API Call Statistics</span>
+                  <span>{t('dashboard.apiStats')}</span>
                 </span>
               }
               size="small"
@@ -254,21 +256,21 @@ const Dashboard: React.FC = () => {
             >
               <Space direction="vertical" style={{ width: '100%' }} size="middle">
                 <Statistic
-                  title="Calls per Minute"
+                  title={t('dashboard.callsPerMinute')}
                   value={systemStatus.system_load.api_calls_per_minute}
-                  suffix="calls/min"
+                  suffix={t('dashboard.callsPerMinuteUnit')}
                   prefix={<RobotOutlined />}
                 />
                 
                 <div>
                   <Text type="secondary">
-                    System is using real GLM API, no Mock mode
+                    {t('dashboard.realApiNote')}
                   </Text>
                 </div>
 
                 <div>
                   <Text type="secondary" style={{ fontSize: 12 }}>
-                    Memory Usage: {systemStatus.system_load.memory}%
+                    {t('dashboard.memoryUsage', { percent: systemStatus.system_load.memory })}
                   </Text>
                   <Progress
                     percent={systemStatus.system_load.memory}
@@ -294,7 +296,7 @@ const Dashboard: React.FC = () => {
                   fontSize: 15,
                 }}>
                   <span>🎯</span>
-                  <span>Task Orchestration Graph</span>
+                  <span>{t('dashboard.graphTitle')}</span>
                 </span>
               }
               size="small"
@@ -308,7 +310,7 @@ const Dashboard: React.FC = () => {
                   onClick={async () => {
                     console.log('Testing PlanTree API...');
                     if (!currentPlanId) {
-                      message.warning('No plan bound yet, cannot request PlanTree data.');
+                      message.warning(t('dashboard.noPlanBound'));
                       return;
                     }
                     try {
@@ -320,11 +322,11 @@ const Dashboard: React.FC = () => {
                       console.log('PlanTree node count:', Object.keys(data.nodes || {}).length);
                     } catch (error) {
                       console.error('PlanTree API debug failed:', error);
-                      message.error('PlanTree API debug failed, please check backend service.');
+                      message.error(t('dashboard.planTreeDebugFailed'));
                     }
                   }}
                 >
-                  Debug API
+                  {t('dashboard.debugApi')}
                 </Button>
               }
             >

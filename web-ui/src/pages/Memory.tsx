@@ -16,16 +16,16 @@ import {
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { memoryApi } from '@api/memory';
 import { useMemoryStore } from '@store/memory';
+import { memoryTypeLabel, memoryImportanceLabel, memoryTypeOptions, memoryImportanceOptions } from '@/i18n/memoryLabels';
+import { translate } from '@/i18n/useT';
 import SaveMemoryModal from '@components/memory/SaveMemoryModal';
 import MemoryDetailDrawer from '@components/memory/MemoryDetailDrawer';
 import MemoryGraph from '@components/memory/MemoryGraph';
 import type { Memory } from '@/types';
 import dayjs from 'dayjs';
 import relativeTime from 'dayjs/plugin/relativeTime';
-import 'dayjs/locale/zh-cn';
-
+import { useT } from '@/i18n/useT';
 dayjs.extend(relativeTime);
-dayjs.locale('zh-cn');
 
 const { Search } = Input;
 
@@ -46,6 +46,7 @@ const useDebounce = <T,>(value: T, delay: number): T => {
 };
 
 const MemoryPage: React.FC = () => {
+  const t = useT();
   const queryClient = useQueryClient();
   const {
   memories,
@@ -79,7 +80,7 @@ const MemoryPage: React.FC = () => {
   retry: 2,
   retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 5000),
   onError: (error: any) => {
-  message.error(`Failed to load statistics: ${error.message || 'Network error'}`);
+  message.error(translate('memory.toastStatsFailed', { message: error.message || translate('common.unknownError') }));
   },
   });
 
@@ -108,7 +109,7 @@ const MemoryPage: React.FC = () => {
   retry: 2,
   retryDelay: (attemptIndex) => Math.min(1000 * 2 ** attemptIndex, 5000),
   onError: (error: any) => {
-  message.error(`Failed to load memory: ${error.message || 'Network error'}`);
+  message.error(translate('memory.toastListFailed', { message: error.message || translate('common.unknownError') }));
   },
   });
 
@@ -121,11 +122,11 @@ const MemoryPage: React.FC = () => {
   const handleRefresh = useCallback(async () => {
   try {
   await refetch();
-  message.success('Refreshed successfully');
+  message.success(t('memory.refreshed'));
   } catch (error: any) {
-  message.error(`Refresh failed: ${error.message || 'Network error'}`);
+  message.error(t('memory.refreshFailed', { message: error.message || t('common.unknownError') }));
   }
-  }, [refetch]);
+  }, [refetch, t]);
 
   const handleSearchChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
   setSearchInput(e.target.value);
@@ -165,7 +166,7 @@ const MemoryPage: React.FC = () => {
 
   const columns = [
   {
-  title: 'ID',
+  title: t('memory.col.id'),
   dataIndex: 'id',
   key: 'id',
   width: 100,
@@ -179,7 +180,7 @@ const MemoryPage: React.FC = () => {
   ),
   },
   {
-  title: 'Content',
+  title: t('memory.col.content'),
   dataIndex: 'content',
   key: 'content',
   ellipsis: true,
@@ -190,53 +191,29 @@ const MemoryPage: React.FC = () => {
   ),
   },
   {
-  title: 'Type',
+  title: t('memory.col.type'),
   dataIndex: 'memory_type',
   key: 'memory_type',
   width: 120,
-  filters: [
-  { text: 'Conversation', value: 'conversation' },
-  { text: 'Experience', value: 'experience' },
-  { text: 'Knowledge', value: 'knowledge' },
-  { text: 'Context', value: 'context' },
-  ],
+  filters: memoryTypeOptions(t).map(({ label, value }) => ({ text: label, value })),
   onFilter: (value: any, record: Memory) => record.memory_type === value,
   render: (type: Memory['memory_type']) => {
-  const labels = {
-  conversation: 'Conversation',
-  experience: 'Experience',
-  knowledge: 'Knowledge',
-  context: 'Context',
-  };
-  return <Tag color={getMemoryTypeColor(type)}>{labels[type]}</Tag>;
+  return <Tag color={getMemoryTypeColor(type)}>{memoryTypeLabel(t, type)}</Tag>;
   },
   },
   {
-  title: 'Importance',
+  title: t('memory.col.importance'),
   dataIndex: 'importance',
   key: 'importance',
   width: 100,
-  filters: [
-  { text: 'Critical', value: 'critical' },
-  { text: 'High', value: 'high' },
-  { text: 'Medium', value: 'medium' },
-  { text: 'Low', value: 'low' },
-  { text: 'Temporary', value: 'temporary' },
-  ],
+  filters: memoryImportanceOptions(t).map(({ label, value }) => ({ text: label, value })),
   onFilter: (value: any, record: Memory) => record.importance === value,
   render: (importance: Memory['importance']) => {
-  const labels = {
-  critical: 'Critical',
-  high: 'High',
-  medium: 'Medium',
-  low: 'Low',
-  temporary: 'Temporary',
-  };
-  return <Tag color={getImportanceColor(importance)}>{labels[importance]}</Tag>;
+  return <Tag color={getImportanceColor(importance)}>{memoryImportanceLabel(t, importance)}</Tag>;
   },
   },
   {
-  title: 'Keywords',
+  title: t('memory.col.keywords'),
   dataIndex: 'keywords',
   key: 'keywords',
   width: 200,
@@ -250,7 +227,7 @@ const MemoryPage: React.FC = () => {
   ),
   },
   {
-  title: 'Similarity',
+  title: t('memory.col.similarity'),
   dataIndex: 'similarity',
   key: 'similarity',
   width: 100,
@@ -262,14 +239,14 @@ const MemoryPage: React.FC = () => {
   sorter: (a: Memory, b: Memory) => (a.similarity || 0) - (b.similarity || 0),
   },
   {
-  title: 'Retrievals',
+  title: t('memory.col.retrievals'),
   dataIndex: 'retrieval_count',
   key: 'retrieval_count',
   width: 100,
   sorter: (a: Memory, b: Memory) => a.retrieval_count - b.retrieval_count,
   },
   {
-  title: 'Created',
+  title: t('memory.col.created'),
   dataIndex: 'created_at',
   key: 'created_at',
   width: 160,
@@ -281,13 +258,13 @@ const MemoryPage: React.FC = () => {
   sorter: (a: Memory, b: Memory) => dayjs(a.created_at).unix() - dayjs(b.created_at).unix(),
   },
   {
-  title: 'Actions',
+  title: t('memory.col.actions'),
   key: 'action',
   width: 120,
   fixed: 'right' as const,
   render: (_: any, record: Memory) => (
   <Space size="small">
-  <Tooltip title="View details">
+  <Tooltip title={t('memory.viewDetails')}>
   <Button
   type="text"
   size="small"
@@ -309,10 +286,10 @@ const MemoryPage: React.FC = () => {
   <div className="content-header">
   <h2 style={{ margin: 0, display: 'flex', alignItems: 'center', gap: '8px' }}>
   <DatabaseOutlined style={{ color: 'var(--color-action)' }} />
-  Memory
+  {t('memory.title')}
   </h2>
   <p style={{ margin: '8px 0 0 0', color: 'var(--text-secondary)' }}>
-  Memory-MCP system overview and AI memory management
+  {t('memory.subtitle')}
   </p>
   </div>
 
@@ -320,8 +297,8 @@ const MemoryPage: React.FC = () => {
   {}
   {isStatsError && (
   <Alert
-  message="Failed to load statistics"
-  description={`Error: ${(statsError as any)?.message || 'Network error'}. Please check backend service status.`}
+  message={t('memory.statsLoadFailed')}
+  description={t('memory.errorDetail', { message: (statsError as any)?.message || t('common.unknownError') })}
   type="error"
   showIcon
   closable
@@ -329,7 +306,7 @@ const MemoryPage: React.FC = () => {
   style={{ marginBottom: 16 }}
   action={
   <Button size="small" danger onClick={handleRefresh}>
-  Retry
+  {t('common.retry')}
   </Button>
   }
   />
@@ -338,8 +315,8 @@ const MemoryPage: React.FC = () => {
   {}
   {isQueryError && (
   <Alert
-  message="Failed to load memories"
-  description={`Error: ${(queryError as any)?.message || 'Network error'}. Please check backend service status.`}
+  message={t('memory.listLoadFailed')}
+  description={t('memory.errorDetail', { message: (queryError as any)?.message || t('common.unknownError') })}
   type="error"
   showIcon
   closable
@@ -347,7 +324,7 @@ const MemoryPage: React.FC = () => {
   style={{ marginBottom: 16 }}
   action={
   <Button size="small" danger onClick={handleRefresh}>
-  Retry
+  {t('common.retry')}
   </Button>
   }
   />
@@ -359,7 +336,7 @@ const MemoryPage: React.FC = () => {
   <Col xs={24} sm={12} md={6}>
   <Card>
   <Statistic
-  title="Memories"
+  title={t('memory.statMemories')}
   value={stats.total_memories}
   prefix={<DatabaseOutlined />}
   valueStyle={{ color: 'var(--color-action)' }}
@@ -369,18 +346,18 @@ const MemoryPage: React.FC = () => {
   <Col xs={24} sm={12} md={6}>
   <Card>
   <Statistic
-  title="Avg Connections"
+  title={t('memory.statAvgConnections')}
   value={stats.average_connections}
   precision={1}
   valueStyle={{ color: 'var(--status-success-fg)' }}
-  suffix="links"
+  suffix={t('memory.statLinks')}
   />
   </Card>
   </Col>
   <Col xs={24} sm={12} md={6}>
   <Card>
   <Statistic
-  title="Embedding Coverage"
+  title={t('memory.statEmbeddingCoverage')}
   value={(stats.embedding_coverage * 100).toFixed(1)}
   valueStyle={{ color: stats.embedding_coverage > 0.8 ? 'var(--status-success-fg)' : 'var(--status-warning-fg)' }}
   suffix="%"
@@ -396,7 +373,7 @@ const MemoryPage: React.FC = () => {
   <Col xs={24} sm={12} md={6}>
   <Card>
   <Statistic
-  title="Evolution Count"
+  title={t('memory.statEvolutionCount')}
   value={stats.evolution_count || 0}
   valueStyle={{ color: 'var(--status-blocked-fg)' }}
   />
@@ -410,7 +387,7 @@ const MemoryPage: React.FC = () => {
   <Space wrap style={{ width: '100%', justifyContent: 'space-between' }}>
   <Space wrap>
   <Search
-  placeholder="Search memory content, tags, or context..."
+  placeholder={t('memory.searchPlaceholder')}
   allowClear
   style={{ width: 300 }}
   value={searchInput}
@@ -422,33 +399,22 @@ const MemoryPage: React.FC = () => {
 
   <Select
   mode="multiple"
-  placeholder="Memory type"
+  placeholder={t('memory.typePlaceholder')}
   style={{ minWidth: 180 }}
   value={filters.memory_types}
   onChange={(value) => setFilters({ memory_types: value })}
-  options={[
-  { label: 'Conversation', value: 'conversation' },
-  { label: 'Experience', value: 'experience' },
-  { label: 'Knowledge', value: 'knowledge' },
-  { label: 'Context', value: 'context' },
-  ]}
+  options={memoryTypeOptions(t)}
   maxTagCount="responsive"
   disabled={isLoading}
   />
 
   <Select
   mode="multiple"
-  placeholder="Importance level"
+  placeholder={t('memory.importancePlaceholder')}
   style={{ minWidth: 150 }}
   value={filters.importance_levels}
   onChange={(value) => setFilters({ importance_levels: value })}
-  options={[
-  { label: 'Critical', value: 'critical' },
-  { label: 'High', value: 'high' },
-  { label: 'Medium', value: 'medium' },
-  { label: 'Low', value: 'low' },
-  { label: 'Temporary', value: 'temporary' },
-  ]}
+  options={memoryImportanceOptions(t)}
   maxTagCount="responsive"
   disabled={isLoading}
   />
@@ -458,7 +424,7 @@ const MemoryPage: React.FC = () => {
   onClick={handleClearFilters}
   disabled={isLoading}
   >
-  Clear filters
+  {t('memory.clearFilters')}
   </Button>
   </Space>
 
@@ -468,14 +434,14 @@ const MemoryPage: React.FC = () => {
   onClick={handleRefresh}
   loading={isLoading}
   >
-  Refresh
+  {t('common.refresh')}
   </Button>
   <Button
   type="primary"
   icon={<PlusOutlined />}
   onClick={() => setIsModalOpen(true)}
   >
-  Save Memory
+  {t('memory.save')}
   </Button>
   </Space>
   </Space>
@@ -492,7 +458,7 @@ const MemoryPage: React.FC = () => {
   label: (
   <span>
   <UnorderedListOutlined />
-  List
+  {t('memory.tabList')}
   </span>
   ),
   children: (
@@ -504,7 +470,7 @@ const MemoryPage: React.FC = () => {
   pagination={{
   showSizeChanger: true,
   showQuickJumper: true,
-  showTotal: (total) => `Total ${total} memories`,
+  showTotal: (total) => t('memory.total', { count: total }),
   defaultPageSize: 20,
   pageSizeOptions: ['10', '20', '50', '100'],
   }}
@@ -517,7 +483,7 @@ const MemoryPage: React.FC = () => {
   label: (
   <span>
   <ApartmentOutlined />
-  Graph
+  {t('memory.tabGraph')}
   </span>
   ),
   children: (
