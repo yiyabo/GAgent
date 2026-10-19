@@ -26,7 +26,6 @@ from app.services.deep_think_agent import (
 from app.services.evaluation.llm_evaluator import LLMEvaluator
 from app.services.evaluation.meta_evaluator import MetaEvaluator
 from app.services.evaluation.expert_evaluator import MultiExpertEvaluator
-from app.services.evaluation.phage_evaluator import PhageEvaluator
 from app.services.evaluation.adversarial_evaluator import ContentCritic, ContentGenerator
 from app.services.plans.plan_executor import (
     ExecutionConfig,
@@ -1961,20 +1960,6 @@ def test_meta_evaluator_fails_without_llm_payload(
             content="content",
             task_context={"name": "task"},
         )
-
-
-def test_phage_evaluator_fails_without_llm_payload(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    evaluator = PhageEvaluator()
-    monkeypatch.setattr(
-        evaluator,
-        "call_llm_with_json_parsing",
-        lambda *_args, **_kwargs: None,
-    )
-
-    with pytest.raises(RuntimeError, match="phage expert evaluation failed"):
-        evaluator._llm_phage_evaluate("content", {"name": "task"})
 
 
 class _ExpertLLMFailureStub:

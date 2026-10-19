@@ -236,12 +236,6 @@ export default defineConfig(({ mode }) => {
               return 'vendor';
             }
             if (
-              id.includes('/monaco-editor/') ||
-              id.includes('/@monaco-editor/')
-            ) {
-              return 'editor';
-            }
-            if (
               id.includes('/vis-network/') ||
               id.includes('/vis-data/')
             ) {

@@ -5,8 +5,6 @@ export const createUISlice: ChatSliceCreator = (set) => ({
     isTyping: false,
     processingSessionIds: new Set<string>(),
     activeRunIds: new Map<string, string>(),
-    chatPanelVisible: true,
-    chatPanelWidth: 400,
 
     setInputText: (text) => set({ inputText: text }),
     setIsTyping: (typing) => set({ isTyping: typing }),
@@ -25,7 +23,4 @@ export const createUISlice: ChatSliceCreator = (set) => ({
             else next.delete(sessionKey);
             return { activeRunIds: next };
         }),
-    toggleChatPanel: () => set((state) => ({ chatPanelVisible: !state.chatPanelVisible })),
-    setChatPanelVisible: (visible) => set({ chatPanelVisible: visible }),
-    setChatPanelWidth: (width) => set({ chatPanelWidth: width }),
 });
