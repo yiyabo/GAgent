@@ -117,7 +117,7 @@ const ChatLayout: React.FC = () => {
   className="chatlist-collapse-button chatlist-handle-vertical"
   onClick={toggleChatList}
   >
-  <span className="chatlist-handle-text"></span>
+  <span className="chatlist-handle-text">Chats</span>
   </Button>
   </Tooltip>
   </div>

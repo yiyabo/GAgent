@@ -36,7 +36,7 @@ const EMPTY_BOARD = (): BackgroundTaskBoardResponse => ({
   groups: {
   task_creation: {
   key: 'task_creation',
-  label: 'taskcreate',
+  label: 'Task creation',
   total: 0,
   running: 0,
   queued: 0,

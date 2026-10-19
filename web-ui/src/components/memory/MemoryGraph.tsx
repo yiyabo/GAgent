@@ -395,22 +395,22 @@ const MemoryGraph: React.FC<MemoryGraphProps> = ({ onNodeClick, height = '600px'
   }}
   >
   <div style={{ fontWeight: 'bold', marginBottom: '8px', color: 'var(--color-action)' }}>
-  🗺️ memory
+  🗺️ Memory graph legend
   </div>
 
   <div style={{ marginBottom: '8px' }}>
   <div style={{ fontWeight: 'bold', fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '4px' }}>
-  =  + 
+  Node size = importance + retrievals
   </div>
   </div>
 
   <div style={{ marginBottom: '8px' }}>
   <div style={{ fontWeight: 'bold', fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '4px' }}>
-  :
+  Importance colour:
   </div>
   <div style={{ marginLeft: '8px' }}>
   <div style={{ marginBottom: '2px' }}>
-  <span style={{ color: 'var(--status-error-fg)' }}>●</span> 
+  <span style={{ color: 'var(--status-error-fg)' }}>●</span> critical
   </div>
   <div style={{ marginBottom: '2px' }}>
   <span style={{ color: 'var(--status-warning-fg)' }}>●</span> high
@@ -422,41 +422,41 @@ const MemoryGraph: React.FC<MemoryGraphProps> = ({ onNodeClick, height = '600px'
   <span style={{ color: 'var(--status-success-fg)' }}>●</span> low
   </div>
   <div>
-  <span style={{ color: 'var(--text-tertiary)' }}>●</span> 
+  <span style={{ color: 'var(--text-tertiary)' }}>●</span> temporary
   </div>
   </div>
   </div>
 
   <div style={{ marginBottom: '8px' }}>
   <div style={{ fontWeight: 'bold', fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '4px' }}>
-  type:
+  Type shape:
   </div>
   <div style={{ marginLeft: '8px' }}>
-  <div>■  | ●  | ◆  | ★ </div>
+  <div>■ conversation | ● experience | ◆ knowledge | ★ context</div>
   </div>
   </div>
 
   <div>
   <div style={{ fontWeight: 'bold', fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '4px' }}>
-  connection:
+  Connection line:
   </div>
   <div style={{ marginLeft: '8px' }}>
   <div style={{ marginBottom: '2px' }}>
-  <span aria-hidden style={{ display: 'inline-block', width: 20, height: 3, borderRadius: 2, verticalAlign: 'middle', marginRight: 6, background: 'var(--status-success-fg)' }} /> high (&gt;80%)
+  <span aria-hidden style={{ display: 'inline-block', width: 20, height: 3, borderRadius: 2, verticalAlign: 'middle', marginRight: 6, background: 'var(--status-success-fg)' }} /> high similarity (&gt;80%)
   </div>
   <div style={{ marginBottom: '2px' }}>
-  <span aria-hidden style={{ display: 'inline-block', width: 20, height: 3, borderRadius: 2, verticalAlign: 'middle', marginRight: 6, background: 'var(--color-action)' }} /> medium (60-80%)
+  <span aria-hidden style={{ display: 'inline-block', width: 20, height: 3, borderRadius: 2, verticalAlign: 'middle', marginRight: 6, background: 'var(--color-action)' }} /> medium similarity (60-80%)
   </div>
   <div>
-  <span aria-hidden style={{ display: 'inline-block', width: 20, height: 3, borderRadius: 2, verticalAlign: 'middle', marginRight: 6, background: 'var(--border-strong)' }} /> low (&lt;60%)
+  <span aria-hidden style={{ display: 'inline-block', width: 20, height: 3, borderRadius: 2, verticalAlign: 'middle', marginRight: 6, background: 'var(--border-strong)' }} /> low similarity (&lt;60%)
   </div>
   </div>
   </div>
 
   <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginTop: '8px', borderTop: '1px solid var(--border-subtle)', paddingTop: '6px' }}>
-  💡 <br />
-  🔍 <br />
-  🖱️ 
+  💡 Click a node for details<br />
+  🔍 Drag to move nodes<br />
+  🖱️ Scroll to zoom
   </div>
   </div>
   );
@@ -471,10 +471,10 @@ const MemoryGraph: React.FC<MemoryGraphProps> = ({ onNodeClick, height = '600px'
   <Card
   title={
   <Space>
-  <span>🗺️ memoryconnection</span>
+  <span>🗺️ Memory graph</span>
   <Badge count={memoryCount} style={{ backgroundColor: 'var(--status-success-bg)', color: 'var(--status-success-fg)', boxShadow: '0 0 0 1px var(--status-success-border)' }} />
   <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
-  (connection: {avgConnections})
+  (avg {avgConnections} links)
   </span>
   </Space>
   }
@@ -482,7 +482,7 @@ const MemoryGraph: React.FC<MemoryGraphProps> = ({ onNodeClick, height = '600px'
   extra={
   <Space wrap>
   <Input.Search
-  placeholder="searchmemory"
+  placeholder="Search"
   style={{ width: 200 }}
   value={searchText}
   onChange={(e) => setSearchText(e.target.value)}
@@ -491,7 +491,7 @@ const MemoryGraph: React.FC<MemoryGraphProps> = ({ onNodeClick, height = '600px'
   size="small"
   />
 
-  <Tooltip title="">
+  <Tooltip title="Similarity threshold">
   <div style={{ width: 150, display: 'inline-block' }}>
   <Slider
   min={0}
@@ -510,9 +510,9 @@ const MemoryGraph: React.FC<MemoryGraphProps> = ({ onNodeClick, height = '600px'
   value={layout}
   onChange={(e) => setLayout(e.target.value)}
   options={[
-  { label: '', value: 'force' },
-  { label: '', value: 'hierarchical' },
-  { label: '', value: 'circular' },
+  { label: 'Force', value: 'force' },
+  { label: 'Hierarchy', value: 'hierarchical' },
+  { label: 'Circular', value: 'circular' },
   ]}
   />
 
@@ -521,11 +521,11 @@ const MemoryGraph: React.FC<MemoryGraphProps> = ({ onNodeClick, height = '600px'
   type={showLabels ? 'primary' : 'default'}
   onClick={() => setShowLabels(!showLabels)}
   >
-  {showLabels ? '' : ''}
+  {showLabels ? 'Hide labels' : 'Show labels'}
   </Button>
 
-  <Button size="small" icon={<ExpandOutlined />} onClick={handleFitView} title="" />
-  <Button size="small" icon={<FullscreenOutlined />} onClick={handleFullscreen} title="" />
+  <Button size="small" icon={<ExpandOutlined />} onClick={handleFitView} title="Fit to view" aria-label="Fit to view" />
+  <Button size="small" icon={<FullscreenOutlined />} onClick={handleFullscreen} title="Fullscreen" aria-label="Fullscreen" />
   <Button size="small" icon={<ReloadOutlined />} onClick={handleRefresh} loading={loading}>
   refresh
   </Button>
