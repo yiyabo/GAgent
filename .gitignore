@@ -108,5 +108,6 @@ bio_tools_test_matrix.json
 logs/
 tools/pkgs/
 web-ui/test-results/
+web-ui/playwright-report/
 lightrag.log
 evals/user_journey/runs/

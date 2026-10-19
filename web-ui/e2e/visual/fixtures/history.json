@@ -1,0 +1,193 @@
+{
+ "success": true,
+ "session_id": "session_fixture_1",
+ "messages": [
+  {
+   "id": 1,
+   "role": "user",
+   "content": "hello",
+   "timestamp": "2026-10-19 04:51:12",
+   "metadata": {
+    "client_message_id": "client_1792385472036_rx0p13f9",
+    "chat_response_preferences": {
+     "response_style": "general",
+     "response_length": "auto",
+     "version": 1
+    }
+   }
+  },
+  {
+   "id": 2,
+   "role": "assistant",
+   "content": "This is a mock completion.",
+   "timestamp": "2026-10-19 04:51:16",
+   "metadata": {
+    "plan_id": null,
+    "plan_title": null,
+    "deep_think": true,
+    "iterations": 1,
+    "tools_used": [],
+    "confidence": 0.85,
+    "tool_failures": [],
+    "search_verified": true,
+    "fallback_used": false,
+    "status": "completed",
+    "unified_stream": true,
+    "request_tier": "standard",
+    "request_route_mode": "auto_deepthink",
+    "route_reason_codes": [
+     "intent_chat",
+     "greeting_or_social"
+    ],
+    "thinking_visibility": "visible",
+    "thinking_display_mode": "final_answer",
+    "intent_type": "chat",
+    "subject_resolution": {
+     "kind": "none",
+     "canonical_ref": null,
+     "display_ref": null,
+     "source": "none",
+     "continuity": "none",
+     "confidence": 0.0
+    },
+    "brevity_hint": true,
+    "explicit_task_ids": [],
+    "explicit_task_override": false,
+    "full_plan_execution": false,
+    "plan_create_required": false,
+    "plan_execute_required": false,
+    "plan_execute_after_create_required": false,
+    "plan_review_required": false,
+    "plan_optimize_required": false,
+    "plan_new_requested": false,
+    "plan_conflict_requires_confirmation": false,
+    "output_input_snapshot": {},
+    "output_spec_base_dir": "/srv/gagent/runtime/session_fixture_1",
+    "analysis_text": "This is a mock completion.",
+    "final_summary": "This is a mock completion.",
+    "thinking_process": {
+     "status": "completed",
+     "total_iterations": 1,
+     "summary": "This is a mock completion",
+     "steps": [
+      {
+       "iteration": 1,
+       "thought": "This is a mock completion.",
+       "display_text": "This is a mock completion",
+       "kind": "reasoning",
+       "action": null,
+       "action_result": null,
+       "evidence": [],
+       "status": "done",
+       "started_at": "2026-10-19T12:51:15.971136",
+       "finished_at": "2026-10-19T12:51:15.977162",
+       "timestamp": "2026-10-19T12:51:15.971117",
+       "self_correction": null
+      }
+     ]
+    },
+    "deep_think_job_id": "dt_5a11d1fa728f45888c3fe1d5c02933d2",
+    "chat_response_preferences": {
+     "response_style": "general",
+     "response_length": "auto",
+     "version": 1
+    }
+   }
+  },
+  {
+   "id": 3,
+   "role": "user",
+   "content": "你好呀",
+   "timestamp": "2026-10-19 04:55:00",
+   "metadata": {
+    "client_message_id": "client_1792385700600_bd5klcw6",
+    "chat_response_preferences": {
+     "response_style": "general",
+     "response_length": "auto",
+     "version": 1
+    }
+   }
+  },
+  {
+   "id": 4,
+   "role": "assistant",
+   "content": "This is a mock completion.",
+   "timestamp": "2026-10-19 04:55:00",
+   "metadata": {
+    "plan_id": null,
+    "plan_title": null,
+    "deep_think": true,
+    "iterations": 1,
+    "tools_used": [],
+    "confidence": 0.85,
+    "tool_failures": [],
+    "search_verified": true,
+    "fallback_used": false,
+    "status": "completed",
+    "unified_stream": true,
+    "request_tier": "standard",
+    "request_route_mode": "auto_deepthink",
+    "route_reason_codes": [
+     "intent_chat",
+     "greeting_or_social"
+    ],
+    "thinking_visibility": "visible",
+    "thinking_display_mode": "final_answer",
+    "intent_type": "chat",
+    "subject_resolution": {
+     "kind": "none",
+     "canonical_ref": null,
+     "display_ref": null,
+     "source": "none",
+     "continuity": "none",
+     "confidence": 0.0
+    },
+    "brevity_hint": true,
+    "explicit_task_ids": [],
+    "explicit_task_override": false,
+    "full_plan_execution": false,
+    "plan_create_required": false,
+    "plan_execute_required": false,
+    "plan_execute_after_create_required": false,
+    "plan_review_required": false,
+    "plan_optimize_required": false,
+    "plan_new_requested": false,
+    "plan_conflict_requires_confirmation": false,
+    "output_input_snapshot": {},
+    "output_spec_base_dir": "/srv/gagent/runtime/session_fixture_1",
+    "analysis_text": "This is a mock completion.",
+    "final_summary": "This is a mock completion.",
+    "thinking_process": {
+     "status": "completed",
+     "total_iterations": 1,
+     "summary": "This is a mock completion",
+     "steps": [
+      {
+       "iteration": 1,
+       "thought": "This is a mock completion.",
+       "display_text": "This is a mock completion",
+       "kind": "reasoning",
+       "action": null,
+       "action_result": null,
+       "evidence": [],
+       "status": "done",
+       "started_at": "2026-10-19T12:55:00.659454",
+       "finished_at": "2026-10-19T12:55:00.665278",
+       "timestamp": "2026-10-19T12:55:00.659433",
+       "self_correction": null
+      }
+     ]
+    },
+    "deep_think_job_id": "dt_563e176376bc492a8e6037b773cac586",
+    "chat_response_preferences": {
+     "response_style": "general",
+     "response_length": "auto",
+     "version": 1
+    }
+   }
+  }
+ ],
+ "total": 4,
+ "has_more": false,
+ "next_before_id": 1
+}

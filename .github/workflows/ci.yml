@@ -40,7 +40,7 @@ jobs:
 
   frontend-regressions:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: web-ui
@@ -58,6 +58,19 @@ jobs:
         run: npm run lint
       - name: Run frontend regressions
         run: npm run test -- --run
+      - name: Install browser for the visual smoke
+        run: npx playwright install --with-deps chromium
+      - name: Visual smoke (both themes, every page)
+        run: npm run test:visual
+      - name: Keep the failure screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: visual-smoke-report
+          path: |
+            web-ui/test-results
+            web-ui/playwright-report
+          retention-days: 7
 
   # ---------------------------------------------------------------------------
   # P6 (LOCAL_INFRA §126): build the stack images and prove the real stack on

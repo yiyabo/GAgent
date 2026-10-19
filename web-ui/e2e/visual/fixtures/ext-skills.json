@@ -1,0 +1,83 @@
+{
+ "can_manage": false,
+ "skills": [
+  {
+   "name": "bio-data-interpreter",
+   "description": "Bioinformatics data interpretation skill for genomics, proteomics, metagenomics, and phage analysis. Covers sequence analysis, annotation, assembly quality, phy",
+   "origin": {
+    "kind": "internal",
+    "source": "gagent",
+    "license": "internal",
+    "commit": "07947a91014b6318d7b2e1e0a4221be8a22413ea",
+    "modified": false,
+    "modifications": [],
+    "path": "skills/bio-data-interpreter"
+   },
+   "review": {
+    "scanner": "passed",
+    "reviewed_by": "claude (AI), full text read",
+    "reviewed_at": "2026-10-18",
+    "human_signoff": false,
+    "notes": "Written in-house; commit is the one that added the skill to this repository. Not a third-party import.",
+    "scanner_version": 1
+   },
+   "findings": [],
+   "enabled": true,
+   "size_chars": 4517,
+   "scripts": 0,
+   "references": 1
+  },
+  {
+   "name": "bio-tools-execution-playbook",
+   "description": "Execution playbook for bio_tools remote mode, with reusable request templates and I/O conventions. Trigger when agent needs concrete payloads for tool_name/oper",
+   "origin": {
+    "kind": "internal",
+    "source": "gagent",
+    "license": "internal",
+    "commit": "bad644501a616ac9121249830190c250b5bd8ce2",
+    "modified": false,
+    "modifications": [],
+    "path": "skills/bio-tools-execution-playbook"
+   },
+   "review": {
+    "scanner": "passed",
+    "reviewed_by": "claude (AI), full text read",
+    "reviewed_at": "2026-10-18",
+    "human_signoff": false,
+    "notes": "Written in-house; commit is the one that added the skill to this repository. Not a third-party import.",
+    "scanner_version": 1
+   },
+   "findings": [],
+   "enabled": true,
+   "size_chars": 934,
+   "scripts": 0,
+   "references": 1
+  },
+  {
+   "name": "bio-tools-router",
+   "description": "Route bioinformatics intents to verified bio_tools operations, prioritizing PASS cases from bio_tools_test_matrix.json. Trigger on FASTA/FASTQ/SAM/BAM requests,",
+   "origin": {
+    "kind": "internal",
+    "source": "gagent",
+    "license": "internal",
+    "commit": "bad644501a616ac9121249830190c250b5bd8ce2",
+    "modified": false,
+    "modifications": [],
+    "path": "skills/bio-tools-router"
+   },
+   "review": {
+    "scanner": "passed",
+    "reviewed_by": "claude (AI), full text read",
+    "reviewed_at": "2026-10-18",
+    "human_signoff": false,
+    "notes": "Written in-house; commit is the one that added the skill to this repository. Not a third-party import.",
+    "scanner_version": 1
+   },
+   "findings": [],
+   "enabled": true,
+   "size_chars": 1054,
+   "scripts": 0,
+   "references": 1
+  }
+ ]
+}
