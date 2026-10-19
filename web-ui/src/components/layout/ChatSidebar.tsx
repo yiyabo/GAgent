@@ -29,10 +29,11 @@ import { useAuthStore } from '@store/auth';
 import { chatApi } from '@api/chat';
 import { ChatProjectItem, ChatSession } from '@/types';
 import { shallow } from 'zustand/shallow';
+import { useT, type TFn } from '@/i18n/useT';
 
 const { Text } = Typography;
 
-function formatTimeAgo(dateInput?: Date | string | null): string {
+function formatTimeAgo(t: TFn, dateInput?: Date | string | null): string {
   if (!dateInput) return '';
   const date = typeof dateInput === 'string' ? new Date(dateInput) : dateInput;
   if (isNaN(date.getTime())) return '';
@@ -44,16 +45,17 @@ function formatTimeAgo(dateInput?: Date | string | null): string {
   const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
   const diffWeeks = Math.floor(diffDays / 7);
 
-  if (diffMinutes < 1) return '刚刚';
-  if (diffMinutes < 60) return `${diffMinutes}m ago`;
-  if (diffHours < 24) return `${diffHours}h ago`;
-  if (diffDays === 1) return '昨天';
-  if (diffDays < 7) return `${diffDays}d ago`;
-  if (diffWeeks < 4) return `${diffWeeks}w ago`;
-  return `${Math.floor(diffDays / 30)}mo ago`;
+  if (diffMinutes < 1) return t('sidebar.justNow');
+  if (diffMinutes < 60) return t('sidebar.minutesAgo', { n: diffMinutes });
+  if (diffHours < 24) return t('sidebar.hoursAgo', { n: diffHours });
+  if (diffDays === 1) return t('sidebar.yesterday');
+  if (diffDays < 7) return t('sidebar.daysAgo', { n: diffDays });
+  if (diffWeeks < 4) return t('sidebar.weeksAgo', { n: diffWeeks });
+  return t('sidebar.monthsAgo', { n: Math.floor(diffDays / 30) });
 }
 
 export const ChatSidebar: React.FC<{ onSessionSelected?: () => void; onCollapse?: () => void }> = ({ onSessionSelected, onCollapse }) => {
+  const t = useT();
   const {
     sessions,
     currentSession,
@@ -156,20 +158,20 @@ export const ChatSidebar: React.FC<{ onSessionSelected?: () => void; onCollapse?
   const handleArchiveSession = async (session: ChatSession) => {
     try {
       await deleteSession(session.id, { archive: true });
-      message.success('对话已归档');
+      message.success(t('sidebar.archived'));
     } catch (error) {
       const errMsg = error instanceof Error ? error.message : String(error);
-      message.error(`归档失败: ${errMsg}`);
+      message.error(t('sidebar.archiveFailed', { error: errMsg }));
     }
   };
 
   const performDeleteSession = async (session: ChatSession) => {
     try {
       await deleteSession(session.id);
-      message.success('对话已删除');
+      message.success(t('sidebar.deleted'));
     } catch (error) {
       const errMsg = error instanceof Error ? error.message : String(error);
-      message.error(`删除失败: ${errMsg}`);
+      message.error(t('sidebar.deleteFailed', { error: errMsg }));
       throw error;
     }
   };
@@ -192,7 +194,7 @@ export const ChatSidebar: React.FC<{ onSessionSelected?: () => void; onCollapse?
 
     const nextTitle = renameValue.trim();
     if (!nextTitle) {
-      message.error('标题不能为空');
+      message.error(t('sidebar.titleEmpty'));
       return;
     }
 
@@ -200,23 +202,23 @@ export const ChatSidebar: React.FC<{ onSessionSelected?: () => void; onCollapse?
     setIsRenaming(true);
     try {
       await renameSession(sessionId, nextTitle);
-      message.success('会话标题已更新');
+      message.success(t('sidebar.titleUpdated'));
       closeRenameModal();
     } catch (error) {
       const errMsg = error instanceof Error ? error.message : String(error);
-      message.error(`重命名失败: ${errMsg}`);
+      message.error(t('sidebar.renameFailed', { error: errMsg }));
       setIsRenaming(false);
     }
   };
 
   const confirmDeleteSession = (session: ChatSession) => {
     Modal.confirm({
-      title: '删除会话',
+      title: t('sidebar.deleteTitle'),
       icon: <ExclamationCircleOutlined />,
-      content: `确认删除「${session.title || session.id}」吗？`,
-      okText: '删除',
+      content: t('sidebar.deleteConfirm', { title: session.title || session.id }),
+      okText: t('sidebar.delete'),
       okType: 'danger',
-      cancelText: '取消',
+      cancelText: t('common.cancel'),
       onOk: () => performDeleteSession(session),
     });
   };
@@ -232,7 +234,7 @@ export const ChatSidebar: React.FC<{ onSessionSelected?: () => void; onCollapse?
     } catch (error) {
       console.warn('Failed to load projects:', error);
       setMoveProjects([]);
-      message.error('项目列表加载失败，请稍后重试');
+      message.error(t('sidebar.projectsLoadFailed'));
     } finally {
       setMoveLoading(false);
     }
@@ -254,13 +256,13 @@ export const ChatSidebar: React.FC<{ onSessionSelected?: () => void; onCollapse?
     try {
       await moveSessionToProject(sessionId, moveValue);
       const targetLabel = moveValue === null
-        ? '未分配'
-        : moveProjects.find((p) => p.id === moveValue)?.label ?? `项目 ${moveValue}`;
-      message.success(`已移动到「${targetLabel}」`);
+        ? t('sidebar.unassigned')
+        : moveProjects.find((p) => p.id === moveValue)?.label ?? t('sidebar.projectN', { id: moveValue });
+      message.success(t('sidebar.moved', { label: targetLabel }));
       closeMoveModal();
     } catch (error) {
       const errMsg = error instanceof Error ? error.message : String(error);
-      message.error(`移动失败: ${errMsg}`);
+      message.error(t('sidebar.moveFailed', { error: errMsg }));
       setMoveSubmitting(false);
     }
   };
@@ -285,13 +287,13 @@ export const ChatSidebar: React.FC<{ onSessionSelected?: () => void; onCollapse?
       const result = await autotitleSession(sessionId, { force: true });
       if (!result) return;
       if (result.updated) {
-        message.success(`已更新标题为「${result.title}」`);
+        message.success(t('sidebar.autotitled', { title: result.title }));
       } else {
-        message.info('标题无需更新');
+        message.info(t('sidebar.titleUnchanged'));
       }
     } catch (error) {
       console.error('Session operation failed:', error);
-      message.error('自动命名失败，请稍后重试');
+      message.error(t('sidebar.autotitleFailed'));
     }
   };
 
@@ -299,17 +301,17 @@ export const ChatSidebar: React.FC<{ onSessionSelected?: () => void; onCollapse?
     const items: MenuProps['items'] = [
       {
         key: 'rename',
-        label: '重命名',
+        label: t('sidebar.menuRename'),
         icon: <EditOutlined />,
       },
       {
         key: 'autotitle',
-        label: '重新生成标题',
+        label: t('sidebar.menuAutotitle'),
         icon: <ReloadOutlined />,
       },
       {
         key: 'move',
-        label: '移动到项目',
+        label: t('sidebar.menuMove'),
         icon: <SwapOutlined />,
       },
     ];
@@ -317,7 +319,7 @@ export const ChatSidebar: React.FC<{ onSessionSelected?: () => void; onCollapse?
     if (session.is_active !== false) {
       items.push({
         key: 'archive',
-        label: '归档会话',
+        label: t('sidebar.menuArchive'),
         icon: <InboxOutlined />,
         onClick: async (_info: any) => {
           _info?.domEvent?.stopPropagation?.();
@@ -329,7 +331,7 @@ export const ChatSidebar: React.FC<{ onSessionSelected?: () => void; onCollapse?
     items.push({ type: 'divider' });
     items.push({
       key: 'delete',
-      label: '删除会话',
+      label: t('sidebar.menuDelete'),
       icon: <DeleteOutlined />,
       danger: true,
       onClick: (_info: any) => {
@@ -341,12 +343,12 @@ export const ChatSidebar: React.FC<{ onSessionSelected?: () => void; onCollapse?
     return items;
   };
 
-  const projectName = projectLabel || '快速任务';
+  const projectName = projectLabel || t('sidebar.defaultProject');
 
   const renderSessionItem = (session: ChatSession) => {
     const isSelected = currentSession?.id === session.id;
     const lastTimestamp = session.last_message_at ?? session.updated_at ?? session.created_at;
-    const timeAgo = formatTimeAgo(lastTimestamp);
+    const timeAgo = formatTimeAgo(t, lastTimestamp);
 
     return (
       <div
@@ -368,7 +370,7 @@ export const ChatSidebar: React.FC<{ onSessionSelected?: () => void; onCollapse?
         </div>
         <div className="biomni-session-title-wrap">
           <Text ellipsis className="biomni-session-title">
-            {session.title || `会话 ${session.id.slice(-6)}`}
+            {session.title || t('sidebar.untitled', { id: session.id.slice(-6) })}
           </Text>
         </div>
         <div className="biomni-session-meta">
@@ -402,13 +404,13 @@ export const ChatSidebar: React.FC<{ onSessionSelected?: () => void; onCollapse?
       {/* 1. Top Project Header */}
       <div className="biomni-sidebar-project-header">
         <div className="biomni-project-meta">
-          <span className="biomni-project-tag">当前项目</span>
+          <span className="biomni-project-tag">{t('sidebar.currentProject')}</span>
           <div className="biomni-project-title-row">
             <span className="biomni-project-name">{projectName}</span>
           </div>
         </div>
         <div className="biomni-project-actions">
-          <Tooltip title="收起侧边栏">
+          <Tooltip title={t('sidebar.collapse')}>
             <Button
               type="text"
               size="small"
@@ -423,10 +425,10 @@ export const ChatSidebar: React.FC<{ onSessionSelected?: () => void; onCollapse?
       {/* 2. Tasks / Sessions Section Header */}
       <div className="biomni-section-header">
         <div className="biomni-section-title">
-          <span>研究对话</span>
+          <span>{t('sidebar.researchChats')}</span>
         </div>
         <div className="biomni-section-actions">
-          <Tooltip title="搜索对话">
+          <Tooltip title={t('sidebar.search')}>
             <Button
               type="text"
               size="small"
@@ -442,7 +444,7 @@ export const ChatSidebar: React.FC<{ onSessionSelected?: () => void; onCollapse?
             className="biomni-new-task-btn"
             onClick={handleNewChat}
           >
-            新建任务
+            {t('sidebar.newTask')}
           </Button>
         </div>
       </div>
@@ -451,7 +453,7 @@ export const ChatSidebar: React.FC<{ onSessionSelected?: () => void; onCollapse?
       {searchVisible && (
         <div className="biomni-search-bar">
           <Input
-            placeholder="搜索任务或会话..."
+            placeholder={t('sidebar.searchPlaceholder')}
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             prefix={<SearchOutlined style={{ color: 'var(--text-tertiary)' }} />}
@@ -471,7 +473,7 @@ export const ChatSidebar: React.FC<{ onSessionSelected?: () => void; onCollapse?
         ) : filteredSessions.length === 0 ? (
           <div className="biomni-empty-sessions">
             <Text type="secondary" style={{ fontSize: 12 }}>
-              暂无任务会话，点击右上角「+ 新建任务」
+              {t('sidebar.empty')}
             </Text>
           </div>
         ) : (
@@ -481,7 +483,7 @@ export const ChatSidebar: React.FC<{ onSessionSelected?: () => void; onCollapse?
               <div className="biomni-group-container">
                 <div className="biomni-group-header">
                   <div className="biomni-group-title">
-                    <span>等待输入</span>
+                    <span>{t('sidebar.waitingInput')}</span>
                   </div>
                   <span className="biomni-group-count">{pendingSessions.length}</span>
                 </div>
@@ -501,19 +503,19 @@ export const ChatSidebar: React.FC<{ onSessionSelected?: () => void; onCollapse?
       </div>
 
       <Modal
-        title="重命名会话"
+        title={t('sidebar.renameTitle')}
         open={renameModalOpen}
         onOk={() => void handleRenameConfirm()}
         confirmLoading={isRenaming}
         onCancel={closeRenameModal}
-        okText="保存"
-        cancelText="取消"
+        okText={t('common.save')}
+        cancelText={t('common.cancel')}
         destroyOnClose
       >
         <Input
           value={renameValue}
           onChange={(e) => setRenameValue(e.target.value)}
-          placeholder="输入新的会话标题"
+          placeholder={t('sidebar.renamePlaceholder')}
           maxLength={120}
           onPressEnter={() => void handleRenameConfirm()}
           autoFocus
@@ -521,37 +523,37 @@ export const ChatSidebar: React.FC<{ onSessionSelected?: () => void; onCollapse?
       </Modal>
 
       <Modal
-        title="移动到项目"
+        title={t('sidebar.moveTitle')}
         open={moveModalOpen}
         onOk={() => void handleMoveConfirm()}
         confirmLoading={moveSubmitting}
         onCancel={closeMoveModal}
-        okText="移动"
-        cancelText="取消"
+        okText={t('sidebar.move')}
+        cancelText={t('common.cancel')}
         destroyOnClose
       >
         <Spin spinning={moveLoading}>
           <div style={{ marginBottom: 8 }}>
             <Text type="secondary">
-              将「{moveTarget?.title || moveTarget?.id}」移动到：
+              {t('sidebar.moveInto', { title: moveTarget?.title || moveTarget?.id })}
             </Text>
           </div>
           <Select
             style={{ width: '100%' }}
             value={moveValue}
             onChange={(value) => setMoveValue(value ?? null)}
-            placeholder="选择目标项目"
+            placeholder={t('sidebar.pickProject')}
             optionFilterProp="label"
             showSearch
             allowClear
             options={moveProjects.map((p) => ({
               value: p.id,
-              label: p.current ? `${p.label}（当前项目）` : p.label,
+              label: p.current ? t('sidebar.currentTag', { label: p.label }) : p.label,
             }))}
           />
           <div style={{ marginTop: 8 }}>
             <Text type="secondary" style={{ fontSize: 12 }}>
-              清空选择表示移出所有项目（未分配）。移动后该会话会从当前项目列表消失。
+              {t('sidebar.moveHint')}
             </Text>
           </div>
         </Spin>
