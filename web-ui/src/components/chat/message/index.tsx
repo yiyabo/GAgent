@@ -34,6 +34,7 @@ import ToolResultDrawer, { ToolStatusBar } from './ToolResultDrawer';
 import { extractLlmReplyMessage } from '@/utils/llmReplyDisplay';
 import { collectArtifactGallery, collectArtifactFiles, filterInlinedGalleryItems } from '@/utils/artifactGallery';
 import { resolveThinkingDisplayMode } from '@store/slices/message/thinkingPresentation';
+import { useT } from '@/i18n/useT';
 
 const { Text } = Typography;
 
@@ -43,6 +44,7 @@ interface ChatMessageProps {
 }
 
 const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sessionIdProp }) => {
+  const t = useT();
   const { type, content, timestamp, metadata } = message;
   const effectiveSessionId =
     sessionIdProp ??
@@ -200,16 +202,16 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
     setDeepThinkCancelRunBusy(true);
     try {
       await chatApi.cancelRun(runIdForDeepThink);
-      antdMessage.success('已请求停止本次运行');
+      antdMessage.success(t('chatMessage.stopRequested'));
     } catch (error) {
       console.warn('Failed to cancel chat run:', error);
       antdMessage.error(
-        error instanceof Error ? error.message : '停止失败，请稍后重试或刷新页面',
+        error instanceof Error ? error.message : t('chatMessage.stopFailed'),
       );
     } finally {
       setDeepThinkCancelRunBusy(false);
     }
-  }, [runIdForDeepThink, deepThinkCancelRunBusy]);
+  }, [runIdForDeepThink, deepThinkCancelRunBusy, t]);
 
   React.useEffect(() => {
     setDeepThinkPaused(deepThinkPausedFromMetadata);
@@ -248,7 +250,7 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
     !showCompactProgress &&
     !hasThinkingSteps  // If thinking steps exist, render ThinkingProcess instead.
   ) {
-    return <TypingIndicator message="Thinking..." showAvatar={true} />;
+    return <TypingIndicator message={t('chat.thinking')} showAvatar={true} />;
   }
   const hasFooterDivider =
     !unifiedStream &&
@@ -291,7 +293,7 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
               }}
             />
             <Text type="secondary" style={{ opacity: 0.8, fontSize: 12 }}>
-              Planning {actions.length} tool actions...
+              {t('chatMessage.planning', { count: actions.length })}
             </Text>
           </Space>
           <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
@@ -301,8 +303,7 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
               const order = typeof act?.order === 'number' ? act.order : idx + 1;
               return (
                 <div key={`${order}_${kind}_${name}`} style={{ marginBottom: 4 }}>
-                  • Step {order}: {kind}
-                  {name ? ` / ${name}` : ''}
+                  {t('chatMessage.step', { order, kind, name: name ? ` / ${name}` : '' })}
                 </div>
               );
             })}
@@ -315,7 +316,7 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
               onClick={() => setPendingDetailOpen((v) => !v)}
               style={{ padding: 0 }}
             >
-              {pendingDetailOpen ? 'Collapse Plan' : 'Expand Full Plan'}
+              {pendingDetailOpen ? t('chatMessage.collapsePlan') : t('chatMessage.expandPlan')}
             </Button>
           )}
         </Space>
@@ -336,7 +337,7 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
       if (showThinkingProcess && message.thinking_process?.status === 'active') {
         return null;
       }
-      const placeholderText = showThinkingProcess ? '正在生成回答…' : '正在准备回复…';
+      const placeholderText = showThinkingProcess ? t('chatMessage.generating') : t('chatMessage.preparing');
       return (
         <div
           style={{
@@ -374,7 +375,7 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
           opacity: 0.7,
         }}
       >
-        本内容由AI生成，请核实
+        {t('chatMessage.disclaimer')}
       </div>
     );
   };
@@ -468,10 +469,13 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
     const planCreationMessage = typeof metadata.plan_creation_message === 'string'
       ? metadata.plan_creation_message.trim()
       : '';
+    const linkedPlanLabel = t('chatMessage.linkedPlan', {
+      rest: `${planTitle ? ` ${planTitle}` : ''}${planId !== undefined && planId !== null ? ` (#${planId})` : ''}`,
+    });
     if (planCreationState === 'text_only' || planCreationState === 'failed') {
       const statusLabel = planCreationState === 'failed'
-        ? 'Plan Status: 结构化计划创建失败'
-        : 'Plan Status: 仅生成文本建议，未创建结构化计划';
+        ? t('chatMessage.planFailed')
+        : t('chatMessage.planTextOnly');
       return (
         <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-tertiary)' }}>
           <div>{statusLabel}</div>
@@ -482,11 +486,7 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
     if (planCreationState === 'created' || planCreationState === 'updated') {
       return (
         <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-tertiary)' }}>
-          <div>
-            Linked Plan:
-            {planTitle ? ` ${planTitle}` : ''}
-            {planId !== undefined && planId !== null ? ` (#${planId})` : ''}
-          </div>
+          <div>{linkedPlanLabel}</div>
         </div>
       );
     }
@@ -495,11 +495,7 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
     }
     return (
       <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-tertiary)' }}>
-        <div>
-          Linked Plan:
-          {planTitle ? ` ${planTitle}` : ''}
-          {planId !== undefined && planId !== null ? ` (#${planId})` : ''}
-        </div>
+        <div>{linkedPlanLabel}</div>
       </div>
     );
   };

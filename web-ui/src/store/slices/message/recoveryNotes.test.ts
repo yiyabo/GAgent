@@ -15,6 +15,7 @@ import { createUISlice } from '../createUISlice';
 import { _looksLikeSubstantialAssistant, _recoverAfterStreamFailure, createMessageSlice } from './index';
 import { useLanguageStore } from '@/i18n/language';
 import { translate } from '@/i18n/useT';
+import { resolveRequestFailureMessage } from '@/components/chat/message/utils';
 
 const session = (): ChatSession => ({
   id: 'local-A', session_id: 'server-A', title: 'A',
@@ -80,6 +81,17 @@ describe('a partial reply is kept only when it is real content', () => {
       // Without the stored note the same words are ordinary text; real text replacing the note ends the match.
       expect(_looksLikeSubstantialAssistant(note, {})).toBe(true);
       expect(_looksLikeSubstantialAssistant(REAL_ANSWER, { recovery_note_text: note })).toBe(true);
+    }
+  });
+});
+
+describe('a failure notice the store wrote is never kept as a partial reply', () => {
+  it('in either language, once it is stored beside the content', () => {
+    for (const language of ['zh-CN', 'en'] as const) {
+      useLanguageStore.getState().setLanguage(language);
+      const notice = `${resolveRequestFailureMessage(new Error('unexpected failure'))}\n\n${translate('chat.recovery.failureTail')}`;
+      expect(notice.length).toBeGreaterThan(40);
+      expect(_looksLikeSubstantialAssistant(notice, { recovery_note_text: notice })).toBe(false);
     }
   });
 });

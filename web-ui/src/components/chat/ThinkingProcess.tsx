@@ -25,6 +25,7 @@ import {
   type ToolStepGroup,
 } from '@utils/toolGrouping';
 import { MarkdownRenderer } from './MarkdownRenderer';
+import { useT } from '@/i18n/useT';
 import './ThinkingProcess.css';
 
 interface ThinkingProcessProps {
@@ -644,6 +645,7 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
   progressHint = null,
   sessionId = null,
 }) => {
+  const t = useT();
   const [isExpanded, setIsExpanded] = useState(!isFinished && process.status === 'active');
   const language = useMemo(() => detectLanguage(process), [process]);
   const isActive = process.status === 'active' && !isFinished;
@@ -818,7 +820,7 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
               disabled={controlDisabled}
               loading={controlBusy && ((paused && controlBusyAction === 'resume') || (!paused && controlBusyAction === 'pause'))}
             >
-              {paused ? 'Resume' : 'Pause'}
+              {paused ? t('thinkingControl.resume') : t('thinkingControl.pause')}
             </Button>
             <Tooltip
               title={localize(
@@ -833,7 +835,7 @@ export const ThinkingProcess: React.FC<ThinkingProcessProps> = ({
                 disabled={controlDisabled || cancelRunBusy}
                 loading={controlBusy && controlBusyAction === 'skip_step'}
               >
-                Skip
+                {t('thinkingControl.skip')}
               </Button>
             </Tooltip>
             {onCancelRun && (

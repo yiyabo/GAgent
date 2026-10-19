@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { useLanguageStore } from '@/i18n/language';
 
 import {
   resolveMessageCopyText,
@@ -54,6 +55,9 @@ describe('resolveMessageCopyText', () => {
 
 
 describe('resolveRequestFailureMessage', () => {
+  beforeEach(() => useLanguageStore.getState().setLanguage('en'));
+  afterEach(() => useLanguageStore.getState().setLanguage('zh-CN'));
+
   it('explains oversized user queries', () => {
     expect(resolveRequestFailureMessage(new Error('User query too long (max 10000 chars)')))
       .toContain('max 10000 characters');
@@ -67,5 +71,14 @@ describe('resolveRequestFailureMessage', () => {
   it('keeps the generic fallback for unknown failures', () => {
     expect(resolveRequestFailureMessage(new Error('unexpected failure')))
       .toContain('Request failed. Please check');
+  });
+
+  it('reads in Chinese when the interface is Chinese, for every kind of failure', () => {
+    useLanguageStore.getState().setLanguage('zh-CN');
+    const cjk = /[\u4e00-\u9fff]/;
+    for (const text of ['User query too long (max 10,000 chars)', 'User query too long', '429 insufficient_quota', '401', 'timed out', 'Network Error', '503', 'unexpected failure']) {
+      expect(resolveRequestFailureMessage(new Error(text)), text).toMatch(cjk);
+    }
+    expect(resolveRequestFailureMessage(new Error('User query too long (max 10,000 chars)'))).toContain('最多 10000 个字符');
   });
 });

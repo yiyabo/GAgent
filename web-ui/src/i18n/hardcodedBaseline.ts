@@ -14,11 +14,10 @@
  */
 export const HARDCODED_BASELINE: Record<string, number> = {
   'components/chat/HeroWelcome.tsx': 1,
-  'components/chat/ThinkingProcess.tsx': 3,
   'components/chat/job-log/constants.tsx': 13,
   'components/chat/job-log/index.tsx': 21,
-  'components/chat/message/SkillLearningPanel.tsx': 25,
-  'components/chat/message/index.tsx': 13,
+  'components/chat/message/SkillLearningPanel.tsx': 1,
+  'components/chat/message/index.tsx': 1,
   'components/extensions/McpServerCard.tsx': 16,
   'components/extensions/McpTab.tsx': 15,
   'components/extensions/SkillsTab.tsx': 17,

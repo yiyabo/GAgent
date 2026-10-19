@@ -37,3 +37,21 @@ describe('skill learning message panel',()=>{
   await waitFor(()=>expect(trial).toHaveBeenCalledWith('x','s','用新数据生成 JSON',1));
  });
 });
+
+import {useLanguageStore} from '@/i18n/language';
+describe('skill learning message panel in English',()=>{
+ beforeEach(()=>useLanguageStore.getState().setLanguage('en'));
+ afterEach(()=>useLanguageStore.getState().setLanguage('zh-CN'));
+ it('shows the panel, the state label and the review note in English, and the actions still work',async()=>{
+  render(<SkillLearningPanel runId="r" sessionId="s" status="completed"/>);
+  fireEvent.click(screen.getByText('Skills and feedback'));
+  await screen.findByText('Candidate · not independently verified');
+  expect(screen.getByText(/the method or content still needs user confirmation/)).toBeTruthy();
+  expect(screen.getByText('Source task: succeeded; checked: output_contract; the method or content still needs user confirmation')).toBeTruthy();
+  fireEvent.click(screen.getByText('This needs improvement'));
+  await waitFor(()=>expect(skillLearningApi.feedback).toHaveBeenCalledWith('r','s','needs_work'));
+  fireEvent.click(await screen.findByText('View, correct or try'));
+  await screen.findByLabelText('New task for the trial');
+  expect(screen.getByText('Try it with different input')).toBeTruthy();
+ });
+});
