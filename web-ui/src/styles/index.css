@@ -1,4 +1,4 @@
-/* GAgent global styles. Colours, type, radius and spacing come from tokens.css; do not redefine them here. */
+/* Phage-Agent global styles. Colours, type, radius and spacing come from tokens.css; do not redefine them here. */
 
 /*  */
 * {
@@ -78,11 +78,19 @@ body h3.ant-typography { font-size: var(--fs-h3); }
 .app-logo {
   display: flex;
   align-items: center;
-  color: var(--color-brand);
-  font-family: var(--font-serif);
   font-size: var(--fs-h3);
-  font-weight: 600;
 }
+
+/* Product wordmark: serif, two colours from the theme tokens. */
+.wordmark {
+  font-family: var(--font-serif);
+  font-weight: 600;
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+
+.wordmark-phage { color: var(--color-brand); }
+.wordmark-agent { color: var(--color-action); }
 
 .app-logo .logo-icon {
   margin-right: 8px;

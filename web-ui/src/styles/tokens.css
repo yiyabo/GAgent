@@ -1,4 +1,4 @@
-/* GAgent design tokens: the single source of truth for colour, type, radius, space.
+/* Phage-Agent design tokens: the single source of truth for colour, type, radius, space.
  *
  * Rules
  *  - New code uses the semantic names (--color-*, --surface-*, --text-*, --status-*).

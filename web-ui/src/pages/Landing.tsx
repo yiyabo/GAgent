@@ -9,6 +9,7 @@ import {
 } from '@ant-design/icons';
 import { Navigate, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@store/auth';
+import Wordmark from '@components/common/Wordmark';
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -93,9 +94,7 @@ const Landing: React.FC = () => {
       >
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <ThunderboltOutlined style={{ fontSize: 20, color: 'var(--primary-color)' }} />
-          <Text strong style={{ fontSize: 16, color: 'var(--text-primary)' }}>
-            Phage-Agent
-          </Text>
+          <Wordmark style={{ fontSize: 18 }} />
         </div>
         <Space size={12}>
           <Button type="text" onClick={() => navigate('/login')}>
@@ -123,10 +122,9 @@ const Landing: React.FC = () => {
               fontSize: 'clamp(36px, 5vw, 52px)',
               fontWeight: 600,
               lineHeight: 1.2,
-              color: 'var(--color-brand)',
             }}
           >
-            Phage-Agent
+            <Wordmark />
           </Title>
           <Paragraph
             style={{

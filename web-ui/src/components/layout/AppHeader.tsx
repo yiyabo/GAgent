@@ -15,6 +15,7 @@ import { useSystemStore } from '@store/system';
 import { useLayoutStore } from '@store/layout';
 import { useAuthStore } from '@store/auth';
 import { useLocation, useNavigate } from 'react-router-dom';
+import Wordmark from '@components/common/Wordmark';
 
 const { Header } = Layout;
 const { Text } = Typography;
@@ -54,9 +55,9 @@ const AppHeader: React.FC = () => {
   return (
     <>
       <Header className={`app-header ${isChatRoute && workspaceMode === 'plan' ? 'workspace-header' : ''}`}>
-        <div className="app-logo" role="link" aria-label="GAgent 首页" style={{ cursor: 'pointer' }} onClick={() => navigate('/chat')}>
+        <div className="app-logo" role="link" aria-label="Phage-Agent 首页" style={{ cursor: 'pointer' }} onClick={() => navigate('/chat')}>
           <ExperimentOutlined className="logo-icon" />
-          <span>GAgent</span>
+          <Wordmark />
         </div>
 
         <div className="app-header-actions">
