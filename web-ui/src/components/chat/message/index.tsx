@@ -294,7 +294,7 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
               Planning {actions.length} tool actions...
             </Text>
           </Space>
-          <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+          <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
             {visible.map((act: any, idx: number) => {
               const kind = typeof act?.kind === 'string' ? act.kind : 'action';
               const name = typeof act?.name === 'string' ? act.name : '';
@@ -369,7 +369,7 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
       <div
         style={{
           marginTop: 6,
-          fontSize: 11,
+          fontSize: 12,
           color: '#999',
           opacity: 0.7,
         }}

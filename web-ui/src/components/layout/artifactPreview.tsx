@@ -121,7 +121,7 @@ const monoBlockStyle: React.CSSProperties = {
   borderRadius: 8,
   padding: 12,
   background: 'var(--bg-tertiary)',
-  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+  fontFamily: 'var(--font-mono)',
   fontSize: 12,
   whiteSpace: 'pre-wrap',
   lineHeight: 1.5,
@@ -409,7 +409,7 @@ export const ArtifactPreviewModal: React.FC<ArtifactPreviewModalProps> = ({
                 {/* Show raw text when rendering fails */}
                 {textPreview?.content && (
                   <div style={{ ...monoBlockStyle, marginTop: 16, maxHeight: 300 }}>
-                    <Text type="secondary" style={{ fontSize: 11, display: 'block', marginBottom: 8 }}>
+                    <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 8 }}>
                       Raw source:
                     </Text>
                     {textPreview.content}

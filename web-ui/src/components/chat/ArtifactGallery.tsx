@@ -120,14 +120,14 @@ export const ArtifactGallery: React.FC<ArtifactGalleryProps> = ({ items, session
                   <Text strong style={{ fontSize: 13, display: 'block' }}>
                     {fig.baseName}
                   </Text>
-                  <Text type='secondary' style={{ fontSize: 11 }}>
+                  <Text type='secondary' style={{ fontSize: 12 }}>
                     {fig.displayTitle}
                   </Text>
                 </div>
                 <Space size={4}>
-                  <Tag color='blue' style={{ fontSize: 10, margin: 0, padding: '0 4px' }}>PNG 300DPI</Tag>
-                  <Tag color='green' style={{ fontSize: 10, margin: 0, padding: '0 4px' }}>SVG 矢量</Tag>
-                  <Tag color='purple' style={{ fontSize: 10, margin: 0, padding: '0 4px' }}>PDF 出版级</Tag>
+                  <Tag color='blue' style={{ fontSize: 12, margin: 0, padding: '0 4px' }}>PNG 300DPI</Tag>
+                  <Tag color='green' style={{ fontSize: 12, margin: 0, padding: '0 4px' }}>SVG 矢量</Tag>
+                  <Tag color='purple' style={{ fontSize: 12, margin: 0, padding: '0 4px' }}>PDF 出版级</Tag>
                 </Space>
               </div>
             </div>

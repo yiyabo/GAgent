@@ -33,7 +33,7 @@ const ActionSummary: React.FC<ActionSummaryProps> = ({ items }) => {
                 ? ` - ${item.message}`
                 : '';
             return (
-              <div key={`${order}_${kind}_${name}`} style={{ fontSize: 11, color: 'var(--text-secondary)', marginBottom: 2 }}>
+              <div key={`${order}_${kind}_${name}`} style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 2 }}>
                 <Text>
                   {icon} Step {order}: {kind}
                   {name}
@@ -91,11 +91,11 @@ export const ToolStatusBar: React.FC<ToolStatusBarProps> = ({
         justifyContent: 'space-between',
         gap: 8,
         flexWrap: 'wrap',
-        fontSize: 11,
+        fontSize: 12,
       }}
     >
       <Space size={6} wrap align="center">
-        <Text strong style={{ fontSize: 11 }}>Tools</Text>
+        <Text strong style={{ fontSize: 12 }}>Tools</Text>
         {statusTag}
         <Space size={[4, 4]} wrap>
           {toolTags}

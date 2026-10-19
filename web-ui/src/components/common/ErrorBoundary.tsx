@@ -112,7 +112,7 @@ class ErrorBoundary extends Component<Props, State> {
   <div
   style={{
   fontSize: '12px',
-  fontFamily: 'monospace',
+  fontFamily: 'var(--font-mono)',
   color: '#d32f2f',
   marginBottom: '8px',
   }}
@@ -122,8 +122,8 @@ class ErrorBoundary extends Component<Props, State> {
   {this.state.error.stack && (
   <pre
   style={{
-  fontSize: '11px',
-  fontFamily: 'monospace',
+  fontSize: '12px',
+  fontFamily: 'var(--font-mono)',
   color: '#666',
   background: '#fff',
   padding: '12px',
@@ -143,8 +143,8 @@ class ErrorBoundary extends Component<Props, State> {
   </summary>
   <pre
   style={{
-  fontSize: '11px',
-  fontFamily: 'monospace',
+  fontSize: '12px',
+  fontFamily: 'var(--font-mono)',
   color: '#666',
   background: '#fff',
   padding: '12px',

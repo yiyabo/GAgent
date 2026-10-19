@@ -22,6 +22,20 @@ body,
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* Titles: serif for page and section headings (antd Title levels 1-3); levels 4-5 and all UI text stay sans.
+   `body` raises specificity above antd's own h1.ant-typography rule, which is injected later. */
+body h1.ant-typography,
+body h2.ant-typography,
+body h3.ant-typography {
+  font-family: var(--font-serif);
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+body h1.ant-typography { font-size: var(--fs-h1); }
+body h2.ant-typography { font-size: var(--fs-h2); }
+body h3.ant-typography { font-size: var(--fs-h3); }
+
 /*  -  */
 ::-webkit-scrollbar {
   width: 6px;
@@ -64,9 +78,10 @@ body,
 .app-logo {
   display: flex;
   align-items: center;
-  color: var(--text-primary);
-  font-size: 15px;
-  font-weight: 500;
+  color: var(--color-brand);
+  font-family: var(--font-serif);
+  font-size: var(--fs-h3);
+  font-weight: 600;
 }
 
 .app-logo .logo-icon {
@@ -86,7 +101,7 @@ body,
   align-items: center;
   gap: 6px;
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: var(--fs-caption);
   padding: 6px 12px;
   border-radius: var(--radius-full);
 }
@@ -166,7 +181,7 @@ body,
 .sider-handle-text {
   writing-mode: vertical-rl;
   text-orientation: mixed;
-  font-size: 10px;
+  font-size: var(--fs-caption);
   color: var(--text-tertiary);
 }
 
@@ -198,7 +213,7 @@ body,
 .chatlist-handle-text {
   writing-mode: vertical-rl;
   text-orientation: mixed;
-  font-size: 11px;
+  font-size: var(--fs-caption);
   letter-spacing: 1px;
 }
 
@@ -296,7 +311,7 @@ body,
 
 .chat-drop-overlay-hint {
   margin-top: 4px;
-  font-size: 12px;
+  font-size: var(--fs-caption);
   color: var(--text-tertiary);
 }
 
@@ -408,7 +423,7 @@ body,
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 12px;
+  font-size: var(--fs-caption);
   color: var(--text-primary);
 }
 
@@ -447,7 +462,7 @@ body,
 }
 
 .message-time {
-  font-size: 10px;
+  font-size: var(--fs-caption);
   color: var(--text-tertiary);
   margin-top: 4px;
   padding: 0 4px;
@@ -533,7 +548,7 @@ body,
 }
 
 .task-status-badge {
-  font-size: 12px;
+  font-size: var(--fs-caption);
   padding: 4px 12px;
   border-radius: var(--radius-full);
   text-transform: capitalize;
@@ -804,7 +819,7 @@ pre, code {
 }
 
 .artifacts-panel-title {
-  font-size: 13px;
+  font-size: var(--fs-small);
   font-weight: 600;
   line-height: 1.35;
   color: var(--text-primary, rgba(0, 0, 0, 0.88));
@@ -820,14 +835,14 @@ pre, code {
   flex-wrap: wrap;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
+  font-size: var(--fs-caption);
   line-height: 1.4;
   color: var(--text-secondary, rgba(0, 0, 0, 0.45));
   min-width: 0;
 }
 
 .artifacts-panel-hint {
-  font-size: 12px;
+  font-size: var(--fs-caption);
   line-height: 1.4;
   color: var(--text-secondary, rgba(0, 0, 0, 0.45));
   white-space: nowrap;
@@ -846,7 +861,7 @@ pre, code {
 }
 
 .artifacts-panel-actions .ant-btn {
-  font-size: 12px;
+  font-size: var(--fs-caption);
   font-family: inherit;
 }
 
@@ -873,7 +888,7 @@ pre, code {
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 12px;
+  font-size: var(--fs-caption);
   font-weight: 500;
   font-family: inherit;
   line-height: normal;
@@ -890,7 +905,7 @@ pre, code {
 }
 
 .artifacts-panel-raw-label {
-  font-size: 12px;
+  font-size: var(--fs-caption);
   font-weight: 500;
   color: var(--text-primary, rgba(0, 0, 0, 0.88));
   white-space: nowrap;
@@ -902,7 +917,7 @@ pre, code {
 }
 
 .artifacts-panel-search .ant-input {
-  font-size: 13px;
+  font-size: var(--fs-small);
   font-family: inherit;
 }
 
@@ -921,7 +936,7 @@ pre, code {
 }
 
 .dag-sidebar-tabs .ant-tabs-tab {
-  font-size: 13px;
+  font-size: var(--fs-small);
   font-family: inherit;
   letter-spacing: 0;
 }
@@ -965,11 +980,12 @@ pre, code {
 }
 
 .hero-welcome-title {
-  font-size: 28px;
-  font-weight: 700;
+  font-family: var(--font-serif);
+  font-size: var(--fs-h1);
+  font-weight: 600;
   color: var(--text-primary, var(--text-primary));
   margin: 0;
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
 }
 
 .hero-welcome-subtitle {
@@ -1043,13 +1059,13 @@ pre, code {
   padding: 3px 8px;
   border-radius: 12px;
   border: 1px solid var(--border-subtle);
-  font-size: 12px;
+  font-size: var(--fs-caption);
 }
 
 .hero-toggle-label {
   color: var(--text-secondary);
   font-weight: 500;
-  font-size: 12px;
+  font-size: var(--fs-caption);
 }
 
 .hero-toggle-help {
@@ -1077,7 +1093,7 @@ pre, code {
   border: 1px solid var(--border-subtle) !important;
   background: var(--surface-page) !important;
   color: var(--text-primary) !important;
-  font-size: 12px !important;
+  font-size: var(--fs-caption) !important;
   font-weight: 500 !important;
   height: 32px !important;
   padding: 0 12px !important;
@@ -1111,7 +1127,7 @@ pre, code {
   margin-top: 12px;
   width: 100%;
   text-align: center;
-  font-size: 12px;
+  font-size: var(--fs-caption);
   color: var(--text-tertiary, var(--text-tertiary));
   letter-spacing: 0.01em;
 }
@@ -1139,11 +1155,10 @@ pre, code {
 }
 
 .hero-capabilities-title {
-  font-size: 11px;
+  font-size: var(--fs-caption);
   font-weight: 700;
   color: var(--text-tertiary);
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  letter-spacing: 0;
 }
 
 .hero-starter-grid {
@@ -1190,14 +1205,14 @@ pre, code {
 }
 
 .hero-starter-title {
-  font-size: 13px;
+  font-size: var(--fs-small);
   font-weight: 600;
   color: var(--text-primary);
   margin-bottom: 3px;
 }
 
 .hero-starter-desc {
-  font-size: 12px;
+  font-size: var(--fs-caption);
   color: var(--text-secondary);
   line-height: 1.4;
 }
@@ -1226,11 +1241,10 @@ pre, code {
 }
 
 .biomni-project-tag {
-  font-size: 10px;
+  font-size: var(--fs-caption);
   font-weight: 700;
   color: var(--text-tertiary, var(--text-tertiary));
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+  letter-spacing: 0;
   display: block;
   margin-bottom: 2px;
 }
@@ -1274,7 +1288,7 @@ pre, code {
 .biomni-section-title {
   display: flex;
   align-items: center;
-  font-size: 13px;
+  font-size: var(--fs-small);
   font-weight: 600;
   color: var(--text-primary);
 }
@@ -1286,7 +1300,7 @@ pre, code {
 }
 
 .biomni-new-task-btn {
-  font-size: 12px !important;
+  font-size: var(--fs-caption) !important;
   color: var(--text-primary) !important;
   font-weight: 500 !important;
   height: 26px !important;
@@ -1296,7 +1310,7 @@ pre, code {
 
 .biomni-action-icon-btn {
   color: var(--text-secondary) !important;
-  font-size: 12px !important;
+  font-size: var(--fs-caption) !important;
   width: 26px !important;
   height: 26px !important;
   display: flex !important;
@@ -1328,7 +1342,7 @@ pre, code {
   padding: 6px 8px;
   margin-top: 4px;
   color: var(--text-secondary);
-  font-size: 12px;
+  font-size: var(--fs-caption);
   font-weight: 600;
 }
 
@@ -1338,7 +1352,7 @@ pre, code {
 }
 
 .biomni-group-count {
-  font-size: 11px;
+  font-size: var(--fs-caption);
   font-weight: 600;
   color: var(--text-tertiary);
   background: var(--bg-tertiary);
@@ -1395,7 +1409,7 @@ pre, code {
 }
 
 .biomni-session-title {
-  font-size: 13px !important;
+  font-size: var(--fs-small) !important;
   color: var(--text-primary) !important;
   line-height: 1.4 !important;
   display: block;
@@ -1409,7 +1423,7 @@ pre, code {
 }
 
 .biomni-session-time {
-  font-size: 11px;
+  font-size: var(--fs-caption);
   color: var(--text-tertiary);
   white-space: nowrap;
 }
@@ -1446,7 +1460,7 @@ pre, code {
 .biomni-drive-empty {
   padding: 10px 8px;
   color: var(--text-tertiary);
-  font-size: 12px;
+  font-size: var(--fs-caption);
 }
 
 .biomni-drive-file-list {

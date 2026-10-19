@@ -5,7 +5,7 @@
   padding: 20px;
   background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
   border-radius: 8px;
-  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', 'Consolas', 'Courier New', monospace;
+  font-family: var(--font-mono);
 }
 
 .tree-content {
@@ -61,7 +61,7 @@
   user-select: none;
   font-size: 14px;
   line-height: 1;
-  font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', 'Consolas', monospace;
+  font-family: var(--font-mono);
 }
 
 .tree-collapse-btn {
@@ -113,12 +113,12 @@
 }
 
 .node-id {
-  font-size: 11px;
+  font-size: var(--fs-caption);
   color: #8c8c8c;
   background: rgba(0, 0, 0, 0.04);
   padding: 2px 6px;
   border-radius: 3px;
-  font-family: 'Monaco', 'Menlo', monospace;
+  font-family: var(--font-mono);
 }
 
 .tree-children {
@@ -162,11 +162,11 @@
   }
   
   .tree-connector {
-  font-size: 12px;
+  font-size: var(--fs-caption);
   }
   
   .node-name {
-  font-size: 13px;
+  font-size: var(--fs-small);
   }
   
   .node-type-icon {

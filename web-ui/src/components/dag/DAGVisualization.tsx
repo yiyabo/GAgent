@@ -547,7 +547,7 @@ const DAGVisualization: React.FC<DAGVisualizationProps> = ({
   <div style={{ marginBottom: '4px' }}>
   <span style={{ color: '#22c55e' }}>⚪</span> ATOMIC - executable subtask
   </div>
-  <div style={{ fontSize: '10px', color: 'var(--text-secondary)', marginTop: '6px' }}>
+  <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '6px' }}>
   💡 Highlighted edges show active paths
   </div>
   </div>

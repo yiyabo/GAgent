@@ -85,7 +85,7 @@
 }
 
 .typing-indicator-text {
-  font-size: 13px;
+  font-size: var(--fs-small);
   color: var(--text-tertiary);
   font-weight: 400;
   letter-spacing: 0.02em;

@@ -465,7 +465,7 @@ const ChatPanel: React.FC = () => {
 
         {/* Drop hint text in input area */}
         <div className="chat-input-hint">
-          <Text type="secondary" style={{ fontSize: 11 }}>
+          <Text type="secondary" style={{ fontSize: 12 }}>
             Ctrl+V 粘贴图片 | 拖放文件到此处上传
           </Text>
         </div>

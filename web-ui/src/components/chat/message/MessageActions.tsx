@@ -73,7 +73,7 @@ const MessageActions: React.FC<MessageActionsProps> = ({ message }) => {
                 size="small"
                 icon={<CopyOutlined />}
                 onClick={handleCopy}
-                style={{ fontSize: 10, padding: '0 4px' }}
+                style={{ fontSize: 12, padding: '0 4px' }}
               />
             </Tooltip>
 
@@ -84,7 +84,7 @@ const MessageActions: React.FC<MessageActionsProps> = ({ message }) => {
                 icon={<DatabaseOutlined />}
                 onClick={handleSaveAsMemory}
                 loading={isSaving}
-                style={{ fontSize: 10, padding: '0 4px' }}
+                style={{ fontSize: 12, padding: '0 4px' }}
               />
             </Tooltip>
 
@@ -112,7 +112,7 @@ const MessageActions: React.FC<MessageActionsProps> = ({ message }) => {
                     }
                   }}
                   disabled={isProcessing}
-                  style={{ fontSize: 10, padding: '0 4px' }}
+                  style={{ fontSize: 12, padding: '0 4px' }}
                 />
               </Tooltip>
             )}

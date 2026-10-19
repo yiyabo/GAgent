@@ -394,13 +394,13 @@ const MemoryGraph: React.FC<MemoryGraphProps> = ({ onNodeClick, height = '600px'
   </div>
 
   <div style={{ marginBottom: '8px' }}>
-  <div style={{ fontWeight: 'bold', fontSize: '11px', color: '#666', marginBottom: '4px' }}>
+  <div style={{ fontWeight: 'bold', fontSize: '12px', color: '#666', marginBottom: '4px' }}>
   =  + 
   </div>
   </div>
 
   <div style={{ marginBottom: '8px' }}>
-  <div style={{ fontWeight: 'bold', fontSize: '11px', color: '#666', marginBottom: '4px' }}>
+  <div style={{ fontWeight: 'bold', fontSize: '12px', color: '#666', marginBottom: '4px' }}>
   :
   </div>
   <div style={{ marginLeft: '8px' }}>
@@ -423,7 +423,7 @@ const MemoryGraph: React.FC<MemoryGraphProps> = ({ onNodeClick, height = '600px'
   </div>
 
   <div style={{ marginBottom: '8px' }}>
-  <div style={{ fontWeight: 'bold', fontSize: '11px', color: '#666', marginBottom: '4px' }}>
+  <div style={{ fontWeight: 'bold', fontSize: '12px', color: '#666', marginBottom: '4px' }}>
   type:
   </div>
   <div style={{ marginLeft: '8px' }}>
@@ -432,7 +432,7 @@ const MemoryGraph: React.FC<MemoryGraphProps> = ({ onNodeClick, height = '600px'
   </div>
 
   <div>
-  <div style={{ fontWeight: 'bold', fontSize: '11px', color: '#666', marginBottom: '4px' }}>
+  <div style={{ fontWeight: 'bold', fontSize: '12px', color: '#666', marginBottom: '4px' }}>
   connection:
   </div>
   <div style={{ marginLeft: '8px' }}>
@@ -448,7 +448,7 @@ const MemoryGraph: React.FC<MemoryGraphProps> = ({ onNodeClick, height = '600px'
   </div>
   </div>
 
-  <div style={{ fontSize: '10px', color: '#999', marginTop: '8px', borderTop: '1px solid #f0f0f0', paddingTop: '6px' }}>
+  <div style={{ fontSize: '12px', color: '#999', marginTop: '8px', borderTop: '1px solid #f0f0f0', paddingTop: '6px' }}>
   💡 <br />
   🔍 <br />
   🖱️ 

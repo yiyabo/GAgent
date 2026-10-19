@@ -82,7 +82,7 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({ size = 'small', style }) 
           )}
           <span>{m.name}</span>
           {!m.available && (
-            <Tag color="default" style={{ marginLeft: 4, fontSize: 10 }}>
+            <Tag color="default" style={{ marginLeft: 4, fontSize: 12 }}>
               未配置
             </Tag>
           )}

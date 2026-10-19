@@ -123,7 +123,7 @@ const Landing: React.FC = () => {
               fontSize: 'clamp(36px, 5vw, 52px)',
               fontWeight: 600,
               lineHeight: 1.2,
-              color: 'var(--text-primary)',
+              color: 'var(--color-brand)',
             }}
           >
             Phage-Agent
@@ -229,7 +229,7 @@ const Landing: React.FC = () => {
         }}
       >
         <Space direction="vertical" size={24} style={{ maxWidth: 560, margin: '0 auto' }}>
-          <Title level={3} style={{ margin: 0, fontWeight: 600, color: 'var(--text-primary)' }}>
+          <Title level={3} style={{ margin: 0, color: 'var(--text-primary)' }}>
             准备好开始了吗？
           </Title>
           <Paragraph style={{ margin: 0, color: 'var(--text-secondary)', fontSize: 16 }}>
