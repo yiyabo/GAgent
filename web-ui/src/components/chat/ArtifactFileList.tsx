@@ -2,6 +2,7 @@ import React from 'react';
 import { Button, Tooltip } from 'antd';
 import { DownloadOutlined, FileTextOutlined } from '@ant-design/icons';
 import { collectArtifactFiles, resolveArtifactFileItemSrc } from '@/utils/artifactGallery';
+import { useT } from '@/i18n/useT';
 
 interface ArtifactFileListProps {
   items: unknown;
@@ -14,6 +15,7 @@ interface ArtifactFileListProps {
  * message produced no files.
  */
 export const ArtifactFileList: React.FC<ArtifactFileListProps> = ({ items, sessionId }) => {
+  const t = useT();
   const files = collectArtifactFiles(items);
   if (files.length === 0) {
     return null;
@@ -35,7 +37,7 @@ export const ArtifactFileList: React.FC<ArtifactFileListProps> = ({ items, sessi
       }}
     >
       {resolved.map(({ item, url }) => (
-        <Tooltip key={`${item.origin ?? 'artifact'}::${item.path}`} title={`下载 ${item.display_name || item.path}`}>
+        <Tooltip key={`${item.origin ?? 'artifact'}::${item.path}`} title={t('chat.downloadFile', { name: item.display_name || item.path })}>
           <a
             href={url}
             download

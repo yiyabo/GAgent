@@ -516,7 +516,10 @@
       "interrupted": "对话已中断（服务端已重启或无进行中的任务）。请重新发送消息。",
       "resumeFailed": "连接中断且自动恢复失败。请刷新页面查看是否已有结果，或重新发送消息。",
       "failureTail": "若任务较长，服务端可能仍在继续或已完成：请刷新页面查看最新结果，或稍后重试。"
-    }
+    },
+    "previewFile": "点击在侧边栏预览 {{name}}",
+    "previewPdf": "点击在侧边栏预览 PDF: {{name}}",
+    "downloadFile": "下载 {{name}}"
   },
   "artifacts": {
     "formatPng": "PNG 300DPI",
@@ -659,7 +662,13 @@
     "logPath": "日志路径： {{path}}",
     "cliUnavailable": "暂时无法读取执行器日志",
     "noCliOutput": "尚无执行器日志输出。",
-    "truncated": "仅展示最新的 200 行日志。"
+    "truncated": "仅展示最新的 200 行日志。",
+    "repairEnded": "补交已结束，记录待核对",
+    "repairing": "正在补齐产物",
+    "repairChecking": "正在重新验收",
+    "repairPassed": "补交验收通过",
+    "repairFailed": "补交仍未通过",
+    "repairLine": "任务 #{{id}} · {{label}} · {{attempt}}/{{max}}"
   },
   "preview": {
     "title": "预览",
@@ -1512,5 +1521,21 @@
     "ctaTitle": "准备好开始了吗？",
     "ctaBody": "立即注册，体验 AI 驱动的噬菌体基因组分析与任务编排。",
     "copyright": "© {{year}} Phage-Agent. 保留所有权利。"
+  },
+  "sessionErrors": {
+    "switchBackTry": "请切回原会话后试用。",
+    "needQuery": "请输入新任务或样例。",
+    "busy": "此会话已有任务正在运行。",
+    "skillChanged": "技能版本已更新，请重新查看后试用。",
+    "skillDisabled": "此技能已停用或需要修订。",
+    "switchedTry": "会话已切换，请回原会话试用。",
+    "switchBackContinue": "请切回原会话后继续此任务。",
+    "runMismatch": "任务与当前会话不匹配。",
+    "switchedContinue": "会话已切换，请回原会话继续。",
+    "chatGone": "对话已不存在，请重新打开后设置"
+  },
+  "session": {
+    "newTitle": "新会话 {{time}}",
+    "assistantTitle": "AI 任务编排助手"
   }
 }

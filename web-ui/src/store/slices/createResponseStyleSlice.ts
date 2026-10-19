@@ -1,6 +1,7 @@
 import { chatApi } from '@api/chat';
 import { useAuthStore } from '@store/auth';
 import type { ChatSliceCreator } from './types';
+import { translate } from '@/i18n/useT';
 
 export const createResponseStyleSlice: ChatSliceCreator = (set, get) => ({
   responseDefaults: null,
@@ -38,7 +39,7 @@ export const createResponseStyleSlice: ChatSliceCreator = (set, get) => ({
     if (get().responsePreferenceSaving.has(sessionId)) return;
     const user = useAuthStore.getState().user;
     const session = get().sessions.find((entry) => entry.id === sessionId);
-    if (!session) throw new Error('对话已不存在，请重新打开后设置');
+    if (!session) throw new Error(translate('sessionErrors.chatGone'));
     set((state) => ({
       responsePreferenceSaving: new Set([...state.responsePreferenceSaving, sessionId]),
       responsePreferenceRevisions: { ...state.responsePreferenceRevisions, [sessionId]: (state.responsePreferenceRevisions[sessionId] ?? 0) + 1 },

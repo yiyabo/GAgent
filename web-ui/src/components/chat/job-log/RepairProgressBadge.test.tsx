@@ -27,3 +27,18 @@ describe('delivery repair progress', () => {
     expect(screen.getByTestId('repair-progress').textContent).toContain('补交仍未通过 · 2/2');
   });
 });
+
+import { useLanguageStore } from '@/i18n/language';
+describe('delivery repair progress in English', () => {
+  it('reads in English and keeps the task, label and attempt order', () => {
+    useLanguageStore.getState().setLanguage('en');
+    try {
+      const { rerender } = render(<RepairProgressBadge logs={[progress('repairing')]} jobStatus="running" />);
+      expect(screen.getByTestId('repair-progress').textContent).toBe('Task #7 · Completing artifacts · 1/2');
+      rerender(<RepairProgressBadge logs={[progress('repairing')]} jobStatus="cancelled" />);
+      expect(screen.getByTestId('repair-progress').textContent).toContain('Resubmission ended');
+    } finally {
+      useLanguageStore.getState().setLanguage('zh-CN');
+    }
+  });
+});

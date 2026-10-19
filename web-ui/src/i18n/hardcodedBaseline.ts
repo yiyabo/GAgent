@@ -10,7 +10,9 @@
  * "proven free of text". Generated at the start of the i18n migration, then widened in batch 2 to also see text next to
  * an expression (`Task ID: {id}`), status words chosen by a ternary, and suffix/extra props: the first
  * scan reported 902 sites, the wider one 1,159. Batch 2 (memory, plans, dashboard, tasks, analytics and the
- * DAG components) brought it to the figure recorded below.
+ * DAG components) brought it to 53 files / 710 sites. Batch 3 migrated all of them; the five lines left are scanner
+ * false positives, not text (a `Promise<void>` type in HeroWelcome and SkillLearningPanel, `3 &&` in message/index.tsx,
+ * one token each in artifactPreview and PlanWorkspace), kept at their reported count rather than loosening the scanner.
  */
 export const HARDCODED_BASELINE: Record<string, number> = {
   'components/chat/HeroWelcome.tsx': 1,
