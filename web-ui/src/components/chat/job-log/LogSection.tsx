@@ -119,7 +119,7 @@ export const ActionLogs: React.FC<{ actionLogs: ActionLogEntry[] }> = ({ actionL
               <Space size="small">
                 <Tag color={statusInfo.color} style={{ marginRight: 0 }}>
                   {statusInfo.icon}
-                  <span style={{ marginLeft: 4 }}>{statusInfo.label}</span>
+                  <span style={{ marginLeft: 4 }}>{t(statusInfo.labelKey)}</span>
                 </Tag>
                 <Text strong>
                   {t('jobLog.step', { n: entry.sequence, name: descriptor })}
