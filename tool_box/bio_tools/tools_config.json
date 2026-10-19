@@ -60,6 +60,13 @@
         "image": "biocontainers/blast:2.2.31",
         "description": "BLAST+ - Basic Local Alignment Search Tool for sequence similarity search",
         "category": "sequence_alignment",
+        "native": {
+            "modules": [
+                "BLAST+/2.12.0"
+            ],
+            "cpus": 4,
+            "mem_mb": 16384
+        },
         "notes": "Standard workflow: run makeblastdb first to build the database, then run blastn/blastp. Database files are written to /work/.",
         "operations": {
             "blastn": {
@@ -318,6 +325,13 @@
         "image": "staphb/minimap2:latest",
         "description": "Minimap2 - Fast sequence alignment for long and short reads",
         "category": "sequence_alignment",
+        "native": {
+            "modules": [
+                "minimap2/2.24"
+            ],
+            "cpus": 8,
+            "mem_mb": 32768
+        },
         "notes": "preset options: map-pb (PacBio CLR), map-ont (ONT), map-hifi (HiFi), sr (Illumina short reads)",
         "operations": {
             "map": {
@@ -378,6 +392,13 @@
         "image": "staphb/samtools:latest",
         "description": "SAMtools - Utilities for manipulating SAM/BAM/CRAM alignment files",
         "category": "sequence_alignment",
+        "native": {
+            "modules": [
+                "SAMtools/1.15.1"
+            ],
+            "cpus": 4,
+            "mem_mb": 16384
+        },
         "notes": "Standard workflow: view (convert) → sort → index → stats",
         "operations": {
             "view_filter_unmapped": {
