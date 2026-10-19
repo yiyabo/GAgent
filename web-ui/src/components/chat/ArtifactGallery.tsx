@@ -22,18 +22,17 @@ interface ConsolidatedFigure {
 }
 
 export const ArtifactGallery: React.FC<ArtifactGalleryProps> = ({ items, sessionId }) => {
-  if (!Array.isArray(items) || items.length === 0) {
-    return null;
-  }
+  // Hooks run on every render; the empty-list return waits until after them (rules of hooks).
+  const safeItems = useMemo(() => (Array.isArray(items) ? items : []), [items]);
 
   const visibleItems = useMemo(() => {
-    return items
+    return safeItems
       .map((item) => ({
         item,
         url: resolveArtifactGalleryItemSrc(item, sessionId),
       }))
       .filter((entry) => entry.url);
-  }, [items, sessionId]);
+  }, [safeItems, sessionId]);
 
   // Consolidate figures by base name (grouping svg, png, pdf of the same figure into one card)
   const consolidatedFigures = useMemo<ConsolidatedFigure[]>(() => {
@@ -75,7 +74,7 @@ export const ArtifactGallery: React.FC<ArtifactGalleryProps> = ({ items, session
     return Array.from(map.values());
   }, [visibleItems]);
 
-  if (consolidatedFigures.length === 0) {
+  if (safeItems.length === 0 || consolidatedFigures.length === 0) {
     return null;
   }
 

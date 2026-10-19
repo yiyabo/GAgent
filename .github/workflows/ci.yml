@@ -54,6 +54,8 @@ jobs:
       - run: npm ci
       - name: Check TypeScript
         run: npm run type-check
+      - name: Lint
+        run: npm run lint
       - name: Run frontend regressions
         run: npm run test -- --run
 

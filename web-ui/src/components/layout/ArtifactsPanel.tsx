@@ -154,7 +154,6 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
     setPreviewOpen(false);
     setKeyword('');
     setCheckedKeys([]);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- reset on session change only
   }, [sessionId]);
 
   React.useEffect(() => {
