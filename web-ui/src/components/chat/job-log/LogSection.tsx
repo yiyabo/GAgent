@@ -3,13 +3,14 @@ import { Space, Tag, Typography, Alert, Divider } from 'antd';
 import type { ActionLogEntry, JobLogEvent } from '@/types';
 import { levelColorMap, statusMeta, normalizeActionStatusKey, parseIsoToMs } from './constants';
 import { parseServerTimeDayjs } from '@/utils/serverTime';
+import { translate, useT } from '@/i18n/useT';
 
 const { Text } = Typography;
 
 /** Render a backend timestamp as local wall-clock time (zone-less values are UTC). */
 const formatLogTime = (value: string): string => {
   const d = parseServerTimeDayjs(value);
-  return d && d.isValid() ? d.format('HH:mm:ss') : '时间未记录';
+  return d && d.isValid() ? d.format('HH:mm:ss') : translate('common.timeNotRecorded');
 };
 
 export const LogMetadata: React.FC<{ metadata: Record<string, any> | undefined }> = ({ metadata }) => {
@@ -41,6 +42,7 @@ export const LogMetadata: React.FC<{ metadata: Record<string, any> | undefined }
 };
 
 export const ActionLogs: React.FC<{ actionLogs: ActionLogEntry[] }> = ({ actionLogs }) => {
+  const t = useT();
   if (!actionLogs.length) {
     return null;
   }
@@ -100,7 +102,7 @@ export const ActionLogs: React.FC<{ actionLogs: ActionLogEntry[] }> = ({ actionL
   return (
     <div style={{ width: '100%' }}>
       <Divider plain style={{ margin: '12px 0' }}>
-        Action Execution Log
+        {t('jobLog.actionLog')}
       </Divider>
       <Space direction="vertical" size={6} style={{ width: '100%' }}>
         {condensed.map((entry) => {
@@ -120,7 +122,7 @@ export const ActionLogs: React.FC<{ actionLogs: ActionLogEntry[] }> = ({ actionL
                   <span style={{ marginLeft: 4 }}>{statusInfo.label}</span>
                 </Tag>
                 <Text strong>
-                  Step {entry.sequence}: {descriptor}
+                  {t('jobLog.step', { n: entry.sequence, name: descriptor })}
                 </Text>
               </Space>
               {entry.message && (
@@ -130,7 +132,7 @@ export const ActionLogs: React.FC<{ actionLogs: ActionLogEntry[] }> = ({ actionL
               )}
               {durationMs !== null && durationMs >= 0 && (
                 <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginTop: 2 }}>
-                  Duration: {durationMs < 1000 ? `${durationMs}ms` : `${(durationMs / 1000).toFixed(1)}s`}
+                  {t('jobLog.duration', { value: durationMs < 1000 ? `${durationMs}ms` : `${(durationMs / 1000).toFixed(1)}s` })}
                 </div>
               )}
               {timestamp && (
@@ -148,12 +150,13 @@ export const ActionLogs: React.FC<{ actionLogs: ActionLogEntry[] }> = ({ actionL
 };
 
 export const LogList: React.FC<{ logs: JobLogEvent[]; missingJob: boolean }> = ({ logs, missingJob }) => {
+  const t = useT();
   if (missingJob) {
     return (
       <Alert
         type="warning"
-        message="Unable to load logs"
-        description="The corresponding background task was cleaned up or does not exist."
+        message={t('jobLog.logsUnavailable')}
+        description={t('jobLog.logsMissing')}
         showIcon
       />
     );
@@ -161,7 +164,7 @@ export const LogList: React.FC<{ logs: JobLogEvent[]; missingJob: boolean }> = (
   if (!logs.length) {
     return (
       <Text type="secondary" style={{ fontSize: 12 }}>
-        No logs yet.
+        {t('jobLog.noLogs')}
       </Text>
     );
   }

@@ -3,6 +3,7 @@ import { Tree, Modal, Button, Spin, message, Space, Typography, Select } from 'a
 import { FolderOutlined, FileOutlined } from '@ant-design/icons';
 import { projectApi, FileTreeNode } from '@api/project';
 import { useProjectStore } from '@store/project';
+import { useT } from '@/i18n/useT';
 
 interface FileTreeSelectorProps {
   projectId: number;
@@ -19,6 +20,7 @@ const FileTreeSelector: React.FC<FileTreeSelectorProps> = ({
   onCancel,
   onSelect,
 }) => {
+  const t = useT();
   const [treeData, setTreeData] = useState<FileTreeNode[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedKeys, setSelectedKeys] = useState<string[]>([]);
@@ -41,12 +43,12 @@ const FileTreeSelector: React.FC<FileTreeSelectorProps> = ({
       if (response.code === 0) {
         setTreeData(response.data);
       } else {
-        message.error(response.message || 'Failed to load files');
+        message.error(response.message || t('fileTree.loadFailed'));
       }
     } catch (error: any) {
       console.error('❌ Error loading project files:', error);
       console.error('❌ Error details:', error.response?.data || error.message);
-      message.error(`Failed to load project files: ${error.message || 'Unknown error'}`);
+      message.error(t('fileTree.loadProjectFailed', { message: error.message || t('app.unknownError') }));
     } finally {
       setLoading(false);
     }
@@ -62,7 +64,7 @@ const FileTreeSelector: React.FC<FileTreeSelectorProps> = ({
 
   const handleSelect = async () => {
     if (selectedKeys.length === 0) {
-      message.warning('Please select at least one file');
+      message.warning(t('fileTree.selectAtLeastOne'));
       return;
     }
 
@@ -75,12 +77,12 @@ const FileTreeSelector: React.FC<FileTreeSelectorProps> = ({
       );
       if (response.code === 0) {
         onSelect(response.files);
-        message.success(`Selected ${response.files.length} files`);
+        message.success(t('fileTree.selectedCount', { count: response.files.length }));
       } else {
-        message.error(response.message || 'Failed to select files');
+        message.error(response.message || t('fileTree.selectFailed'));
       }
     } catch (error) {
-      message.error('Failed to select files');
+      message.error(t('fileTree.selectFailed'));
       console.error('Error selecting files:', error);
     }
   };
@@ -98,22 +100,22 @@ const FileTreeSelector: React.FC<FileTreeSelectorProps> = ({
 
   return (
     <Modal
-      title="Select Files from Project"
+      title={t('fileTree.title')}
       open={visible}
       onCancel={onCancel}
       width={600}
       footer={[
         <Button key="cancel" onClick={onCancel}>
-          Cancel
+          {t('common.cancel')}
         </Button>,
         <Button key="select" type="primary" onClick={handleSelect} disabled={selectedKeys.length === 0}>
-          Select ({selectedKeys.length})
+          {t('fileTree.selectButton', { count: selectedKeys.length })}
         </Button>,
       ]}
     >
       <Space direction="vertical" style={{ width: '100%' }}>
         <Typography.Text type="secondary">
-          Select files from the project data roots to use in your chat session.
+          {t('fileTree.hint')}
         </Typography.Text>
         {dataRoots.length > 1 && (
           <Select
@@ -129,12 +131,12 @@ const FileTreeSelector: React.FC<FileTreeSelectorProps> = ({
               value: idx,
               label: root.label || root.path,
             }))}
-            placeholder="Select data root"
+            placeholder={t('fileTree.dataRootPlaceholder')}
           />
         )}
         {loading ? (
           <div style={{ textAlign: 'center', padding: '20px' }}>
-            <Spin tip="Loading files..." />
+            <Spin tip={t('fileTree.loadingFiles')} />
           </div>
         ) : (
           <Tree

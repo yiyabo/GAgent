@@ -3,6 +3,7 @@ import React from 'react';
 import { describe, expect, it } from 'vitest';
 
 import PlanTreeVisualization from './PlanTreeVisualization';
+import { translate } from '@/i18n/useT';
 import type { PlanTaskNode } from '../../types';
 
 const makeTask = (id: number, name: string, status: PlanTaskNode['status']): PlanTaskNode => ({
@@ -28,9 +29,9 @@ describe('PlanTreeVisualization', () => {
       />
     );
 
-    const pendingDot = screen.getByTitle('pending');
-    const blockedDot = screen.getByTitle('blocked');
-    const failedDot = screen.getByTitle('failed');
+    const pendingDot = screen.getByTitle(translate('status.pending'));
+    const blockedDot = screen.getByTitle(translate('status.blocked'));
+    const failedDot = screen.getByTitle(translate('status.failed'));
 
     expect(pendingDot.classList.contains('status-pending')).toBe(true);
     expect(blockedDot.classList.contains('status-blocked')).toBe(true);

@@ -1,6 +1,7 @@
 import React, { Component, ErrorInfo, ReactNode } from 'react';
 import { Result, Button } from 'antd';
 import { CloseCircleOutlined, ReloadOutlined } from '@ant-design/icons';
+import { translate } from '@/i18n/useT';
 
 interface Props {
   children: ReactNode;
@@ -86,14 +87,14 @@ class ErrorBoundary extends Component<Props, State> {
   <Result
   status="error"
   icon={<CloseCircleOutlined style={{ color: 'var(--status-error-fg)' }} />}
-  title="Component crashed"
-  subTitle={moduleImportError ? 'A page module failed to load. This is usually caused by a stale dev-server module cache or a temporary network hiccup; reload the page to fetch the latest module graph.' : 'A rendering error occurred in this component. Try reset or reload.'}
+  title={translate('errorBoundary.crashed')}
+  subTitle={moduleImportError ? translate('errorBoundary.moduleLoadFailed') : translate('errorBoundary.renderFailed')}
   extra={[
   <Button type="primary" key="reset" onClick={this.handleReset}>
-  {moduleImportError ? 'Reload page' : 'Reset component'}
+  {moduleImportError ? translate('errorBoundary.reloadPage') : translate('errorBoundary.resetComponent')}
   </Button>,
   <Button key="reload" icon={<ReloadOutlined />} onClick={this.handleReload}>
-  Reload page
+  {translate('errorBoundary.reloadPage')}
   </Button>,
   ]}
   >
@@ -108,7 +109,7 @@ class ErrorBoundary extends Component<Props, State> {
   marginTop: '24px',
   }}
   >
-  <h4 style={{ color: 'var(--status-error-fg)', marginBottom: '12px' }}>Error details (development)</h4>
+  <h4 style={{ color: 'var(--status-error-fg)', marginBottom: '12px' }}>{translate('errorBoundary.devDetails')}</h4>
   <div
   style={{
   fontSize: '12px',
@@ -117,7 +118,7 @@ class ErrorBoundary extends Component<Props, State> {
   marginBottom: '8px',
   }}
   >
-  <strong>Error:</strong> {this.state.error.message}
+  <strong>{translate('errorBoundary.errorLabel')}</strong> {this.state.error.message}
   </div>
   {this.state.error.stack && (
   <pre
@@ -139,7 +140,7 @@ class ErrorBoundary extends Component<Props, State> {
   {this.state.errorInfo && (
   <details style={{ marginTop: '12px' }}>
   <summary style={{ cursor: 'pointer', color: 'var(--color-action)', fontWeight: 'bold' }}>
-  Component stack
+  {translate('errorBoundary.componentStack')}
   </summary>
   <pre
   style={{

@@ -3,9 +3,11 @@ import React from 'react';
 import { vi } from 'vitest';
 import ToolResultCard from '../ToolResultCard';
 import { useChatStore } from '@store/chat';
+import { useLanguageStore } from '@/i18n/language';
 
 describe('ToolResultCard', () => {
   beforeEach(() => {
+    useLanguageStore.setState({ language: 'en' });
     useChatStore.setState({
       sendMessage: vi.fn().mockResolvedValue(undefined),
     } as any);
@@ -13,6 +15,7 @@ describe('ToolResultCard', () => {
 
   afterEach(() => {
     vi.clearAllMocks();
+    useLanguageStore.setState({ language: 'zh-CN' });
   });
 
   it('renders search results when successful', () => {
@@ -87,5 +90,22 @@ describe('ToolResultCard', () => {
     await waitFor(() => {
       expect(sendMessage).toHaveBeenCalledTimes(1);
     });
+  });
+
+  it('shows its own fallback texts in Chinese when the language is Chinese', () => {
+    useLanguageStore.setState({ language: 'zh-CN' });
+    render(
+      <ToolResultCard
+        defaultOpen
+        payload={{
+          name: 'web_search',
+          result: { query: 'AI research', success: false },
+        }}
+      />
+    );
+
+    expect(screen.getByText('联网搜索失败，请稍后重试。')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /重新搜索/ })).toBeInTheDocument();
+    expect(screen.queryByText(/Retry search/)).not.toBeInTheDocument();
   });
 });

@@ -5,6 +5,7 @@ import { ToolResultItem, ToolResultPayload } from '@/types';
 import { useChatStore } from '@store/chat';
 import { collectArtifactImagePathsFromResult, resolveArtifactImageSrc } from '@/utils/artifactImageUrl';
 import { SessionArtifactImage } from './SessionArtifactImage';
+import { useT } from '@/i18n/useT';
 
 const { Paragraph, Text } = Typography;
 
@@ -15,6 +16,7 @@ interface ToolResultCardProps {
 }
 
 const ToolResultCard: React.FC<ToolResultCardProps> = ({ payload, defaultOpen = false, sessionId }) => {
+  const t = useT();
   const [introVisible, setIntroVisible] = useState(true);
   const [retryLoading, setRetryLoading] = useState(false);
 
@@ -53,7 +55,7 @@ const ToolResultCard: React.FC<ToolResultCardProps> = ({ payload, defaultOpen = 
         ? payload.result.fallback_from
         : undefined;
     const labelMap: Record<string, string> = {
-      builtin: 'Built-in Search',
+      builtin: t('toolResult.providerBuiltin'),
       perplexity: 'Perplexity',
     };
     const providerLabelText = providerValue ? labelMap[providerValue] ?? providerValue : undefined;
@@ -62,18 +64,18 @@ const ToolResultCard: React.FC<ToolResultCardProps> = ({ payload, defaultOpen = 
     const successState = payload.result?.success !== false;
     let headerText =
       payload.summary ??
-      (successState ? 'Tool execution completed' : 'Tool execution failed. Please try again later.');
-    let intro = 'Tool call completed';
+      (successState ? t('toolResult.executionDone') : t('toolResult.executionFailed'));
+    let intro = t('toolResult.introGeneric');
     if (isWeb) {
       headerText =
         payload.summary ??
-        (successState ? 'Web search completed' : 'Web search failed. Please try again later.');
-      intro = 'Web search has been called to fetch real-time information';
+        (successState ? t('toolResult.webSearchDone') : t('toolResult.webSearchFailed'));
+      intro = t('toolResult.introWebSearch');
     } else if (isGraph) {
       headerText =
         payload.summary ??
-        (successState ? 'Knowledge graph retrieval completed' : 'Knowledge graph retrieval failed');
-      intro = 'Phage knowledge graph has been queried';
+        (successState ? t('toolResult.graphDone') : t('toolResult.graphFailed'));
+      intro = t('toolResult.introGraph');
     }
     const normalizedQuery =
       payload.result?.query ??
@@ -152,7 +154,7 @@ const ToolResultCard: React.FC<ToolResultCardProps> = ({ payload, defaultOpen = 
         : undefined,
       isWebSearch: isWeb,
     };
-  }, [payload]);
+  }, [payload, t]);
 
   const artifactPreviewUrls = useMemo(() => {
     const sid = typeof sessionId === 'string' ? sessionId.trim() : '';
@@ -203,40 +205,41 @@ const ToolResultCard: React.FC<ToolResultCardProps> = ({ payload, defaultOpen = 
         <Space direction="vertical" size="small" style={{ width: '100%' }}>
           {providerLabel && (
             <Text type="secondary">
-              Source provider: {providerLabel}
-              {fallbackLabel ? ` (fallback: ${fallbackLabel})` : ''}
+              {fallbackLabel
+                ? t('toolResult.sourceProviderFallback', { provider: providerLabel, fallback: fallbackLabel })
+                : t('toolResult.sourceProvider', { provider: providerLabel })}
             </Text>
           )}
           {query && (
             <Text type="secondary">
-              Query: <Text code>{query}</Text>
+              {t('toolResult.query')} <Text code>{query}</Text>
             </Text>
           )}
           {executionMeta && (
             <Space direction="vertical" size={0}>
               {(executionMeta.executionBackend || executionMeta.executionLane) && (
                 <Text type="secondary">
-                  Execution:
+                  {t('toolResult.execution')}
                   {executionMeta.executionBackend ? ` ${executionMeta.executionBackend}` : ''}
                   {executionMeta.executionLane ? ` (${executionMeta.executionLane})` : ''}
                 </Text>
               )}
               {executionMeta.executionLaneReason && (
-                <Text type="secondary">Reason: {executionMeta.executionLaneReason}</Text>
+                <Text type="secondary">{t('toolResult.reason', { reason: executionMeta.executionLaneReason })}</Text>
               )}
               {executionMeta.workspaceDir && (
                 <Text type="secondary">
-                  Workspace: <Text code>{executionMeta.workspaceDir}</Text>
+                  {t('toolResult.workspace')} <Text code>{executionMeta.workspaceDir}</Text>
                 </Text>
               )}
               {executionMeta.codeDirectory && (
                 <Text type="secondary">
-                  Code dir: <Text code>{executionMeta.codeDirectory}</Text>
+                  {t('toolResult.codeDir')} <Text code>{executionMeta.codeDirectory}</Text>
                 </Text>
               )}
               {executionMeta.codeFile && (
                 <Text type="secondary">
-                  Code file: <Text code>{executionMeta.codeFile}</Text>
+                  {t('toolResult.codeFile')} <Text code>{executionMeta.codeFile}</Text>
                 </Text>
               )}
             </Space>
@@ -250,8 +253,8 @@ const ToolResultCard: React.FC<ToolResultCardProps> = ({ payload, defaultOpen = 
             <Alert
               type="warning"
               showIcon
-              message="No parseable source links returned"
-              description="The tool payload has no structured results list (URLs), so the text cannot be checked against independent sources item by item. For time-sensitive or factual claims, treat with caution or run another search."
+              message={t('toolResult.noSourceLinks')}
+              description={t('toolResult.noSourceLinksDesc')}
             />
           )}
           {promptText && (
@@ -261,7 +264,7 @@ const ToolResultCard: React.FC<ToolResultCardProps> = ({ payload, defaultOpen = 
           )}
           {metadata && (
             <Text type="secondary">
-              Triple count: {metadata.triple_count ?? '-'}, hops: {metadata.hops ?? '-'}
+              {t('toolResult.tripleCount', { count: metadata.triple_count ?? '-', hops: metadata.hops ?? '-' })}
             </Text>
           )}
           {searchItems.length > 0 && (
@@ -283,7 +286,7 @@ const ToolResultCard: React.FC<ToolResultCardProps> = ({ payload, defaultOpen = 
                       </Text>
                     )}
                     {item?.source && (
-                      <Text type="secondary">Source: {item.source}</Text>
+                      <Text type="secondary">{t('toolResult.source', { source: item.source })}</Text>
                     )}
                     {item?.snippet && (
                       <Text style={{ whiteSpace: 'pre-wrap' }}>{item.snippet}</Text>
@@ -304,10 +307,10 @@ const ToolResultCard: React.FC<ToolResultCardProps> = ({ payload, defaultOpen = 
                       {item.entity1} --[{item.relation}]→ {item.entity2}
                     </Text>
                     <Text type="secondary">
-                      Type: {item.entity1_type ?? 'unknown'} → {item.entity2_type ?? 'unknown'}
+                      {t('toolResult.tripleType', { from: item.entity1_type ?? t('toolResult.unknownType'), to: item.entity2_type ?? t('toolResult.unknownType') })}
                     </Text>
                     {item.pdf_name && (
-                      <Text type="secondary">Source PDF: {item.pdf_name}</Text>
+                      <Text type="secondary">{t('toolResult.sourcePdf', { name: item.pdf_name })}</Text>
                     )}
                   </Space>
                 </List.Item>
@@ -318,13 +321,13 @@ const ToolResultCard: React.FC<ToolResultCardProps> = ({ payload, defaultOpen = 
             <Alert
               type="info"
               showIcon
-              message="Knowledge-graph subgraph returned. You can analyze it further in graph view."
+              message={t('toolResult.subgraphReturned')}
             />
           )}
           {artifactPreviewUrls.length > 0 && (
             <div style={{ marginTop: 8 }}>
               <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 6 }}>
-                Artifacts (preview)
+                {t('toolResult.artifactsPreview')}
               </Text>
               <Space wrap size={8}>
                 {artifactPreviewUrls.map((url, idx) => (
@@ -350,7 +353,7 @@ const ToolResultCard: React.FC<ToolResultCardProps> = ({ payload, defaultOpen = 
             <Alert
               type="error"
               showIcon
-              message={errorText ?? 'Search failed. Please try again later.'}
+              message={errorText ?? t('toolResult.searchFailed')}
             />
           )}
           {!success && query && isWebSearch && (
@@ -361,7 +364,7 @@ const ToolResultCard: React.FC<ToolResultCardProps> = ({ payload, defaultOpen = 
               loading={retryLoading}
               style={{ paddingLeft: 0 }}
             >
-              Retry search
+              {t('toolResult.retrySearch')}
             </Button>
           )}
         </Space>
