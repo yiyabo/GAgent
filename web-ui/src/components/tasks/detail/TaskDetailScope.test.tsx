@@ -2,7 +2,8 @@ import React from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { App as AntdApp } from 'antd';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { useLanguageStore } from '@/i18n/language';
 import { planTreeApi } from '@api/planTree';
 import { useChatStore } from '@store/chat';
 import { useTasksStore } from '@store/tasks';
@@ -30,8 +31,10 @@ function mount() {
 const oldResponse = { success: true, message: 'old complete', plan_id: 1, task_id: 1, updated_fields: [], result: { task_id: 1, content: 'OLD MUTATION RESULT', status: 'completed' } };
 const writeTaskResult = useTasksStore.getState().setTaskResult;
 const cacheWrites = vi.fn(writeTaskResult);
+afterEach(() => useLanguageStore.setState({ language: 'zh-CN' }));
 beforeEach(() => {
   vi.clearAllMocks();
+  useLanguageStore.setState({ language: 'en' });
   useTasksStore.setState({ setTaskResult: cacheWrites });
   setScope(1);
   vi.mocked(planTreeApi.getTaskResult).mockImplementation(async planId => ({ task_id: 1, content: `Result ${planId}`, status: 'failed' }));

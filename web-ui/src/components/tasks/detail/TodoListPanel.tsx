@@ -25,15 +25,33 @@ import {
 import { planTreeApi } from '@api/planTree';
 import JobLogPanel from '@/components/chat/JobLogPanel';
 import type { TodoItemResponse, TodoListResponse, TodoPhaseResponse } from '@/types';
+import { translate, useT } from '@/i18n/useT';
+import type { TFn } from '@/i18n/useT';
+import { statusLabel } from '@/i18n/statusLabels';
 
 const { Text, Title, Paragraph } = Typography;
 
-const phaseStatusConfig: Record<string, { color: string; label: string }> = {
-  completed: { color: 'success', label: 'Completed' },
-  in_progress: { color: 'processing', label: 'In Progress' },
-  pending: { color: 'warning', label: 'Pending' },
-  partial_failure: { color: 'error', label: 'Partial Failure' },
-  empty: { color: 'default', label: 'Empty' },
+const phaseStatusColor: Record<string, string> = {
+  completed: 'success',
+  in_progress: 'processing',
+  pending: 'warning',
+  partial_failure: 'error',
+  empty: 'default',
+};
+
+const phaseStatusLabel = (key: string, t: TFn): string => {
+  switch (key) {
+    case 'completed':
+      return statusLabel(t, 'completed');
+    case 'in_progress':
+      return t('todoList.inProgress');
+    case 'partial_failure':
+      return t('toolDrawer.partialFailure');
+    case 'empty':
+      return t('todoList.empty');
+    default:
+      return statusLabel(t, 'pending');
+  }
 };
 
 const taskStatusIcon: Record<string, React.ReactNode> = {
@@ -59,6 +77,7 @@ const TodoTaskItem: React.FC<{
   onTaskClick?: (taskId: number) => void;
   showPhaseTag?: boolean;
 }> = ({ item, onTaskClick, showPhaseTag = false }) => {
+  const t = useT();
   const displayStatus = item.effective_status || item.status;
   const incomplete = item.incomplete_dependencies ?? [];
   const blocked =
@@ -81,11 +100,11 @@ const TodoTaskItem: React.FC<{
       <div style={{ flex: 1, minWidth: 0 }}>
         <Space size={6} wrap>
           <Tag color={taskStatusColor[displayStatus] ?? 'default'} style={{ marginRight: 0 }}>
-            {displayStatus}
+            {statusLabel(t, displayStatus)}
           </Tag>
           {showPhaseTag && (
             <Tag color="blue" style={{ marginRight: 0 }}>
-              Phase {item.phase + 1}
+              {t('todoList.phase', { n: item.phase + 1 })}
             </Tag>
           )}
           <Button
@@ -101,7 +120,7 @@ const TodoTaskItem: React.FC<{
           <div style={{ marginTop: 2 }}>
             <Tooltip title={item.status_reason || undefined}>
               <Text type="warning" style={{ fontSize: 12 }}>
-                Blocked by {incomplete.map((d) => `#${d}`).join(', ')}
+                {t('executorPanel.blockedBy', { deps: incomplete.map((d) => `#${d}`).join(', ') })}
               </Text>
             </Tooltip>
           </div>
@@ -110,14 +129,14 @@ const TodoTaskItem: React.FC<{
           <Paragraph
             type="secondary"
             style={{ margin: '2px 0 0', fontSize: 12, whiteSpace: 'pre-wrap' }}
-            ellipsis={{ rows: 2, expandable: true, symbol: 'more' }}
+            ellipsis={{ rows: 2, expandable: true, symbol: t('common.more') }}
           >
             {item.instruction}
           </Paragraph>
         )}
         {item.dependencies.length > 0 && (
           <Text type="secondary" style={{ fontSize: 12 }}>
-            deps: {item.dependencies.map((d) => `#${d}`).join(', ')}
+            {t('todoList.deps', { deps: item.dependencies.map((d) => `#${d}`).join(', ') })}
           </Text>
         )}
       </div>
@@ -129,8 +148,9 @@ const TodoPhaseCard: React.FC<{
   phase: TodoPhaseResponse;
   onTaskClick?: (taskId: number) => void;
 }> = ({ phase, onTaskClick }) => {
+  const t = useT();
   const pct = phase.total > 0 ? Math.round((phase.completed / phase.total) * 100) : 0;
-  const cfg = phaseStatusConfig[phase.status] ?? phaseStatusConfig.pending;
+  const phaseColor = phaseStatusColor[phase.status] ?? phaseStatusColor.pending;
   const allCompleted = phase.status === 'completed';
   const [collapsed, setCollapsed] = useState(allCompleted);
 
@@ -148,13 +168,13 @@ const TodoPhaseCard: React.FC<{
         onClick={() => setCollapsed(!collapsed)}
       >
         <Space size={8}>
-          <Badge status={cfg.color as any} />
+          <Badge status={phaseColor as any} />
           <Title level={5} style={{ margin: 0 }}>
-            {phase.label.startsWith('Phase ') ? phase.label : `Phase ${phase.phase_id + 1}: ${phase.label}`}
+            {phase.label.startsWith('Phase ') ? phase.label : t('todoList.phaseTitle', { n: phase.phase_id + 1, label: phase.label })}
           </Title>
         </Space>
         <Space size={8}>
-          <Tag color={cfg.color}>{cfg.label}</Tag>
+          <Tag color={phaseColor}>{phaseStatusLabel(phase.status, t)}</Tag>
           <Text type="secondary">
             {phase.completed}/{phase.total}
           </Text>
@@ -203,6 +223,7 @@ const TodoListPanel: React.FC<TodoListPanelProps> = ({
   onTaskClick,
   fullPlan = false,
 }) => {
+  const t = useT();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [todoList, setTodoList] = useState<TodoListResponse | null>(null);
@@ -220,7 +241,7 @@ const TodoListPanel: React.FC<TodoListPanelProps> = ({
         : await planTreeApi.getPlanTodoList(planId!, targetTaskId!);
       setTodoList(data);
     } catch (err: any) {
-      setError(err?.message || 'Failed to load todo list');
+      setError(err?.message || translate('todoList.loadListFailed'));
     } finally {
       setLoading(false);
     }
@@ -256,13 +277,13 @@ const TodoListPanel: React.FC<TodoListPanelProps> = ({
       if (result.success) {
         const jobId = result.result?.job_id || result.job?.job_id || null;
         setExecutionJobId(jobId);
-        message.success(result.message || 'Plan execution started.');
+        message.success(result.message || translate('todoList.executionStarted'));
         setTimeout(() => void fetchTodoList(), 1500);
       } else {
-        message.error(result.message || 'Failed to start execution.');
+        message.error(result.message || translate('todoList.executionStartFailed'));
       }
     } catch (err: any) {
-      message.error(err?.message || 'Failed to execute plan.');
+      message.error(err?.message || translate('todoList.executeFailed'));
     } finally {
       setExecuting(false);
     }
@@ -276,8 +297,8 @@ const TodoListPanel: React.FC<TodoListPanelProps> = ({
   const isFullPlanMode = fullPlan || targetTaskId === null;
   const hasPending = todoList ? todoList.pending_order.length > 0 : false;
   const titleText = isFullPlanMode
-    ? `Plan Workflow`
-    : `Todo List — Task #${targetTaskId}`;
+    ? t('todoList.titleFullPlan')
+    : t('todoList.titleTask', { id: targetTaskId });
 
   return (
     <Modal
@@ -299,14 +320,14 @@ const TodoListPanel: React.FC<TodoListPanelProps> = ({
             onClick={handleExecuteFullPlan}
             loading={executing}
           >
-            Execute Full Plan
+            {t('todoList.executeFullPlan')}
           </Button>
         ) : null,
         <Button key="refresh" icon={<ReloadOutlined />} onClick={fetchTodoList} loading={loading}>
-          Refresh
+          {t('common.refresh')}
         </Button>,
         <Button key="close" onClick={onClose}>
-          Close
+          {t('common.close')}
         </Button>,
       ].filter(Boolean)}
     >
@@ -319,21 +340,21 @@ const TodoListPanel: React.FC<TodoListPanelProps> = ({
       )}
       {loading && !todoList ? (
         <div style={{ display: 'flex', justifyContent: 'center', padding: '32px 0' }}>
-          <Spin tip="Loading todo list..." />
+          <Spin tip={t('todoList.loading')} />
         </div>
       ) : error ? (
-        <Alert type="error" message="Failed to load" description={error} showIcon />
+        <Alert type="error" message={t('todoList.loadFailed')} description={error} showIcon />
       ) : !todoList ? (
-        <Text type="secondary">No data</Text>
+        <Text type="secondary">{t('todoList.noData')}</Text>
       ) : (
         <Space direction="vertical" size="middle" style={{ width: '100%' }}>
           <div>
             <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
               <Text strong>
-                Overall Progress: {todoList.completed_tasks}/{todoList.total_tasks} tasks
+                {t('todoList.overall', { done: todoList.completed_tasks, total: todoList.total_tasks })}
               </Text>
               <Text type="secondary">
-                {`${todoList.phases.length} phases`}
+                {t('todoList.phaseCount', { count: todoList.phases.length })}
               </Text>
             </div>
             <Progress percent={overallPct} />
@@ -344,8 +365,8 @@ const TodoListPanel: React.FC<TodoListPanelProps> = ({
               <Alert
                 type="info"
                 showIcon
-                message="Ordered by execution dependencies"
-                description="Phases reflect the real dependency order in which tasks become runnable; each task shows its dependencies."
+                message={t('todoList.orderedTitle')}
+                description={t('todoList.orderedDesc')}
               />
             )}
             {todoList.phases.map((phase) => (
@@ -358,7 +379,7 @@ const TodoListPanel: React.FC<TodoListPanelProps> = ({
               type="secondary"
               style={{ whiteSpace: 'pre-wrap', fontSize: 12, marginTop: 8 }}
               copyable
-              ellipsis={{ rows: 4, expandable: true, symbol: 'Show full summary' }}
+              ellipsis={{ rows: 4, expandable: true, symbol: t('todoList.showFullSummary') }}
             >
               {todoList.summary}
             </Paragraph>

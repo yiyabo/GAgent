@@ -16,6 +16,9 @@ import type {
 } from '@/types';
 import { resolveChatSessionProcessingKey } from '@/utils/chatSessionKeys';
 import { parseServerTimeDayjs as parseServerTimeShared } from '@/utils/serverTime';
+import { translate, useT } from '@/i18n/useT';
+import type { TFn } from '@/i18n/useT';
+import { statusLabel } from '@/i18n/statusLabels';
 import './ExecutorPanel.css';
 
 dayjs.extend(relativeTime);
@@ -30,13 +33,17 @@ const parseServerTime = (time?: string | null) => {
   return parseServerTimeShared(time);
 };
 
+// Product names, not translated.
+const PHAGESCOPE_LABEL = 'PhageScope';
+const CODE_EXECUTOR_LABEL = 'Claude Code';
+
 const EMPTY_BOARD = (): BackgroundTaskBoardResponse => ({
   generated_at: new Date().toISOString(),
   total: 0,
   groups: {
   task_creation: {
   key: 'task_creation',
-  label: 'Task creation',
+  label: translate('executorPanel.groupTaskCreation'),
   total: 0,
   running: 0,
   queued: 0,
@@ -46,7 +53,7 @@ const EMPTY_BOARD = (): BackgroundTaskBoardResponse => ({
   },
   phagescope: {
   key: 'phagescope',
-  label: 'PhageScope',
+  label: PHAGESCOPE_LABEL,
   total: 0,
   running: 0,
   queued: 0,
@@ -56,7 +63,7 @@ const EMPTY_BOARD = (): BackgroundTaskBoardResponse => ({
   },
   code_executor: {
   key: 'code_executor',
-  label: 'Claude Code',
+  label: CODE_EXECUTOR_LABEL,
   total: 0,
   running: 0,
   queued: 0,
@@ -75,16 +82,26 @@ const normalizeJobStatus = (raw: unknown): 'queued' | 'running' | 'completed' | 
   return 'queued';
 };
 
-const getStatusLabel = (status: string): string => {
+const getStatusLabel = (status: string, t: TFn): string => {
   switch (normalizeJobStatus(status)) {
   case 'running':
-  return 'medium';
+  return statusLabel(t, 'running');
   case 'completed':
-  return 'completed';
+  return statusLabel(t, 'completed');
   case 'failed':
-  return 'failed';
+  return statusLabel(t, 'failed');
   default:
-  return 'queued';
+  return t('executorPanel.queued');
+  }
+};
+
+/** The backend sends English group labels; show the category in the UI language, and any unknown category as sent. */
+const groupLabel = (group: BackgroundTaskGroup, t: TFn): string => {
+  switch (group.key) {
+    case 'task_creation':
+      return t('executorPanel.groupTaskCreation');
+    default:
+      return group.label;
   }
 };
 
@@ -108,15 +125,15 @@ const formatDuration = (startedAt?: string | null, finishedAt?: string | null): 
   return `${Math.floor(diffMs / 3600000)}h`;
 };
 
-const formatRelativeTime = (time?: string | null): string => {
+const formatRelativeTime = (time: string | null | undefined, t: TFn): string => {
   if (!time) return '-';
   const date = parseServerTime(time);
   if (!date || !date.isValid()) return '-';
   const diffMs = Date.now() - date.valueOf();
-  if (diffMs < 60000) return '';
-  if (diffMs < 3600000) return `${Math.floor(diffMs / 60000)}`;
-  if (diffMs < 86400000) return `${Math.floor(diffMs / 3600000)}`;
-  return `${Math.floor(diffMs / 86400000)}`;
+  if (diffMs < 60000) return t('executorPanel.justNow');
+  if (diffMs < 3600000) return t('executorPanel.minutesAgo', { count: Math.floor(diffMs / 60000) });
+  if (diffMs < 86400000) return t('executorPanel.hoursAgo', { count: Math.floor(diffMs / 3600000) });
+  return t('executorPanel.daysAgo', { count: Math.floor(diffMs / 86400000) });
 };
 
 const clampPercent = (value: number): number => {
@@ -132,13 +149,13 @@ const toProgressStatus = (status: string): 'normal' | 'active' | 'success' | 'ex
   return 'normal';
 };
 
-const getProgressText = (item: BackgroundTaskItem): string | null => {
+const getProgressText = (item: BackgroundTaskItem, t: TFn): string | null => {
   const parts: string[] = [];
   const hideStepProgress = item.job_type === 'plan_execute' && item.mode === 'full_plan';
 
   if (item.effective_status === 'blocked' && (item.incomplete_dependencies?.length ?? 0) > 0) {
     const deps = (item.incomplete_dependencies ?? []).map((d) => `#${d}`).join(', ');
-    parts.push(`Blocked by ${deps}`);
+    parts.push(t('executorPanel.blockedBy', { deps }));
   }
 
   if (typeof item.progress_text === 'string' && item.progress_text.trim()) {
@@ -173,9 +190,9 @@ const getProgressText = (item: BackgroundTaskItem): string | null => {
   Number.isFinite(item.total_steps) &&
   item.total_steps > 0
   ) {
-  parts.push(`step ${Math.round(item.current_step)}/${Math.round(item.total_steps)}`);
+  parts.push(t('executorPanel.stepOf', { current: Math.round(item.current_step), total: Math.round(item.total_steps) }));
   } else {
-  parts.push(`step ${Math.round(item.current_step)}`);
+  parts.push(t('executorPanel.step', { current: Math.round(item.current_step) }));
   }
   }
 
@@ -184,7 +201,7 @@ const getProgressText = (item: BackgroundTaskItem): string | null => {
   Number.isFinite(item.current_task_id) &&
   item.current_task_id > 0
   ) {
-  parts.push(`task #${Math.round(item.current_task_id)}`);
+  parts.push(t('executorPanel.taskNum', { id: Math.round(item.current_task_id) }));
   }
 
   if (!parts.length) return null;
@@ -192,7 +209,8 @@ const getProgressText = (item: BackgroundTaskItem): string | null => {
 };
 
 const resolveItemProgress = (
-  item: BackgroundTaskItem
+  item: BackgroundTaskItem,
+  t: TFn
 ): { percent: number; status: 'normal' | 'active' | 'success' | 'exception'; text: string | null } => {
   const status =
     item.effective_status === 'blocked'
@@ -234,7 +252,7 @@ const resolveItemProgress = (
   return {
   percent,
   status,
-  text: getProgressText(item),
+  text: getProgressText(item, t),
   };
 };
 
@@ -255,11 +273,12 @@ const _itemFingerprint = (item: BackgroundTaskItem): string =>
 
 const TaskRow = React.memo<TaskRowProps>(
   ({ item, currentPlanId, isExpanded, canExpand, isProcessing, controlBusy, onToggle, onSendMessage, onControlJob }) => {
+    const t = useT();
     const effective = item.effective_status || null;
     const displayStatus = effective === 'blocked' ? 'queued' : item.status;
     const normalized = effective === 'blocked' ? 'queued' : normalizeJobStatus(item.status);
     const duration = formatDuration(item.started_at, item.finished_at);
-    const progress = resolveItemProgress(item);
+    const progress = resolveItemProgress(item, t);
     const remoteMeta =
       item.category === 'phagescope'
         ? [item.remote_status, item.phase].filter((v) => typeof v === 'string' && v.trim()).join(' / ')
@@ -284,10 +303,10 @@ const TaskRow = React.memo<TaskRowProps>(
           <td className="task-content" title={item.label}>
             <div>{item.label}</div>
             {remoteMeta ? (
-              <div className="task-content-meta">status: {remoteMeta}</div>
+              <div className="task-content-meta">{t('executorPanel.remoteStatus', { value: remoteMeta })}</div>
             ) : null}
             {countMeta ? (
-              <div className="task-content-meta">progress: {countMeta}</div>
+              <div className="task-content-meta">{t('executorPanel.moduleProgress', { value: countMeta })}</div>
             ) : null}
             {item.error ? (
               <div className="task-content-meta task-content-error">{item.error}</div>
@@ -308,17 +327,17 @@ const TaskRow = React.memo<TaskRowProps>(
           </td>
           <td className="task-status">
             <span className={`task-status-dot ${normalized}`} />
-            <span className="task-status-text">{effective === 'blocked' ? 'blocked' : getStatusLabel(displayStatus)}</span>
+            <span className="task-status-text">{effective === 'blocked' ? statusLabel(t, 'blocked') : getStatusLabel(displayStatus, t)}</span>
             {duration ? <span className="task-status-meta">{duration}</span> : null}
-            <span className="task-status-meta">{formatRelativeTime(item.created_at)}</span>
+            <span className="task-status-meta">{formatRelativeTime(item.created_at, t)}</span>
             {item.job_type === 'plan_execute' && (normalized === 'running' || normalized === 'queued') && (
               <>
                 {item.execution_paused ? (
                   <Tag color="gold" style={{ marginInlineStart: 4, fontSize: 12, lineHeight: '14px', padding: '0 4px' }}>
-                    Paused
+                    {t('executorPanel.paused')}
                   </Tag>
                 ) : null}
-                <Tooltip title={item.execution_paused ? 'Resume plan execution' : 'Pause plan execution'}>
+                <Tooltip title={item.execution_paused ? t('executorPanel.resumeTip') : t('executorPanel.pauseTip')}>
                   <Button
                     type="link"
                     size="small"
@@ -330,13 +349,13 @@ const TaskRow = React.memo<TaskRowProps>(
                     }}
                     style={{ padding: '0 4px', fontSize: 12, height: 'auto', lineHeight: 1 }}
                   >
-                    {item.execution_paused ? 'Resume' : 'Pause'}
+                    {item.execution_paused ? t('executorPanel.resume') : t('executorPanel.pause')}
                   </Button>
                 </Tooltip>
               </>
             )}
             {normalized === 'completed' && (
-              <Tooltip title="Ask Agent to analyze task results">
+              <Tooltip title={t('executorPanel.analyzeTip')}>
                 <Button
                   type="link"
                   size="small"
@@ -361,7 +380,7 @@ const TaskRow = React.memo<TaskRowProps>(
                   }}
                   style={{ padding: '0 4px', fontSize: 12, height: 'auto', lineHeight: 1 }}
                 >
-                  Analyze
+                  {t('executorPanel.analyze')}
                 </Button>
               </Tooltip>
             )}
@@ -394,6 +413,7 @@ const TaskRow = React.memo<TaskRowProps>(
 );
 
 const ExecutorPanel: React.FC = () => {
+  const t = useT();
   const currentSessionId = useChatStore(
   (state) => state.currentSession?.session_id ?? state.currentSession?.id ?? null
   );
@@ -463,7 +483,7 @@ const ExecutorPanel: React.FC = () => {
   });
   applySnapshot(snapshot);
   } catch (err: any) {
-  setError(err?.message || 'Failed to load background tasks');
+  setError(err?.message || translate('executorPanel.loadFailed'));
   } finally {
   setLoading(false);
   setRefreshing(false);
@@ -480,10 +500,10 @@ const ExecutorPanel: React.FC = () => {
   try {
   const resp = await planTreeApi.controlJob(jobId, { action });
   if (!resp.success) {
-  message.warning(resp.message || `Failed to ${action} execution`);
+  message.warning(resp.message || translate(action === 'pause' ? 'executorPanel.pauseFailed' : 'executorPanel.resumeFailed'));
   }
   } catch (err: any) {
-  message.error(err?.message || `Failed to ${action} execution`);
+  message.error(err?.message || translate(action === 'pause' ? 'executorPanel.pauseFailed' : 'executorPanel.resumeFailed'));
   } finally {
   setControlBusyJobId(null);
   void fetchBoard(true);
@@ -641,7 +661,7 @@ const ExecutorPanel: React.FC = () => {
   return (
   <div className="executor-empty">
   <div className="executor-empty-icon" />
-  <span>Loading background tasks...</span>
+  <span>{t('executorPanel.loading')}</span>
   </div>
   );
   }
@@ -656,12 +676,12 @@ const ExecutorPanel: React.FC = () => {
   onClick={() => void fetchBoard(false)}
   loading={refreshing}
   >
-  Refresh
+  {t('common.refresh')}
   </Button>
   <Text type="secondary" style={{ fontSize: 12 }}>
-  {totalItems} tasks
+  {t('executorPanel.taskCount', { count: totalItems })}
   </Text>
-  <Tooltip title={sseConnected ? 'Live updates (SSE)' : 'Polling mode'}>
+  <Tooltip title={sseConnected ? t('executorPanel.liveUpdates') : t('executorPanel.pollingMode')}>
   <span
   style={{
   display: 'inline-block',
@@ -675,7 +695,7 @@ const ExecutorPanel: React.FC = () => {
   </Tooltip>
   </Space>
   <Text type="secondary" style={{ fontSize: 12 }}>
-  Updated: {board?.generated_at ? formatRelativeTime(board.generated_at) : '-'}
+  {t('executorPanel.updated', { time: board?.generated_at ? formatRelativeTime(board.generated_at, t) : '-' })}
   </Text>
   </div>
 
@@ -688,7 +708,7 @@ const ExecutorPanel: React.FC = () => {
   {totalItems === 0 ? (
   <div className="executor-empty">
   <div className="executor-empty-icon" />
-  <span>No tasks</span>
+  <span>{t('executorPanel.empty')}</span>
   </div>
   ) : (
   <div className="task-table-wrap">
@@ -696,19 +716,19 @@ const ExecutorPanel: React.FC = () => {
   <div key={group.key} className="executor-group">
   <div className="executor-group-header">
   <Space size={8}>
-  <Text strong>{group.label}</Text>
+  <Text strong>{groupLabel(group, t)}</Text>
   <Tag>{group.total}</Tag>
-  {group.running > 0 ? <Tag color="blue">Running {group.running}</Tag> : null}
-  {group.queued > 0 ? <Tag color="default">Pending {group.queued}</Tag> : null}
-  {group.failed > 0 ? <Tag color="red">Failed {group.failed}</Tag> : null}
+  {group.running > 0 ? <Tag color="blue">{t('executorPanel.tagRunning', { count: group.running })}</Tag> : null}
+  {group.queued > 0 ? <Tag color="default">{t('executorPanel.tagPending', { count: group.queued })}</Tag> : null}
+  {group.failed > 0 ? <Tag color="red">{t('executorPanel.tagFailed', { count: group.failed })}</Tag> : null}
   </Space>
   </div>
   <table className="task-table">
   <thead>
   <tr>
-  <th>Task ID</th>
-  <th>Content</th>
-  <th>Status</th>
+  <th>{t('executorPanel.colId')}</th>
+  <th>{t('executorPanel.colContent')}</th>
+  <th>{t('executorPanel.colStatus')}</th>
   </tr>
   </thead>
   <tbody>

@@ -8,6 +8,7 @@ import ArtifactsPanel from './ArtifactsPanel';
 import { artifactsApi, downloadSessionBatch } from '@api/artifacts';
 import { useTasksStore } from '@store/tasks';
 import { useLayoutStore } from '@store/layout';
+import { useLanguageStore } from '@/i18n/language';
 
 vi.mock('@api/artifacts', async () => {
   const actual = await vi.importActual<typeof import('@api/artifacts')>('@api/artifacts');
@@ -66,8 +67,11 @@ function setupDeliverableItems() {
 }
 
 describe('ArtifactsPanel', () => {
+  afterEach(() => useLanguageStore.setState({ language: 'zh-CN' }));
+
   beforeEach(() => {
     vi.clearAllMocks();
+    useLanguageStore.setState({ language: 'en' });
     useLayoutStore.setState({
       dagSidebarFullscreen: false,
       toggleDagSidebarFullscreen: vi.fn(),
@@ -197,6 +201,16 @@ describe('ArtifactsPanel', () => {
         expect.objectContaining({ pathPrefix: 'raw_files/task_1/task_8/task_34' })
       );
     });
+  });
+
+  it('shows its labels in Chinese when the language is Chinese', async () => {
+    useLanguageStore.setState({ language: 'zh-CN' });
+    renderPanel();
+
+    expect(await screen.findByRole('radio', { name: '原始文件' })).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: '交付物' })).toBeInTheDocument();
+    expect(screen.getByPlaceholderText('搜索文件路径')).toBeInTheDocument();
+    expect(screen.queryByText('Raw Files')).not.toBeInTheDocument();
   });
 
   describe('batch download', () => {

@@ -8,6 +8,10 @@ import {
 } from 'antd';
 import { CloudSyncOutlined } from '@ant-design/icons';
 import type { ChatMessage as ChatMessageType, CompactProgressState, DecompositionJobStatus } from '@/types';
+import { translate, useT } from '@/i18n/useT';
+import type { TFn } from '@/i18n/useT';
+import type { TranslationKey } from '@/i18n/keys';
+import { statusLabel as sharedStatusLabel } from '@/i18n/statusLabels';
 
 const { Text } = Typography;
 
@@ -19,12 +23,12 @@ export const formatToolActionLabel = (action: any) => {
 
   if (kind === 'tool_operation') {
     if (name && query) {
-      return `Use ${name} to search "${query}"`;
+      return translate('toolProgress.actionSearch', { name, query });
     }
     if (name) {
-      return `Invoke ${name}`;
+      return translate('toolProgress.invokeNamed', { name });
     }
-    return 'Invoke tool';
+    return translate('toolProgress.invokeTool');
   }
   if (kind === 'plan_operation') {
     const title =
@@ -33,7 +37,9 @@ export const formatToolActionLabel = (action: any) => {
         : typeof params.title === 'string'
           ? params.title
           : '';
-    return title ? `Execute plan: ${title}` : `Execute plan operation${name ? ` ${name}` : ''}`;
+    return title
+      ? translate('toolProgress.planTitled', { title })
+      : name ? translate('toolProgress.planOpNamed', { name }) : translate('toolProgress.planOp');
   }
   if (kind === 'task_operation') {
     const taskName =
@@ -42,13 +48,15 @@ export const formatToolActionLabel = (action: any) => {
         : typeof params.title === 'string'
           ? params.title
           : '';
-    return taskName ? `Execute task: ${taskName}` : `Execute task operation${name ? ` ${name}` : ''}`;
+    return taskName
+      ? translate('toolProgress.taskTitled', { title: taskName })
+      : name ? translate('toolProgress.taskOpNamed', { name }) : translate('toolProgress.taskOp');
   }
   if (kind === 'context_request') {
-    return `Fetch context${name ? `: ${name}` : ''}`;
+    return name ? translate('toolProgress.contextNamed', { name }) : translate('toolProgress.context');
   }
   if (kind === 'system_operation') {
-    return `System operation${name ? `: ${name}` : ''}`;
+    return name ? translate('toolProgress.systemNamed', { name }) : translate('toolProgress.system');
   }
   return `${kind || 'action'}${name ? `/${name}` : ''}`;
 };
@@ -72,12 +80,12 @@ const TOOL_LABELS: Record<string, string> = {
   code_executor: 'code_executor',
 };
 
-const PHASE_LABELS: Record<string, string> = {
-  planning: 'Analyzing request',
-  gathering: 'Searching sources',
-  analyzing: 'Reviewing findings',
-  synthesizing: 'Preparing answer',
-  finalizing: 'Preparing answer',
+const PHASE_LABEL_KEYS: Record<string, TranslationKey> = {
+  planning: 'toolProgress.phasePlanning',
+  gathering: 'toolProgress.phaseGathering',
+  analyzing: 'toolProgress.phaseAnalyzing',
+  synthesizing: 'toolProgress.phasePreparing',
+  finalizing: 'toolProgress.phasePreparing',
 };
 
 const normalizeProgressText = (value: unknown) =>
@@ -94,24 +102,28 @@ const truncateProgressText = (value: unknown, maxChars: number) => {
 
 const formatToolName = (tool: unknown) => {
   const normalized = String(tool ?? '').trim();
-  if (!normalized) return 'Tool';
+  if (!normalized) return translate('toolProgress.toolFallback');
   return TOOL_LABELS[normalized] ?? normalized;
 };
 
 const formatPhaseTitle = (phase: unknown) => {
   const normalized = String(phase ?? '').trim();
-  if (!normalized) return 'Working on the request';
-  return PHASE_LABELS[normalized] ?? 'Working on the request';
+  return translate(PHASE_LABEL_KEYS[normalized] ?? 'toolProgress.phaseWorking');
 };
 
-const formatCompactStatus = (status: unknown) => {
+type CompactStatus = 'retrying' | 'failed' | 'running' | 'completed';
+
+const formatCompactStatus = (status: unknown): CompactStatus | null => {
   const normalized = String(status ?? '').trim().toLowerCase();
-  if (normalized === 'retrying') return 'Retrying';
-  if (normalized === 'failed' || normalized === 'error') return 'Failed';
-  if (normalized === 'running' || normalized === 'active') return 'Running';
-  if (normalized === 'completed' || normalized === 'success' || normalized === 'done') return 'Completed';
+  if (normalized === 'retrying') return 'retrying';
+  if (normalized === 'failed' || normalized === 'error') return 'failed';
+  if (normalized === 'running' || normalized === 'active') return 'running';
+  if (normalized === 'completed' || normalized === 'success' || normalized === 'done') return 'completed';
   return null;
 };
+
+const compactStatusLabel = (status: CompactStatus, t: TFn): string =>
+  status === 'retrying' ? t('toolProgress.retrying') : sharedStatusLabel(t, status);
 
 const isSameText = (left: unknown, right: unknown) =>
   normalizeProgressText(left).toLowerCase() === normalizeProgressText(right).toLowerCase();
@@ -221,6 +233,7 @@ const ToolProgressCard: React.FC<ToolProgressCardProps> = ({
   effectiveDecomposeJob,
   processSummary,
 }) => {
+  const t = useT();
   const [toolOpen, setToolOpen] = useState(false);
   const [expandedTextKeys, setExpandedTextKeys] = useState<Record<string, boolean>>({});
   const unifiedStream = Boolean(metadata && (metadata as any).unified_stream);
@@ -274,7 +287,7 @@ const ToolProgressCard: React.FC<ToolProgressCardProps> = ({
             onClick={() => toggleExpandedText(key)}
             style={{ padding: 0, height: 'auto', fontSize: 12 }}
           >
-            {expanded ? 'Less' : 'More'}
+            {expanded ? t('toolProgress.less') : t('toolProgress.more')}
           </Button>
         )}
       </div>
@@ -284,12 +297,12 @@ const ToolProgressCard: React.FC<ToolProgressCardProps> = ({
   const effectiveStatus = isDecomposeFailed ? 'failed' : isDecomposeActive ? 'running' : status;
   const statusLabel =
     isDecomposeActive
-      ? 'Decomposing Plan'
+      ? t('toolProgress.decomposingPlan')
       : effectiveStatus === 'completed'
-      ? 'Completed'
+      ? t('status.completed')
       : effectiveStatus === 'failed'
-        ? 'Failed'
-        : 'Running';
+        ? t('status.failed')
+        : t('status.running');
   const statusColor =
     isDecomposeFailed
       ? 'red'
@@ -305,17 +318,22 @@ const ToolProgressCard: React.FC<ToolProgressCardProps> = ({
     progressVisibility === 'progress' && deepThinkProgress
       ? (typeof deepThinkProgress.label === 'string' && deepThinkProgress.label.trim()
           ? deepThinkProgress.label
-          : 'Working on the request')
+          : t('toolProgress.phaseWorking'))
       : toolActions.length > 0
-      ? `Tools: ${toolActions
-        .map((act: any) => (typeof act?.name === 'string' ? act.name : null))
-        .filter(Boolean)
-        .slice(0, 3)
-        .join(', ')}${toolActions.length > 3 ? ` and ${toolActions.length - 3} more` : ''}`
-      : `Actions: ${visibleActions.length}`;
+      ? (() => {
+          const names = toolActions
+            .map((act: any) => (typeof act?.name === 'string' ? act.name : null))
+            .filter(Boolean)
+            .slice(0, 3)
+            .join(', ');
+          return toolActions.length > 3
+            ? t('toolProgress.toolsSummaryMore', { names, count: toolActions.length - 3 })
+            : t('toolProgress.toolsSummary', { names });
+        })()
+      : t('toolProgress.actionsCount', { count: visibleActions.length });
   const compactProgressLabel =
     progressVisibility === 'progress' && deepThinkProgress
-      ? (typeof deepThinkProgress.label === 'string' ? deepThinkProgress.label : 'Working on the request')
+      ? (typeof deepThinkProgress.label === 'string' ? deepThinkProgress.label : t('toolProgress.phaseWorking'))
       : null;
   const compactProgressPhase =
     progressVisibility === 'progress' && deepThinkProgress && typeof deepThinkProgress.phase === 'string'
@@ -409,7 +427,7 @@ const ToolProgressCard: React.FC<ToolProgressCardProps> = ({
     const currentTitle = progressFinished
       ? latestToolItem
         ? formatToolName(latestToolItem.tool)
-        : 'Answer ready'
+        : t('toolProgress.answerReady')
       : titleTool
         ? formatToolName(titleTool)
         : formatPhaseTitle(deepThinkProgress.phase);
@@ -453,15 +471,15 @@ const ToolProgressCard: React.FC<ToolProgressCardProps> = ({
                 marginTop: 5,
                 borderRadius: 999,
                 background:
-                  compactStatus === 'Failed'
+                  compactStatus === 'failed'
                     ? 'var(--status-error-fg)'
-                    : compactStatus === 'Retrying'
+                    : compactStatus === 'retrying'
                       ? 'var(--status-warning-fg)'
                       : 'var(--primary-color)',
                 boxShadow:
-                  compactStatus === 'Failed'
+                  compactStatus === 'failed'
                     ? '0 0 0 4px var(--status-error-bg)'
-                    : compactStatus === 'Retrying'
+                    : compactStatus === 'retrying'
                       ? '0 0 0 4px var(--status-warning-bg)'
                       : '0 0 0 4px color-mix(in srgb, var(--primary-color) 16%, transparent)',
                 flexShrink: 0,
@@ -477,9 +495,9 @@ const ToolProgressCard: React.FC<ToolProgressCardProps> = ({
                     {phaseTitle}
                   </Text>
                 )}
-                {compactStatus && compactStatus !== 'Completed' && (
-                  <Tag color={compactStatus === 'Failed' ? 'red' : compactStatus === 'Retrying' ? 'gold' : 'blue'} style={{ margin: 0 }}>
-                    {compactStatus}
+                {compactStatus && compactStatus !== 'completed' && (
+                  <Tag color={compactStatus === 'failed' ? 'red' : compactStatus === 'retrying' ? 'gold' : 'blue'} style={{ margin: 0 }}>
+                    {compactStatusLabel(compactStatus, t)}
                   </Tag>
                 )}
               </Space>
@@ -526,7 +544,7 @@ const ToolProgressCard: React.FC<ToolProgressCardProps> = ({
             onClick={() => setToolOpen((v) => !v)}
             style={{ padding: 0, fontSize: 12, flexShrink: 0 }}
           >
-            {toolOpen ? 'Collapse' : 'Expand'}
+            {toolOpen ? t('common.collapse') : t('common.expand')}
           </Button>
         </div>
 
@@ -551,9 +569,9 @@ const ToolProgressCard: React.FC<ToolProgressCardProps> = ({
                         <Text strong style={{ fontSize: 13, color: 'var(--text-primary)' }}>
                           {formatToolName(item.tool)}
                         </Text>
-                        {toolStatus && toolStatus !== 'Completed' && (
-                          <Tag color={toolStatus === 'Failed' ? 'red' : toolStatus === 'Retrying' ? 'gold' : 'blue'} style={{ margin: 0 }}>
-                            {toolStatus}
+                        {toolStatus && toolStatus !== 'completed' && (
+                          <Tag color={toolStatus === 'failed' ? 'red' : toolStatus === 'retrying' ? 'gold' : 'blue'} style={{ margin: 0 }}>
+                            {compactStatusLabel(toolStatus, t)}
                           </Tag>
                         )}
                       </div>
@@ -570,7 +588,7 @@ const ToolProgressCard: React.FC<ToolProgressCardProps> = ({
 
             {visibleNotes.length > 0 && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                <Text style={{ color: 'var(--text-secondary)', fontSize: 12 }}>Notes</Text>
+                <Text style={{ color: 'var(--text-secondary)', fontSize: 12 }}>{t('toolProgress.notes')}</Text>
                 {visibleNotes.map((note, idx) => (
                   <div key={`note_${idx}`}>
                     {renderExpandableText(note, `note_${idx}`, 120, { muted: true })}
@@ -581,7 +599,7 @@ const ToolProgressCard: React.FC<ToolProgressCardProps> = ({
 
             {processSummary && !isSameText(processSummary, currentSubtitle) && (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-                <Text style={{ color: 'var(--text-secondary)', fontSize: 12 }}>Current summary</Text>
+                <Text style={{ color: 'var(--text-secondary)', fontSize: 12 }}>{t('toolProgress.currentSummary')}</Text>
                 {renderExpandableText(processSummary, 'progress_summary', 160, { muted: true })}
               </div>
             )}
@@ -615,7 +633,7 @@ const ToolProgressCard: React.FC<ToolProgressCardProps> = ({
           onClick={() => setToolOpen((v) => !v)}
           style={{ padding: 0, fontSize: 12 }}
         >
-          {toolOpen ? 'Collapse' : 'View Process'}
+          {toolOpen ? t('common.collapse') : t('toolProgress.viewProcess')}
         </Button>
       </div>
       <div style={{ marginTop: 8 }}>
@@ -628,16 +646,16 @@ const ToolProgressCard: React.FC<ToolProgressCardProps> = ({
         {isDecomposeActive && (
           <div style={{ marginTop: 6 }}>
             <Text style={{ color: 'var(--text-secondary)', fontSize: 12 }}>
-              Decomposition progress:
+              {t('toolProgress.decompProgress')}
               {decomposeProgress?.percent !== null && decomposeProgress?.percent !== undefined
                 ? `${Math.round(decomposeProgress.percent)}%`
-                : 'Calculating'}
+                : t('toolProgress.calculating')}
               {decomposeProgress?.consumedBudget !== null &&
                 decomposeProgress?.consumedBudget !== undefined
-                ? `, created ${Math.max(0, Math.round(decomposeProgress.consumedBudget))} tasks`
+                ? t('toolProgress.createdTasks', { count: Math.max(0, Math.round(decomposeProgress.consumedBudget)) })
                 : ''}
               {decomposeProgress?.queueRemaining !== null && decomposeProgress?.queueRemaining !== undefined
-                ? `, queue remaining ${decomposeProgress.queueRemaining}`
+                ? t('toolProgress.queueLeft', { count: decomposeProgress.queueRemaining })
                 : ''}
             </Text>
           </div>
@@ -645,21 +663,23 @@ const ToolProgressCard: React.FC<ToolProgressCardProps> = ({
         {isDecomposeFailed && (
           <div style={{ marginTop: 6 }}>
             <Text style={{ color: 'var(--text-secondary)', fontSize: 12 }}>
-              Decomposition failed{effectiveDecomposeJob?.error ? `: ${effectiveDecomposeJob.error}` : ''}
+              {effectiveDecomposeJob?.error
+                ? t('toolProgress.decompFailedWith', { error: effectiveDecomposeJob.error })
+                : t('toolProgress.decompFailed')}
             </Text>
           </div>
         )}
         {moduleDone !== null && moduleTotal !== null && effectiveStatus !== 'completed' && effectiveStatus !== 'failed' && (
           <div style={{ marginTop: 6 }}>
             <Text style={{ color: 'var(--text-secondary)', fontSize: 12 }}>
-              Module progress: {moduleDone}/{moduleTotal}
+              {t('toolProgress.moduleProgress', { done: moduleDone, total: moduleTotal })}
             </Text>
           </div>
         )}
         {toolProgressStatus && effectiveStatus !== 'completed' && effectiveStatus !== 'failed' && (
           <div style={{ marginTop: 6 }}>
             <Text style={{ color: 'var(--text-secondary)', fontSize: 12 }}>
-              Current status: {toolProgressStatus}
+              {t('toolProgress.currentStatus', { status: toolProgressStatus })}
             </Text>
           </div>
         )}
@@ -668,7 +688,7 @@ const ToolProgressCard: React.FC<ToolProgressCardProps> = ({
             <Text style={{ color: 'var(--text-secondary)', fontSize: 12 }}>
               {compactProgressPhase ? `${compactProgressPhase}: ` : ''}
               {compactProgressLabel}
-              {compactProgressIteration !== null ? ` · step ${compactProgressIteration}` : ''}
+              {compactProgressIteration !== null ? ` · ${t('toolProgress.step', { n: compactProgressIteration })}` : ''}
               {compactProgressStatus && compactProgressStatus !== 'active' ? ` · ${compactProgressStatus}` : ''}
             </Text>
           </div>
@@ -679,19 +699,19 @@ const ToolProgressCard: React.FC<ToolProgressCardProps> = ({
           {processSummary && (
             <div style={{ marginBottom: 8 }}>
               <Text style={{ color: 'var(--text-secondary)', fontSize: 12 }}>
-                Summary: {processSummary}
+                {t('toolProgress.summary', { text: processSummary })}
               </Text>
             </div>
           )}
           {compactProgressHistory.length > 0 && (
             <div style={{ marginBottom: 8 }}>
               <Text style={{ color: 'var(--text-secondary)', fontSize: 12 }}>
-                Progress:
+                {t('toolProgress.progress')}
               </Text>
               <div style={{ marginTop: 6, display: 'flex', flexDirection: 'column', gap: 4 }}>
                 {compactProgressHistory.map((entry: any, idx: number) => (
                   <Text key={`${entry?.phase ?? 'phase'}_${idx}`} style={{ color: 'var(--text-secondary)', fontSize: 12 }}>
-                    {(typeof entry?.label === 'string' ? entry.label : 'Working on the request')}
+                    {(typeof entry?.label === 'string' ? entry.label : t('toolProgress.phaseWorking'))}
                     {typeof entry?.tool === 'string' && entry.tool ? ` · ${entry.tool}` : ''}
                   </Text>
                 ))}
@@ -701,16 +721,14 @@ const ToolProgressCard: React.FC<ToolProgressCardProps> = ({
           {toolProgressModules && toolProgressModules.length > 0 && (
             <div style={{ marginBottom: 8 }}>
               <Text style={{ color: 'var(--text-secondary)', fontSize: 12 }}>
-                Module completion:
+                {t('toolProgress.moduleCompletion')}
               </Text>
               <div style={{ marginTop: 6 }}>
                 <Space size={[6, 6]} wrap>
                   {toolProgressModules.map((m: any, idx: number) => {
                     const name = typeof m?.name === 'string' ? m.name : `module_${idx + 1}`;
                     const done = typeof m?.done === 'boolean' ? m.done : null;
-                    const rawStatus =
-                      typeof m?.status === 'string' ? m.status : (done === true ? 'DONE' : 'RUNNING');
-                    const upper = String(rawStatus).toUpperCase();
+                    const upper = typeof m?.status === 'string' ? m.status.toUpperCase() : '';
                     const failed = done === false || upper === 'FAILED' || upper === 'ERROR';
                     const color = failed ? 'red' : done === true ? 'green' : 'blue';
                     return (
@@ -738,14 +756,14 @@ const ToolProgressCard: React.FC<ToolProgressCardProps> = ({
                 key={`${order}_${action?.name ?? 'action'}`}
                 style={{ color: 'var(--text-secondary)', marginBottom: 4, fontSize: 12 }}
               >
-                {statusIcon} Step {order}: {label}
+                {statusIcon} {t('jobLog.step', { n: order, name: label })}
                 {singleTask && (
                   <div style={{ marginTop: 6, paddingLeft: 18 }}>
                     {typeof singleTask.name === 'string' && (
-                      <div>Subtask: {singleTask.name}</div>
+                      <div>{t('toolProgress.subtask', { name: singleTask.name })}</div>
                     )}
                     {typeof singleTask.instruction === 'string' && singleTask.instruction.trim().length > 0 && (
-                      <div>Instruction: {singleTask.instruction}</div>
+                      <div>{t('toolProgress.instruction', { text: singleTask.instruction })}</div>
                     )}
                   </div>
                 )}
@@ -762,8 +780,8 @@ const ToolProgressCard: React.FC<ToolProgressCardProps> = ({
                         typeof task?.instruction === 'string' ? task.instruction : '';
                       return (
                         <div key={`${order}_created_${idx}`} style={{ marginBottom: 6 }}>
-                          {name ? <div>Subtask: {name}</div> : null}
-                          {instruction ? <div>Instruction: {instruction}</div> : null}
+                          {name ? <div>{t('toolProgress.subtask', { name })}</div> : null}
+                          {instruction ? <div>{t('toolProgress.instruction', { text: instruction })}</div> : null}
                         </div>
                       );
                     })}
@@ -784,13 +802,14 @@ interface BackgroundDispatchCardProps {
 }
 
 export const BackgroundDispatchCard: React.FC<BackgroundDispatchCardProps> = ({ metadata }) => {
+  const t = useT();
   const bgCategory = (metadata as any)?.background_category as string | undefined;
   const isBackgroundDispatch = Boolean(bgCategory && (bgCategory === 'phagescope' || bgCategory === 'code_executor' || bgCategory === 'task_creation'));
   if (!isBackgroundDispatch) return null;
   const categoryLabels: Record<string, string> = {
     phagescope: 'PhageScope',
-    code_executor: 'Code Executor',
-    task_creation: 'Task Creation / Decomposition',
+    code_executor: t('toolProgress.categoryCodeExecutor'),
+    task_creation: t('toolProgress.categoryTaskCreation'),
   };
   const categoryColors: Record<string, string> = {
     phagescope: 'purple',
@@ -817,17 +836,17 @@ export const BackgroundDispatchCard: React.FC<BackgroundDispatchCardProps> = ({ 
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
         <CloudSyncOutlined style={{ color: 'var(--primary-color)', fontSize: 16 }} />
         <Text strong style={{ fontSize: 13, color: 'var(--text-primary)' }}>
-          Background task submitted
+          {t('toolProgress.dispatchTitle')}
         </Text>
         <Tag color={color} style={{ margin: 0, fontSize: 12 }}>{label}</Tag>
       </div>
       <Text style={{ color: 'var(--text-secondary)', fontSize: 12, lineHeight: 1.6 }}>
-        The task is running in the background. Track progress in the right-side "Task Status" panel, then ask me for result analysis when it completes.
+        {t('toolProgress.dispatchBody')}
       </Text>
       {trackingId && (
         <div style={{ marginTop: 6 }}>
           <Text style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>
-            Tracking: {trackingId.slice(0, 16)}...
+            {t('toolProgress.tracking', { id: trackingId.slice(0, 16) })}
           </Text>
         </div>
       )}
