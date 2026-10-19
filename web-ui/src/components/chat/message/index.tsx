@@ -370,7 +370,7 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
         style={{
           marginTop: 6,
           fontSize: 12,
-          color: '#999',
+          color: 'var(--text-tertiary)',
           opacity: 0.7,
         }}
       >
@@ -473,7 +473,7 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
         ? 'Plan Status: 结构化计划创建失败'
         : 'Plan Status: 仅生成文本建议，未创建结构化计划';
       return (
-        <div style={{ marginTop: 8, fontSize: 12, color: '#999' }}>
+        <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-tertiary)' }}>
           <div>{statusLabel}</div>
           {planCreationMessage ? <div>{planCreationMessage}</div> : null}
         </div>
@@ -481,7 +481,7 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
     }
     if (planCreationState === 'created' || planCreationState === 'updated') {
       return (
-        <div style={{ marginTop: 8, fontSize: 12, color: '#999' }}>
+        <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-tertiary)' }}>
           <div>
             Linked Plan:
             {planTitle ? ` ${planTitle}` : ''}
@@ -494,7 +494,7 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
       return null;
     }
     return (
-      <div style={{ marginTop: 8, fontSize: 12, color: '#999' }}>
+      <div style={{ marginTop: 8, fontSize: 12, color: 'var(--text-tertiary)' }}>
         <div>
           Linked Plan:
           {planTitle ? ` ${planTitle}` : ''}

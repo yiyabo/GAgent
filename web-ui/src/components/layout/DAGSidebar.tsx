@@ -178,7 +178,7 @@ export const LegacyDAGSidebar: React.FC = () => {
   borderRadius: 10,
   border: '1px solid var(--border-color)',
   background: 'color-mix(in srgb, var(--bg-tertiary) 78%, transparent)',
-  boxShadow: '0 6px 20px rgba(0,0,0,0.06)',
+  boxShadow: 'var(--shadow-2)',
   backdropFilter: 'blur(10px)',
   }}
   >
@@ -216,8 +216,8 @@ export const LegacyDAGSidebar: React.FC = () => {
   size="small"
   showInfo={false}
   strokeColor={{
-  '0%': 'color-mix(in srgb, var(--primary-color) 90%, white)',
-  '100%': 'color-mix(in srgb, var(--primary-color) 40%, #67C23A)',
+  '0%': 'color-mix(in srgb, var(--primary-color) 90%, var(--surface-card))',
+  '100%': 'color-mix(in srgb, var(--primary-color) 40%, var(--status-success-fg))',
   }}
   trailColor="color-mix(in srgb, var(--border-color) 45%, transparent)"
   />

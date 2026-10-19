@@ -11,8 +11,8 @@
   --dag-accent: var(--color-action);
   --dag-accent-light: var(--color-action-bg);
   --dag-surface: var(--surface-card);
-  --dag-shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
-  --dag-shadow-lg: 0 4px 12px rgba(0, 0, 0, 0.08);
+  --dag-shadow: var(--shadow-1);
+  --dag-shadow-lg: var(--shadow-2);
   --dag-radius: 8px;
   --dag-radius-lg: 12px;
 }
@@ -282,7 +282,7 @@
 }
 
 .dag-stats-dot.pending {
-  background: #eab308;
+  background: var(--status-warning-fg);
 }
 
 .dag-stats-dot.running {
@@ -291,11 +291,11 @@
 }
 
 .dag-stats-dot.completed {
-  background: #22c55e;
+  background: var(--status-success-fg);
 }
 
 .dag-stats-dot.failed {
-  background: #ef4444;
+  background: var(--status-error-fg);
 }
 
 @keyframes pulse {
@@ -370,12 +370,12 @@
 /* ============================================ */
 
 .dag-sticky-container {
-  background: #f9fafb;
+  background: var(--surface-page);
   font-family: var(--font-serif);
 }
 
 .dag-sticky-container:fullscreen {
-  background: #f9fafb;
+  background: var(--surface-page);
 }
 
 /*  */
@@ -391,8 +391,8 @@
   0deg,
   transparent,
   transparent 39px,
-  rgba(179, 212, 252, 0.08) 39px,
-  rgba(179, 212, 252, 0.08) 40px
+  color-mix(in srgb, var(--color-action) 8%, transparent) 39px,
+  color-mix(in srgb, var(--color-action) 8%, transparent) 40px
   );
   pointer-events: none;
   z-index: 0;
@@ -409,7 +409,7 @@
   background: radial-gradient(
   ellipse at center,
   transparent 40%,
-  rgba(245, 243, 237, 0.8) 100%
+  color-mix(in srgb, var(--surface-page) 80%, transparent) 100%
   );
   pointer-events: none;
   z-index: 0;
@@ -424,14 +424,14 @@
   font-family: var(--font-serif);
   font-size: var(--fs-caption);
   font-weight: normal;
-  color: #666;
+  color: var(--text-secondary);
   letter-spacing: 0.5px;
   text-transform: none;
 }
 
 .dag-card-legend .dag-legend-item {
   font-size: var(--fs-caption);
-  color: #4a4a4a;
+  color: var(--text-secondary);
 }
 
 .dag-legend-card {
@@ -439,7 +439,7 @@
   height: 16px;
   border-radius: 2px;
   display: inline-block;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  box-shadow: var(--shadow-1);
 }
 
 .dag-legend-divider {
@@ -456,14 +456,14 @@
 }
 
 .dag-legend-line-solid {
-  background: #7c8594;
+  background: var(--text-tertiary);
 }
 
 .dag-legend-line-dashed {
   background: repeating-linear-gradient(
   90deg,
-  #c9a87c 0px,
-  #c9a87c 6px,
+  var(--status-warning-fg) 0px,
+  var(--status-warning-fg) 6px,
   transparent 6px,
   transparent 10px
   );
@@ -538,8 +538,8 @@
 
 /* search */
 .dag-sticky-container .dag-search-input:focus {
-  border-color: #b8860b;
-  box-shadow: 0 0 0 3px rgba(184, 134, 11, 0.1);
+  border-color: var(--color-action);
+  box-shadow: 0 0 0 3px var(--color-action-bg);
 }
 
 /*  */
@@ -549,7 +549,7 @@
 
 .dag-sticky-container .dag-toolbar-btn:hover {
   transform: translateY(-1px);
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  box-shadow: var(--shadow-2);
 }
 
 /*  */
@@ -564,11 +564,11 @@
 /* ============================================ */
 
 .dag-3d-container {
-  background: linear-gradient(180deg, #ffffff 0%, #f3f4f6 100%);
+  background: linear-gradient(180deg, var(--surface-card) 0%, var(--surface-sunken) 100%);
 }
 
 .dag-3d-container:fullscreen {
-  background: linear-gradient(180deg, #ffffff 0%, #f3f4f6 100%);
+  background: linear-gradient(180deg, var(--surface-card) 0%, var(--surface-sunken) 100%);
 }
 
 .dag-3d-container::before {
@@ -578,7 +578,7 @@
   left: 0;
   right: 0;
   bottom: 0;
-  background-image: radial-gradient(circle, rgba(0, 0, 0, 0.04) 1px, transparent 1px);
+  background-image: radial-gradient(circle, color-mix(in srgb, var(--text-primary) 5%, transparent) 1px, transparent 1px);
   background-size: 32px 32px;
   pointer-events: none;
   z-index: 0;
@@ -591,7 +591,7 @@
   left: 0;
   right: 0;
   bottom: 0;
-  background: radial-gradient(ellipse at center, transparent 30%, rgba(244, 244, 243, 0.7) 100%);
+  background: radial-gradient(ellipse at center, transparent 30%, color-mix(in srgb, var(--surface-page) 70%, transparent) 100%);
   pointer-events: none;
   z-index: 0;
 }
@@ -639,19 +639,19 @@
 
 /* 3D status - Claude  */
 .dag-3d-stats .dag-stats-dot.pending {
-  background: var(--color-action);
+  background: var(--text-tertiary);
 }
 
 .dag-3d-stats .dag-stats-dot.running {
-  background: #2563eb;
+  background: var(--color-action);
 }
 
 .dag-3d-stats .dag-stats-dot.completed {
-  background: #16a34a;
+  background: var(--status-success-fg);
 }
 
 .dag-3d-stats .dag-stats-dot.failed {
-  background: #dc2626;
+  background: var(--status-error-fg);
 }
 
 /* hint */
@@ -722,7 +722,7 @@
 }
 
 .dag-task-drawer .ant-drawer-content-wrapper {
-  box-shadow: -4px 0 16px rgba(0, 0, 0, 0.1) !important;
+  box-shadow: var(--shadow-3) !important;
 }
 
 .dag-task-drawer .ant-drawer-header {
@@ -739,7 +739,7 @@
 
 .dag-task-drawer .ant-drawer-close:hover {
   color: var(--color-action);
-  background: rgba(0, 0, 0, 0.04);
+  background: var(--surface-hover);
 }
 
 .task-detail-section {
@@ -747,8 +747,8 @@
 }
 
 .task-instruction-box {
-  background: #fff;
-  border: 1px solid #e8e8e8;
+  background: var(--surface-card);
+  border: 1px solid var(--border-subtle);
   border-radius: 6px;
   padding: 12px;
   font-size: var(--fs-small);
@@ -756,8 +756,8 @@
 }
 
 .task-context-box {
-  background: #fff;
-  border: 1px solid #e8e8e8;
+  background: var(--surface-card);
+  border: 1px solid var(--border-subtle);
   border-radius: 6px;
   padding: 12px;
   font-size: var(--fs-caption);
@@ -767,8 +767,8 @@
 }
 
 .task-result-box {
-  background: #fff;
-  border: 1px solid #e8e8e8;
+  background: var(--surface-card);
+  border: 1px solid var(--border-subtle);
   border-radius: 6px;
   padding: 12px;
   font-size: var(--fs-caption);
@@ -778,8 +778,8 @@
 }
 
 .task-metadata-box {
-  background: #fff;
-  border: 1px solid #e8e8e8;
+  background: var(--surface-card);
+  border: 1px solid var(--border-subtle);
   border-radius: 6px;
   padding: 12px;
   font-size: var(--fs-caption);
@@ -804,7 +804,7 @@
 .dag-sticky-container .ant-drawer .ant-descriptions-item-label {
   width: 80px;
   font-size: var(--fs-caption);
-  color: #666;
+  color: var(--text-secondary);
 }
 
 .dag-sticky-container .ant-drawer .ant-descriptions-item-content {
@@ -827,12 +827,12 @@
 .task-context-box::-webkit-scrollbar-thumb,
 .task-result-box::-webkit-scrollbar-thumb,
 .task-metadata-box::-webkit-scrollbar-thumb {
-  background: #d9d9d9;
+  background: var(--border-strong);
   border-radius: 3px;
 }
 
 .task-context-box::-webkit-scrollbar-thumb:hover,
 .task-result-box::-webkit-scrollbar-thumb:hover,
 .task-metadata-box::-webkit-scrollbar-thumb:hover {
-  background: #bfbfbf;
+  background: var(--text-disabled);
 }

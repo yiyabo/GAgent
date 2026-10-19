@@ -8,7 +8,7 @@
   margin: 6px 0;
   border-radius: 8px;
   border: 1px solid var(--border-color);
-  background: var(--bg-secondary, rgba(0, 0, 0, 0.015));
+  background: var(--surface-card);
   overflow: hidden;
 }
 
@@ -34,7 +34,7 @@
 }
 
 .tp-header:hover {
-  background: rgba(0, 0, 0, 0.02);
+  background: var(--surface-sunken);
 }
 
 .tp-header-icon {
@@ -120,7 +120,7 @@
 }
 
 .tp-steps::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.08);
+  background: var(--surface-hover);
   border-radius: 2px;
 }
 
@@ -153,11 +153,11 @@
 }
 
 .tp-item-row.expandable:hover {
-  background: rgba(0, 0, 0, 0.025);
+  background: var(--surface-sunken);
 }
 
 .tp-item-row.active {
-  background: rgba(0, 0, 0, 0.02);
+  background: var(--surface-sunken);
 }
 
 /* Item icon — small square badge; tool = warm accent, reasoning = cool accent */
@@ -170,18 +170,18 @@
   justify-content: center;
   font-size: 11px;
   flex-shrink: 0;
-  background: rgba(201, 100, 66, 0.08);
-  color: var(--primary-color);
+  background: var(--color-action-bg);
+  color: var(--color-action);
 }
 
 .tp-item-icon.reasoning {
-  background: rgba(100, 130, 200, 0.1);
-  color: rgba(80, 110, 180, 0.85);
+  background: var(--status-info-bg);
+  color: var(--status-info-fg);
 }
 
 .tp-item-icon.error {
-  background: rgba(255, 77, 79, 0.1);
-  color: #ff4d4f;
+  background: var(--status-error-bg);
+  color: var(--status-error-fg);
 }
 
 /* Item label */
@@ -205,11 +205,11 @@
 }
 
 .tp-item-status.success {
-  color: var(--success-color, #52c41a);
+  color: var(--status-success-fg);
 }
 
 .tp-item-status.error {
-  color: #ff4d4f;
+  color: var(--status-error-fg);
 }
 
 .tp-item-status.running {
@@ -257,9 +257,9 @@
 .tp-item-thought {
   margin: 2px 0 8px 34px;
   padding: 8px 12px;
-  background: var(--bg-tertiary, rgba(0, 0, 0, 0.02));
+  background: var(--surface-sunken);
   border-radius: 6px;
-  border-left: 2px solid rgba(100, 130, 200, 0.25);
+  border-left: 2px solid var(--status-info-border);
   font-size: 12.5px;
   line-height: 1.65;
   color: var(--text-secondary);
@@ -273,7 +273,7 @@
 }
 
 .tp-item-thought::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.06);
+  background: var(--surface-hover);
   border-radius: 2px;
 }
 
@@ -327,9 +327,9 @@
 .tp-item-stream {
   margin: 2px 0 8px 34px;
   padding: 8px 12px;
-  background: var(--bg-tertiary, rgba(0, 0, 0, 0.02));
+  background: var(--surface-sunken);
   border-radius: 6px;
-  border-left: 2px solid rgba(100, 130, 200, 0.3);
+  border-left: 2px solid var(--status-info-border);
   font-size: 12.5px;
   line-height: 1.65;
   color: var(--text-secondary);
@@ -346,7 +346,7 @@
 }
 
 .tp-item-stream::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.06);
+  background: var(--surface-hover);
   border-radius: 2px;
 }
 
@@ -406,9 +406,9 @@
 .tp-tool-params {
   margin: 0 0 6px;
   padding: 6px 10px;
-  background: var(--bg-tertiary, rgba(0, 0, 0, 0.02));
+  background: var(--surface-sunken);
   border-radius: 6px;
-  border-left: 2px solid rgba(201, 100, 66, 0.2);
+  border-left: 2px solid var(--status-warning-border);
 }
 
 .tp-tool-params-pre {
@@ -432,9 +432,9 @@
 .tp-tool-result-full {
   margin: 0;
   padding: 6px 10px;
-  background: var(--bg-tertiary, rgba(0, 0, 0, 0.02));
+  background: var(--surface-sunken);
   border-radius: 6px;
-  border-left: 2px solid rgba(82, 196, 26, 0.25);
+  border-left: 2px solid var(--status-success-border);
 }
 
 .tp-tool-result-fulltext {
@@ -453,7 +453,7 @@
 }
 
 .tp-tool-result-fulltext::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.06);
+  background: var(--surface-hover);
   border-radius: 2px;
 }
 
@@ -463,7 +463,7 @@
 
 .tp-error-inline {
   font-size: var(--fs-caption);
-  color: #ff4d4f;
+  color: var(--status-error-fg);
   padding: 2px 0;
   line-height: 1.5;
 }
@@ -488,7 +488,7 @@
   border: 1px solid var(--border-color);
   border-radius: 4px;
   padding: 4px 8px;
-  background: var(--bg-primary, #fff);
+  background: var(--surface-page);
   font-size: var(--fs-caption);
 }
 
@@ -516,7 +516,7 @@
 .tp-group-children {
   margin-left: 9px;
   padding-left: 12px;
-  border-left: 1px solid rgba(0, 0, 0, 0.06);
+  border-left: 1px solid var(--border-subtle);
 }
 
 .tp-group > .tp-item-row .tp-item-label {

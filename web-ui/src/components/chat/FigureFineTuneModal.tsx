@@ -63,6 +63,7 @@ export const FigureFineTuneModal: React.FC<FigureFineTuneModalProps> = ({
 
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
+    // Canvas cannot read CSS variables, and the box marks a region of the user's figure, so it stays a fixed red.
     ctx.strokeStyle = '#ff4d4f';
     ctx.lineWidth = 3;
     ctx.fillStyle = 'rgba(255, 77, 79, 0.2)';
@@ -196,7 +197,7 @@ export const FigureFineTuneModal: React.FC<FigureFineTuneModalProps> = ({
       destroyOnClose
     >
       <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-        <div style={{ background: '#fafafa', padding: 10, borderRadius: 8, border: '1px solid #f0f0f0' }}>
+        <div style={{ background: 'var(--surface-sunken)', padding: 10, borderRadius: 8, border: '1px solid var(--border-subtle)' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
             <Text type='secondary' style={{ fontSize: 12 }}>
               🖱️ 可直接在图上按住鼠标左键<strong>拖拽画框</strong>以标记需调整的局部区域:
@@ -214,10 +215,10 @@ export const FigureFineTuneModal: React.FC<FigureFineTuneModalProps> = ({
               display: 'inline-block',
               maxWidth: '100%',
               margin: '0 auto',
-              border: '1px solid #e8e8e8',
+              border: '1px solid var(--border-subtle)',
               borderRadius: 6,
               overflow: 'hidden',
-              background: '#fff',
+              background: 'var(--surface-card)',
             }}
           >
             <img

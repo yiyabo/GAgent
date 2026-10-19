@@ -12,7 +12,7 @@ export default function ResumeRunAction({ runId, sessionId, status, error }: {
   if (!runId || !sessionId || !['failed', 'cancelled'].includes(status ?? '')) return null;
   return (
     <div>
-    {error && <div role="status" style={{ marginTop: 8, color: '#8c6d1f' }}>{error}</div>}
+    {error && <div role="status" style={{ marginTop: 8, color: 'var(--status-warning-fg)' }}>{error}</div>}
     <Button size="small" icon={<PlayCircleOutlined />} loading={busy} style={{ marginTop: 12 }}
       onClick={async () => {
         if (pending.current) return;

@@ -78,7 +78,7 @@ const ModelSelector: React.FC<ModelSelectorProps> = ({ size = 'small', style }) 
       label: (
         <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
           {m.id === 'mimo-v2.5-pro-ultraspeed' && (
-            <ThunderboltOutlined style={{ color: '#faad14' }} />
+            <ThunderboltOutlined style={{ color: 'var(--status-warning-fg)' }} />
           )}
           <span>{m.name}</span>
           {!m.available && (

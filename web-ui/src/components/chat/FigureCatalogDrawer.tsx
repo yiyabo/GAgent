@@ -191,10 +191,10 @@ export const FigureCatalogDrawer: React.FC<FigureCatalogDrawerProps> = ({
                       style={{
                         width: 110,
                         height: 80,
-                        background: '#fafafa',
+                        background: 'var(--surface-sunken)',
                         borderRadius: 6,
                         overflow: 'hidden',
-                        border: '1px solid #f0f0f0',
+                        border: '1px solid var(--border-subtle)',
                         display: 'flex',
                         alignItems: 'center',
                         justifyContent: 'center',
@@ -208,7 +208,7 @@ export const FigureCatalogDrawer: React.FC<FigureCatalogDrawerProps> = ({
                           style={{ width: '100%', height: '100%', objectFit: 'contain' }}
                         />
                       ) : (
-                        <FileImageOutlined style={{ fontSize: 28, color: '#bfbfbf' }} />
+                        <FileImageOutlined style={{ fontSize: 28, color: 'var(--text-disabled)' }} />
                       )}
                     </div>
 

@@ -137,9 +137,9 @@ const McpServerCard: React.FC<McpServerCardProps> = ({ server, blockReason, pend
                     {verification.checks.map((check) => (
                       <li key={check.name} style={{ marginBottom: 4 }}>
                         {check.passed ? (
-                          <CheckCircleOutlined style={{ color: '#52c41a' }} role="img" aria-label="通过" />
+                          <CheckCircleOutlined style={{ color: 'var(--status-success-fg)' }} role="img" aria-label="通过" />
                         ) : (
-                          <CloseCircleOutlined style={{ color: '#ff4d4f' }} role="img" aria-label="未通过" />
+                          <CloseCircleOutlined style={{ color: 'var(--status-error-fg)' }} role="img" aria-label="未通过" />
                         )}{' '}
                         <Text strong>{check.name}</Text>
                         {check.detail ? <Text type="secondary"> — {check.detail}</Text> : null}

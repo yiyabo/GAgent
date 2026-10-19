@@ -65,7 +65,7 @@ export const PdfViewerDrawer: React.FC = () => {
       title={
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', width: '100%' }}>
           <Space>
-            <FilePdfOutlined style={{ color: '#ff4d4f', fontSize: 18 }} />
+            <FilePdfOutlined style={{ color: 'var(--status-error-fg)', fontSize: 18 }} />
             <Text strong style={{ maxWidth: 300, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {state.title}
             </Text>

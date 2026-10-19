@@ -25,7 +25,7 @@ export interface HeroWelcomeProps {
 
 const STARTER_PROMPTS = [
   {
-    icon: <ExperimentOutlined style={{ color: '#10b981' }} />,
+    icon: <ExperimentOutlined style={{ color: 'var(--status-success-fg)' }} />,
     title: '噬菌体全基因组注释',
     desc: '预测开放阅读框(ORF)，注释结构与裂解基因，绘制环状拓扑图',
     prompt: '请帮我对上传的噬菌体 FASTA 基因组序列进行完整的结构与功能注释，识别裂解酶、穿孔素及尾部纤维蛋白，并生成基因组特征概览。',
@@ -37,13 +37,13 @@ const STARTER_PROMPTS = [
     prompt: '请分析目标噬菌体的受体结合蛋白 (RBP / Tail Fiber) 结构域，预测其对铜绿假单胞菌/鲍曼不动杆菌等临床耐药菌的宿主谱特异性。',
   },
   {
-    icon: <ThunderboltOutlined style={{ color: '#f59e0b' }} />,
+    icon: <ThunderboltOutlined style={{ color: 'var(--status-warning-fg)' }} />,
     title: '差异表达与转录组分析',
     desc: '运行 RNA-Seq 差异表达分析，输出火山图与主要富集通路',
     prompt: '请对感染噬菌体前后的宿主菌转录组数据执行差异表达分析 (DESeq2)，生成火山图并富集出早期与晚期关键应激反应通路。',
   },
   {
-    icon: <ReadOutlined style={{ color: '#8b5cf6' }} />,
+    icon: <ReadOutlined style={{ color: 'var(--status-blocked-fg)' }} />,
     title: '噬菌体疗法文献深度调研',
     desc: '检索权威文献库，梳理耐药菌鸡尾酒配方与临床案例',
     prompt: '请对超级耐药肺炎克雷伯菌 (CRKP) 的噬菌体鸡尾酒协同疗法进行深度文献调研，总结最新临床试验案例并梳理治疗方案建议。',

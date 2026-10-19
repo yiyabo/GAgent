@@ -477,7 +477,7 @@ const AgentWorkPanel: React.FC<AgentWorkPanelProps> = ({ sessionId }) => {
       content = evt.message || '';
       if (usage && typeof usage === 'object') {
         details = (
-          <div style={{ fontSize: 12, color: '#666' }}>
+          <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
             {Object.entries(usage).map(([key, val]) => (
               <div key={key}>
                 {key}: {String(val)}
@@ -488,8 +488,8 @@ const AgentWorkPanel: React.FC<AgentWorkPanelProps> = ({ sessionId }) => {
       }
     }
 
-    const cardBorderColor = isError ? '#ff4d4f' : color === 'blue' ? '#1890ff' : color === 'orange' ? '#fa8c16' : color === 'green' ? '#52c41a' : color === 'purple' ? '#722ed1' : '#d9d9d9';
-    const cardBg = evt.subType === 'agent_thinking' ? '#f0f5ff' : evt.subType === 'agent_result' ? '#f6ffed' : '#fff';
+    const cardBorderColor = isError ? 'var(--status-error-fg)' : color === 'blue' ? 'var(--color-action)' : color === 'orange' ? 'var(--status-warning-fg)' : color === 'green' ? 'var(--status-success-fg)' : color === 'purple' ? 'var(--status-blocked-fg)' : 'var(--border-default)';
+    const cardBg = evt.subType === 'agent_thinking' ? 'var(--color-action-bg)' : evt.subType === 'agent_result' ? 'var(--status-success-bg)' : 'var(--surface-card)';
 
     return (
       <div
@@ -513,8 +513,8 @@ const AgentWorkPanel: React.FC<AgentWorkPanelProps> = ({ sessionId }) => {
           <Badge
             count={icon}
             style={{
-              backgroundColor: isError ? '#ff4d4f' : color === 'blue' ? '#1890ff' : color === 'orange' ? '#fa8c16' : color === 'green' ? '#52c41a' : color === 'purple' ? '#722ed1' : '#d9d9d9',
-              color: '#fff',
+              backgroundColor: isError ? 'var(--status-error-fg)' : color === 'blue' ? 'var(--color-action)' : color === 'orange' ? 'var(--status-warning-fg)' : color === 'green' ? 'var(--status-success-fg)' : color === 'purple' ? 'var(--status-blocked-fg)' : 'var(--border-default)',
+              color: 'var(--color-on-action)',
               fontSize: 14,
               width: 28,
               height: 28,
@@ -529,7 +529,7 @@ const AgentWorkPanel: React.FC<AgentWorkPanelProps> = ({ sessionId }) => {
               style={{
                 width: 2,
                 flex: 1,
-                backgroundColor: '#e8e8e8',
+                backgroundColor: 'var(--border-subtle)',
                 marginTop: 4,
                 minHeight: 20,
               }}
@@ -573,7 +573,7 @@ const AgentWorkPanel: React.FC<AgentWorkPanelProps> = ({ sessionId }) => {
                   alignItems: 'center',
                   gap: 4,
                   cursor: 'pointer',
-                  color: '#1890ff',
+                  color: 'var(--color-action)',
                   fontSize: 12,
                 }}
                 onClick={() => toggleDetail(evt.id)}
@@ -586,7 +586,7 @@ const AgentWorkPanel: React.FC<AgentWorkPanelProps> = ({ sessionId }) => {
                   style={{
                     marginTop: 8,
                     padding: 8,
-                    backgroundColor: '#f5f5f5',
+                    backgroundColor: 'var(--surface-sunken)',
                     borderRadius: 4,
                     maxHeight: 300,
                     overflow: 'auto',
@@ -615,8 +615,8 @@ const AgentWorkPanel: React.FC<AgentWorkPanelProps> = ({ sessionId }) => {
           alignItems: 'center',
           justifyContent: 'space-between',
           padding: '12px 16px',
-          backgroundColor: '#fafafa',
-          borderBottom: '1px solid #f0f0f0',
+          backgroundColor: 'var(--surface-sunken)',
+          borderBottom: '1px solid var(--border-subtle)',
         }}
       >
         <Space direction="vertical" size={2}>
@@ -713,7 +713,7 @@ const AgentWorkPanel: React.FC<AgentWorkPanelProps> = ({ sessionId }) => {
                 alignItems: 'center',
                 gap: 4,
                 cursor: 'pointer',
-                color: '#1890ff',
+                color: 'var(--color-action)',
                 fontSize: 13,
                 marginBottom: 8,
               }}
@@ -725,8 +725,8 @@ const AgentWorkPanel: React.FC<AgentWorkPanelProps> = ({ sessionId }) => {
             {rawExpanded && (
               <div
                 style={{
-                  backgroundColor: '#1e1e1e',
-                  color: '#d4d4d4',
+                  backgroundColor: 'var(--surface-log)',
+                  color: 'var(--on-log)',
                   padding: 12,
                   borderRadius: 4,
                   fontSize: 12,
@@ -751,7 +751,7 @@ const AgentWorkPanel: React.FC<AgentWorkPanelProps> = ({ sessionId }) => {
                 alignItems: 'center',
                 gap: 4,
                 cursor: 'pointer',
-                color: '#1890ff',
+                color: 'var(--color-action)',
                 fontSize: 13,
                 marginBottom: 8,
               }}
@@ -763,8 +763,8 @@ const AgentWorkPanel: React.FC<AgentWorkPanelProps> = ({ sessionId }) => {
             {consoleExpanded && (
               <div
                 style={{
-                  backgroundColor: '#1e1e1e',
-                  color: '#d4d4d4',
+                  backgroundColor: 'var(--surface-log)',
+                  color: 'var(--on-log)',
                   padding: 12,
                   borderRadius: 4,
                   fontSize: 12,

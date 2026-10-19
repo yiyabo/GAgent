@@ -668,7 +668,7 @@ const ExecutorPanel: React.FC = () => {
   width: 6,
   height: 6,
   borderRadius: '50%',
-  background: sseConnected ? '#52c41a' : '#faad14',
+  background: sseConnected ? 'var(--status-success-fg)' : 'var(--status-warning-fg)',
   flexShrink: 0,
   }}
   />

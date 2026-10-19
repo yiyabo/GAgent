@@ -18,7 +18,7 @@ export const LogMetadata: React.FC<{ metadata: Record<string, any> | undefined }
   return (
     <div
       style={{
-        background: '#f7f7f7',
+        background: 'var(--surface-sunken)',
         padding: 8,
         borderRadius: 4,
         marginTop: 4,
@@ -113,7 +113,7 @@ export const ActionLogs: React.FC<{ actionLogs: ActionLogEntry[] }> = ({ actionL
               ? ((entry.details as any).duration_ms as number)
               : null;
           return (
-            <div key={`action_${entry.sequence}`} style={{ fontSize: 12, borderLeft: '2px solid #f0f0f0', paddingLeft: 8 }}>
+            <div key={`action_${entry.sequence}`} style={{ fontSize: 12, borderLeft: '2px solid var(--border-subtle)', paddingLeft: 8 }}>
               <Space size="small">
                 <Tag color={statusInfo.color} style={{ marginRight: 0 }}>
                   {statusInfo.icon}
@@ -129,12 +129,12 @@ export const ActionLogs: React.FC<{ actionLogs: ActionLogEntry[] }> = ({ actionL
                 </div>
               )}
               {durationMs !== null && durationMs >= 0 && (
-                <div style={{ fontSize: 12, color: '#999', marginTop: 2 }}>
+                <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginTop: 2 }}>
                   Duration: {durationMs < 1000 ? `${durationMs}ms` : `${(durationMs / 1000).toFixed(1)}s`}
                 </div>
               )}
               {timestamp && (
-                <div style={{ fontSize: 12, color: '#999', marginTop: 2 }}>
+                <div style={{ fontSize: 12, color: 'var(--text-tertiary)', marginTop: 2 }}>
                   {formatLogTime(timestamp)}
                 </div>
               )}
@@ -177,7 +177,7 @@ export const LogList: React.FC<{ logs: JobLogEvent[]; missingJob: boolean }> = (
               </Tag>
               <div>
                 <Text style={{ fontWeight: 500 }}>{log.message}</Text>
-                <div style={{ fontSize: 12, color: '#999' }}>
+                <div style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
                   {log.timestamp ? formatLogTime(log.timestamp) : ''}
                 </div>
                 <LogMetadata metadata={log.metadata as Record<string, any>} />

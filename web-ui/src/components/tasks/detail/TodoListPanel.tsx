@@ -37,12 +37,12 @@ const phaseStatusConfig: Record<string, { color: string; label: string }> = {
 };
 
 const taskStatusIcon: Record<string, React.ReactNode> = {
-  completed: <CheckCircleOutlined style={{ color: '#52c41a' }} />,
-  pending: <ClockCircleOutlined style={{ color: '#faad14' }} />,
-  failed: <CloseCircleOutlined style={{ color: '#ff4d4f' }} />,
-  skipped: <MinusCircleOutlined style={{ color: '#d9d9d9' }} />,
+  completed: <CheckCircleOutlined style={{ color: 'var(--status-success-fg)' }} />,
+  pending: <ClockCircleOutlined style={{ color: 'var(--status-warning-fg)' }} />,
+  failed: <CloseCircleOutlined style={{ color: 'var(--status-error-fg)' }} />,
+  skipped: <MinusCircleOutlined style={{ color: 'var(--border-default)' }} />,
   running: <ExclamationCircleOutlined style={{ color: 'var(--color-action)' }} />,
-  blocked: <MinusCircleOutlined style={{ color: '#fa8c16' }} />,
+  blocked: <MinusCircleOutlined style={{ color: 'var(--status-warning-fg)' }} />,
 };
 
 const taskStatusColor: Record<string, string> = {
@@ -71,8 +71,8 @@ const TodoTaskItem: React.FC<{
         gap: 8,
         padding: '6px 8px',
         borderRadius: 6,
-        border: '1px solid #f0f0f0',
-        background: displayStatus === 'completed' ? '#f6ffed' : undefined,
+        border: '1px solid var(--border-subtle)',
+        background: displayStatus === 'completed' ? 'var(--status-success-bg)' : undefined,
       }}
     >
       <span style={{ marginTop: 2, flexShrink: 0 }}>
@@ -137,10 +137,10 @@ const TodoPhaseCard: React.FC<{
   return (
     <div
       style={{
-        border: '1px solid #e8e8e8',
+        border: '1px solid var(--border-subtle)',
         borderRadius: 8,
         padding: '12px 16px',
-        background: '#fafafa',
+        background: 'var(--surface-sunken)',
       }}
     >
       <div
@@ -170,7 +170,7 @@ const TodoPhaseCard: React.FC<{
             percent={pct}
             size="small"
             status={phase.status === 'partial_failure' ? 'exception' : undefined}
-            strokeColor={phase.status === 'completed' ? '#52c41a' : undefined}
+            strokeColor={phase.status === 'completed' ? 'var(--status-success-fg)' : undefined}
           />
 
           <Space direction="vertical" size={4} style={{ width: '100%', marginTop: 8 }}>

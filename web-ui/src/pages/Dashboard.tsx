@@ -185,7 +185,7 @@ const Dashboard: React.FC = () => {
                 <div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
                     <Text>API Connection</Text>
-                    <Text strong style={{ color: systemStatus.api_connected ? '#52c41a' : '#ff4d4f' }}>
+                    <Text strong style={{ color: systemStatus.api_connected ? 'var(--status-success-fg)' : 'var(--status-error-fg)' }}>
                       {systemStatus.api_connected ? 'Connected' : 'Disconnected'}
                     </Text>
                   </div>
@@ -201,7 +201,7 @@ const Dashboard: React.FC = () => {
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
                     <Text>Database Status</Text>
                     <Text strong style={{
-                      color: systemStatus.database_status === 'connected' ? '#52c41a' : '#ff4d4f'
+                      color: systemStatus.database_status === 'connected' ? 'var(--status-success-fg)' : 'var(--status-error-fg)'
                     }}>
                       {systemStatus.database_status === 'connected' ? 'Normal' : 'Error'}
                     </Text>
@@ -242,11 +242,7 @@ const Dashboard: React.FC = () => {
                   fontSize: 15,
                 }}>
                   <span>📈</span>
-                  <span style={{
-                    background: 'var(--primary-gradient)',
-                    WebkitBackgroundClip: 'text',
-                    WebkitTextFillColor: 'transparent',
-                  }}>API Call Statistics</span>
+                  <span>API Call Statistics</span>
                 </span>
               }
               size="small"
@@ -298,11 +294,7 @@ const Dashboard: React.FC = () => {
                   fontSize: 15,
                 }}>
                   <span>🎯</span>
-                  <span style={{
-                    background: 'var(--primary-gradient)',
-                    WebkitBackgroundClip: 'text',
-                    WebkitTextFillColor: 'transparent',
-                  }}>Task Orchestration Graph</span>
+                  <span>Task Orchestration Graph</span>
                 </span>
               }
               size="small"

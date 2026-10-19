@@ -337,7 +337,7 @@ const ToolResultCard: React.FC<ToolResultCardProps> = ({ payload, defaultOpen = 
                         maxHeight: 160,
                         objectFit: 'contain',
                         borderRadius: 6,
-                        border: '1px solid var(--border-color, #e8e8e8)',
+                        border: '1px solid var(--border-color)',
                         display: 'block',
                       }}
                     />

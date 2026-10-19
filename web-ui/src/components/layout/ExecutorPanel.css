@@ -12,12 +12,12 @@
   align-items: center;
   justify-content: space-between;
   padding: 10px 12px 6px;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+  border-bottom: 1px solid var(--border-subtle);
 }
 
 .executor-error {
   padding: 8px 12px;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+  border-bottom: 1px solid var(--border-subtle);
 }
 
 /* Scrollable task table container */
@@ -25,15 +25,7 @@
   flex: 1;
   overflow: auto;
   padding: 10px 10px 12px;
-  background:
-  radial-gradient(1200px 600px at 40% 0%, rgba(0, 0, 0, 0.03), transparent 55%),
-  repeating-linear-gradient(
-  to bottom,
-  rgba(0, 0, 0, 0.03) 0px,
-  rgba(0, 0, 0, 0.03) 1px,
-  transparent 1px,
-  transparent 24px
-  );
+  background: transparent;
 }
 
 .executor-group {
@@ -55,9 +47,8 @@
   width: 100%;
   border-collapse: separate;
   border-spacing: 0;
-  background: rgba(255, 255, 255, 0.68);
-  backdrop-filter: blur(10px);
-  border: 1px solid rgba(0, 0, 0, 0.06);
+  background: var(--surface-card);
+  border: 1px solid var(--border-subtle);
   border-radius: 10px;
   overflow: hidden;
 }
@@ -71,17 +62,17 @@
   padding: 10px 12px;
   font-size: var(--fs-caption);
   letter-spacing: 0;
-  color: rgba(0, 0, 0, 0.55);
-  background: rgba(255, 255, 255, 0.78);
-  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+  color: var(--text-secondary);
+  background: var(--surface-sunken);
+  border-bottom: 1px solid var(--border-subtle);
 }
 
 .task-table tbody td {
   padding: 10px 12px;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.05);
+  border-bottom: 1px solid var(--border-subtle);
   vertical-align: middle;
   font-size: var(--fs-small);
-  color: #374151;
+  color: var(--text-primary);
 }
 
 .task-table tbody tr:last-child td {
@@ -93,7 +84,7 @@
 }
 
 .task-row:hover {
-  background: rgba(0, 0, 0, 0.03);
+  background: var(--surface-hover);
 }
 
 .task-row-expandable {
@@ -101,7 +92,7 @@
 }
 
 .task-row-expandable:hover {
-  background: rgba(24, 144, 255, 0.04);
+  background: var(--surface-hover);
 }
 
 .task-id {
@@ -109,7 +100,7 @@
   font-variant-numeric: tabular-nums;
   font-family: var(--font-mono);
   font-size: var(--fs-caption);
-  color: rgba(0, 0, 0, 0.65);
+  color: var(--text-secondary);
 }
 
 .task-content {
@@ -121,13 +112,13 @@
 
 .task-content-meta {
   font-size: var(--fs-caption);
-  color: rgba(0, 0, 0, 0.45);
+  color: var(--text-tertiary);
   margin-top: 4px;
   line-height: 1.35;
 }
 
 .task-content-error {
-  color: #dc2626;
+  color: var(--status-error-fg);
 }
 
 .task-progress-wrap {
@@ -143,7 +134,7 @@
 }
 
 .task-progress-wrap .ant-progress-inner {
-  background: rgba(0, 0, 0, 0.08);
+  background: var(--surface-sunken);
 }
 
 .task-progress-meta {
@@ -156,12 +147,12 @@
 .task-progress-percent {
   font-size: var(--fs-caption);
   font-variant-numeric: tabular-nums;
-  color: rgba(0, 0, 0, 0.55);
+  color: var(--text-secondary);
 }
 
 .task-progress-text {
   font-size: var(--fs-caption);
-  color: rgba(0, 0, 0, 0.45);
+  color: var(--text-tertiary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -180,35 +171,35 @@
   height: 6px;
   border-radius: 50%;
   flex-shrink: 0;
-  background: #d1d5db;
+  background: var(--text-disabled);
 }
 
 .task-status-dot.running {
   background: var(--color-action);
-  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.18);
+  box-shadow: 0 0 0 2px var(--color-action-border);
   animation: pulse 2s ease-in-out infinite;
 }
 
 .task-status-dot.completed {
-  background: #22c55e;
+  background: var(--status-success-fg);
 }
 
 .task-status-dot.failed {
-  background: #ef4444;
+  background: var(--status-error-fg);
 }
 
 .task-status-dot.queued {
-  background: #d1d5db;
+  background: var(--text-disabled);
 }
 
 .task-status-text {
   font-size: var(--fs-caption);
-  color: rgba(0, 0, 0, 0.65);
+  color: var(--text-secondary);
 }
 
 .task-status-meta {
   font-size: var(--fs-caption);
-  color: rgba(0, 0, 0, 0.35);
+  color: var(--text-quaternary);
   margin-left: 2px;
   font-variant-numeric: tabular-nums;
 }
@@ -226,7 +217,7 @@
   justify-content: center;
   height: 100%;
   gap: 12px;
-  color: #9ca3af;
+  color: var(--text-tertiary);
   font-size: var(--fs-small);
 }
 
@@ -234,7 +225,7 @@
   width: 32px;
   height: 32px;
   border-radius: 50%;
-  background: linear-gradient(135deg, #f3f4f6 0%, #e5e7eb 100%);
+  background: var(--surface-sunken);
   position: relative;
 }
 
@@ -246,7 +237,7 @@
   transform: translate(-50%, -50%);
   width: 12px;
   height: 12px;
-  border: 2px solid #d1d5db;
+  border: 2px solid var(--border-strong);
   border-radius: 2px;
 }
 
@@ -261,10 +252,10 @@
 }
 
 .task-table-wrap::-webkit-scrollbar-thumb {
-  background: rgba(0, 0, 0, 0.1);
+  background: var(--border-default);
   border-radius: 2px;
 }
 
 .task-table-wrap::-webkit-scrollbar-thumb:hover {
-  background: rgba(0, 0, 0, 0.2);
+  background: var(--border-strong);
 }
