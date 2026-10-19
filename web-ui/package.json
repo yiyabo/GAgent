@@ -12,6 +12,7 @@
     "type-check": "tsc --noEmit",
     "test": "vitest",
     "test:e2e": "npx playwright test",
+    "test:visual": "playwright test -c playwright.visual.config.ts",
     "postinstall": "npx patch-package"
   },
   "dependencies": {
