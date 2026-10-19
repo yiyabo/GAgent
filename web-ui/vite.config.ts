@@ -4,6 +4,44 @@ import fs from 'node:fs/promises';
 import path from 'path';
 import viteCompression from 'vite-plugin-compression';
 
+/**
+ * Puts the deployment's default UI language into index.html (title, description, <html lang>) and a
+ * pre-paint script that lets a visitor's saved choice win. Mirrors src/i18n/language.ts; the page
+ * title must be right before React boots, because the tab shows it first.
+ */
+const htmlLanguage = (rawDefault: string | undefined) => {
+  const fallback = rawDefault === 'zh-CN' ? 'zh-CN' : 'en';
+  const copy = {
+    en: { title: 'Phage-Agent · Research workspace', description: 'Phage-Agent research workspace: research chat, plan execution and traceable artifacts.' },
+    'zh-CN': { title: 'Phage-Agent · 研究工作台', description: 'Phage-Agent 科研工作台：研究对话、计划执行与可追溯产物。' },
+  } as const;
+  return {
+    name: 'html-language',
+    transformIndexHtml(html: string) {
+      const chosen = copy[fallback];
+      const script = `<script>
+      // Language before first paint: a saved choice (gagent.language) beats the deployment default (${fallback}).
+      (function () {
+        try {
+          var copy = ${JSON.stringify(copy)};
+          var saved = localStorage.getItem('gagent.language');
+          var lang = saved === 'zh-CN' || saved === 'en' ? saved : '${fallback}';
+          document.documentElement.setAttribute('lang', lang);
+          document.title = copy[lang].title;
+          var meta = document.querySelector('meta[name="description"]');
+          if (meta) meta.setAttribute('content', copy[lang].description);
+        } catch (e) {}
+      })();
+    </script>`;
+      return html
+        .replace(/<html lang="[^"]*">/, `<html lang="${fallback}">`)
+        .replace(/<title>[^<]*<\/title>/, `<title>${chosen.title}</title>`)
+        .replace(/(<meta name="description" content=")[^"]*(")/, `$1${chosen.description}$2`)
+        .replace('</head>', `${script}\n  </head>`);
+    },
+  };
+};
+
 const patchThirdPartyModules = () => {
   const directiveRe = /^\s*(["'])use client\1;?\s*/;
   return {
@@ -86,6 +124,7 @@ export default defineConfig(({ mode }) => {
     plugins: [
       patchThirdPartyModules(),
       react(),
+      htmlLanguage(process.env.VITE_DEFAULT_LANGUAGE ?? env.VITE_DEFAULT_LANGUAGE),
       viteCompression({ algorithm: 'gzip', ext: '.gz' }),
       viteCompression({ algorithm: 'brotliCompress', ext: '.br' }),
     ],

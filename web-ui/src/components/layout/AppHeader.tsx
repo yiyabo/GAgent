@@ -16,11 +16,14 @@ import { useLayoutStore } from '@store/layout';
 import { useAuthStore } from '@store/auth';
 import { useLocation, useNavigate } from 'react-router-dom';
 import Wordmark from '@components/common/Wordmark';
+import LanguageSwitch from '@components/common/LanguageSwitch';
+import { useT } from '@/i18n/useT';
 
 const { Header } = Layout;
 const { Text } = Typography;
 
 const AppHeader: React.FC = () => {
+  const t = useT();
   const { message } = App.useApp();
   const { apiConnected } = useSystemStore();
   const { chatListVisible, toggleChatList, workspaceMode, setWorkspaceMode } = useLayoutStore();
@@ -43,30 +46,30 @@ const AppHeader: React.FC = () => {
       await changePassword(values.current_password, values.new_password);
       setChangePasswordOpen(false);
       form.resetFields();
-      message.success('Password updated.');
+      message.success(t('header.passwordUpdated'));
     } catch (error: any) {
       if (error?.errorFields) {
         return;
       }
-      message.error(error?.message || 'Failed to update password.');
+      message.error(error?.message || t('header.passwordUpdateFailed'));
     }
   };
 
   return (
     <>
       <Header className={`app-header ${isChatRoute && workspaceMode === 'plan' ? 'workspace-header' : ''}`}>
-        <div className="app-logo" role="link" aria-label="Phage-Agent 首页" style={{ cursor: 'pointer' }} onClick={() => navigate('/chat')}>
+        <div className="app-logo" role="link" aria-label={t('header.homeAria')} style={{ cursor: 'pointer' }} onClick={() => navigate('/chat')}>
           <ExperimentOutlined className="logo-icon" />
           <Wordmark />
         </div>
 
         <div className="app-header-actions">
           <Space size="small" style={{ marginRight: 16 }}>
-            <Tooltip title={apiConnected ? 'Connected' : 'Disconnected'}>
+            <Tooltip title={apiConnected ? t('header.connected') : t('header.disconnected')}>
               <div className="system-status" style={{ gap: 6 }}>
                 <div className={`status-indicator ${apiConnected ? '' : 'disconnected'}`} />
                 <Text style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-                  {apiConnected ? 'Ready' : 'Offline'}
+                  {apiConnected ? t('header.ready') : t('header.offline')}
                 </Text>
               </div>
             </Tooltip>
@@ -74,35 +77,36 @@ const AppHeader: React.FC = () => {
 
           <Space size="small">
             {isChatRoute && <Dropdown trigger={['click']} menu={{ selectedKeys: [workspaceMode], items: [
-              { key: 'plan', label: '计划工作区' },
-              { key: 'classic', label: '经典布局' },
+              { key: 'plan', label: t('header.layoutPlan') },
+              { key: 'classic', label: t('header.layoutClassic') },
             ], onClick: ({ key }) => setWorkspaceMode(key as 'plan' | 'classic') }}>
-              <Button type="text" icon={<AppstoreOutlined />} aria-label="切换界面布局">布局</Button>
+              <Button type="text" icon={<AppstoreOutlined />} aria-label={t('header.switchLayoutAria')}>{t('header.layout')}</Button>
             </Dropdown>}
             {!isChatRoute && (
-              <Tooltip title="回到聊天">
-                <Button type="text" icon={<MessageOutlined />} aria-label="聊天" style={{ color: 'var(--text-secondary)' }} onClick={() => navigate('/chat')}>
-                  聊天
+              <Tooltip title={t('header.backToChat')}>
+                <Button type="text" icon={<MessageOutlined />} aria-label={t('header.chat')} style={{ color: 'var(--text-secondary)' }} onClick={() => navigate('/chat')}>
+                  {t('header.chat')}
                 </Button>
               </Tooltip>
             )}
-            <Tooltip title="扩展：MCP 服务器与技能">
+            <Tooltip title={t('header.extensionsTip')}>
               <Button
                 type="text"
                 icon={<ApiOutlined />}
-                aria-label="扩展"
+                aria-label={t('header.extensions')}
                 style={{ color: location.pathname.startsWith('/extensions') ? 'var(--text-primary)' : 'var(--text-secondary)' }}
                 onClick={() => navigate('/extensions')}
               >
-                扩展
+                {t('header.extensions')}
               </Button>
             </Tooltip>
+            <LanguageSwitch />
             <Text className="workspace-account-email" style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-              {user?.email || 'anonymous'}
+              {user?.email || t('header.anonymous')}
             </Text>
             {projectLabel ? <Tag color="blue">{projectLabel}</Tag> : null}
             {canManageLocalSession ? (
-              <Tooltip title="Change password">
+              <Tooltip title={t('header.changePassword')}>
                 <Button
                   type="text"
                   icon={<KeyOutlined />}
@@ -117,7 +121,7 @@ const AppHeader: React.FC = () => {
               </Tooltip>
             ) : null}
             {canManageLocalSession ? (
-              <Tooltip title="Sign out">
+              <Tooltip title={t('header.signOut')}>
                 <Button
                   type="text"
                   icon={<LogoutOutlined />}
@@ -132,7 +136,7 @@ const AppHeader: React.FC = () => {
               </Tooltip>
             ) : null}
             {isChatRoute && !chatListVisible && (
-              <Tooltip title="Chat List">
+              <Tooltip title={t('header.chatList')}>
                 <Button
                   type="text"
                   icon={<UnorderedListOutlined />}
@@ -147,7 +151,7 @@ const AppHeader: React.FC = () => {
               </Tooltip>
             )}
 
-            <Tooltip title="Notifications">
+            <Tooltip title={t('header.notifications')}>
               <Badge count={0} size="small">
                 <Button
                   type="text"
@@ -162,7 +166,7 @@ const AppHeader: React.FC = () => {
               </Badge>
             </Tooltip>
 
-            <Tooltip title="Settings">
+            <Tooltip title={t('header.settings')}>
               <Button
                 type="text"
                 icon={<SettingOutlined />}
@@ -178,7 +182,7 @@ const AppHeader: React.FC = () => {
         </div>
       </Header>
       <Modal
-        title="Change Password"
+        title={t('header.changePassword')}
         open={changePasswordOpen && canManageLocalSession}
         onCancel={() => {
           setChangePasswordOpen(false);
@@ -190,33 +194,33 @@ const AppHeader: React.FC = () => {
         <Form form={form} layout="vertical">
           <Form.Item
             name="current_password"
-            label="Current Password"
-            rules={[{ required: true, message: 'Current password is required' }]}
+            label={t('header.currentPassword')}
+            rules={[{ required: true, message: t('header.currentPasswordRequired') }]}
           >
             <Input.Password autoComplete="current-password" />
           </Form.Item>
           <Form.Item
             name="new_password"
-            label="New Password"
+            label={t('header.newPassword')}
             rules={[
-              { required: true, message: 'New password is required' },
-              { min: 8, message: 'At least 8 characters' },
+              { required: true, message: t('header.newPasswordRequired') },
+              { min: 8, message: t('header.passwordMin') },
             ]}
           >
             <Input.Password autoComplete="new-password" />
           </Form.Item>
           <Form.Item
             name="confirm_password"
-            label="Confirm New Password"
+            label={t('header.confirmPassword')}
             dependencies={['new_password']}
             rules={[
-              { required: true, message: 'Please confirm new password' },
+              { required: true, message: t('header.confirmPasswordRequired') },
               ({ getFieldValue }) => ({
                 validator(_, value) {
                   if (!value || value === getFieldValue('new_password')) {
                     return Promise.resolve();
                   }
-                  return Promise.reject(new Error('Passwords do not match'));
+                  return Promise.reject(new Error(t('header.passwordMismatch')));
                 },
               }),
             ]}
