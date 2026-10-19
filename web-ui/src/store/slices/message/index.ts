@@ -22,7 +22,8 @@ import { hydratePersistedMessage } from './historyHydration';
 import { matchesResumeSession, selectActiveChatRun } from './runResume';
 import { createSessionAccess, findSession, matchesSession, sessionMessages, sessionPatch } from './sessionState';
 import { resolveRequestFailureMessage } from '@/components/chat/message/utils';
-import { recoverAfterStreamFailure } from './recovery';
+import { isRecoveryNote, recoverAfterStreamFailure } from './recovery';
+import { translate } from '@/i18n/useT';
 import { mergeUnpersistedTurns } from './turnCorrelation';
 
 /** Recent turns attached to each API request. Align with backend `CHAT_HISTORY_MAX_MESSAGES` (default 80, cap 200). */
@@ -46,19 +47,16 @@ import type { StreamMutableState, StreamHandlerContext } from './types';
 import type { ChatStreamEvent } from '../../chatUtils';
 
 
-export const _looksLikeSubstantialAssistant = (content: unknown): boolean => {
+export const _looksLikeSubstantialAssistant = (content: unknown, metadata?: Record<string, any> | null): boolean => {
+  if (isRecoveryNote(content, metadata)) return false;
   const text = typeof content === 'string' ? content.trim() : '';
   if (text.length < 40) return false;
   const lower = text.toLowerCase();
   if (lower.includes('backend returned a server error')) return false;
   if (lower.includes('request failed. please check')) return false;
   if (lower.includes('reconnect failed')) return false;
-  if (lower.includes('对话已中断')) return false;
-  if (lower.includes('连接中断')) return false;
   return true;
 };
-
-export const _isRecoveryNote = (prior: string): boolean => prior.startsWith('连接中断') || prior.startsWith('服务端');
 
 /**
  * After SSE/stream drop: backend may still be running or already saved the reply.
@@ -116,10 +114,9 @@ export const _recoverAfterStreamFailure = async (
       const target = source.get().messages.find((m: ChatMessage) => m.id === opts.assistantMessageId);
       const prev = (target?.metadata ?? {}) as Record<string, any>;
       const prior = typeof target?.content === 'string' ? target.content.trim() : '';
-      const isRecoveryNote = _isRecoveryNote(prior);
-      const base = prior && !isRecoveryNote ? `${prior}\n\n` : '';
+      const base = prior && !isRecoveryNote(prior, prev) ? `${prior}\n\n` : '';
       source.get().updateMessage(opts.assistantMessageId, {
-        content: `${base}（连接中断，已从断点自动续跑，最新结果见下方新一轮）`,
+        content: `${base}${translate('chat.recovery.resumedNote')}`,
         metadata: { ...prev, status: 'interrupted', recovering: false, auto_resumed_from: runId },
       });
       try {
@@ -623,11 +620,11 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => {
   source.get().setSessionProcessing(processingKey, false);
   const errorContent =
     resolveRequestFailureMessage(error) +
-    '\n\n若任务较长，服务端可能仍在继续或已完成：请刷新页面查看最新结果，或稍后重试。';
+    `\n\n${translate('chat.recovery.failureTail')}`;
   if (assistantMessageAdded) {
     const prev =
       (source.get().messages.find((m) => m.id === assistantMessageId)?.metadata ?? {}) as Record<string, any>;
-    const keepPartial = _looksLikeSubstantialAssistant(partialContent);
+    const keepPartial = _looksLikeSubstantialAssistant(partialContent, prev);
     source.get().updateMessage(assistantMessageId, {
       content: keepPartial ? `${partialContent}\n\n---\n${errorContent}` : errorContent,
       metadata: {
@@ -681,13 +678,13 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => {
   const msgs = source.get().messages;
   const last = msgs.length > 0 ? msgs[msgs.length - 1] : null;
   if (last?.type === 'assistant' && (last.metadata as any)?.status === 'pending') {
+  const hasOwnText = Boolean(last.content && String(last.content).trim());
+  const interruptedText = translate('chat.recovery.interrupted');
   source.get().updateMessage(last.id, {
-  content:
-  (last.content && String(last.content).trim())
-  ? last.content
-  : '对话已中断（服务端已重启或无进行中的任务）。请重新发送消息。',
+  content: hasOwnText ? last.content : interruptedText,
   metadata: {
   ...(last.metadata as any),
+  recovery_note_text: hasOwnText ? undefined : interruptedText,
   status: 'failed',
   errors: ['No active run on server (e.g. server restarted).'],
   },
@@ -800,11 +797,13 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => {
   }
   source.get().setActiveRunId(resumeKey, null);
   source.get().setSessionProcessing(resumeKey, false);
+  const failureText =
+  translate('chat.recovery.resumeFailed') + '\n\n' +
+  (error instanceof Error ? error.message : String(error));
   source.get().updateMessage(assistantMessageId, {
-  content:
-  '连接中断且自动恢复失败。请刷新页面查看是否已有结果，或重新发送消息。\n\n' +
-  (error instanceof Error ? error.message : String(error)),
+  content: failureText,
   metadata: {
+  recovery_note_text: failureText,
   status: 'failed',
   recovering: false,
   errors: [error instanceof Error ? error.message : String(error)],

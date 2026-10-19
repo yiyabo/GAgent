@@ -9,10 +9,12 @@ vi.mock('@api/chat', () => ({ chatApi: {
 } }));
 
 import { chatApi } from '@api/chat';
-import { resetAutoResumeGuardsForTest } from './recovery';
+import { isRecoveryNote, resetAutoResumeGuardsForTest } from './recovery';
 import { createSessionSlice } from '../createSessionSlice';
 import { createUISlice } from '../createUISlice';
-import { _isRecoveryNote, _looksLikeSubstantialAssistant, _recoverAfterStreamFailure, createMessageSlice } from './index';
+import { _looksLikeSubstantialAssistant, _recoverAfterStreamFailure, createMessageSlice } from './index';
+import { useLanguageStore } from '@/i18n/language';
+import { translate } from '@/i18n/useT';
 
 const session = (): ChatSession => ({
   id: 'local-A', session_id: 'server-A', title: 'A',
@@ -44,6 +46,7 @@ function buildStore() {
 const assistant = (store: any) => store.sessions[0].messages.find((message: any) => message.id === 'assistant-A');
 
 beforeEach(() => {
+  useLanguageStore.getState().setLanguage('zh-CN');
   resetAutoResumeGuardsForTest();
   vi.clearAllMocks();
   vi.mocked(chatApi.getHistory).mockResolvedValue({ data: { success: true, messages: [], has_more: false } } as any);
@@ -67,17 +70,29 @@ describe('a partial reply is kept only when it is real content', () => {
   it('drops short text, errors, and the interruption notes', () => {
     expect(_looksLikeSubstantialAssistant('ok')).toBe(false);
     expect(_looksLikeSubstantialAssistant('Request failed. Please check: the backend, the model key and the network, then retry.')).toBe(false);
-    expect(_looksLikeSubstantialAssistant(`对话已中断（服务端已重启或无进行中的任务）。请重新发送消息。${'。'.repeat(40)}`)).toBe(false);
-    expect(_looksLikeSubstantialAssistant(`连接中断，正在从服务端同步本轮已完成的结果…${'…'.repeat(40)}`)).toBe(false);
+  });
+
+  it('drops a status note the store wrote, in either language, but not real text that merely resembles one', () => {
+    for (const language of ['zh-CN', 'en'] as const) {
+      useLanguageStore.getState().setLanguage(language);
+      const note = `${translate('chat.recovery.interrupted')} ${translate('chat.recovery.failureTail')}`;
+      expect(_looksLikeSubstantialAssistant(note, { recovery_note_text: note })).toBe(false);
+      // Without the stored note the same words are ordinary text; real text replacing the note ends the match.
+      expect(_looksLikeSubstantialAssistant(note, {})).toBe(true);
+      expect(_looksLikeSubstantialAssistant(REAL_ANSWER, { recovery_note_text: note })).toBe(true);
+    }
   });
 });
 
 describe('the interruption note shown while a turn is recovering', () => {
-  it('is recognised as a note, and ordinary text is not', () => {
-    expect(_isRecoveryNote('连接中断，正在自动重连并继续接收结果…')).toBe(true);
-    expect(_isRecoveryNote('服务端已恢复，正在从断点自动续跑…')).toBe(true);
-    expect(_isRecoveryNote(REAL_ANSWER)).toBe(false);
-    expect(_isRecoveryNote('')).toBe(false);
+  it('is recognised as a note only when it equals the note stored beside it', () => {
+    const note = translate('chat.recovery.reconnecting');
+    expect(isRecoveryNote(note, { recovery_note_text: note })).toBe(true);
+    expect(isRecoveryNote(`  ${note}\n`, { recovery_note_text: note })).toBe(true);
+    expect(isRecoveryNote(note, {})).toBe(false);
+    expect(isRecoveryNote(note, null)).toBe(false);
+    expect(isRecoveryNote(REAL_ANSWER, { recovery_note_text: note })).toBe(false);
+    expect(isRecoveryNote('', { recovery_note_text: '' })).toBe(false);
   });
 
   it('is what a turn without any streamed text shows first, and is not kept as a partial reply', () => {
@@ -85,9 +100,10 @@ describe('the interruption note shown while a turn is recovering', () => {
     void recoverAfterStreamFailure(fixture, null, '');
     const shown = assistant(fixture.store).content as string;
     expect(shown.length).toBeGreaterThan(0);
-    expect(_isRecoveryNote(shown)).toBe(true);
-    expect(_looksLikeSubstantialAssistant(shown)).toBe(false);
-    expect(assistant(fixture.store).metadata).toMatchObject({ status: 'pending', recovering: true });
+    const metadata = assistant(fixture.store).metadata;
+    expect(isRecoveryNote(shown, metadata)).toBe(true);
+    expect(_looksLikeSubstantialAssistant(shown, metadata)).toBe(false);
+    expect(metadata).toMatchObject({ status: 'pending', recovering: true });
   });
 });
 
@@ -107,9 +123,8 @@ describe('automatic resume from a checkpoint', () => {
     expect(await recovering).toBe(true);
     expect(fixture.store.resumeChatRun).toHaveBeenCalledWith('run-A', 'server-A');
     const content = assistant(fixture.store).content as string;
+    expect(content).toBe(translate('chat.recovery.resumedNote'));
     expect(content).toContain('已从断点自动续跑');
-    expect(content).not.toContain('服务端已恢复');
-    expect(content.includes('\n\n')).toBe(false);
     expect(assistant(fixture.store).metadata).toMatchObject({ status: 'interrupted', recovering: false, auto_resumed_from: 'run-A' });
   });
 
@@ -121,6 +136,28 @@ describe('automatic resume from a checkpoint', () => {
     expect(await recovering).toBe(true);
     const content = assistant(fixture.store).content as string;
     expect(content.startsWith(`${REAL_ANSWER}\n\n`)).toBe(true);
-    expect(content).toContain('已从断点自动续跑');
+    expect(content.endsWith(translate('chat.recovery.resumedNote'))).toBe(true);
+  });
+
+  it('shows the notes in English when the interface is English, and still replaces them', async () => {
+    useLanguageStore.getState().setLanguage('en');
+    vi.useFakeTimers();
+    const fixture = buildStore();
+    const recovering = recoverAfterStreamFailure(fixture, 'run-A', '');
+    await vi.runAllTimersAsync();
+    expect(await recovering).toBe(true);
+    const content = assistant(fixture.store).content as string;
+    expect(content).toBe('(Connection lost. Resumed from the checkpoint automatically. The latest results are in the new turn below.)');
+    expect(content).not.toMatch(/[\u4e00-\u9fff]/);
+  });
+
+  it('does not treat real text that starts like a note as a note', async () => {
+    vi.useFakeTimers();
+    const fixture = buildStore();
+    const lookalike = '服务端返回的结果显示，宿主范围与受体结合蛋白之间存在明显的相关性，详见下表所列数据。';
+    const recovering = recoverAfterStreamFailure(fixture, 'run-A', lookalike);
+    await vi.runAllTimersAsync();
+    expect(await recovering).toBe(true);
+    expect((assistant(fixture.store).content as string).startsWith(`${lookalike}\n\n`)).toBe(true);
   });
 });

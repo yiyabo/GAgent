@@ -505,7 +505,17 @@
     "saveFailed": "Save failed",
     "resumeTask": "Continue this task",
     "resumeUnavailable": "Unable to continue right now. Please try again later.",
-    "chatsHandle": "Chats"
+    "chatsHandle": "Chats",
+    "recovery": {
+      "reconnecting": "Connection lost. Reconnecting and resuming the results…",
+      "syncing": "Connection lost. Syncing this turn's finished results from the server…",
+      "waiting": "Connection lost. Waiting for the server to recover, then resuming from the checkpoint automatically…",
+      "serverBack": "The server is back. Resuming from the checkpoint automatically…",
+      "resumedNote": "(Connection lost. Resumed from the checkpoint automatically. The latest results are in the new turn below.)",
+      "interrupted": "This conversation was interrupted (the server restarted or no task was running). Please send the message again.",
+      "resumeFailed": "The connection was lost and automatic recovery failed. Refresh the page to see whether a result is already there, or send the message again.",
+      "failureTail": "If the task is long, the server may still be running it or may have finished. Refresh the page to see the latest result, or try again later."
+    }
   },
   "artifacts": {
     "formatPng": "PNG 300 DPI",

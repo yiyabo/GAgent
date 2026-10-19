@@ -4,6 +4,7 @@ import { selectActiveChatRun } from './runResume';
 import { findCorrelatedAssistant, type TurnIdentity } from './turnCorrelation';
 import { hydratePersistedMessage } from './historyHydration';
 import type { StoreGet, StoreSet } from './types';
+import { translate } from '@/i18n/useT';
 
 export interface StreamRecoveryOptions extends TurnIdentity {
   apiSessionId: string;
@@ -35,14 +36,30 @@ export function resetAutoResumeGuardsForTest(): void {
   autoResumeCount = 0;
 }
 
+/**
+ * The interim text this module writes while a turn recovers. The note is stored in the message's
+ * metadata next to its content, so "is this a status note or a real partial reply" is an equality
+ * check that holds in any UI language and stops matching as soon as real text replaces the note.
+ */
+export const isRecoveryNote = (content: unknown, metadata?: Record<string, any> | null): boolean => {
+  const text = typeof content === 'string' ? content.trim() : '';
+  const note = metadata?.recovery_note_text;
+  return Boolean(text) && typeof note === 'string' && note.trim() === text;
+};
+
 export async function recoverAfterStreamFailure(options: StreamRecoveryOptions): Promise<boolean> {
   const { apiSessionId, localSessionId, assistantMessageId, processingKey, runId, clientMessageId, partialContent } = options;
   const source = createSessionAccess(options.get, options.set, localSessionId);
   const keepPending = (note: string) => {
     const previous = source.get().messages.find((message: any) => message.id === assistantMessageId)?.metadata ?? {};
+    const partial = isRecoveryNote(partialContent, previous) ? '' : partialContent?.trim() ?? '';
     source.get().updateMessage(assistantMessageId, {
-      content: partialContent?.trim() || note,
-      metadata: { ...previous, status: 'pending', recovering: true, errors: undefined, chat_run_id: runId ?? previous.chat_run_id },
+      content: partial || note,
+      metadata: {
+        ...previous, status: 'pending', recovering: true, errors: undefined,
+        chat_run_id: runId ?? previous.chat_run_id,
+        recovery_note_text: partial ? undefined : note,
+      },
     });
     options.get().setSessionProcessing(processingKey, true);
   };
@@ -54,7 +71,7 @@ export async function recoverAfterStreamFailure(options: StreamRecoveryOptions):
       const response = await chatApi.getActiveRun(apiSessionId);
       const run = selectActiveChatRun(response.data, runId);
       if (run) {
-        keepPending('连接中断，正在自动重连并继续接收结果…');
+        keepPending(translate('chat.recovery.reconnecting'));
         options.get().setActiveRunId(processingKey, runId);
         await options.resumeRun(runId);
         return true;
@@ -64,7 +81,7 @@ export async function recoverAfterStreamFailure(options: StreamRecoveryOptions):
     }
   }
 
-  keepPending('连接中断，正在从服务端同步本轮已完成的结果…');
+  keepPending(translate('chat.recovery.syncing'));
   const restoreFromHistory = async (): Promise<boolean> => {
     const response = await chatApi.getHistory(apiSessionId, { limit: 30 });
     const messages = Array.isArray(response.data?.messages) ? response.data.messages : [];
@@ -113,7 +130,7 @@ export async function recoverAfterStreamFailure(options: StreamRecoveryOptions):
     !autoResumedRunIds.has(runId) &&
     autoResumeCount < MAX_AUTO_RESUMES_PER_SESSION
   ) {
-    keepPending('连接中断，正在等待服务端恢复并自动从断点续跑…');
+    keepPending(translate('chat.recovery.waiting'));
     const deadline = Date.now() + AUTO_RESUME_WINDOW_MS;
     let delay = 2000;
     while (Date.now() < deadline) {
@@ -123,7 +140,7 @@ export async function recoverAfterStreamFailure(options: StreamRecoveryOptions):
         const active = await chatApi.getActiveRun(apiSessionId);
         const run = selectActiveChatRun(active.data, runId);
         if (run) {
-          keepPending('连接中断，正在自动重连并继续接收结果…');
+          keepPending(translate('chat.recovery.reconnecting'));
           options.get().setActiveRunId(processingKey, runId);
           await options.resumeRun(runId);
           return true;
@@ -133,7 +150,7 @@ export async function recoverAfterStreamFailure(options: StreamRecoveryOptions):
         if (!info.can_resume || info.automatic_resume_allowed === false) return false;
         autoResumedRunIds.add(runId);
         autoResumeCount += 1;
-        keepPending('服务端已恢复，正在从断点自动续跑…');
+        keepPending(translate('chat.recovery.serverBack'));
         const ok = await options.autoResumeFromCheckpoint(runId);
         if (ok) return true;
         autoResumedRunIds.delete(runId);
