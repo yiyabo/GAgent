@@ -682,13 +682,13 @@ const ChatMainArea: React.FC = () => {
               {/* Input box */}
               <div className="workspace-input-box" style={{
                 flex: 1,
-                background: '#FFFFFF',
+                background: 'var(--surface-card)',
                 borderRadius: 'var(--radius-xl)',
                 padding: '6px',
                 display: 'flex',
                 alignItems: 'flex-end',
                 border: '2px solid var(--border-color)',
-                boxShadow: '0 8px 32px -12px rgba(0, 0, 0, 0.03)',
+                boxShadow: 'var(--shadow-1)',
                 transition: 'var(--transition-normal)',
               }}>
                 <TextArea
@@ -724,7 +724,7 @@ const ChatMainArea: React.FC = () => {
                     borderRadius: 'var(--radius-md)',
                     minWidth: 80,
                     background: isProcessing && activeRunId
-                      ? 'var(--accent-color, #e8854a)'
+                      ? 'var(--accent-color)'
                       : 'var(--primary-color)',
                     border: 'none',
                   }}
