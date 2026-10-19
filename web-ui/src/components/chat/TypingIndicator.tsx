@@ -1,11 +1,12 @@
 import React from 'react';
 import { RobotOutlined } from '@ant-design/icons';
+import { useT } from '@/i18n/useT';
 import './TypingIndicator.css';
 
 interface TypingIndicatorProps {
     /**
      * Optional message to display alongside the animation.
-     * @default "Thinking..."
+     * @default the localized "Thinking..."
      */
     message?: string;
     /**
@@ -20,9 +21,11 @@ interface TypingIndicatorProps {
  * "thinking" animation while the AI is preparing a response.
  */
 export const TypingIndicator: React.FC<TypingIndicatorProps> = ({
-    message = 'Thinking...',
+    message,
     showAvatar = true,
 }) => {
+    const t = useT();
+    const text = message === undefined ? t('chat.thinking') : message;
     return (
         <div className="typing-indicator-wrapper">
             {showAvatar && (
@@ -36,7 +39,7 @@ export const TypingIndicator: React.FC<TypingIndicatorProps> = ({
                     <span className="typing-dot" />
                     <span className="typing-dot" />
                 </div>
-                {message && <span className="typing-indicator-text">{message}</span>}
+                {text && <span className="typing-indicator-text">{text}</span>}
             </div>
         </div>
     );

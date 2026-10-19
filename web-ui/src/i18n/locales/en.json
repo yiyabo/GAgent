@@ -1,6 +1,11 @@
 {
   "app": {
-    "name": "Phage-Agent"
+    "name": "Phage-Agent",
+    "errorToast": "Error: {{message}}",
+    "exceptionToast": "Exception: {{message}}",
+    "unknownError": "Unknown error",
+    "backendUnreachable": "Backend service connection failed. Please check: {{url}}",
+    "initFailed": "System initialization failed. Please check network and backend service."
   },
   "common": {
     "retry": "Retry",
@@ -10,7 +15,9 @@
     "refresh": "Refresh",
     "language": "Language",
     "all": "All",
-    "unknownError": "Network error"
+    "unknownError": "Network error",
+    "loading": "Loading...",
+    "expand": "Expand"
   },
   "header": {
     "homeAria": "Phage-Agent home",
@@ -87,7 +94,10 @@
     "empty": "No tasks",
     "emptyHint": "Create a ROOT task first.",
     "loadFailed": "Failed to load tasks: {{message}}",
-    "nodeTip": "ID: {{id}} | Status: {{status}} | Type: {{type}} | Depth: {{depth}}"
+    "nodeTip": "ID: {{id}} | Status: {{status}} | Type: {{type}} | Depth: {{depth}}",
+    "rootBadge": "ROOT",
+    "failedTip": "Task failed · Click to view details",
+    "blockedTip": "Task blocked · Click to view details"
   },
   "memory": {
     "title": "Memory",
@@ -452,5 +462,47 @@
       "explanation": "Evidence explanation"
     },
     "basisPending": "pending"
+  },
+  "auth": {
+    "signIn": "Sign In",
+    "signInSubtitle": "Use your email and password to continue.",
+    "email": "Email",
+    "emailRequired": "Email is required",
+    "emailInvalid": "Invalid email",
+    "password": "Password",
+    "passwordRequired": "Password is required",
+    "passwordPlaceholder": "Your password",
+    "loginFailed": "Login failed. Please check your credentials.",
+    "noAccount": "No account yet?",
+    "createOne": "Create one",
+    "createAccount": "Create Account",
+    "registerSubtitle": "Email + password login for internal testing.",
+    "confirmPassword": "Confirm Password",
+    "confirmRequired": "Please confirm password",
+    "repeatPassword": "Repeat password",
+    "register": "Register",
+    "registerFailed": "Registration failed.",
+    "haveAccount": "Already have an account?",
+    "signInLink": "Sign in"
+  },
+  "system": {
+    "title": "System Settings",
+    "underDevelopment": "System settings feature is under development..."
+  },
+  "chat": {
+    "thinking": "Thinking...",
+    "copy": "Copy",
+    "saveAsMemory": "Save as Memory",
+    "regenerate": "Regenerate",
+    "savedToMemory": "Saved to memory",
+    "saveFailed": "Save failed",
+    "resumeTask": "Continue this task",
+    "resumeUnavailable": "Unable to continue right now. Please try again later.",
+    "chatsHandle": "Chats"
+  },
+  "artifacts": {
+    "formatPng": "PNG 300 DPI",
+    "formatSvg": "SVG vector",
+    "formatPdf": "PDF print-ready"
   }
 }

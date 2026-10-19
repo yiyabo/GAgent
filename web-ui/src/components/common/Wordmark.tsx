@@ -1,6 +1,8 @@
 import React from 'react';
 
-export const PRODUCT_NAME = 'Phage-Agent';
+const BRAND_FIRST = 'Phage-';
+const BRAND_SECOND = 'Agent';
+export const PRODUCT_NAME = `${BRAND_FIRST}${BRAND_SECOND}`;
 
 /**
  * The product name in two colours: "Phage-" in the brand navy, "Agent" in the action blue.
@@ -9,8 +11,8 @@ export const PRODUCT_NAME = 'Phage-Agent';
  */
 const Wordmark: React.FC<{ className?: string; style?: React.CSSProperties }> = ({ className, style }) => (
   <span className={`wordmark${className ? ` ${className}` : ''}`} style={style}>
-    <span className="wordmark-phage">Phage-</span>
-    <span className="wordmark-agent">Agent</span>
+    <span className="wordmark-phage">{BRAND_FIRST}</span>
+    <span className="wordmark-agent">{BRAND_SECOND}</span>
   </span>
 );
 

@@ -1,6 +1,11 @@
 {
   "app": {
-    "name": "Phage-Agent"
+    "name": "Phage-Agent",
+    "errorToast": "出错：{{message}}",
+    "exceptionToast": "异常：{{message}}",
+    "unknownError": "未知错误",
+    "backendUnreachable": "后端服务连接失败，请检查：{{url}}",
+    "initFailed": "系统初始化失败，请检查网络和后端服务。"
   },
   "common": {
     "retry": "重试",
@@ -10,7 +15,9 @@
     "refresh": "刷新",
     "language": "语言",
     "all": "全部",
-    "unknownError": "网络错误"
+    "unknownError": "网络错误",
+    "loading": "加载中...",
+    "expand": "展开"
   },
   "header": {
     "homeAria": "Phage-Agent 首页",
@@ -87,7 +94,10 @@
     "empty": "暂无任务",
     "emptyHint": "请先创建一个 ROOT 任务。",
     "loadFailed": "加载任务失败：{{message}}",
-    "nodeTip": "ID：{{id}} | 状态：{{status}} | 类型：{{type}} | 深度：{{depth}}"
+    "nodeTip": "ID：{{id}} | 状态：{{status}} | 类型：{{type}} | 深度：{{depth}}",
+    "rootBadge": "根节点",
+    "failedTip": "任务失败 · 点击查看详情",
+    "blockedTip": "任务被阻塞 · 点击查看详情"
   },
   "memory": {
     "title": "记忆",
@@ -452,5 +462,47 @@
       "explanation": "证据说明"
     },
     "basisPending": "待定"
+  },
+  "auth": {
+    "signIn": "登录",
+    "signInSubtitle": "使用邮箱和密码继续。",
+    "email": "邮箱",
+    "emailRequired": "请输入邮箱",
+    "emailInvalid": "邮箱格式不正确",
+    "password": "密码",
+    "passwordRequired": "请输入密码",
+    "passwordPlaceholder": "你的密码",
+    "loginFailed": "登录失败，请检查邮箱和密码。",
+    "noAccount": "还没有账号？",
+    "createOne": "立即注册",
+    "createAccount": "创建账号",
+    "registerSubtitle": "邮箱加密码登录，仅用于内部测试。",
+    "confirmPassword": "确认密码",
+    "confirmRequired": "请确认密码",
+    "repeatPassword": "再次输入密码",
+    "register": "注册",
+    "registerFailed": "注册失败。",
+    "haveAccount": "已有账号？",
+    "signInLink": "去登录"
+  },
+  "system": {
+    "title": "系统设置",
+    "underDevelopment": "系统设置功能开发中……"
+  },
+  "chat": {
+    "thinking": "思考中...",
+    "copy": "复制",
+    "saveAsMemory": "保存为记忆",
+    "regenerate": "重新生成",
+    "savedToMemory": "已保存到记忆",
+    "saveFailed": "保存失败",
+    "resumeTask": "继续此任务",
+    "resumeUnavailable": "暂时无法继续，请稍后再试。",
+    "chatsHandle": "对话"
+  },
+  "artifacts": {
+    "formatPng": "PNG 300DPI",
+    "formatSvg": "SVG 矢量",
+    "formatPdf": "PDF 出版级"
   }
 }

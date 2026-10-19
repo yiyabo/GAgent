@@ -1,6 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Spin, Tooltip } from 'antd';
 import { PlanTaskNode } from '@/types';
+import { useT } from '@/i18n/useT';
+import { statusLabel } from '@/i18n/statusLabels';
 import './PlanTreeVisualization.css';
 
 /** Format milliseconds to a human-readable duration string */
@@ -65,6 +67,7 @@ const PlanTreeVisualization: React.FC<PlanTreeVisualizationProps> = ({
   onSelectTask,
   selectedTaskId,
 }) => {
+  const t = useT();
   const [collapsed, setCollapsed] = useState<Set<number>>(new Set());
   const [internalSelectedId, setInternalSelectedId] = useState<number | null>(null);
 
@@ -133,7 +136,7 @@ const PlanTreeVisualization: React.FC<PlanTreeVisualizationProps> = ({
   return (
   <div className="tree-loading">
   <Spin size="small" />
-  <span>Loading...</span>
+  <span>{t('common.loading')}</span>
   </div>
   );
   }
@@ -142,7 +145,7 @@ const PlanTreeVisualization: React.FC<PlanTreeVisualizationProps> = ({
   return (
   <div className="tree-empty">
   <div className="tree-empty-dot" />
-  <span>No tasks</span>
+  <span>{t('tree.empty')}</span>
   </div>
   );
   }
@@ -161,9 +164,9 @@ const PlanTreeVisualization: React.FC<PlanTreeVisualizationProps> = ({
   const displayName = cleanName.length > 36 ? cleanName.substring(0, 36) + '…' : cleanName;
   const duration = getTaskDuration(task);
   const statusTooltip = task.status === 'failed'
-  ? { title: 'Task failed · Click to view details', color: 'var(--status-error-fg)' }
+  ? { title: t('tree.failedTip'), color: 'var(--status-error-fg)' }
   : task.status === 'blocked'
-  ? { title: 'Task blocked · Click to view details', color: 'var(--status-blocked-fg)' }
+  ? { title: t('tree.blockedTip'), color: 'var(--status-blocked-fg)' }
   : undefined;
 
   const nodeInner = (
@@ -195,7 +198,7 @@ const PlanTreeVisualization: React.FC<PlanTreeVisualizationProps> = ({
   </div>
 
   {/* Status dot */}
-  <div className={`tree-status status-${task.status}`} title={task.status} />
+  <div className={`tree-status status-${task.status}`} title={statusLabel(t, task.status)} />
 
   {/* Name */}
   <span className="tree-name" title={cleanName}>
@@ -208,7 +211,7 @@ const PlanTreeVisualization: React.FC<PlanTreeVisualizationProps> = ({
   )}
 
   {/* ROOT badge */}
-  {isRoot && <span className="tree-badge">ROOT</span>}
+  {isRoot && <span className="tree-badge">{t('tree.rootBadge')}</span>}
   </div>
   );
 

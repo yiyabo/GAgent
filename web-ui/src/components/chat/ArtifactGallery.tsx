@@ -3,6 +3,7 @@ import { Typography, Tag, Space } from 'antd';
 import type { ArtifactGalleryItem } from '@/types';
 import { resolveArtifactGalleryItemSrc } from '@/utils/artifactGallery';
 import { SessionArtifactImage } from './SessionArtifactImage';
+import { useT } from '@/i18n/useT';
 
 const { Text } = Typography;
 
@@ -22,6 +23,7 @@ interface ConsolidatedFigure {
 }
 
 export const ArtifactGallery: React.FC<ArtifactGalleryProps> = ({ items, sessionId }) => {
+  const t = useT();
   // Hooks run on every render; the empty-list return waits until after them (rules of hooks).
   const safeItems = useMemo(() => (Array.isArray(items) ? items : []), [items]);
 
@@ -124,9 +126,9 @@ export const ArtifactGallery: React.FC<ArtifactGalleryProps> = ({ items, session
                   </Text>
                 </div>
                 <Space size={4}>
-                  <Tag color='blue' style={{ fontSize: 12, margin: 0, padding: '0 4px' }}>PNG 300DPI</Tag>
-                  <Tag color='green' style={{ fontSize: 12, margin: 0, padding: '0 4px' }}>SVG 矢量</Tag>
-                  <Tag color='purple' style={{ fontSize: 12, margin: 0, padding: '0 4px' }}>PDF 出版级</Tag>
+                  <Tag color='blue' style={{ fontSize: 12, margin: 0, padding: '0 4px' }}>{t('artifacts.formatPng')}</Tag>
+                  <Tag color='green' style={{ fontSize: 12, margin: 0, padding: '0 4px' }}>{t('artifacts.formatSvg')}</Tag>
+                  <Tag color='purple' style={{ fontSize: 12, margin: 0, padding: '0 4px' }}>{t('artifacts.formatPdf')}</Tag>
                 </Space>
               </div>
             </div>

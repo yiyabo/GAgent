@@ -9,6 +9,7 @@ import { useAuthStore } from '@store/auth';
 import { useSystemStore } from '@store/system';
 import { ENV } from '@/config/env';
 import { retryLazy } from '@/utils/retryLazy';
+import { translate } from '@/i18n/useT';
 
 const ChatLayout = retryLazy(() => import('@components/layout/ChatLayout'));
 const Dashboard = retryLazy(() => import('@pages/Dashboard'));
@@ -94,7 +95,7 @@ function App() {
   useEffect(() => {
     const handleError = (event: ErrorEvent) => {
       console.error('Unhandled error:', event.error || event.message);
-      message.error(`error: ${event.message || 'error'}`, 6);
+      message.error(translate('app.errorToast', { message: event.message || translate('app.unknownError') }), 6);
     };
     const handleRejection = (event: PromiseRejectionEvent) => {
       const reason = event.reason;
@@ -106,9 +107,9 @@ function App() {
         return;
       }
       
-      const message = (reason && (reason.message || reason.toString())) || 'reason';
+      const reasonText = (reason && (reason.message || reason.toString())) || translate('app.unknownError');
       console.error('Unhandled rejection:', reason);
-      message.error(`exception: ${message}`, 6);
+      message.error(translate('app.exceptionToast', { message: reasonText }), 6);
     };
     const handleUnauthorized = () => {
       clearAuth();
@@ -148,12 +149,12 @@ function App() {
         });
 
         if (!healthData.api_connected) {
-          message.error(`Backend service connection failed. Please check: ${ENV.API_BASE_URL}`, 10);
+          message.error(translate('app.backendUnreachable', { url: ENV.API_BASE_URL }), 10);
           setApiConnected(false);
         }
       } catch (error) {
         console.error('❌ App initialization failed:', error);
-        message.error('System initialization failed. Please check network and backend service.', 10);
+        message.error(translate('app.initFailed'), 10);
         setApiConnected(false);
         setSystemStatus({
           api_connected: false,
