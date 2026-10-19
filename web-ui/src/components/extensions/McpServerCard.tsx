@@ -9,6 +9,7 @@ import {
   VerificationBadge,
   shortCommit,
 } from './extensionMeta';
+import { useT } from '@/i18n/useT';
 
 const { Text, Paragraph } = Typography;
 
@@ -21,19 +22,20 @@ interface McpServerCardProps {
 }
 
 const McpServerCard: React.FC<McpServerCardProps> = ({ server, blockReason, pending, onToggle }) => {
+  const t = useT();
   const { verification } = server;
   const passedCount = verification.checks.filter((check) => check.passed).length;
   // An "error" server is configured on but failing; keep the switch on so it can be turned off.
   const checked = server.state === 'enabled' || server.state === 'error';
   const stateTag =
     server.state === 'enabled' ? (
-      <Tag color={server.connected ? 'green' : 'default'}>{server.connected ? '已连接' : '已启用'}</Tag>
+      <Tag color={server.connected ? 'green' : 'default'}>{server.connected ? t('extensions.connected') : t('extensions.enabled')}</Tag>
     ) : server.state === 'error' ? (
-      <Tag color="red">出错</Tag>
+      <Tag color="red">{t('extensions.error')}</Tag>
     ) : server.state === 'unavailable' ? (
-      <Tag>不可用</Tag>
+      <Tag>{t('extensions.unavailable')}</Tag>
     ) : (
-      <Tag>未启用</Tag>
+      <Tag>{t('extensions.off')}</Tag>
     );
 
   return (
@@ -54,9 +56,9 @@ const McpServerCard: React.FC<McpServerCardProps> = ({ server, blockReason, pend
               checked={checked}
               loading={pending}
               disabled={pending || blockReason !== null}
-              aria-label={`${checked ? '停用' : '启用'} MCP 服务器 ${server.title}`}
-              checkedChildren="开"
-              unCheckedChildren="关"
+              aria-label={t(checked ? 'extensions.switchDisableAria' : 'extensions.switchEnableAria', { title: server.title })}
+              checkedChildren={t('extensions.switchOn')}
+              unCheckedChildren={t('extensions.switchOff')}
               onChange={(next) => onToggle(server, next)}
             />
           </span>
@@ -76,19 +78,19 @@ const McpServerCard: React.FC<McpServerCardProps> = ({ server, blockReason, pend
         </Space>
 
         <Text type="secondary" style={{ fontSize: 12 }}>
-          来源：<ExternalLink href={server.source.repo}>{server.source.repo}</ExternalLink>
+          {t('extensions.sourceLabel')}<ExternalLink href={server.source.repo}>{server.source.repo}</ExternalLink>
           {server.source.commit ? <> @ <Text code>{shortCommit(server.source.commit)}</Text></> : null}
-          {server.source.package ? <> · 包：<Text code>{server.source.package}</Text></> : null}
-          {server.homepage ? <> · <ExternalLink href={server.homepage}>主页</ExternalLink></> : null}
+          {server.source.package ? <> · {t('extensions.packageLabel')}<Text code>{server.source.package}</Text></> : null}
+          {server.homepage ? <> · <ExternalLink href={server.homepage}>{t('extensions.homepage')}</ExternalLink></> : null}
           {verification.reviewer || verification.reviewed_at ? (
-            <> · 审核：{[verification.reviewer, verification.reviewed_at].filter(Boolean).join(' ')}</>
+            <> · {t('extensions.reviewLabel')}{[verification.reviewer, verification.reviewed_at].filter(Boolean).join(' ')}</>
           ) : null}
         </Text>
 
         <Space size={[6, 6]} wrap align="center">
-          <Text type="secondary">网络出口：</Text>
+          <Text type="secondary">{t('extensions.egressLabel')}</Text>
           {server.egress.length === 0 ? (
-            <Tag color="green">无网络</Tag>
+            <Tag color="green">{t('extensions.noNetwork')}</Tag>
           ) : (
             server.egress.map((host) => (
               <Tag key={host}>{host}</Tag>
@@ -97,30 +99,30 @@ const McpServerCard: React.FC<McpServerCardProps> = ({ server, blockReason, pend
         </Space>
 
         <Space size={[6, 6]} wrap align="center">
-          <Text type="secondary">工具：</Text>
-          {server.tools.length === 0 ? <Text type="secondary">无</Text> : null}
+          <Text type="secondary">{t('extensions.toolsLabel')}</Text>
+          {server.tools.length === 0 ? <Text type="secondary">{t('extensions.none')}</Text> : null}
           {server.tools.map((tool) => (
             <Tag
               key={tool.name}
               color={tool.read_only ? 'blue' : 'volcano'}
-              aria-label={`${tool.name}：${tool.read_only ? '只读' : '有副作用'}`}
+              aria-label={`${tool.name}：${tool.read_only ? t('extensions.readOnly') : t('extensions.sideEffects')}`}
             >
-              {tool.name} · {tool.read_only ? '只读' : '有副作用'}
+              {tool.name} · {tool.read_only ? t('extensions.readOnly') : t('extensions.sideEffects')}
             </Tag>
           ))}
         </Space>
 
         {server.state === 'unavailable' && server.unavailable_reason ? (
-          <Text type="secondary">不可用：{server.unavailable_reason}</Text>
+          <Text type="secondary">{t('extensions.unavailableLine', { reason: server.unavailable_reason })}</Text>
         ) : null}
 
         {server.error ? (
-          <Alert type="error" showIcon message="服务器报告错误" description={server.error} />
+          <Alert type="error" showIcon message={t('extensions.serverError')} description={server.error} />
         ) : null}
 
         {server.live_tools.length > 0 ? (
           <Text type="secondary" style={{ fontSize: 12 }}>
-            当前已挂载的工具：{server.live_tools.join(', ')}
+            {t('extensions.liveTools', { list: server.live_tools.join(', ') })}
           </Text>
         ) : null}
 
@@ -131,15 +133,15 @@ const McpServerCard: React.FC<McpServerCardProps> = ({ server, blockReason, pend
             items={[
               {
                 key: 'checks',
-                label: `验证检查（${passedCount}/${verification.checks.length} 通过）`,
+                label: t('extensions.checksLabel', { passed: passedCount, total: verification.checks.length }),
                 children: (
                   <ul style={{ margin: 0, paddingLeft: 0, listStyle: 'none' }}>
                     {verification.checks.map((check) => (
                       <li key={check.name} style={{ marginBottom: 4 }}>
                         {check.passed ? (
-                          <CheckCircleOutlined style={{ color: 'var(--status-success-fg)' }} role="img" aria-label="通过" />
+                          <CheckCircleOutlined style={{ color: 'var(--status-success-fg)' }} role="img" aria-label={t('extensions.checkPassed')} />
                         ) : (
-                          <CloseCircleOutlined style={{ color: 'var(--status-error-fg)' }} role="img" aria-label="未通过" />
+                          <CloseCircleOutlined style={{ color: 'var(--status-error-fg)' }} role="img" aria-label={t('extensions.checkFailed')} />
                         )}{' '}
                         <Text strong>{check.name}</Text>
                         {check.detail ? <Text type="secondary"> — {check.detail}</Text> : null}

@@ -394,32 +394,32 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => {
 
   trialLearnedSkill: async (skillId: string, sessionId: string, query: string, expectedVersion?: number) => {
     const captured = get().currentSession;
-    if ((captured?.session_id ?? captured?.id) !== sessionId) throw new Error('请切回原会话后试用。');
-    if (!query.trim()) throw new Error('请输入新任务或样例。');
+    if ((captured?.session_id ?? captured?.id) !== sessionId) throw new Error(translate('sessionErrors.switchBackTry'));
+    if (!query.trim()) throw new Error(translate('sessionErrors.needQuery'));
     const key = resolveChatSessionProcessingKey(captured);
-    if (get().processingSessionIds.has(key)) throw new Error('此会话已有任务正在运行。');
+    if (get().processingSessionIds.has(key)) throw new Error(translate('sessionErrors.busy'));
     const skill = await skillLearningApi.detail(skillId, sessionId);
-    if (expectedVersion !== undefined && skill.current_version !== expectedVersion) throw new Error('技能版本已更新，请重新查看后试用。');
-    if (['disabled', 'suspended'].includes(skill.state)) throw new Error('此技能已停用或需要修订。');
+    if (expectedVersion !== undefined && skill.current_version !== expectedVersion) throw new Error(translate('sessionErrors.skillChanged'));
+    if (['disabled', 'suspended'].includes(skill.state)) throw new Error(translate('sessionErrors.skillDisabled'));
     const current = get().currentSession;
-    if ((current?.session_id ?? current?.id) !== sessionId) throw new Error('会话已切换，请回原会话试用。');
-    if (get().processingSessionIds.has(key)) throw new Error('此会话已有任务正在运行。');
+    if ((current?.session_id ?? current?.id) !== sessionId) throw new Error(translate('sessionErrors.switchedTry'));
+    if (get().processingSessionIds.has(key)) throw new Error(translate('sessionErrors.busy'));
     await get().sendMessage(query, { learned_skill_ids: [skillId], learned_skill_versions: { [skillId]: skill.current_version }, skill_trial: true });
   },
 
   resumeChatRun: async (runId: string, sessionId: string) => {
     const captured = get().currentSession;
     const apiSessionId = captured?.session_id ?? captured?.id;
-    if (apiSessionId !== sessionId) throw new Error('请切回原会话后继续此任务。');
+    if (apiSessionId !== sessionId) throw new Error(translate('sessionErrors.switchBackContinue'));
     const key = resolveChatSessionProcessingKey(captured) ?? '__no_session__';
-    if (get().processingSessionIds.has(key)) throw new Error('此会话已有任务正在运行。');
+    if (get().processingSessionIds.has(key)) throw new Error(translate('sessionErrors.busy'));
     const info = await chatApi.getResumeInfo(runId, sessionId);
     if (!info.can_resume || !info.message) throw new Error(info.reason);
-    if (info.run_id !== runId || info.session_id !== sessionId) throw new Error('任务与当前会话不匹配。');
+    if (info.run_id !== runId || info.session_id !== sessionId) throw new Error(translate('sessionErrors.runMismatch'));
     const current = get().currentSession;
-    if ((current?.session_id ?? current?.id) !== apiSessionId) throw new Error('会话已切换，请回原会话继续。');
+    if ((current?.session_id ?? current?.id) !== apiSessionId) throw new Error(translate('sessionErrors.switchedContinue'));
     // sendMessage establishes the processing fence synchronously before its first await.
-    if (get().processingSessionIds.has(key)) throw new Error('此会话已有任务正在运行。');
+    if (get().processingSessionIds.has(key)) throw new Error(translate('sessionErrors.busy'));
     await get().sendMessage(info.message, { resume_from_run_id: runId });
   },
 

@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { extensionsApi, type McpListResponse, type McpServer } from '@api/extensions';
 import McpServerCard from './McpServerCard';
 import { IsolationBadge, mcpSwitchBlockReason } from './extensionMeta';
+import { useT } from '@/i18n/useT';
 
 const { Text } = Typography;
 
@@ -12,6 +13,7 @@ export const MCP_QUERY_KEY = ['extensions', 'mcp'] as const;
 const ALL = '__all__';
 
 const McpTab: React.FC = () => {
+  const t = useT();
   const { message } = AntdApp.useApp();
   const queryClient = useQueryClient();
   const [search, setSearch] = useState('');
@@ -40,9 +42,9 @@ const McpTab: React.FC = () => {
           ? { ...current, servers: current.servers.map((item) => (item.id === updated.id ? updated : item)) }
           : current,
       );
-      message.success(`${server.title} 已${enable ? '启用' : '停用'}`);
+      message.success(t(enable ? 'extensions.toggledOn' : 'extensions.toggledOff', { name: server.title }));
     } catch (error) {
-      message.error(error instanceof Error && error.message ? error.message : '操作失败');
+      message.error(error instanceof Error && error.message ? error.message : t('extensions.actionFailed'));
     } finally {
       setPendingIds((prev) => {
         const next = { ...prev };
@@ -72,19 +74,19 @@ const McpTab: React.FC = () => {
   if (query.isLoading) {
     return (
       <div style={{ textAlign: 'center', padding: 48 }}>
-        <Spin tip="加载中…"><div style={{ padding: 24 }} /></Spin>
+        <Spin tip={t('extensions.loading')}><div style={{ padding: 24 }} /></Spin>
       </div>
     );
   }
 
   if (query.isError || !data) {
-    const reason = query.error instanceof Error ? query.error.message : '未知错误';
+    const reason = query.error instanceof Error ? query.error.message : t('extensions.unknownError');
     return (
       <Result
         status="error"
-        title="无法加载 MCP 服务器列表"
+        title={t('extensions.mcpLoadFailed')}
         subTitle={reason}
-        extra={<Button type="primary" onClick={() => void query.refetch()}>重试</Button>}
+        extra={<Button type="primary" onClick={() => void query.refetch()}>{t('common.retry')}</Button>}
       />
     );
   }
@@ -95,34 +97,34 @@ const McpTab: React.FC = () => {
         <Alert
           type="warning"
           showIcon
-          message="服务端未配置 MCP 挂载文件"
-          description="目前只能查看目录，无法启用或停用任何 MCP 服务器。请联系管理员配置挂载文件。"
+          message={t('extensions.notConfiguredTitle')}
+          description={t('extensions.notConfiguredDesc')}
         />
       ) : null}
 
       <Space wrap>
         <Input.Search
           allowClear
-          placeholder="搜索名称、描述或工具"
-          aria-label="搜索 MCP 服务器"
+          placeholder={t('extensions.mcpSearchPlaceholder')}
+          aria-label={t('extensions.mcpSearchAria')}
           style={{ width: 280 }}
           value={search}
           onChange={(event) => setSearch(event.target.value)}
         />
         <Select
-          aria-label="按类别筛选"
+          aria-label={t('extensions.categoryAria')}
           style={{ width: 160 }}
           value={category}
           onChange={setCategory}
-          options={[{ value: ALL, label: '全部类别' }, ...categories.map((item) => ({ value: item, label: item }))]}
+          options={[{ value: ALL, label: t('extensions.allCategories') }, ...categories.map((item) => ({ value: item, label: item }))]}
         />
-        <Text type="secondary">共 {visible.length} / {data.servers.length} 个</Text>
+        <Text type="secondary">{t('extensions.count', { visible: visible.length, total: data.servers.length })}</Text>
       </Space>
 
       {data.servers.length === 0 ? (
-        <Empty description="暂无可用的 MCP 服务器" />
+        <Empty description={t('extensions.mcpEmpty')} />
       ) : visible.length === 0 ? (
-        <Empty description="没有符合筛选条件的 MCP 服务器" />
+        <Empty description={t('extensions.mcpNoMatch')} />
       ) : (
         <Space direction="vertical" size={12} style={{ width: '100%' }}>
           {visible.map((server) => (
@@ -143,7 +145,7 @@ const McpTab: React.FC = () => {
       )}
 
       {data.custom.length > 0 ? (
-        <Card size="small" title="自定义条目（只读）" data-testid="mcp-custom">
+        <Card size="small" title={t('extensions.customTitle')} data-testid="mcp-custom">
           <Space direction="vertical" size={8} style={{ width: '100%' }}>
             {data.custom.map((entry) => (
               <div key={entry.name}>
@@ -151,7 +153,7 @@ const McpTab: React.FC = () => {
                   <Text strong>{entry.name}</Text>
                   <Tag style={{ marginInlineEnd: 0 }}>{entry.transport}</Tag>
                   <IsolationBadge isolation={entry.isolation} />
-                  <Tag color={entry.connected ? 'green' : 'default'}>{entry.connected ? '已连接' : '未连接'}</Tag>
+                  <Tag color={entry.connected ? 'green' : 'default'}>{entry.connected ? t('extensions.connected') : t('extensions.notConnected')}</Tag>
                   {entry.tools.length > 0 ? <Text type="secondary">{entry.tools.join(', ')}</Text> : null}
                 </Space>
                 {entry.error ? <div><Text type="danger">{entry.error}</Text></div> : null}

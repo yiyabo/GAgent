@@ -1,5 +1,7 @@
 import { ChatSliceCreator } from './types';
 import { ChatSession } from '@/types';
+import { translate } from '@/i18n/useT';
+import { dateLocale } from '@/i18n/format';
 import { SessionStorage } from '@/utils/sessionStorage';
 import { chatApi } from '@api/chat';
 import { ENV } from '@/config/env';
@@ -192,7 +194,7 @@ export const createSessionSlice: ChatSliceCreator = (set, get) => ({
   autoTitleHistory.delete(sessionId);
   const session: ChatSession = {
   id: sessionId,
-  title: title || `New Session ${new Date().toLocaleString()}`,
+  title: title || translate('session.newTitle', { time: new Date().toLocaleString(dateLocale()) }),
   messages: [],
   created_at: new Date(),
   updated_at: new Date(),
@@ -237,7 +239,7 @@ export const createSessionSlice: ChatSliceCreator = (set, get) => ({
   autoTitleHistory.delete(sessionId);
   session = {
   id: sessionId,
-  title: title || `New Session ${new Date().toLocaleString()}`,
+  title: title || translate('session.newTitle', { time: new Date().toLocaleString(dateLocale()) }),
   messages: [],
   created_at: new Date(),
   updated_at: new Date(),

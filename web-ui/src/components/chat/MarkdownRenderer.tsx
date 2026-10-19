@@ -15,6 +15,7 @@ import {
   type GeneratedDownloadFile,
 } from '@/utils/generatedFileDownloads';
 import { SessionArtifactImage } from './SessionArtifactImage';
+import { useT } from '@/i18n/useT';
 
 interface MarkdownRendererProps {
     content: string;
@@ -110,6 +111,7 @@ const preprocessLaTeX = (content: string): string => {
 };
 
 export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, className, sessionId, sourceType }) => {
+    const t = useT();
     const processedContent = React.useMemo(() => preprocessLaTeX(content), [content]);
 
     return (
@@ -172,7 +174,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, cla
                                         onClick={handlePdfOrFileClick}
                                         download={isPdf ? undefined : file.name}
                                         style={{ color: 'var(--color-action)', fontWeight: 500, cursor: 'pointer' }}
-                                        title={isPdf ? `点击在侧边栏预览 ${file.name}` : file.path}
+                                        title={isPdf ? t('chat.previewFile', { name: file.name }) : file.path}
                                     >
                                         {children}
                                     </a>
@@ -268,7 +270,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, cla
                                         cursor: 'pointer',
                                         fontWeight: 500,
                                     }}
-                                    title={`点击在侧边栏预览 PDF: ${textStr}`}
+                                    title={t('chat.previewPdf', { name: textStr })}
                                 >
                                     📄 {textStr}
                                 </span>

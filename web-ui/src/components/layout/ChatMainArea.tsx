@@ -379,15 +379,15 @@ const ChatMainArea: React.FC = () => {
           await loadChatHistory(selected.session_id ?? selected.id);
           return;
         }
-        const session = startNewSession('AI Task Orchestration Assistant');
+        const session = startNewSession(t('session.assistantTitle'));
         await loadChatHistory(session.session_id ?? session.id);
       } catch (err) {
         console.warn('[ChatMainArea] Session initialization failed; creating a new session:', err);
-        const session = startNewSession('AI Task Orchestration Assistant');
+        const session = startNewSession(t('session.assistantTitle'));
         await loadChatHistory(session.session_id ?? session.id);
       }
     })();
-  }, [currentSession, loadSessions, loadChatHistory, startNewSession]);
+  }, [currentSession, loadSessions, loadChatHistory, startNewSession, t]);
 
   // ---- Upload helper ----
   const doUploadFile = useCallback(async (file: File) => {

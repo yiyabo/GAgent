@@ -10,6 +10,8 @@ import {
 import { Navigate, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@store/auth';
 import Wordmark from '@components/common/Wordmark';
+import { useT } from '@/i18n/useT';
+import type { TranslationKey } from '@/i18n/keys';
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -38,6 +40,7 @@ const FullPageLoading = () => (
 );
 
 const Landing: React.FC = () => {
+  const t = useT();
   const navigate = useNavigate();
   const { initialized, authenticated } = useAuthStore();
 
@@ -49,30 +52,26 @@ const Landing: React.FC = () => {
     return <Navigate to="/chat" replace />;
   }
 
-  const features = [
+  const features: Array<{ icon: React.ReactNode; title: TranslationKey; description: TranslationKey }> = [
     {
       icon: <MessageOutlined style={{ fontSize: 28, color: 'var(--primary-color)' }} />,
-      title: '自然语言交互',
-      description:
-        '用自然语言描述分析需求，系统将自动拆解为可执行计划，无需编写复杂命令。',
+      title: 'landing.f1Title',
+      description: 'landing.f1Body',
     },
     {
       icon: <ProjectOutlined style={{ fontSize: 28, color: 'var(--primary-color)' }} />,
-      title: '智能任务编排',
-      description:
-        '基于 DAG 的任务调度引擎，自动管理依赖关系、并行执行与结果汇聚。',
+      title: 'landing.f2Title',
+      description: 'landing.f2Body',
     },
     {
       icon: <ExperimentOutlined style={{ fontSize: 28, color: 'var(--primary-color)' }} />,
-      title: '噬菌体基因组分析',
-      description:
-        '集成 PhageScope 等专业工具，支持注释、分类、系统发育与功能分析。',
+      title: 'landing.f3Title',
+      description: 'landing.f3Body',
     },
     {
       icon: <SafetyOutlined style={{ fontSize: 28, color: 'var(--primary-color)' }} />,
-      title: '安全可控',
-      description:
-        '严格的权限隔离与审计追踪，确保数据安全与实验结果的可追溯性。',
+      title: 'landing.f4Title',
+      description: 'landing.f4Body',
     },
   ];
 
@@ -98,10 +97,10 @@ const Landing: React.FC = () => {
         </div>
         <Space size={12}>
           <Button type="text" onClick={() => navigate('/login')}>
-            登录
+            {t('landing.signIn')}
           </Button>
           <Button type="primary" onClick={() => navigate('/register')}>
-            注册
+            {t('landing.signUp')}
           </Button>
         </Space>
       </Layout.Header>
@@ -134,9 +133,9 @@ const Landing: React.FC = () => {
               lineHeight: 1.6,
             }}
           >
-            AI 驱动的噬菌体基因组分析与任务编排平台
+            {t('landing.heroLine1')}
             <br />
-            让自然语言请求自动转化为计划、工具调用与流式对话响应
+            {t('landing.heroLine2')}
           </Paragraph>
           <Space size={16} style={{ marginTop: 16 }}>
             <Button
@@ -150,7 +149,7 @@ const Landing: React.FC = () => {
                 borderRadius: 'var(--radius-md)',
               }}
             >
-              开始使用
+              {t('landing.getStarted')}
             </Button>
             <Button
               size="large"
@@ -162,7 +161,7 @@ const Landing: React.FC = () => {
                 borderRadius: 'var(--radius-md)',
               }}
             >
-              免费注册
+              {t('landing.signUpFree')}
             </Button>
           </Space>
         </Space>
@@ -178,7 +177,7 @@ const Landing: React.FC = () => {
             color: 'var(--text-primary)',
           }}
         >
-          核心能力
+          {t('landing.coreTitle')}
         </Title>
         <Row gutter={[24, 24]}>
           {features.map((f) => (
@@ -206,10 +205,10 @@ const Landing: React.FC = () => {
                 <Space direction="vertical" size={12} style={{ width: '100%' }}>
                   <div>{f.icon}</div>
                   <Text strong style={{ fontSize: 16, color: 'var(--text-primary)' }}>
-                    {f.title}
+                    {t(f.title)}
                   </Text>
                   <Text type="secondary" style={{ lineHeight: 1.7 }}>
-                    {f.description}
+                    {t(f.description)}
                   </Text>
                 </Space>
               </Card>
@@ -228,10 +227,10 @@ const Landing: React.FC = () => {
       >
         <Space direction="vertical" size={24} style={{ maxWidth: 560, margin: '0 auto' }}>
           <Title level={3} style={{ margin: 0, color: 'var(--text-primary)' }}>
-            准备好开始了吗？
+            {t('landing.ctaTitle')}
           </Title>
           <Paragraph style={{ margin: 0, color: 'var(--text-secondary)', fontSize: 16 }}>
-            立即注册，体验 AI 驱动的噬菌体基因组分析与任务编排。
+            {t('landing.ctaBody')}
           </Paragraph>
           <Space size={16}>
             <Button
@@ -245,7 +244,7 @@ const Landing: React.FC = () => {
                 borderRadius: 'var(--radius-md)',
               }}
             >
-              开始使用
+              {t('landing.getStarted')}
             </Button>
             <Button
               size="large"
@@ -257,7 +256,7 @@ const Landing: React.FC = () => {
                 borderRadius: 'var(--radius-md)',
               }}
             >
-              免费注册
+              {t('landing.signUpFree')}
             </Button>
           </Space>
         </Space>
@@ -272,7 +271,7 @@ const Landing: React.FC = () => {
         }}
       >
         <Text type="secondary" style={{ fontSize: 13 }}>
-          © {new Date().getFullYear()} Phage-Agent. All rights reserved.
+          {t('landing.copyright', { year: new Date().getFullYear() })}
         </Text>
       </div>
     </div>

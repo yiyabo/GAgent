@@ -12,6 +12,8 @@ import type {
   SkillFindingSeverity,
   SkillScanner,
 } from '@api/extensions';
+import { translate, useT } from '@/i18n/useT';
+import type { TranslationKey } from '@/i18n/keys';
 
 /** Reason why the enable/disable switch is inactive, or null when it is usable. */
 export function mcpSwitchBlockReason(args: {
@@ -20,84 +22,94 @@ export function mcpSwitchBlockReason(args: {
   state: McpState;
   unavailableReason?: string | null;
 }): string | null {
-  if (!args.canManage) return '仅管理员可以启用或停用';
-  if (!args.configured) return '服务端未配置 MCP 挂载文件，暂时无法启用或停用';
+  if (!args.canManage) return translate('extensions.adminOnly');
+  if (!args.configured) return translate('extensions.mcpNotConfigured');
   if (args.state === 'unavailable') {
-    return args.unavailableReason || '当前环境无法启用该服务器';
+    return args.unavailableReason || translate('extensions.mcpCannotEnable');
   }
   return null;
 }
 
 export function skillSwitchBlockReason(canManage: boolean): string | null {
-  return canManage ? null : '仅管理员可以启用或停用';
+  return canManage ? null : translate('extensions.adminOnly');
 }
 
-const ISOLATION_META: Record<McpIsolation, { color: string; label: string }> = {
-  container: { color: 'green', label: '容器隔离' },
-  host: { color: 'orange', label: '本机进程 — 未隔离' },
-  remote: { color: 'blue', label: '远程服务' },
+const ISOLATION_META: Record<McpIsolation, { color: string; label: TranslationKey }> = {
+  container: { color: 'green', label: 'extensions.isolationContainer' },
+  host: { color: 'orange', label: 'extensions.isolationHost' },
+  remote: { color: 'blue', label: 'extensions.isolationRemote' },
 };
 
 export const IsolationBadge: React.FC<{ isolation: McpIsolation | string }> = ({ isolation }) => {
-  const meta = ISOLATION_META[isolation as McpIsolation] ?? { color: 'default', label: String(isolation) };
+  const t = useT();
+  const known = ISOLATION_META[isolation as McpIsolation];
+  const color = known?.color ?? 'default';
+  const label = known ? t(known.label) : String(isolation);
   return (
-    <Tag color={meta.color} role="note" aria-label={`隔离方式：${meta.label}`} style={{ marginInlineEnd: 0 }}>
-      {meta.label}
+    <Tag color={color} role="note" aria-label={t('extensions.isolationAria', { label })} style={{ marginInlineEnd: 0 }}>
+      {label}
     </Tag>
   );
 };
 
 export const VerificationBadge: React.FC<{ status: string }> = ({ status }) => {
+  const t = useT();
   const verified = status === 'verified';
   return (
     <Tag
       color={verified ? 'green' : 'default'}
       icon={verified ? <CheckCircleOutlined /> : <ExclamationCircleOutlined />}
       role="note"
-      aria-label={verified ? '验证状态：已验证' : '验证状态：未验证'}
+      aria-label={verified ? t('extensions.verifiedAria') : t('extensions.unverifiedAria')}
       style={{ marginInlineEnd: 0 }}
     >
-      {verified ? '已验证' : '未验证'}
+      {verified ? t('extensions.verified') : t('extensions.unverified')}
     </Tag>
   );
 };
 
 /** Honest marker: a missing human sign-off must never be hidden behind "verified". */
-export const SignoffBadge: React.FC<{ humanSignoff: boolean }> = ({ humanSignoff }) => (
-  <Tag
-    color={humanSignoff ? 'cyan' : 'gold'}
-    role="note"
-    aria-label={humanSignoff ? '人工确认：已完成' : '人工确认：尚未完成'}
-    style={{ marginInlineEnd: 0 }}
-  >
-    {humanSignoff ? '人工已确认' : '待人工确认'}
-  </Tag>
-);
+export const SignoffBadge: React.FC<{ humanSignoff: boolean }> = ({ humanSignoff }) => {
+  const t = useT();
+  return (
+    <Tag
+      color={humanSignoff ? 'cyan' : 'gold'}
+      role="note"
+      aria-label={humanSignoff ? t('extensions.signedOffAria') : t('extensions.signoffPendingAria')}
+      style={{ marginInlineEnd: 0 }}
+    >
+      {humanSignoff ? t('extensions.signedOff') : t('extensions.signoffPending')}
+    </Tag>
+  );
+};
 
-const SCANNER_META: Record<SkillScanner, { color: string; label: string }> = {
-  passed: { color: 'green', label: '扫描通过' },
-  warnings: { color: 'orange', label: '有警告' },
-  blocked: { color: 'red', label: '已拦截' },
-  'n/a': { color: 'default', label: '未扫描' },
+const SCANNER_META: Record<SkillScanner, { color: string; label: TranslationKey }> = {
+  passed: { color: 'green', label: 'extensions.scanPassed' },
+  warnings: { color: 'orange', label: 'extensions.scanWarnings' },
+  blocked: { color: 'red', label: 'extensions.scanBlocked' },
+  'n/a': { color: 'default', label: 'extensions.scanNone' },
 };
 
 export const ScannerBadge: React.FC<{ scanner: SkillScanner | string }> = ({ scanner }) => {
-  const meta = SCANNER_META[scanner as SkillScanner] ?? { color: 'default', label: String(scanner) };
+  const t = useT();
+  const known = SCANNER_META[scanner as SkillScanner];
+  const label = known ? t(known.label) : String(scanner);
   return (
-    <Tag color={meta.color} role="note" aria-label={`扫描结果：${meta.label}`} style={{ marginInlineEnd: 0 }}>
-      {meta.label}
+    <Tag color={known?.color ?? 'default'} role="note" aria-label={t('extensions.scanAria', { label })} style={{ marginInlineEnd: 0 }}>
+      {label}
     </Tag>
   );
 };
 
 export const SeverityIcon: React.FC<{ severity: SkillFindingSeverity | string }> = ({ severity }) => {
+  const t = useT();
   if (severity === 'block') {
-    return <CloseCircleOutlined style={{ color: 'var(--status-error-fg)' }} aria-label="严重程度：拦截" role="img" />;
+    return <CloseCircleOutlined style={{ color: 'var(--status-error-fg)' }} aria-label={t('extensions.severityBlock')} role="img" />;
   }
   if (severity === 'warn') {
-    return <ExclamationCircleOutlined style={{ color: 'var(--status-warning-fg)' }} aria-label="严重程度：警告" role="img" />;
+    return <ExclamationCircleOutlined style={{ color: 'var(--status-warning-fg)' }} aria-label={t('extensions.severityWarn')} role="img" />;
   }
-  return <InfoCircleOutlined style={{ color: 'var(--color-action)' }} aria-label="严重程度：提示" role="img" />;
+  return <InfoCircleOutlined style={{ color: 'var(--color-action)' }} aria-label={t('extensions.severityInfo')} role="img" />;
 };
 
 /** Only http(s) links are rendered as anchors; anything else stays plain text. */
