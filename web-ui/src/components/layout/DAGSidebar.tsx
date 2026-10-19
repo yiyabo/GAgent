@@ -376,7 +376,7 @@ export const LegacyDAGSidebar: React.FC = () => {
   Todo List
   </Button>
 
-  <Tooltip title={dagVisible ? '' : ''}>
+  <Tooltip title={dagVisible ? 'Hide graph' : 'Show graph'}>
   <Button
   type="text"
   size="small"
@@ -385,7 +385,7 @@ export const LegacyDAGSidebar: React.FC = () => {
   />
   </Tooltip>
 
-  <Tooltip title="">
+  <Tooltip title="Fullscreen view">
   <Button
   type="text"
   size="small"
@@ -395,7 +395,7 @@ export const LegacyDAGSidebar: React.FC = () => {
   />
   </Tooltip>
 
-  <Tooltip title="">
+  <Tooltip title="Sidebar fullscreen">
   <Button
   type="text"
   size="small"
@@ -404,7 +404,7 @@ export const LegacyDAGSidebar: React.FC = () => {
   />
   </Tooltip>
 
-  <Tooltip title="">
+  <Tooltip title="Settings">
   <Button type="text" size="small" icon={<SettingOutlined />} />
   </Tooltip>
   </Space>

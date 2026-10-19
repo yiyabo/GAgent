@@ -23,21 +23,21 @@ export const DAGToolbar: React.FC<DAGToolbarProps> = ({
   onExitFullscreen,
 }) => (
   <div className="dag-toolbar">
-  <button className="dag-toolbar-btn" onClick={onFitView} title="">
+  <button className="dag-toolbar-btn" onClick={onFitView} title="Fit to view" aria-label="Fit to view">
   <ExpandOutlined />
   </button>
-  <button className="dag-toolbar-btn" onClick={onResetView} title="">
+  <button className="dag-toolbar-btn" onClick={onResetView} title="Reset view" aria-label="Reset view">
   <AimOutlined />
   </button>
   <div className="dag-toolbar-divider" />
-  <button className="dag-toolbar-btn" onClick={onRefresh} title="refresh">
+  <button className="dag-toolbar-btn" onClick={onRefresh} title="Refresh" aria-label="Refresh">
   <ReloadOutlined />
   </button>
-  <button className="dag-toolbar-btn" onClick={onExport} title="">
+  <button className="dag-toolbar-btn" onClick={onExport} title="Export image" aria-label="Export image">
   <DownloadOutlined />
   </button>
   <div className="dag-toolbar-divider" />
-  <button className="dag-toolbar-btn" onClick={onExitFullscreen} title="">
+  <button className="dag-toolbar-btn" onClick={onExitFullscreen} title="Exit fullscreen" aria-label="Exit fullscreen">
   <FullscreenExitOutlined />
   </button>
   </div>

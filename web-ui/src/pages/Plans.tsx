@@ -732,7 +732,7 @@ const PlansPage: React.FC = () => {
   )}
   </Descriptions.Item>
   {selectedResult.notes && selectedResult.notes.length > 0 && (
-  <Descriptions.Item label="">
+  <Descriptions.Item label="Notes">
   <Space direction="vertical" size={0}>
   {selectedResult.notes.map((note, index) => (
   <Text key={index} type="secondary">

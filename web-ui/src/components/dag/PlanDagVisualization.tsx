@@ -167,7 +167,7 @@ const PlanDagVisualization: React.FC<PlanDagVisualizationProps> = ({
   background: withAlpha(palette.card, 0.7),
   }}
   >
-  <Spin size="large" tip="loadDAGmedium" />
+  <Spin size="large" tip="Loading graph…" />
   </div>
   )}
   <div ref={containerRef} style={{ height: '100%' }} />

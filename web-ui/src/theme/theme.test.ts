@@ -356,3 +356,33 @@ describe('chat composer', () => {
     expect(style).not.toMatch(/#[0-9a-fA-F]{3,8}|rgba?\(|\bwhite\b/);
   });
 });
+
+describe('visible text is never blank', () => {
+  // A repo-wide translation once left tooltips, button titles and toolbar labels as `""`, so icon-only
+  // buttons had no name for anyone, sighted or not. Any attribute that names a control must say something.
+  const TEXT_ATTRS = ['title', 'label', 'placeholder', 'tip', 'aria-label', 'okText', 'cancelText'];
+  const EMPTY = new RegExp(`\\b(?:${TEXT_ATTRS.join('|')})\\s*=\\s*(?:""|\\{\\s*(?:''|""|\`\`)\\s*\\})`);
+  const BOTH_EMPTY = /\?\s*(?:''|"")\s*:\s*(?:''|"")/;
+
+  it('has no empty title / label / placeholder / tooltip attribute and no ternary whose branches are both empty', () => {
+    const blank: string[] = [];
+    for (const file of SOURCE_FILES.filter((name) => /\.tsx$/.test(name))) {
+      readFileSync(file, 'utf8').split('\n').forEach((line, index) => {
+        const code = line.trim();
+        if (code.startsWith('//') || code.startsWith('*') || code.startsWith('/*')) return;
+        if (EMPTY.test(line) || BOTH_EMPTY.test(line)) blank.push(`${relative(resolve(__dirname, '..'), file)}:${index + 1}: ${code.slice(0, 90)}`);
+      });
+    }
+    expect(blank).toEqual([]);
+  });
+
+  it('has no Radio/Select option or Descriptions row with an empty label', () => {
+    const blank: string[] = [];
+    for (const file of SOURCE_FILES.filter((name) => /\.tsx?$/.test(name))) {
+      readFileSync(file, 'utf8').split('\n').forEach((line, index) => {
+        if (/\{\s*label:\s*(?:''|"")\s*,\s*value:/.test(line)) blank.push(`${relative(resolve(__dirname, '..'), file)}:${index + 1}: ${line.trim().slice(0, 90)}`);
+      });
+    }
+    expect(blank).toEqual([]);
+  });
+});
