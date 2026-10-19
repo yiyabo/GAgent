@@ -41,8 +41,6 @@ export interface ChatState {
     processingSessionIds: Set<string>;
     /** Per-session run id of the currently active chat run (keyed by session processing key). */
     activeRunIds: Map<string, string>;
-    chatPanelVisible: boolean;
-    chatPanelWidth: number;
 
     // Memory & Files Slice State
     memoryEnabled: boolean;
@@ -95,9 +93,6 @@ export interface ChatState {
     setIsTyping: (typing: boolean) => void;
     setSessionProcessing: (sessionId: string, processing: boolean) => void;
     setActiveRunId: (sessionKey: string, runId: string | null) => void;
-    toggleChatPanel: () => void;
-    setChatPanelVisible: (visible: boolean) => void;
-    setChatPanelWidth: (width: number) => void;
 
     // Memory & Files Actions
     toggleMemory: () => void;

@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 from fastapi import HTTPException
 
-from app.routers import agent_routes, decomposition_routes, tool_routes
+from app.routers import agent_routes, tool_routes
 
 
 @pytest.mark.asyncio
@@ -19,14 +19,6 @@ async def test_legacy_tool_routes_fail_closed():
 
     assert exec_exc_info.value.status_code == 410
     assert "plan_routes" in exec_exc_info.value.detail
-
-
-def test_legacy_decomposition_routes_fail_closed():
-    with pytest.raises(HTTPException) as exc_info:
-        decomposition_routes.decompose_task_endpoint(7, payload={})
-
-    assert exc_info.value.status_code == 410
-    assert "PlanTree-backed planning stack" in exc_info.value.detail
 
 
 @pytest.mark.asyncio
