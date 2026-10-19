@@ -306,8 +306,6 @@ describe('typography', () => {
     const literal: string[] = [];
     for (const file of SOURCE_FILES.filter((name) => name !== TOKENS_CSS && !name.endsWith('antdTheme.ts'))) {
       const text = readFileSync(file, 'utf8');
-      // The xterm terminal needs a literal list: it measures glyphs on a canvas and cannot read CSS variables.
-      if (file.endsWith('TerminalPanel.tsx')) continue;
       for (const match of text.matchAll(/font-?[fF]amily:\s*([^;\n]+)/g)) {
         const value = match[1].trim().replace(/[,'"]+$/, '');
         if (!/^(var\(--font-(sans|serif|mono)\)|inherit)/.test(value.replace(/^['"]/, ''))) {
