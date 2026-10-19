@@ -7,6 +7,8 @@ import { useMemoryStore } from '@store/memory';
 import type { Memory } from '@/types';
 import { useCanvasPalette, withAlpha, type CanvasPalette } from '@/theme/canvasPalette';
 
+import { useT } from '@/i18n/useT';
+import { memoryTypeLabel, memoryImportanceLabel } from '@/i18n/memoryLabels';
 type GraphNode = {
   id: string;
   label: string;
@@ -31,6 +33,7 @@ interface MemoryGraphProps {
 }
 
 const MemoryGraph: React.FC<MemoryGraphProps> = ({ onNodeClick, height = '600px' }) => {
+  const t = useT();
   const networkRef = useRef<HTMLDivElement>(null);
   const networkInstance = useRef<Network | null>(null);
   const { memories, getFilteredMemories } = useMemoryStore();
@@ -132,17 +135,17 @@ const MemoryGraph: React.FC<MemoryGraphProps> = ({ onNodeClick, height = '600px'
   : memory.content.substring(0, 30) + (memory.content.length > 30 ? '...' : '')
   : '';
 
-  const title = `
-🧠 memory
-━━━━━━━━━━━━━━━━
-📋 ID: ${memory.id.substring(0, 8)}...
-📝 content: ${memory.content.substring(0, 100)}${memory.content.length > 100 ? '...' : ''}
-🏷️ type: ${memory.memory_type}
-⭐ : ${memory.importance}
-🔑 : ${memory.keywords.join(', ') || ''}
-👁️ : ${memory.retrieval_count}
-🔗 connection: ${memory.links?.length || 0}
-  `.trim();
+  const title = [
+  t('memory.graph.tipTitle'),
+  '━━━━━━━━━━━━━━━━',
+  t('memory.graph.tipId', { id: memory.id.substring(0, 8) }),
+  t('memory.graph.tipContent', { value: `${memory.content.substring(0, 100)}${memory.content.length > 100 ? '...' : ''}` }),
+  t('memory.graph.tipType', { value: memoryTypeLabel(t, memory.memory_type) }),
+  t('memory.graph.tipImportance', { value: memoryImportanceLabel(t, memory.importance) }),
+  t('memory.graph.tipKeywords', { value: memory.keywords.join(', ') || t('memory.graph.none') }),
+  t('memory.graph.tipRetrievals', { value: memory.retrieval_count }),
+  t('memory.graph.tipLinks', { value: memory.links?.length || 0 }),
+  ].join('\n');
 
   return {
   id: memory.id,
@@ -219,7 +222,7 @@ const MemoryGraph: React.FC<MemoryGraphProps> = ({ onNodeClick, height = '600px'
   } catch (err: any) {
   console.error('❌ Failed to build network data:', err);
   setError(err.message || 'failed');
-  message.error(`failed: ${err.message || 'error'}`);
+  message.error(t('memory.graph.buildFailed', { message: err.message || t('memory.graph.errorUnknown') }));
   return {
   nodes: new DataSet<GraphNode>([]),
   edges: new DataSet<Record<string, any>>([]),
@@ -227,7 +230,7 @@ const MemoryGraph: React.FC<MemoryGraphProps> = ({ onNodeClick, height = '600px'
   } finally {
   setLoading(false);
   }
-  }, [getFilteredMemories, searchText, minSimilarity, showLabels, palette]);
+  }, [getFilteredMemories, searchText, minSimilarity, showLabels, palette, t]);
 
   const getLayoutOptions = () => {
   switch (layout) {
@@ -395,68 +398,68 @@ const MemoryGraph: React.FC<MemoryGraphProps> = ({ onNodeClick, height = '600px'
   }}
   >
   <div style={{ fontWeight: 'bold', marginBottom: '8px', color: 'var(--color-action)' }}>
-  🗺️ Memory graph legend
+  🗺️ {t('memory.graph.legendTitle')}
   </div>
 
   <div style={{ marginBottom: '8px' }}>
   <div style={{ fontWeight: 'bold', fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '4px' }}>
-  Node size = importance + retrievals
-  </div>
-  </div>
-
-  <div style={{ marginBottom: '8px' }}>
-  <div style={{ fontWeight: 'bold', fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '4px' }}>
-  Importance colour:
-  </div>
-  <div style={{ marginLeft: '8px' }}>
-  <div style={{ marginBottom: '2px' }}>
-  <span style={{ color: 'var(--status-error-fg)' }}>●</span> critical
-  </div>
-  <div style={{ marginBottom: '2px' }}>
-  <span style={{ color: 'var(--status-warning-fg)' }}>●</span> high
-  </div>
-  <div style={{ marginBottom: '2px' }}>
-  <span style={{ color: 'var(--color-action)' }}>●</span> medium
-  </div>
-  <div style={{ marginBottom: '2px' }}>
-  <span style={{ color: 'var(--status-success-fg)' }}>●</span> low
-  </div>
-  <div>
-  <span style={{ color: 'var(--text-tertiary)' }}>●</span> temporary
-  </div>
+  {t('memory.graph.legendSize')}
   </div>
   </div>
 
   <div style={{ marginBottom: '8px' }}>
   <div style={{ fontWeight: 'bold', fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '4px' }}>
-  Type shape:
+  {t('memory.graph.legendImportance')}
   </div>
   <div style={{ marginLeft: '8px' }}>
-  <div>■ conversation | ● experience | ◆ knowledge | ★ context</div>
+  <div style={{ marginBottom: '2px' }}>
+  <span style={{ color: 'var(--status-error-fg)' }}>●</span> {memoryImportanceLabel(t, 'critical')}
+  </div>
+  <div style={{ marginBottom: '2px' }}>
+  <span style={{ color: 'var(--status-warning-fg)' }}>●</span> {memoryImportanceLabel(t, 'high')}
+  </div>
+  <div style={{ marginBottom: '2px' }}>
+  <span style={{ color: 'var(--color-action)' }}>●</span> {memoryImportanceLabel(t, 'medium')}
+  </div>
+  <div style={{ marginBottom: '2px' }}>
+  <span style={{ color: 'var(--status-success-fg)' }}>●</span> {memoryImportanceLabel(t, 'low')}
+  </div>
+  <div>
+  <span style={{ color: 'var(--text-tertiary)' }}>●</span> {memoryImportanceLabel(t, 'temporary')}
+  </div>
+  </div>
+  </div>
+
+  <div style={{ marginBottom: '8px' }}>
+  <div style={{ fontWeight: 'bold', fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '4px' }}>
+  {t('memory.graph.legendShape')}
+  </div>
+  <div style={{ marginLeft: '8px' }}>
+  <div>■ {memoryTypeLabel(t, 'conversation')} | ● {memoryTypeLabel(t, 'experience')} | ◆ {memoryTypeLabel(t, 'knowledge')} | ★ {memoryTypeLabel(t, 'context')}</div>
   </div>
   </div>
 
   <div>
   <div style={{ fontWeight: 'bold', fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '4px' }}>
-  Connection line:
+  {t('memory.graph.legendConnection')}
   </div>
   <div style={{ marginLeft: '8px' }}>
   <div style={{ marginBottom: '2px' }}>
-  <span aria-hidden style={{ display: 'inline-block', width: 20, height: 3, borderRadius: 2, verticalAlign: 'middle', marginRight: 6, background: 'var(--status-success-fg)' }} /> high similarity (&gt;80%)
+  <span aria-hidden style={{ display: 'inline-block', width: 20, height: 3, borderRadius: 2, verticalAlign: 'middle', marginRight: 6, background: 'var(--status-success-fg)' }} /> {t('memory.graph.simHigh')}
   </div>
   <div style={{ marginBottom: '2px' }}>
-  <span aria-hidden style={{ display: 'inline-block', width: 20, height: 3, borderRadius: 2, verticalAlign: 'middle', marginRight: 6, background: 'var(--color-action)' }} /> medium similarity (60-80%)
+  <span aria-hidden style={{ display: 'inline-block', width: 20, height: 3, borderRadius: 2, verticalAlign: 'middle', marginRight: 6, background: 'var(--color-action)' }} /> {t('memory.graph.simMedium')}
   </div>
   <div>
-  <span aria-hidden style={{ display: 'inline-block', width: 20, height: 3, borderRadius: 2, verticalAlign: 'middle', marginRight: 6, background: 'var(--border-strong)' }} /> low similarity (&lt;60%)
+  <span aria-hidden style={{ display: 'inline-block', width: 20, height: 3, borderRadius: 2, verticalAlign: 'middle', marginRight: 6, background: 'var(--border-strong)' }} /> {t('memory.graph.simLow')}
   </div>
   </div>
   </div>
 
   <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginTop: '8px', borderTop: '1px solid var(--border-subtle)', paddingTop: '6px' }}>
-  💡 Click a node for details<br />
-  🔍 Drag to move nodes<br />
-  🖱️ Scroll to zoom
+  {t('memory.graph.hint1')}<br />
+  {t('memory.graph.hint2')}<br />
+  {t('memory.graph.hint3')}
   </div>
   </div>
   );
@@ -471,10 +474,10 @@ const MemoryGraph: React.FC<MemoryGraphProps> = ({ onNodeClick, height = '600px'
   <Card
   title={
   <Space>
-  <span>🗺️ Memory graph</span>
+  <span>{t('memory.graph.title')}</span>
   <Badge count={memoryCount} style={{ backgroundColor: 'var(--status-success-bg)', color: 'var(--status-success-fg)', boxShadow: '0 0 0 1px var(--status-success-border)' }} />
   <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
-  (avg {avgConnections} links)
+  {t('memory.graph.avgLinks', { value: avgConnections })}
   </span>
   </Space>
   }
@@ -482,7 +485,7 @@ const MemoryGraph: React.FC<MemoryGraphProps> = ({ onNodeClick, height = '600px'
   extra={
   <Space wrap>
   <Input.Search
-  placeholder="Search"
+  placeholder={t('memory.graph.search')}
   style={{ width: 200 }}
   value={searchText}
   onChange={(e) => setSearchText(e.target.value)}
@@ -491,7 +494,7 @@ const MemoryGraph: React.FC<MemoryGraphProps> = ({ onNodeClick, height = '600px'
   size="small"
   />
 
-  <Tooltip title="Similarity threshold">
+  <Tooltip title={t('memory.graph.similarityThreshold')}>
   <div style={{ width: 150, display: 'inline-block' }}>
   <Slider
   min={0}
@@ -510,9 +513,9 @@ const MemoryGraph: React.FC<MemoryGraphProps> = ({ onNodeClick, height = '600px'
   value={layout}
   onChange={(e) => setLayout(e.target.value)}
   options={[
-  { label: 'Force', value: 'force' },
-  { label: 'Hierarchy', value: 'hierarchical' },
-  { label: 'Circular', value: 'circular' },
+  { label: t('memory.graph.layoutForce'), value: 'force' },
+  { label: t('memory.graph.layoutHierarchy'), value: 'hierarchical' },
+  { label: t('memory.graph.layoutCircular'), value: 'circular' },
   ]}
   />
 
@@ -521,22 +524,22 @@ const MemoryGraph: React.FC<MemoryGraphProps> = ({ onNodeClick, height = '600px'
   type={showLabels ? 'primary' : 'default'}
   onClick={() => setShowLabels(!showLabels)}
   >
-  {showLabels ? 'Hide labels' : 'Show labels'}
+  {showLabels ? t('memory.graph.hideLabels') : t('memory.graph.showLabels')}
   </Button>
 
-  <Button size="small" icon={<ExpandOutlined />} onClick={handleFitView} title="Fit to view" aria-label="Fit to view" />
-  <Button size="small" icon={<FullscreenOutlined />} onClick={handleFullscreen} title="Fullscreen" aria-label="Fullscreen" />
+  <Button size="small" icon={<ExpandOutlined />} onClick={handleFitView} title={t('memory.graph.fit')} aria-label={t('memory.graph.fit')} />
+  <Button size="small" icon={<FullscreenOutlined />} onClick={handleFullscreen} title={t('memory.graph.fullscreen')} aria-label={t('memory.graph.fullscreen')} />
   <Button size="small" icon={<ReloadOutlined />} onClick={handleRefresh} loading={loading}>
-  refresh
+  {t('common.refresh')}
   </Button>
   </Space>
   }
   >
-  <Spin spinning={loading} tip="Loading memory graph...">
+  <Spin spinning={loading} tip={t('memory.graph.loading')}>
   {}
   {error && (
   <Alert
-  message="Load failed"
+  message={t('memory.graph.loadFailed')}
   description={error}
   type="error"
   showIcon
@@ -554,16 +557,16 @@ const MemoryGraph: React.FC<MemoryGraphProps> = ({ onNodeClick, height = '600px'
   imageStyle={{ height: 80 }}
   description={
   <span style={{ color: 'var(--text-tertiary)' }}>
-  No memories yet
+  {t('memory.graph.empty')}
   <br />
   <span style={{ fontSize: '12px' }}>
-  Save memory entries to visualize the graph.
+  {t('memory.graph.emptyHint')}
   </span>
   </span>
   }
   >
   <Button type="primary" icon={<ReloadOutlined />} onClick={handleRefresh}>
-  Refresh
+  {t('common.refresh')}
   </Button>
   </Empty>
   </div>

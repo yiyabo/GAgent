@@ -3,6 +3,7 @@ import { Spin } from 'antd';
 import { Network } from 'vis-network';
 import { DataSet } from 'vis-data';
 import { PlanTaskNode } from '@/types';
+import { useT } from '@/i18n/useT';
 import { useCanvasPalette, withAlpha, type CanvasPalette } from '@/theme/canvasPalette';
 
 export interface PlanDagVisualizationProps {
@@ -41,6 +42,7 @@ const PlanDagVisualization: React.FC<PlanDagVisualizationProps> = ({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const networkRef = useRef<Network | null>(null);
   const palette = useCanvasPalette();
+  const t = useT();
 
   useEffect(() => {
   if (!containerRef.current || !tasks) {
@@ -79,7 +81,7 @@ const PlanDagVisualization: React.FC<PlanDagVisualizationProps> = ({
   x: 2,
   y: 2,
   },
-  title: `task: ${task.name}\nstatus: ${task.status}\ntype: ${task.task_type}`,
+  title: t('dag.nodeTip', { name: task.name, status: task.status, type: task.task_type }),
   };
   })
   );
@@ -151,7 +153,7 @@ const PlanDagVisualization: React.FC<PlanDagVisualizationProps> = ({
   network.destroy();
   networkRef.current = null;
   };
-  }, [tasks, onSelectTask, palette]);
+  }, [tasks, onSelectTask, palette, t]);
 
   return (
   <div style={{ position: 'relative', height }}>
@@ -167,7 +169,7 @@ const PlanDagVisualization: React.FC<PlanDagVisualizationProps> = ({
   background: withAlpha(palette.card, 0.7),
   }}
   >
-  <Spin size="large" tip="Loading graph…" />
+  <Spin size="large" tip={t('dag.loadingGraph')} />
   </div>
   )}
   <div ref={containerRef} style={{ height: '100%' }} />

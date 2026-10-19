@@ -46,7 +46,8 @@ describe('the two catalogues stay in step', () => {
 
   it('translate every value: an identical string is an untranslated copy', () => {
     // Only the brand and strings that are the same word in both languages may match.
-    const ALLOWED_SAME = ['app.name', 'header.homeAria'];
+    // The brand, and words that are the same in both languages (an abbreviation, a product name).
+    const ALLOWED_SAME = ['app.name', 'header.homeAria', 'memory.col.id', 'plans.originDeepThink'];
     const same = paths(en).filter((key) => lookup(en, key) === lookup(zhCN, key) && !ALLOWED_SAME.includes(key));
     expect(same).toEqual([]);
   });
@@ -107,10 +108,19 @@ const JSX_TEXT = />\s*([^<>{}\n]*[A-Za-z一-鿿][^<>{}\n]*?)\s*</g;
 const ATTRS = /\b(?:title|label|placeholder|tip|description|okText|cancelText|aria-label|alt|text|emptyText|message)\s*=\s*(["'])((?:(?!\1).)*[A-Za-z一-鿿](?:(?!\1).)*)\1/g;
 const CALLS = /\b(?:message|notification|Modal)\.(?:success|error|warning|info|loading|confirm)\(\s*([`'"])((?:(?!\1).)*[A-Za-z一-鿿](?:(?!\1).)*)\1/g;
 const PROPS = /\b(?:title|label|placeholder|tip|description|text|header|desc|emptyText)\s*:\s*(['"`])((?:(?!\1).)*[A-Za-z一-鿿](?:(?!\1).)*)\1/g;
+// Text mixed with an expression in JSX: "Task ID: {id}", "{count} Failed".
+const TEXT_BEFORE_EXPR = />\s*([A-Z][A-Za-z][A-Za-z ,.'’:!?\-/]{1,60}?)\s*\{/g;
+const TEXT_AFTER_EXPR = /\}\s*([A-Za-z][A-Za-z ,.'’:!?%\-/]{2,60}?)\s*(?=<|\{)/g;
+// `cond ? 'one phrase' : 'another phrase'`, the usual way a status word is chosen.
+const TERNARY_TEXT = /\?\s*(["'`])([A-Za-z一-鿿][^"'`$\n]{2,})\1\s*:\s*(["'`])([A-Za-z一-鿿][^"'`$\n]{2,})\3/g;
+// Props that carry a visible word but are not title/label.
+const EXTRA_ATTRS = /\b(?:suffix|prefix|addonBefore|addonAfter|extra|subTitle|help|tooltip)\s*=\s*(["'])([A-Z一-鿿][^"']{2,})\1/g;
 
 function looksLikeText(raw: string): boolean {
   const text = raw.trim();
   if (CJK_RE.test(text)) return true;
+  // A template with no words outside its `${...}` holes ("${n}%") is a number format, the same in every language.
+  if (!/[A-Za-z]{2,}/.test(text.replace(/\$\{[^}]*\}/g, ''))) return false;
   if (!/[A-Za-z]{2,}/.test(text)) return false;
   if (/^[a-z0-9_\-./:#@[\]()=<>$%{}]+$/.test(text)) return false; // identifiers, class names, paths
   if (/^(var\(|rgb|#|https?:|\/|\.|calc\()/.test(text)) return false;
@@ -122,14 +132,25 @@ function looksLikeText(raw: string): boolean {
 export function hardcodedText(source: string): string[] {
   const code = stripComments(source);
   const found: string[] = [];
+  // `{x}` followed by code is not text: `) : ok ? (`, `React.FC`, `interface Foo`, `return`, `catch`.
+  const CODE = /^(?:interface|export|const|let|var|function|return|try|catch|finally|else|if|for|while|switch|case|default|type|enum|class|new|async|await|import|from|typeof|void)\b|[=;(){}<>?$]|\bReact\./;
+  const visible = (text: string) => /[A-Za-z]{3,}|[一-鿿]/.test(text) && looksLikeText(text) && !CODE.test(text.trim());
   for (const rx of [JSX_TEXT, ATTRS, CALLS, PROPS]) {
     for (const match of code.matchAll(rx)) {
-      const value = match[match.length - 1 === 1 ? 1 : 2] ?? match[1];
-      const text = (rx === JSX_TEXT ? match[1] : match[2]) ?? value;
+      const text = (rx === JSX_TEXT ? match[1] : match[2]) ?? match[1];
       if (/\bt\(\s*['"`]/.test(text)) continue;
-      if (looksLikeText(text)) found.push(text.trim().slice(0, 50));
+      // A `>` that is really an arrow (`=> cond ? (`) makes JSX_TEXT span code; real text has none of this.
+      if (looksLikeText(text) && !(rx === JSX_TEXT && CODE.test(text.trim()))) found.push(text.trim().slice(0, 50));
     }
   }
+  for (const rx of [TEXT_BEFORE_EXPR, TEXT_AFTER_EXPR]) {
+    for (const match of code.matchAll(rx)) if (visible(match[1])) found.push(match[1].trim().slice(0, 50));
+  }
+  for (const match of code.matchAll(TERNARY_TEXT)) {
+    if (visible(match[2])) found.push(match[2].trim().slice(0, 50));
+    if (visible(match[4])) found.push(match[4].trim().slice(0, 50));
+  }
+  for (const match of code.matchAll(EXTRA_ATTRS)) if (visible(match[2])) found.push(match[2].trim().slice(0, 50));
   return found;
 }
 

@@ -20,10 +20,12 @@ import {
 import { ReloadOutlined, ApartmentOutlined } from '@ant-design/icons';
 import { usePlanSummaries, usePlanTasks, usePlanExecutionSummary, usePlanResults } from '@hooks/usePlans';
 import { useChatStore } from '@store/chat';
+import { statusLabel } from '@/i18n/statusLabels';
 import PlanDagVisualization from '@components/dag/PlanDagVisualization';
 import type { PlanResultItem, PlanSyncEventDetail, PlanTaskNode } from '@/types';
 import { isPlanSyncEventDetail, matchesPlanEventSession } from '@utils/planSyncEvents';
 
+import { useT } from '@/i18n/useT';
 const { Title, Text, Paragraph } = Typography;
 const resolveDisplayStatus = (status?: string | null, effectiveStatus?: string | null) =>
   (effectiveStatus ?? status ?? 'pending').toLowerCase();
@@ -72,9 +74,9 @@ const toNumber = (value: unknown): number | null => {
   return Number.isFinite(numeric) ? numeric : null;
 };
 
-const formatScoreDelta = (value: number): string => `${value >= 0 ? '+' : ''}${Math.round(value)} pts`;
 
 const PlansPage: React.FC = () => {
+  const t = useT();
   const { currentWorkflowId, currentSession, currentPlanId, setChatContext } = useChatStore((state) => ({
   currentWorkflowId: state.currentWorkflowId,
   currentSession: state.currentSession,
@@ -225,10 +227,10 @@ const PlansPage: React.FC = () => {
   }
   }
   const label = warning && (normalized === 'completed' || normalized === 'success')
-  ? 'completed with warnings'
-  : status ?? 'pending';
+  ? t('status.completedWithWarnings')
+  : statusLabel(t, status);
   return <Badge status={badgeStatus} text={label} />;
-  }, []);
+  }, [t]);
 
   const handleResultsRefresh = useCallback(() => {
   void Promise.all([refetchPlanResults(), refetchExecutionSummary()]);
@@ -375,17 +377,17 @@ const PlansPage: React.FC = () => {
   const meta = (plan.metadata ?? {}) as Record<string, any>;
   const originRaw = typeof meta.plan_origin === 'string' ? meta.plan_origin.toLowerCase() : null;
   const originTag =
-  originRaw === 'deepthink' ? <Tag color="geekblue">DeepThink</Tag> : <Tag>Standard</Tag>;
+  originRaw === 'deepthink' ? <Tag color="geekblue">{t('plans.originDeepThink')}</Tag> : <Tag>{t('plans.originStandard')}</Tag>;
   const evalObj = (meta.plan_evaluation ?? null) as Record<string, any> | null;
   const score = typeof evalObj?.overall_score === 'number' ? evalObj.overall_score : null;
   const rounded = score != null ? Math.round(score) : null;
   const below = rounded != null && rounded < 80;
   const scoreTag =
   rounded == null ? (
-  <Tag>Rubric: N/A</Tag>
+  <Tag>{t('plans.rubricNA')}</Tag>
   ) : (
   <Tag color={below ? 'red' : rounded >= 90 ? 'green' : rounded >= 80 ? 'blue' : 'orange'}>
-  Rubric {rounded}%{below ? ' (Below)' : ''}
+  {t('plans.rubric', { value: rounded, below: below ? t('plans.rubricBelow') : '' })}
   </Tag>
   );
   return (
@@ -470,12 +472,12 @@ const PlansPage: React.FC = () => {
   <div className="content-header">
   <Title level={3} style={{ margin: 0, display: 'flex', alignItems: 'center', gap: 8 }}>
   <ApartmentOutlined />
-  Plan DAG
+  {t('plans.title')}
   </Title>
   <Space>
-  <Tooltip title="Refresh plan tasks">
+  <Tooltip title={t('plans.refreshTip')}>
   <Button icon={<ReloadOutlined />} onClick={handleRefresh}>
-  Refresh
+  {t('common.refresh')}
   </Button>
   </Tooltip>
   </Space>
@@ -485,10 +487,10 @@ const PlansPage: React.FC = () => {
   <Card>
   <Space direction="vertical" style={{ width: '100%' }} size="large">
   <Space wrap>
-  <Text strong>Plan:</Text>
+  <Text strong>{t('plans.planLabel')}</Text>
   <Select
   style={{ minWidth: 260 }}
-  placeholder={summariesLoading ? 'Loading plans...' : 'Please select a plan'}
+  placeholder={summariesLoading ? t('plans.loadingPlans') : t('plans.selectPlan')}
   loading={summariesLoading}
   value={selectedPlanId}
   onChange={handlePlanChange}
@@ -496,21 +498,21 @@ const PlansPage: React.FC = () => {
   />
   {statusSummary && (
   <Space size="middle">
-  <Tag color="blue">Tasks {statusSummary.total}</Tag>
-  <Tag color="green">Completed {statusSummary.completed}</Tag>
-  <Tag color="gold">Pending {statusSummary.pending}</Tag>
-  {statusSummary.running > 0 && <Tag color="cyan">Running {statusSummary.running}</Tag>}
-  {statusSummary.failed > 0 && <Tag color="red">Failed {statusSummary.failed}</Tag>}
-  {statusSummary.blocked > 0 && <Tag color="orange">Blocked {statusSummary.blocked}</Tag>}
-  {statusSummary.skipped > 0 && <Tag color="volcano">Skipped {statusSummary.skipped}</Tag>}
-  {statusSummary.needs_review > 0 && <Tag color="magenta">Needs review {statusSummary.needs_review}</Tag>}
+  <Tag color="blue">{t('plans.tagTasks', { count: statusSummary.total })}</Tag>
+  <Tag color="green">{t('plans.tagCompleted', { count: statusSummary.completed })}</Tag>
+  <Tag color="gold">{t('plans.tagPending', { count: statusSummary.pending })}</Tag>
+  {statusSummary.running > 0 && <Tag color="cyan">{t('plans.tagRunning', { count: statusSummary.running })}</Tag>}
+  {statusSummary.failed > 0 && <Tag color="red">{t('plans.tagFailed', { count: statusSummary.failed })}</Tag>}
+  {statusSummary.blocked > 0 && <Tag color="orange">{t('plans.tagBlocked', { count: statusSummary.blocked })}</Tag>}
+  {statusSummary.skipped > 0 && <Tag color="volcano">{t('plans.tagSkipped', { count: statusSummary.skipped })}</Tag>}
+  {statusSummary.needs_review > 0 && <Tag color="magenta">{t('plans.tagNeedsReview', { count: statusSummary.needs_review })}</Tag>}
   </Space>
   )}
   {planStats && (
   <Space size="middle">
-  <Tag color="purple">Root {planStats.root}</Tag>
-  <Tag color="geekblue">Composite {planStats.composite}</Tag>
-  <Tag color="green">Atomic {planStats.atomic}</Tag>
+  <Tag color="purple">{t('plans.tagRoot', { count: planStats.root })}</Tag>
+  <Tag color="geekblue">{t('plans.tagComposite', { count: planStats.composite })}</Tag>
+  <Tag color="green">{t('plans.tagAtomic', { count: planStats.atomic })}</Tag>
   </Space>
   )}
   </Space>
@@ -519,32 +521,32 @@ const PlansPage: React.FC = () => {
   <Space wrap>
   {selectedPlanMetrics.overall != null ? (
   <Tag color={selectedPlanMetrics.overall < 80 ? 'red' : selectedPlanMetrics.overall >= 90 ? 'green' : 'blue'}>
-  Latest Rubric {Math.round(selectedPlanMetrics.overall)}%
+  {t('plans.latestRubric', { value: Math.round(selectedPlanMetrics.overall) })}
   </Tag>
   ) : (
-  <Tag>Latest Rubric: N/A</Tag>
+  <Tag>{t('plans.latestRubricNA')}</Tag>
   )}
   {selectedPlanMetrics.before != null && selectedPlanMetrics.after != null && (
   <Tag color="gold">
-  Optimize {Math.round(selectedPlanMetrics.before)}% {'->'} {Math.round(selectedPlanMetrics.after)}%
+  {t('plans.optimize', { before: Math.round(selectedPlanMetrics.before), after: Math.round(selectedPlanMetrics.after) })}
   </Tag>
   )}
   {selectedPlanMetrics.delta != null && (
   <Tag color={selectedPlanMetrics.delta >= 0 ? 'green' : 'red'}>
-  {formatScoreDelta(selectedPlanMetrics.delta)}
+  {t('plans.scoreDelta', { sign: selectedPlanMetrics.delta >= 0 ? '+' : '', value: Math.round(selectedPlanMetrics.delta) })}
   </Tag>
   )}
   {selectedPlanMetrics.appliedChangeCount != null && (
   <Tag>
-  {Math.round(selectedPlanMetrics.appliedChangeCount)} changes
+  {t('plans.changes', { count: Math.round(selectedPlanMetrics.appliedChangeCount) })}
   </Tag>
   )}
   {selectedPlanMetrics.autoGenerated && (
-  <Tag color="purple">Auto optimize</Tag>
+  <Tag color="purple">{t('plans.autoOptimize')}</Tag>
   )}
   {selectedPlanMetrics.optimizedAt && (
   <Text type="secondary">
-  Last optimize: {new Date(selectedPlanMetrics.optimizedAt).toLocaleString()}
+  {t('plans.lastOptimize', { time: new Date(selectedPlanMetrics.optimizedAt).toLocaleString() })}
   </Text>
   )}
   </Space>
@@ -560,27 +562,27 @@ const PlansPage: React.FC = () => {
   ) : (
   <Empty
   image={Empty.PRESENTED_IMAGE_SIMPLE}
-  description={summariesLoading ? 'Loading plans...' : 'No available plans. Create one via CLI.'}
+  description={summariesLoading ? t('plans.loadingPlans') : t('plans.noPlans')}
   />
   )}
   </Space>
   </Card>
 
   <Card
-  title="Plan Execution Results"
+  title={t('plans.results.title')}
   bordered={false}
   extra={
   <Space>
-  <Tooltip title={onlyWithOutput ? 'Showing only tasks with output' : 'Showing all tasks'}>
+  <Tooltip title={onlyWithOutput ? t('plans.results.onlyOutputTip') : t('plans.results.allTip')}>
   <Switch
   size="small"
   checked={onlyWithOutput}
   onChange={handleToggleOutput}
-  checkedChildren="Output"
-  unCheckedChildren="All"
+  checkedChildren={t('plans.results.switchOutput')}
+  unCheckedChildren={t('plans.results.switchAll')}
   />
   </Tooltip>
-  <Tooltip title="Refresh execution results">
+  <Tooltip title={t('plans.results.refreshTip')}>
   <Button icon={<ReloadOutlined />} onClick={handleResultsRefresh} />
   </Tooltip>
   </Space>
@@ -592,29 +594,29 @@ const PlansPage: React.FC = () => {
   {statusSummary ? (
   <Row gutter={[16, 16]}>
   <Col xs={12} sm={8} lg={4}>
-  <Statistic title="Tasks" value={statusSummary.total} />
+  <Statistic title={t('plans.results.statTasks')} value={statusSummary.total} />
   </Col>
   <Col xs={12} sm={8} lg={4}>
-  <Statistic title="Completed" value={statusSummary.completed} />
+  <Statistic title={t('plans.results.statCompleted')} value={statusSummary.completed} />
   </Col>
   <Col xs={12} sm={8} lg={4}>
-  <Statistic title="Running" value={statusSummary.running} />
+  <Statistic title={t('plans.results.statRunning')} value={statusSummary.running} />
   </Col>
   <Col xs={12} sm={8} lg={4}>
-  <Statistic title="Pending" value={statusSummary.pending} />
+  <Statistic title={t('plans.results.statPending')} value={statusSummary.pending} />
   </Col>
   <Col xs={12} sm={8} lg={4}>
-  <Statistic title="Failed" value={statusSummary.failed} valueStyle={{ color: statusSummary.failed > 0 ? 'var(--status-error-fg)' : undefined }} />
+  <Statistic title={t('plans.results.statFailed')} value={statusSummary.failed} valueStyle={{ color: statusSummary.failed > 0 ? 'var(--status-error-fg)' : undefined }} />
   </Col>
   <Col xs={12} sm={8} lg={4}>
-  <Statistic title="Blocked" value={statusSummary.blocked ?? 0} valueStyle={{ color: (statusSummary.blocked ?? 0) > 0 ? 'var(--status-warning-fg)' : undefined }} />
+  <Statistic title={t('plans.results.statBlocked')} value={statusSummary.blocked ?? 0} valueStyle={{ color: (statusSummary.blocked ?? 0) > 0 ? 'var(--status-warning-fg)' : undefined }} />
   </Col>
   <Col xs={12} sm={8} lg={4}>
-  <Statistic title="Skipped" value={statusSummary.skipped} />
+  <Statistic title={t('plans.results.statSkipped')} value={statusSummary.skipped} />
   </Col>
   </Row>
   ) : (
-  <Text type="secondary">No statistics available yet. Execute the plan first.</Text>
+  <Text type="secondary">{t('plans.results.noStats')}</Text>
   )}
   </Spin>
   <Row gutter={[16, 16]}>
@@ -649,9 +651,9 @@ const PlansPage: React.FC = () => {
   <List.Item.Meta
   title={
   <Space size={8} wrap>
-  <Text strong>{item.name || `task #${item.task_id}`}</Text>
+  <Text strong>{item.name || t('plans.results.taskFallback', { id: item.task_id })}</Text>
   {renderStatusBadge(item.effective_status || item.status, hasVerificationWarning(item.metadata))}
-  {hasVerificationWarning(item.metadata) && <Tag color="gold">Verification warning</Tag>}
+  {hasVerificationWarning(item.metadata) && <Tag color="gold">{t('plans.results.verificationWarning')}</Tag>}
   </Space>
   }
   description={
@@ -659,7 +661,7 @@ const PlansPage: React.FC = () => {
   {item.content ? (
   <Text ellipsis={{ tooltip: item.content }}>{item.content}</Text>
   ) : (
-  <Text type="secondary">No output content</Text>
+  <Text type="secondary">{t('plans.results.noOutput')}</Text>
   )}
   {item.notes && item.notes.length > 0 && (
   <Text type="secondary">
@@ -677,10 +679,10 @@ const PlansPage: React.FC = () => {
   image={Empty.PRESENTED_IMAGE_SIMPLE}
   description={
   resultsLoading
-  ? 'Loading execution outputs...'
+  ? t('plans.results.loading')
   : onlyWithOutput
-  ? 'No tasks with execution output. Run plan tasks first.'
-  : 'No tasks in this plan.'
+  ? t('plans.results.emptyOutput')
+  : t('plans.results.emptyPlan')
   }
   />
   )}
@@ -690,49 +692,49 @@ const PlansPage: React.FC = () => {
   <Spin spinning={resultsLoading && !selectedResult}>
   {selectedResult ? (
   <Descriptions column={1} size="small" bordered>
-  <Descriptions.Item label="Task Name">
+  <Descriptions.Item label={t('plans.results.fieldName')}>
   {selectedResult.name ||
   selectedResultTask?.name ||
-  `task #${selectedResult.task_id}`}
+  t('plans.results.taskFallback', { id: selectedResult.task_id })}
   </Descriptions.Item>
-  <Descriptions.Item label="status">
+  <Descriptions.Item label={t('plans.results.fieldStatus')}>
   {renderStatusBadge(resolveResultDisplayStatus(selectedResult, selectedResultTask), hasVerificationWarning(selectedResult.metadata))}
-  {isManualAccepted(selectedResult.metadata) && <Tag color="blue" style={{ marginLeft: 8 }}>Manually accepted</Tag>}
-  {hasVerificationWarning(selectedResult.metadata) && <Tag color="gold" style={{ marginLeft: 8 }}>Completed with verification warnings</Tag>}
+  {isManualAccepted(selectedResult.metadata) && <Tag color="blue" style={{ marginLeft: 8 }}>{t('plans.results.manuallyAccepted')}</Tag>}
+  {hasVerificationWarning(selectedResult.metadata) && <Tag color="gold" style={{ marginLeft: 8 }}>{t('plans.results.completedWithWarnings')}</Tag>}
   </Descriptions.Item>
-  <Descriptions.Item label="Task ID">
+  <Descriptions.Item label={t('plans.results.fieldId')}>
   #{selectedResult.task_id}
   </Descriptions.Item>
   {selectedResultTask?.parent_id && (
-  <Descriptions.Item label="parent task">
+  <Descriptions.Item label={t('plans.results.fieldParent')}>
   #{selectedResultTask.parent_id}
   </Descriptions.Item>
   )}
   {selectedResultTask?.instruction && (
-  <Descriptions.Item label="Instruction">
+  <Descriptions.Item label={t('plans.results.fieldInstruction')}>
   <Paragraph
   style={{ whiteSpace: 'pre-wrap', marginBottom: 0 }}
-  ellipsis={{ rows: 4, expandable: true, symbol: 'expand' }}
+  ellipsis={{ rows: 4, expandable: true, symbol: t('plans.results.expand') }}
   >
   {selectedResultTask.instruction}
   </Paragraph>
   </Descriptions.Item>
   )}
-  <Descriptions.Item label="Output Content">
+  <Descriptions.Item label={t('plans.results.fieldOutput')}>
   {selectedResult.content ? (
   <Paragraph
   style={{ whiteSpace: 'pre-wrap', marginBottom: 0 }}
   copyable={{ text: selectedResult.content }}
-  ellipsis={{ rows: 6, expandable: true, symbol: 'expand' }}
+  ellipsis={{ rows: 6, expandable: true, symbol: t('plans.results.expand') }}
   >
   {selectedResult.content}
   </Paragraph>
   ) : (
-  <Text type="secondary">No output content</Text>
+  <Text type="secondary">{t('plans.results.noOutput')}</Text>
   )}
   </Descriptions.Item>
   {selectedResult.notes && selectedResult.notes.length > 0 && (
-  <Descriptions.Item label="Notes">
+  <Descriptions.Item label={t('plans.results.fieldNotes')}>
   <Space direction="vertical" size={0}>
   {selectedResult.notes.map((note, index) => (
   <Text key={index} type="secondary">
@@ -744,13 +746,13 @@ const PlansPage: React.FC = () => {
   )}
   {selectedResultTask?.dependencies &&
   selectedResultTask.dependencies.length > 0 && (
-  <Descriptions.Item label="Dependencies">
+  <Descriptions.Item label={t('plans.results.fieldDependencies')}>
   {selectedResultTask.dependencies.map((dep) => `#${dep}`).join(', ')}
   </Descriptions.Item>
   )}
   {selectedResult.metadata &&
   Object.keys(selectedResult.metadata).length > 0 && (
-  <Descriptions.Item label="Metadata">
+  <Descriptions.Item label={t('plans.results.fieldMetadata')}>
   <Space direction="vertical" size={0}>
   {Object.entries(selectedResult.metadata).map(([key, value]) => (
   <Text key={key} type="secondary">
@@ -761,7 +763,7 @@ const PlansPage: React.FC = () => {
   </Descriptions.Item>
   )}
   {selectedResult.raw && (
-  <Descriptions.Item label="Raw Payload">
+  <Descriptions.Item label={t('plans.results.fieldRaw')}>
   <pre
   style={{
   background: 'var(--surface-sunken)',
@@ -782,8 +784,8 @@ const PlansPage: React.FC = () => {
   image={Empty.PRESENTED_IMAGE_SIMPLE}
   description={
   planResults.length === 0
-  ? 'No execution output available.'
-  : 'Please select a task to view its execution output.'
+  ? t('plans.results.noOutputData')
+  : t('plans.results.pickTask')
   }
   />
   )}
@@ -792,17 +794,17 @@ const PlansPage: React.FC = () => {
   </Row>
   </Space>
   ) : (
-  <Empty description="Please select a plan" />
+  <Empty description={t('plans.selectPlan')} />
   )}
   </Card>
 
-  <Card title="Task Details" bordered={false}>
+  <Card title={t('plans.detail.title')} bordered={false}>
   {selectedTask ? (
   <Descriptions column={2} size="small" bordered>
-  <Descriptions.Item label="Task Name" span={2}>
+  <Descriptions.Item label={t('plans.detail.name')} span={2}>
   {selectedTask.name}
   </Descriptions.Item>
-  <Descriptions.Item label="Task Type">
+  <Descriptions.Item label={t('plans.detail.type')}>
   <Tag color={
   selectedTask.task_type === 'root'
   ? 'purple'
@@ -811,13 +813,13 @@ const PlansPage: React.FC = () => {
   : 'green'
   }>
   {selectedTask.task_type === 'root'
-  ? 'Root Task'
+  ? t('plans.detail.typeRoot')
   : selectedTask.task_type === 'composite'
-  ? 'Composite Task'
-  : 'Atomic Task'}
+  ? t('plans.detail.typeComposite')
+  : t('plans.detail.typeAtomic')}
   </Tag>
   </Descriptions.Item>
-  <Descriptions.Item label="status">
+  <Descriptions.Item label={t('plans.detail.status')}>
   <Badge
   status={
   resolveDisplayStatus(selectedTask.status, selectedTask.effective_status) === 'completed'
@@ -830,29 +832,29 @@ const PlansPage: React.FC = () => {
   ? 'warning'
   : 'default'
   }
-  text={selectedTask.effective_status || selectedTask.status || ''}
+  text={selectedTask.effective_status || selectedTask.status ? statusLabel(t, selectedTask.effective_status || selectedTask.status) : ''}
   />
   </Descriptions.Item>
-  <Descriptions.Item label="Depth">
+  <Descriptions.Item label={t('plans.detail.depth')}>
   {selectedTask.depth ?? 0}
   </Descriptions.Item>
-  <Descriptions.Item label="Task ID">{selectedTask.id}</Descriptions.Item>
-  <Descriptions.Item label="Parent Task">
+  <Descriptions.Item label={t('plans.detail.id')}>{selectedTask.id}</Descriptions.Item>
+  <Descriptions.Item label={t('plans.detail.parent')}>
   {selectedTask.parent_id ? `#${selectedTask.parent_id}` : ''}
   </Descriptions.Item>
   {selectedTask.instruction && (
-  <Descriptions.Item label="Instruction" span={2}>
+  <Descriptions.Item label={t('plans.detail.instruction')} span={2}>
   <Text>{selectedTask.instruction}</Text>
   </Descriptions.Item>
   )}
   {selectedTask.status_reason && (
-  <Descriptions.Item label="Status Reason" span={2}>
+  <Descriptions.Item label={t('plans.detail.statusReason')} span={2}>
   <Text type={resolveDisplayStatus(selectedTask.status, selectedTask.effective_status) === 'blocked' ? 'warning' : 'secondary'}>
   {selectedTask.status_reason}
   </Text>
   </Descriptions.Item>
   )}
-  <Descriptions.Item label="Execution Result" span={2}>
+  <Descriptions.Item label={t('plans.detail.executionResult')} span={2}>
   {executionInfo ? (
   <Space direction="vertical" size="small">
   <Badge
@@ -871,9 +873,9 @@ const PlansPage: React.FC = () => {
   ? 'warning'
   : 'default'
   }
-  text={executionInfo.status ?? ''}
+  text={executionInfo.status ? statusLabel(t, executionInfo.status) : ''}
   />
-  {executionInfo.manualAccepted && <Tag color="blue">Manually accepted</Tag>}
+  {executionInfo.manualAccepted && <Tag color="blue">{t('plans.results.manuallyAccepted')}</Tag>}
   {executionInfo.content && <Text>{executionInfo.content}</Text>}
   {executionInfo.notes && executionInfo.notes.length > 0 && (
   <Space direction="vertical" size={0}>
@@ -886,25 +888,22 @@ const PlansPage: React.FC = () => {
   )}
   {executionInfo.metadata && Object.keys(executionInfo.metadata).length > 0 && (
   <Text type="secondary">
-  Metadata:
-  {Object.entries(executionInfo.metadata)
-  .map(([key, value]) => `${key}=${String(value)}`)
-  .join(', ')}
+  {t('plans.detail.metadata', { value: Object.entries(executionInfo.metadata).map(([key, value]) => `${key}=${String(value)}`).join(', ') })}
   </Text>
   )}
   </Space>
   ) : (
-  <Text type="secondary">No execution data</Text>
+  <Text type="secondary">{t('plans.detail.noExecution')}</Text>
   )}
   </Descriptions.Item>
   {selectedPlanSummary?.description && (
-  <Descriptions.Item label="Plan Description" span={2}>
+  <Descriptions.Item label={t('plans.detail.planDescription')} span={2}>
   {selectedPlanSummary.description}
   </Descriptions.Item>
   )}
   </Descriptions>
   ) : (
-  <Text type="secondary">Select a task to view details.</Text>
+  <Text type="secondary">{t('plans.detail.pickTask')}</Text>
   )}
   </Card>
   </div>

@@ -37,12 +37,14 @@ import { DAGToolbar } from './DAGToolbar';
 import { DAGLegend } from './DAGLegend';
 import { DAGStatsBar } from './DAGStatsBar';
 
+import { useT } from '@/i18n/useT';
 interface DAGViewProps {
   onClose?: () => void;
   onNodeSelect?: (task: TaskType | null) => void;
 }
 
 const DAG3DView: React.FC<DAGViewProps> = ({ onClose, onNodeSelect }) => {
+  const t = useT();
   const containerRef = useRef<HTMLDivElement>(null);
   const graphRef = useRef<ForceGraphMethods | undefined>();
   const palette = useCanvasPalette();
@@ -142,7 +144,7 @@ const DAG3DView: React.FC<DAGViewProps> = ({ onClose, onNodeSelect }) => {
   });
   } catch (error: any) {
   console.error('Failed to load tasks:', error);
-  message.error(`Failed to load tasks: ${error.message}`);
+  message.error(t('tree.loadFailed', { message: error.message }));
   } finally {
   setLoading(false);
   }
@@ -270,7 +272,7 @@ const DAG3DView: React.FC<DAGViewProps> = ({ onClose, onNodeSelect }) => {
   link.download = `dag-sticky-${currentPlanId || 'unknown'}.png`;
   link.href = canvas.toDataURL('image/png');
   link.click();
-  message.success('DAG image exported');
+  message.success(t('dag.imageExported'));
   }
   };
 
@@ -321,27 +323,27 @@ const DAG3DView: React.FC<DAGViewProps> = ({ onClose, onNodeSelect }) => {
   const tabItems = [
   {
   key: 'basic',
-  label: <span><FileTextOutlined /> </span>,
+  label: <span><FileTextOutlined /> {t('dag.drawer.tabBasic')}</span>,
   children: (
   <div className="task-detail-section">
   <Descriptions column={1} size="small" bordered>
-  <Descriptions.Item label="Task ID">{selectedTask.id}</Descriptions.Item>
-  <Descriptions.Item label="name">{selectedTask.name}</Descriptions.Item>
-  <Descriptions.Item label="type">
+  <Descriptions.Item label={t('dag.drawer.taskId')}>{selectedTask.id}</Descriptions.Item>
+  <Descriptions.Item label={t('dag.drawer.name')}>{selectedTask.name}</Descriptions.Item>
+  <Descriptions.Item label={t('dag.drawer.type')}>
   <Tag color={getTaskTypeTag(selectedTask.task_type)}>
-  {getTaskTypeName(selectedTask.task_type)}
+  {getTaskTypeName(t, selectedTask.task_type)}
   </Tag>
   </Descriptions.Item>
-  <Descriptions.Item label="status">
+  <Descriptions.Item label={t('dag.drawer.status')}>
   <Tag color={getStatusTag(selectedTask.status)}>
-  {getStatusName(selectedTask.status)}
+  {getStatusName(t, selectedTask.status)}
   </Tag>
   </Descriptions.Item>
-  <Descriptions.Item label="depth">{selectedTask.depth ?? '-'}</Descriptions.Item>
-  <Descriptions.Item label="path">{selectedTask.path || '-'}</Descriptions.Item>
-  <Descriptions.Item label="Parent Task ID">{selectedTask.parent_id ?? ''}</Descriptions.Item>
+  <Descriptions.Item label={t('dag.drawer.depth')}>{selectedTask.depth ?? '-'}</Descriptions.Item>
+  <Descriptions.Item label={t('dag.drawer.path')}>{selectedTask.path || '-'}</Descriptions.Item>
+  <Descriptions.Item label={t('dag.drawer.parentId')}>{selectedTask.parent_id ?? '-'}</Descriptions.Item>
   {selectedTask.dependencies && selectedTask.dependencies.length > 0 && (
-  <Descriptions.Item label="dependencies">
+  <Descriptions.Item label={t('dag.drawer.dependencies')}>
   {selectedTask.dependencies.map(d => (
   <Tag key={d} style={{ marginRight: 4 }}>{d}</Tag>
   ))}
@@ -351,11 +353,11 @@ const DAG3DView: React.FC<DAGViewProps> = ({ onClose, onNodeSelect }) => {
 
   {selectedTask.instruction && (
   <div style={{ marginTop: 16 }}>
-  <Text strong style={{ display: 'block', marginBottom: 8 }}>Instruction</Text>
+  <Text strong style={{ display: 'block', marginBottom: 8 }}>{t('dag.drawer.instruction')}</Text>
   <div className="task-instruction-box">
   <Paragraph 
   style={{ margin: 0, whiteSpace: 'pre-wrap' }}
-  ellipsis={{ rows: 6, expandable: true, symbol: 'expand' }}
+  ellipsis={{ rows: 6, expandable: true, symbol: t('dag.drawer.expand') }}
   >
   {selectedTask.instruction}
   </Paragraph>
@@ -367,7 +369,7 @@ const DAG3DView: React.FC<DAGViewProps> = ({ onClose, onNodeSelect }) => {
   },
   {
   key: 'context',
-  label: <span><BranchesOutlined /> </span>,
+  label: <span><BranchesOutlined /> {t('dag.drawer.tabContext')}</span>,
   children: (
   <div className="task-detail-section">
   {selectedTask.context_combined ? (
@@ -375,28 +377,28 @@ const DAG3DView: React.FC<DAGViewProps> = ({ onClose, onNodeSelect }) => {
   <div className="task-context-box">
   <Paragraph 
   style={{ margin: 0, whiteSpace: 'pre-wrap', fontSize: 12 }}
-  ellipsis={{ rows: 10, expandable: true, symbol: 'expand' }}
+  ellipsis={{ rows: 10, expandable: true, symbol: t('dag.drawer.expand') }}
   >
   {selectedTask.context_combined}
   </Paragraph>
   </div>
   {selectedTask.context_updated_at && (
   <Text type="secondary" style={{ fontSize: 12, marginTop: 8, display: 'block' }}>
-  Updated: {new Date(selectedTask.context_updated_at).toLocaleString()}
+  {t('dag.drawer.updatedAt', { time: new Date(selectedTask.context_updated_at).toLocaleString() })}
   </Text>
   )}
   </>
   ) : (
-  <Empty description="No context available" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+  <Empty description={t('dag.drawer.noContext')} image={Empty.PRESENTED_IMAGE_SIMPLE} />
   )}
 
   {selectedTask.context_sections && selectedTask.context_sections.length > 0 && (
   <div style={{ marginTop: 16 }}>
-  <Text strong style={{ display: 'block', marginBottom: 8 }}>Context Sections</Text>
+  <Text strong style={{ display: 'block', marginBottom: 8 }}>{t('dag.drawer.contextSections')}</Text>
   <Collapse size="small" ghost>
   {selectedTask.context_sections.map((section, idx) => (
   <Panel 
-  header={section.name || `Section ${idx + 1}`} 
+  header={section.name || t('dag.sectionN', { n: idx + 1 })} 
   key={idx}
   >
   <pre style={{ 
@@ -419,29 +421,29 @@ const DAG3DView: React.FC<DAGViewProps> = ({ onClose, onNodeSelect }) => {
   },
   {
   key: 'result',
-  label: <span><HistoryOutlined /> Execution Result</span>,
+  label: <span><HistoryOutlined /> {t('dag.drawer.tabResult')}</span>,
   children: (
   <div className="task-detail-section">
   {loadingResult ? (
-  <div style={{ textAlign: 'center', padding: '20px' }}>Loading...</div>
+  <div style={{ textAlign: 'center', padding: '20px' }}>{t('dag.drawer.loading')}</div>
   ) : taskExecutionResult ? (
   <div className="task-result-box">
   <Paragraph 
   style={{ margin: 0, whiteSpace: 'pre-wrap', fontSize: 12 }}
-  ellipsis={{ rows: 15, expandable: true, symbol: 'expand' }}
+  ellipsis={{ rows: 15, expandable: true, symbol: t('dag.drawer.expand') }}
   >
   {taskExecutionResult}
   </Paragraph>
   </div>
   ) : (
-  <Empty description="No execution result available" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+  <Empty description={t('dag.drawer.noResult')} image={Empty.PRESENTED_IMAGE_SIMPLE} />
   )}
   </div>
   ),
   },
   {
   key: 'metadata',
-  label: <span><DatabaseOutlined /> </span>,
+  label: <span><DatabaseOutlined /> {t('dag.drawer.tabMetadata')}</span>,
   children: (
   <div className="task-detail-section">
   {selectedTask.metadata && Object.keys(selectedTask.metadata).length > 0 ? (
@@ -449,32 +451,32 @@ const DAG3DView: React.FC<DAGViewProps> = ({ onClose, onNodeSelect }) => {
   {formatJson(selectedTask.metadata)}
   </pre>
   ) : (
-  <Empty description="No metadata available" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+  <Empty description={t('dag.drawer.noMetadata')} image={Empty.PRESENTED_IMAGE_SIMPLE} />
   )}
 
   <Descriptions 
   column={1} 
   size="small" 
   style={{ marginTop: 16 }}
-  title={<Text type="secondary" style={{ fontSize: 12 }}>System</Text>}
+  title={<Text type="secondary" style={{ fontSize: 12 }}>{t('dag.drawer.system')}</Text>}
   >
   {selectedTask.created_at && (
-  <Descriptions.Item label="Created">
+  <Descriptions.Item label={t('dag.drawer.created')}>
   {new Date(selectedTask.created_at).toLocaleString()}
   </Descriptions.Item>
   )}
   {selectedTask.updated_at && (
-  <Descriptions.Item label="Updated">
+  <Descriptions.Item label={t('dag.drawer.updated')}>
   {new Date(selectedTask.updated_at).toLocaleString()}
   </Descriptions.Item>
   )}
   {selectedTask.session_id && (
-  <Descriptions.Item label="Session ID">
+  <Descriptions.Item label={t('dag.drawer.sessionId')}>
   <Text copyable style={{ fontSize: 12 }}>{selectedTask.session_id}</Text>
   </Descriptions.Item>
   )}
   {selectedTask.workflow_id && (
-  <Descriptions.Item label="Workflow ID">
+  <Descriptions.Item label={t('dag.drawer.workflowId')}>
   <Text copyable style={{ fontSize: 12 }}>{selectedTask.workflow_id}</Text>
   </Descriptions.Item>
   )}
@@ -558,7 +560,7 @@ const DAG3DView: React.FC<DAGViewProps> = ({ onClose, onNodeSelect }) => {
   <input
   className="dag-search-input"
   type="text"
-  placeholder="Search tasks..."
+  placeholder={t('dag.searchTasks')}
   value={searchText}
   onChange={(e) => setSearchText(e.target.value)}
   />
@@ -575,7 +577,7 @@ const DAG3DView: React.FC<DAGViewProps> = ({ onClose, onNodeSelect }) => {
   title={
   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
   <Tag color={getStatusTag(selectedTask?.status)}>
-  {getStatusName(selectedTask?.status)}
+  {getStatusName(t, selectedTask?.status)}
   </Tag>
   <span style={{ 
   flex: 1, 
@@ -613,7 +615,7 @@ const DAG3DView: React.FC<DAGViewProps> = ({ onClose, onNodeSelect }) => {
 
   {}
   <div className="dag-fullscreen-hint">
-  ESC  ·  ·  · 
+  {t('dag.escHint')}
   </div>
   </div>
   );
