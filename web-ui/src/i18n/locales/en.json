@@ -1,0 +1,44 @@
+{
+  "app": {
+    "name": "Phage-Agent"
+  },
+  "common": {
+    "retry": "Retry",
+    "cancel": "Cancel",
+    "confirm": "Confirm",
+    "save": "Save",
+    "refresh": "Refresh",
+    "language": "Language"
+  },
+  "header": {
+    "homeAria": "Phage-Agent home",
+    "connected": "Connected",
+    "disconnected": "Disconnected",
+    "ready": "Ready",
+    "offline": "Offline",
+    "layout": "Layout",
+    "switchLayoutAria": "Switch workspace layout",
+    "layoutPlan": "Plan workspace",
+    "layoutClassic": "Classic layout",
+    "chat": "Chat",
+    "backToChat": "Back to chat",
+    "extensions": "Extensions",
+    "extensionsTip": "Extensions: MCP servers and skills",
+    "anonymous": "anonymous",
+    "changePassword": "Change password",
+    "signOut": "Sign out",
+    "chatList": "Chat list",
+    "notifications": "Notifications",
+    "settings": "Settings",
+    "passwordUpdated": "Password updated.",
+    "passwordUpdateFailed": "Failed to update password.",
+    "currentPassword": "Current password",
+    "currentPasswordRequired": "Current password is required",
+    "newPassword": "New password",
+    "newPasswordRequired": "New password is required",
+    "passwordMin": "At least 8 characters",
+    "confirmPassword": "Confirm new password",
+    "confirmPasswordRequired": "Please confirm the new password",
+    "passwordMismatch": "Passwords do not match"
+  }
+}

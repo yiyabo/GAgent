@@ -1,0 +1,44 @@
+{
+  "app": {
+    "name": "Phage-Agent"
+  },
+  "common": {
+    "retry": "重试",
+    "cancel": "取消",
+    "confirm": "确定",
+    "save": "保存",
+    "refresh": "刷新",
+    "language": "语言"
+  },
+  "header": {
+    "homeAria": "Phage-Agent 首页",
+    "connected": "已连接",
+    "disconnected": "未连接",
+    "ready": "就绪",
+    "offline": "离线",
+    "layout": "布局",
+    "switchLayoutAria": "切换界面布局",
+    "layoutPlan": "计划工作区",
+    "layoutClassic": "经典布局",
+    "chat": "聊天",
+    "backToChat": "回到聊天",
+    "extensions": "扩展",
+    "extensionsTip": "扩展：MCP 服务器与技能",
+    "anonymous": "匿名",
+    "changePassword": "修改密码",
+    "signOut": "退出登录",
+    "chatList": "会话列表",
+    "notifications": "通知",
+    "settings": "设置",
+    "passwordUpdated": "密码已更新。",
+    "passwordUpdateFailed": "密码更新失败。",
+    "currentPassword": "当前密码",
+    "currentPasswordRequired": "请输入当前密码",
+    "newPassword": "新密码",
+    "newPasswordRequired": "请输入新密码",
+    "passwordMin": "至少 8 个字符",
+    "confirmPassword": "确认新密码",
+    "confirmPasswordRequired": "请再次输入新密码",
+    "passwordMismatch": "两次输入的密码不一致"
+  }
+}

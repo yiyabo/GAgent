@@ -5,6 +5,7 @@ import { App as AntdApp } from 'antd';
 import App from './App';
 import { queryClient } from '@/queryClient';
 import { emitAuthUnauthorized } from '@/auth/events';
+import '@/i18n';
 import ThemeProvider from '@/theme/ThemeProvider';
 import './styles/fonts.css';
 import './styles/tokens.css';

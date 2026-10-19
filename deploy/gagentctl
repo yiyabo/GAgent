@@ -94,8 +94,9 @@ build() {
   # (no Docker Hub route — see deploy/Dockerfile.gateway). The build needs node
   # on the machine running gagentctl.
   log "building frontend (needs node on this host)"
+  # VITE_DEFAULT_LANGUAGE (en | zh-CN) is the UI language before a visitor picks one; unset means en.
   ( cd "${ROOT_DIR}/web-ui" \
-      && VITE_API_BASE_URL='' VITE_WS_BASE_URL='' npm run build ) || die "frontend build failed"
+      && VITE_API_BASE_URL='' VITE_WS_BASE_URL='' VITE_DEFAULT_LANGUAGE="${VITE_DEFAULT_LANGUAGE:-}" npm run build ) || die "frontend build failed"
   local hits
   # Runtime .js only: source maps legitimately contain the dev origin and are
   # never executed (same rule as the gate inside deploy/Dockerfile.gateway).

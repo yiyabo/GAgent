@@ -23,7 +23,8 @@ export default defineConfig({
   webServer: {
     // Same-origin API base so fetches reach page.route(), exactly as the gateway build does in production.
     command: 'npm run build && npx vite preview --port 4173 --host 127.0.0.1 --strictPort',
-    env: { VITE_API_BASE_URL: '', VITE_WS_BASE_URL: '' },
+    // English is the CityU default. The language tests read the build's own default, so they stay valid for either.
+    env: { VITE_API_BASE_URL: '', VITE_WS_BASE_URL: '', VITE_DEFAULT_LANGUAGE: 'en' },
     url: 'http://127.0.0.1:4173',
     reuseExistingServer: !process.env.CI,
     timeout: 180_000,
