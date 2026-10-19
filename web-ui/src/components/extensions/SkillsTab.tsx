@@ -4,27 +4,29 @@ import type { ColumnsType } from 'antd/es/table';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { extensionsApi, type SkillEntry, type SkillListResponse } from '@api/extensions';
 import { ExternalLink, ScannerBadge, SeverityIcon, SignoffBadge, skillSwitchBlockReason } from './extensionMeta';
+import { useT, type TFn } from '@/i18n/useT';
 
 const { Text } = Typography;
 
 export const SKILLS_QUERY_KEY = ['extensions', 'skills'] as const;
 
-function formatSize(chars: number): string {
-  if (chars >= 10_000) return `${(chars / 1000).toFixed(1)}k 字符`;
-  return `${chars} 字符`;
+function formatSize(t: TFn, chars: number): string {
+  if (chars >= 10_000) return t('extensions.sizeK', { n: (chars / 1000).toFixed(1) });
+  return t('extensions.sizeChars', { n: chars });
 }
 
 const FindingsList: React.FC<{ skill: SkillEntry }> = ({ skill }) => {
+  const t = useT();
   if (skill.findings.length === 0) {
     return (
       <Text type="secondary">
-        没有扫描发现。{skill.review.notes ? `备注：${skill.review.notes}` : ''}
+        {skill.review.notes ? t('extensions.noFindingsWithNotes', { notes: skill.review.notes }) : t('extensions.noFindings')}
       </Text>
     );
   }
   return (
     <div>
-      {skill.review.notes ? <div style={{ marginBottom: 8 }}><Text type="secondary">备注：{skill.review.notes}</Text></div> : null}
+      {skill.review.notes ? <div style={{ marginBottom: 8 }}><Text type="secondary">{t('extensions.notes', { notes: skill.review.notes })}</Text></div> : null}
       <ul style={{ margin: 0, paddingLeft: 0, listStyle: 'none' }}>
         {skill.findings.map((finding, index) => (
           <li key={`${finding.rule}-${finding.file}-${finding.line ?? 'n'}-${index}`} style={{ marginBottom: 4 }}>
@@ -42,6 +44,7 @@ const FindingsList: React.FC<{ skill: SkillEntry }> = ({ skill }) => {
 };
 
 const SkillsTab: React.FC = () => {
+  const t = useT();
   const { message } = AntdApp.useApp();
   const queryClient = useQueryClient();
   const [filter, setFilter] = useState('');
@@ -69,9 +72,9 @@ const SkillsTab: React.FC = () => {
           ? { ...current, skills: current.skills.map((item) => (item.name === updated.name ? updated : item)) }
           : current,
       );
-      message.success(`${skill.name} 已${enable ? '启用' : '停用'}`);
+      message.success(t(enable ? 'extensions.toggledOn' : 'extensions.toggledOff', { name: skill.name }));
     } catch (error) {
-      message.error(error instanceof Error && error.message ? error.message : '操作失败');
+      message.error(error instanceof Error && error.message ? error.message : t('extensions.actionFailed'));
     } finally {
       setPendingNames((prev) => {
         const next = { ...prev };
@@ -97,14 +100,14 @@ const SkillsTab: React.FC = () => {
   const columns: ColumnsType<SkillEntry> = useMemo(
     () => [
       {
-        title: '名称',
+        title: t('extensions.colName'),
         dataIndex: 'name',
         key: 'name',
         width: 180,
         render: (name: string) => <Text strong>{name}</Text>,
       },
       {
-        title: '描述',
+        title: t('extensions.colDescription'),
         dataIndex: 'description',
         key: 'description',
         width: 260,
@@ -113,29 +116,29 @@ const SkillsTab: React.FC = () => {
         ),
       },
       {
-        title: '来源',
+        title: t('extensions.colSource'),
         key: 'origin',
         width: 240,
         render: (_: unknown, skill) => (
           <Space size={[4, 4]} wrap>
             <Tag color={skill.origin.kind === 'internal' ? 'geekblue' : 'purple'} style={{ marginInlineEnd: 0 }}>
-              {skill.origin.kind === 'internal' ? '内置' : '第三方'}
+              {skill.origin.kind === 'internal' ? t('extensions.builtIn') : t('extensions.thirdParty')}
             </Tag>
             <Text type="secondary"><ExternalLink href={skill.origin.source}>{skill.origin.source}</ExternalLink></Text>
             {skill.origin.license ? <Text type="secondary">· {skill.origin.license}</Text> : null}
             {skill.origin.modified ? (
               <Popover
-                title="本地修改"
+                title={t('extensions.localChanges')}
                 content={
                   skill.origin.modifications.length > 0 ? (
                     <ul style={{ margin: 0, paddingLeft: 18 }}>
                       {skill.origin.modifications.map((item) => <li key={item}>{item}</li>)}
                     </ul>
-                  ) : '未列出具体修改'
+                  ) : t('extensions.noChangesListed')
                 }
               >
-                <Tag color="gold" style={{ cursor: 'pointer', marginInlineEnd: 0 }} tabIndex={0} aria-label="已修改：查看修改内容">
-                  已修改
+                <Tag color="gold" style={{ cursor: 'pointer', marginInlineEnd: 0 }} tabIndex={0} aria-label={t('extensions.modifiedAria')}>
+                  {t('extensions.modified')}
                 </Tag>
               </Popover>
             ) : null}
@@ -143,7 +146,7 @@ const SkillsTab: React.FC = () => {
         ),
       },
       {
-        title: '扫描 / 确认',
+        title: t('extensions.colReview'),
         key: 'review',
         width: 200,
         render: (_: unknown, skill) => (
@@ -154,17 +157,17 @@ const SkillsTab: React.FC = () => {
         ),
       },
       {
-        title: '大小',
+        title: t('extensions.colSize'),
         key: 'size',
         width: 150,
         render: (_: unknown, skill) => (
           <Text type="secondary">
-            {formatSize(skill.size_chars)} · {skill.scripts} 脚本 · {skill.references} 引用
+            {t('extensions.sizeLine', { size: formatSize(t, skill.size_chars), scripts: skill.scripts, refs: skill.references })}
           </Text>
         ),
       },
       {
-        title: '启用',
+        title: t('extensions.colEnabled'),
         key: 'enabled',
         width: 90,
         fixed: 'right',
@@ -178,7 +181,7 @@ const SkillsTab: React.FC = () => {
                   checked={skill.enabled}
                   loading={pending}
                   disabled={pending || reason !== null}
-                  aria-label={`${skill.enabled ? '停用' : '启用'}技能 ${skill.name}`}
+                  aria-label={t(skill.enabled ? 'extensions.skillDisableAria' : 'extensions.skillEnableAria', { name: skill.name })}
                   onChange={(next) => void handleToggle(skill, next)}
                 />
               </span>
@@ -188,25 +191,25 @@ const SkillsTab: React.FC = () => {
       },
     ],
     // handleToggle only closes over stable setters/mutation; data/pending drive the switch state.
-    [data?.can_manage, pendingNames],
+    [data?.can_manage, pendingNames, t],
   );
 
   if (query.isLoading) {
     return (
       <div style={{ textAlign: 'center', padding: 48 }}>
-        <Spin tip="加载中…"><div style={{ padding: 24 }} /></Spin>
+        <Spin tip={t('extensions.loading')}><div style={{ padding: 24 }} /></Spin>
       </div>
     );
   }
 
   if (query.isError || !data) {
-    const reason = query.error instanceof Error ? query.error.message : '未知错误';
+    const reason = query.error instanceof Error ? query.error.message : t('extensions.unknownError');
     return (
       <Result
         status="error"
-        title="无法加载技能列表"
+        title={t('extensions.skillsLoadFailed')}
         subTitle={reason}
-        extra={<Button type="primary" onClick={() => void query.refetch()}>重试</Button>}
+        extra={<Button type="primary" onClick={() => void query.refetch()}>{t('common.retry')}</Button>}
       />
     );
   }
@@ -216,13 +219,13 @@ const SkillsTab: React.FC = () => {
       <Space wrap>
         <Input.Search
           allowClear
-          placeholder="按名称、描述或来源过滤"
-          aria-label="过滤技能"
+          placeholder={t('extensions.skillsFilterPlaceholder')}
+          aria-label={t('extensions.skillsFilterAria')}
           style={{ width: 280 }}
           value={filter}
           onChange={(event) => setFilter(event.target.value)}
         />
-        <Text type="secondary">共 {visible.length} / {data.skills.length} 个</Text>
+        <Text type="secondary">{t('extensions.count', { visible: visible.length, total: data.skills.length })}</Text>
       </Space>
       <Table<SkillEntry>
         rowKey="name"
@@ -232,7 +235,7 @@ const SkillsTab: React.FC = () => {
         pagination={visible.length > 20 ? { pageSize: 20 } : false}
         scroll={{ x: 1100 }}
         locale={{
-          emptyText: <Empty description={data.skills.length === 0 ? '暂无技能' : '没有符合过滤条件的技能'} />,
+          emptyText: <Empty description={data.skills.length === 0 ? t('extensions.skillsEmpty') : t('extensions.skillsNoMatch')} />,
         }}
         expandable={{
           expandedRowRender: (skill) => <FindingsList skill={skill} />,

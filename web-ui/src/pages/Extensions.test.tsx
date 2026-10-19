@@ -2,13 +2,14 @@ import React from 'react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { App as AntdApp } from 'antd';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Full antd page + real user-event clicks: ~2 s locally, several times that on a loaded CI runner.
 vi.setConfig({ testTimeout: 30_000 });
 
 import Extensions from './Extensions';
 import { extensionsApi } from '@api/extensions';
+import { useLanguageStore } from '@/i18n/language';
 import type { McpListResponse, McpServer, SkillEntry, SkillListResponse } from '@api/extensions';
 
 vi.mock('@api/extensions', () => ({
@@ -448,5 +449,49 @@ describe('Extensions page - Skills tab', () => {
     expect(await screen.findByText('无法加载技能列表')).toBeInTheDocument();
     await user.click(screen.getAllByRole('button', { name: /重\s?试/ })[0]);
     expect(await screen.findByText('seq-helper')).toBeInTheDocument();
+  });
+});
+
+describe('Extensions page in English', () => {
+  const cjk = /[\u4e00-\u9fff]/;
+  beforeEach(() => {
+    vi.resetAllMocks();
+    useLanguageStore.getState().setLanguage('en');
+    api.listSkills.mockResolvedValue(skills());
+  });
+  afterEach(() => useLanguageStore.getState().setLanguage('zh-CN'));
+
+  it('shows the MCP card, its badges, tools and checks in English', async () => {
+    api.listMcp.mockResolvedValue(mcp());
+    const { container } = renderPage();
+    const card = await screen.findByTestId('mcp-server-blast');
+    expect(within(card).getByText('Verified')).toBeInTheDocument();
+    expect(within(card).getByText('Human sign-off done')).toBeInTheDocument();
+    expect(within(card).getByText('Container-isolated')).toBeInTheDocument();
+    expect(within(card).getByText('blast_search · Read-only')).toBeInTheDocument();
+    expect(within(card).getByText('save_result · Has side effects')).toBeInTheDocument();
+    expect(within(card).getByLabelText('Enable MCP server BLAST Search')).toBeInTheDocument();
+    fireEvent.click(within(card).getByText(/Verification checks \(1\/2 passed\)/));
+    expect(within(card).getByLabelText('Passed')).toBeInTheDocument();
+    expect(screen.getByText('1 of 1')).toBeInTheDocument();
+    expect(container.textContent).not.toMatch(cjk);
+  });
+
+  it('shows the not-configured notice and the switch reason in English', async () => {
+    api.listMcp.mockResolvedValue(mcp({ configured: false }));
+    renderPage();
+    expect(await screen.findByText('The server has no MCP mount file configured')).toBeInTheDocument();
+  });
+
+  it('shows the skills table in English', async () => {
+    api.listMcp.mockResolvedValue(mcp());
+    const { container } = renderPage();
+    fireEvent.click(screen.getByRole('tab', { name: /Skills/ }));
+    expect(await screen.findByText('Third-party')).toBeInTheDocument();
+    expect(screen.getByText('Warnings')).toBeInTheDocument();
+    expect(screen.getByText('Awaiting human sign-off')).toBeInTheDocument();
+    expect(screen.getByText(/1234 chars · 2 scripts · 1 references/)).toBeInTheDocument();
+    expect(screen.getByText('Modified')).toBeInTheDocument();
+    expect(container.textContent).not.toMatch(cjk);
   });
 });

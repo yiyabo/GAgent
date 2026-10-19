@@ -2,27 +2,31 @@ import React from 'react';
 import { Tabs, Typography } from 'antd';
 import McpTab from '@components/extensions/McpTab';
 import SkillsTab from '@components/extensions/SkillsTab';
+import { useT } from '@/i18n/useT';
 
 const { Title, Paragraph } = Typography;
 
-const Extensions: React.FC = () => (
+const Extensions: React.FC = () => {
+  const t = useT();
+  return (
   <div>
     <div className="content-header">
-      <Title level={3} style={{ margin: 0 }}>扩展</Title>
+      <Title level={3} style={{ margin: 0 }}>{t('extensions.title')}</Title>
       <Paragraph type="secondary" style={{ marginBottom: 0 }}>
-        查看智能体可用的 MCP 服务器与技能，以及它们的来源、审核状态与隔离方式。
+        {t('extensions.subtitle')}
       </Paragraph>
     </div>
     <div className="content-body">
       <Tabs
         defaultActiveKey="mcp"
         items={[
-          { key: 'mcp', label: 'MCP 服务器', children: <McpTab /> },
-          { key: 'skills', label: '技能 (Skills)', children: <SkillsTab /> },
+          { key: 'mcp', label: t('extensions.tabMcp'), children: <McpTab /> },
+          { key: 'skills', label: t('extensions.tabSkills'), children: <SkillsTab /> },
         ]}
       />
     </div>
   </div>
-);
+  );
+};
 
 export default Extensions;

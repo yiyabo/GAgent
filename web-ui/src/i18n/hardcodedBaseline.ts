@@ -16,12 +16,7 @@ export const HARDCODED_BASELINE: Record<string, number> = {
   'components/chat/HeroWelcome.tsx': 1,
   'components/chat/message/SkillLearningPanel.tsx': 1,
   'components/chat/message/index.tsx': 1,
-  'components/extensions/McpServerCard.tsx': 16,
-  'components/extensions/McpTab.tsx': 15,
-  'components/extensions/SkillsTab.tsx': 17,
-  'components/extensions/extensionMeta.tsx': 18,
   'components/layout/artifactPreview.tsx': 1,
   'components/layout/planWorkspace/PlanWorkspace.tsx': 1,
-  'pages/Extensions.tsx': 4,
   'pages/Landing.tsx': 20,
 };
