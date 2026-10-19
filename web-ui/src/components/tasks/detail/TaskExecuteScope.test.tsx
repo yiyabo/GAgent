@@ -1,7 +1,8 @@
 import React from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { App as AntdApp } from 'antd';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { useLanguageStore } from '@/i18n/language';
 import { planTreeApi } from '@api/planTree';
 import TaskExecuteModal from './TaskExecuteModal';
 
@@ -11,7 +12,8 @@ vi.mock('./TaskDetailSections', () => ({ resolveTaskName: (id: number) => `Task 
 const dependencies = { plan_id: 1, target_task_id: 1, closure_dependencies: [], missing_dependencies: [], running_dependencies: [], cycle_detected: false, execution_items: [], execution_order: [], direct_dependencies: [], satisfied_statuses: [], cycle_paths: [] };
 const callbacks = { onClose: vi.fn(), onExecutionStarted: vi.fn(), handleDependencyClick: vi.fn(), refetchPlanTasks: vi.fn(), refetchTaskResult: vi.fn() };
 const component = (planId = 1) => <AntdApp><TaskExecuteModal {...callbacks} open currentPlanId={planId} currentSessionId={`s${planId}`} selectedTaskId={1} activeTask={null} taskMap={new Map()} isTaskDrawerOpen /></AntdApp>;
-beforeEach(() => { vi.clearAllMocks(); vi.mocked(planTreeApi.getTaskDependencyPlan).mockResolvedValue(dependencies); });
+afterEach(() => useLanguageStore.setState({ language: 'zh-CN' }));
+beforeEach(() => { vi.clearAllMocks(); useLanguageStore.setState({ language: 'en' }); vi.mocked(planTreeApi.getTaskDependencyPlan).mockResolvedValue(dependencies); });
 
 describe('execution callback ownership', () => {
   it('ignores the old execution response after changing plan with the same task id', async () => {

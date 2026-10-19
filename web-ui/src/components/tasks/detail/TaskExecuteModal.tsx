@@ -12,7 +12,10 @@ import {
 import { planTreeApi } from '@api/planTree';
 import JobLogPanel from '@components/chat/JobLogPanel';
 import type { DependencyPlanResponse, PlanTaskNode } from '@/types';
-import { statusColorMap, statusLabelMap } from './constants';
+import { statusColorMap } from './constants';
+import { translate, useT } from '@/i18n/useT';
+import type { TFn } from '@/i18n/useT';
+import { planStatusLabel } from '@/i18n/planStatusLabels';
 import { resolveTaskName, resolveTaskStatus } from './TaskDetailSections';
 import { useCallbackScope } from './useCallbackScope';
 
@@ -24,12 +27,21 @@ const executionStateColorMap: Record<string, string> = {
   failed: 'error',
   ready: 'blue',
 };
-const executionStateLabelMap: Record<string, string> = {
-  completed: 'Completed',
-  running: 'Running',
-  blocked: 'Blocked',
-  failed: 'Failed',
-  ready: 'Ready',
+const executionStateLabel = (state: string, t: TFn): string => {
+  switch (state) {
+    case 'completed':
+      return t('status.completed');
+    case 'running':
+      return t('status.running');
+    case 'blocked':
+      return t('status.blocked');
+    case 'failed':
+      return t('status.failed');
+    case 'ready':
+      return t('taskExecute.ready');
+    default:
+      return state;
+  }
 };
 
 interface TaskExecuteModalProps {
@@ -64,6 +76,7 @@ const TaskExecuteModal: React.FC<TaskExecuteModalProps> = ({
   refetchTaskResult,
 }) => {
   const { message } = AntdApp.useApp();
+  const t = useT();
   const [dependencyPlanLoading, setDependencyPlanLoading] = useState(false);
   const [dependencyPlan, setDependencyPlan] = useState<DependencyPlanResponse | null>(null);
   const [executeLoading, setExecuteLoading] = useState(false);
@@ -88,7 +101,7 @@ const TaskExecuteModal: React.FC<TaskExecuteModalProps> = ({
   include_subtasks: true,
   })
   .then((plan) => { if (isCurrentScope()) setDependencyPlan(plan); })
-  .catch((err: any) => { if (isCurrentScope()) setExecuteError(err?.message || 'Failed to load dependency plan'); })
+  .catch((err: any) => { if (isCurrentScope()) setExecuteError(err?.message || translate('taskExecute.depPlanFailed')); })
   .finally(() => { if (isCurrentScope()) setDependencyPlanLoading(false); });
   }
   }, [open, currentPlanId, selectedTaskId, currentSessionId, captureScope]);
@@ -113,11 +126,11 @@ const TaskExecuteModal: React.FC<TaskExecuteModalProps> = ({
   return;
   }
   if (dependencyPlan?.cycle_detected) {
-  message.error('Execution blocked due to dependency cycle. Resolve dependencies first.');
+  message.error(translate('taskExecute.cycleBlocked'));
   return;
   }
   if (dependencyPlan?.running_dependencies?.length) {
-  message.warning('Some dependencies are still running. Please wait and retry.');
+  message.warning(translate('taskExecute.depsRunning'));
   return;
   }
 
@@ -134,22 +147,22 @@ const TaskExecuteModal: React.FC<TaskExecuteModalProps> = ({
   });
   if (!isCurrentScope()) return;
   if (!resp.success) {
-  setExecuteError(resp.message || 'Execution failed');
+  setExecuteError(resp.message || translate('jobLog.executionFailed'));
   setDependencyPlan(resp.dependency_plan ?? dependencyPlan);
   return;
   }
   const jobId = resp.job?.job_id;
   if (!jobId) {
-  setExecuteError('Execution started, but no job_id was returned.');
+  setExecuteError(translate('taskExecute.noJobId'));
   return;
   }
   setExecuteJobId(jobId);
   onExecutionStarted?.(jobId);
-  message.success('Task execution started in background.');
+  message.success(translate('taskExecute.started'));
   void refetchPlanTasks();
   void refetchTaskResult();
   } catch (err: any) {
-  if (isCurrentScope()) setExecuteError(err?.message || 'Execution failed');
+  if (isCurrentScope()) setExecuteError(err?.message || translate('jobLog.executionFailed'));
   } finally {
   if (isCurrentScope()) setExecuteLoading(false);
   }
@@ -175,19 +188,19 @@ const TaskExecuteModal: React.FC<TaskExecuteModalProps> = ({
   return (
   <Modal
   open={open}
-  title={executeJobId ? 'Execution Progress' : 'Execute Task'}
+  title={executeJobId ? t('taskExecute.titleProgress') : t('taskExecute.titleExecute')}
   onCancel={handleClose}
   width={720}
   footer={
   executeJobId
   ? [
   <Button key="close" onClick={handleClose}>
-  Close
+  {t('common.close')}
   </Button>,
   ]
   : [
   <Button key="cancel" onClick={handleClose}>
-  Cancel
+  {t('common.cancel')}
   </Button>,
   <Button
   key="run"
@@ -202,19 +215,19 @@ const TaskExecuteModal: React.FC<TaskExecuteModalProps> = ({
   }
   >
   {dependencyPlan?.missing_dependencies?.length
-  ? 'Execute with dependencies'
-  : 'Execute task'}
+  ? t('taskExecute.runWithDeps')
+  : t('taskExecute.runTask')}
   </Button>,
   ]
   }
   >
   {dependencyPlanLoading ? (
   <div style={{ padding: '16px 0' }}>
-  <Spin tip="Loading execution prerequisites..." />
+  <Spin tip={t('taskExecute.loadingPrereqs')} />
   </div>
   ) : executeJobId ? (
   <Space direction="vertical" size="small" style={{ width: '100%' }}>
-  <Text type="secondary">Deep Think execution is active. You can monitor the thinking timeline in real time.</Text>
+  <Text type="secondary">{t('taskExecute.deepThinkActive')}</Text>
   <JobLogPanel
   jobId={executeJobId}
   targetTaskName={activeTask?.name ?? null}
@@ -227,7 +240,7 @@ const TaskExecuteModal: React.FC<TaskExecuteModalProps> = ({
   {executeError && (
   <Alert
   type="error"
-  message="执行请求未成功"
+  message={t('taskExecute.requestFailed')}
   description={executeError}
   showIcon
   />
@@ -236,8 +249,8 @@ const TaskExecuteModal: React.FC<TaskExecuteModalProps> = ({
   {dependencyPlan?.cycle_detected && (
   <Alert
   type="error"
-  message="Dependency cycle detected"
-  description="Resolve cyclic dependencies before executing this task."
+  message={t('taskExecute.cycleTitle')}
+  description={t('taskExecute.cycleDesc')}
   showIcon
   />
   )}
@@ -245,24 +258,23 @@ const TaskExecuteModal: React.FC<TaskExecuteModalProps> = ({
   {dependencyPlan && !dependencyPlan.cycle_detected && (
   <>
   <Text type="secondary">
-  Dependency closure: {dependencyPlan.closure_dependencies.length}; missing prerequisites:{" "}
-  {dependencyPlan.missing_dependencies.length}
+  {t('taskExecute.closure', { closure: dependencyPlan.closure_dependencies.length, missing: dependencyPlan.missing_dependencies.length })}
   </Text>
 
   {dependencyPlan.running_dependencies.length > 0 && (
   <Alert
   type="warning"
-  message="Dependencies are still running"
-  description="Wait for running dependencies to finish before executing this task."
+  message={t('taskExecute.stillRunningTitle')}
+  description={t('taskExecute.stillRunningDesc')}
   showIcon
   />
   )}
 
   <div>
-  <Text type="secondary">Missing dependencies:</Text>
+  <Text type="secondary">{t('taskExecute.missingDeps')}</Text>
   {dependencyPlan.missing_dependencies.length === 0 ? (
   <div style={{ marginTop: 6 }}>
-  <Text>前置任务状态已满足；输入文件仍需核对。</Text>
+  <Text>{t('taskExecute.prereqsMet')}</Text>
   </div>
   ) : (
   <Space
@@ -273,7 +285,7 @@ const TaskExecuteModal: React.FC<TaskExecuteModalProps> = ({
   {dependencyPlan.missing_dependencies.map((dep) => (
   <Space key={dep.id} size={8} wrap>
   <Tag color={statusColorMap[dep.status] ?? 'default'}>
-  {statusLabelMap[dep.status] ?? dep.status}
+  {planStatusLabel(t, dep.status)}
   </Tag>
   <Button
   size="small"
@@ -289,13 +301,11 @@ const TaskExecuteModal: React.FC<TaskExecuteModalProps> = ({
   </div>
 
   <div>
-   <Text type="secondary">Execution order:</Text>
+   <Text type="secondary">{t('taskExecute.order')}</Text>
    {executionItems.length > 0 && (
    <div style={{ marginTop: 6 }}>
    <Text type="secondary">
-   Steps: {executionItems.length} | Ready: {executionStateCounts.ready ?? 0} | Running:{' '}
-   {executionStateCounts.running ?? 0} | Blocked: {executionStateCounts.blocked ?? 0} |
-   Completed: {executionStateCounts.completed ?? 0}
+   {t('taskExecute.steps', { steps: executionItems.length, ready: executionStateCounts.ready ?? 0, running: executionStateCounts.running ?? 0, blocked: executionStateCounts.blocked ?? 0, completed: executionStateCounts.completed ?? 0 })}
    </Text>
    </div>
    )}
@@ -320,10 +330,10 @@ const TaskExecuteModal: React.FC<TaskExecuteModalProps> = ({
    {item.step_index}.
    </Text>
    <Tag color={executionStateColorMap[item.execution_state] ?? 'default'}>
-   {executionStateLabelMap[item.execution_state] ?? item.execution_state}
+   {executionStateLabel(item.execution_state, t)}
    </Tag>
    <Tag color={statusColorMap[item.status] ?? 'default'}>
-   {statusLabelMap[item.status] ?? item.status}
+   {planStatusLabel(t, item.status)}
    </Tag>
    <Button
    size="small"
@@ -332,14 +342,13 @@ const TaskExecuteModal: React.FC<TaskExecuteModalProps> = ({
    >
    #{tid} {item.name}
    </Button>
-   {isTarget && <Text type="secondary">(target task)</Text>}
+   {isTarget && <Text type="secondary">{t('taskExecute.targetTask')}</Text>}
    </Space>
    {item.depends_on.length > 0 && (
    <Text type="secondary">
-   Depends on: {item.depends_on.map((dep) => `#${dep}`).join(', ')}
    {item.unmet_dependencies.length > 0
-   ? ` | unmet: ${item.unmet_dependencies.map((dep) => `#${dep}`).join(', ')}`
-   : ''}
+   ? t('taskExecute.dependsOnUnmet', { deps: item.depends_on.map((dep) => `#${dep}`).join(', '), unmet: item.unmet_dependencies.map((dep) => `#${dep}`).join(', ') })
+   : t('taskExecute.dependsOn', { deps: item.depends_on.map((dep) => `#${dep}`).join(', ') })}
    </Text>
    )}
    {item.instruction && (
@@ -349,8 +358,7 @@ const TaskExecuteModal: React.FC<TaskExecuteModalProps> = ({
    )}
    {item.expected_deliverables.length > 0 && (
    <Text type="secondary">
-   Expected outputs: {item.expected_deliverables.slice(0, 4).join(', ')}
-   {item.expected_deliverables.length > 4 ? ', ...' : ''}
+   {t('taskExecute.expectedOutputs', { list: `${item.expected_deliverables.slice(0, 4).join(', ')}${item.expected_deliverables.length > 4 ? ', ...' : ''}` })}
    </Text>
    )}
    </Space>
@@ -365,7 +373,7 @@ const TaskExecuteModal: React.FC<TaskExecuteModalProps> = ({
   {index + 1}.
   </Text>
   <Tag color={statusColorMap[status] ?? 'default'}>
-  {statusLabelMap[status] ?? status}
+  {planStatusLabel(t, status)}
   </Tag>
   <Button
   size="small"
@@ -374,7 +382,7 @@ const TaskExecuteModal: React.FC<TaskExecuteModalProps> = ({
   >
   #{tid} {resolveTaskName(tid, selectedTaskId, activeTask, taskMap, dependencyPlan)}
   </Button>
-   {isTarget && <Text type="secondary">(target task)</Text>}
+   {isTarget && <Text type="secondary">{t('taskExecute.targetTask')}</Text>}
    </Space>
    );
    })}

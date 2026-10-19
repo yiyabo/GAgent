@@ -1,4 +1,5 @@
 import type { PlanNodeResponse, PlanTreeResponse, Task } from '@/types';
+import { translate } from '@/i18n/useT';
 
 const normalizeTaskStatus = (rawStatus?: string | null): Task['status'] => {
   const normalized = typeof rawStatus === 'string' ? rawStatus.toLowerCase() : 'pending';
@@ -54,7 +55,7 @@ export function planTreeToTasks(tree: PlanTreeResponse): Task[] {
       name: node.name,
       status,
       effective_status: node.effective_status ?? node.status ?? null,
-      status_reason: node.status_reason ?? (unfinishedStage ? '阶段拆解尚未完成，未生成原子子任务。' : null),
+      status_reason: node.status_reason ?? (unfinishedStage ? translate('planWorkspace.stageNotDecomposed') : null),
       blocked_by_dependencies: node.blocked_by_dependencies ?? false,
       incomplete_dependencies: Array.isArray(node.incomplete_dependencies)
         ? node.incomplete_dependencies.map(Number).filter((dep) => !Number.isNaN(dep))

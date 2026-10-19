@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useChatStore } from '@store/chat';
 import { useTasksStore } from '@store/tasks';
 import type { PlanTreeResponse } from '@/types';
+import { translate } from '@/i18n/useT';
 
 let navigationGeneration = 0;
 export interface SourceNotice { planId: number; title: string; sessionId: string }
@@ -25,7 +26,7 @@ export async function restorePlanSource(notice: SourceNotice, isOriginCurrent: (
   if (!findSource()) await useChatStore.getState().loadSessions();
   if (!isOriginCurrent() || !isStillRequested()) return false;
   const source = findSource();
-  if (!source) throw new Error('来源会话不在当前可访问的会话列表中，请先在对应项目中打开该会话。');
+  if (!source) throw new Error(translate('planWorkspace.sourceNotAccessible'));
   let interrupted = false;
   let enteredSource = false;
   const initialSourcePlan = source.plan_id ?? null;
@@ -66,7 +67,7 @@ export function usePlanSourceGuard(planId: number | null, sessionId: string | nu
     const ticket = ++generation.current;
     setBusy(true); setError(null);
     try { await restorePlanSource(target, () => isCurrent(ticket), () => navigationGeneration === navigation); }
-    catch (failure) { if (isCurrent(ticket)) setError(failure instanceof Error ? failure.message : '无法打开来源会话。'); }
+    catch (failure) { if (isCurrent(ticket)) setError(failure instanceof Error ? failure.message : translate('planWorkspace.sourceOpenFailed')); }
     finally { if (isCurrent(ticket)) setBusy(false); }
   }, [isCurrent]);
   return {error, busy, dismiss, openSource};

@@ -1,14 +1,8 @@
 import type { BackgroundTaskBoardResponse, BackgroundTaskItem, PlanTaskNode } from '@/types';
 import { parseServerTimestampMs } from '@utils/serverTime';
+import { translate } from '@/i18n/useT';
+import { dateLocale } from '@/i18n/format';
 
-export const statusLabels: Record<string, string> = {
-  pending: '待执行', queued: '排队中', running: '执行中', in_progress: '执行中',
-  completed: '已执行', succeeded: '已执行', failed: '失败', error: '失败',
-  blocked: '等待依赖', skipped: '已跳过', cancelled: '已取消', canceled: '已取消',
-  paused: '已暂停', stale: '待更新', unknown: '来源未追踪', reconciling: '同步中',
-  needs_review: '待验收',
-};
-export const statusLabel = (status: string) => statusLabels[status] ?? status;
 export const taskStatus = (task: PlanTaskNode) => task.effective_status || task.status;
 export const isActiveJob = (job: BackgroundTaskItem) => ['running', 'in_progress', 'queued'].includes(job.status);
 
@@ -64,7 +58,7 @@ export function selectTaskJob(jobs: BackgroundTaskItem[], taskId: number): Backg
 
 export function displayTime(value?: string | null): string {
   const ms = parseServerTimestampMs(value);
-  return ms == null ? '时间未记录' : new Date(ms).toLocaleString('zh-CN', {
+  return ms == null ? translate('common.timeNotRecorded') : new Date(ms).toLocaleString(dateLocale(), {
     month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false,
   });
 }
