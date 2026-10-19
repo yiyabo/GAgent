@@ -1,17 +1,19 @@
 import React from 'react';
+import { useT } from '@/i18n/useT';
 
 /** Source evidence stays on its own message, even after switching sessions. */
 export default function RecallReferences({ context }: { context?: Record<string, any> | null }) {
+  const t = useT();
   const notes = Array.isArray(context?.memories) ? context.memories : [];
   const history = Array.isArray(context?.history) ? context.history : [];
   if (!notes.length && !history.length) return context?.unavailable
-    ? <div style={{ marginTop: 10, fontSize: 12, color: 'var(--text-secondary)' }}>记忆召回暂时不可用，本轮未引用历史资料。</div>
+    ? <div style={{ marginTop: 10, fontSize: 12, color: 'var(--text-secondary)' }}>{t('recall.unavailable')}</div>
     : null;
   return (
     <details style={{ marginTop: 10, fontSize: 12, color: 'var(--text-secondary)' }}>
-      <summary style={{ cursor: 'pointer' }}>参考记忆与历史（{notes.length + history.length} 条）</summary>
-      {[...notes.map((item: any) => ({ ...item, label: `记忆 · ${item.scope === 'user' ? '用户' : item.scope === 'project' ? '项目' : '会话'} · ${item.id}` })),
-        ...history.map((item: any) => ({ ...item, label: `历史 · ${item.session_title || item.session_id} · 消息 #${item.message_id} · ${item.role}${item.status ? ` · ${item.status}` : ''}` }))]
+      <summary style={{ cursor: 'pointer' }}>{t('recall.summary', { count: notes.length + history.length })}</summary>
+      {[...notes.map((item: any) => ({ ...item, label: t('recall.memory', { scope: item.scope === 'user' ? t('recall.scopeUser') : item.scope === 'project' ? t('recall.scopeProject') : t('recall.scopeSession'), id: item.id }) })),
+        ...history.map((item: any) => ({ ...item, label: t('recall.history', { title: item.session_title || item.session_id, messageId: item.message_id, rest: `${item.role}${item.status ? ` · ${item.status}` : ''}` }) }))]
         .map((item, index) => (
           <div key={`${item.id ?? item.message_id}-${index}`} style={{ marginTop: 8 }}>
             <div>{item.label} · {item.created_at}</div>

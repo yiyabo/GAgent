@@ -3,8 +3,10 @@ import { Tag, Space, Tooltip, message, Typography } from 'antd';
 import { CloseOutlined, FileImageOutlined, FileTextOutlined, FileZipOutlined, PaperClipOutlined, CloudServerOutlined } from '@ant-design/icons';
 import { useChatStore } from '@store/chat';
 import type { UploadedFile } from '@/types';
+import { useT } from '@/i18n/useT';
 
 const UploadedFilesList: React.FC = () => {
+  const t = useT();
   const uploadedFiles = useChatStore((s) => s.uploadedFiles);
   const removeUploadedFile = useChatStore((s) => s.removeUploadedFile);
   const syncUploadedFilesFromServer = useChatStore((s) => s.syncUploadedFilesFromServer);
@@ -27,11 +29,11 @@ const UploadedFilesList: React.FC = () => {
   const handleRemove = async (file: UploadedFile) => {
     try {
       await removeUploadedFile(file.file_id);
-      message.success(`已删除：${file.original_name || file.file_name}`);
+      message.success(t('uploadedFiles.removed', { name: file.original_name || file.file_name }));
     } catch (error: any) {
       console.error('Failed to remove file:', error);
-      const detail = error?.response?.data?.detail || error?.message || '未知错误';
-      message.error(`删除失败（文件仍保留在会话中）：${detail}`);
+      const detail = error?.response?.data?.detail || error?.message || t('uploadedFiles.unknownError');
+      message.error(t('uploadedFiles.removeFailed', { detail }));
       void syncUploadedFilesFromServer();
     }
   };
@@ -41,7 +43,7 @@ const UploadedFilesList: React.FC = () => {
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
           <CloudServerOutlined style={{ marginRight: 4 }} />
-          当前会话附件（与服务器 uploads 一致）· {serverCount} 个文件
+          {t('uploadedFiles.header', { count: serverCount })}
         </Typography.Text>
       </div>
       <Space wrap size={[8, 8]}>
@@ -63,7 +65,7 @@ const UploadedFilesList: React.FC = () => {
                 : <PaperClipOutlined />;
           const color = isImage ? 'blue' : isArchive ? 'gold' : isDocument ? 'geekblue' : undefined;
           const tagKey = file.file_id || file.file_path || `${file.original_name}-${index}`;
-          const tip = `${file.original_name} (${file.file_size})${file.source === 'server' ? ' · 服务器' : ''}`;
+          const tip = `${file.original_name} (${file.file_size})${file.source === 'server' ? t('uploadedFiles.serverSuffix') : ''}`;
 
           return (
             <Tag

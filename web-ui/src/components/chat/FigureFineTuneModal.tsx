@@ -7,6 +7,8 @@ import {
 } from '@ant-design/icons';
 import { useChatStore } from '@store/chat';
 import { artifactImageFileName, parseSessionArtifactImageUrl } from '@utils/artifactImageUrl';
+import { useT } from '@/i18n/useT';
+import type { TranslationKey } from '@/i18n/keys';
 
 const { TextArea } = Input;
 const { Text } = Typography;
@@ -21,22 +23,28 @@ interface FigureFineTuneModalProps {
   onSubmitPrompt?: (prompt: string, annotatedImageBase64?: string) => void;
 }
 
-const PRESET_CHIPS = [
-  { label: '🎨 统一Nature配色', prompt: '请将该图配色调整为统一的Nature科学色盘（珊瑚红、深蓝、青绿），保持全文风格一致。' },
-  { label: '🔤 加大坐标与标签字号', prompt: '请调大坐标轴标签与刻度字号（Title 12pt bold, Labels 10pt, Ticks 9pt），避免文字遮挡或过小。' },
-  { label: '📐 调整边距与去上右边框', prompt: '请调整图像边距，去除顶部和右侧无用边框（Despine top/right），保持背景纯白。' },
-  { label: '📊 突出前3组关键数据', prompt: '请在图中对前3组关键差异数据进行重点高亮标记，其他组弱化对比。' },
-  { label: '✨ 导出矢量SVG/PDF', prompt: '请重新导出该图，确保同时输出 PNG (300dpi)、可编辑矢量 SVG 和出版级 PDF。' },
+const PRESET_CHIPS: Array<{ label: TranslationKey; prompt: TranslationKey }> = [
+  { label: 'figureFineTune.chipColors', prompt: 'figureFineTune.chipColorsPrompt' },
+  { label: 'figureFineTune.chipFonts', prompt: 'figureFineTune.chipFontsPrompt' },
+  { label: 'figureFineTune.chipMargins', prompt: 'figureFineTune.chipMarginsPrompt' },
+  { label: 'figureFineTune.chipHighlight', prompt: 'figureFineTune.chipHighlightPrompt' },
+  { label: 'figureFineTune.chipExport', prompt: 'figureFineTune.chipExportPrompt' },
 ];
+
+/** Renders `<b>…</b>` inside a catalogue sentence, so the emphasis can sit anywhere in either language. */
+const renderBold = (text: string): React.ReactNode[] =>
+  text.split(/<b>(.*?)<\/b>/g).map((part, index) => (index % 2 ? <strong key={index}>{part}</strong> : part));
 
 export const FigureFineTuneModal: React.FC<FigureFineTuneModalProps> = ({
   visible,
   onClose,
   imageUrl,
-  imageAlt = '图表',
+  imageAlt: imageAltProp,
   imagePath = '',
   onSubmitPrompt,
 }) => {
+  const t = useT();
+  const imageAlt = imageAltProp ?? t('figureFineTune.defaultAlt');
   const [instruction, setInstruction] = useState('');
   const [isDrawing, setIsDrawing] = useState(false);
   const [rects, setRects] = useState<Array<{ x: number; y: number; w: number; h: number }>>([]);
@@ -145,7 +153,7 @@ export const FigureFineTuneModal: React.FC<FigureFineTuneModalProps> = ({
 
   const handleSubmit = async () => {
     if (!instruction.trim() && rects.length === 0) {
-      antMessage.warning('请输入微调要求或在图上框选标注区域');
+      antMessage.warning(t('figureFineTune.emptyWarning'));
       return;
     }
 
@@ -161,12 +169,12 @@ export const FigureFineTuneModal: React.FC<FigureFineTuneModalProps> = ({
 
     try {
       await useChatStore.getState().sendMessage(finalPrompt);
-      antMessage.success('已发送微调指令，AI 正在为您修改图表...');
+      antMessage.success(t('figureFineTune.sent'));
     } catch (err) {
       console.error('Failed to send fine-tune message directly:', err);
       const cur = useChatStore.getState().inputText;
       useChatStore.getState().setInputText(cur ? `${cur}\n\n${finalPrompt}` : finalPrompt);
-      antMessage.info('微调指令已载入对话输入框');
+      antMessage.info(t('figureFineTune.loadedInInput'));
     }
 
     if (onSubmitPrompt) {
@@ -182,16 +190,16 @@ export const FigureFineTuneModal: React.FC<FigureFineTuneModalProps> = ({
       title={
         <Space>
           <EditOutlined style={{ color: 'var(--color-action)' }} />
-          <span>图表定向微调 — {imageAlt || fileName}</span>
+          <span>{t('figureFineTune.title', { name: imageAlt || fileName })}</span>
         </Space>
       }
       width={720}
       footer={[
         <Button key='cancel' onClick={onClose}>
-          取消
+          {t('common.cancel')}
         </Button>,
         <Button key='submit' type='primary' icon={<SendOutlined />} onClick={handleSubmit}>
-          发送微调指令
+          {t('figureFineTune.send')}
         </Button>,
       ]}
       destroyOnClose
@@ -200,11 +208,11 @@ export const FigureFineTuneModal: React.FC<FigureFineTuneModalProps> = ({
         <div style={{ background: 'var(--surface-sunken)', padding: 10, borderRadius: 8, border: '1px solid var(--border-subtle)' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
             <Text type='secondary' style={{ fontSize: 12 }}>
-              🖱️ 可直接在图上按住鼠标左键<strong>拖拽画框</strong>以标记需调整的局部区域:
+              {renderBold(t('figureFineTune.drawHint'))}
             </Text>
             {rects.length > 0 && (
               <Button size='small' type='text' icon={<ClearOutlined />} onClick={handleClearBoxes} danger>
-                清除红框 ({rects.length})
+                {t('figureFineTune.clearBoxes', { count: rects.length })}
               </Button>
             )}
           </div>
@@ -253,7 +261,7 @@ export const FigureFineTuneModal: React.FC<FigureFineTuneModalProps> = ({
 
         <div>
           <Text strong style={{ fontSize: 13, marginBottom: 6, display: 'block' }}>
-            常用微调快捷模板:
+            {t('figureFineTune.presets')}
           </Text>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
             {PRESET_CHIPS.map((chip, idx) => (
@@ -261,9 +269,9 @@ export const FigureFineTuneModal: React.FC<FigureFineTuneModalProps> = ({
                 key={idx}
                 color='blue'
                 style={{ cursor: 'pointer', padding: '3px 8px', fontSize: 12 }}
-                onClick={() => handleApplyChip(chip.prompt)}
+                onClick={() => handleApplyChip(t(chip.prompt))}
               >
-                {chip.label}
+                {t(chip.label)}
               </Tag>
             ))}
           </div>
@@ -271,13 +279,13 @@ export const FigureFineTuneModal: React.FC<FigureFineTuneModalProps> = ({
 
         <div>
           <Text strong style={{ fontSize: 13, marginBottom: 6, display: 'block' }}>
-            具体微调要求描述:
+            {t('figureFineTune.describe')}
           </Text>
           <TextArea
             rows={3}
             value={instruction}
             onChange={(e) => setInstruction(e.target.value)}
-            placeholder='例如：将X轴字体调大，柱状图改为Nature浅蓝色，去掉背景网格线...'
+            placeholder={t('figureFineTune.placeholder')}
           />
         </div>
       </div>

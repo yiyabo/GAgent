@@ -24,7 +24,8 @@
     "close": "关闭",
     "more": "更多",
     "collapse": "收起",
-    "listSeparator": "；"
+    "listSeparator": "；",
+    "itemSeparator": "、"
   },
   "header": {
     "homeAria": "Phage-Agent 首页",
@@ -1055,5 +1056,138 @@
     "dependsOn": "依赖：{{deps}}",
     "dependsOnUnmet": "依赖：{{deps}} | 未满足：{{unmet}}",
     "expectedOutputs": "预期输出：{{list}}"
+  },
+  "hero": {
+    "greeting": "你好，{{name}}",
+    "fallbackName": "研究员",
+    "subtitle": "我是 Phage-Agent，专为噬菌体与生物医学研究设计的自主智能体。",
+    "placeholder": "输入您的研究目标或生信分析需求... (支持拖放 / 粘贴文件与序列)",
+    "footnote": "支持生信工具链自主调度、噬菌体多模态分析与出版级图表生成",
+    "workflows": "常用研究工作流 / WORKFLOWS",
+    "starter1": {
+      "title": "噬菌体全基因组注释",
+      "desc": "预测开放阅读框(ORF)，注释结构与裂解基因，绘制环状拓扑图",
+      "prompt": "请帮我对上传的噬菌体 FASTA 基因组序列进行完整的结构与功能注释，识别裂解酶、穿孔素及尾部纤维蛋白，并生成基因组特征概览。"
+    },
+    "starter2": {
+      "title": "噬菌体-宿主互作预测",
+      "desc": "分析受体结合蛋白(RBP)与细菌特异性受体结合位点",
+      "prompt": "请分析目标噬菌体的受体结合蛋白 (RBP / Tail Fiber) 结构域，预测其对铜绿假单胞菌/鲍曼不动杆菌等临床耐药菌的宿主谱特异性。"
+    },
+    "starter3": {
+      "title": "差异表达与转录组分析",
+      "desc": "运行 RNA-Seq 差异表达分析，输出火山图与主要富集通路",
+      "prompt": "请对感染噬菌体前后的宿主菌转录组数据执行差异表达分析 (DESeq2)，生成火山图并富集出早期与晚期关键应激反应通路。"
+    },
+    "starter4": {
+      "title": "噬菌体疗法文献深度调研",
+      "desc": "检索权威文献库，梳理耐药菌鸡尾酒配方与临床案例",
+      "prompt": "请对超级耐药肺炎克雷伯菌 (CRKP) 的噬菌体鸡尾酒协同疗法进行深度文献调研，总结最新临床试验案例并梳理治疗方案建议。"
+    }
+  },
+  "responseStyle": {
+    "lengthAuto": "自动",
+    "lengthConcise": "简洁",
+    "lengthDetailed": "详细",
+    "general": {
+      "label": "通用助手",
+      "description": "直接自然，按问题调整详略"
+    },
+    "productManager": {
+      "label": "产品经理",
+      "description": "聚焦需求、优先级与方案取舍"
+    },
+    "seniorDeveloper": {
+      "label": "资深开发",
+      "description": "聚焦根因、实现与维护成本"
+    },
+    "researchAdvisor": {
+      "label": "科研顾问",
+      "description": "聚焦证据、方法与结论边界"
+    },
+    "saveFailed": "回复风格保存失败，请重试",
+    "dialogLabel": "回复偏好",
+    "heading": "回复风格",
+    "lengthHeading": "回复篇幅",
+    "hint": "从下一条回复生效。你在消息中的具体要求优先。",
+    "saveDefault": "同时设为新对话默认",
+    "apply": "应用到此对话",
+    "triggerLabel": "回复风格：{{style}}，篇幅：{{length}}"
+  },
+  "uploadedFiles": {
+    "removed": "已删除：{{name}}",
+    "removeFailed": "删除失败（文件仍保留在会话中）：{{detail}}",
+    "unknownError": "未知错误",
+    "header": "当前会话附件（与服务器 uploads 一致）· {{count}} 个文件",
+    "serverSuffix": " · 服务器"
+  },
+  "recall": {
+    "unavailable": "记忆召回暂时不可用，本轮未引用历史资料。",
+    "summary": "参考记忆与历史（{{count}} 条）",
+    "memory": "记忆 · {{scope}} · {{id}}",
+    "scopeUser": "用户",
+    "scopeProject": "项目",
+    "scopeSession": "会话",
+    "history": "历史 · {{title}} · 消息 #{{messageId}} · {{rest}}"
+  },
+  "artifactImage": {
+    "defaultAlt": "图表",
+    "copied": "已复制 Markdown 引用: {{ref}}",
+    "previewPdf": "📄 在侧边栏预览 PDF",
+    "downloadSvg": "📥 下载 SVG 矢量图 (可编辑文字/图形)",
+    "downloadPdf": "📥 下载 PDF 出版级高清文件",
+    "downloadPng": "📥 下载 PNG 标清图 (300 DPI)",
+    "loadFailed": "图片加载失败：{{name}}",
+    "fineTune": "微调此图",
+    "downloadTitle": "下载矢量图 (SVG/PDF/PNG)",
+    "zoomTitle": "全屏放大查看",
+    "copyRefTitle": "复制 Markdown 引用"
+  },
+  "figureFineTune": {
+    "defaultAlt": "图表",
+    "chipColors": "🎨 统一Nature配色",
+    "chipColorsPrompt": "请将该图配色调整为统一的Nature科学色盘（珊瑚红、深蓝、青绿），保持全文风格一致。",
+    "chipFonts": "🔤 加大坐标与标签字号",
+    "chipFontsPrompt": "请调大坐标轴标签与刻度字号（Title 12pt bold, Labels 10pt, Ticks 9pt），避免文字遮挡或过小。",
+    "chipMargins": "📐 调整边距与去上右边框",
+    "chipMarginsPrompt": "请调整图像边距，去除顶部和右侧无用边框（Despine top/right），保持背景纯白。",
+    "chipHighlight": "📊 突出前3组关键数据",
+    "chipHighlightPrompt": "请在图中对前3组关键差异数据进行重点高亮标记，其他组弱化对比。",
+    "chipExport": "✨ 导出矢量SVG/PDF",
+    "chipExportPrompt": "请重新导出该图，确保同时输出 PNG (300dpi)、可编辑矢量 SVG 和出版级 PDF。",
+    "emptyWarning": "请输入微调要求或在图上框选标注区域",
+    "sent": "已发送微调指令，AI 正在为您修改图表...",
+    "loadedInInput": "微调指令已载入对话输入框",
+    "title": "图表定向微调 — {{name}}",
+    "send": "发送微调指令",
+    "drawHint": "🖱️ 可直接在图上按住鼠标左键<b>拖拽画框</b>以标记需调整的局部区域:",
+    "clearBoxes": "清除红框 ({{count}})",
+    "presets": "常用微调快捷模板:",
+    "describe": "具体微调要求描述:",
+    "placeholder": "例如：将X轴字体调大，柱状图改为Nature浅蓝色，去掉背景网格线..."
+  },
+  "artifactVersions": {
+    "blocked": "部分输入来源尚未确定，请先检查任务依赖。",
+    "upToDate": "当前结果无需更新。",
+    "started": "更新已开始，可在任务列表查看进度。",
+    "failed": "更新失败，请刷新后重试。",
+    "history": "历史与来源",
+    "update": "更新相关结果",
+    "drawerTitle": "结果历史与来源",
+    "fresh": "当前",
+    "stale": "待更新",
+    "unknown": "来源未追踪",
+    "reconciling": "同步中",
+    "older": "历史版本",
+    "validated": "已通过声明检查",
+    "unvalidated": "尚未核验",
+    "task": "任务 #{{id}}",
+    "imported": "历史导入",
+    "method": "方法：{{text}}",
+    "methodMissing": "历史方法未记录",
+    "inputs": "关联输入：{{list}}",
+    "inputsMissing": "输入来源尚未追踪",
+    "viewFile": "查看此版本文件",
+    "loadMore": "加载更多版本"
   }
 }

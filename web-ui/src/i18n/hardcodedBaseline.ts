@@ -13,22 +13,16 @@
  * DAG components) brought it to the figure recorded below.
  */
 export const HARDCODED_BASELINE: Record<string, number> = {
-  'components/chat/FigureFineTuneModal.tsx': 13,
-  'components/chat/HeroWelcome.tsx': 13,
-  'components/chat/ResponseStyleSelector.tsx': 12,
-  'components/chat/SessionArtifactImage.tsx': 8,
+  'components/chat/HeroWelcome.tsx': 1,
   'components/chat/ThinkingProcess.tsx': 3,
-  'components/chat/UploadedFilesList.tsx': 2,
   'components/chat/job-log/constants.tsx': 13,
   'components/chat/job-log/index.tsx': 21,
-  'components/chat/message/RecallReferences.tsx': 3,
   'components/chat/message/SkillLearningPanel.tsx': 25,
   'components/chat/message/index.tsx': 13,
   'components/extensions/McpServerCard.tsx': 16,
   'components/extensions/McpTab.tsx': 15,
   'components/extensions/SkillsTab.tsx': 17,
   'components/extensions/extensionMeta.tsx': 18,
-  'components/layout/ArtifactVersionPanel.tsx': 7,
   'components/layout/ChatMainArea.tsx': 18,
   'components/layout/ChatSidebar.tsx': 36,
   'components/layout/ResearchWorkspace.tsx': 10,

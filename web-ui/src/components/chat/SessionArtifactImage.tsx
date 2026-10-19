@@ -9,6 +9,7 @@ import {
 } from '@ant-design/icons';
 import { FigureFineTuneModal } from './FigureFineTuneModal';
 import { artifactImageFormatUrl, parseSessionArtifactImageUrl } from '@utils/artifactImageUrl';
+import { useT } from '@/i18n/useT';
 
 const RETRY_DELAY_MS = 600;
 const MAX_RETRY_INDEX = 5;
@@ -34,6 +35,7 @@ export const SessionArtifactImage: React.FC<SessionArtifactImageProps> = ({
   decoding = 'async',
   showActions = true,
 }) => {
+  const t = useT();
   const [attempt, setAttempt] = useState(0);
   const [broken, setBroken] = useState(false);
   const [isHovered, setIsHovered] = useState(false);
@@ -90,9 +92,9 @@ export const SessionArtifactImage: React.FC<SessionArtifactImageProps> = ({
 
   const handleCopyRef = () => {
     const targetPath = filePath || alt || 'figure.png';
-    const ref = `![${alt || '图表'}](${targetPath})`;
+    const ref = `![${alt || t('artifactImage.defaultAlt')}](${targetPath})`;
     navigator.clipboard.writeText(ref);
-    antMessage.success(`已复制 Markdown 引用: ${ref}`);
+    antMessage.success(t('artifactImage.copied', { ref }));
   };
 
   const handleDownloadFormat = (ext: 'png' | 'svg' | 'pdf') => {
@@ -121,7 +123,7 @@ export const SessionArtifactImage: React.FC<SessionArtifactImageProps> = ({
     items: [
       {
         key: 'preview-pdf',
-        label: '📄 在侧边栏预览 PDF',
+        label: t('artifactImage.previewPdf'),
         onClick: () => {
           if (!sessionId || !filePath) return;
           const base = filePath.replace(/\.[^/.]+$/, '');
@@ -140,17 +142,17 @@ export const SessionArtifactImage: React.FC<SessionArtifactImageProps> = ({
       },
       {
         key: 'svg',
-        label: '📥 下载 SVG 矢量图 (可编辑文字/图形)',
+        label: t('artifactImage.downloadSvg'),
         onClick: () => handleDownloadFormat('svg'),
       },
       {
         key: 'pdf',
-        label: '📥 下载 PDF 出版级高清文件',
+        label: t('artifactImage.downloadPdf'),
         onClick: () => handleDownloadFormat('pdf'),
       },
       {
         key: 'png',
-        label: '📥 下载 PNG 标清图 (300 DPI)',
+        label: t('artifactImage.downloadPng'),
         onClick: () => handleDownloadFormat('png'),
       },
     ],
@@ -167,7 +169,7 @@ export const SessionArtifactImage: React.FC<SessionArtifactImageProps> = ({
         style={{ fontSize: 12, color: 'var(--text-secondary)', display: 'block', margin: '8px 0' }}
         title={url}
       >
-        图片加载失败：{alt || fileName}
+        {t('artifactImage.loadFailed', { name: alt || fileName })}
       </span>
     );
   }
@@ -218,11 +220,11 @@ export const SessionArtifactImage: React.FC<SessionArtifactImageProps> = ({
             onClick={() => setFineTuneOpen(true)}
             style={{ color: 'var(--color-action)', fontWeight: 500, fontSize: 12 }}
           >
-            微调此图
+            {t('artifactImage.fineTune')}
           </Button>
 
           <Dropdown menu={downloadMenu} placement='bottomRight'>
-            <Button size='small' type='text' icon={<DownloadOutlined />} title='下载矢量图 (SVG/PDF/PNG)' />
+            <Button size='small' type='text' icon={<DownloadOutlined />} title={t('artifactImage.downloadTitle')} />
           </Dropdown>
 
           <Button
@@ -230,7 +232,7 @@ export const SessionArtifactImage: React.FC<SessionArtifactImageProps> = ({
             type='text'
             icon={<EyeOutlined />}
             onClick={() => setPreviewVisible(true)}
-            title='全屏放大查看'
+            title={t('artifactImage.zoomTitle')}
           />
 
           <Button
@@ -238,7 +240,7 @@ export const SessionArtifactImage: React.FC<SessionArtifactImageProps> = ({
             type='text'
             icon={<CopyOutlined />}
             onClick={handleCopyRef}
-            title='复制 Markdown 引用'
+            title={t('artifactImage.copyRefTitle')}
           />
         </div>
       )}

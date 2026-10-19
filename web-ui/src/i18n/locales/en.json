@@ -24,7 +24,8 @@
     "close": "Close",
     "more": "more",
     "collapse": "Collapse",
-    "listSeparator": "; "
+    "listSeparator": "; ",
+    "itemSeparator": ", "
   },
   "header": {
     "homeAria": "Phage-Agent home",
@@ -1055,5 +1056,138 @@
     "dependsOn": "Depends on: {{deps}}",
     "dependsOnUnmet": "Depends on: {{deps}} | unmet: {{unmet}}",
     "expectedOutputs": "Expected outputs: {{list}}"
+  },
+  "hero": {
+    "greeting": "Hello, {{name}}",
+    "fallbackName": "Researcher",
+    "subtitle": "I'm Phage-Agent, an autonomous agent built for phage and biomedical research.",
+    "placeholder": "Describe your research goal or bioinformatics need... (drag and drop or paste files and sequences)",
+    "footnote": "Autonomous bioinformatics toolchain scheduling, multimodal phage analysis and publication-grade figures",
+    "workflows": "Common research workflows",
+    "starter1": {
+      "title": "Phage whole-genome annotation",
+      "desc": "Predict ORFs, annotate structural and lysis genes, draw a circular genome map",
+      "prompt": "Please run a complete structural and functional annotation of the uploaded phage FASTA genome: identify endolysins, holins and tail fiber proteins, and produce a genome feature overview."
+    },
+    "starter2": {
+      "title": "Phage-host interaction prediction",
+      "desc": "Analyse receptor-binding proteins (RBPs) and the bacterial receptors they bind to",
+      "prompt": "Please analyse the receptor-binding protein (RBP / tail fiber) domains of the target phage and predict its host-range specificity against clinical drug-resistant bacteria such as Pseudomonas aeruginosa and Acinetobacter baumannii."
+    },
+    "starter3": {
+      "title": "Differential expression and transcriptome analysis",
+      "desc": "Run RNA-Seq differential expression analysis, output a volcano plot and the main enriched pathways",
+      "prompt": "Please run differential expression analysis (DESeq2) on the host transcriptome before and after phage infection, draw a volcano plot, and identify the key early and late stress-response pathways that are enriched."
+    },
+    "starter4": {
+      "title": "In-depth review of phage therapy literature",
+      "desc": "Search authoritative literature, and sort out cocktail formulations and clinical cases for resistant bacteria",
+      "prompt": "Please run an in-depth literature review on phage cocktail therapy for carbapenem-resistant Klebsiella pneumoniae (CRKP), summarise the latest clinical trial cases and outline recommended treatment options."
+    }
+  },
+  "responseStyle": {
+    "lengthAuto": "Auto",
+    "lengthConcise": "Concise",
+    "lengthDetailed": "Detailed",
+    "general": {
+      "label": "General assistant",
+      "description": "Direct and natural, detail adjusted to the question"
+    },
+    "productManager": {
+      "label": "Product manager",
+      "description": "Focuses on requirements, priorities and trade-offs"
+    },
+    "seniorDeveloper": {
+      "label": "Senior developer",
+      "description": "Focuses on root causes, implementation and upkeep cost"
+    },
+    "researchAdvisor": {
+      "label": "Research advisor",
+      "description": "Focuses on evidence, methods and the limits of conclusions"
+    },
+    "saveFailed": "Could not save the reply style. Please try again.",
+    "dialogLabel": "Reply preferences",
+    "heading": "Reply style",
+    "lengthHeading": "Reply length",
+    "hint": "Takes effect from the next reply. What you ask for in a message takes priority.",
+    "saveDefault": "Also make this the default for new chats",
+    "apply": "Apply to this chat",
+    "triggerLabel": "Reply style: {{style}}, length: {{length}}"
+  },
+  "uploadedFiles": {
+    "removed": "Removed: {{name}}",
+    "removeFailed": "Delete failed (the file is still in the chat): {{detail}}",
+    "unknownError": "Unknown error",
+    "header": "Attachments in this chat (in sync with the server's uploads) · Files: {{count}}",
+    "serverSuffix": " · Server"
+  },
+  "recall": {
+    "unavailable": "Memory recall is temporarily unavailable. This turn did not use any earlier material.",
+    "summary": "Referenced memory and history ({{count}})",
+    "memory": "Memory · {{scope}} · {{id}}",
+    "scopeUser": "User",
+    "scopeProject": "Project",
+    "scopeSession": "Chat",
+    "history": "History · {{title}} · Message #{{messageId}} · {{rest}}"
+  },
+  "artifactImage": {
+    "defaultAlt": "Figure",
+    "copied": "Copied Markdown reference: {{ref}}",
+    "previewPdf": "📄 Preview PDF in the side panel",
+    "downloadSvg": "📥 Download SVG vector (editable text and shapes)",
+    "downloadPdf": "📥 Download print-ready PDF",
+    "downloadPng": "📥 Download PNG (300 DPI)",
+    "loadFailed": "Image failed to load: {{name}}",
+    "fineTune": "Fine-tune this figure",
+    "downloadTitle": "Download vector figure (SVG/PDF/PNG)",
+    "zoomTitle": "View full screen",
+    "copyRefTitle": "Copy Markdown reference"
+  },
+  "figureFineTune": {
+    "defaultAlt": "Figure",
+    "chipColors": "🎨 Unify Nature colours",
+    "chipColorsPrompt": "Please change the colours of this figure to the Nature palette (coral red, deep blue, teal) and keep the style consistent across the whole paper.",
+    "chipFonts": "🔤 Larger axis and label fonts",
+    "chipFontsPrompt": "Please enlarge the axis label and tick fonts (Title 12pt bold, Labels 10pt, Ticks 9pt) so that text is neither covered nor too small.",
+    "chipMargins": "📐 Adjust margins, remove top and right frame",
+    "chipMarginsPrompt": "Please adjust the figure margins, remove the unneeded top and right frame (despine top/right) and keep the background pure white.",
+    "chipHighlight": "📊 Highlight the top 3 groups",
+    "chipHighlightPrompt": "Please highlight the 3 groups with the largest differences in the figure and tone down the other groups.",
+    "chipExport": "✨ Export vector SVG/PDF",
+    "chipExportPrompt": "Please re-export this figure and make sure PNG (300dpi), an editable vector SVG and a print-ready PDF are all produced.",
+    "emptyWarning": "Enter what to change, or draw a box on the figure to mark the area",
+    "sent": "Fine-tune request sent. The AI is revising the figure...",
+    "loadedInInput": "The fine-tune request was put in the chat input",
+    "title": "Fine-tune figure — {{name}}",
+    "send": "Send fine-tune request",
+    "drawHint": "🖱️ Hold the left mouse button and <b>drag a box</b> on the figure to mark the area to change:",
+    "clearBoxes": "Clear boxes ({{count}})",
+    "presets": "Quick fine-tune templates:",
+    "describe": "Describe what to change:",
+    "placeholder": "e.g. make the X-axis font larger, change the bars to light Nature blue, remove the background grid..."
+  },
+  "artifactVersions": {
+    "blocked": "Some input sources are not settled yet. Check the task dependencies first.",
+    "upToDate": "Nothing needs updating right now.",
+    "started": "The update has started. Follow its progress in the task list.",
+    "failed": "The update failed. Refresh and try again.",
+    "history": "History and sources",
+    "update": "Update related results",
+    "drawerTitle": "Result history and sources",
+    "fresh": "Current",
+    "stale": "Needs update",
+    "unknown": "Source not tracked",
+    "reconciling": "Syncing",
+    "older": "Earlier version",
+    "validated": "Passed the declared checks",
+    "unvalidated": "Not verified yet",
+    "task": "Task #{{id}}",
+    "imported": "Imported from history",
+    "method": "Method: {{text}}",
+    "methodMissing": "The earlier method was not recorded",
+    "inputs": "Related inputs: {{list}}",
+    "inputsMissing": "The input sources are not tracked yet",
+    "viewFile": "View the file of this version",
+    "loadMore": "Load more versions"
   }
 }
