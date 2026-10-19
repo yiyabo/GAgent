@@ -409,7 +409,7 @@ body,
   align-items: center;
   justify-content: center;
   font-size: 12px;
-  color: var(--surface-card);
+  color: var(--text-primary);
 }
 
 .message.user .message-avatar {
@@ -417,7 +417,8 @@ body,
 }
 
 .message.assistant .message-avatar {
-  background: var(--primary-gradient);
+  background: var(--color-action);
+  color: var(--color-on-action);
   border-radius: 6px;
 }
 
@@ -597,26 +598,6 @@ body,
 /* ============================================
   
   ============================================ */
-.ant-btn-primary {
-  background: var(--primary-gradient) !important;
-  border: none !important;
-  border-radius: var(--radius-md) !important;
-  box-shadow: 0 4px 12px color-mix(in srgb, var(--color-action) 32%, transparent) !important;
-  transition: all var(--transition-normal) !important;
-}
-
-.ant-btn-primary:hover {
-  background: var(--primary-color) !important;
-  filter: brightness(0.9);
-  transform: translateY(-2px);
-  box-shadow: 0 6px 20px color-mix(in srgb, var(--color-action) 40%, transparent) !important;
-}
-
-.ant-btn-primary:active {
-  transform: translateY(0);
-  filter: brightness(0.85);
-}
-
 /* ============================================
   input - Claude 
   ============================================ */
@@ -669,24 +650,6 @@ body,
 /* ============================================
   Modal 
   ============================================ */
-.ant-modal-confirm .ant-btn.ant-btn-primary {
-  background: var(--error-color) !important;
-  border-color: var(--error-color) !important;
-  transition: all var(--transition-normal) !important;
-}
-
-.ant-modal-confirm .ant-btn.ant-btn-primary:hover {
-  background: var(--status-error-fg) !important;
-  border-color: var(--status-error-fg) !important;
-  filter: brightness(0.9);
-}
-
-.ant-modal-confirm .ant-btn.ant-btn-primary:active {
-  background: var(--status-error-fg) !important;
-  border-color: var(--status-error-fg) !important;
-  filter: brightness(0.85);
-}
-
 /* ============================================
   Tab 
   ============================================ */
@@ -809,7 +772,7 @@ body,
 
 /*  */
 pre, code {
-  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace !important;
+  font-family: var(--font-mono) !important;
 }
 
 .ant-code-block {
@@ -845,7 +808,7 @@ pre, code {
   font-weight: 600;
   line-height: 1.35;
   color: var(--text-primary, rgba(0, 0, 0, 0.88));
-  var(--surface-card)-space: nowrap;
+  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   letter-spacing: 0;
@@ -867,7 +830,7 @@ pre, code {
   font-size: 12px;
   line-height: 1.4;
   color: var(--text-secondary, rgba(0, 0, 0, 0.45));
-  var(--surface-card)-space: nowrap;
+  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   min-width: 0;
@@ -930,7 +893,7 @@ pre, code {
   font-size: 12px;
   font-weight: 500;
   color: var(--text-primary, rgba(0, 0, 0, 0.88));
-  var(--surface-card)-space: nowrap;
+  white-space: nowrap;
 }
 
 .artifacts-panel-search {
@@ -964,7 +927,7 @@ pre, code {
 }
 
 .dag-sidebar-tabs .ant-tabs-tab-btn {
-  var(--surface-card)-space: nowrap;
+  white-space: nowrap;
 }
 
 /* ==========================================================================
@@ -1126,7 +1089,7 @@ pre, code {
   min-width: 34px !important;
   background: var(--color-action) !important;
   border: none !important;
-  color: var(--surface-card) !important;
+  color: var(--color-on-action) !important;
   display: flex !important;
   align-items: center !important;
   justify-content: center !important;
@@ -1448,7 +1411,7 @@ pre, code {
 .biomni-session-time {
   font-size: 11px;
   color: var(--text-tertiary);
-  var(--surface-card)-space: nowrap;
+  white-space: nowrap;
 }
 
 .biomni-session-more-btn {
