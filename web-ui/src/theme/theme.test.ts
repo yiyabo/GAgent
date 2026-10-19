@@ -208,19 +208,13 @@ const REFERENCED = new Set(
 
 /**
  * Tokens that are decided but not wired into a component yet. Each is scheduled for a later step of
- * the redesign; this list may only shrink. `--font-serif` and the type/space scales go in with the
- * typography pass, the status sets with the per-page pass.
+ * the redesign; this list may only shrink. The spacing scale and `--fs-h4` wait for the shell and
+ * per-page passes, the status sets for the per-page pass.
  */
 const UNWIRED = [
   '--ease-out',
   '--focus-ring',
-  '--font-serif',
-  '--fs-caption',
-  '--fs-h1',
-  '--fs-h2',
-  '--fs-h3',
   '--fs-h4',
-  '--fs-small',
   '--info-bg',
   '--lh-tight',
   '--on-log',
@@ -281,5 +275,57 @@ describe('the token layer stays honest', () => {
     for (const match of tokensCss.matchAll(/:\s*var\(\s*(--[a-z0-9-]+)/g)) consumed.add(match[1]);
     const unwired = Object.keys(light).filter((name) => !consumed.has(`--${name}`)).sort();
     expect(unwired).toEqual(UNWIRED.map((name) => name.slice(2)).sort());
+  });
+});
+
+/** Selectors whose font-size sizes an icon or glyph, not text. Text below 12px is not readable. */
+const GLYPH_SELECTORS = new Set([
+  '.hero-toggle-help',
+  '.response-style-trigger .anticon',
+  '.tp-header-chevron',
+  '.tp-item-icon',
+  '.tp-item-chevron',
+  '.pw-tree-toggle',
+  '.pw-status-icon',
+  '.tree-collapse-btn',
+]);
+
+describe('typography', () => {
+  const cssFiles = SOURCE_FILES.filter((file) => file.endsWith('.css') && file !== TOKENS_CSS);
+
+  it('sets no text smaller than 12px in any stylesheet', () => {
+    const small: string[] = [];
+    for (const file of cssFiles) {
+      const text = readFileSync(file, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+      for (const rule of text.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+        const selector = rule[1].trim().replace(/\s+/g, ' ');
+        if (GLYPH_SELECTORS.has(selector)) continue;
+        for (const size of rule[2].matchAll(/font-size:\s*([0-9.]+)px/g)) {
+          if (Number(size[1]) < 12) small.push(`${relative(resolve(__dirname, '..'), file)}: ${selector} ${size[1]}px`);
+        }
+      }
+    }
+    expect(small).toEqual([]);
+  });
+
+  it('uses the self-hosted mono and serif stacks instead of per-component font lists', () => {
+    const literal: string[] = [];
+    for (const file of SOURCE_FILES.filter((name) => name !== TOKENS_CSS && !name.endsWith('antdTheme.ts'))) {
+      const text = readFileSync(file, 'utf8');
+      // The xterm terminal needs a literal list: it measures glyphs on a canvas and cannot read CSS variables.
+      if (file.endsWith('TerminalPanel.tsx')) continue;
+      for (const match of text.matchAll(/font-?[fF]amily:\s*([^;\n]+)/g)) {
+        const value = match[1].trim().replace(/[,'"]+$/, '');
+        if (!/^(var\(--font-(sans|serif|mono)\)|inherit)/.test(value.replace(/^['"]/, ''))) {
+          literal.push(`${relative(resolve(__dirname, '..'), file)}: ${value}`);
+        }
+      }
+    }
+    expect(literal).toEqual([]);
+  });
+
+  it('keeps the title levels on the serif stack', () => {
+    const index = readFileSync(resolve(__dirname, '../styles/index.css'), 'utf8');
+    expect(index).toMatch(/body h1\.ant-typography,\s*body h2\.ant-typography,\s*body h3\.ant-typography\s*\{[^}]*var\(--font-serif\)/);
   });
 });

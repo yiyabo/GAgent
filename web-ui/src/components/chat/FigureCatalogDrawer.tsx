@@ -217,13 +217,13 @@ export const FigureCatalogDrawer: React.FC<FigureCatalogDrawerProps> = ({
                         <Text strong style={{ fontSize: 13, display: 'block', wordBreak: 'break-word' }}>
                           {fig.displayTitle}
                         </Text>
-                        <Text type='secondary' style={{ fontSize: 11, display: 'block' }}>
+                        <Text type='secondary' style={{ fontSize: 12, display: 'block' }}>
                           {fig.baseName}
                         </Text>
                         <div style={{ marginTop: 4 }}>
-                          {fig.pngPath && <Tag color='blue' style={{ fontSize: 10, padding: '0 4px' }}>PNG 300DPI</Tag>}
-                          {fig.svgPath && <Tag color='green' style={{ fontSize: 10, padding: '0 4px' }}>SVG 矢量</Tag>}
-                          {fig.pdfPath && <Tag color='purple' style={{ fontSize: 10, padding: '0 4px' }}>PDF 出版级</Tag>}
+                          {fig.pngPath && <Tag color='blue' style={{ fontSize: 12, padding: '0 4px' }}>PNG 300DPI</Tag>}
+                          {fig.svgPath && <Tag color='green' style={{ fontSize: 12, padding: '0 4px' }}>SVG 矢量</Tag>}
+                          {fig.pdfPath && <Tag color='purple' style={{ fontSize: 12, padding: '0 4px' }}>PDF 出版级</Tag>}
                         </div>
                       </div>
 

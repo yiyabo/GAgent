@@ -123,12 +123,12 @@
 /* Task name */
 .tree-name {
   flex: 1;
-  font-size: 13px;
+  font-size: var(--fs-small);
   color: #374151;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
 }
 
 .tree-item:hover .tree-name {
@@ -141,7 +141,7 @@
 
 /* Duration label */
 .tree-duration {
-  font-size: 10px;
+  font-size: var(--fs-caption);
   font-variant-numeric: tabular-nums;
   color: rgba(0, 0, 0, 0.35);
   margin-left: 6px;
@@ -151,7 +151,7 @@
 
 /* ROOT badge */
 .tree-badge {
-  font-size: 9px;
+  font-size: var(--fs-caption);
   font-weight: 600;
   letter-spacing: 0.05em;
   color: rgba(0, 0, 0, 0.35);
@@ -171,7 +171,7 @@
   height: 100%;
   gap: 12px;
   color: #9ca3af;
-  font-size: 12px;
+  font-size: var(--fs-caption);
 }
 
 /* Empty state */
@@ -183,7 +183,7 @@
   height: 100%;
   gap: 10px;
   color: #9ca3af;
-  font-size: 12px;
+  font-size: var(--fs-caption);
 }
 
 .tree-empty-dot {

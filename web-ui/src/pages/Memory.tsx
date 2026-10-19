@@ -172,7 +172,7 @@ const MemoryPage: React.FC = () => {
   ellipsis: true,
   render: (id: string) => (
   <Tooltip title={id}>
-  <span style={{ fontFamily: 'monospace', fontSize: '12px' }}>
+  <span style={{ fontFamily: 'var(--font-mono)', fontSize: '12px' }}>
   {id.substring(0, 8)}...
   </span>
   </Tooltip>
@@ -243,7 +243,7 @@ const MemoryPage: React.FC = () => {
   render: (keywords: string[]) => (
   <Space size={[0, 4]} wrap>
   {keywords.slice(0, 3).map((keyword, index) => (
-  <Tag key={index} style={{ fontSize: '11px' }}>{keyword}</Tag>
+  <Tag key={index} style={{ fontSize: '12px' }}>{keyword}</Tag>
   ))}
   {keywords.length > 3 && <Tag>+{keywords.length - 3}</Tag>}
   </Space>

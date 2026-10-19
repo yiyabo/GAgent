@@ -305,7 +305,7 @@ export const Dependencies: React.FC<DependenciesProps> = ({ dependencies, onDepe
             {depStatus && (
               <Tag
                 color={statusColorMap[depStatus] ?? 'default'}
-                style={{ marginLeft: 4, fontSize: 11, lineHeight: '16px', padding: '0 4px' }}
+                style={{ marginLeft: 4, fontSize: 12, lineHeight: '16px', padding: '0 4px' }}
               >
                 {statusLabelMap[depStatus] ?? depStatus}
               </Tag>

@@ -129,12 +129,12 @@ export const ActionLogs: React.FC<{ actionLogs: ActionLogEntry[] }> = ({ actionL
                 </div>
               )}
               {durationMs !== null && durationMs >= 0 && (
-                <div style={{ fontSize: 11, color: '#999', marginTop: 2 }}>
+                <div style={{ fontSize: 12, color: '#999', marginTop: 2 }}>
                   Duration: {durationMs < 1000 ? `${durationMs}ms` : `${(durationMs / 1000).toFixed(1)}s`}
                 </div>
               )}
               {timestamp && (
-                <div style={{ fontSize: 11, color: '#999', marginTop: 2 }}>
+                <div style={{ fontSize: 12, color: '#999', marginTop: 2 }}>
                   {formatLogTime(timestamp)}
                 </div>
               )}

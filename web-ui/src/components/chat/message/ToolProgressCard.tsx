@@ -819,14 +819,14 @@ export const BackgroundDispatchCard: React.FC<BackgroundDispatchCardProps> = ({ 
         <Text strong style={{ fontSize: 13, color: 'var(--text-primary)' }}>
           Background task submitted
         </Text>
-        <Tag color={color} style={{ margin: 0, fontSize: 11 }}>{label}</Tag>
+        <Tag color={color} style={{ margin: 0, fontSize: 12 }}>{label}</Tag>
       </div>
       <Text style={{ color: 'var(--text-secondary)', fontSize: 12, lineHeight: 1.6 }}>
         The task is running in the background. Track progress in the right-side "Task Status" panel, then ask me for result analysis when it completes.
       </Text>
       {trackingId && (
         <div style={{ marginTop: 6 }}>
-          <Text style={{ color: 'var(--text-tertiary)', fontSize: 11 }}>
+          <Text style={{ color: 'var(--text-tertiary)', fontSize: 12 }}>
             Tracking: {trackingId.slice(0, 16)}...
           </Text>
         </div>

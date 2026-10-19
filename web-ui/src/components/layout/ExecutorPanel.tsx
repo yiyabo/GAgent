@@ -314,7 +314,7 @@ const TaskRow = React.memo<TaskRowProps>(
             {item.job_type === 'plan_execute' && (normalized === 'running' || normalized === 'queued') && (
               <>
                 {item.execution_paused ? (
-                  <Tag color="gold" style={{ marginInlineStart: 4, fontSize: 10, lineHeight: '14px', padding: '0 4px' }}>
+                  <Tag color="gold" style={{ marginInlineStart: 4, fontSize: 12, lineHeight: '14px', padding: '0 4px' }}>
                     Paused
                   </Tag>
                 ) : null}
@@ -328,7 +328,7 @@ const TaskRow = React.memo<TaskRowProps>(
                       e.stopPropagation();
                       onControlJob(item.job_id, item.execution_paused ? 'resume' : 'pause');
                     }}
-                    style={{ padding: '0 4px', fontSize: 11, height: 'auto', lineHeight: 1 }}
+                    style={{ padding: '0 4px', fontSize: 12, height: 'auto', lineHeight: 1 }}
                   >
                     {item.execution_paused ? 'Resume' : 'Pause'}
                   </Button>
@@ -359,7 +359,7 @@ const TaskRow = React.memo<TaskRowProps>(
                       onSendMessage(prompt, { analysis_only: true, source_job_id: item.job_id });
                     }
                   }}
-                  style={{ padding: '0 4px', fontSize: 11, height: 'auto', lineHeight: 1 }}
+                  style={{ padding: '0 4px', fontSize: 12, height: 'auto', lineHeight: 1 }}
                 >
                   Analyze
                 </Button>

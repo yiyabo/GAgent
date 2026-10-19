@@ -457,7 +457,7 @@ const AgentWorkPanel: React.FC<AgentWorkPanelProps> = ({ sessionId }) => {
       content = summarizeToolInput(toolName, toolInput);
       if (toolInput && typeof toolInput === 'object') {
         details = (
-          <pre style={{ margin: 0, fontSize: 11, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+          <pre style={{ margin: 0, fontSize: 12, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
             {JSON.stringify(toolInput, null, 2)}
           </pre>
         );
@@ -467,7 +467,7 @@ const AgentWorkPanel: React.FC<AgentWorkPanelProps> = ({ sessionId }) => {
       content = truncateText(resultText, 200);
       if (resultText.length > 200) {
         details = (
-          <pre style={{ margin: 0, fontSize: 11, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+          <pre style={{ margin: 0, fontSize: 12, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
             {resultText}
           </pre>
         );
@@ -477,7 +477,7 @@ const AgentWorkPanel: React.FC<AgentWorkPanelProps> = ({ sessionId }) => {
       content = evt.message || '';
       if (usage && typeof usage === 'object') {
         details = (
-          <div style={{ fontSize: 11, color: '#666' }}>
+          <div style={{ fontSize: 12, color: '#666' }}>
             {Object.entries(usage).map(([key, val]) => (
               <div key={key}>
                 {key}: {String(val)}
@@ -558,7 +558,7 @@ const AgentWorkPanel: React.FC<AgentWorkPanelProps> = ({ sessionId }) => {
               <Tag color={color}>{getSubTypeLabel(evt.subType)}</Tag>
               {isError && <Tag color="red">Error</Tag>}
             </Space>
-            <Text type="secondary" style={{ fontSize: 11 }}>
+            <Text type="secondary" style={{ fontSize: 12 }}>
               {formatRelativeTime(evt.timestamp)}
             </Text>
           </div>
@@ -729,8 +729,8 @@ const AgentWorkPanel: React.FC<AgentWorkPanelProps> = ({ sessionId }) => {
                   color: '#d4d4d4',
                   padding: 12,
                   borderRadius: 4,
-                  fontSize: 11,
-                  fontFamily: 'monospace',
+                  fontSize: 12,
+                  fontFamily: 'var(--font-mono)',
                   maxHeight: 300,
                   overflow: 'auto',
                   whiteSpace: 'pre-wrap',
@@ -767,8 +767,8 @@ const AgentWorkPanel: React.FC<AgentWorkPanelProps> = ({ sessionId }) => {
                   color: '#d4d4d4',
                   padding: 12,
                   borderRadius: 4,
-                  fontSize: 11,
-                  fontFamily: 'monospace',
+                  fontSize: 12,
+                  fontFamily: 'var(--font-mono)',
                   maxHeight: 300,
                   overflow: 'auto',
                   whiteSpace: 'pre-wrap',

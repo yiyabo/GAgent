@@ -69,9 +69,8 @@
   z-index: 1;
   text-align: left;
   padding: 10px 12px;
-  font-size: 11px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  font-size: var(--fs-caption);
+  letter-spacing: 0;
   color: rgba(0, 0, 0, 0.55);
   background: rgba(255, 255, 255, 0.78);
   border-bottom: 1px solid rgba(0, 0, 0, 0.06);
@@ -81,7 +80,7 @@
   padding: 10px 12px;
   border-bottom: 1px solid rgba(0, 0, 0, 0.05);
   vertical-align: middle;
-  font-size: 13px;
+  font-size: var(--fs-small);
   color: #374151;
 }
 
@@ -108,8 +107,8 @@
 .task-id {
   width: 92px;
   font-variant-numeric: tabular-nums;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-  font-size: 12px;
+  font-family: var(--font-mono);
+  font-size: var(--fs-caption);
   color: rgba(0, 0, 0, 0.65);
 }
 
@@ -121,7 +120,7 @@
 }
 
 .task-content-meta {
-  font-size: 11px;
+  font-size: var(--fs-caption);
   color: rgba(0, 0, 0, 0.45);
   margin-top: 4px;
   line-height: 1.35;
@@ -155,13 +154,13 @@
 }
 
 .task-progress-percent {
-  font-size: 11px;
+  font-size: var(--fs-caption);
   font-variant-numeric: tabular-nums;
   color: rgba(0, 0, 0, 0.55);
 }
 
 .task-progress-text {
-  font-size: 11px;
+  font-size: var(--fs-caption);
   color: rgba(0, 0, 0, 0.45);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -203,12 +202,12 @@
 }
 
 .task-status-text {
-  font-size: 12px;
+  font-size: var(--fs-caption);
   color: rgba(0, 0, 0, 0.65);
 }
 
 .task-status-meta {
-  font-size: 11px;
+  font-size: var(--fs-caption);
   color: rgba(0, 0, 0, 0.35);
   margin-left: 2px;
   font-variant-numeric: tabular-nums;
@@ -228,7 +227,7 @@
   height: 100%;
   gap: 12px;
   color: #9ca3af;
-  font-size: 13px;
+  font-size: var(--fs-small);
 }
 
 .executor-empty-icon {

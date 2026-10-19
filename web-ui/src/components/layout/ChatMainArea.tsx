@@ -585,7 +585,7 @@ const ChatMainArea: React.FC = () => {
                 {currentSession?.title || '研究对话'}
               </Text>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 2 }}>
-                <Text type="secondary" style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+                <Text type="secondary" style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
                   {isProcessing ? '正在处理' : '研究对话'}
                 </Text>
               </div>

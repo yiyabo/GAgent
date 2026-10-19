@@ -382,7 +382,7 @@ const DAG3DView: React.FC<DAGViewProps> = ({ onClose, onNodeSelect }) => {
   </Paragraph>
   </div>
   {selectedTask.context_updated_at && (
-  <Text type="secondary" style={{ fontSize: 11, marginTop: 8, display: 'block' }}>
+  <Text type="secondary" style={{ fontSize: 12, marginTop: 8, display: 'block' }}>
   Updated: {new Date(selectedTask.context_updated_at).toLocaleString()}
   </Text>
   )}
@@ -401,7 +401,7 @@ const DAG3DView: React.FC<DAGViewProps> = ({ onClose, onNodeSelect }) => {
   key={idx}
   >
   <pre style={{ 
-  fontSize: 11, 
+  fontSize: 12, 
   margin: 0, 
   whiteSpace: 'pre-wrap',
   background: '#f5f5f5',
@@ -471,12 +471,12 @@ const DAG3DView: React.FC<DAGViewProps> = ({ onClose, onNodeSelect }) => {
   )}
   {selectedTask.session_id && (
   <Descriptions.Item label="Session ID">
-  <Text copyable style={{ fontSize: 11 }}>{selectedTask.session_id}</Text>
+  <Text copyable style={{ fontSize: 12 }}>{selectedTask.session_id}</Text>
   </Descriptions.Item>
   )}
   {selectedTask.workflow_id && (
   <Descriptions.Item label="Workflow ID">
-  <Text copyable style={{ fontSize: 11 }}>{selectedTask.workflow_id}</Text>
+  <Text copyable style={{ fontSize: 12 }}>{selectedTask.workflow_id}</Text>
   </Descriptions.Item>
   )}
   </Descriptions>

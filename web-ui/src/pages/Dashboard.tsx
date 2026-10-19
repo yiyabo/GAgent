@@ -68,7 +68,7 @@ const Dashboard: React.FC = () => {
     <div>
       {/* Page title */}
       <div className="content-header">
-        <Title level={3} style={{ margin: 0, fontSize: 18, color: 'var(--text-primary)' }}>
+        <Title level={3} style={{ margin: 0 }}>
           Dashboard
         </Title>
         <Text type="secondary" style={{ fontSize: 12 }}>
@@ -91,7 +91,7 @@ const Dashboard: React.FC = () => {
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                 <DatabaseOutlined style={{ color: 'var(--text-secondary)', fontSize: 16 }} />
                 <div>
-                  <Text type="secondary" style={{ fontSize: 11 }}>Tasks</Text>
+                  <Text type="secondary" style={{ fontSize: 12 }}>Tasks</Text>
                   <div style={{ fontSize: 20, fontWeight: 500, color: 'var(--text-primary)' }}>
                     {stats.total}
                   </div>
@@ -112,7 +112,7 @@ const Dashboard: React.FC = () => {
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                 <ClockCircleOutlined style={{ color: 'var(--warning-color)', fontSize: 16 }} />
                 <div>
-                  <Text type="secondary" style={{ fontSize: 11 }}>Pending</Text>
+                  <Text type="secondary" style={{ fontSize: 12 }}>Pending</Text>
                   <div style={{ fontSize: 20, fontWeight: 500, color: 'var(--warning-color)' }}>
                     {stats.pending}
                   </div>
@@ -133,7 +133,7 @@ const Dashboard: React.FC = () => {
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                 <PlayCircleOutlined style={{ color: 'var(--info-color)', fontSize: 16 }} />
                 <div>
-                  <Text type="secondary" style={{ fontSize: 11 }}>Running</Text>
+                  <Text type="secondary" style={{ fontSize: 12 }}>Running</Text>
                   <div style={{ fontSize: 20, fontWeight: 500, color: 'var(--info-color)' }}>
                     {stats.running}
                   </div>
@@ -154,12 +154,12 @@ const Dashboard: React.FC = () => {
               <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                 <CheckCircleOutlined style={{ color: 'var(--success-color)', fontSize: 16 }} />
                 <div>
-                  <Text type="secondary" style={{ fontSize: 11 }}>Completed</Text>
+                  <Text type="secondary" style={{ fontSize: 12 }}>Completed</Text>
                   <div style={{ fontSize: 20, fontWeight: 500, color: 'var(--success-color)' }}>
                     {stats.completed}
                   </div>
                   {stats.failed > 0 && (
-                    <Text type="danger" style={{ fontSize: 11, marginTop: 2 }}>
+                    <Text type="danger" style={{ fontSize: 12, marginTop: 2 }}>
                       {stats.failed} Failed
                     </Text>
                   )}

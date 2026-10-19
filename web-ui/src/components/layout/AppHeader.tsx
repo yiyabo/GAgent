@@ -56,7 +56,7 @@ const AppHeader: React.FC = () => {
       <Header className={`app-header ${isChatRoute && workspaceMode === 'plan' ? 'workspace-header' : ''}`}>
         <div className="app-logo" role="link" aria-label="GAgent 首页" style={{ cursor: 'pointer' }} onClick={() => navigate('/chat')}>
           <ExperimentOutlined className="logo-icon" />
-          <span style={{ fontWeight: 650, fontSize: 18, color: 'var(--text-primary)' }}>GAgent</span>
+          <span>GAgent</span>
         </div>
 
         <div className="app-header-actions">
@@ -64,7 +64,7 @@ const AppHeader: React.FC = () => {
             <Tooltip title={apiConnected ? 'Connected' : 'Disconnected'}>
               <div className="system-status" style={{ gap: 6 }}>
                 <div className={`status-indicator ${apiConnected ? '' : 'disconnected'}`} />
-                <Text style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+                <Text style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
                   {apiConnected ? 'Ready' : 'Offline'}
                 </Text>
               </div>

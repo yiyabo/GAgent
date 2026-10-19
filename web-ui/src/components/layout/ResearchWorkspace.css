@@ -29,12 +29,12 @@
 .research-workspace :focus-visible { outline: 2px solid var(--color-action); outline-offset: 2px; }
 .research-workspace .biomni-sidebar-container { background: var(--surface-sidebar); padding: 18px 10px 12px; }
 .research-workspace .biomni-sidebar-project-header { padding: 6px 8px 18px; margin-bottom: 12px; }
-.research-workspace .biomni-project-tag { letter-spacing: 0; font-size: 11px; font-weight: 400; }
+.research-workspace .biomni-project-tag { letter-spacing: 0; font-size: var(--fs-caption); font-weight: 400; }
 .research-workspace .biomni-project-name { font-size: 14px; font-weight: 600; overflow-wrap: anywhere; }
 .research-workspace .biomni-session-item { padding: 10px 8px; margin: 3px 0; border-radius: 6px; }
 .research-workspace .biomni-session-item.selected { background: var(--surface-selected); }
 .research-workspace .biomni-session-item.selected .biomni-session-title { color: var(--color-action-hover) !important; }
-.research-workspace .biomni-session-time { font-size: 10px; }
+.research-workspace .biomni-session-time { font-size: var(--fs-caption); }
 .research-workspace .biomni-session-item:focus-within .biomni-session-more-btn { opacity: 1; }
 .research-workspace .biomni-section-header { flex-wrap: wrap; row-gap: 8px; }
 .research-workspace .workspace-chat-header { padding: 17px 20px !important; min-height: 70px; gap: 12px; }
@@ -58,7 +58,6 @@
 .research-workspace .workspace-input-box > button { align-self: flex-end; min-width: 60px !important; height: 32px !important; }
 .research-workspace .workspace-upload-control { position: absolute; z-index: 1; bottom: 11px; left: 10px; background: transparent !important; padding: 0 !important; }
 .research-workspace .hero-welcome-container { padding: 32px 24px; }
-.research-workspace .hero-welcome-title { font-size: 23px; }
 .research-workspace .hero-starter-grid { grid-template-columns: 1fr; }
 .research-workspace .hero-starter-card { padding: 12px; box-shadow: none; border-radius: 8px; }
 .research-workspace .hero-prompt-card { border-width: 1px; border-radius: 10px; box-shadow: 0 3px 12px #182b4610; }

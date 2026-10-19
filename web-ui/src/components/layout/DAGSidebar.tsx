@@ -224,7 +224,7 @@ export const LegacyDAGSidebar: React.FC = () => {
 
   {detailParts.length > 0 && (
   <div style={{ marginTop: 6 }}>
-  <Text type="secondary" style={{ fontSize: 11, color: 'var(--text-tertiary)' }}>
+  <Text type="secondary" style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
   {detailParts.join(' · ')}
   </Text>
   </div>
@@ -452,7 +452,7 @@ export const LegacyDAGSidebar: React.FC = () => {
   </Space>
 
   <Space direction="vertical" size={8} style={{ width: '100%', marginTop: 12 }}>
-  <Text type="secondary" style={{ fontSize: 11 }}>
+  <Text type="secondary" style={{ fontSize: 12 }}>
   ROOT task:
   </Text>
   <div
@@ -467,7 +467,7 @@ export const LegacyDAGSidebar: React.FC = () => {
   >
   {selectedPlanTitle || 'No ROOT task'}
   </div>
-  <Text type="secondary" style={{ fontSize: 10, color: 'var(--text-tertiary)' }}>
+  <Text type="secondary" style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
   Current plan title
   </Text>
   </Space>
@@ -529,7 +529,7 @@ export const LegacyDAGSidebar: React.FC = () => {
   </Space>
 
   <div style={{ textAlign: 'center', marginTop: 8 }}>
-  <Text type="secondary" style={{ fontSize: 11, opacity: 0.6 }}>
+  <Text type="secondary" style={{ fontSize: 12, opacity: 0.6 }}>
   Select a node to inspect task details
   </Text>
   </div>

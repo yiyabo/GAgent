@@ -24,7 +24,7 @@
   height: 100%;
   background: var(--dag-bg);
   overflow: hidden;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'SF Pro Text', sans-serif;
+  font-family: var(--font-sans);
 }
 
 .dag-fullscreen-container:fullscreen {
@@ -107,11 +107,10 @@
 }
 
 .dag-legend-title {
-  font-size: 11px;
+  font-size: var(--fs-caption);
   font-weight: 600;
   color: var(--dag-text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
+  letter-spacing: 0;
   margin-bottom: 14px;
 }
 
@@ -120,7 +119,7 @@
   align-items: center;
   gap: 10px;
   padding: 6px 0;
-  font-size: 13px;
+  font-size: var(--fs-small);
   color: var(--dag-text-secondary);
 }
 
@@ -182,7 +181,7 @@
 }
 
 .dag-node-info-content {
-  font-size: 13px;
+  font-size: var(--fs-small);
   color: var(--dag-text-secondary);
   line-height: 1.5;
 }
@@ -201,7 +200,7 @@
   width: 64px;
   flex-shrink: 0;
   color: var(--dag-text-muted);
-  font-size: 12px;
+  font-size: var(--fs-caption);
 }
 
 .dag-node-info-value {
@@ -229,7 +228,7 @@
   border: 1px solid var(--dag-border);
   border-radius: 18px;
   color: var(--dag-text-primary);
-  font-size: 13px;
+  font-size: var(--fs-small);
   outline: none;
   transition: all 0.15s;
 }
@@ -249,7 +248,7 @@
   top: 50%;
   transform: translateY(-50%);
   color: var(--dag-text-muted);
-  font-size: 13px;
+  font-size: var(--fs-small);
 }
 
 /*  -  */
@@ -272,7 +271,7 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
+  font-size: var(--fs-caption);
   color: var(--dag-text-secondary);
 }
 
@@ -315,7 +314,7 @@
   background: var(--dag-surface);
   border: 1px solid var(--dag-border);
   border-radius: 16px;
-  font-size: 11px;
+  font-size: var(--fs-caption);
   color: var(--dag-text-muted);
   pointer-events: none;
   opacity: 0;
@@ -372,7 +371,7 @@
 
 .dag-sticky-container {
   background: #f9fafb;
-  font-family: Georgia, 'Times New Roman', serif;
+  font-family: var(--font-serif);
 }
 
 .dag-sticky-container:fullscreen {
@@ -418,13 +417,12 @@
 
 /*  */
 .dag-card-legend {
-  font-family: Georgia, 'Times New Roman', serif;
+  font-family: var(--font-serif);
 }
 
 .dag-card-legend .dag-legend-title {
-  font-family: Georgia, serif;
-  font-style: italic;
-  font-size: 12px;
+  font-family: var(--font-serif);
+  font-size: var(--fs-caption);
   font-weight: normal;
   color: #666;
   letter-spacing: 0.5px;
@@ -432,7 +430,7 @@
 }
 
 .dag-card-legend .dag-legend-item {
-  font-size: 12px;
+  font-size: var(--fs-caption);
   color: #4a4a4a;
 }
 
@@ -472,9 +470,9 @@
 }
 
 .dag-card-legend .dag-legend-hint {
-  font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+  font-family: var(--font-sans);
   font-style: normal;
-  font-size: 10px;
+  font-size: var(--fs-caption);
 }
 
 /*  */
@@ -634,7 +632,7 @@
   margin-top: 14px;
   padding-top: 14px;
   border-top: 1px solid var(--dag-border);
-  font-size: 11px;
+  font-size: var(--fs-caption);
   color: var(--dag-text-muted);
   line-height: 1.5;
 }
@@ -690,7 +688,7 @@
 
 .dag-3d-loading-text {
   color: var(--dag-text-muted);
-  font-size: 13px;
+  font-size: var(--fs-small);
 }
 
 /* status */
@@ -753,7 +751,7 @@
   border: 1px solid #e8e8e8;
   border-radius: 6px;
   padding: 12px;
-  font-size: 13px;
+  font-size: var(--fs-small);
   line-height: 1.6;
 }
 
@@ -762,7 +760,7 @@
   border: 1px solid #e8e8e8;
   border-radius: 6px;
   padding: 12px;
-  font-size: 12px;
+  font-size: var(--fs-caption);
   line-height: 1.5;
   max-height: 300px;
   overflow-y: auto;
@@ -773,7 +771,7 @@
   border: 1px solid #e8e8e8;
   border-radius: 6px;
   padding: 12px;
-  font-size: 12px;
+  font-size: var(--fs-caption);
   line-height: 1.5;
   max-height: 400px;
   overflow-y: auto;
@@ -784,7 +782,7 @@
   border: 1px solid #e8e8e8;
   border-radius: 6px;
   padding: 12px;
-  font-size: 11px;
+  font-size: var(--fs-caption);
   line-height: 1.4;
   margin: 0;
   white-space: pre-wrap;
@@ -800,23 +798,23 @@
 
 .dag-sticky-container .ant-drawer .ant-tabs-tab {
   padding: 8px 12px;
-  font-size: 13px;
+  font-size: var(--fs-small);
 }
 
 .dag-sticky-container .ant-drawer .ant-descriptions-item-label {
   width: 80px;
-  font-size: 12px;
+  font-size: var(--fs-caption);
   color: #666;
 }
 
 .dag-sticky-container .ant-drawer .ant-descriptions-item-content {
-  font-size: 12px;
+  font-size: var(--fs-caption);
 }
 
 /* Collapse  */
 .dag-sticky-container .ant-collapse-ghost > .ant-collapse-item > .ant-collapse-header {
   padding: 8px 0;
-  font-size: 12px;
+  font-size: var(--fs-caption);
 }
 
 /*  */

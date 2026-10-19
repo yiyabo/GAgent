@@ -856,7 +856,7 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
                     borderRadius: isFocusedPreview ? 0 : 8,
                     padding: isFocusedPreview ? 16 : 12,
                     background: isFocusedPreview ? 'var(--bg-primary)' : 'var(--bg-tertiary)',
-                    fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+                    fontFamily: 'var(--font-mono)',
                     fontSize: 12,
                     whiteSpace: 'pre-wrap',
                     lineHeight: 1.5,
@@ -904,7 +904,7 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
                         borderRadius: isFocusedPreview ? 0 : 8,
                         padding: isFocusedPreview ? 16 : 12,
                         background: isFocusedPreview ? 'var(--bg-primary)' : 'var(--bg-tertiary)',
-                        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+                        fontFamily: 'var(--font-mono)',
                         fontSize: 12,
                         whiteSpace: 'pre-wrap',
                         lineHeight: 1.5,
@@ -934,7 +934,7 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
                             borderRadius: 8,
                             padding: 12,
                             background: 'var(--bg-tertiary)',
-                            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+                            fontFamily: 'var(--font-mono)',
                             fontSize: 12,
                             whiteSpace: 'pre-wrap',
                             lineHeight: 1.5,
@@ -942,7 +942,7 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
                             overflow: 'auto',
                           }}
                         >
-                          <Text type="secondary" style={{ fontSize: 11, display: 'block', marginBottom: 8 }}>
+                          <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 8 }}>
                             Raw source:
                           </Text>
                           {textPreview.content}

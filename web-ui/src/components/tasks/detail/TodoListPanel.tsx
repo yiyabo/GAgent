@@ -116,7 +116,7 @@ const TodoTaskItem: React.FC<{
           </Paragraph>
         )}
         {item.dependencies.length > 0 && (
-          <Text type="secondary" style={{ fontSize: 11 }}>
+          <Text type="secondary" style={{ fontSize: 12 }}>
             deps: {item.dependencies.map((d) => `#${d}`).join(', ')}
           </Text>
         )}
@@ -158,7 +158,7 @@ const TodoPhaseCard: React.FC<{
           <Text type="secondary">
             {phase.completed}/{phase.total}
           </Text>
-          <Text type="secondary" style={{ fontSize: 11 }}>
+          <Text type="secondary" style={{ fontSize: 12 }}>
             {collapsed ? '▸' : '▾'}
           </Text>
         </Space>
