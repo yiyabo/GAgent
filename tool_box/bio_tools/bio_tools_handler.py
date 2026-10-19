@@ -20,6 +20,7 @@ from pathlib import Path
 from string import Formatter
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
+from . import native_client, native_exec
 from .remote_executor import (
     RemoteExecutionConfig,
     create_remote_run_dirs,
@@ -184,12 +185,16 @@ def get_available_bio_tools() -> List[Dict[str, Any]]:
     config = get_tools_config()
     tools = []
     for name, info in config.items():
-        tools.append({
+        entry = {
             "name": name,
             "description": info.get("description", ""),
             "category": info.get("category", ""),
             "operations": list(info.get("operations", {}).keys())
-        })
+        }
+        native_ops = [op for op in entry["operations"] if native_exec.supports_native(config, name, op)]
+        if native_ops:
+            entry["native_operations"] = native_ops
+        tools.append(entry)
     return tools
 
 
@@ -942,7 +947,7 @@ async def execute_docker_command(
 
 def _normalize_execution_mode(value: Optional[str]) -> str:
     mode = (value or DEFAULT_EXECUTION_MODE).strip().lower()
-    if mode not in {"local", "remote", "auto"}:
+    if mode not in {"local", "remote", "auto", "native", "native_first"}:
         return DEFAULT_EXECUTION_MODE
     return mode
 
@@ -951,6 +956,9 @@ def _effective_execution_mode(config: RemoteExecutionConfig) -> str:
     configured = _normalize_execution_mode(os.getenv("BIO_TOOLS_EXECUTION_MODE"))
     if configured in {"local", "remote"}:
         return configured
+    if configured in {"native", "native_first"}:
+        # Reached only for what native execution does not cover (native_first), which runs in Docker.
+        return "local"
 
     # auto mode: use remote only when minimal remote config is available
     if not config.missing_required():
@@ -1369,6 +1377,45 @@ async def _execute_remote_bio_tool(
     return result
 
 
+def _native_runtime_dir() -> str:
+    return os.path.join(RUNTIME_BASE_DIR)
+
+
+def _container_runtime_root() -> str:
+    try:
+        from app.services.session_paths import get_runtime_root
+
+        return str(get_runtime_root())
+    except Exception:
+        return str(Path(RUNTIME_BASE_DIR).parent)
+
+
+async def _execute_native_bio_tool(
+    *,
+    tool_name: str,
+    operation: str,
+    input_file: Optional[str],
+    output_file: Optional[str],
+    params: Optional[Dict[str, Any]],
+    timeout: Optional[int],
+    report: Optional[Callable] = None,
+    log_callback: Optional[Callable[[str, str], None]] = None,
+) -> Dict[str, Any]:
+    return await native_client.run_native_bio_tool(
+        config=get_tools_config(),
+        runtime_dir=_native_runtime_dir(),
+        container_runtime_root=_container_runtime_root(),
+        tool_name=tool_name,
+        operation=operation,
+        input_file=input_file,
+        output_file=output_file,
+        params=params,
+        timeout=timeout,
+        report=report,
+        log_callback=log_callback,
+    )
+
+
 async def _execute_bio_tool_once(
     *,
     tool_name: str,
@@ -1387,6 +1434,26 @@ async def _execute_bio_tool_once(
     remote_config = RemoteExecutionConfig.from_env()
     requested_mode = _normalize_execution_mode(os.getenv("BIO_TOOLS_EXECUTION_MODE"))
     execution_mode = _effective_execution_mode(remote_config)
+
+    if requested_mode in {"native", "native_first"}:
+        native_result = await _execute_native_bio_tool(
+            tool_name=tool_name,
+            operation=operation,
+            input_file=input_file,
+            output_file=output_file,
+            params=params,
+            timeout=timeout,
+            report=_report,
+            log_callback=log_callback,
+        )
+        # native_first falls through to Docker only when native cannot take the run at all;
+        # a run that started and failed is reported as failed, never silently re-run elsewhere.
+        can_fall_through = requested_mode == "native_first" and (
+            native_result.get("fallback_ok") or native_result.get("error_code") == "not_native"
+        )
+        if not can_fall_through:
+            return native_result
+        await _report("running", "Native execution not available, using Docker: %s" % native_result.get("error", ""))
 
     if execution_mode == "remote":
         await _report("started", f"Connecting to {remote_config.host} for {tool_name} {operation}")
@@ -1792,6 +1859,9 @@ async def bio_tools_handler(
             "description": tool_config.get("description", ""),
             "notes": tool_config.get("notes", ""),
             "image": tool_config.get("image", ""),
+            "native_operations": [
+                op for op in operations_detail if native_exec.supports_native(config, tool_name, op)
+            ],
             "operations": operations_detail,
         }
     
