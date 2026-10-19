@@ -13,6 +13,7 @@ import {
 } from '@ant-design/icons';
 import type { ChatMessage as ChatMessageType } from '@/types';
 import { useChatStore } from '@store/chat';
+import { useT } from '@/i18n/useT';
 import { resolveChatSessionProcessingKey } from '@/utils/chatSessionKeys';
 import { formatTime, fallbackCopyToClipboard, resolveMessageCopyText } from './utils';
 
@@ -23,6 +24,7 @@ interface MessageActionsProps {
 }
 
 const MessageActions: React.FC<MessageActionsProps> = ({ message }) => {
+  const t = useT();
   const { type, content, timestamp, metadata } = message;
   const saveMessageAsMemory = useChatStore((s) => s.saveMessageAsMemory);
   const retryActionRun = useChatStore((s) => s.retryActionRun);
@@ -49,10 +51,10 @@ const MessageActions: React.FC<MessageActionsProps> = ({ message }) => {
     try {
       setIsSaving(true);
       await saveMessageAsMemory(message);
-      antMessage.success('Saved to memory');
+      antMessage.success(t('chat.savedToMemory'));
     } catch (error) {
       console.error('Failed to save memory:', error);
-      antMessage.error('Save failed');
+      antMessage.error(t('chat.saveFailed'));
     } finally {
       setIsSaving(false);
     }
@@ -67,7 +69,7 @@ const MessageActions: React.FC<MessageActionsProps> = ({ message }) => {
 
         {type !== 'system' && (
           <Space size={4}>
-            <Tooltip title="Copy">
+            <Tooltip title={t('chat.copy')}>
               <Button
                 type="text"
                 size="small"
@@ -77,7 +79,7 @@ const MessageActions: React.FC<MessageActionsProps> = ({ message }) => {
               />
             </Tooltip>
 
-            <Tooltip title="Save as Memory">
+            <Tooltip title={t('chat.saveAsMemory')}>
               <Button
                 type="text"
                 size="small"
@@ -89,7 +91,7 @@ const MessageActions: React.FC<MessageActionsProps> = ({ message }) => {
             </Tooltip>
 
             {type === 'assistant' && (
-              <Tooltip title="Regenerate">
+              <Tooltip title={t('chat.regenerate')}>
                 <Button
                   type="text"
                   size="small"

@@ -45,6 +45,8 @@ import type { DataNode } from 'antd/es/tree';
 import { useLayoutStore } from '@store/layout';
 import { useTasksStore } from '@store/tasks';
 import { MarkdownRenderer } from '@components/chat/MarkdownRenderer';
+import { useT } from '@/i18n/useT';
+import type { TFn } from '@/i18n/useT';
 import {
   CSVTablePreview,
   CSV_EXTS,
@@ -57,7 +59,7 @@ import {
 
 const { Text } = Typography;
 
-function getReleaseStatePresentation(releaseState?: string): {
+function getReleaseStatePresentation(releaseState: string | undefined, t: TFn): {
   color: string;
   label: string;
   icon: React.ReactNode;
@@ -65,20 +67,20 @@ function getReleaseStatePresentation(releaseState?: string): {
   const normalized = String(releaseState ?? '').trim().toLowerCase();
   if (!normalized) return null;
   if (normalized === 'draft') {
-    return { color: 'orange', label: 'Draft', icon: <EditOutlined /> };
+    return { color: 'orange', label: t('artifactsPanel.releaseDraft'), icon: <EditOutlined /> };
   }
   if (normalized === 'final') {
-    return { color: 'green', label: 'Final', icon: <CheckCircleOutlined /> };
+    return { color: 'green', label: t('artifactsPanel.releaseFinal'), icon: <CheckCircleOutlined /> };
   }
   if (normalized === 'blocked') {
-    return { color: 'red', label: 'Blocked', icon: <StopOutlined /> };
+    return { color: 'red', label: t('status.blocked'), icon: <StopOutlined /> };
   }
   return { color: 'blue', label: normalized.replace(/_/g, ' '), icon: <FileOutlined /> };
 }
 
-const formatModuleName = (module?: string) => {
+const formatModuleName = (module: string | undefined, t: TFn) => {
   if (!module) return '';
-  if (module === 'image_tabular') return 'image & tabular';
+  if (module === 'image_tabular') return t('artifactsPanel.moduleImageTabular');
   return module;
 };
 
@@ -130,6 +132,7 @@ const trimDisplayPrefix = (path: string, prefix: string | null): string => {
 
 const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
   const { message } = App.useApp();
+  const t = useT();
   const { dagSidebarFullscreen, toggleDagSidebarFullscreen } = useLayoutStore();
   const { tasks, selectedTaskId } = useTasksStore((state) => ({
     tasks: state.tasks,
@@ -475,7 +478,7 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
     try {
       await downloadSessionBatch(sessionId!, entries);
     } catch (err) {
-      message.error(err instanceof Error ? err.message : 'Batch download failed');
+      message.error(err instanceof Error ? err.message : t('artifactsPanel.batchFailed'));
     } finally {
       setIsBatchDownloading(false);
     }
@@ -488,7 +491,7 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
     try {
       await downloadSessionBatch(sessionId!, entries);
     } catch (err) {
-      message.error(err instanceof Error ? err.message : 'Batch download failed');
+      message.error(err instanceof Error ? err.message : t('artifactsPanel.batchFailed'));
     } finally {
       setIsBatchDownloading(false);
     }
@@ -497,7 +500,7 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
   if (!sessionId) {
     return (
       <div style={{ padding: 16 }}>
-        <Empty description="No active session. Unable to load artifacts." />
+        <Empty description={t('artifactsPanel.noSession')} />
       </div>
     );
   }
@@ -505,7 +508,7 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
   if (activeError && !isNotFoundError(activeError)) {
     return (
       <div style={{ padding: 16 }}>
-        <Empty description={`Load failed: ${(activeError as Error).message}`} />
+        <Empty description={t('artifactsPanel.loadFailed', { message: (activeError as Error).message })} />
       </div>
     );
   }
@@ -513,7 +516,7 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
   const paperCompleted = Number(deliverableData?.paper_status?.completed_count ?? 0);
   const paperTotal = Number(deliverableData?.paper_status?.total_sections ?? 0);
   const releaseSummary = String(deliverableData?.release_summary ?? '').trim();
-  const releaseStateMeta = getReleaseStatePresentation(deliverableData?.release_state);
+  const releaseStateMeta = getReleaseStatePresentation(deliverableData?.release_state, t);
   const showPaperProgress = paperCompleted > 0 && paperTotal > 0;
 
   return (
@@ -536,18 +539,19 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
             <div className="artifacts-panel-title-block">
               <div className="artifacts-panel-title">
                 {mode === 'deliverables'
-                  ? 'Deliverables'
+                  ? t('artifactsPanel.deliverables')
                   : showAllRawFiles
-                  ? 'Raw Files · All Tasks'
+                  ? t('artifactsPanel.rawFilesAll')
                   : selectedTaskId != null
-                  ? `Raw Files · Task #${selectedTaskId}`
-                  : 'Raw Files'}
+                  ? t('artifactsPanel.rawFilesTask', { id: selectedTaskId })
+                  : t('artifactsPanel.rawFiles')}
               </div>
               {mode === 'deliverables' && (
                 <div className="artifacts-panel-subtitle">
                   <span>
-                    {deliverableData?.count ?? 0} files
-                    {showPaperProgress ? ` · Paper ${paperCompleted}/${paperTotal}` : ''}
+                    {showPaperProgress
+                      ? t('artifactsPanel.fileCountPaper', { count: deliverableData?.count ?? 0, done: paperCompleted, total: paperTotal })
+                      : t('artifactsPanel.fileCount', { count: deliverableData?.count ?? 0 })}
                   </span>
                   {releaseStateMeta && (
                     <Tag icon={releaseStateMeta.icon} color={releaseStateMeta.color} style={{ marginInlineEnd: 0 }}>
@@ -565,7 +569,7 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
           </div>
 
           <div className="artifacts-panel-actions">
-            <Tooltip title="Download selected files as zip">
+            <Tooltip title={t('artifactsPanel.downloadSelectedTip')}>
               <Button
                 size="small"
                 className="artifacts-action-btn"
@@ -574,10 +578,10 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
                 loading={isBatchDownloading}
                 disabled={checkedKeys.length === 0 || isBatchDownloading}
               >
-                <span className="artifacts-action-label">Selected</span>
+                <span className="artifacts-action-label">{t('artifactsPanel.downloadSelected')}</span>
               </Button>
             </Tooltip>
-            <Tooltip title="Download all visible files as zip">
+            <Tooltip title={t('artifactsPanel.downloadAllTip')}>
               <Button
                 size="small"
                 className="artifacts-action-btn"
@@ -586,17 +590,17 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
                 loading={isBatchDownloading}
                 disabled={filteredItems.length === 0 || isBatchDownloading}
               >
-                <span className="artifacts-action-label">All</span>
+                <span className="artifacts-action-label">{t('artifactsPanel.downloadAll')}</span>
               </Button>
             </Tooltip>
-            <Tooltip title={dagSidebarFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}>
+            <Tooltip title={dagSidebarFullscreen ? t('common.exitFullscreen') : t('common.fullscreen')}>
               <Button
                 size="small"
                 icon={dagSidebarFullscreen ? <FullscreenExitOutlined /> : <FullscreenOutlined />}
                 onClick={toggleDagSidebarFullscreen}
               />
             </Tooltip>
-            <Tooltip title="Refresh">
+            <Tooltip title={t('common.refresh')}>
               <Button size="small" icon={<ReloadOutlined />} onClick={handleRefetch} loading={isFetching} />
             </Tooltip>
           </div>
@@ -605,8 +609,8 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
             className="artifacts-panel-segmented"
             value={mode}
             options={[
-              { label: 'Deliverables', value: 'deliverables' },
-              { label: 'Raw Files', value: 'raw' },
+              { label: t('artifactsPanel.deliverables'), value: 'deliverables' },
+              { label: t('artifactsPanel.rawFiles'), value: 'raw' },
             ]}
             onChange={(value) => {
               setUserPickedMode(true);
@@ -624,29 +628,29 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
                 size="small"
                 checked={!hasPlanTasks || showAllRawFiles}
                 disabled={!hasPlanTasks || selectedTaskId == null}
-                aria-label="All Raw Files"
+                aria-label={t('artifactsPanel.allRawFiles')}
                 onChange={(checked) => {
                   setShowAllRawFiles(checked);
                   setSelectedPath(null);
                   setPreviewOpen(false);
                 }}
               />
-              <span className="artifacts-panel-raw-label">All Raw Files</span>
+              <span className="artifacts-panel-raw-label">{t('artifactsPanel.allRawFiles')}</span>
               <span className="artifacts-panel-hint">
                 {!hasPlanTasks
-                  ? 'No plan bound — full raw_files'
+                  ? t('artifactsPanel.hintNoPlan')
                   : showAllRawFiles
-                  ? 'Full raw_files tree'
+                  ? t('artifactsPanel.hintFullTree')
                   : selectedTaskId != null
-                  ? `Task #${selectedTaskId} only`
-                  : 'Select a task to scope'}
+                  ? t('artifactsPanel.hintTaskOnly', { id: selectedTaskId })
+                  : t('artifactsPanel.hintSelectTask')}
               </span>
             </div>
           )}
 
           <Input.Search
             className="artifacts-panel-search"
-            placeholder="Search file paths"
+            placeholder={t('artifactsPanel.searchPlaceholder')}
             value={keyword}
             onChange={(event) => setKeyword(event.target.value)}
             allowClear
@@ -671,7 +675,7 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
         }}>
           {isLoading ? (
             <div style={{ padding: 16 }}>
-              <Text type="secondary">Loading...</Text>
+              <Text type="secondary">{t('common.loading')}</Text>
             </div>
           ) : filteredItems.length ? (
             <Tree
@@ -698,7 +702,7 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
             />
           ) : (
             <div style={{ padding: 16 }}>
-              <Empty description="No files" />
+              <Empty description={t('artifactsPanel.noFiles')} />
             </div>
           )}
         </div>
@@ -732,7 +736,7 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
         >
           <Space size={8} wrap style={{ flex: 1, minWidth: 0 }}>
             <Text strong ellipsis style={{ maxWidth: 200 }}>
-              {selectedItem?.name || 'Preview'}
+              {selectedItem?.name || t('preview.title')}
             </Text>
             {selectedItem?.extension && <Tag>{selectedItem.extension}</Tag>}
             {selectedItem?.size !== undefined && (
@@ -747,10 +751,10 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
                 size="small"
                 onClick={() => setShowSource(!showSource)}
               >
-                {showSource ? 'Show Rendered' : 'Show Source'}
+                {showSource ? t('preview.showRendered') : t('preview.showSource')}
               </Button>
             )}
-            <Tooltip title="Open in new tab">
+            <Tooltip title={t('preview.openInNewTab')}>
               <Button
                 size="small"
                 icon={<LinkOutlined />}
@@ -762,7 +766,7 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
                 disabled={!fileUrl}
               />
             </Tooltip>
-            <Tooltip title="Close">
+            <Tooltip title={t('common.close')}>
               <Button
                 size="small"
                 icon={<CloseOutlined />}
@@ -796,16 +800,16 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
               {/* Status Tags */}
               {!isFocusedPreview && (<Space size={8} wrap>
                 {selectedItem.sourceType === 'deliverables' && selectedItem.module && (
-                  <Tag color="blue">{formatModuleName(selectedItem.module)}</Tag>
+                  <Tag color="blue">{formatModuleName(selectedItem.module, t)}</Tag>
                 )}
                 {selectedItem.sourceType === 'deliverables' && selectedItem.status === 'draft' && (
-                  <Tag icon={<EditOutlined />} color="orange">Draft</Tag>
+                  <Tag icon={<EditOutlined />} color="orange">{t('artifactsPanel.releaseDraft')}</Tag>
                 )}
                 {selectedItem.sourceType === 'deliverables' && selectedItem.status === 'final' && (
-                  <Tag icon={<CheckCircleOutlined />} color="green">Final</Tag>
+                  <Tag icon={<CheckCircleOutlined />} color="green">{t('artifactsPanel.releaseFinal')}</Tag>
                 )}
                 {selectedItem.sourceType === 'deliverables' && selectedItem.status === 'superseded' && (
-                  <Tag icon={<StopOutlined />} color="default">Superseded</Tag>
+                  <Tag icon={<StopOutlined />} color="default">{t('artifactsPanel.releaseSuperseded')}</Tag>
                 )}
               </Space>)}
 
@@ -862,13 +866,13 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
                     overflow: 'auto',
                   }}
                 >
-                  {textLoading ? 'Loading text preview...' : textPreview?.content ?? ''}
+                  {textLoading ? t('preview.loadingText') : textPreview?.content ?? ''}
                   {textPreview?.truncated && (
                     <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8 }}>
                       <Text type="secondary" style={{ fontSize: 12 }}>
-                        Content is truncated (showing first 200 KB).
+                        {t('preview.truncated')}
                       </Text>
-                      <Tooltip title="Download full file">
+                      <Tooltip title={t('preview.downloadFull')}>
                         <Button
                           size="small"
                           type="primary"
@@ -884,7 +888,7 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
                             }
                           }}
                         >
-                          Download
+                          {t('preview.download')}
                         </Button>
                       </Tooltip>
                     </div>
@@ -913,14 +917,14 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
                       {textPreview.content}
                     </div>
                   ) : renderLoading ? (
-                    <Empty description="Rendering document..." image={Empty.PRESENTED_IMAGE_SIMPLE} />
+                    <Empty description={t('preview.rendering')} image={Empty.PRESENTED_IMAGE_SIMPLE} />
                   ) : renderError ? (
                     <div>
                       <Empty
                         image={Empty.PRESENTED_IMAGE_SIMPLE}
                         description={
                           <span>
-                            Failed to render: {(renderError as Error)?.message || 'Unknown error'}
+                            {t('preview.renderFailedWith', { message: (renderError as Error)?.message || t('app.unknownError') })}
                           </span>
                         }
                       />
@@ -942,7 +946,7 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
                           }}
                         >
                           <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 8 }}>
-                            Raw source:
+                            {t('preview.rawSource')}
                           </Text>
                           {textPreview.content}
                         </div>
@@ -986,7 +990,7 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
                   ) : (
                     <Empty
                       image={Empty.PRESENTED_IMAGE_SIMPLE}
-                      description="Failed to render document."
+                      description={t('preview.renderFailed')}
                     />
                   )}
                 </div>
@@ -996,12 +1000,12 @@ const ArtifactsPanel: React.FC<ArtifactsPanelProps> = ({ sessionId }) => {
               {!isImage && !isPDF && !isText && !isRenderable && (
                 <Empty
                   image={Empty.PRESENTED_IMAGE_SIMPLE}
-                  description="File type is not supported for preview"
+                  description={t('preview.unsupported')}
                 />
               )}
             </div>
           ) : (
-            <Empty description="Select a file to preview" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+            <Empty description={t('preview.selectFile')} image={Empty.PRESENTED_IMAGE_SIMPLE} />
           )}
         </div>
         </div>

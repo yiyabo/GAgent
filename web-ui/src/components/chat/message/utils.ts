@@ -1,5 +1,6 @@
 import type { ChatMessage as ChatMessageType, DecompositionJobStatus } from '@/types';
 import { extractLlmReplyMessage } from '@/utils/llmReplyDisplay';
+import { dateLocale } from '@/i18n/format';
 
 export const GENERIC_REQUEST_FAILURE_MESSAGE = 'Request failed. Please check:\n\n1. Backend service availability\n2. LLM API configuration\n3. Network connectivity\n\nThen retry the request.';
 
@@ -134,7 +135,7 @@ export const computeDecomposeProgress = (
 
 // Format time.
 export const formatTime = (date: Date) => {
-  return new Date(date).toLocaleTimeString('en-US', {
+  return new Date(date).toLocaleTimeString(dateLocale(), {
     hour: '2-digit',
     minute: '2-digit',
   });

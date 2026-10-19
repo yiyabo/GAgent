@@ -5,12 +5,14 @@ import { useChatStore } from '@store/chat';
 import { useAuthStore } from '@store/auth';
 import { UPLOAD_ACCEPT_LIST, isAllowedUploadFile } from '@/constants/uploadFileTypes';
 import FileTreeSelector from './FileTreeSelector';
+import { useT } from '@/i18n/useT';
 
 interface FileUploadButtonProps {
   size?: 'small' | 'middle' | 'large';
 }
 
 const FileUploadButton: React.FC<FileUploadButtonProps> = ({ size = 'middle' }) => {
+  const t = useT();
   const uploadFile = useChatStore((s) => s.uploadFile);
   const currentSession = useChatStore((s) => s.currentSession);
   const { projectId } = useAuthStore();
@@ -19,17 +21,17 @@ const FileUploadButton: React.FC<FileUploadButtonProps> = ({ size = 'middle' }) 
 
   const handleUpload = async (file: File) => {
     if (!currentSession) {
-      message.error('Please create or select a session first.');
+      message.error(t('upload.needSession'));
       return false;
     }
 
     setUploading(true);
     try {
       await uploadFile(file);
-      message.success(`File ${file.name} uploaded successfully.`);
+      message.success(t('upload.uploaded', { name: file.name }));
       return false;
     } catch (error: any) {
-      message.error(`Upload failed: ${error.message || 'Unknown error'}`);
+      message.error(t('upload.failed', { message: error.message || t('app.unknownError') }));
       return false;
     } finally {
       setUploading(false);
@@ -38,7 +40,7 @@ const FileUploadButton: React.FC<FileUploadButtonProps> = ({ size = 'middle' }) 
 
   const beforeUpload = (file: File) => {
     if (!isAllowedUploadFile(file)) {
-      message.error('Unsupported file type.');
+      message.error(t('upload.unsupportedType'));
       return Upload.LIST_IGNORE;
     }
 
@@ -70,12 +72,12 @@ const FileUploadButton: React.FC<FileUploadButtonProps> = ({ size = 'middle' }) 
         .filter((f) => !existingKeys.has(f.file_path) && !existingKeys.has(f.file_id));
 
       if (fileRefs.length === 0) {
-        message.info('Selected files are already attached');
+        message.info(t('upload.alreadyAttached'));
         return;
       }
 
       store.setUploadedFiles([...existing, ...fileRefs]);
-      message.success(`Added ${fileRefs.length} project files to session`);
+      message.success(t('upload.addedProjectFiles', { count: fileRefs.length }));
     }
   };
 
@@ -88,7 +90,7 @@ const FileUploadButton: React.FC<FileUploadButtonProps> = ({ size = 'middle' }) 
           accept={UPLOAD_ACCEPT_LIST}
           multiple={false}
         >
-          <Tooltip title="Upload file">
+          <Tooltip title={t('upload.tip')}>
             <Button
               type="text"
               size={size}
@@ -100,7 +102,7 @@ const FileUploadButton: React.FC<FileUploadButtonProps> = ({ size = 'middle' }) 
         </Upload>
 
         {projectId && (
-          <Tooltip title="Select from project">
+          <Tooltip title={t('upload.fromProject')}>
             <Button
               type="text"
               size={size}

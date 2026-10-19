@@ -27,12 +27,15 @@ import PlanWorkspace from './planWorkspace/PlanWorkspace';
 import ArtifactsPanel from './ArtifactsPanel';
 import TodoListPanel from '@components/tasks/detail/TodoListPanel';
 import { ENV } from '@/config/env';
+import { useT } from '@/i18n/useT';
+import { statusLabel } from '@/i18n/statusLabels';
 
 const { Title, Text } = Typography;
 
 const FINAL_JOB_STATUSES = new Set(['succeeded', 'failed', 'completed']);
 
 export const LegacyDAGSidebar: React.FC = () => {
+  const t = useT();
   const { setCurrentPlan, setTasks, openTaskDrawer, openTaskDrawerById, closeTaskDrawer, selectedTaskId } = useTasksStore((state) => ({
   setCurrentPlan: state.setCurrentPlan,
   setTasks: state.setTasks,
@@ -149,25 +152,25 @@ export const LegacyDAGSidebar: React.FC = () => {
   : statusKey === 'queued'
   ? 'default'
   : 'processing';
-  const statusLabel =
+  const statusText =
   statusKey === 'running'
-  ? 'medium'
+  ? t('dagSidebar.decomposeRunning')
   : statusKey === 'queued'
-  ? 'queued'
+  ? t('executorPanel.queued')
   : statusKey === 'failed'
-  ? 'failed'
-  : 'medium';
+  ? t('status.failed')
+  : t('dagSidebar.decomposeInProgress');
 
   const percent = decomposeProgress.percent != null ? decomposeProgress.percent : 0;
   const detailParts: string[] = [];
   if (decomposeProgress.consumedBudget != null) {
-  detailParts.push(`create ${Math.max(0, Math.round(decomposeProgress.consumedBudget))}`);
+  detailParts.push(t('dagSidebar.created', { count: Math.max(0, Math.round(decomposeProgress.consumedBudget)) }));
   }
   if (decomposeProgress.totalBudget != null && decomposeProgress.totalBudget > 0) {
-  detailParts.push(` ${Math.round(decomposeProgress.totalBudget)}`);
+  detailParts.push(t('dagSidebar.limit', { count: Math.round(decomposeProgress.totalBudget) }));
   }
   if (decomposeProgress.queueRemaining != null) {
-  detailParts.push(`queue ${Math.max(0, Math.round(decomposeProgress.queueRemaining))}`);
+  detailParts.push(t('jobLog.queueRemaining', { count: Math.max(0, Math.round(decomposeProgress.queueRemaining)) }));
   }
 
   return (
@@ -194,10 +197,10 @@ export const LegacyDAGSidebar: React.FC = () => {
   <Space size={8} align="center">
   <Badge status={badgeStatus as any} />
   <Text style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)' }}>
-  task
+  {t('dagSidebar.decomposeTitle')}
   </Text>
   <Text type="secondary" style={{ fontSize: 12 }}>
-  {statusLabel}
+  {statusText}
   </Text>
   </Space>
   {decomposeProgress.percent != null ? (
@@ -206,7 +209,7 @@ export const LegacyDAGSidebar: React.FC = () => {
   </Text>
   ) : (
   <Text type="secondary" style={{ fontSize: 12 }}>
-  estimating
+  {t('jobLog.estimating')}
   </Text>
   )}
   </div>
@@ -362,7 +365,7 @@ export const LegacyDAGSidebar: React.FC = () => {
   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
   <NodeIndexOutlined style={{ color: 'var(--primary-color)', fontSize: 18 }} />
   <Title level={5} style={{ margin: 0, color: 'var(--text-primary)' }}>
-  task
+  {t('dagSidebar.title')}
   </Title>
   </div>
 
@@ -373,10 +376,10 @@ export const LegacyDAGSidebar: React.FC = () => {
   onClick={() => setPlanTodoListOpen(true)}
   disabled={!currentPlanId}
   >
-  Todo List
+  {t('dagSidebar.todoList')}
   </Button>
 
-  <Tooltip title={dagVisible ? 'Hide graph' : 'Show graph'}>
+  <Tooltip title={dagVisible ? t('dagSidebar.hideGraph') : t('dagSidebar.showGraph')}>
   <Button
   type="text"
   size="small"
@@ -385,7 +388,7 @@ export const LegacyDAGSidebar: React.FC = () => {
   />
   </Tooltip>
 
-  <Tooltip title="Fullscreen view">
+  <Tooltip title={t('dagSidebar.fullscreenView')}>
   <Button
   type="text"
   size="small"
@@ -395,7 +398,7 @@ export const LegacyDAGSidebar: React.FC = () => {
   />
   </Tooltip>
 
-  <Tooltip title="Sidebar fullscreen">
+  <Tooltip title={t('dagSidebar.sidebarFullscreen')}>
   <Button
   type="text"
   size="small"
@@ -404,7 +407,7 @@ export const LegacyDAGSidebar: React.FC = () => {
   />
   </Tooltip>
 
-  <Tooltip title="Settings">
+  <Tooltip title={t('header.settings')}>
   <Button type="text" size="small" icon={<SettingOutlined />} />
   </Tooltip>
   </Space>
@@ -415,37 +418,37 @@ export const LegacyDAGSidebar: React.FC = () => {
   <Space size={16} wrap>
   <Badge count={stats.total} size="small" offset={[8, -2]}>
   <Text type="secondary" style={{ fontSize: 12 }}>
-  task
+  {t('dagSidebar.statTotal')}
   </Text>
   </Badge>
   <Badge count={stats.running} size="small" color="blue" offset={[8, -2]}>
   <Text type="secondary" style={{ fontSize: 12 }}>
-  medium
+  {statusLabel(t, 'running')}
   </Text>
   </Badge>
   <Badge count={stats.completed} size="small" color="green" offset={[8, -2]}>
   <Text type="secondary" style={{ fontSize: 12 }}>
-  completed
+  {statusLabel(t, 'completed')}
   </Text>
   </Badge>
   {stats.pending > 0 && (
   <Badge count={stats.pending} size="small" color="gray" offset={[8, -2]}>
   <Text type="secondary" style={{ fontSize: 12 }}>
-  pending
+  {statusLabel(t, 'pending')}
   </Text>
   </Badge>
   )}
   {stats.blocked > 0 && (
   <Badge count={stats.blocked} size="small" color="orange" offset={[8, -2]}>
   <Text type="secondary" style={{ fontSize: 12 }}>
-  blocked
+  {statusLabel(t, 'blocked')}
   </Text>
   </Badge>
   )}
   {stats.failed > 0 && (
   <Badge count={stats.failed} size="small" color="red" offset={[8, -2]}>
   <Text type="secondary" style={{ fontSize: 12 }}>
-  failed
+  {statusLabel(t, 'failed')}
   </Text>
   </Badge>
   )}
@@ -453,7 +456,7 @@ export const LegacyDAGSidebar: React.FC = () => {
 
   <Space direction="vertical" size={8} style={{ width: '100%', marginTop: 12 }}>
   <Text type="secondary" style={{ fontSize: 12 }}>
-  ROOT task:
+  {t('dagSidebar.rootTask')}
   </Text>
   <div
   style={{
@@ -465,10 +468,10 @@ export const LegacyDAGSidebar: React.FC = () => {
   color: selectedPlanTitle ? 'var(--text-primary)' : 'var(--text-tertiary)',
   }}
   >
-  {selectedPlanTitle || 'No ROOT task'}
+  {selectedPlanTitle || t('dagSidebar.noRootTask')}
   </div>
   <Text type="secondary" style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
-  Current plan title
+  {t('dagSidebar.planTitleHint')}
   </Text>
   </Space>
   </div>
@@ -502,10 +505,10 @@ export const LegacyDAGSidebar: React.FC = () => {
   image={Empty.PRESENTED_IMAGE_SIMPLE}
   description={
   planTasksLoading
-  ? 'Loading tasks...'
+  ? t('tree.loading')
   : currentWorkflowId || currentSession?.session_id
-  ? 'No tasks found in this session'
-  : 'Create a workflow to generate tasks'
+  ? t('dagSidebar.noTasksInSession')
+  : t('dagSidebar.createWorkflow')
   }
   />
   )}
@@ -515,7 +518,7 @@ export const LegacyDAGSidebar: React.FC = () => {
   <div style={{ padding: '12px 16px', borderTop: '1px solid var(--border-color)', background: 'var(--bg-tertiary)' }}>
   <Space size={8} wrap style={{ width: '100%', justifyContent: 'center' }}>
   <Button size="small" icon={<ReloadOutlined />} onClick={handleRefresh} loading={planTasksLoading}>
-  Refresh
+  {t('common.refresh')}
   </Button>
   <Button
   size="small"
@@ -524,13 +527,13 @@ export const LegacyDAGSidebar: React.FC = () => {
   onClick={() => setShowFullscreenDAG(true)}
   disabled={!planTasks || planTasks.length === 0}
   >
-  Fullscreen
+  {t('common.fullscreen')}
   </Button>
   </Space>
 
   <div style={{ textAlign: 'center', marginTop: 8 }}>
   <Text type="secondary" style={{ fontSize: 12, opacity: 0.6 }}>
-  Select a node to inspect task details
+  {t('dagSidebar.selectNodeHint')}
   </Text>
   </div>
   </div>
@@ -546,12 +549,12 @@ export const LegacyDAGSidebar: React.FC = () => {
   items={[
   {
   key: 'plan',
-  label: 'Plan',
+  label: t('dagSidebar.tabPlan'),
   children: <div style={{ height: '100%' }}>{renderPlanPanel()}</div>,
   },
   {
   key: 'executor',
-  label: 'Execution Status',
+  label: t('dagSidebar.tabExecution'),
   children: (
   <div style={{ height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
   <ExecutorPanel />
@@ -560,7 +563,7 @@ export const LegacyDAGSidebar: React.FC = () => {
   },
   {
   key: 'artifacts',
-  label: 'Artifacts',
+  label: t('dagSidebar.tabArtifacts'),
   children: (
   <div style={{ height: '100%', display: 'flex', flexDirection: 'column', minHeight: 0 }}>
   <ArtifactsPanel sessionId={currentSession?.session_id ?? null} />

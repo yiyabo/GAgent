@@ -25,6 +25,7 @@ import {
 } from '@api/artifacts';
 import type { ArtifactRenderResponse, ArtifactTextResponse } from '@/types';
 import { MarkdownRenderer } from '@components/chat/MarkdownRenderer';
+import { useT } from '@/i18n/useT';
 
 const { Text } = Typography;
 
@@ -51,6 +52,7 @@ export function parseDelimited(content: string, delimiter: string): ParsedTable 
 }
 
 export const CSVTablePreview: React.FC<{ content: string; extension: string }> = ({ content, extension }) => {
+  const t = useT();
   const delimiter = extension === 'tsv' ? '\t' : ',';
   const { columns, rows } = React.useMemo(() => parseDelimited(content, delimiter), [content, delimiter]);
 
@@ -69,14 +71,14 @@ export const CSVTablePreview: React.FC<{ content: string; extension: string }> =
     return record;
   });
 
-  if (!columns.length) return <Empty description="No tabular data detected" />;
+  if (!columns.length) return <Empty description={t('preview.noTabular')} />;
 
   return (
     <div style={{ overflow: 'auto' }}>
       <div style={{ marginBottom: 8, display: 'flex', alignItems: 'center', gap: 6 }}>
         <TableOutlined style={{ color: 'var(--primary-color)' }} />
         <Text type="secondary" style={{ fontSize: 12 }}>
-          {rows.length} rows x {columns.length} columns
+          {t('preview.rowsColumns', { rows: rows.length, columns: columns.length })}
         </Text>
       </div>
       <Table
@@ -149,6 +151,7 @@ export const ArtifactPreviewModal: React.FC<ArtifactPreviewModalProps> = ({
   version,
   rawPath,
 }) => {
+  const t = useT();
   const [showSource, setShowSource] = React.useState(false);
   const [imgRawFallback, setImgRawFallback] = React.useState(false);
   React.useEffect(() => {
@@ -269,7 +272,7 @@ export const ArtifactPreviewModal: React.FC<ArtifactPreviewModalProps> = ({
       title={
         <Space size={8}>
           <Text strong ellipsis style={{ maxWidth: 320 }}>
-            {name || 'Preview'}
+            {name || t('preview.title')}
           </Text>
           {ext && <Tag>{ext}</Tag>}
         </Space>
@@ -278,10 +281,10 @@ export const ArtifactPreviewModal: React.FC<ArtifactPreviewModalProps> = ({
         <Space size={8}>
           {isRenderable && (
             <Button onClick={() => setShowSource(!showSource)}>
-              {showSource ? 'Show Rendered' : 'Show Source'}
+              {showSource ? t('preview.showRendered') : t('preview.showSource')}
             </Button>
           )}
-          <Tooltip title="Open in new tab">
+          <Tooltip title={t('preview.openInNewTab')}>
             <Button
               icon={<LinkOutlined />}
               onClick={() => {
@@ -298,7 +301,7 @@ export const ArtifactPreviewModal: React.FC<ArtifactPreviewModalProps> = ({
             onClick={handleDownload}
             disabled={!fileUrl}
           >
-            Download
+            {t('preview.download')}
           </Button>
         </Space>
       }
@@ -307,7 +310,7 @@ export const ArtifactPreviewModal: React.FC<ArtifactPreviewModalProps> = ({
         {!fileUrl && (
           <Empty
             image={Empty.PRESENTED_IMAGE_SIMPLE}
-            description="Preview unavailable: no active session"
+            description={t('preview.unavailableNoSession')}
           />
         )}
 
@@ -349,12 +352,12 @@ export const ArtifactPreviewModal: React.FC<ArtifactPreviewModalProps> = ({
 
         {/* CSV Table Preview */}
         {isCSV && isText && textLoading && (
-          <Empty description="Loading text preview..." image={Empty.PRESENTED_IMAGE_SIMPLE} />
+          <Empty description={t('preview.loadingText')} image={Empty.PRESENTED_IMAGE_SIMPLE} />
         )}
         {isCSV && isText && !textLoading && textError && (
           <Empty
             image={Empty.PRESENTED_IMAGE_SIMPLE}
-            description={`Failed to load: ${(textError as Error)?.message || 'Unknown error'}`}
+            description={t('preview.loadFailed', { message: (textError as Error)?.message || t('app.unknownError') })}
           />
         )}
         {isCSV && isText && !textLoading && textPreview?.content && (
@@ -365,23 +368,23 @@ export const ArtifactPreviewModal: React.FC<ArtifactPreviewModalProps> = ({
         {isText && !isCSV && !isRenderable && (
           <div style={monoBlockStyle}>
             {textLoading
-              ? 'Loading text preview...'
+              ? t('preview.loadingText')
               : textError
-              ? `Failed to load: ${(textError as Error)?.message || 'Unknown error'}`
+              ? t('preview.loadFailed', { message: (textError as Error)?.message || t('app.unknownError') })
               : textPreview?.content ?? ''}
             {textPreview?.truncated && (
               <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 8 }}>
                 <Text type="secondary" style={{ fontSize: 12 }}>
-                  Content is truncated (showing first 200 KB).
+                  {t('preview.truncated')}
                 </Text>
-                <Tooltip title="Download full file">
+                <Tooltip title={t('preview.downloadFull')}>
                   <Button
                     size="small"
                     type="primary"
                     icon={<CloudDownloadOutlined />}
                     onClick={handleDownload}
                   >
-                    Download
+                    {t('preview.download')}
                   </Button>
                 </Tooltip>
               </div>
@@ -395,14 +398,14 @@ export const ArtifactPreviewModal: React.FC<ArtifactPreviewModalProps> = ({
             {showSource && textPreview?.content ? (
               <div style={monoBlockStyle}>{textPreview.content}</div>
             ) : renderLoading ? (
-              <Empty description="Rendering document..." image={Empty.PRESENTED_IMAGE_SIMPLE} />
+              <Empty description={t('preview.rendering')} image={Empty.PRESENTED_IMAGE_SIMPLE} />
             ) : renderError ? (
               <div>
                 <Empty
                   image={Empty.PRESENTED_IMAGE_SIMPLE}
                   description={
                     <span>
-                      Failed to render: {(renderError as Error)?.message || 'Unknown error'}
+                      {t('preview.renderFailedWith', { message: (renderError as Error)?.message || t('app.unknownError') })}
                     </span>
                   }
                 />
@@ -410,7 +413,7 @@ export const ArtifactPreviewModal: React.FC<ArtifactPreviewModalProps> = ({
                 {textPreview?.content && (
                   <div style={{ ...monoBlockStyle, marginTop: 16, maxHeight: 300 }}>
                     <Text type="secondary" style={{ fontSize: 12, display: 'block', marginBottom: 8 }}>
-                      Raw source:
+                      {t('preview.rawSource')}
                     </Text>
                     {textPreview.content}
                   </div>
@@ -454,7 +457,7 @@ export const ArtifactPreviewModal: React.FC<ArtifactPreviewModalProps> = ({
             ) : (
               <Empty
                 image={Empty.PRESENTED_IMAGE_SIMPLE}
-                description="Failed to render document."
+                description={t('preview.renderFailed')}
               />
             )}
           </div>
@@ -464,14 +467,14 @@ export const ArtifactPreviewModal: React.FC<ArtifactPreviewModalProps> = ({
         {fileUrl && !isImage && !isPDF && !isText && !isRenderable && (
           <Empty
             image={Empty.PRESENTED_IMAGE_SIMPLE}
-            description="File type is not supported for preview"
+            description={t('preview.unsupported')}
           >
             <Button
               type="primary"
               icon={<DownloadOutlined />}
               onClick={handleDownload}
             >
-              Download
+              {t('preview.download')}
             </Button>
           </Empty>
         )}

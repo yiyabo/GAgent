@@ -8,6 +8,7 @@ import {
 } from 'antd';
 import type { ToolResultPayload } from '@/types';
 import ToolResultCard from '../ToolResultCard';
+import { useT } from '@/i18n/useT';
 
 const { Text } = Typography;
 
@@ -16,11 +17,12 @@ interface ActionSummaryProps {
 }
 
 const ActionSummary: React.FC<ActionSummaryProps> = ({ items }) => {
+  const t = useT();
   if (!items.length) return null;
   return (
     <div style={{ marginTop: 10 }}>
       <Space direction="vertical" size={4} style={{ width: '100%' }}>
-        <Text strong style={{ color: 'var(--text-primary)', fontSize: 12 }}>Action Summary</Text>
+        <Text strong style={{ color: 'var(--text-primary)', fontSize: 12 }}>{t('jobLog.actionSummary')}</Text>
         <div>
           {items.map((item, index) => {
             const order = typeof item.order === 'number' ? item.order : index + 1;
@@ -35,8 +37,7 @@ const ActionSummary: React.FC<ActionSummaryProps> = ({ items }) => {
             return (
               <div key={`${order}_${kind}_${name}`} style={{ fontSize: 12, color: 'var(--text-secondary)', marginBottom: 2 }}>
                 <Text>
-                  {icon} Step {order}: {kind}
-                  {name}
+                  {icon} {t('jobLog.step', { n: order, name: `${kind}${name}` })}
                   {messageText}
                 </Text>
               </div>
@@ -61,6 +62,7 @@ export const ToolStatusBar: React.FC<ToolStatusBarProps> = ({
   unifiedStream,
   onOpenDrawer,
 }) => {
+  const t = useT();
   if (isPendingAction) return null;
   if (unifiedStream) return null;
   if (!toolResults.length) return null;
@@ -68,9 +70,9 @@ export const ToolStatusBar: React.FC<ToolStatusBarProps> = ({
   const successCount = toolResults.filter((item) => item.result?.success !== false).length;
   const failCount = toolResults.length - successCount;
   const statusTag = failCount > 0 ? (
-    <Tag color="red">Partial Failure</Tag>
+    <Tag color="red">{t('toolDrawer.partialFailure')}</Tag>
   ) : (
-    <Tag color="green">All Succeeded</Tag>
+    <Tag color="green">{t('toolDrawer.allSucceeded')}</Tag>
   );
 
   const toolTags = toolResults.slice(0, 3).map((item, index) => (
@@ -95,20 +97,20 @@ export const ToolStatusBar: React.FC<ToolStatusBarProps> = ({
       }}
     >
       <Space size={6} wrap align="center">
-        <Text strong style={{ fontSize: 12 }}>Tools</Text>
+        <Text strong style={{ fontSize: 12 }}>{t('toolDrawer.tools')}</Text>
         {statusTag}
         <Space size={[4, 4]} wrap>
           {toolTags}
           {toolResults.length > 3 && (
-            <Text type="secondary">+{toolResults.length - 3} more</Text>
+            <Text type="secondary">{t('toolDrawer.more', { count: toolResults.length - 3 })}</Text>
           )}
         </Space>
         <Text type="secondary">
-          {failCount > 0 ? `Failed ${failCount} · Succeeded ${successCount}` : `Succeeded ${successCount}`}
+          {failCount > 0 ? t('toolDrawer.failedSucceeded', { failed: failCount, success: successCount }) : t('toolDrawer.succeeded', { count: successCount })}
         </Text>
       </Space>
       <Button type="link" size="small" onClick={onOpenDrawer} style={{ padding: 0 }}>
-        View Call Flow
+        {t('toolDrawer.viewCallFlow')}
       </Button>
     </div>
   );
@@ -131,12 +133,13 @@ const ToolResultDrawer: React.FC<ToolResultDrawerProps> = ({
   actionsSummary,
   sessionId,
 }) => {
+  const t = useT();
   if (!toolResults.length) return null;
   if (unifiedStream) return null;
   const summaryItems = Array.isArray(actionsSummary) ? actionsSummary : [];
   return (
     <Drawer
-      title="Tool Call Details"
+      title={t('toolDrawer.title')}
       placement="right"
       width={640}
       open={open}

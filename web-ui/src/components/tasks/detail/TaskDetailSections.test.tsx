@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { artifactsApi } from '@api/artifacts';
 import { useChatStore } from '@store/chat';
+import { useLanguageStore } from '@/i18n/language';
 import type { PlanResultItem, PlanTaskNode } from '@/types';
 import { ExecutionResult, TaskDrawerContent } from './TaskDetailSections';
 
@@ -220,6 +221,7 @@ describe('TaskDrawerContent', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    useLanguageStore.setState({ language: 'en' });
     useChatStore.setState({
       currentSession: { session_id: 'sess-1' },
     } as any);
@@ -238,6 +240,7 @@ describe('TaskDrawerContent', () => {
 
   afterEach(() => {
     useChatStore.setState({ currentSession: null } as any);
+    useLanguageStore.setState({ language: 'zh-CN' });
   });
 
   it('shows a clean readable default view without bare JSON', () => {

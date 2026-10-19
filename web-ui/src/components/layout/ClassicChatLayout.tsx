@@ -7,8 +7,10 @@ import TaskDetailDrawer from '@components/tasks/TaskDetailDrawer';
 import { useLayoutStore } from '@store/layout';
 import { Button, Tooltip } from 'antd';
 import { MenuUnfoldOutlined } from '@ant-design/icons';
+import { useT } from '@/i18n/useT';
 
 const ChatLayout: React.FC = () => {
+  const t = useT();
   const {
   chatListVisible,
   chatListWidth,
@@ -109,7 +111,7 @@ const ChatLayout: React.FC = () => {
   <ChatSidebar />
   ) : (
   <div className="chatlist-collapsed">
-  <Tooltip title="expand" placement="right">
+  <Tooltip title={t('common.expand')} placement="right">
   <Button
   type="text"
   size="small"
@@ -117,7 +119,7 @@ const ChatLayout: React.FC = () => {
   className="chatlist-collapse-button chatlist-handle-vertical"
   onClick={toggleChatList}
   >
-  <span className="chatlist-handle-text">Chats</span>
+  <span className="chatlist-handle-text">{t('chat.chatsHandle')}</span>
   </Button>
   </Tooltip>
   </div>

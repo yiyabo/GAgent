@@ -3,6 +3,7 @@ import { Space, Typography, Divider, Progress } from 'antd';
 import { FileTextOutlined } from '@ant-design/icons';
 import type { JobLogEvent } from '@/types';
 import { FINAL_STATUSES, toNumber } from './constants';
+import { useT } from '@/i18n/useT';
 
 const { Text } = Typography;
 
@@ -12,6 +13,7 @@ interface ResultSummaryProps {
 }
 
 export const ResultSummary: React.FC<ResultSummaryProps> = ({ result, jobType }) => {
+  const t = useT();
   if (!result) return null;
   if (jobType === 'plan_decompose') {
     const createdTasks = Array.isArray(result.created_tasks) ? result.created_tasks : [];
@@ -19,16 +21,16 @@ export const ResultSummary: React.FC<ResultSummaryProps> = ({ result, jobType })
     return (
       <div style={{ marginTop: 12 }}>
         <Divider plain style={{ margin: '12px 0' }}>
-          Execution Results
+          {t('jobLog.executionResults')}
         </Divider>
         <Space direction="vertical" size="small" style={{ width: '100%' }}>
           <Space size="small">
             <FileTextOutlined />
-            <Text>New subtasks: {createdTasks.length}</Text>
+            <Text>{t('jobLog.newSubtasks', { count: createdTasks.length })}</Text>
           </Space>
           {stoppedReason && (
             <Text type="secondary" style={{ fontSize: 12 }}>
-              Stop reason: {stoppedReason}
+              {t('jobLog.stopReason', { reason: String(stoppedReason) })}
             </Text>
           )}
         </Space>
@@ -44,19 +46,19 @@ export const ResultSummary: React.FC<ResultSummaryProps> = ({ result, jobType })
     return (
       <div style={{ marginTop: 12 }}>
         <Divider plain style={{ margin: '12px 0' }}>
-          Action Summary
+          {t('jobLog.actionSummary')}
         </Divider>
         <Space direction="vertical" size="small" style={{ width: '100%' }}>
           <Space size="small">
             <FileTextOutlined />
-            <Text>Total actions: {steps.length}</Text>
+            <Text>{t('jobLog.totalActions', { count: steps.length })}</Text>
           </Space>
           <Text type="secondary" style={{ fontSize: 12 }}>
-            Success: {succeededSteps.length}, Failed: {failedSteps.length}
+            {t('jobLog.successFailed', { success: succeededSteps.length, failed: failedSteps.length })}
           </Text>
           {firstFailure && (
             <Text type="danger" style={{ fontSize: 12 }}>
-              First failed action: {firstFailure?.action?.name ?? '-'} - {firstFailure?.message ?? 'Execution failed'}
+              {t('jobLog.firstFailedAction', { name: firstFailure?.action?.name ?? '-', message: firstFailure?.message ?? t('jobLog.executionFailed') })}
             </Text>
           )}
         </Space>
@@ -85,29 +87,29 @@ export const ResultSummary: React.FC<ResultSummaryProps> = ({ result, jobType })
     return (
       <div style={{ marginTop: 12 }}>
         <Divider plain style={{ margin: '12px 0' }}>
-          Execution Summary
+          {t('jobLog.executionSummary')}
         </Divider>
         <Space direction="vertical" size="small" style={{ width: '100%' }}>
           <Space size="small">
             <FileTextOutlined />
-            <Text>Step count: {total}</Text>
+            <Text>{t('jobLog.stepCount', { count: total })}</Text>
           </Space>
           {typeof targetTaskId === 'number' && (
             <Text type="secondary" style={{ fontSize: 12 }}>
-              Target task: #{targetTaskId}
+              {t('jobLog.targetTask', { id: targetTaskId })}
             </Text>
           )}
           <Text type="secondary" style={{ fontSize: 12 }}>
-            Success: {executed.length}, Failed: {failed.length}, Skipped: {skipped.length}
+            {t('jobLog.successFailedSkipped', { success: executed.length, failed: failed.length, skipped: skipped.length })}
           </Text>
           {firstFailed != null && (
             <Text type="danger" style={{ fontSize: 12 }}>
-              First failed task: #{String(firstFailed)}
+              {t('jobLog.firstFailedTask', { id: String(firstFailed) })}
             </Text>
           )}
           {firstFailed == null && firstSkipped != null && (
             <Text type="warning" style={{ fontSize: 12 }}>
-              First skipped task: #{String(firstSkipped)}
+              {t('jobLog.firstSkippedTask', { id: String(firstSkipped) })}
             </Text>
           )}
         </Space>
@@ -127,6 +129,7 @@ interface ProgressBarProps {
 }
 
 export const ProgressBar: React.FC<ProgressBarProps> = ({ jobType, status, logs, stats, jobParams }) => {
+  const t = useT();
   const progressContext = React.useMemo(() => {
     if (jobType !== 'plan_decompose') return null;
     const totalBudget =
@@ -186,22 +189,23 @@ export const ProgressBar: React.FC<ProgressBarProps> = ({ jobType, status, logs,
   const detailParts: string[] = [];
   if (showBudget) {
     detailParts.push(
-      `Processed ${Math.max(0, Math.round(progressContext!.consumedBudget!))}/${Math.round(
-        progressContext!.totalBudget!
-      )}`
+      t('jobLog.processed', {
+        done: Math.max(0, Math.round(progressContext!.consumedBudget!)),
+        total: Math.round(progressContext!.totalBudget!),
+      })
     );
   }
   if (
     progressContext?.queueRemaining !== null &&
     progressContext?.queueRemaining !== undefined
   ) {
-    detailParts.push(`Queue remaining ${Math.max(0, Math.round(progressContext.queueRemaining))}`);
+    detailParts.push(t('jobLog.queueRemaining', { count: Math.max(0, Math.round(progressContext.queueRemaining)) }));
   }
   const detailText = detailParts.length ? detailParts.join(' · ') : null;
   return (
     <div style={{ width: '100%' }}>
       <Text type="secondary" style={{ fontSize: 12 }}>
-        Decomposition Progress
+        {t('jobLog.decompositionProgress')}
       </Text>
       <Progress
         percent={percent}
@@ -212,9 +216,9 @@ export const ProgressBar: React.FC<ProgressBarProps> = ({ jobType, status, logs,
           if (progressContext?.percent !== null && progressContext?.percent !== undefined) {
             return `${percent}%`;
           }
-          if (status === 'failed') return 'Failed';
-          if (isFinal) return 'Completed';
-          return 'Estimating';
+          if (status === 'failed') return t('status.failed');
+          if (isFinal) return t('status.completed');
+          return t('jobLog.estimating');
         }}
       />
       {detailText && (

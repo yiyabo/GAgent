@@ -31,10 +31,12 @@ import JobLogPanel from '@components/chat/JobLogPanel';
 import { TaskDrawerContent } from './TaskDetailSections';
 import TaskExecuteModal from './TaskExecuteModal';
 import { useCallbackScope } from './useCallbackScope';
+import { translate, useT } from '@/i18n/useT';
 
 const { Text, Title } = Typography;
 
 const TaskDetailDrawer: React.FC = () => {
+  const t = useT();
   const { message } = AntdApp.useApp();
   const {
     isTaskDrawerOpen,
@@ -131,7 +133,7 @@ const TaskDetailDrawer: React.FC = () => {
     refetchOnWindowFocus: false,
     queryFn: async () => {
       if (!currentPlanId || !selectedTaskId) {
-        throw new Error('Missing plan or task information; cannot fetch execution result');
+        throw new Error(translate('taskDetail.missingFetchResult'));
       }
       return planTreeApi.getTaskResult(currentPlanId, selectedTaskId);
     },
@@ -148,7 +150,7 @@ const TaskDetailDrawer: React.FC = () => {
     refetchOnWindowFocus: false,
     queryFn: async () => {
       if (!currentPlanId) {
-        throw new Error('Missing plan information; cannot fetch token usage');
+        throw new Error(translate('taskDetail.missingTokenUsage'));
       }
       return statsApi.getPlanTaskTokenUsage(currentPlanId);
     },
@@ -311,7 +313,7 @@ const TaskDetailDrawer: React.FC = () => {
 
   const handleOpenExecuteModal = useCallback(() => {
     if (!currentPlanId || !selectedTaskId) {
-      message.error('Missing plan or task information; cannot execute task');
+      message.error(translate('taskDetail.missingExecute'));
       return;
     }
     setExecuteModalOpen(true);
@@ -319,7 +321,7 @@ const TaskDetailDrawer: React.FC = () => {
 
   const handleReverify = useCallback(async () => {
     if (!currentPlanId || !selectedTaskId) {
-      message.error('Missing plan or task information; cannot verify task');
+      message.error(translate('taskDetail.missingVerify'));
       return;
     }
     const isCurrentScope = captureTaskScope();
@@ -328,7 +330,7 @@ const TaskDetailDrawer: React.FC = () => {
       const response: VerifyTaskResponse = await planTreeApi.verifyTask(currentPlanId, selectedTaskId);
       if (!isCurrentScope()) return;
       setTaskResult(selectedTaskId, response.result);
-      message.success(response.message || 'Task verification completed');
+      message.success(response.message || translate('taskDetail.verifyDone'));
       dispatchPlanSyncEvent({
         type: 'task_changed',
         plan_id: currentPlanId,
@@ -343,7 +345,7 @@ const TaskDetailDrawer: React.FC = () => {
       void refetchPlanTasks();
       void refetchTaskResult();
     } catch (error: any) {
-      if (isCurrentScope()) message.error(error?.message || 'Task verification failed');
+      if (isCurrentScope()) message.error(error?.message || translate('taskDetail.verifyFailed'));
     } finally {
       if (isCurrentScope()) setVerifyLoading(false);
     }
@@ -362,20 +364,20 @@ const TaskDetailDrawer: React.FC = () => {
     const defaultReason =
       typeof manualAcceptance?.reason === 'string' && manualAcceptance.reason.trim().length > 0
         ? manualAcceptance.reason.trim()
-        : 'Artifacts reviewed manually; outputs are acceptable for downstream use.';
+        : translate('taskDetail.defaultReason');
     setManualAcceptReason(defaultReason);
     setManualAcceptOpen(true);
   }, [manualAcceptance]);
 
   const handleManualAccept = useCallback(async () => {
     if (!currentPlanId || !selectedTaskId) {
-      message.error('Missing plan or task information; cannot accept task');
+      message.error(translate('taskDetail.missingAccept'));
       return;
     }
 
     const reason = manualAcceptReason.trim();
     if (reason.length < 3) {
-      message.error('Please enter a brief review reason');
+      message.error(translate('taskDetail.reasonRequired'));
       return;
     }
 
@@ -388,7 +390,7 @@ const TaskDetailDrawer: React.FC = () => {
       if (!isCurrentScope()) return;
       setTaskResult(selectedTaskId, response.result);
       setManualAcceptOpen(false);
-      message.success(response.message || 'Task accepted after manual review');
+      message.success(response.message || translate('taskDetail.accepted'));
       dispatchPlanSyncEvent({
         type: 'task_changed',
         plan_id: currentPlanId,
@@ -403,7 +405,7 @@ const TaskDetailDrawer: React.FC = () => {
       void refetchPlanTasks();
       void refetchTaskResult();
     } catch (error: any) {
-      if (isCurrentScope()) message.error(error?.message || 'Failed to accept task');
+      if (isCurrentScope()) message.error(error?.message || translate('taskDetail.acceptFailed'));
     } finally {
       if (isCurrentScope()) setManualAcceptLoading(false);
     }
@@ -429,10 +431,10 @@ const TaskDetailDrawer: React.FC = () => {
               <Title level={5} style={{ margin: 0 }} ellipsis={{ tooltip: activeTask.name }}>
                 {activeTask.name}
               </Title>
-              <Text type="secondary">Task ID: {activeTask.id}</Text>
+              <Text type="secondary">{t('taskDetail.taskId', { id: activeTask.id })}</Text>
             </div>
           )
-          : 'Task Details'
+          : t('taskDetail.title')
       }
       open={isTaskDrawerOpen}
       onClose={closeTaskDrawer}
@@ -447,9 +449,9 @@ const TaskDetailDrawer: React.FC = () => {
             disabled={!currentPlanId || !selectedTaskId}
             loading={executeButtonLoading}
           >
-            Execute
+            {t('taskDetail.execute')}
           </Button>
-          <Tooltip title="Refresh">
+          <Tooltip title={t('common.refresh')}>
             <Button
               icon={<ReloadOutlined />}
               onClick={handleRefresh}
@@ -461,15 +463,15 @@ const TaskDetailDrawer: React.FC = () => {
       }
     >
       {!currentPlanId ? (
-        <Empty description="No plan is bound to the current session" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+        <Empty description={t('taskDetail.noPlan')} image={Empty.PRESENTED_IMAGE_SIMPLE} />
       ) : !selectedTaskId ? (
-        <Empty description="Select a task to view details" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+        <Empty description={t('taskDetail.selectTask')} image={Empty.PRESENTED_IMAGE_SIMPLE} />
       ) : tasksLoading && !activeTask ? (
         <div style={{ display: 'flex', justifyContent: 'center', padding: '32px 0' }}>
-          <Spin tip="Loading task details..." />
+          <Spin tip={t('taskDetail.loading')} />
         </div>
       ) : !activeTask ? (
-        <Empty description="Task not found; it may have been deleted" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+        <Empty description={t('taskDetail.notFound')} image={Empty.PRESENTED_IMAGE_SIMPLE} />
       ) : (
         <Space direction="vertical" size="large" style={{ width: '100%' }}>
           <TaskDrawerContent
@@ -490,7 +492,7 @@ const TaskDetailDrawer: React.FC = () => {
           />
           {activeExecutionJobId && (
             <section>
-              <Title level={5}>Execution Chain</Title>
+              <Title level={5}>{t('taskDetail.executionChain')}</Title>
               <JobLogPanel
                 jobId={activeExecutionJobId}
                 targetTaskName={activeTask?.name ?? null}
@@ -529,8 +531,8 @@ const TaskDetailDrawer: React.FC = () => {
 
       <Modal
         open={manualAcceptOpen}
-        title="Accept Task After Manual Review"
-        okText="Accept task"
+        title={t('taskDetail.manualTitle')}
+        okText={t('taskDetail.manualOk')}
         onCancel={() => setManualAcceptOpen(false)}
         onOk={() => void handleManualAccept()}
         confirmLoading={manualAcceptLoading}
@@ -538,14 +540,14 @@ const TaskDetailDrawer: React.FC = () => {
       >
         <Space direction="vertical" size="middle" style={{ width: '100%' }}>
           <Text type="secondary">
-            This marks the task as completed after manual review and may reopen downstream skipped tasks.
+            {t('taskDetail.manualHint')}
           </Text>
           <Input.TextArea
             value={manualAcceptReason}
             onChange={(event) => setManualAcceptReason(event.target.value)}
             rows={4}
             maxLength={500}
-            placeholder="Explain why the current outputs are acceptable."
+            placeholder={t('taskDetail.manualPlaceholder')}
           />
         </Space>
       </Modal>
