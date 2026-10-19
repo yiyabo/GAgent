@@ -21,16 +21,16 @@ import { planTreeToTasks } from '@utils/planTree';
 import { useChatStore } from '@store/chat';
 import type { Task as TaskType } from '@/types';
 import {
-  getTaskTypeColors,
-  getStatusColor,
+  getTaskTypeTag,
+  getStatusTag,
   truncateText,
   getTaskTypeName,
   getStatusName,
-  TASK_TYPE_COLORS,
 } from './dag3d-utils';
+import { useCanvasPalette } from '@/theme/canvasPalette';
 import '@/styles/dag-fullscreen.css';
 import type { GraphNode, GraphLink } from './dag-constants';
-import { CARD_WIDTH, CARD_HEIGHT, CARD_RADIUS, getCardColors } from './dag-constants';
+import { CARD_WIDTH, CARD_HEIGHT, CARD_RADIUS } from './dag-constants';
 import { calculateHierarchicalLayout } from './dag-layout';
 import { drawNote, drawLink } from './dag-canvas-renderers';
 import { DAGToolbar } from './DAGToolbar';
@@ -45,6 +45,7 @@ interface DAGViewProps {
 const DAG3DView: React.FC<DAGViewProps> = ({ onClose, onNodeSelect }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const graphRef = useRef<ForceGraphMethods | undefined>();
+  const palette = useCanvasPalette();
   
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [tasks, setTasks] = useState<TaskType[]>([]);
@@ -193,7 +194,6 @@ const DAG3DView: React.FC<DAGViewProps> = ({ onClose, onNodeSelect }) => {
 
   const nodes: GraphNode[] = filteredTasks.map(task => {
   const pos = positions.get(task.id) || { x: 0, y: 0 };
-  const colors = getCardColors(task.task_type);
   return {
   id: task.id,
   name: truncateText(task.name, 24),
@@ -203,7 +203,6 @@ const DAG3DView: React.FC<DAGViewProps> = ({ onClose, onNodeSelect }) => {
   fx: pos.x,
   fy: pos.y,
   rotation: 0, // 
-  noteColor: colors.bg,
   };
   });
 
@@ -233,7 +232,7 @@ const DAG3DView: React.FC<DAGViewProps> = ({ onClose, onNodeSelect }) => {
   });
 
   return { nodes, links };
-  }, [tasks, searchText, getRotation, getCardColors]);
+  }, [tasks, searchText, getRotation]);
 
   const handleNodeClick = useCallback((node: GraphNode) => {
   if (selectedNodeId === node.id) {
@@ -329,12 +328,12 @@ const DAG3DView: React.FC<DAGViewProps> = ({ onClose, onNodeSelect }) => {
   <Descriptions.Item label="Task ID">{selectedTask.id}</Descriptions.Item>
   <Descriptions.Item label="name">{selectedTask.name}</Descriptions.Item>
   <Descriptions.Item label="type">
-  <Tag color={getTaskTypeColors(selectedTask.task_type).primary}>
+  <Tag color={getTaskTypeTag(selectedTask.task_type)}>
   {getTaskTypeName(selectedTask.task_type)}
   </Tag>
   </Descriptions.Item>
   <Descriptions.Item label="status">
-  <Tag color={getStatusColor(selectedTask.status)}>
+  <Tag color={getStatusTag(selectedTask.status)}>
   {getStatusName(selectedTask.status)}
   </Tag>
   </Descriptions.Item>
@@ -502,7 +501,7 @@ const DAG3DView: React.FC<DAGViewProps> = ({ onClose, onNodeSelect }) => {
   const isSelected = selectedNodeId === gNode.id;
   const isHovered = hoveredNodeId === gNode.id;
   const isHighlighted = highlightedNodes.size === 0 || highlightedNodes.has(gNode.id);
-  drawNote(ctx, gNode, isSelected, isHovered, isHighlighted);
+  drawNote(ctx, gNode, isSelected, isHovered, isHighlighted, palette);
   }}
   nodePointerAreaPaint={(node, color, ctx) => {
   ctx.fillStyle = color;
@@ -530,7 +529,7 @@ const DAG3DView: React.FC<DAGViewProps> = ({ onClose, onNodeSelect }) => {
   
   const isHighlighted = highlightedNodes.size === 0 || 
   (highlightedNodes.has(sourceId) && highlightedNodes.has(targetId));
-  drawLink(ctx, link, isHighlighted);
+  drawLink(ctx, link, isHighlighted, palette);
   }}
   linkDirectionalParticles={0}
   backgroundColor="transparent"
@@ -575,7 +574,7 @@ const DAG3DView: React.FC<DAGViewProps> = ({ onClose, onNodeSelect }) => {
   <Drawer
   title={
   <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-  <Tag color={getStatusColor(selectedTask?.status)}>
+  <Tag color={getStatusTag(selectedTask?.status)}>
   {getStatusName(selectedTask?.status)}
   </Tag>
   <span style={{ 

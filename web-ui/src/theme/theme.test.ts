@@ -234,7 +234,6 @@ const UNWIRED = [
   '--status-running-fg',
   '--status-skipped-bg',
   '--status-skipped-border',
-  '--status-skipped-fg',
   '--surface-scrim',
 ];
 

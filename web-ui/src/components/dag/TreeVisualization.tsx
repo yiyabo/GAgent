@@ -317,7 +317,7 @@ const TreeVisualization: React.FC<TreeVisualizationProps> = ({
   <Space>
   <span>Task Tree</span>
   {stats && (
-  <Badge count={stats.total} style={{ backgroundColor: 'var(--status-success-fg)' }} />
+  <Badge count={stats.total} style={{ backgroundColor: 'var(--status-success-bg)', color: 'var(--status-success-fg)', boxShadow: '0 0 0 1px var(--status-success-border)' }} />
   )}
   </Space>
   }

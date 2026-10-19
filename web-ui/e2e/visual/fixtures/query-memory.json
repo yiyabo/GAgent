@@ -1,0 +1,159 @@
+{
+ "memories": [
+  {
+   "memory_id": "mem-0000-aaaa",
+   "content": "噬菌体宿主范围预测的关键特征",
+   "memory_type": "knowledge",
+   "task_id": null,
+   "created_at": "2026-10-18 10:00:00",
+   "retrieval_count": 0,
+   "similarity": 0.95,
+   "meta": {
+    "importance": "critical",
+    "agentic_keywords": [
+     "host range"
+    ],
+    "tags": [
+     "fixture"
+    ],
+    "agentic_context": "fixture"
+   }
+  },
+  {
+   "memory_id": "mem-0001-aaaa",
+   "content": "CRISPR 间隔序列比对流程",
+   "memory_type": "experience",
+   "task_id": null,
+   "created_at": "2026-10-18 10:00:00",
+   "retrieval_count": 1,
+   "similarity": 0.91,
+   "meta": {
+    "importance": "high",
+    "agentic_keywords": [
+     "CRISPR",
+     "spacer"
+    ],
+    "tags": [
+     "fixture"
+    ],
+    "agentic_context": "fixture"
+   }
+  },
+  {
+   "memory_id": "mem-0002-aaaa",
+   "content": "用户询问 tRNA 注释结果",
+   "memory_type": "conversation",
+   "task_id": null,
+   "created_at": "2026-10-18 10:00:00",
+   "retrieval_count": 2,
+   "similarity": 0.87,
+   "meta": {
+    "importance": "medium",
+    "agentic_keywords": [
+     "tRNA"
+    ],
+    "tags": [
+     "fixture"
+    ],
+    "agentic_context": "fixture"
+   }
+  },
+  {
+   "memory_id": "mem-0003-aaaa",
+   "content": "样本 S12 来自污水处理厂",
+   "memory_type": "context",
+   "task_id": null,
+   "created_at": "2026-10-18 10:00:00",
+   "retrieval_count": 3,
+   "similarity": 0.83,
+   "meta": {
+    "importance": "low",
+    "agentic_keywords": [
+     "sample"
+    ],
+    "tags": [
+     "fixture"
+    ],
+    "agentic_context": "fixture"
+   }
+  },
+  {
+   "memory_id": "mem-0004-aaaa",
+   "content": "临时讨论：绘图配色",
+   "memory_type": "conversation",
+   "task_id": null,
+   "created_at": "2026-10-18 10:00:00",
+   "retrieval_count": 0,
+   "similarity": 0.79,
+   "meta": {
+    "importance": "temporary",
+    "agentic_keywords": [
+     "plot"
+    ],
+    "tags": [
+     "fixture"
+    ],
+    "agentic_context": "fixture"
+   }
+  },
+  {
+   "memory_id": "mem-0005-aaaa",
+   "content": "受体结合蛋白与宿主表面受体的对应",
+   "memory_type": "knowledge",
+   "task_id": null,
+   "created_at": "2026-10-18 10:00:00",
+   "retrieval_count": 1,
+   "similarity": 0.75,
+   "meta": {
+    "importance": "high",
+    "agentic_keywords": [
+     "RBP"
+    ],
+    "tags": [
+     "fixture"
+    ],
+    "agentic_context": "fixture"
+   }
+  },
+  {
+   "memory_id": "mem-0006-aaaa",
+   "content": "BLASTn 阈值 1e-5 的取舍",
+   "memory_type": "experience",
+   "task_id": null,
+   "created_at": "2026-10-18 10:00:00",
+   "retrieval_count": 2,
+   "similarity": 0.71,
+   "meta": {
+    "importance": "medium",
+    "agentic_keywords": [
+     "BLAST"
+    ],
+    "tags": [
+     "fixture"
+    ],
+    "agentic_context": "fixture"
+   }
+  },
+  {
+   "memory_id": "mem-0007-aaaa",
+   "content": "裂解周期与溶原周期的判别标记",
+   "memory_type": "knowledge",
+   "task_id": null,
+   "created_at": "2026-10-18 10:00:00",
+   "retrieval_count": 3,
+   "similarity": 0.67,
+   "meta": {
+    "importance": "low",
+    "agentic_keywords": [
+     "lifecycle"
+    ],
+    "tags": [
+     "fixture"
+    ],
+    "agentic_context": "fixture"
+   }
+  }
+ ],
+ "total": 8,
+ "search_time_ms": 3
+}

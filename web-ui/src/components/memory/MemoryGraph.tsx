@@ -5,6 +5,7 @@ import { Card, Spin, Button, Space, Select, Input, message, Badge, Radio, Slider
 import { ReloadOutlined, ExpandOutlined, FullscreenOutlined, SearchOutlined, InboxOutlined } from '@ant-design/icons';
 import { useMemoryStore } from '@store/memory';
 import type { Memory } from '@/types';
+import { useCanvasPalette, withAlpha, type CanvasPalette } from '@/theme/canvasPalette';
 
 type GraphNode = {
   id: string;
@@ -33,6 +34,7 @@ const MemoryGraph: React.FC<MemoryGraphProps> = ({ onNodeClick, height = '600px'
   const networkRef = useRef<HTMLDivElement>(null);
   const networkInstance = useRef<Network | null>(null);
   const { memories, getFilteredMemories } = useMemoryStore();
+  const palette = useCanvasPalette();
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -54,15 +56,16 @@ const MemoryGraph: React.FC<MemoryGraphProps> = ({ onNodeClick, height = '600px'
   return baseSize + bonus;
   };
 
-  const getNodeColor = (importance: Memory['importance']) => {
-  const colors = {
-  critical: { background: '#ff4d4f', border: '#cf1322', highlight: '#ff7875' },
-  high: { background: '#fa8c16', border: '#d46b08', highlight: '#ffa940' },
-  medium: { background: '#1890ff', border: '#096dd9', highlight: '#40a9ff' },
-  low: { background: '#52c41a', border: '#389e0d', highlight: '#73d13d' },
-  temporary: { background: '#d9d9d9', border: '#8c8c8c', highlight: '#bfbfbf' },
-  };
-  return colors[importance] || colors.medium;
+  /** Importance ramps cool to hot; the fill is a tint of the status colour so labels stay legible on both themes. */
+  const getNodeColor = (importance: Memory['importance'], p: CanvasPalette) => {
+  const tone = {
+  critical: p.error,
+  high: p.warning,
+  medium: p.action,
+  low: p.success,
+  temporary: p.textTertiary,
+  }[importance] || p.action;
+  return { background: withAlpha(tone, 0.22), border: tone, highlight: { background: withAlpha(tone, 0.4), border: tone } };
   };
 
   const getNodeShape = (type: Memory['memory_type']) => {
@@ -75,17 +78,17 @@ const MemoryGraph: React.FC<MemoryGraphProps> = ({ onNodeClick, height = '600px'
   return shapes[type] || 'dot';
   };
 
-  const getEdgeStyle = (similarity: number) => {
+  const getEdgeStyle = (similarity: number, p: CanvasPalette) => {
   let color, width;
 
   if (similarity > 0.8) {
-  color = '#52c41a'; //  - high
+  color = p.success;
   width = 5;
   } else if (similarity > 0.6) {
-  color = '#1890ff'; //  - medium
+  color = p.action;
   width = 3;
   } else {
-  color = '#d9d9d9'; //  - low
+  color = p.borderStrong;
   width = 2;
   }
 
@@ -120,7 +123,7 @@ const MemoryGraph: React.FC<MemoryGraphProps> = ({ onNodeClick, height = '600px'
 
   const nodes: GraphNode[] = filteredMemories.map((memory) => {
   const size = getNodeSize(memory.importance, memory.retrieval_count);
-  const colors = getNodeColor(memory.importance);
+  const colors = getNodeColor(memory.importance, palette);
   const shape = getNodeShape(memory.memory_type);
 
   const label = showLabels
@@ -150,15 +153,15 @@ const MemoryGraph: React.FC<MemoryGraphProps> = ({ onNodeClick, height = '600px'
   color: colors,
   font: {
   size: 12,
-  color: '#ffffff',
-  face: 'Arial',
+  color: palette.textPrimary,
+  face: palette.fontSans,
   strokeWidth: 3,
-  strokeColor: '#000000',
+  strokeColor: palette.card,
   },
   borderWidth: 2,
   shadow: {
   enabled: true,
-  color: 'rgba(0,0,0,0.3)',
+  color: palette.shadow,
   size: 10,
   x: 2,
   y: 2,
@@ -179,7 +182,7 @@ const MemoryGraph: React.FC<MemoryGraphProps> = ({ onNodeClick, height = '600px'
   if (!edgeSet.has(edgeId)) {
   edgeSet.add(edgeId);
 
-  const edgeStyle = getEdgeStyle(link.similarity);
+  const edgeStyle = getEdgeStyle(link.similarity, palette);
 
   edges.push({
   from: memory.id,
@@ -191,8 +194,9 @@ const MemoryGraph: React.FC<MemoryGraphProps> = ({ onNodeClick, height = '600px'
   },
   label: `${(link.similarity * 100).toFixed(0)}%`,
   font: {
-  size: 10,
-  color: '#666',
+  size: 12,
+  color: palette.textSecondary,
+  face: palette.fontSans,
   strokeWidth: 0,
   },
   labelHighlightBold: false,
@@ -223,7 +227,7 @@ const MemoryGraph: React.FC<MemoryGraphProps> = ({ onNodeClick, height = '600px'
   } finally {
   setLoading(false);
   }
-  }, [getFilteredMemories, searchText, minSimilarity, showLabels]);
+  }, [getFilteredMemories, searchText, minSimilarity, showLabels, palette]);
 
   const getLayoutOptions = () => {
   switch (layout) {
@@ -261,7 +265,8 @@ const MemoryGraph: React.FC<MemoryGraphProps> = ({ onNodeClick, height = '600px'
   shadow: true,
   font: {
   size: 12,
-  color: '#ffffff',
+  color: palette.textPrimary,
+  face: palette.fontSans,
   },
   chosen: {
   node: (values: any) => {
@@ -345,7 +350,7 @@ const MemoryGraph: React.FC<MemoryGraphProps> = ({ onNodeClick, height = '600px'
   networkInstance.current = null;
   }
   };
-  }, [memories, layout, searchText, minSimilarity, showLabels, onNodeClick]);
+  }, [memories, layout, searchText, minSimilarity, showLabels, onNodeClick, palette]);
 
   const handleRefresh = () => {
   if (networkInstance.current) {
@@ -380,50 +385,50 @@ const MemoryGraph: React.FC<MemoryGraphProps> = ({ onNodeClick, height = '600px'
   position: 'absolute',
   top: 10,
   left: 10,
-  background: 'rgba(255,255,255,0.95)',
+  background: 'var(--surface-raised)',
   padding: '12px',
   borderRadius: '8px',
-  border: '1px solid #d9d9d9',
+  border: '1px solid var(--border-default)',
   fontSize: '12px',
   zIndex: 1000,
   maxWidth: '250px',
   }}
   >
-  <div style={{ fontWeight: 'bold', marginBottom: '8px', color: '#1890ff' }}>
+  <div style={{ fontWeight: 'bold', marginBottom: '8px', color: 'var(--color-action)' }}>
   🗺️ memory
   </div>
 
   <div style={{ marginBottom: '8px' }}>
-  <div style={{ fontWeight: 'bold', fontSize: '12px', color: '#666', marginBottom: '4px' }}>
+  <div style={{ fontWeight: 'bold', fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '4px' }}>
   =  + 
   </div>
   </div>
 
   <div style={{ marginBottom: '8px' }}>
-  <div style={{ fontWeight: 'bold', fontSize: '12px', color: '#666', marginBottom: '4px' }}>
+  <div style={{ fontWeight: 'bold', fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '4px' }}>
   :
   </div>
   <div style={{ marginLeft: '8px' }}>
   <div style={{ marginBottom: '2px' }}>
-  <span style={{ color: '#ff4d4f' }}>●</span> 
+  <span style={{ color: 'var(--status-error-fg)' }}>●</span> 
   </div>
   <div style={{ marginBottom: '2px' }}>
-  <span style={{ color: '#fa8c16' }}>●</span> high
+  <span style={{ color: 'var(--status-warning-fg)' }}>●</span> high
   </div>
   <div style={{ marginBottom: '2px' }}>
-  <span style={{ color: '#1890ff' }}>●</span> medium
+  <span style={{ color: 'var(--color-action)' }}>●</span> medium
   </div>
   <div style={{ marginBottom: '2px' }}>
-  <span style={{ color: '#52c41a' }}>●</span> low
+  <span style={{ color: 'var(--status-success-fg)' }}>●</span> low
   </div>
   <div>
-  <span style={{ color: '#d9d9d9' }}>●</span> 
+  <span style={{ color: 'var(--text-tertiary)' }}>●</span> 
   </div>
   </div>
   </div>
 
   <div style={{ marginBottom: '8px' }}>
-  <div style={{ fontWeight: 'bold', fontSize: '12px', color: '#666', marginBottom: '4px' }}>
+  <div style={{ fontWeight: 'bold', fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '4px' }}>
   type:
   </div>
   <div style={{ marginLeft: '8px' }}>
@@ -432,23 +437,23 @@ const MemoryGraph: React.FC<MemoryGraphProps> = ({ onNodeClick, height = '600px'
   </div>
 
   <div>
-  <div style={{ fontWeight: 'bold', fontSize: '12px', color: '#666', marginBottom: '4px' }}>
+  <div style={{ fontWeight: 'bold', fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '4px' }}>
   connection:
   </div>
   <div style={{ marginLeft: '8px' }}>
   <div style={{ marginBottom: '2px' }}>
-  <span style={{ color: '#52c41a', fontWeight: 'bold' }}>━━</span> high (&gt;80%)
+  <span aria-hidden style={{ display: 'inline-block', width: 20, height: 3, borderRadius: 2, verticalAlign: 'middle', marginRight: 6, background: 'var(--status-success-fg)' }} /> high (&gt;80%)
   </div>
   <div style={{ marginBottom: '2px' }}>
-  <span style={{ color: '#1890ff', fontWeight: 'bold' }}>━━</span> medium (60-80%)
+  <span aria-hidden style={{ display: 'inline-block', width: 20, height: 3, borderRadius: 2, verticalAlign: 'middle', marginRight: 6, background: 'var(--color-action)' }} /> medium (60-80%)
   </div>
   <div>
-  <span style={{ color: '#d9d9d9', fontWeight: 'bold' }}>━━</span> low (&lt;60%)
+  <span aria-hidden style={{ display: 'inline-block', width: 20, height: 3, borderRadius: 2, verticalAlign: 'middle', marginRight: 6, background: 'var(--border-strong)' }} /> low (&lt;60%)
   </div>
   </div>
   </div>
 
-  <div style={{ fontSize: '12px', color: '#999', marginTop: '8px', borderTop: '1px solid #f0f0f0', paddingTop: '6px' }}>
+  <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginTop: '8px', borderTop: '1px solid var(--border-subtle)', paddingTop: '6px' }}>
   💡 <br />
   🔍 <br />
   🖱️ 
@@ -467,8 +472,8 @@ const MemoryGraph: React.FC<MemoryGraphProps> = ({ onNodeClick, height = '600px'
   title={
   <Space>
   <span>🗺️ memoryconnection</span>
-  <Badge count={memoryCount} style={{ backgroundColor: '#52c41a' }} />
-  <span style={{ fontSize: '12px', color: '#999' }}>
+  <Badge count={memoryCount} style={{ backgroundColor: 'var(--status-success-bg)', color: 'var(--status-success-fg)', boxShadow: '0 0 0 1px var(--status-success-border)' }} />
+  <span style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
   (connection: {avgConnections})
   </span>
   </Space>
@@ -545,10 +550,10 @@ const MemoryGraph: React.FC<MemoryGraphProps> = ({ onNodeClick, height = '600px'
   {memoryCount === 0 && !loading ? (
   <div style={{ height, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
   <Empty
-  image={<InboxOutlined style={{ fontSize: 64, color: '#d9d9d9' }} />}
+  image={<InboxOutlined style={{ fontSize: 64, color: 'var(--border-strong)' }} />}
   imageStyle={{ height: 80 }}
   description={
-  <span style={{ color: '#999' }}>
+  <span style={{ color: 'var(--text-tertiary)' }}>
   No memories yet
   <br />
   <span style={{ fontSize: '12px' }}>
@@ -569,9 +574,9 @@ const MemoryGraph: React.FC<MemoryGraphProps> = ({ onNodeClick, height = '600px'
   style={{
   height,
   width: '100%',
-  border: '1px solid #d9d9d9',
-  borderRadius: '6px',
-  backgroundColor: '#fafafa',
+  border: '1px solid var(--border-default)',
+  borderRadius: 'var(--radius-md)',
+  backgroundColor: 'var(--surface-sunken)',
   }}
   />
   <Legend />

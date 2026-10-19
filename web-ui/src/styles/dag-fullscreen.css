@@ -439,6 +439,8 @@
   height: 16px;
   border-radius: 2px;
   display: inline-block;
+  /* The swatch is a card on a card-coloured panel: the hairline is what keeps it visible. */
+  border: 1px solid var(--border-default);
   box-shadow: var(--shadow-1);
 }
 

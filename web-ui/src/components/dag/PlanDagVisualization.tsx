@@ -3,6 +3,7 @@ import { Spin } from 'antd';
 import { Network } from 'vis-network';
 import { DataSet } from 'vis-data';
 import { PlanTaskNode } from '@/types';
+import { useCanvasPalette, withAlpha, type CanvasPalette } from '@/theme/canvasPalette';
 
 export interface PlanDagVisualizationProps {
   tasks: PlanTaskNode[];
@@ -11,18 +12,25 @@ export interface PlanDagVisualizationProps {
   onSelectTask?: (task: PlanTaskNode | null) => void;
 }
 
-const statusColorMap: Record<string, string> = {
-  pending: '#faad14',
-  running: '#1890ff',
-  completed: '#52c41a',
-  failed: '#ff4d4f',
-};
+/** vis-network takes literal colour strings, so the node colours come from the resolved theme palette. */
+function statusFill(p: CanvasPalette, status: string): { fill: string; ink: string } {
+  switch (status) {
+  case 'completed': return { fill: p.successBg, ink: p.success };
+  case 'running': return { fill: p.actionBg, ink: p.action };
+  case 'failed': return { fill: p.errorBg, ink: p.error };
+  case 'blocked': return { fill: p.blockedBg, ink: p.blocked };
+  case 'pending': return { fill: p.warningBg, ink: p.warning };
+  default: return { fill: p.sunken, ink: p.textSecondary };
+  }
+}
 
-const groupBorderColor: Record<string, string> = {
-  root: '#873bf4',
-  composite: '#1890ff',
-  atomic: '#52c41a',
-};
+function typeBorder(p: CanvasPalette, type: string): string {
+  switch (type) {
+  case 'root': return p.blocked;
+  case 'composite': return p.action;
+  default: return p.borderStrong;
+  }
+}
 
 const PlanDagVisualization: React.FC<PlanDagVisualizationProps> = ({
   tasks,
@@ -32,6 +40,7 @@ const PlanDagVisualization: React.FC<PlanDagVisualizationProps> = ({
 }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const networkRef = useRef<Network | null>(null);
+  const palette = useCanvasPalette();
 
   useEffect(() => {
   if (!containerRef.current || !tasks) {
@@ -48,23 +57,24 @@ const PlanDagVisualization: React.FC<PlanDagVisualizationProps> = ({
   label: label.length === (task.short_name || task.name || '').length ? label : `${label}…`,
   level: task.depth ?? 0,
   color: {
-  background: statusColorMap[status] || '#d9d9d9',
-  border: groupBorderColor[type] || '#d9d9d9',
+  background: statusFill(palette, status).fill,
+  border: typeBorder(palette, type),
   highlight: {
-  background: '#ffc53d',
-  border: '#fa8c16',
+  background: palette.actionBg,
+  border: palette.action,
   },
   },
   shape:
   type === 'root' ? 'star' : type === 'composite' ? 'box' : 'ellipse',
   font: {
-  color: '#ffffff',
-  face: 'Inter, Arial, sans-serif',
+  color: statusFill(palette, status).ink,
+  face: palette.fontSans,
   size: type === 'root' ? 16 : 14,
   },
   borderWidth: type === 'root' ? 3 : 2,
   shadow: {
   enabled: true,
+  color: palette.shadow,
   size: 8,
   x: 2,
   y: 2,
@@ -83,8 +93,8 @@ const PlanDagVisualization: React.FC<PlanDagVisualizationProps> = ({
   to: task.id,
   arrows: 'to',
   color: {
-  color: '#c4c4c4',
-  highlight: '#8c8c8c',
+  color: palette.borderStrong,
+  highlight: palette.textTertiary,
   },
   }))
   );
@@ -141,7 +151,7 @@ const PlanDagVisualization: React.FC<PlanDagVisualizationProps> = ({
   network.destroy();
   networkRef.current = null;
   };
-  }, [tasks, onSelectTask]);
+  }, [tasks, onSelectTask, palette]);
 
   return (
   <div style={{ position: 'relative', height }}>
@@ -154,7 +164,7 @@ const PlanDagVisualization: React.FC<PlanDagVisualizationProps> = ({
   alignItems: 'center',
   justifyContent: 'center',
   zIndex: 2,
-  background: 'rgba(255,255,255,0.7)',
+  background: withAlpha(palette.card, 0.7),
   }}
   >
   <Spin size="large" tip="loadDAGmedium" />
