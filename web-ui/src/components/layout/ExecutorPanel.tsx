@@ -35,7 +35,7 @@ const parseServerTime = (time?: string | null) => {
 
 // Product names, not translated.
 const PHAGESCOPE_LABEL = 'PhageScope';
-const CODE_EXECUTOR_LABEL = 'Claude Code';
+const CODE_EXECUTOR_LABEL = 'Code Executor';
 
 const EMPTY_BOARD = (): BackgroundTaskBoardResponse => ({
   generated_at: new Date().toISOString(),
@@ -100,6 +100,8 @@ const groupLabel = (group: BackgroundTaskGroup, t: TFn): string => {
   switch (group.key) {
     case 'task_creation':
       return t('executorPanel.groupTaskCreation');
+    case 'code_executor':
+      return t('toolProgress.categoryCodeExecutor');
     default:
       return group.label;
   }
