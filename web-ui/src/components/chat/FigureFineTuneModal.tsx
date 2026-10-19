@@ -157,15 +157,15 @@ export const FigureFineTuneModal: React.FC<FigureFineTuneModalProps> = ({
       return;
     }
 
-    let finalPrompt = `【图表局部微调】针对目标图表 \`${fileName}\` (${imageAlt || '未命名图表'}):\n`;
-    finalPrompt += `- 原图文件: \`${sourcePath}\`\n`;
+    let finalPrompt = `${t('figureFineTune.reqHeader', { file: fileName, alt: imageAlt || t('figureFineTune.reqUntitled') })}\n`;
+    finalPrompt += `${t('figureFineTune.reqSource', { path: sourcePath })}\n`;
     if (rects.length > 0) {
-      finalPrompt += `- 用户在图上框选了 ${rects.length} 处关键区域（已标红框）。\n`;
+      finalPrompt += `${t('figureFineTune.reqBoxes', { count: rects.length })}\n`;
     }
     if (instruction.trim()) {
-      finalPrompt += `- 修改具体要求: ${instruction.trim()}\n`;
+      finalPrompt += `${t('figureFineTune.reqInstruction', { text: instruction.trim() })}\n`;
     }
-    finalPrompt += `- 规范要求: 请在保持全文风格一致（统一字体字号、Nature配色、纯白背景、无多余边框）的前提下进行定向修改，并覆盖更新 \`results/${fileName}\`（输出 PNG, 可编辑矢量 SVG, 出版级 PDF）。`;
+    finalPrompt += t('figureFineTune.reqSpec', { file: fileName });
 
     try {
       await useChatStore.getState().sendMessage(finalPrompt);

@@ -11,6 +11,7 @@ import { Navigate, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@store/auth';
 import Wordmark from '@components/common/Wordmark';
 import { useT } from '@/i18n/useT';
+import LanguageSwitch from '@components/common/LanguageSwitch';
 import type { TranslationKey } from '@/i18n/keys';
 
 const { Title, Text, Paragraph } = Typography;
@@ -96,6 +97,7 @@ const Landing: React.FC = () => {
           <Wordmark style={{ fontSize: 18 }} />
         </div>
         <Space size={12}>
+          <LanguageSwitch />
           <Button type="text" onClick={() => navigate('/login')}>
             {t('landing.signIn')}
           </Button>

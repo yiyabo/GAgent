@@ -1212,7 +1212,13 @@
     "clearBoxes": "清除红框 ({{count}})",
     "presets": "常用微调快捷模板:",
     "describe": "具体微调要求描述:",
-    "placeholder": "例如：将X轴字体调大，柱状图改为Nature浅蓝色，去掉背景网格线..."
+    "placeholder": "例如：将X轴字体调大，柱状图改为Nature浅蓝色，去掉背景网格线...",
+    "reqHeader": "【图表局部微调】针对目标图表 `{{file}}` ({{alt}}):",
+    "reqUntitled": "未命名图表",
+    "reqSource": "- 原图文件: `{{path}}`",
+    "reqBoxes": "- 用户在图上框选了 {{count}} 处关键区域（已标红框）。",
+    "reqInstruction": "- 修改具体要求: {{text}}",
+    "reqSpec": "- 规范要求: 请在保持全文风格一致（统一字体字号、Nature配色、纯白背景、无多余边框）的前提下进行定向修改，并覆盖更新 `results/{{file}}`（输出 PNG, 可编辑矢量 SVG, 出版级 PDF）。"
   },
   "artifactVersions": {
     "blocked": "部分输入来源尚未确定，请先检查任务依赖。",

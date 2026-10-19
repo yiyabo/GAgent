@@ -1212,7 +1212,13 @@
     "clearBoxes": "Clear boxes ({{count}})",
     "presets": "Quick fine-tune templates:",
     "describe": "Describe what to change:",
-    "placeholder": "e.g. make the X-axis font larger, change the bars to light Nature blue, remove the background grid..."
+    "placeholder": "e.g. make the X-axis font larger, change the bars to light Nature blue, remove the background grid...",
+    "reqHeader": "[Figure fine-tune] Target figure `{{file}}` ({{alt}}):",
+    "reqUntitled": "Untitled figure",
+    "reqSource": "- Source file: `{{path}}`",
+    "reqBoxes": "- The user marked {{count}} key regions on the figure (shown as red boxes).",
+    "reqInstruction": "- Requested change: {{text}}",
+    "reqSpec": "- Requirements: make a targeted change while keeping the style consistent across the whole paper (same fonts and sizes, Nature palette, pure white background, no extra frames), and overwrite `results/{{file}}` (output PNG, editable vector SVG, print-ready PDF)."
   },
   "artifactVersions": {
     "blocked": "Some input sources are not settled yet. Check the task dependencies first.",

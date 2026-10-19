@@ -66,7 +66,7 @@ describe('chat parts in English', () => {
       .toBe('Memory recall is temporarily unavailable. This turn did not use any earlier material.');
   });
 
-  it('the fine-tune dialog is English, and the request sent to the agent keeps the wording the backend looks for', async () => {
+  it('the fine-tune dialog and the request sent to the agent are English, with the prefix the backend prompt names', async () => {
     const { useChatStore } = await import('@store/chat');
     const send = vi.fn().mockResolvedValue(undefined);
     (useChatStore as any).getState = () => ({ sendMessage: send, inputText: '', setInputText: vi.fn() });
@@ -76,7 +76,26 @@ describe('chat parts in English', () => {
     fireEvent.click(screen.getByRole('button', { name: /Send fine-tune request/ }));
     await vi.waitFor(() => expect(send).toHaveBeenCalled());
     const sent = send.mock.calls[0][0] as string;
-    expect(sent.startsWith('【图表局部微调】针对目标图表 `')).toBe(true);
+    expect(sent.startsWith('[Figure fine-tune] Target figure `')).toBe(true);
+    expect(sent).toContain('- Source file: `results/fig.png`');
     expect(sent).toContain('Nature palette');
+    expect(sent).not.toMatch(CJK);
+  });
+
+  it('the Chinese request is exactly the text the backend prompt was written for', async () => {
+    useLanguageStore.getState().setLanguage('zh-CN');
+    const { useChatStore } = await import('@store/chat');
+    const send = vi.fn().mockResolvedValue(undefined);
+    (useChatStore as any).getState = () => ({ sendMessage: send, inputText: '', setInputText: vi.fn() });
+    render(<FigureFineTuneModal visible onClose={() => {}} imageUrl="/a/b.png" imageAlt="fig.png" imagePath="results/fig.png" />);
+    fireEvent.change(await screen.findByPlaceholderText(/例如：将X轴字体调大/), { target: { value: '注释改成英文' } });
+    fireEvent.click(screen.getByRole('button', { name: /发送微调指令/ }));
+    await vi.waitFor(() => expect(send).toHaveBeenCalled());
+    expect(send.mock.calls[0][0]).toBe(
+      '【图表局部微调】针对目标图表 `fig.png` (fig.png):\n' +
+      '- 原图文件: `results/fig.png`\n' +
+      '- 修改具体要求: 注释改成英文\n' +
+      '- 规范要求: 请在保持全文风格一致（统一字体字号、Nature配色、纯白背景、无多余边框）的前提下进行定向修改，并覆盖更新 `results/fig.png`（输出 PNG, 可编辑矢量 SVG, 出版级 PDF）。',
+    );
   });
 });

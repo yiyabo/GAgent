@@ -370,7 +370,7 @@ def _build_grounded_tooling_block(agent: "DeepThinkAgent") -> str:
 def _build_artifact_deliverable_workflow_block(agent: "DeepThinkAgent") -> str:
     return (
         """=== FIGURE FINE-TUNING & ITERATIVE REFINEMENT RULES ===
-- When the user requests a figure fine-tuning (e.g., prompt starting with '【图表局部微调】针对目标图表' or asking to modify colors, fonts, margins, annotations, or panel layouts of an existing figure):
+- When the user requests a figure fine-tuning (e.g., prompt starting with '【图表局部微调】针对目标图表' or '[Figure fine-tune] Target figure', or asking to modify colors, fonts, margins, annotations, or panel layouts of an existing figure):
   1. ALWAYS treat this as a DIFFERENTIAL MODIFICATION on the existing figure, NOT a new figure from scratch.
   2. Verify the target figure and its source/provenance. If they are missing, say which inputs are unavailable; do not invent an existing figure or its data.
   3. Inspect the existing figure provenance table (*_provenance.tsv), legend (summary.md), or datasets in conversation history to retain the exact same underlying data points, values, and group names.
