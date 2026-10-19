@@ -1493,7 +1493,7 @@
     "noChangesListed": "No specific changes listed",
     "modified": "Modified",
     "modifiedAria": "Modified: view the changes",
-    "sizeLine": "{{size}} · {{scripts}} scripts · {{refs}} references",
+    "sizeLine": "{{size}} · Scripts: {{scripts}} · References: {{refs}}",
     "skillDisableAria": "Disable skill {{name}}",
     "skillEnableAria": "Enable skill {{name}}",
     "skillsLoadFailed": "Could not load the skill list",

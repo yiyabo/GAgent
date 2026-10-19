@@ -490,7 +490,7 @@ describe('Extensions page in English', () => {
     expect(await screen.findByText('Third-party')).toBeInTheDocument();
     expect(screen.getByText('Warnings')).toBeInTheDocument();
     expect(screen.getByText('Awaiting human sign-off')).toBeInTheDocument();
-    expect(screen.getByText(/1234 chars · 2 scripts · 1 references/)).toBeInTheDocument();
+    expect(screen.getByText(/1234 chars · Scripts: 2 · References: 1/)).toBeInTheDocument();
     expect(screen.getByText('Modified')).toBeInTheDocument();
     expect(container.textContent).not.toMatch(cjk);
   });
