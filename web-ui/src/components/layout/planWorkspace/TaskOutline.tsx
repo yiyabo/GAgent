@@ -2,7 +2,9 @@ import React, { useMemo, useState } from 'react';
 import { Input, Empty } from 'antd';
 import { CheckOutlined, CloseOutlined, LoadingOutlined, SearchOutlined, LockOutlined, RightOutlined, DownOutlined } from '@ant-design/icons';
 import type { PlanTaskNode } from '@/types';
-import { buildTaskOutline, statusLabel, taskStatus } from './model';
+import { buildTaskOutline, taskStatus } from './model';
+import { useT } from '@/i18n/useT';
+import { planStatusLabel } from '@/i18n/planStatusLabels';
 
 export const TaskStatusIcon: React.FC<{ status: string }> = ({ status }) => (
   <span className={`pw-status-icon pw-status-${status}`} aria-hidden="true">
@@ -15,6 +17,7 @@ export const TaskStatusIcon: React.FC<{ status: string }> = ({ status }) => (
 
 interface Props { tasks: PlanTaskNode[]; selectedTaskId: number | null; onSelect: (id: number) => void }
 const TaskOutline: React.FC<Props> = ({ tasks, selectedTaskId, onSelect }) => {
+  const t = useT();
   const [query, setQuery] = useState('');
   const [collapsed, setCollapsed] = useState<Set<number>>(new Set());
   const rows = useMemo(() => buildTaskOutline(tasks), [tasks]);
@@ -34,16 +37,16 @@ const TaskOutline: React.FC<Props> = ({ tasks, selectedTaskId, onSelect }) => {
     return result;
   }, [rows, collapsed, query]);
   return (
-    <aside className="pw-outline" aria-label="计划任务列表">
-      <div className="pw-outline-heading"><span>任务</span><span className="pw-muted">{tasks.length}</span></div>
+    <aside className="pw-outline" aria-label={t('planWorkspace.outlineAria')}>
+      <div className="pw-outline-heading"><span>{t('planWorkspace.outlineTasks')}</span><span className="pw-muted">{tasks.length}</span></div>
       <Input className="pw-task-search" size="small" prefix={<SearchOutlined />} value={query}
-        placeholder="查找任务" aria-label="查找任务" allowClear onChange={(event) => setQuery(event.target.value)} />
+        placeholder={t('planWorkspace.findTask')} aria-label={t('planWorkspace.findTask')} allowClear onChange={(event) => setQuery(event.target.value)} />
       <div className="pw-task-list">
         {visible.map(({ task, depth, hasChildren }) => {
           const status = taskStatus(task);
           return <div key={task.id} className={`pw-task-row ${selectedTaskId === task.id ? 'is-selected' : ''}`}
             style={{ '--task-depth': Math.min(depth, 5) } as React.CSSProperties}>
-            {hasChildren ? <button className="pw-tree-toggle" aria-label={`${collapsed.has(task.id) ? '展开' : '折叠'} ${task.name}`}
+            {hasChildren ? <button className="pw-tree-toggle" aria-label={t(collapsed.has(task.id) ? 'planWorkspace.expandTask' : 'planWorkspace.collapseTask', { name: task.name })}
               onClick={() => setCollapsed((old) => { const next = new Set(old); next.has(task.id) ? next.delete(task.id) : next.add(task.id); return next; })}>
               {collapsed.has(task.id) ? <RightOutlined /> : <DownOutlined />}
             </button> : <span className="pw-tree-toggle-spacer" />}
@@ -51,12 +54,12 @@ const TaskOutline: React.FC<Props> = ({ tasks, selectedTaskId, onSelect }) => {
               onClick={() => onSelect(task.id)} title={task.name}>
               <TaskStatusIcon status={status} />
               <span className="pw-task-copy"><span className="pw-task-name">{task.short_name || task.name}</span>
-                <span className="pw-task-meta">#{task.id} · {statusLabel(status)}{task.freshness === 'stale' ? ' · 待更新' : ''}</span>
+                <span className="pw-task-meta">#{task.id} · {planStatusLabel(t, status)}{task.freshness === 'stale' ? ` · ${planStatusLabel(t, 'stale')}` : ''}</span>
               </span>
             </button>
           </div>;
         })}
-        {!visible.length && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="没有匹配的任务" />}
+        {!visible.length && <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('planWorkspace.noMatch')} />}
       </div>
     </aside>
   );

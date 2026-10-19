@@ -1,10 +1,15 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { useLanguageStore } from '@/i18n/language';
 
 import type { PlanResultItem } from '@/types';
 import { getVerificationView } from './verification';
 
 describe('task verification view', () => {
+  beforeEach(() => useLanguageStore.setState({ language: 'en' }));
+  afterEach(() => useLanguageStore.setState({ language: 'zh-CN' }));
+
   it('keeps rule errors separate from failed checks', () => {
+    useLanguageStore.setState({ language: 'zh-CN' });
     const view = getVerificationView({ task_id: 1, status: 'needs_review', metadata: {
       verification: { status: 'config_error', failures: [], config_errors: [
         { type: 'glob_count_at_least', message: 'This check counts files, not records.' },

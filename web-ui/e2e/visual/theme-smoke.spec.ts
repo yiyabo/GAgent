@@ -64,8 +64,8 @@ for (const mode of ['light', 'dark'] as const) {
     await page.addInitScript((value) => window.localStorage.setItem('gagent.theme', value), mode);
     await page.goto('/chat');
     await page.waitForLoadState('networkidle');
-    await page.getByRole('tab', { name: /关系图/ }).click();
-    await page.getByRole('button', { name: /3D 全屏/ }).click();
+    await page.getByRole('tab', { name: /关系图|Graph/ }).click();
+    await page.getByRole('button', { name: /3D 全屏|3D fullscreen/ }).click();
     await page.waitForSelector('canvas');
     await page.waitForTimeout(1500);
 

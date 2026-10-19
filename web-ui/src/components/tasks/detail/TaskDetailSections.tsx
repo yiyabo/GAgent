@@ -20,15 +20,20 @@ import { buildDeliverableFileUrl } from '@api/artifacts';
 import { useChatStore } from '@store/chat';
 import type { DependencyPlanResponse, PlanResultItem, PlanTaskNode, ToolResultPayload } from '@/types';
 import type { TaskTokenUsageItem } from '@/api/stats';
-import { statusColorMap, statusLabelMap } from './constants';
+import { statusColorMap } from './constants';
+import { translate, useT } from '@/i18n/useT';
+import { planStatusLabel } from '@/i18n/planStatusLabels';
+import { dateLocale } from '@/i18n/format';
+import type { TranslationKey } from '@/i18n/keys';
 import { getVerificationView } from './verification';
 
 const { Paragraph, Text, Title } = Typography;
 
 const RenderedResultContent: React.FC<{ content: string; sessionId?: string | null }> = ({ content, sessionId }) => {
+  const t = useT();
   const [expanded, setExpanded] = React.useState(false);
   return <div style={{ marginTop: 8 }}>
-    <Text type="secondary" copyable={{ text: content }}>复制结果正文</Text>
+    <Text type="secondary" copyable={{ text: content }}>{t('taskSections.copyResult')}</Text>
     <div className="task-result-markdown" style={{
       marginTop: 8, maxHeight: expanded ? undefined : 480, overflowY: expanded ? undefined : 'auto',
       overflowWrap: 'anywhere',
@@ -36,7 +41,7 @@ const RenderedResultContent: React.FC<{ content: string; sessionId?: string | nu
       <MarkdownRenderer content={content} sessionId={sessionId} />
     </div>
     {content.length > 1800 && <Button type="link" size="small" onClick={() => setExpanded(value => !value)}>
-      {expanded ? '收起正文' : '展开完整正文'}
+      {expanded ? t('taskSections.collapseText') : t('taskSections.expandText')}
     </Button>}
   </div>;
 };
@@ -76,7 +81,7 @@ export async function copyJsonToClipboard(
       if (fallbackCopyToClipboard(text)) {
         messageFn.success(successMessage);
       } else {
-        messageFn.error('Copy failed, please copy manually');
+        messageFn.error(translate('taskSections.copyFailed'));
       }
     }
   } catch (error) {
@@ -85,7 +90,7 @@ export async function copyJsonToClipboard(
     if (fallbackCopyToClipboard(text)) {
       messageFn.success(successMessage);
     } else {
-      messageFn.error('Copy failed, please copy manually');
+      messageFn.error(translate('taskSections.copyFailed'));
     }
   }
 }
@@ -107,7 +112,7 @@ export function resolveTaskName(
   const fromPlan =
     dependencyPlan?.missing_dependencies?.find((d) => d.id === taskId)?.name ??
     dependencyPlan?.running_dependencies?.find((d) => d.id === taskId)?.name;
-  return fromPlan || `Task #${taskId}`;
+  return fromPlan || translate('taskDetail.taskNum', { id: taskId });
 }
 
 export function resolveTaskStatus(
@@ -125,11 +130,11 @@ export function resolveTaskStatus(
   return fromPlan || 'pending';
 }
 
-const FAILURE_KIND_LABELS: Record<string, string> = {
-  contract_mismatch: 'Deliverable contract mismatch',
-  execution_failed: 'Execution failed',
-  blocked_dependency: 'Blocked by dependency',
-  verification_config_error: '验收规则配置无效',
+const FAILURE_KIND_KEYS: Record<string, TranslationKey> = {
+  contract_mismatch: 'taskSections.failContract',
+  execution_failed: 'jobLog.executionFailed',
+  blocked_dependency: 'taskSections.failBlocked',
+  verification_config_error: 'taskSections.failVerificationConfig',
 };
 
 export function humanizeFailureKind(kind: string): string {
@@ -137,8 +142,8 @@ export function humanizeFailureKind(kind: string): string {
   if (!normalized) {
     return '';
   }
-  if (FAILURE_KIND_LABELS[normalized]) {
-    return FAILURE_KIND_LABELS[normalized];
+  if (FAILURE_KIND_KEYS[normalized]) {
+    return translate(FAILURE_KIND_KEYS[normalized]);
   }
   return normalized
     .split(/[_\s]+/)
@@ -285,8 +290,9 @@ interface DependenciesProps {
 }
 
 export const Dependencies: React.FC<DependenciesProps> = ({ dependencies, onDependencyClick, taskMap }) => {
+  const t = useT();
   if (!dependencies || dependencies.length === 0) {
-    return <Text type="secondary">No dependencies</Text>;
+    return <Text type="secondary">{t('taskSections.noDependencies')}</Text>;
   }
   return (
     <Space wrap size={6}>
@@ -301,13 +307,13 @@ export const Dependencies: React.FC<DependenciesProps> = ({ dependencies, onDepe
             onClick={() => onDependencyClick(dep)}
             style={{ padding: '0 4px', height: 'auto' }}
           >
-            Task #{dep}
+            {t('taskDetail.taskNum', { id: dep })}
             {depStatus && (
               <Tag
                 color={statusColorMap[depStatus] ?? 'default'}
                 style={{ marginLeft: 4, fontSize: 12, lineHeight: '16px', padding: '0 4px' }}
               >
-                {statusLabelMap[depStatus] ?? depStatus}
+                {planStatusLabel(t, depStatus)}
               </Tag>
             )}
           </Button>
@@ -322,6 +328,7 @@ interface ContextSectionsProps {
 }
 
 export const ContextSections: React.FC<ContextSectionsProps> = ({ sections }) => {
+  const t = useT();
   if (!Array.isArray(sections) || sections.length === 0) {
     return null;
   }
@@ -329,7 +336,7 @@ export const ContextSections: React.FC<ContextSectionsProps> = ({ sections }) =>
     const title =
       typeof section?.title === 'string' && section.title.trim().length > 0
         ? section.title
-        : `Section ${index + 1}`;
+        : t('dag.sectionN', { n: index + 1 });
     const content =
       typeof section?.content === 'string'
         ? section.content
@@ -356,12 +363,13 @@ export const PublishedArtifactsSection: React.FC<PublishedArtifactsSectionProps>
     [result, sessionId]
   );
   const [previewEntry, setPreviewEntry] = React.useState<PublishedArtifactEntry | null>(null);
+  const t = useT();
   if (entries.length === 0) {
     return null;
   }
   return (
     <section>
-      <Title level={5}>Published Artifacts ({entries.length})</Title>
+      <Title level={5}>{t('taskSections.publishedArtifacts', { count: entries.length })}</Title>
       <Space direction="vertical" size={8} style={{ width: '100%' }}>
         {entries.map((entry) => (
           <Card
@@ -377,12 +385,12 @@ export const PublishedArtifactsSection: React.FC<PublishedArtifactsSectionProps>
                 <Text strong>{entry.fileName}</Text>
                 {entry.alias && entry.alias !== entry.fileName && <Tag>{entry.alias}</Tag>}
                 {entry.href && (
-                  <Tooltip title="Open in new tab">
+                  <Tooltip title={t('preview.openInNewTab')}>
                     <a
                       href={entry.href}
                       target="_blank"
                       rel="noreferrer"
-                      aria-label={`Open ${entry.fileName} in new tab`}
+                      aria-label={t('taskSections.openFileNewTab', { name: entry.fileName })}
                       onClick={(event) => event.stopPropagation()}
                     >
                       <LinkOutlined />
@@ -463,6 +471,7 @@ export const TaskDrawerContent: React.FC<TaskDrawerContentProps> = ({
   taskTokenUsage,
 }) => {
   const { message } = AntdApp.useApp();
+  const t = useT();
   const resultSessionId = useChatStore(state => state.currentSession?.session_id ?? state.currentSession?.id ?? null);
   const effectiveStatus = activeTask.effective_status ?? activeTask.status ?? 'pending';
   const isBlocked = effectiveStatus === 'blocked';
@@ -476,7 +485,7 @@ export const TaskDrawerContent: React.FC<TaskDrawerContentProps> = ({
   const handleCopyDetails = () => {
     void copyJsonToClipboard(
       { task: activeTask, result: effectiveResult ?? null },
-      'Task details copied',
+      t('taskSections.detailsCopied'),
       message
     );
   };
@@ -484,22 +493,22 @@ export const TaskDrawerContent: React.FC<TaskDrawerContentProps> = ({
   return (
     <Space direction="vertical" size="large" style={{ width: '100%' }}>
       <section>
-        <Title level={5}>Status</Title>
+        <Title level={5}>{t('taskSections.status')}</Title>
         <Space direction="vertical" size="small" style={{ width: '100%' }}>
           <Space wrap size={8}>
             <Tag color={statusColorMap[effectiveStatus] ?? 'default'}>
-              {statusLabelMap[effectiveStatus] ?? effectiveStatus}
+              {planStatusLabel(t, effectiveStatus)}
             </Tag>
             {activeTask.parent_id != null && (
               <Text type="secondary">
-                Parent:{' '}
+                {t('taskSections.parent')}{' '}
                 <Button
                   type="link"
                   size="small"
                   style={{ padding: 0, height: 'auto' }}
                   onClick={() => handleDependencyClick(activeTask.parent_id!)}
                 >
-                  Task #{activeTask.parent_id}
+                  {t('taskDetail.taskNum', { id: activeTask.parent_id })}
                 </Button>
               </Text>
             )}
@@ -514,7 +523,7 @@ export const TaskDrawerContent: React.FC<TaskDrawerContentProps> = ({
                 fontSize: 13,
               }}
             >
-              <Text type="warning" style={{ fontWeight: 500 }}>⏳ Blocked: </Text>
+              <Text type="warning" style={{ fontWeight: 500 }}>⏳ {t('taskSections.blocked')} </Text>
               <Text>{activeTask.status_reason}</Text>
             </div>
           )}
@@ -528,7 +537,7 @@ export const TaskDrawerContent: React.FC<TaskDrawerContentProps> = ({
                 fontSize: 13,
               }}
             >
-              <Text type="warning" style={{ fontWeight: 500 }}>⏳ Waiting for: </Text>
+              <Text type="warning" style={{ fontWeight: 500 }}>⏳ {t('taskSections.waitingFor')} </Text>
               {activeTask.incomplete_dependencies.map((depId, idx) => (
                 <React.Fragment key={depId}>
                   {idx > 0 && ', '}
@@ -538,7 +547,7 @@ export const TaskDrawerContent: React.FC<TaskDrawerContentProps> = ({
                     style={{ padding: 0, height: 'auto', fontSize: 13 }}
                     onClick={() => handleDependencyClick(depId)}
                   >
-                    Task #{depId}
+                    {t('taskDetail.taskNum', { id: depId })}
                   </Button>
                 </React.Fragment>
               ))}
@@ -553,10 +562,10 @@ export const TaskDrawerContent: React.FC<TaskDrawerContentProps> = ({
         items={[
           {
             key: 'task-instruction',
-            label: 'Task instruction',
+            label: t('taskSections.instruction'),
             children: (
               <Paragraph style={{ whiteSpace: 'pre-wrap', marginBottom: 0 }} copyable>
-                {activeTask.instruction || 'No description available'}
+                {activeTask.instruction || t('taskSections.noDescription')}
               </Paragraph>
             ),
           },
@@ -564,7 +573,7 @@ export const TaskDrawerContent: React.FC<TaskDrawerContentProps> = ({
       />
 
       <section>
-        <Title level={5}>Execution Result</Title>
+        <Title level={5}>{t('taskSections.executionResult')}</Title>
         <ExecutionResult
           resultLoading={resultLoading}
           taskResult={taskResult}
@@ -587,26 +596,26 @@ export const TaskDrawerContent: React.FC<TaskDrawerContentProps> = ({
         items={[
           {
             key: 'technical-details',
-            label: 'Technical Details',
+            label: t('taskSections.technicalDetails'),
             children: (
               <Space direction="vertical" size="middle" style={{ width: '100%' }}>
                 <div>
                   <Button size="small" icon={<CopyOutlined />} onClick={handleCopyDetails}>
-                    Copy task JSON
+                    {t('taskSections.copyJson')}
                   </Button>
                 </div>
                 <div>
-                  <Text type="secondary">Token Consumption</Text>
+                  <Text type="secondary">{t('taskSections.tokenConsumption')}</Text>
                   <Descriptions column={1} size="small" bordered style={{ marginTop: 4 }}>
-                    <Descriptions.Item label="Total Tokens">
+                    <Descriptions.Item label={t('taskSections.totalTokens')}>
                       <Text strong>
-                        {taskTokenUsage ? taskTokenUsage.total_tokens.toLocaleString() : '0'}
+                        {taskTokenUsage ? taskTokenUsage.total_tokens.toLocaleString(dateLocale()) : '0'}
                       </Text>
                     </Descriptions.Item>
                   </Descriptions>
                 </div>
                 <div>
-                  <Text type="secondary">Dependencies</Text>
+                  <Text type="secondary">{t('taskSections.dependencies')}</Text>
                   <div style={{ marginTop: 4 }}>
                     <Dependencies
                       dependencies={activeTask.dependencies}
@@ -616,18 +625,18 @@ export const TaskDrawerContent: React.FC<TaskDrawerContentProps> = ({
                   </div>
                 </div>
                 <div>
-                  <Text type="secondary">Context</Text>
+                  <Text type="secondary">{t('taskSections.context')}</Text>
                   <Space direction="vertical" size="small" style={{ width: '100%', marginTop: 4 }}>
                     {activeTask.context_combined ? (
                       <Paragraph
                         style={{ whiteSpace: 'pre-wrap' }}
                         copyable
-                        ellipsis={{ rows: 6, expandable: true, symbol: 'Expand' }}
+                        ellipsis={{ rows: 6, expandable: true, symbol: t('common.expand') }}
                       >
                         {activeTask.context_combined}
                       </Paragraph>
                     ) : (
-                      <Text type="secondary">No context summary available</Text>
+                      <Text type="secondary">{t('taskSections.noContext')}</Text>
                     )}
                     <ContextSections sections={activeTask.context_sections} />
                     {activeTask.context_meta && Object.keys(activeTask.context_meta).length > 0 && (
@@ -643,22 +652,22 @@ export const TaskDrawerContent: React.FC<TaskDrawerContentProps> = ({
                 </div>
                 {hasTimestamps && (
                   <div>
-                    <Text type="secondary">Details</Text>
+                    <Text type="secondary">{t('taskSections.details')}</Text>
                     <Descriptions column={1} size="small" style={{ marginTop: 4 }}>
-                      <Descriptions.Item label="Type">{activeTask.task_type ?? 'Unknown'}</Descriptions.Item>
-                      <Descriptions.Item label="Depth">{activeTask.depth ?? 0}</Descriptions.Item>
+                      <Descriptions.Item label={t('taskSections.type')}>{activeTask.task_type ?? t('dag.type.unknown')}</Descriptions.Item>
+                      <Descriptions.Item label={t('taskSections.depth')}>{activeTask.depth ?? 0}</Descriptions.Item>
                       {activeTask.created_at && (
-                        <Descriptions.Item label="Created">{new Date(activeTask.created_at).toLocaleString()}</Descriptions.Item>
+                        <Descriptions.Item label={t('dag.drawer.created')}>{new Date(activeTask.created_at).toLocaleString(dateLocale())}</Descriptions.Item>
                       )}
                       {activeTask.updated_at && (
-                        <Descriptions.Item label="Updated">{new Date(activeTask.updated_at).toLocaleString()}</Descriptions.Item>
+                        <Descriptions.Item label={t('dag.drawer.updated')}>{new Date(activeTask.updated_at).toLocaleString(dateLocale())}</Descriptions.Item>
                       )}
                     </Descriptions>
                   </div>
                 )}
                 {activeTask.metadata && Object.keys(activeTask.metadata).length > 0 && (
                   <div>
-                    <Text type="secondary">Metadata</Text>
+                    <Text type="secondary">{t('taskSections.metadata')}</Text>
                     <Paragraph
                       code
                       copyable
@@ -671,7 +680,7 @@ export const TaskDrawerContent: React.FC<TaskDrawerContentProps> = ({
                 {recentToolResults.length > 0 && (
                   <div>
                     <Text type="secondary">
-                      Recent Tool Summaries (session-level, not specific to this task)
+                      {t('taskSections.recentTools')}
                     </Text>
                     <Space direction="vertical" size="small" style={{ width: '100%', marginTop: 4 }}>
                       {recentToolResults.map((result, index) => (
@@ -686,7 +695,7 @@ export const TaskDrawerContent: React.FC<TaskDrawerContentProps> = ({
                 )}
                 {resultTechnical.producedFiles.length > 0 && (
                   <div>
-                    <Text type="secondary">Produced files ({resultTechnical.producedFiles.length})</Text>
+                    <Text type="secondary">{t('taskSections.producedFiles', { count: resultTechnical.producedFiles.length })}</Text>
                     <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
                       {resultTechnical.producedFiles.map((item) => (
                         <li key={item}>
@@ -698,7 +707,7 @@ export const TaskDrawerContent: React.FC<TaskDrawerContentProps> = ({
                 )}
                 {resultTechnical.expectedFiles.length > 0 && (
                   <div>
-                    <Text type="secondary">Expected deliverables ({resultTechnical.expectedFiles.length})</Text>
+                    <Text type="secondary">{t('taskSections.expectedDeliverables', { count: resultTechnical.expectedFiles.length })}</Text>
                     <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
                       {resultTechnical.expectedFiles.map((item) => (
                         <li key={item}>
@@ -710,7 +719,7 @@ export const TaskDrawerContent: React.FC<TaskDrawerContentProps> = ({
                 )}
                 {resultTechnical.verificationRaw && (
                   <div>
-                    <Text type="secondary">Verification raw data</Text>
+                    <Text type="secondary">{t('taskSections.verificationRaw')}</Text>
                     <Paragraph
                       code
                       copyable
@@ -722,7 +731,7 @@ export const TaskDrawerContent: React.FC<TaskDrawerContentProps> = ({
                 )}
                 {resultTechnical.resultMetadata && (
                   <div>
-                    <Text type="secondary">Result metadata</Text>
+                    <Text type="secondary">{t('taskSections.resultMetadata')}</Text>
                     <Paragraph
                       code
                       copyable
@@ -753,17 +762,18 @@ export const ExecutionResult: React.FC<ExecutionResultProps> = ({
   canVerify = false,
   canManualAccept = false,
 }) => {
+  const t = useT();
   if (resultLoading && !taskResult && !cachedResult) {
     return (
       <div style={{ padding: '12px 0' }}>
-        <Spin tip="Loading execution result..." />
+        <Spin tip={t('taskSections.loadingResult')} />
       </div>
     );
   }
 
   const result = taskResult ?? cachedResult;
   if (!result) {
-    return <Text type="secondary">No execution result available</Text>;
+    return <Text type="secondary">{t('taskSections.noResult')}</Text>;
   }
   const verification = getVerificationView(result);
   const agentManaged = result.metadata?.execution_policy === 'agent';
@@ -817,7 +827,7 @@ export const ExecutionResult: React.FC<ExecutionResultProps> = ({
     <Space direction="vertical" size="small" style={{ width: '100%' }}>
       {(showFailureSummary || Boolean(result.content)) && (
         <div>
-          <Text type="secondary">Result summary</Text>
+          <Text type="secondary">{t('taskSections.resultSummary')}</Text>
           {showFailureSummary && (
             <Space direction="vertical" size={6} style={{ width: '100%', marginTop: 4 }}>
               {failureKind && (
@@ -831,7 +841,7 @@ export const ExecutionResult: React.FC<ExecutionResultProps> = ({
                     <li key={idx} style={{ marginBottom: 4 }}>
                       <Space size={6} wrap>
                         <Tag>
-                          {typeof failure.type === 'string' && failure.type ? failure.type : 'check'}
+                          {typeof failure.type === 'string' && failure.type ? failure.type : t('taskSections.checkFallback')}
                         </Tag>
                         {typeof failure.path === 'string' && failure.path && (
                           <Text code>{failure.path}</Text>
@@ -862,10 +872,10 @@ export const ExecutionResult: React.FC<ExecutionResultProps> = ({
         <Alert
           type="warning"
           showIcon
-          message="文件已保留，验收规则需要核对"
+          message={t('taskSections.configErrorTitle')}
           description={
             <Space direction="vertical" size={4}>
-              <Text>当前尚未确认完成。请修正验收规则后复验，重复执行任务无法修复规则配置。</Text>
+              <Text>{t('taskSections.configErrorDesc')}</Text>
               {verification.configErrors.map((error, index) => (
                 <Text type="secondary" key={index}>{String(error.message ?? '')}</Text>
               ))}
@@ -876,7 +886,7 @@ export const ExecutionResult: React.FC<ExecutionResultProps> = ({
       <Space wrap>
         {result.status && (
           <Tag color={statusColorMap[result.status] ?? 'default'}>
-            {statusLabelMap[result.status] ?? result.status}
+            {planStatusLabel(t, result.status)}
           </Tag>
         )}
         {verification.status && verification.label && (
@@ -884,24 +894,24 @@ export const ExecutionResult: React.FC<ExecutionResultProps> = ({
         )}
         {verification.status && verification.checksTotal > 0 && (
           <Tag color={verification.color}>
-            {`${verification.checksPassed}/${verification.checksTotal} checks passed${verification.blocking ? ' · blocking' : ''}`}
+            {t(verification.blocking ? 'taskSections.checksPassedBlocking' : 'taskSections.checksPassed', { passed: verification.checksPassed, total: verification.checksTotal })}
           </Tag>
         )}
-        {manualAccepted && <Tag color="blue">Manually accepted</Tag>}
+        {manualAccepted && <Tag color="blue">{t('taskSections.manuallyAccepted')}</Tag>}
         {executionCompleted && publishedArtifactLabels.length > 0 && (
-          <Tag color="green">Published artifacts: {publishedArtifactLabels.length}</Tag>
+          <Tag color="green">{t('taskSections.publishedCount', { count: publishedArtifactLabels.length })}</Tag>
         )}
         {executionCompleted && publishedArtifactLabels.length === 0 && (
-          <Tag>No published artifact</Tag>
+          <Tag>{t('taskSections.noPublished')}</Tag>
         )}
         {!agentManaged && canVerify && onReverify && (
           <Button size="small" onClick={onReverify} loading={verifyLoading}>
-            Re-verify
+            {t('taskSections.reverify')}
           </Button>
         )}
         {!agentManaged && canManualAccept && onManualAccept && (
           <Button size="small" onClick={onManualAccept} loading={manualAcceptLoading}>
-            Accept manually
+            {t('taskSections.acceptManually')}
           </Button>
         )}
       </Space>
@@ -909,11 +919,11 @@ export const ExecutionResult: React.FC<ExecutionResultProps> = ({
         <Alert
           type="warning"
           showIcon
-          message="Execution completed, but verification failed"
+          message={t('taskSections.verifyFailedTitle')}
           description={
             failureKind === 'contract_mismatch'
-              ? 'The task produced files, but they did not match the expected deliverable contract, so the task remains failed until the outputs are corrected or accepted manually.'
-              : 'The task produced output, but deterministic verification did not pass, so the task remains failed until the result is corrected or accepted manually.'
+              ? t('taskSections.verifyFailedContract')
+              : t('taskSections.verifyFailedOther')
           }
         />
       )}
@@ -923,19 +933,19 @@ export const ExecutionResult: React.FC<ExecutionResultProps> = ({
           showIcon
           message={
             expectedPublishAliases.length > 0
-              ? 'Execution finished, but no canonical artifact was published'
-              : 'Execution finished without a published artifact'
+              ? t('taskSections.noCanonicalTitle')
+              : t('taskSections.noArtifactTitle')
           }
           description={
             expectedPublishAliases.length > 0
-              ? 'This task reported completion, but the plan artifact registry has no published output yet. Check the produced files or rerun after fixing the output location.'
-              : 'This task may have produced only raw files or summary text. Completion and published artifacts are tracked separately.'
+              ? t('taskSections.noCanonicalDesc')
+              : t('taskSections.noArtifactDesc')
           }
         />
       )}
       {Array.isArray(result.notes) && result.notes.length > 0 && (
         <div>
-          <Text type="secondary">Notes</Text>
+          <Text type="secondary">{t('toolProgress.notes')}</Text>
           <ul style={{ margin: '4px 0 0', paddingLeft: 18 }}>
             {result.notes.map((note, idx) => (
               <li key={idx}>

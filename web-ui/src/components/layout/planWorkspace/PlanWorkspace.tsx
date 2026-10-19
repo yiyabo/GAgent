@@ -21,6 +21,7 @@ import SelectedTaskDetail from './SelectedTaskDetail';
 import PlanRunHistory from './PlanRunHistory';
 import { defaultTaskSelection, isActiveJob, scopedPlanJobs, taskStatus } from './model';
 import { artifactSourceSession, usePlanSourceGuard } from './usePlanSourceGuard';
+import { useT } from '@/i18n/useT';
 import './PlanWorkspace.css';
 
 /** Outer scope boundary: selecting another session/plan discards transient UI and callbacks. */
@@ -31,6 +32,7 @@ const PlanWorkspace: React.FC = () => {
 };
 
 const ScopedPlanWorkspace: React.FC<{ planId: number | null; sessionId: string | null }> = ({ planId, sessionId }) => {
+  const t = useT();
   const currentPlanTitle = useChatStore((state) => state.currentPlanTitle);
   const setChatContext = useChatStore((state) => state.setChatContext);
   const fullscreen = useLayoutStore((state) => state.dagSidebarFullscreen);
@@ -65,7 +67,7 @@ const ScopedPlanWorkspace: React.FC<{ planId: number | null; sessionId: string |
   const completed = executionTasks.filter((task) => taskStatus(task) === 'completed').length;
   const failures = executionTasks.filter((task) => taskStatus(task) === 'failed').length;
   const needsReview = executionTasks.filter((task) => taskStatus(task) === 'needs_review').length;
-  const planTitle = treeQuery.data?.title || currentPlanTitle || (planId != null ? `Plan #${planId}` : '尚未创建计划');
+  const planTitle = treeQuery.data?.title || currentPlanTitle || (planId != null ? t('planWorkspace.planNum', { id: planId }) : t('planWorkspace.noPlanYet'));
   const artifactSessionId = artifactSourceSession(treeQuery.data) ?? undefined;
   const foreignSource = Boolean(artifactSessionId && artifactSessionId !== sessionId);
   const sourceGuard = usePlanSourceGuard(planId, sessionId);
@@ -125,63 +127,63 @@ const ScopedPlanWorkspace: React.FC<{ planId: number | null; sessionId: string |
 
   return <div className="plan-workspace">
     <header className="pw-header">
-      <div className="pw-heading-row"><span className="pw-eyebrow"><ApartmentOutlined /> 当前对话计划</span>
-        <Space size={2}><Tooltip title="当前会话全部文件"><Button aria-label="全部文件" type="text" size="small" icon={<FolderOpenOutlined />} onClick={() => setFilesOpen(true)} /></Tooltip>
-          <Tooltip title="执行清单"><Button aria-label="执行清单" type="text" size="small" icon={<AppstoreOutlined />} disabled={planId == null || foreignSource} onClick={() => setTodoOpen(true)} /></Tooltip>
-          <Tooltip title="刷新计划"><Button aria-label="刷新计划" type="text" size="small" icon={<ReloadOutlined spin={taskQuery.isFetching} />} onClick={refresh} disabled={planId == null} /></Tooltip>
-          <Tooltip title={fullscreen ? '退出专注模式' : '展开工作台'}><Button aria-label={fullscreen ? '退出专注模式' : '展开工作台'} type="text" size="small"
+      <div className="pw-heading-row"><span className="pw-eyebrow"><ApartmentOutlined /> {t('planWorkspace.eyebrow')}</span>
+        <Space size={2}><Tooltip title={t('planWorkspace.allFilesTip')}><Button aria-label={t('planWorkspace.allFiles')} type="text" size="small" icon={<FolderOpenOutlined />} onClick={() => setFilesOpen(true)} /></Tooltip>
+          <Tooltip title={t('planWorkspace.checklist')}><Button aria-label={t('planWorkspace.checklist')} type="text" size="small" icon={<AppstoreOutlined />} disabled={planId == null || foreignSource} onClick={() => setTodoOpen(true)} /></Tooltip>
+          <Tooltip title={t('planWorkspace.refreshPlan')}><Button aria-label={t('planWorkspace.refreshPlan')} type="text" size="small" icon={<ReloadOutlined spin={taskQuery.isFetching} />} onClick={refresh} disabled={planId == null} /></Tooltip>
+          <Tooltip title={fullscreen ? t('planWorkspace.exitFocus') : t('planWorkspace.expandWorkspace')}><Button aria-label={fullscreen ? t('planWorkspace.exitFocus') : t('planWorkspace.expandWorkspace')} type="text" size="small"
             icon={fullscreen ? <FullscreenExitOutlined /> : <FullscreenOutlined />} onClick={toggleFullscreen} /></Tooltip></Space>
       </div>
       {/* One session, one plan: the bound plan is shown read-only. Plans are created,
           reviewed or replaced inside the conversation itself and are never picked from
           another session's list (2026-10-09, LOCAL_INFRA §113). */}
       <h2 className="pw-plan-title" title={planTitle}>{planTitle}</h2>
-      <div className="pw-plan-meta"><span>{planId == null ? '在对话中创建计划' : `Plan #${planId}`}</span>
-        {planId != null && <><span className="pw-separator">·</span><span>{completed} / {executionTasks.length} 个任务已执行</span>
-          {activeJobs.length > 0 && <span className="pw-live-indicator">执行中</span>}
-          {failures > 0 && <span className="pw-error-text">{failures} 个失败</span>}</>}
-        {needsReview > 0 && <span className="pw-review-text">{needsReview} 个待验收</span>}
+      <div className="pw-plan-meta"><span>{planId == null ? t('planWorkspace.createInChat') : t('planWorkspace.planNum', { id: planId })}</span>
+        {planId != null && <><span className="pw-separator">·</span><span>{t('planWorkspace.tasksExecuted', { done: completed, total: executionTasks.length })}</span>
+          {activeJobs.length > 0 && <span className="pw-live-indicator">{t('planStatus.running')}</span>}
+          {failures > 0 && <span className="pw-error-text">{t('planWorkspace.failedCount', { count: failures })}</span>}</>}
+        {needsReview > 0 && <span className="pw-review-text">{t('planWorkspace.reviewCount', { count: needsReview })}</span>}
       </div>
     </header>
     {tasks.some((task) => task.task_type === 'composite' && taskStatus(task) !== 'completed' &&
       !tasks.some((child) => child.parent_id === task.id)) &&
-      <Alert className="pw-alert" type="warning" showIcon message="计划拆解未完成"
-        description="部分阶段尚未生成子任务。执行或重试会沿用原任务；需要修改任务树时，可明确选择“继续拆解”。" />}
+      <Alert className="pw-alert" type="warning" showIcon message={t('planWorkspace.decomposeIncomplete')}
+        description={t('planWorkspace.decomposeIncompleteDesc')} />}
     {sourceNotice && <Alert className="pw-alert" type="info" showIcon
-      message={`“${sourceNotice.title}”的产物属于另一会话`}
-      description="打开来源会话后可继续执行。当前会话与计划绑定保持不变。"
-      action={<Button size="small" type="primary" loading={sourceGuard.busy} onClick={() => void sourceGuard.openSource(sourceNotice)}>打开来源会话</Button>} />}
+      message={t('planWorkspace.foreignArtifacts', { title: sourceNotice.title })}
+      description={t('planWorkspace.foreignArtifactsDesc')}
+      action={<Button size="small" type="primary" loading={sourceGuard.busy} onClick={() => void sourceGuard.openSource(sourceNotice)}>{t('planWorkspace.openSource')}</Button>} />}
     {sourceGuard.error && <Alert className="pw-alert" type="warning" showIcon message={sourceGuard.error} closable onClose={sourceGuard.dismiss} />}
     <Tabs className="pw-tabs" activeKey={activeTab} onChange={setActiveTab} destroyOnHidden
-      tabBarExtraContent={planId != null ? <Tooltip title="查看执行顺序及运行整个计划"><Button type="text" size="small" icon={<AppstoreOutlined />} disabled={foreignSource} onClick={() => setTodoOpen(true)}>执行清单</Button></Tooltip> : undefined}
+      tabBarExtraContent={planId != null ? <Tooltip title={t('planWorkspace.checklistTip')}><Button type="text" size="small" icon={<AppstoreOutlined />} disabled={foreignSource} onClick={() => setTodoOpen(true)}>{t('planWorkspace.checklist')}</Button></Tooltip> : undefined}
       items={[
-        { key: 'plan', label: <><ApartmentOutlined /> 计划</>, children: planId == null ? <Empty className="pw-empty" image={Empty.PRESENTED_IMAGE_SIMPLE} description="计划会把研究目标拆解成可执行的任务。选择计划后，可在这里查看过程和对应产物。" />
-          : taskQuery.isError ? <Alert className="pw-alert" type="error" showIcon message="计划任务加载失败" action={<Button size="small" onClick={refresh}>重试</Button>} />
+        { key: 'plan', label: <><ApartmentOutlined /> {t('planWorkspace.tabPlan')}</>, children: planId == null ? <Empty className="pw-empty" image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('planWorkspace.emptyPlan')} />
+          : taskQuery.isError ? <Alert className="pw-alert" type="error" showIcon message={t('planWorkspace.tasksLoadFailed')} action={<Button size="small" onClick={refresh}>{t('common.retry')}</Button>} />
           : tasks.length ? <div className={`pw-plan-body ${mobileDetail ? 'pw-show-detail' : ''}`}>
             <TaskOutline tasks={tasks} selectedTaskId={selectedTask?.id ?? null} onSelect={selectTask} />
             {selectedTask && <SelectedTaskDetail key={`${planId}:${selectedTask.id}`} planId={planId} sessionId={sessionId}
               task={selectedTask} tasks={tasks} jobs={jobs} artifactSessionId={artifactSessionId} executionBlocked={foreignSource}
               onSelectTask={selectTask} onBack={() => setMobileDetail(false)} onShowHistory={() => setActiveTab('history')} onRefresh={refresh} />}
-          </div> : <div className="pw-empty">{taskQuery.isFetching ? <><Spin /><p>正在读取计划…</p></> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="该计划尚无任务；生成中的任务会自动出现在这里。" />}</div> },
-        { key: 'artifacts', label: <><FolderOpenOutlined /> 产物</>, children: planId != null ? <div className="pw-artifacts"><div className="pw-section-heading"><h3>计划产物</h3><Button size="small" onClick={() => setFilesOpen(true)}>全部文件</Button></div>
-          <p className="pw-muted pw-small">按任务查看交付文件、来源和历史版本。</p>
+          </div> : <div className="pw-empty">{taskQuery.isFetching ? <><Spin /><p>{t('planWorkspace.readingPlan')}</p></> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('planWorkspace.noTasksYet')} />}</div> },
+        { key: 'artifacts', label: <><FolderOpenOutlined /> {t('planWorkspace.tabArtifacts')}</>, children: planId != null ? <div className="pw-artifacts"><div className="pw-section-heading"><h3>{t('planWorkspace.planArtifacts')}</h3><Button size="small" onClick={() => setFilesOpen(true)}>{t('planWorkspace.allFiles')}</Button></div>
+          <p className="pw-muted pw-small">{t('planWorkspace.artifactsHint')}</p>
           <PlanTaskArtifacts planId={planId} sessionId={sessionId} artifactSessionId={artifactSessionId} tasks={tasks} onSelectTask={selectTask} />
         </div> : <ArtifactsPanel key={sessionId ?? 'none'} sessionId={sessionId} /> },
-        { key: 'history', label: <><HistoryOutlined /> 运行记录</>, children: planId != null ? <PlanRunHistory jobs={jobs} planId={planId}
-          loading={board.isLoading} error={board.isError ? '请稍后重试或点击刷新。' : null} onBackground={() => setBackgroundOpen(true)} />
-          : <div className="pw-empty"><Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="选择计划以查看运行记录" /><Button onClick={() => setBackgroundOpen(true)}>查看会话后台任务</Button></div> },
-        { key: 'graph', label: <><NodeIndexOutlined /> 关系图</>, children: <div className="pw-graph"><div className="pw-graph-toolbar"><span className="pw-muted pw-small">查看任务层级与依赖关系</span>
-          <Button size="small" disabled={!tasks.length} onClick={() => setGraphOpen(true)}>3D 全屏</Button></div>
+        { key: 'history', label: <><HistoryOutlined /> {t('planWorkspace.tabHistory')}</>, children: planId != null ? <PlanRunHistory jobs={jobs} planId={planId}
+          loading={board.isLoading} error={board.isError ? t('planWorkspace.historyRetry') : null} onBackground={() => setBackgroundOpen(true)} />
+          : <div className="pw-empty"><Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('planWorkspace.pickPlanForHistory')} /><Button onClick={() => setBackgroundOpen(true)}>{t('planWorkspace.viewBackground')}</Button></div> },
+        { key: 'graph', label: <><NodeIndexOutlined /> {t('planWorkspace.tabGraph')}</>, children: <div className="pw-graph"><div className="pw-graph-toolbar"><span className="pw-muted pw-small">{t('planWorkspace.graphHint')}</span>
+          <Button size="small" disabled={!tasks.length} onClick={() => setGraphOpen(true)}>{t('planWorkspace.graph3d')}</Button></div>
           {tasks.length ? <PlanTreeVisualization tasks={tasks} loading={taskQuery.isFetching} height="100%" selectedTaskId={selectedTask?.id}
-            onSelectTask={(task) => { if (task) selectTask(task.id); }} /> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无任务关系" />}</div> },
+            onSelectTask={(task) => { if (task) selectTask(task.id); }} /> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={t('planWorkspace.noRelations')} />}</div> },
       ]} />
     {!foreignSource && <TodoListPanel open={todoOpen} onClose={() => setTodoOpen(false)} planId={planId} currentSessionId={sessionId}
       targetTaskId={null} fullPlan onTaskClick={(id) => { setTodoOpen(false); selectTask(id); }} />}
     {graphOpen && <DAG3DView onClose={() => setGraphOpen(false)} onNodeSelect={(task) => { if (task) { setGraphOpen(false); selectTask(task.id); } }} />}
-    <Drawer title="当前会话 · 全部文件" width="min(1000px, 95vw)" open={filesOpen} onClose={() => setFilesOpen(false)} destroyOnHidden>
+    <Drawer title={t('planWorkspace.filesDrawerTitle')} width="min(1000px, 95vw)" open={filesOpen} onClose={() => setFilesOpen(false)} destroyOnHidden>
       <ArtifactsPanel key={sessionId ?? 'none'} sessionId={sessionId} />
     </Drawer>
-    <Drawer title="后台任务" width="min(900px, 95vw)" open={backgroundOpen} onClose={() => setBackgroundOpen(false)} destroyOnHidden>
+    <Drawer title={t('planWorkspace.backgroundDrawerTitle')} width="min(900px, 95vw)" open={backgroundOpen} onClose={() => setBackgroundOpen(false)} destroyOnHidden>
       <ExecutorPanel key={`${sessionId}:${planId}`} />
     </Drawer>
   </div>;

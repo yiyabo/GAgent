@@ -1,4 +1,5 @@
 import type { PlanResultItem } from '@/types';
+import { translate } from '@/i18n/useT';
 
 export type VerificationStatus = 'passed' | 'failed' | 'skipped' | 'config_error';
 
@@ -44,13 +45,13 @@ export const getVerificationView = (
 
   const label =
     status === 'passed'
-      ? 'Verified'
+      ? translate('verification.verified')
       : status === 'failed'
-      ? 'Verification failed'
+      ? translate('verification.failed')
       : status === 'skipped'
-      ? 'Verification skipped'
+      ? translate('verification.skipped')
       : status === 'config_error'
-      ? '验收规则需修正'
+      ? translate('verification.configError')
       : null;
 
   const color =

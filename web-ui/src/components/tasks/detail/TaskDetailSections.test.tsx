@@ -28,16 +28,19 @@ vi.mock('@api/artifacts', async () => {
 const mockedArtifactsApi = vi.mocked(artifactsApi);
 
 describe('ExecutionResult', () => {
+  beforeEach(() => useLanguageStore.setState({ language: 'en' }));
+  afterEach(() => useLanguageStore.setState({ language: 'zh-CN' }));
+
   it('shows execution only and hides historical acceptance actions in agent mode', () => {
     render(<ExecutionResult resultLoading={false} canVerify canManualAccept onReverify={vi.fn()} onManualAccept={vi.fn()}
       taskResult={{task_id: 1, status: 'completed', content: 'Existing corpus is available.', metadata: {
         execution_policy: 'agent', execution_status: 'completed', failure_kind: 'verification_config_error',
         verification: {status: 'config_error', checks_total: 4, checks_passed: 3, failures: []},
       }}} />);
-    expect(screen.getByText('已执行')).toBeInTheDocument();
+    expect(screen.getByText('Executed')).toBeInTheDocument();
     expect(screen.queryByRole('button', {name: 'Re-verify'})).not.toBeInTheDocument();
     expect(screen.queryByRole('button', {name: 'Accept manually'})).not.toBeInTheDocument();
-    expect(screen.queryByText('验收规则需修正')).not.toBeInTheDocument();
+    expect(screen.queryByText('Acceptance rules need fixing')).not.toBeInTheDocument();
     expect(screen.queryByText('No published artifact')).toBeInTheDocument();
   });
   it('shows retained outputs awaiting rule correction without asking for a rerun', () => {
@@ -48,9 +51,9 @@ describe('ExecutionResult', () => {
           failures: [], config_errors: [{ type: 'glob_count_at_least', message: 'Counts files, not records.' }] },
       },
     }} />);
-    expect(screen.getByText('文件已保留，验收规则需要核对')).toBeInTheDocument();
+    expect(screen.getByText('Files kept; the acceptance rules need review')).toBeInTheDocument();
     expect(screen.getByText('Counts files, not records.')).toBeInTheDocument();
-    expect(screen.getByText('验收规则需修正')).toBeInTheDocument();
+    expect(screen.getByText('Acceptance rules need fixing')).toBeInTheDocument();
     expect(screen.queryByText('Verification failed')).not.toBeInTheDocument();
     expect(screen.queryByText('Verification configuration error')).not.toBeInTheDocument();
     expect(screen.queryByText('Execution finished without a published artifact')).not.toBeInTheDocument();
@@ -62,7 +65,20 @@ describe('ExecutionResult', () => {
     expect(screen.getByRole('heading', { name: 'Evidence report' })).toBeInTheDocument();
     expect(screen.getByText('Reviewed').tagName).toBe('STRONG');
     expect(screen.getByRole('table')).toBeInTheDocument();
+    expect(screen.getByText('Copy result text')).toBeInTheDocument();
+  });
+  it('shows the rule-correction notice in Chinese when the language is Chinese', () => {
+    useLanguageStore.setState({ language: 'zh-CN' });
+    render(<ExecutionResult resultLoading={false} taskResult={{ task_id: 1,
+      status: 'needs_review', content: 'Corpus saved.', metadata: {
+        execution_status: 'completed', failure_kind: 'verification_config_error',
+        verification: { status: 'config_error', checks_total: 3, checks_passed: 2, failures: [], config_errors: [] },
+      },
+    }} />);
+    expect(screen.getByText('文件已保留，验收规则需要核对')).toBeInTheDocument();
+    expect(screen.getByText('验收规则需修正')).toBeInTheDocument();
     expect(screen.getByText('复制结果正文')).toBeInTheDocument();
+    expect(screen.queryByText('Acceptance rules need fixing')).not.toBeInTheDocument();
   });
   it('renders a readable failure summary with humanized failure kind', () => {
     const onReverify = vi.fn();
