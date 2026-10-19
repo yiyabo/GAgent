@@ -3,6 +3,7 @@ import { Alert, Button, Card, Form, Input, Space, Typography } from 'antd';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@store/auth';
 import { useT } from '@/i18n/useT';
+import LanguageSwitch from '@components/common/LanguageSwitch';
 
 const { Title, Text } = Typography;
 
@@ -30,6 +31,7 @@ const Login: React.FC = () => {
     <div
       style={{
         minHeight: '100vh',
+        position: 'relative',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
@@ -38,6 +40,9 @@ const Login: React.FC = () => {
           'radial-gradient(circle at 20% 20%, color-mix(in srgb, var(--color-action) 10%, transparent), transparent 50%), var(--bg-primary)',
       }}
     >
+      <div style={{ position: 'absolute', top: 16, right: 24 }}>
+        <LanguageSwitch />
+      </div>
       <Card
         style={{ width: '100%', maxWidth: 420, borderRadius: 12 }}
         bodyStyle={{ padding: 28 }}

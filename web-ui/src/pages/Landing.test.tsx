@@ -34,4 +34,13 @@ describe('landing page', () => {
     fireEvent.click(screen.getByText('Sign up'));
     expect(navigate).toHaveBeenCalledWith('/register');
   });
+
+  it('has a language switch, so a signed-out visitor can change the language', async () => {
+    useLanguageStore.getState().setLanguage('en');
+    renderLanding();
+    fireEvent.click(screen.getByRole('button', { name: 'Language' }));
+    fireEvent.click(await screen.findByRole('menuitem', { name: '中文' }));
+    expect(await screen.findByText('核心能力')).toBeTruthy();
+    expect(useLanguageStore.getState().language).toBe('zh-CN');
+  });
 });
