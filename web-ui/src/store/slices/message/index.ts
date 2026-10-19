@@ -46,7 +46,7 @@ import type { StreamMutableState, StreamHandlerContext } from './types';
 import type { ChatStreamEvent } from '../../chatUtils';
 
 
-const _looksLikeSubstantialAssistant = (content: unknown): boolean => {
+export const _looksLikeSubstantialAssistant = (content: unknown): boolean => {
   const text = typeof content === 'string' ? content.trim() : '';
   if (text.length < 40) return false;
   const lower = text.toLowerCase();
@@ -58,11 +58,13 @@ const _looksLikeSubstantialAssistant = (content: unknown): boolean => {
   return true;
 };
 
+export const _isRecoveryNote = (prior: string): boolean => prior.startsWith('连接中断') || prior.startsWith('服务端');
+
 /**
  * After SSE/stream drop: backend may still be running or already saved the reply.
  * Prefer resume active run, then poll history — only fail if both miss.
  */
-const _recoverAfterStreamFailure = async (
+export const _recoverAfterStreamFailure = async (
   get: any,
   opts: {
     apiSessionId: string;
@@ -114,7 +116,7 @@ const _recoverAfterStreamFailure = async (
       const target = source.get().messages.find((m: ChatMessage) => m.id === opts.assistantMessageId);
       const prev = (target?.metadata ?? {}) as Record<string, any>;
       const prior = typeof target?.content === 'string' ? target.content.trim() : '';
-      const isRecoveryNote = prior.startsWith('连接中断') || prior.startsWith('服务端');
+      const isRecoveryNote = _isRecoveryNote(prior);
       const base = prior && !isRecoveryNote ? `${prior}\n\n` : '';
       source.get().updateMessage(opts.assistantMessageId, {
         content: `${base}（连接中断，已从断点自动续跑，最新结果见下方新一轮）`,
