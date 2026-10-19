@@ -38,9 +38,10 @@ import { shallow } from 'zustand/shallow';
 import type { ChatMessage as ChatMessageType, Memory } from '@/types';
 import VirtualList, { ListRef } from 'rc-virtual-list';
 import { isAllowedUploadFile } from '@/constants/uploadFileTypes';
+import { useT } from '@/i18n/useT';
 
 /** FastAPI/axios errors often put the reason in `response.data.detail`; BaseApi may not surface it on `Error.message`. */
-function httpErrorDetail(err: unknown): { status?: number; detail: string } {
+function httpErrorDetail(err: unknown, fallback: string): { status?: number; detail: string } {
   const ax = err as { response?: { status?: number; data?: { detail?: unknown; message?: string } }; message?: string };
   const status = ax?.response?.status;
   const raw = ax?.response?.data?.detail;
@@ -57,7 +58,7 @@ function httpErrorDetail(err: unknown): { status?: number; detail: string } {
   if (err instanceof Error && err.message) {
     return { status, detail: err.message };
   }
-  return { status, detail: '请重试' };
+  return { status, detail: fallback };
 }
 
 const { TextArea } = Input;
@@ -117,6 +118,7 @@ const ChatMessageList: React.FC<ChatMessageListProps> = React.memo(
     isHistoryLoading = false,
     sessionId = null,
   }) => {
+    const t = useT();
     const listRef = useRef<ListRef>(null);
     const pendingAdjustRef = useRef<{ scrollTop: number; scrollHeight: number } | null>(null);
     const loadMoreLockRef = useRef(false);
@@ -145,7 +147,7 @@ const ChatMessageList: React.FC<ChatMessageListProps> = React.memo(
             }}
           >
             <span style={{ color: 'var(--primary-color)' }}>&#x1F9E0;</span>
-            {item.count} related memories
+            {t('chatMain.memoryNotice', { count: item.count })}
           </div>
         );
       }
@@ -154,7 +156,7 @@ const ChatMessageList: React.FC<ChatMessageListProps> = React.memo(
           <ChatMessage message={item} sessionId={sessionId} />
         </div>
       );
-    }, [sessionId]);
+    }, [sessionId, t]);
 
     const scrollTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
 
@@ -263,6 +265,7 @@ const ChatMessageList: React.FC<ChatMessageListProps> = React.memo(
 // ---------------------------------------------------------------------------
 
 const ChatMainArea: React.FC = () => {
+  const t = useT();
   const { message } = AntdApp.useApp();
   const inputRef = useRef<any>(null);
   const messageContainerRef = useRef<HTMLDivElement>(null);
@@ -389,16 +392,16 @@ const ChatMainArea: React.FC = () => {
   // ---- Upload helper ----
   const doUploadFile = useCallback(async (file: File) => {
     if (!currentSession) {
-      message.error('请先创建或选择一个会话');
+      message.error(t('chatMain.needSession'));
       return;
     }
     try {
       await uploadFile(file);
-      message.success(`${file.name} 上传成功`);
+      message.success(t('chatMain.uploaded', { name: file.name }));
     } catch (error: any) {
-      message.error(`上传失败: ${error.message || '未知错误'}`);
+      message.error(t('chatMain.uploadFailed', { error: error.message || t('chatMain.unknownError') }));
     }
-  }, [currentSession, uploadFile, message]);
+  }, [currentSession, uploadFile, message, t]);
 
   // ---- Paste handler (images) ----
   const handlePaste = useCallback((e: React.ClipboardEvent) => {
@@ -458,13 +461,13 @@ const ChatMainArea: React.FC = () => {
     }
 
     if (rejected.length > 0) {
-      message.warning(`不支持的文件类型: ${rejected.join(', ')}`);
+      message.warning(t('chatMain.unsupported', { names: rejected.join(', ') }));
     }
 
     if (allowed.length > 0) {
       Promise.all(allowed.map((f) => doUploadFile(f)));
     }
-  }, [doUploadFile, message]);
+  }, [doUploadFile, message, t]);
 
   // ---- Message handlers ----
 
@@ -477,20 +480,18 @@ const ChatMainArea: React.FC = () => {
       setSteerSending(true);
       try {
         await chatApi.steerRun(activeRunId, draft, currentSession?.session_id ?? currentSession?.id);
-        message.success('引导已发送，将在下一步采纳');
+        message.success(t('chatMain.steerSent'));
       } catch (err) {
         console.error('[ChatMainArea] Failed to send steer:', err);
         setInputText(draft);
-        const { status, detail } = httpErrorDetail(err);
+        const { status, detail } = httpErrorDetail(err, t('chatMain.retry'));
         if (status === 409) {
           const k = resolveChatSessionProcessingKey(currentSession);
           useChatStore.getState().setActiveRunId(k, null);
           useChatStore.getState().setSessionProcessing(k, false);
-          message.error(
-            `发送引导失败：本轮 Run 已结束或不再接受中途引导（${detail}）。界面已退出「进行中」；若需继续请重新发送消息。`
-          );
+          message.error(t('chatMain.steerEnded', { detail }));
         } else {
-          message.error(`发送引导失败：${detail}`);
+          message.error(t('chatMain.steerFailed', { detail }));
         }
       } finally {
         setSteerSending(false);
@@ -515,7 +516,7 @@ const ChatMainArea: React.FC = () => {
     } catch (err) {
       console.error('[ChatMainArea] Failed to send message:', err);
       setInputText(draft);
-      message.error('发送失败，请重试');
+      message.error(t('chatMain.sendFailed'));
     }
   };
 
@@ -551,10 +552,10 @@ const ChatMainArea: React.FC = () => {
           <div className="chat-drop-overlay-content">
             <InboxOutlined style={{ fontSize: 48, color: 'var(--primary-color)' }} />
             <div className="chat-drop-overlay-title">
-              松开以上传文件
+              {t('chatMain.dropTitle')}
             </div>
             <div className="chat-drop-overlay-hint">
-              支持图片、PDF、FASTA、PDB、生信数据等文件
+              {t('chatMain.dropHint')}
             </div>
           </div>
         </div>
@@ -582,11 +583,11 @@ const ChatMainArea: React.FC = () => {
             />
             <div className="workspace-chat-heading">
               <Text strong style={{ fontSize: 14, color: 'var(--text-primary)' }}>
-                {currentSession?.title || '研究对话'}
+                {currentSession?.title || t('chatMain.title')}
               </Text>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 2 }}>
                 <Text type="secondary" style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
-                  {isProcessing ? '正在处理' : '研究对话'}
+                  {isProcessing ? t('chatMain.processing') : t('chatMain.title')}
                 </Text>
               </div>
             </div>
@@ -594,9 +595,9 @@ const ChatMainArea: React.FC = () => {
 
           {/* Controls */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-            <Tooltip title={memoryEnabled ? "已启用记忆" : "记忆已关闭"}>
+            <Tooltip title={memoryEnabled ? t('chatMain.memoryOn') : t('chatMain.memoryOff')}>
               <Switch
-                aria-label="启用记忆"
+                aria-label={t('chatMain.memoryLabel')}
                 checked={memoryEnabled}
                 onChange={toggleMemory}
                 size="small"
@@ -654,7 +655,7 @@ const ChatMainArea: React.FC = () => {
             {pasteUploading && (
               <div style={{ padding: '4px 0', fontSize: 12, color: 'var(--primary-color)' }}>
                 <FileImageOutlined style={{ marginRight: 4 }} />
-                正在上传粘贴的图片...
+                {t('chatMain.pasteUploading')}
               </div>
             )}
 
@@ -698,8 +699,8 @@ const ChatMainArea: React.FC = () => {
                   onKeyPress={handleKeyPress}
                   onPaste={handlePaste}
                   placeholder={isProcessing && activeRunId
-                    ? "输入引导内容，Agent 将在下一步参考..."
-                    : "输入消息... (可粘贴图片 / 拖放文件上传)"}
+                    ? t('chatMain.steerPlaceholder')
+                    : t('chatMain.placeholder')}
                   autoSize={{ minRows: 1, maxRows: 5 }}
                   disabled={false}
                   style={{
@@ -729,7 +730,7 @@ const ChatMainArea: React.FC = () => {
                     border: 'none',
                   }}
                 >
-                  {isProcessing && activeRunId ? '发送引导' : '发送'}
+                  {isProcessing && activeRunId ? t('chatMain.sendSteer') : t('chatMain.send')}
                 </Button>
               </div>
             </div>

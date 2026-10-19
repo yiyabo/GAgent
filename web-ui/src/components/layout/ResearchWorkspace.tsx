@@ -3,6 +3,7 @@ import { Button, Drawer, Segmented, Tooltip } from 'antd';
 import { MenuUnfoldOutlined, MessageOutlined, PartitionOutlined } from '@ant-design/icons';
 import { useLayoutStore } from '@store/layout';
 import { useChatStore } from '@store/chat';
+import { useT } from '@/i18n/useT';
 import ChatSidebar from './ChatSidebar';
 import ChatMainArea from './ChatMainArea';
 import DAGSidebar from './DAGSidebar';
@@ -11,6 +12,7 @@ import { workspaceGeometry } from './workspaceGeometry';
 import './ResearchWorkspace.css';
 
 const ResearchWorkspace: React.FC = () => {
+  const t = useT();
   const currentPlanId = useChatStore((state) => state.currentPlanId);
   const drawerScope = useChatStore((state) => `${state.currentSession?.session_id ?? state.currentSession?.id ?? 'none'}:${state.currentPlanId ?? 'none'}`);
   const { chatListVisible, workspacePlanWidth, setWorkspacePlanWidth, dagSidebarFullscreen,
@@ -61,30 +63,30 @@ const ResearchWorkspace: React.FC = () => {
   return (
     <div className={`research-workspace ${geometry.compact ? 'is-compact' : ''}`} ref={container}>
       {geometry.compact && <div className="workspace-mobile-toolbar">
-        <Button type="text" aria-label="打开会话列表" icon={<MenuUnfoldOutlined />} onClick={() => setNavOpen(true)} />
+        <Button type="text" aria-label={t('workspace.openChatList')} icon={<MenuUnfoldOutlined />} onClick={() => setNavOpen(true)} />
         <Segmented value={compactPlan ? 'plan' : 'chat'} options={[
-          { value: 'chat', label: '研究对话', icon: <MessageOutlined /> },
-          { value: 'plan', label: '计划工作区', icon: <PartitionOutlined /> },
+          { value: 'chat', label: t('workspace.chatPane'), icon: <MessageOutlined /> },
+          { value: 'plan', label: t('workspace.planPane'), icon: <PartitionOutlined /> },
         ]} onChange={(value) => { setPane(value as 'chat' | 'plan'); setDagSidebarFullscreen(false); }} />
       </div>}
       <div className="workspace-columns">
-        {geometry.navWidth > 0 && <aside className="workspace-navigation" style={{ width: geometry.navWidth }} aria-label="会话导航"><ChatSidebar /></aside>}
-        {!geometry.compact && !chatListVisible && <Tooltip title="展开会话列表"><Button className="workspace-nav-reopen" type="text" aria-label="展开会话列表" icon={<MenuUnfoldOutlined />} onClick={toggleChatList} /></Tooltip>}
-        <section className="workspace-conversation" aria-label="研究对话" hidden={geometry.compact ? compactPlan : dagSidebarFullscreen}>
+        {geometry.navWidth > 0 && <aside className="workspace-navigation" style={{ width: geometry.navWidth }} aria-label={t('workspace.navLabel')}><ChatSidebar /></aside>}
+        {!geometry.compact && !chatListVisible && <Tooltip title={t('workspace.expandChatList')}><Button className="workspace-nav-reopen" type="text" aria-label={t('workspace.expandChatList')} icon={<MenuUnfoldOutlined />} onClick={toggleChatList} /></Tooltip>}
+        <section className="workspace-conversation" aria-label={t('workspace.chatPane')} hidden={geometry.compact ? compactPlan : dagSidebarFullscreen}>
           <ChatMainArea />
         </section>
         {!geometry.compact && !dagSidebarFullscreen && <div className="workspace-divider" role="separator" tabIndex={0}
-          aria-label="调整对话与计划宽度" aria-orientation="vertical" aria-valuemin={420} aria-valuemax={Math.round(geometry.maxPlan)} aria-valuenow={Math.round(geometry.planWidth)}
+          aria-label={t('workspace.resize')} aria-orientation="vertical" aria-valuemin={420} aria-valuemax={Math.round(geometry.maxPlan)} aria-valuenow={Math.round(geometry.planWidth)}
           onPointerDown={(event) => { event.preventDefault(); drag.current = true; document.body.style.cursor = 'col-resize'; document.body.style.userSelect = 'none'; }}
           onDoubleClick={() => setWorkspacePlanWidth((width - geometry.navWidth) * 0.65)}
           onKeyDown={(event) => { if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') { event.preventDefault(); setWorkspacePlanWidth(Math.min(geometry.maxPlan, Math.max(420, geometry.planWidth + (event.key === 'ArrowLeft' ? 32 : -32)))); } }}
         ><span /></div>}
-        <section className="workspace-plan" aria-label="计划工作区" hidden={geometry.compact && !compactPlan}
+        <section className="workspace-plan" aria-label={t('workspace.planPane')} hidden={geometry.compact && !compactPlan}
           style={{ width: geometry.compact || dagSidebarFullscreen ? undefined : geometry.planWidth, flex: geometry.compact || dagSidebarFullscreen ? 1 : undefined }}>
           <DAGSidebar />
         </section>
       </div>
-      <Drawer title="研究会话" placement="left" width="min(320px, 90vw)" open={geometry.compact && navOpen} onClose={() => setNavOpen(false)} bodyStyle={{ padding: 0 }}>
+      <Drawer title={t('workspace.drawerTitle')} placement="left" width="min(320px, 90vw)" open={geometry.compact && navOpen} onClose={() => setNavOpen(false)} bodyStyle={{ padding: 0 }}>
         <ChatSidebar onCollapse={() => setNavOpen(false)} onSessionSelected={() => { setNavOpen(false); setPane('chat'); setDagSidebarFullscreen(false); }} />
       </Drawer>
       <TaskDetailDrawer key={drawerScope} />

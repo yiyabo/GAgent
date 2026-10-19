@@ -12,6 +12,8 @@ import {
   ReadOutlined,
 } from '@ant-design/icons';
 import { useAuthStore } from '@store/auth';
+import { useT } from '@/i18n/useT';
+import type { TranslationKey } from '@/i18n/keys';
 import FileUploadButton from './FileUploadButton';
 import ResponseStyleSelector from './ResponseStyleSelector';
 import UploadedFilesList from './UploadedFilesList';
@@ -23,30 +25,37 @@ export interface HeroWelcomeProps {
   isProcessing?: boolean;
 }
 
-const STARTER_PROMPTS = [
+interface StarterPrompt {
+  icon: React.ReactNode;
+  title: TranslationKey;
+  desc: TranslationKey;
+  prompt: TranslationKey;
+}
+
+const STARTER_PROMPTS: StarterPrompt[] = [
   {
     icon: <ExperimentOutlined style={{ color: 'var(--status-success-fg)' }} />,
-    title: '噬菌体全基因组注释',
-    desc: '预测开放阅读框(ORF)，注释结构与裂解基因，绘制环状拓扑图',
-    prompt: '请帮我对上传的噬菌体 FASTA 基因组序列进行完整的结构与功能注释，识别裂解酶、穿孔素及尾部纤维蛋白，并生成基因组特征概览。',
+    title: 'hero.starter1.title',
+    desc: 'hero.starter1.desc',
+    prompt: 'hero.starter1.prompt',
   },
   {
     icon: <CompassOutlined style={{ color: 'var(--color-action)' }} />,
-    title: '噬菌体-宿主互作预测',
-    desc: '分析受体结合蛋白(RBP)与细菌特异性受体结合位点',
-    prompt: '请分析目标噬菌体的受体结合蛋白 (RBP / Tail Fiber) 结构域，预测其对铜绿假单胞菌/鲍曼不动杆菌等临床耐药菌的宿主谱特异性。',
+    title: 'hero.starter2.title',
+    desc: 'hero.starter2.desc',
+    prompt: 'hero.starter2.prompt',
   },
   {
     icon: <ThunderboltOutlined style={{ color: 'var(--status-warning-fg)' }} />,
-    title: '差异表达与转录组分析',
-    desc: '运行 RNA-Seq 差异表达分析，输出火山图与主要富集通路',
-    prompt: '请对感染噬菌体前后的宿主菌转录组数据执行差异表达分析 (DESeq2)，生成火山图并富集出早期与晚期关键应激反应通路。',
+    title: 'hero.starter3.title',
+    desc: 'hero.starter3.desc',
+    prompt: 'hero.starter3.prompt',
   },
   {
     icon: <ReadOutlined style={{ color: 'var(--status-blocked-fg)' }} />,
-    title: '噬菌体疗法文献深度调研',
-    desc: '检索权威文献库，梳理耐药菌鸡尾酒配方与临床案例',
-    prompt: '请对超级耐药肺炎克雷伯菌 (CRKP) 的噬菌体鸡尾酒协同疗法进行深度文献调研，总结最新临床试验案例并梳理治疗方案建议。',
+    title: 'hero.starter4.title',
+    desc: 'hero.starter4.desc',
+    prompt: 'hero.starter4.prompt',
   },
 ];
 
@@ -54,6 +63,7 @@ export const HeroWelcome: React.FC<HeroWelcomeProps> = ({
   onSendMessage,
   isProcessing = false,
 }) => {
+  const t = useT();
   const { user } = useAuthStore();
   const inputRef = useRef<any>(null);
   const [inputText, setInputText] = useState('');
@@ -68,8 +78,8 @@ export const HeroWelcome: React.FC<HeroWelcomeProps> = ({
     if (user?.email) {
       return user.email.split('@')[0];
     }
-    return '研究员';
-  }, [user]);
+    return t('hero.fallbackName');
+  }, [user, t]);
 
   const handleSend = () => {
     const trimmed = inputText.trim();
@@ -96,11 +106,11 @@ export const HeroWelcome: React.FC<HeroWelcomeProps> = ({
         <div className="hero-welcome-title-row">
           <span className="hero-welcome-logo">🌀</span>
           <h1 className="hero-welcome-title">
-            你好，{displayName}
+            {t('hero.greeting', { name: displayName })}
           </h1>
         </div>
         <p className="hero-welcome-subtitle">
-          我是 Phage-Agent，专为噬菌体与生物医学研究设计的自主智能体。
+          {t('hero.subtitle')}
         </p>
       </div>
 
@@ -118,7 +128,7 @@ export const HeroWelcome: React.FC<HeroWelcomeProps> = ({
             value={inputText}
             onChange={(e) => setInputText(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="输入您的研究目标或生信分析需求... (支持拖放 / 粘贴文件与序列)"
+            placeholder={t('hero.placeholder')}
             autoSize={{ minRows: 4, maxRows: 10 }}
             className="hero-prompt-textarea"
             autoFocus
@@ -148,7 +158,7 @@ export const HeroWelcome: React.FC<HeroWelcomeProps> = ({
 
       {/* Clean Footnote / Capability Hint */}
       <div className="hero-welcome-footnote">
-        支持生信工具链自主调度、噬菌体多模态分析与出版级图表生成
+        {t('hero.footnote')}
       </div>
 
       {/* 3. Explore Capabilities / Starter Cards */}
@@ -160,7 +170,7 @@ export const HeroWelcome: React.FC<HeroWelcomeProps> = ({
           <span className="hero-capabilities-arrow" style={{ transform: showCapabilities ? 'rotate(90deg)' : 'none' }}>
             ›
           </span>
-          <span className="hero-capabilities-title">常用研究工作流 / WORKFLOWS</span>
+          <span className="hero-capabilities-title">{t('hero.workflows')}</span>
         </div>
 
         {showCapabilities && (
@@ -169,12 +179,12 @@ export const HeroWelcome: React.FC<HeroWelcomeProps> = ({
               <div
                 key={idx}
                 className="hero-starter-card"
-                onClick={() => handleStarterClick(item.prompt)}
+                onClick={() => handleStarterClick(t(item.prompt))}
               >
                 <div className="hero-starter-icon">{item.icon}</div>
                 <div className="hero-starter-content">
-                  <div className="hero-starter-title">{item.title}</div>
-                  <div className="hero-starter-desc">{item.desc}</div>
+                  <div className="hero-starter-title">{t(item.title)}</div>
+                  <div className="hero-starter-desc">{t(item.desc)}</div>
                 </div>
               </div>
             ))}

@@ -9,6 +9,7 @@ import {
 } from '@ant-design/icons';
 import type { DecompositionJobStatus, JobLogEvent } from '@/types';
 import { parseServerTimestampMs } from '@/utils/serverTime';
+import type { TranslationKey } from '@/i18n/keys';
 
 export const MAX_RENDER_LOGS = 200;
 // Job-level terminal statuses: polling and the log stream stop on any of
@@ -31,53 +32,53 @@ export const statusMeta: Record<
   string,
   {
     color: string;
-    label: string;
+    labelKey: TranslationKey;
     icon: React.ReactNode;
   }
 > = {
   queued: {
     color: 'default',
-    label: '排队中',
+    labelKey: 'jobLog.stateQueued',
     icon: <PauseCircleOutlined />,
   },
   pending: {
     color: 'default',
-    label: '排队中',
+    labelKey: 'jobLog.stateQueued',
     icon: <PauseCircleOutlined />,
   },
   awaiting_confirmation: {
     color: 'default',
-    label: '等待确认',
+    labelKey: 'jobLog.stateAwaitingConfirmation',
     icon: <PauseCircleOutlined />,
   },
   running: {
     color: 'processing',
-    label: '执行中',
+    labelKey: 'jobLog.stateRunning',
     icon: <SyncOutlined spin />,
   },
   succeeded: {
     color: 'success',
-    label: '已完成',
+    labelKey: 'jobLog.stateCompleted',
     icon: <CheckCircleOutlined />,
   },
   completed: {
     color: 'success',
-    label: '已完成',
+    labelKey: 'jobLog.stateCompleted',
     icon: <CheckCircleOutlined />,
   },
   failed: {
     color: 'error',
-    label: '失败',
+    labelKey: 'jobLog.stateFailed',
     icon: <CloseCircleOutlined />,
   },
   cancelled: {
     color: 'default',
-    label: '已取消',
+    labelKey: 'jobLog.stateCancelled',
     icon: <StopOutlined />,
   },
   needs_review: {
     color: 'warning',
-    label: '待复核',
+    labelKey: 'jobLog.stateNeedsReview',
     icon: <ExclamationCircleOutlined />,
   },
 };
@@ -104,24 +105,24 @@ export const parseIsoToMs = (value?: string | null): number | null => {
 export const jobTypeMeta: Record<
   string,
   {
-    label: string;
+    labelKey: TranslationKey;
     color: string;
   }
 > = {
   plan_decompose: {
-    label: '任务拆解记录',
+    labelKey: 'jobLog.typeDecompose',
     color: 'blue',
   },
   plan_execute: {
-    label: '计划执行记录',
+    labelKey: 'jobLog.typeExecute',
     color: 'green',
   },
   chat_action: {
-    label: '操作执行记录',
+    labelKey: 'jobLog.typeChatAction',
     color: 'purple',
   },
   default: {
-    label: '后台任务记录',
+    labelKey: 'jobLog.typeDefault',
     color: 'geekblue',
   },
 };
@@ -167,7 +168,7 @@ export const parseStreamData = (raw: MessageEvent<any>): StreamMessage | null =>
 
 export interface JobLogPanelProps {
   jobId: string;
-  /** Plan workspace shows the thinking timeline; diagnostics remain in 原始日志. */
+  /** Plan workspace shows the thinking timeline; diagnostics remain in the raw log. */
   compact?: boolean;
   defaultExpanded?: boolean;
   initialJob?: DecompositionJobStatus | null;

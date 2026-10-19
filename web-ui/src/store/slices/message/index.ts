@@ -631,6 +631,7 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => {
         ...prev,
         status: 'failed',
         recovering: false,
+        recovery_note_text: keepPartial ? undefined : errorContent,
         errors: [error instanceof Error ? error.message : String(error)],
       },
     });
@@ -640,7 +641,7 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => {
       type: 'assistant',
       content: errorContent,
       timestamp: new Date(),
-      metadata: { status: 'failed' },
+      metadata: { status: 'failed', recovery_note_text: errorContent },
     });
   }
   }

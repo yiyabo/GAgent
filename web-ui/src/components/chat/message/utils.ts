@@ -1,8 +1,7 @@
 import type { ChatMessage as ChatMessageType, DecompositionJobStatus } from '@/types';
 import { extractLlmReplyMessage } from '@/utils/llmReplyDisplay';
 import { dateLocale } from '@/i18n/format';
-
-export const GENERIC_REQUEST_FAILURE_MESSAGE = 'Request failed. Please check:\n\n1. Backend service availability\n2. LLM API configuration\n3. Network connectivity\n\nThen retry the request.';
+import { translate } from '@/i18n/useT';
 
 const getErrorMessage = (error: unknown): string => {
   if (error instanceof Error) return error.message;
@@ -21,8 +20,10 @@ export const resolveRequestFailureMessage = (error: unknown): string => {
 
   if (normalized.includes("user query too long")) {
     const maxMatch = message.match(/max\s+([0-9,]+)\s+chars?/i);
-    const maxText = maxMatch?.[1] ? `${maxMatch[1].replace(/,/g, "")} characters` : "the configured character limit";
-    return `Your message is too long for the current backend limit (max ${maxText}). Please shorten it or split it into smaller requests, then retry.`;
+    const maxText = maxMatch?.[1]
+      ? translate('requestFailure.maxChars', { n: maxMatch[1].replace(/,/g, '') })
+      : translate('requestFailure.maxDefault');
+    return translate('requestFailure.tooLong', { max: maxText });
   }
 
   if (
@@ -33,26 +34,26 @@ export const resolveRequestFailureMessage = (error: unknown): string => {
     normalized.includes('exceeded your current quota') ||
     normalized.includes('429')
   ) {
-    return 'The LLM provider rejected the request because the quota or rate limit was reached. Please check the LLM API billing/quota configuration, wait for the limit to reset, then retry.';
+    return translate('requestFailure.quota');
   }
 
   if (normalized.includes('401') || normalized.includes('authentication required')) {
-    return 'Authentication is required or your session expired. Please sign in again, then retry the request.';
+    return translate('requestFailure.auth');
   }
 
   if (normalized.includes('timeout') || normalized.includes('timed out')) {
-    return 'The request timed out while waiting for the backend or LLM provider. Please retry; if it repeats, check backend load and provider latency.';
+    return translate('requestFailure.timeout');
   }
 
   if (normalized.includes('network error') || normalized.includes('failed to fetch')) {
-    return 'Network connectivity failed while contacting the backend. Please check that the backend service is reachable, then retry.';
+    return translate('requestFailure.network');
   }
 
   if (/\b5\d\d\b/.test(normalized)) {
-    return 'The backend returned a server error. Please check backend logs for the failed request, then retry after the service recovers.';
+    return translate('requestFailure.server');
   }
 
-  return GENERIC_REQUEST_FAILURE_MESSAGE;
+  return translate('requestFailure.generic');
 };
 
 export const FINAL_JOB_STATUSES = new Set(['succeeded', 'failed', 'completed']);

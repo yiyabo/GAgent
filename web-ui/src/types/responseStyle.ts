@@ -1,9 +1,15 @@
-export const RESPONSE_STYLES = [
-  { value: 'general', label: '通用助手', description: '直接自然，按问题调整详略' },
-  { value: 'product_manager', label: '产品经理', description: '聚焦需求、优先级与方案取舍' },
-  { value: 'senior_developer', label: '资深开发', description: '聚焦根因、实现与维护成本' },
-  { value: 'research_advisor', label: '科研顾问', description: '聚焦证据、方法与结论边界' },
-] as const;
+import type { TranslationKey } from '@/i18n/keys';
+
+export const RESPONSE_STYLES: ReadonlyArray<{
+  value: 'general' | 'product_manager' | 'senior_developer' | 'research_advisor';
+  label: TranslationKey;
+  description: TranslationKey;
+}> = [
+  { value: 'general', label: 'responseStyle.general.label', description: 'responseStyle.general.description' },
+  { value: 'product_manager', label: 'responseStyle.productManager.label', description: 'responseStyle.productManager.description' },
+  { value: 'senior_developer', label: 'responseStyle.seniorDeveloper.label', description: 'responseStyle.seniorDeveloper.description' },
+  { value: 'research_advisor', label: 'responseStyle.researchAdvisor.label', description: 'responseStyle.researchAdvisor.description' },
+];
 export type ResponseStyle = typeof RESPONSE_STYLES[number]['value'];
 export type ResponseLength = 'auto' | 'concise' | 'detailed';
 export interface ResponsePreferences {
