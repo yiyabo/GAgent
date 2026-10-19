@@ -92,10 +92,10 @@ export const ScannerBadge: React.FC<{ scanner: SkillScanner | string }> = ({ sca
 
 export const SeverityIcon: React.FC<{ severity: SkillFindingSeverity | string }> = ({ severity }) => {
   if (severity === 'block') {
-    return <CloseCircleOutlined style={{ color: '#ff4d4f' }} aria-label="严重程度：拦截" role="img" />;
+    return <CloseCircleOutlined style={{ color: 'var(--status-error-fg)' }} aria-label="严重程度：拦截" role="img" />;
   }
   if (severity === 'warn') {
-    return <ExclamationCircleOutlined style={{ color: '#faad14' }} aria-label="严重程度：警告" role="img" />;
+    return <ExclamationCircleOutlined style={{ color: 'var(--status-warning-fg)' }} aria-label="严重程度：警告" role="img" />;
   }
   return <InfoCircleOutlined style={{ color: 'var(--color-action)' }} aria-label="严重程度：提示" role="img" />;
 };

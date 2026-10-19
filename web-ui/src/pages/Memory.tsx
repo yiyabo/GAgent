@@ -311,7 +311,7 @@ const MemoryPage: React.FC = () => {
   <DatabaseOutlined style={{ color: 'var(--color-action)' }} />
   Memory
   </h2>
-  <p style={{ margin: '8px 0 0 0', color: '#666' }}>
+  <p style={{ margin: '8px 0 0 0', color: 'var(--text-secondary)' }}>
   Memory-MCP system overview and AI memory management
   </p>
   </div>
@@ -372,7 +372,7 @@ const MemoryPage: React.FC = () => {
   title="Avg Connections"
   value={stats.average_connections}
   precision={1}
-  valueStyle={{ color: '#52c41a' }}
+  valueStyle={{ color: 'var(--status-success-fg)' }}
   suffix="links"
   />
   </Card>
@@ -382,7 +382,7 @@ const MemoryPage: React.FC = () => {
   <Statistic
   title="Embedding Coverage"
   value={(stats.embedding_coverage * 100).toFixed(1)}
-  valueStyle={{ color: stats.embedding_coverage > 0.8 ? '#52c41a' : '#faad14' }}
+  valueStyle={{ color: stats.embedding_coverage > 0.8 ? 'var(--status-success-fg)' : 'var(--status-warning-fg)' }}
   suffix="%"
   />
   <Progress
@@ -398,7 +398,7 @@ const MemoryPage: React.FC = () => {
   <Statistic
   title="Evolution Count"
   value={stats.evolution_count || 0}
-  valueStyle={{ color: '#722ed1' }}
+  valueStyle={{ color: 'var(--status-blocked-fg)' }}
   />
   </Card>
   </Col>

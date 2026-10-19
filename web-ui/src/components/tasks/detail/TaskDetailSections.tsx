@@ -507,8 +507,8 @@ export const TaskDrawerContent: React.FC<TaskDrawerContentProps> = ({
           {isBlocked && activeTask.status_reason && (
             <div
               style={{
-                background: '#fff7e6',
-                border: '1px solid #ffd591',
+                background: 'var(--status-warning-bg)',
+                border: '1px solid var(--status-warning-border)',
                 borderRadius: 6,
                 padding: '8px 12px',
                 fontSize: 13,
@@ -521,8 +521,8 @@ export const TaskDrawerContent: React.FC<TaskDrawerContentProps> = ({
           {isBlocked && !activeTask.status_reason && activeTask.incomplete_dependencies && activeTask.incomplete_dependencies.length > 0 && (
             <div
               style={{
-                background: '#fff7e6',
-                border: '1px solid #ffd591',
+                background: 'var(--status-warning-bg)',
+                border: '1px solid var(--status-warning-border)',
                 borderRadius: 6,
                 padding: '8px 12px',
                 fontSize: 13,

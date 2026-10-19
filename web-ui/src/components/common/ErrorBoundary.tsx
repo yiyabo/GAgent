@@ -85,7 +85,7 @@ class ErrorBoundary extends Component<Props, State> {
   <div style={{ padding: '48px 24px', maxWidth: '800px', margin: '0 auto' }}>
   <Result
   status="error"
-  icon={<CloseCircleOutlined style={{ color: '#ff4d4f' }} />}
+  icon={<CloseCircleOutlined style={{ color: 'var(--status-error-fg)' }} />}
   title="Component crashed"
   subTitle={moduleImportError ? 'A page module failed to load. This is usually caused by a stale dev-server module cache or a temporary network hiccup; reload the page to fetch the latest module graph.' : 'A rendering error occurred in this component. Try reset or reload.'}
   extra={[
@@ -102,18 +102,18 @@ class ErrorBoundary extends Component<Props, State> {
   <div
   style={{
   textAlign: 'left',
-  background: '#fafafa',
+  background: 'var(--surface-sunken)',
   padding: '16px',
   borderRadius: '4px',
   marginTop: '24px',
   }}
   >
-  <h4 style={{ color: '#ff4d4f', marginBottom: '12px' }}>Error details (development)</h4>
+  <h4 style={{ color: 'var(--status-error-fg)', marginBottom: '12px' }}>Error details (development)</h4>
   <div
   style={{
   fontSize: '12px',
   fontFamily: 'var(--font-mono)',
-  color: '#d32f2f',
+  color: 'var(--status-error-fg)',
   marginBottom: '8px',
   }}
   >
@@ -124,13 +124,13 @@ class ErrorBoundary extends Component<Props, State> {
   style={{
   fontSize: '12px',
   fontFamily: 'var(--font-mono)',
-  color: '#666',
-  background: '#fff',
+  color: 'var(--text-secondary)',
+  background: 'var(--surface-card)',
   padding: '12px',
   borderRadius: '4px',
   overflow: 'auto',
   maxHeight: '300px',
-  border: '1px solid #d9d9d9',
+  border: '1px solid var(--border-default)',
   }}
   >
   {this.state.error.stack}
@@ -145,13 +145,13 @@ class ErrorBoundary extends Component<Props, State> {
   style={{
   fontSize: '12px',
   fontFamily: 'var(--font-mono)',
-  color: '#666',
-  background: '#fff',
+  color: 'var(--text-secondary)',
+  background: 'var(--surface-card)',
   padding: '12px',
   borderRadius: '4px',
   overflow: 'auto',
   maxHeight: '300px',
-  border: '1px solid #d9d9d9',
+  border: '1px solid var(--border-default)',
   marginTop: '8px',
   }}
   >

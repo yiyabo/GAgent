@@ -604,10 +604,10 @@ const PlansPage: React.FC = () => {
   <Statistic title="Pending" value={statusSummary.pending} />
   </Col>
   <Col xs={12} sm={8} lg={4}>
-  <Statistic title="Failed" value={statusSummary.failed} valueStyle={{ color: statusSummary.failed > 0 ? '#ff4d4f' : undefined }} />
+  <Statistic title="Failed" value={statusSummary.failed} valueStyle={{ color: statusSummary.failed > 0 ? 'var(--status-error-fg)' : undefined }} />
   </Col>
   <Col xs={12} sm={8} lg={4}>
-  <Statistic title="Blocked" value={statusSummary.blocked ?? 0} valueStyle={{ color: (statusSummary.blocked ?? 0) > 0 ? '#fa8c16' : undefined }} />
+  <Statistic title="Blocked" value={statusSummary.blocked ?? 0} valueStyle={{ color: (statusSummary.blocked ?? 0) > 0 ? 'var(--status-warning-fg)' : undefined }} />
   </Col>
   <Col xs={12} sm={8} lg={4}>
   <Statistic title="Skipped" value={statusSummary.skipped} />
@@ -637,11 +637,11 @@ const PlansPage: React.FC = () => {
   marginBottom: 8,
   border:
   item.task_id === selectedResultTaskId
-  ? '1px solid rgba(24, 144, 255, 0.6)'
+  ? '1px solid var(--color-action)'
   : '1px solid transparent',
   backgroundColor:
   item.task_id === selectedResultTaskId
-  ? 'rgba(24, 144, 255, 0.08)'
+  ? 'var(--color-action-bg)'
   : 'transparent',
   transition: 'background-color 0.2s ease',
   }}
@@ -764,7 +764,7 @@ const PlansPage: React.FC = () => {
   <Descriptions.Item label="Raw Payload">
   <pre
   style={{
-  background: '#f5f5f5',
+  background: 'var(--surface-sunken)',
   padding: 12,
   borderRadius: 6,
   margin: 0,

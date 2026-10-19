@@ -217,7 +217,6 @@ const UNWIRED = [
   '--fs-h4',
   '--info-bg',
   '--lh-tight',
-  '--on-log',
   '--shadow-md',
   '--space-1',
   '--space-2',
@@ -227,10 +226,6 @@ const UNWIRED = [
   '--space-6',
   '--space-8',
   '--space-10',
-  '--status-blocked-bg',
-  '--status-blocked-border',
-  '--status-blocked-fg',
-  '--status-info-border',
   '--status-pending-bg',
   '--status-pending-border',
   '--status-pending-fg',
@@ -240,7 +235,6 @@ const UNWIRED = [
   '--status-skipped-bg',
   '--status-skipped-border',
   '--status-skipped-fg',
-  '--surface-log',
   '--surface-scrim',
 ];
 
@@ -327,5 +321,41 @@ describe('typography', () => {
   it('keeps the title levels on the serif stack', () => {
     const index = readFileSync(resolve(__dirname, '../styles/index.css'), 'utf8');
     expect(index).toMatch(/body h1\.ant-typography,\s*body h2\.ant-typography,\s*body h3\.ant-typography\s*\{[^}]*var\(--font-serif\)/);
+  });
+});
+
+describe('stylesheets follow the theme', () => {
+  it('hard-codes no colour outside tokens.css, except shadows and print', () => {
+    // A literal here is invisible in the other theme: dark text on a dark card, or a white slab.
+    const found: string[] = [];
+    for (const file of SOURCE_FILES.filter((name) => name.endsWith('.css') && name !== TOKENS_CSS)) {
+      const text = readFileSync(file, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+      // Print rules are meant to be paper-white whatever the theme.
+      const screenOnly = text.replace(/@media print\s*\{(?:[^{}]|\{[^{}]*\})*\}/g, '');
+      for (const rule of screenOnly.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+        for (const decl of rule[2].split(';')) {
+          const [prop, ...rest] = decl.split(':');
+          const value = rest.join(':');
+          // Shadows are black with alpha in both themes, so a literal there is fine.
+          if (/box-shadow|text-shadow/.test(prop)) continue;
+          if (/#[0-9a-fA-F]{3,8}\b|rgba?\(|\b(white|black)\b/.test(value)) {
+            found.push(`${relative(resolve(__dirname, '..'), file)}: ${rule[1].trim().replace(/\s+/g, ' ')} { ${prop.trim()}: ${value.trim()} }`);
+          }
+        }
+      }
+    }
+    expect(found).toEqual([]);
+  });
+});
+
+describe('chat composer', () => {
+  const source = readFileSync(resolve(__dirname, '../components/layout/ChatMainArea.tsx'), 'utf8');
+
+  it('takes its surface from the theme, not a literal colour', () => {
+    // A literal white here made the input a white slab on the dark theme.
+    const box = source.slice(source.indexOf('className="workspace-input-box"'));
+    const style = box.slice(0, box.indexOf('<TextArea'));
+    expect(style).toMatch(/background:\s*'var\(--surface-card\)'/);
+    expect(style).not.toMatch(/#[0-9a-fA-F]{3,8}|rgba?\(|\bwhite\b/);
   });
 });

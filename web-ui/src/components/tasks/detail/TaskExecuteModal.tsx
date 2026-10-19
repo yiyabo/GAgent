@@ -313,7 +313,7 @@ const TaskExecuteModal: React.FC<TaskExecuteModalProps> = ({
    key={`${tid}_${item.step_index}`}
    direction="vertical"
    size={2}
-   style={{ width: '100%', padding: '8px 10px', border: '1px solid #f0f0f0', borderRadius: 8 }}
+   style={{ width: '100%', padding: '8px 10px', border: '1px solid var(--border-subtle)', borderRadius: 8 }}
    >
    <Space size={8} wrap>
    <Text type="secondary" style={{ width: 22 }}>

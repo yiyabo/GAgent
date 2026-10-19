@@ -225,10 +225,10 @@ const SaveMemoryModal: React.FC<SaveMemoryModalProps> = ({ open, onCancel }) => 
   <div style={{
   marginTop: '16px',
   padding: '12px',
-  background: '#f0f5ff',
+  background: 'var(--color-action-bg)',
   borderRadius: '6px',
   fontSize: '13px',
-  color: '#666'
+  color: 'var(--text-secondary)'
   }}>
   <div><strong>Hint:</strong></div>
   <ul style={{ marginTop: '8px', marginBottom: 0, paddingLeft: '20px' }}>

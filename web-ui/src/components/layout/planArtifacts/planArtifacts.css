@@ -10,10 +10,10 @@
 .plan-artifact-icon { display: flex; align-items: center; justify-content: center; flex-shrink: 0; width: 34px; height: 38px; border: 1px solid var(--border-color); border-radius: 7px; background: var(--bg-secondary); color: var(--text-secondary); font-size: 17px; }
 .plan-artifact-info { min-width: 0; flex: 1; }
 .plan-artifact-name { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border: 0; padding: 0; background: none; color: var(--text-primary); font: inherit; font-size: var(--fs-small); font-weight: 500; cursor: pointer; text-align: left; }
-.plan-artifact-name:hover:not(:disabled) { color: var(--primary-color, #4169a8); }
+.plan-artifact-name:hover:not(:disabled) { color: var(--color-action); }
 .plan-artifact-name:disabled { cursor: default; }
 .plan-artifact-meta { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 5px; font-size: var(--fs-caption); color: var(--text-secondary); }
-.plan-artifact-stale { color: #ad6800; }
+.plan-artifact-stale { color: var(--status-warning-fg); }
 .plan-artifact-actions { display: flex; flex-shrink: 0; gap: 2px; }
 .plan-artifact-note { margin: 10px 0; color: var(--text-secondary); font-size: var(--fs-caption); line-height: 1.65; }
 .plan-artifacts .ant-alert { margin-bottom: 10px; }

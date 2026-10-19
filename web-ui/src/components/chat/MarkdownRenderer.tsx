@@ -188,8 +188,8 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, cla
                                             width: 22,
                                             height: 22,
                                             borderRadius: 4,
-                                            border: '1px solid #91caff',
-                                            background: '#e6f4ff',
+                                            border: '1px solid var(--color-action-border)',
+                                            background: 'var(--color-action-bg)',
                                             color: 'var(--color-action)',
                                             fontSize: 12,
                                             lineHeight: 1,
@@ -259,9 +259,9 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, cla
                                         display: 'inline-flex',
                                         alignItems: 'center',
                                         gap: 4,
-                                        backgroundColor: '#fff1f0',
-                                        border: '1px solid #ffa39e',
-                                        color: '#cf1322',
+                                        backgroundColor: 'var(--status-error-bg)',
+                                        border: '1px solid var(--status-error-border)',
+                                        color: 'var(--status-error-fg)',
                                         padding: '2px 8px',
                                         borderRadius: '4px',
                                         fontSize: '0.9em',
@@ -279,7 +279,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, cla
                             <code
                                 className={codeClassName}
                                 style={{
-                                    backgroundColor: 'var(--bg-tertiary, #f5f5f5)',
+                                    backgroundColor: 'var(--bg-tertiary)',
                                     padding: '2px 6px',
                                     borderRadius: '4px',
                                     fontSize: '0.9em',
@@ -306,10 +306,10 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, cla
                         return (
                             <blockquote
                                 style={{
-                                    borderLeft: '4px solid #d9d9d9',
+                                    borderLeft: '4px solid var(--border-default)',
                                     paddingLeft: '12px',
                                     margin: '8px 0',
-                                    color: '#666',
+                                    color: 'var(--text-secondary)',
                                     fontStyle: 'italic',
                                 }}
                             >
@@ -337,9 +337,9 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, cla
                         return (
                             <th
                                 style={{
-                                    border: '1px solid var(--border-color, #e8e8e8)',
+                                    border: '1px solid var(--border-color)',
                                     padding: '8px 12px',
-                                    backgroundColor: 'var(--bg-tertiary, #fafafa)',
+                                    backgroundColor: 'var(--bg-tertiary)',
                                     textAlign: 'left',
                                 }}
                             >
@@ -351,7 +351,7 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({ content, cla
                         return (
                             <td
                                 style={{
-                                    border: '1px solid var(--border-color, #e8e8e8)',
+                                    border: '1px solid var(--border-color)',
                                     padding: '8px 12px',
                                 }}
                             >
