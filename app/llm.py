@@ -63,6 +63,19 @@ def _thinking_off_reasoning_effort(url: Optional[str] = None) -> Optional[str]:
     return "low"
 
 
+def _thinking_on_reasoning_effort() -> Optional[str]:
+    """``reasoning_effort`` to send when thinking is on (``LLM_THINKING_ON_REASONING_EFFORT``; unset keeps the
+    ``thinking_budget`` behaviour).
+
+    Measured on DashScope with qwen3.8-flash (one hard reasoning prompt): thinking on with ``thinking_budget``
+    8000 took 56 s (41 s before the first answer token); ``reasoning_effort=medium`` took 27 s (17 s). The two
+    parameters are mutually exclusive ("'reasoning_effort' and 'thinking_budget' cannot be set simultaneously",
+    HTTP 400), so when an effort is configured the budget is not sent.
+    """
+    raw = str(os.getenv("LLM_THINKING_ON_REASONING_EFFORT", "")).strip().lower()
+    return raw if raw in ("low", "medium", "high") else None
+
+
 def _default_max_tokens() -> int:
     """Output ceiling for a call that does not pass ``max_tokens``.
 
@@ -1249,6 +1262,10 @@ class LLMClient(LLMProvider):
                 effort = _thinking_off_reasoning_effort(self.url)
                 if effort:
                     payload["reasoning_effort"] = effort
+            else:
+                effort = _thinking_on_reasoning_effort()
+                if effort:
+                    payload["reasoning_effort"] = effort
         headers = self._build_headers()
         timeout = _make_request_timeout(timeout_override)
 
@@ -1546,7 +1563,10 @@ class LLMClient(LLMProvider):
         }
         if enable_thinking is not None:
             payload["enable_thinking"] = enable_thinking
-        if thinking_budget is not None:
+        on_effort = _thinking_on_reasoning_effort() if enable_thinking else None
+        if on_effort:
+            payload["reasoning_effort"] = on_effort  # exclusive with thinking_budget
+        elif thinking_budget is not None:
             payload["thinking_budget"] = thinking_budget
         if enable_thinking is False:
             # The gateway ignores enable_thinking (LOCAL_INFRA §114);
@@ -1774,7 +1794,10 @@ class LLMClient(LLMProvider):
         # accepts these as top-level fields alongside model/messages).
         if enable_thinking is not None:
             payload["enable_thinking"] = enable_thinking
-        if thinking_budget is not None:
+        on_effort = _thinking_on_reasoning_effort() if enable_thinking else None
+        if on_effort:
+            payload["reasoning_effort"] = on_effort  # exclusive with thinking_budget
+        elif thinking_budget is not None:
             payload["thinking_budget"] = thinking_budget
         if enable_thinking is False:
             # The gateway ignores enable_thinking (LOCAL_INFRA §114);

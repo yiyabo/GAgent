@@ -259,6 +259,62 @@ class TestThinkingOffOnDirectDashScope:
         assert "reasoning_effort" not in sent
 
 
+class TestThinkingOnReasoningEffort:
+    """reasoning_effort and thinking_budget are mutually exclusive on DashScope (HTTP 400 when both are sent)."""
+
+    def test_only_the_known_grades_are_accepted(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("LLM_THINKING_ON_REASONING_EFFORT", raising=False)
+        assert llm_mod._thinking_on_reasoning_effort() is None
+        monkeypatch.setenv("LLM_THINKING_ON_REASONING_EFFORT", " Medium ")
+        assert llm_mod._thinking_on_reasoning_effort() == "medium"
+        for junk in ("none", "off", "turbo", ""):
+            monkeypatch.setenv("LLM_THINKING_ON_REASONING_EFFORT", junk)
+            assert llm_mod._thinking_on_reasoning_effort() is None
+
+    @pytest.mark.asyncio()
+    async def test_the_effort_replaces_the_budget_in_the_native_tool_stream(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("LLM_THINKING_ON_REASONING_EFFORT", "medium")
+        fake = _FakeAsyncClient([_FakeAsyncStreamResponse(_sse_lines(["ok"]))])
+        monkeypatch.setattr(llm_mod, "_get_shared_async_client", lambda: fake)
+        monkeypatch.setattr(llm_mod, "_outbound_limiter", _NoopLimiter())
+
+        await _client().stream_chat_with_tools_async(
+            messages=[{"role": "user", "content": "ping"}], tools=[], enable_thinking=True, thinking_budget=8000,
+        )
+
+        sent = fake.calls[0]["json"]
+        assert sent["enable_thinking"] is True and sent["reasoning_effort"] == "medium"
+        assert "thinking_budget" not in sent
+
+    @pytest.mark.asyncio()
+    async def test_without_the_setting_the_budget_is_sent_as_before(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("LLM_THINKING_ON_REASONING_EFFORT", raising=False)
+        fake = _FakeAsyncClient([_FakeAsyncStreamResponse(_sse_lines(["ok"]))])
+        monkeypatch.setattr(llm_mod, "_get_shared_async_client", lambda: fake)
+        monkeypatch.setattr(llm_mod, "_outbound_limiter", _NoopLimiter())
+
+        await _client().stream_chat_with_tools_async(
+            messages=[{"role": "user", "content": "ping"}], tools=[], enable_thinking=True, thinking_budget=8000,
+        )
+
+        sent = fake.calls[0]["json"]
+        assert sent["thinking_budget"] == 8000 and "reasoning_effort" not in sent
+
+    @pytest.mark.asyncio()
+    async def test_turning_thinking_off_is_not_affected(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("LLM_THINKING_ON_REASONING_EFFORT", "medium")
+        monkeypatch.delenv("LLM_THINKING_OFF_REASONING_EFFORT", raising=False)
+        fake = _FakeAsyncClient([_FakeAsyncStreamResponse(_sse_lines(["ok"]))])
+        monkeypatch.setattr(llm_mod, "_get_shared_async_client", lambda: fake)
+        monkeypatch.setattr(llm_mod, "_outbound_limiter", _NoopLimiter())
+
+        await _client().stream_chat_with_tools_async(
+            messages=[{"role": "user", "content": "ping"}], tools=[], enable_thinking=False,
+        )
+
+        assert fake.calls[0]["json"]["reasoning_effort"] == "low"  # the off mapping, not the on setting
+
+
 class TestThinkingOffReasoningEffort:
     def test_default_is_low(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("LLM_THINKING_OFF_REASONING_EFFORT", raising=False)
