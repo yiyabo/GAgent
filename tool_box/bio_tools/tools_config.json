@@ -926,7 +926,7 @@
                     }
                 },
                 "notes": "Database is mounted automatically; -x fa specifies the .fa file extension for genome bins",
-                "native_command": "GTDBTK_DATA_PATH=/work/database gtdbtk classify_wf --cpus $GAGENT_CPUS --genome_dir {genome_dir} --out_dir /work/{output} -x fa"
+                "native_command": "GTDBTK_DATA_PATH=/work/database gtdbtk classify_wf --skip_ani_screen --cpus $GAGENT_CPUS --pplacer_cpus 8 --genome_dir {genome_dir} --out_dir /work/{output} -x fa"
             }
         },
         "native": {
