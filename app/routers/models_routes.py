@@ -61,7 +61,7 @@ _MODEL_METADATA = {
     "qwen3.8-flash": {
         "provider": "qwen",
         "name": "Qwen 3.8 Flash",
-        "description": "Default fast Qwen model.",
+        "description": "Default fast Qwen model (1M context).",
     },
     "qwen3.7-max": {
         "provider": "qwen",
