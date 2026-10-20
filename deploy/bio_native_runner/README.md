@@ -48,7 +48,23 @@ Add a `native` block to the tool in `tools_config.json`:
 "native": {"modules": ["BLAST+/2.12.0"], "cpus": 4, "mem_mb": 16384}
 ```
 
-Optional keys: `conda_env` (needs `--conda-base`), `path_tools` (software on the system PATH, no
-module), `max_cpus`, `time_limit_seconds`, `partition`, `database: {"env": ..., "subdir": ...}` for
+Optional keys: `conda_env` (a name under `--conda-envs-dir`; needs `--conda-base`), `path_tools`
+(programs on the system PATH; checked before the command runs), `max_cpus`, `time_limit_seconds`, `partition`, `database: {"env": ..., "subdir": ...}` for
 tools whose command uses `/work/database`. Command templates are shared with the Docker path:
 `/work/{output}` becomes the run's work directory and `/work/database` the configured database.
+An operation may set `native_command` to replace `command` on the host; use it to pass the CPU
+allocation (`$GAGENT_CPUS`, also exported as `OMP_NUM_THREADS`) to tools that default to every core.
+Set an operation's `native` to `false` to keep it on Docker.
+
+## Conda environments (620b)
+
+One environment per tool, named after the tool, built by `mkenvs.sh` (conda-forge + bioconda only,
+`--override-channels`, so the Anaconda `defaults` terms of service are not involved):
+
+```sh
+CONDA_ENVS_PATH=/data1/gagent/conda/envs CONDA_PKGS_DIRS=/data1/gagent/conda/pkgs \
+  conda create -y -n seqkit --override-channels -c conda-forge -c bioconda seqkit=2.8.0
+```
+
+Databases for the `database: {"subdir": ...}` tools live under `/data1/gagent/databases/<subdir>`; a
+tool whose directory is empty answers `database_unavailable`.

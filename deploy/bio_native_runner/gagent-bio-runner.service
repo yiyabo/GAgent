@@ -10,6 +10,8 @@ ExecStart=/usr/bin/python3 /data1/gagent/bio-runner/native_runner.py \
   --read-root /home/wangyichun/gagent/runtime \
   --read-root /home/wangyichun/gagent/refdata \
   --db-root /data1/gagent/databases \
+  --conda-base /home/wangyichun/miniconda3 \
+  --conda-envs-dir /data1/gagent/conda/envs \
   --partition work
 Restart=always
 RestartSec=5

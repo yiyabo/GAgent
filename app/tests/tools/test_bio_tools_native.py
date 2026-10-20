@@ -11,6 +11,7 @@ import asyncio
 import importlib
 import json
 import os
+import re
 import stat
 import subprocess
 import sys
@@ -109,7 +110,7 @@ def test_minimap2_takes_two_input_paths_and_a_free_text_preset(dirs) -> None:
         ("samtools", "sort", {"input_file": "{q}", "params": {"output": "a; rm -rf /", "threads": "2"}}, "invalid_parameter"),
         ("samtools", "sort", {"input_file": "{q}", "params": {"output": "o.bam", "evil": "1", "threads": "2"}}, "invalid_parameter"),
         ("samtools", "sort", {"input_file": "{q}", "params": {"output": "o.bam", "threads": "x"}}, "invalid_parameter"),
-        ("seqkit", "stats", {"input_file": "{q}"}, "not_native"),
+        ("nextflow", "clean", {}, "not_native"),
         ("nope", "x", {}, "unknown_tool"),
         ("samtools", "sort", {"input_file": "relative/q.bam", "params": {"output": "o.bam", "threads": "2"}}, "invalid_parameter"),
     ],
@@ -137,6 +138,83 @@ def test_script_loads_modules_and_records_the_exit_code(dirs) -> None:
     assert script.startswith("#!/bin/bash -l")
     assert "module load SAMtools/1.15.1" in script
     assert "umask 000" in script and "trap 'echo $? > /runs/x/exit_code' EXIT" in script
+
+
+def test_script_exports_cpus_and_activates_the_conda_env_from_the_configured_dir(dirs) -> None:
+    job = _job(dirs, "seqkit", "stats", input_file=str(dirs["query"]))
+    script = native_exec.render_script(
+        job, run_dir="/runs/x", conda_base="/opt/conda", conda_envs_dir="/data/envs"
+    )
+    lines = script.splitlines()
+    assert "export GAGENT_CPUS=2 OMP_NUM_THREADS=2" in lines
+    assert lines.index("export CONDA_ENVS_PATH=/data/envs") < next(
+        i for i, line in enumerate(lines) if "conda activate seqkit" in line
+    )
+    assert lines.index("unset PYTHONPATH PYTHONHOME PYTHONSTARTUP PERL5LIB") < next(
+        i for i, line in enumerate(lines) if "conda activate seqkit" in line
+    )
+    assert native_exec.render_script(job, run_dir="/r", conda_base="/opt/conda").count("CONDA_ENVS_PATH") == 0
+
+
+def test_a_system_program_is_checked_before_the_command_runs(dirs) -> None:
+    job = _job(dirs, "prodigal", "meta", input_file=str(dirs["query"]), params={"protein": "p.faa"})
+    script = native_exec.render_script(job, run_dir="/runs/x")
+    assert "command -v prodigal" in script and "exit 95" in script
+    assert script.index("command -v prodigal") < script.index("prodigal -i")
+
+
+def test_native_command_passes_the_cpu_allocation_where_docker_relies_on_defaults(dirs) -> None:
+    job = _job(dirs, "flye", "ont", input_file=str(dirs["query"]), params={"output": "asm"})
+    assert "--threads $GAGENT_CPUS" in job["command"]
+    assert job["cpus"] == 16
+    docker = REAL_CONFIG["flye"]["operations"]["ont"]["command"]
+    assert "GAGENT_CPUS" not in docker
+
+
+def test_a_database_tool_says_so_when_its_database_is_not_installed(dirs) -> None:
+    with pytest.raises(native_exec.NativeError) as err:
+        _job(dirs, "genomad", "end_to_end", input_file=str(dirs["query"]), params={"output": "o"})
+    assert err.value.code == "database_unavailable"
+
+
+def test_a_bad_path_tools_entry_is_a_config_error() -> None:
+    with pytest.raises(native_exec.NativeError) as err:
+        native_exec.validate_native_spec("x", {"path_tools": ["ok", "bad name; rm"]})
+    assert err.value.code == "bad_config"
+
+
+def test_every_native_operation_in_the_shipped_config_renders(dirs) -> None:
+    """Every operation that opts into native execution must produce a command from plausible values."""
+    database = dirs["tmp"] / "db"
+    database.mkdir()
+    for name in REAL_CONFIG:
+        spec = native_exec.native_spec(REAL_CONFIG, name)
+        if not spec:
+            continue
+        for op_name, op in REAL_CONFIG[name]["operations"].items():
+            if not native_exec.supports_native(REAL_CONFIG, name, op_name):
+                continue
+            params: Dict[str, Any] = {}
+            template = op.get("native_command") or op["command"]
+            written = set(re.findall(r"/work/\{(\w+)\}", template))
+            for key, meta in (op.get("extra_params") or {}).items():
+                if key in native_exec.INPUT_PATH_PARAM_KEYS and key not in written:
+                    params[key] = str(dirs["query"])
+                elif meta.get("type") == "integer":
+                    params[key] = 2
+                elif key in ("fraction", "min_seq_id", "min_score", "quality"):
+                    params[key] = "0.5"
+                else:
+                    params[key] = "x1"
+            job = native_exec.build_job(
+                REAL_CONFIG, tool=name, operation=op_name, input_file=str(dirs["query"]), output_file=None,
+                params=params, timeout=None, work_dir=str(dirs["work"]), read_roots=[str(dirs["read_root"])],
+                database_path=str(database),
+            )
+            assert job["command"].strip(), (name, op_name)
+            assert "{" not in job["command"] and "/work/" not in job["command"].replace(job["work_dir"], ""), (
+                name, op_name, job["command"])
+            native_exec.render_script(job, run_dir="/runs/x", conda_base="/opt/conda", conda_envs_dir="/envs")
 
 
 def test_every_native_block_in_the_shipped_config_is_valid() -> None:
@@ -426,6 +504,6 @@ def test_list_and_help_say_which_operations_are_native() -> None:
     listing = asyncio.run(handler.bio_tools_handler(tool_name="list", operation="list"))
     by_name = {t["name"]: t for t in listing["tools"]}
     assert "blastn" in by_name["blast"]["native_operations"]
-    assert "native_operations" not in by_name["seqkit"]
+    assert "native_operations" not in by_name["nextflow"]
     helped = asyncio.run(handler.bio_tools_handler(tool_name="samtools", operation="help"))
     assert "sort" in helped["native_operations"]

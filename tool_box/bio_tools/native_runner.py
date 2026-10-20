@@ -60,6 +60,7 @@ class Runner:
         *,
         db_root: Optional[str] = None,
         conda_base: Optional[str] = None,
+        conda_envs_dir: Optional[str] = None,
         max_active: int = 8,
         partition: Optional[str] = None,
         sbatch: str = "sbatch",
@@ -72,6 +73,7 @@ class Runner:
         self.read_roots = [os.path.realpath(r) for r in read_roots] + [self.runtime_dir]
         self.db_root = os.path.realpath(db_root) if db_root else None
         self.conda_base = conda_base
+        self.conda_envs_dir = conda_envs_dir
         self.max_active = max_active
         self.partition = partition
         self.bins = {"sbatch": sbatch, "squeue": squeue, "sacct": sacct, "scancel": scancel}
@@ -218,7 +220,9 @@ class Runner:
                 params=params, timeout=request.get("timeout"), work_dir=work_dir, read_roots=self.read_roots,
                 database_path=self._database_path(tool),
             )
-            script = native_exec.render_script(job, run_dir=run_dir, conda_base=self.conda_base)
+            script = native_exec.render_script(
+                job, run_dir=run_dir, conda_base=self.conda_base, conda_envs_dir=self.conda_envs_dir
+            )
         except native_exec.NativeError as exc:
             return self._reject(run_dir, str(exc), exc.code)
         except (OSError, TypeError, ValueError) as exc:
@@ -349,6 +353,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--read-root", action="append", default=[], help="host directory inputs may be read from")
     parser.add_argument("--db-root", default=None, help="host directory holding reference databases")
     parser.add_argument("--conda-base", default=None)
+    parser.add_argument("--conda-envs-dir", default=None, help="directory holding the conda environments")
     parser.add_argument("--max-active", type=int, default=8)
     parser.add_argument("--partition", default=None)
     parser.add_argument("--interval", type=float, default=2.0)
@@ -358,7 +363,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     os.umask(0)
     runner = Runner(args.runtime_dir, args.config, args.read_root, db_root=args.db_root,
-                    conda_base=args.conda_base, max_active=args.max_active, partition=args.partition)
+                    conda_base=args.conda_base, conda_envs_dir=args.conda_envs_dir, max_active=args.max_active, partition=args.partition)
     runner.ensure_dirs()
     if args.once:
         runner.recover()

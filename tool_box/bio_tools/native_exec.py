@@ -105,7 +105,10 @@ def validate_native_spec(tool: str, spec: Dict[str, Any]) -> None:
     env = spec.get("conda_env")
     if env is not None and not (isinstance(env, str) and _CONDA_ENV_RE.match(env)):
         raise NativeError("%s: native.conda_env is not a valid environment name" % tool, "bad_config")
-    if not modules and not env and not spec.get("path_tools"):
+    path_tools = spec.get("path_tools") or []
+    if not isinstance(path_tools, list) or not all(isinstance(t, str) and _CONDA_ENV_RE.match(t) for t in path_tools):
+        raise NativeError("%s: native.path_tools must be a list of program names" % tool, "bad_config")
+    if not modules and not env and not path_tools:
         raise NativeError("%s: native needs modules, conda_env or path_tools" % tool, "bad_config")
 
 
@@ -252,7 +255,8 @@ def build_job(
     op = config[tool]["operations"][operation]
 
     declared = _declared_params(op)
-    template = _QUOTED_PLACEHOLDER_RE.sub(r"{\2}", op["command"])
+    # ``native_command`` lets a tool pass its CPU allocation ($GAGENT_CPUS) where the Docker command relies on defaults.
+    template = _QUOTED_PLACEHOLDER_RE.sub(r"{\2}", op.get("native_command") or op["command"])
     output_keys = set(OUTPUT_PATH_PARAM_KEYS) | set(_WORK_PLACEHOLDER_RE.findall(template))
     uses_database = "/work/database" in template
     if uses_database:
@@ -338,7 +342,9 @@ def build_job(
     }
 
 
-def render_script(job: Dict[str, Any], *, run_dir: str, conda_base: Optional[str] = None) -> str:
+def render_script(
+    job: Dict[str, Any], *, run_dir: str, conda_base: Optional[str] = None, conda_envs_dir: Optional[str] = None
+) -> str:
     """The batch script. ``-l`` makes the login profile load Lmod, as it does for a user."""
     lines = [
         "#!/bin/bash -l",
@@ -347,6 +353,7 @@ def render_script(job: Dict[str, Any], *, run_dir: str, conda_base: Optional[str
         # Whatever ends the script (the tool, a failed module load, a stray exit) leaves its status here.
         "trap 'echo $? > %s' EXIT" % shlex.quote(os.path.join(run_dir, EXIT_CODE_FILENAME)),
         "cd %s || exit 98" % shlex.quote(job["work_dir"]),
+        "export GAGENT_CPUS=%d OMP_NUM_THREADS=%d" % (int(job["cpus"]), int(job["cpus"])),
     ]
     if job["modules"]:
         lines.append("type module >/dev/null 2>&1 || . /etc/profile.d/z00_lmod.sh")
@@ -357,8 +364,15 @@ def render_script(job: Dict[str, Any], *, run_dir: str, conda_base: Optional[str
     if job.get("conda_env"):
         if not conda_base:
             raise NativeError("conda is not configured on this server", "bad_config")
+        # The login profile loads site modules whose PYTHONPATH/PERL5LIB would shadow the environment's own packages.
+        lines.append("unset PYTHONPATH PYTHONHOME PYTHONSTARTUP PERL5LIB")
+        if conda_envs_dir:
+            lines.append("export CONDA_ENVS_PATH=%s" % shlex.quote(conda_envs_dir))
         lines.append("source %s/etc/profile.d/conda.sh && conda activate %s || { echo 'conda activate failed' >&2; exit 96; }" % (
             shlex.quote(conda_base), shlex.quote(job["conda_env"])))
+    for program in job.get("path_tools") or []:
+        lines.append("command -v %s >/dev/null || { echo 'program not found on this server: %s' >&2; exit 95; }" % (
+            shlex.quote(program), program))
     lines += [
         "set -o pipefail",
         job["command"],

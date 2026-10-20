@@ -54,6 +54,11 @@
                     }
                 }
             }
+        },
+        "native": {
+            "conda_env": "seqkit",
+            "cpus": 2,
+            "mem_mb": 8192
         }
     },
     "blast": {
@@ -167,6 +172,13 @@
                 },
                 "notes": "The -p meta flag is built into the command"
             }
+        },
+        "native": {
+            "path_tools": [
+                "prodigal"
+            ],
+            "cpus": 1,
+            "mem_mb": 8192
         }
     },
     "hmmer": {
@@ -192,7 +204,8 @@
                         "description": "Output results filename, e.g. hmmscan_results.txt"
                     }
                 },
-                "notes": "input must be a protein FASTA file; db must have been processed with hmmpress"
+                "notes": "input must be a protein FASTA file; db must have been processed with hmmpress",
+                "native_command": "hmmscan --cpu $GAGENT_CPUS --tblout /work/{output} {db} {input}"
             },
             "hmmsearch": {
                 "command": "hmmsearch --tblout /work/{output} {db} {input}",
@@ -211,7 +224,8 @@
                         "description": "Output results filename, e.g. hmmsearch_results.txt"
                     }
                 },
-                "notes": "input must be a protein FASTA sequence database"
+                "notes": "input must be a protein FASTA sequence database",
+                "native_command": "hmmsearch --cpu $GAGENT_CPUS --tblout /work/{output} {db} {input}"
             },
             "hmmpress": {
                 "command": "hmmpress /work/{db}",
@@ -241,6 +255,13 @@
                 },
                 "notes": "input must be a multiple sequence alignment file (FASTA/Stockholm/Clustal/Phylip format)"
             }
+        },
+        "native": {
+            "modules": [
+                "HMMER/3.3.2"
+            ],
+            "cpus": 4,
+            "mem_mb": 16384
         }
     },
     "dorado": {
@@ -317,8 +338,14 @@
                         "description": "Prefix for output filenames, e.g. sample1"
                     }
                 },
-                "notes": "input must be a FASTQ file; output includes an HTML report and quality plots"
+                "notes": "input must be a FASTQ file; output includes an HTML report and quality plots",
+                "native_command": "NanoPlot -t $GAGENT_CPUS --fastq {input} -o /work/{output} --prefix {prefix}"
             }
+        },
+        "native": {
+            "conda_env": "nanoplot",
+            "cpus": 4,
+            "mem_mb": 16384
         }
     },
     "minimap2": {
@@ -497,7 +524,8 @@
                         "description": "Output directory name, e.g. flye_meta_output. Final assembly is assembly.fasta inside this directory."
                     }
                 },
-                "notes": "input must be ONT reads in FASTQ format; --nano-raw and --meta flags are built in"
+                "notes": "input must be ONT reads in FASTQ format; --nano-raw and --meta flags are built in",
+                "native_command": "flye --threads $GAGENT_CPUS --meta --nano-raw {input} --out-dir /work/{output}"
             },
             "ont": {
                 "command": "flye --nano-raw {input} --out-dir /work/{output}",
@@ -510,7 +538,8 @@
                         "required": true,
                         "description": "Output directory name, e.g. flye_ont_output"
                     }
-                }
+                },
+                "native_command": "flye --threads $GAGENT_CPUS --nano-raw {input} --out-dir /work/{output}"
             },
             "hifi": {
                 "command": "flye --pacbio-hifi {input} --out-dir /work/{output}",
@@ -523,8 +552,15 @@
                         "required": true,
                         "description": "Output directory name, e.g. flye_hifi_output"
                     }
-                }
+                },
+                "native_command": "flye --threads $GAGENT_CPUS --pacbio-hifi {input} --out-dir /work/{output}"
             }
+        },
+        "native": {
+            "conda_env": "flye",
+            "cpus": 16,
+            "mem_mb": 65536,
+            "time_limit_seconds": 86400
         }
     },
     "seqtk": {
@@ -556,6 +592,11 @@
                 "requires_input": true,
                 "requires_output": false
             }
+        },
+        "native": {
+            "conda_env": "seqtk",
+            "cpus": 1,
+            "mem_mb": 8192
         }
     },
     "megahit": {
@@ -584,8 +625,17 @@
                         "required": true,
                         "description": "Output directory name, e.g. megahit_output. Final contigs are in final.contigs.fa."
                     }
-                }
+                },
+                "native_command": "megahit -t $GAGENT_CPUS -1 {r1} -2 {r2} -o /work/{output}"
             }
+        },
+        "native": {
+            "modules": [
+                "MEGAHIT/1.2.9"
+            ],
+            "cpus": 16,
+            "mem_mb": 65536,
+            "time_limit_seconds": 86400
         }
     },
     "bakta": {
@@ -611,7 +661,17 @@
                         "description": "Output directory name, e.g. bakta_output"
                     }
                 },
-                "notes": "input must be a genome FASTA file; the database is mounted automatically"
+                "notes": "input must be a genome FASTA file; the database is mounted automatically",
+                "native_command": "bakta --threads $GAGENT_CPUS --db /work/database --prefix {prefix} --output /work/{output} {input}"
+            }
+        },
+        "native": {
+            "conda_env": "bakta",
+            "cpus": 8,
+            "mem_mb": 32768,
+            "time_limit_seconds": 28800,
+            "database": {
+                "subdir": "bakta"
             }
         }
     },
@@ -642,7 +702,8 @@
                         "required": true,
                         "description": "Output bin filename prefix, e.g. bin. Output files will be bin.1.fa, bin.2.fa, etc."
                     }
-                }
+                },
+                "native_command": "metabat2 -t $GAGENT_CPUS -i {contigs} -a {depth} -o /work/{output_prefix}"
             },
             "depth": {
                 "command": "jgi_summarize_bam_contig_depths --outputDepth /work/{output} {bam_files}",
@@ -662,6 +723,11 @@
                     }
                 }
             }
+        },
+        "native": {
+            "conda_env": "metabat2",
+            "cpus": 8,
+            "mem_mb": 32768
         }
     },
     "concoct": {
@@ -691,8 +757,14 @@
                         "required": true,
                         "description": "Output directory prefix, e.g. concoct_output"
                     }
-                }
+                },
+                "native_command": "concoct -t $GAGENT_CPUS --coverage_file {coverage} --composition_file {contigs} -b /work/{output}"
             }
+        },
+        "native": {
+            "conda_env": "concoct",
+            "cpus": 8,
+            "mem_mb": 32768
         }
     },
     "maxbin2": {
@@ -722,8 +794,14 @@
                         "required": true,
                         "description": "Absolute path to the abundance file (one coverage value per line, matching contigs order)"
                     }
-                }
+                },
+                "native_command": "run_MaxBin.pl -thread $GAGENT_CPUS -contig {contigs} -out /work/{output} -abundance {abundance}"
             }
+        },
+        "native": {
+            "conda_env": "maxbin2",
+            "cpus": 8,
+            "mem_mb": 32768
         }
     },
     "das_tool": {
@@ -753,8 +831,14 @@
                         "required": true,
                         "description": "Output directory prefix, e.g. das_tool_output"
                     }
-                }
+                },
+                "native_command": "DAS_Tool --threads $GAGENT_CPUS -i {bins} -c {contigs} -o /work/{output}"
             }
+        },
+        "native": {
+            "conda_env": "das_tool",
+            "cpus": 8,
+            "mem_mb": 32768
         }
     },
     "checkm": {
@@ -780,7 +864,8 @@
                         "description": "CheckM working directory name, e.g. checkm_output"
                     }
                 },
-                "notes": "input must be the absolute path to a directory containing bin FASTA files (.fa suffix); database is mounted automatically"
+                "notes": "input must be the absolute path to a directory containing bin FASTA files (.fa suffix); database is mounted automatically",
+                "native_command": "CHECKM_DATA_PATH=/work/database checkm lineage_wf -t $GAGENT_CPUS -x fa --tabulated -f /work/{output} {input} /work/{output_dir}"
             },
             "qa": {
                 "command": "checkm qa -o 2 -f /work/{output} --tabulated /work/{tree} {input}",
@@ -803,7 +888,17 @@
                         "required": true,
                         "description": "Path to the marker file from the lineage_wf output directory"
                     }
-                }
+                },
+                "native_command": "CHECKM_DATA_PATH=/work/database checkm qa -o 2 -f /work/{output} --tabulated {tree} {input}"
+            }
+        },
+        "native": {
+            "conda_env": "checkm",
+            "cpus": 8,
+            "mem_mb": 65536,
+            "time_limit_seconds": 43200,
+            "database": {
+                "subdir": "checkm"
             }
         }
     },
@@ -830,7 +925,17 @@
                         "description": "Output directory name, e.g. gtdbtk_output"
                     }
                 },
-                "notes": "Database is mounted automatically; -x fa specifies the .fa file extension for genome bins"
+                "notes": "Database is mounted automatically; -x fa specifies the .fa file extension for genome bins",
+                "native_command": "GTDBTK_DATA_PATH=/work/database gtdbtk classify_wf --cpus $GAGENT_CPUS --genome_dir {genome_dir} --out_dir /work/{output} -x fa"
+            }
+        },
+        "native": {
+            "conda_env": "gtdbtk",
+            "cpus": 16,
+            "mem_mb": 131072,
+            "time_limit_seconds": 86400,
+            "database": {
+                "subdir": "gtdbtk"
             }
         }
     },
@@ -852,7 +957,8 @@
                         "description": "Output directory name, e.g. genomad_output"
                     }
                 },
-                "notes": "input must be a genome or metagenome contigs FASTA file; database is mounted automatically"
+                "notes": "input must be a genome or metagenome contigs FASTA file; database is mounted automatically",
+                "native_command": "genomad end-to-end --threads $GAGENT_CPUS {input} /work/{output} /work/database"
             },
             "annotate": {
                 "command": "genomad annotate {input} /work/{output} /work/database",
@@ -865,7 +971,8 @@
                         "required": true,
                         "description": "Output directory name, e.g. genomad_annotate_output"
                     }
-                }
+                },
+                "native_command": "genomad annotate --threads $GAGENT_CPUS {input} /work/{output} /work/database"
             },
             "find_proviruses": {
                 "command": "genomad find-proviruses {input} /work/{output} /work/database",
@@ -878,7 +985,17 @@
                         "required": true,
                         "description": "Output directory name, e.g. genomad_provirus_output"
                     }
-                }
+                },
+                "native_command": "genomad find-proviruses --threads $GAGENT_CPUS {input} /work/{output} /work/database"
+            }
+        },
+        "native": {
+            "conda_env": "genomad",
+            "cpus": 8,
+            "mem_mb": 32768,
+            "time_limit_seconds": 43200,
+            "database": {
+                "subdir": "genomad"
             }
         }
     },
@@ -938,6 +1055,14 @@
                     }
                 }
             }
+        },
+        "native": {
+            "conda_env": "checkv",
+            "cpus": 8,
+            "mem_mb": 32768,
+            "database": {
+                "subdir": "checkv"
+            }
         }
     },
     "virsorter2": {
@@ -969,6 +1094,15 @@
                     }
                 },
                 "notes": "input must be a contigs FASTA file; database is mounted automatically"
+            }
+        },
+        "native": {
+            "conda_env": "virsorter2",
+            "cpus": 8,
+            "mem_mb": 32768,
+            "time_limit_seconds": 43200,
+            "database": {
+                "subdir": "virsorter2"
             }
         }
     },
@@ -1009,6 +1143,13 @@
                 },
                 "notes": "input must be a reads FASTQ file"
             }
+        },
+        "native": {
+            "modules": [
+                "BWA/0.7.17"
+            ],
+            "cpus": 8,
+            "mem_mb": 32768
         }
     },
     "bowtie2": {
@@ -1064,6 +1205,13 @@
                     }
                 }
             }
+        },
+        "native": {
+            "modules": [
+                "Bowtie2/2.4.4"
+            ],
+            "cpus": 8,
+            "mem_mb": 32768
         }
     },
     "mmseqs2": {
@@ -1128,6 +1276,14 @@
                     }
                 }
             }
+        },
+        "native": {
+            "modules": [
+                "MMseqs2/13-45111"
+            ],
+            "cpus": 8,
+            "mem_mb": 32768,
+            "time_limit_seconds": 43200
         }
     },
     "trim_galore": {
@@ -1193,6 +1349,11 @@
                     }
                 }
             }
+        },
+        "native": {
+            "conda_env": "trim_galore",
+            "cpus": 4,
+            "mem_mb": 16384
         }
     },
     "ngmlr": {
@@ -1230,6 +1391,11 @@
                 },
                 "notes": "input must be a FASTQ file; pipe the output SAM through samtools sort and index before running Sniffles2"
             }
+        },
+        "native": {
+            "conda_env": "ngmlr",
+            "cpus": 8,
+            "mem_mb": 65536
         }
     },
     "sniffles2": {
@@ -1262,6 +1428,11 @@
                 },
                 "notes": "input must be a coordinate-sorted BAM file with a .bai index"
             }
+        },
+        "native": {
+            "conda_env": "sniffles2",
+            "cpus": 8,
+            "mem_mb": 32768
         }
     },
     "fastani": {
@@ -1298,6 +1469,11 @@
                     }
                 }
             }
+        },
+        "native": {
+            "conda_env": "fastani",
+            "cpus": 8,
+            "mem_mb": 16384
         }
     },
     "vibrant": {
@@ -1323,7 +1499,17 @@
                         "description": "Number of threads, default 4"
                     }
                 },
-                "notes": "input must be a contigs FASTA file; sequences shorter than 1 kb are recommended to be filtered out first"
+                "notes": "input must be a contigs FASTA file; sequences shorter than 1 kb are recommended to be filtered out first",
+                "native_command": "VIBRANT_run.py -d /work/database/databases -i {input} -o /work/{output} -t {threads}"
+            }
+        },
+        "native": {
+            "conda_env": "vibrant",
+            "cpus": 8,
+            "mem_mb": 32768,
+            "time_limit_seconds": 43200,
+            "database": {
+                "subdir": "vibrant"
             }
         }
     },
@@ -1351,6 +1537,15 @@
                     }
                 },
                 "notes": "input must be a viral sequences FASTA file; database is mounted automatically"
+            }
+        },
+        "native": {
+            "conda_env": "iphop",
+            "cpus": 16,
+            "mem_mb": 131072,
+            "time_limit_seconds": 86400,
+            "database": {
+                "subdir": "iphop"
             }
         }
     },
