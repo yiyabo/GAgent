@@ -225,6 +225,7 @@ def estimate_messages_tokens(messages: List[Dict[str, Any]]) -> int:
 
 # Known context window sizes (in tokens).
 _MODEL_CONTEXT_WINDOWS: Dict[str, int] = {
+    "qwen3.8-flash": 1000000,  # 1M context; max input 991K (983K with thinking), max output 128K
     "qwen3.7-max": 1000000,
     "qwen3.6-plus": 1000000,
     "qwen-long": 1000000,

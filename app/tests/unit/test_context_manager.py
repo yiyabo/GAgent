@@ -75,6 +75,10 @@ class TestContextWindow:
     def test_known_model(self):
         assert get_context_window("qwen3.6-plus") == 1000000
 
+    def test_qwen38_flash_has_the_one_million_token_window(self):
+        assert get_context_window("qwen3.8-flash") == 1000000
+        assert get_context_window("Qwen3.8-Flash") == 1000000
+
     def test_unknown_model_returns_default(self):
         assert get_context_window("unknown-model-xyz") == 131072
 

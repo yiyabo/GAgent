@@ -130,6 +130,8 @@ def test_budget_model_window_table(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("DEEP_THINK_CONTEXT_BUDGET_MAX", raising=False)
     # qwen3.7-max: 1M * 0.5 = 500k -> capped at 131072
     assert _resolve_context_budget_tokens("qwen3.7-max") == 131072
+    # qwen3.8-flash: 1M window too (the budget used to fall back to 64000 for it)
+    assert _resolve_context_budget_tokens("qwen3.8-flash") == 131072
     # qwen-max: 262144 * 0.5 = 131072
     assert _resolve_context_budget_tokens("qwen-max-latest") == 131072
     # gpt-4o-mini: 128000 * 0.5 = 64000

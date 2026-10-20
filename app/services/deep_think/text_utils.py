@@ -76,6 +76,7 @@ def _answer_discloses_limitation(text: str) -> bool:
 # conservatively). Used to size the compaction budget relative to the model's
 # real window instead of the historical fixed 32k.
 _MODEL_CONTEXT_WINDOWS = (
+    ("qwen3.8-flash", 1_000_000),
     ("qwen3.7-max", 1_000_000),
     ("qwen-max", 262_144),
     ("qwen-plus", 131_072),
