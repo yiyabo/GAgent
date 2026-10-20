@@ -1237,7 +1237,9 @@ def test_help_operation_returns_structured_param_contract() -> None:
 
 def test_help_all_tools_have_contract_fields() -> None:
     config = bio_handler_module.get_tools_config()
-    for tool_name in config:
+    for tool_name, info in config.items():
+        if info.get("native_only"):
+            continue  # host software with no Docker image; only offered where native execution is on
         result = asyncio.run(
             bio_handler_module.bio_tools_handler(
                 tool_name=tool_name,

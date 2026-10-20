@@ -21,6 +21,8 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from app.services import bio_tools_catalog
+
 logger = logging.getLogger(__name__)
 
 
@@ -91,7 +93,7 @@ def _load_bio_tool_names() -> List[str]:
         if not _BIO_TOOLS_CONFIG_PATH.exists():
             return list(_BIO_TOOLS_FALLBACK)
         config = json.loads(_BIO_TOOLS_CONFIG_PATH.read_text(encoding="utf-8"))
-        names = [str(name).strip() for name in config.keys() if str(name).strip()]
+        names = [str(name).strip() for name in bio_tools_catalog.exposed_catalog(config) if str(name).strip()]
         if not names:
             return list(_BIO_TOOLS_FALLBACK)
         return sorted(set(names))

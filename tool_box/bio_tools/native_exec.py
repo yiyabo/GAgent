@@ -19,7 +19,7 @@ import re
 import shlex
 import tempfile
 from string import Formatter
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 PROTOCOL_VERSION = 1
 
@@ -96,6 +96,59 @@ def supports_native(config: Dict[str, Any], tool: str, operation: str) -> bool:
     if not isinstance(op, dict):
         return False
     return op.get("native", True) is not False
+
+
+def native_catalog(config: Dict[str, Any]) -> Dict[str, List[str]]:
+    """Tool -> operations that can run natively, for tools that opted in. Static: says nothing about
+    what is installed (see ``compute_capabilities``)."""
+    catalog = {}  # type: Dict[str, List[str]]
+    for tool, info in config.items():
+        if not native_spec(config, tool):
+            continue
+        ops = [op for op in (info.get("operations") or {}) if supports_native(config, tool, op)]
+        if ops:
+            catalog[tool] = ops
+    return catalog
+
+
+def operation_needs_database(config: Dict[str, Any], tool: str, operation: str) -> bool:
+    op = (config.get(tool) or {}).get("operations", {}).get(operation) or {}
+    return "/work/database" in (op.get("native_command") or op.get("command") or "")
+
+
+def compute_capabilities(
+    config: Dict[str, Any],
+    *,
+    database_for: Callable[[str], Optional[str]],
+    conda_envs_dir: Optional[str],
+    which: Callable[[str], Optional[str]],
+) -> Dict[str, Dict[str, Optional[str]]]:
+    """What this server can run right now: tool -> operation -> None (ready) or why not. Modules are
+    taken as present; conda environments, system programs and databases are looked for."""
+    result = {}  # type: Dict[str, Dict[str, Optional[str]]]
+    for tool, ops in native_catalog(config).items():
+        spec = native_spec(config, tool) or {}
+        env = spec.get("conda_env")
+        tool_reason = None  # type: Optional[str]
+        if env and conda_envs_dir and not os.path.isdir(os.path.join(conda_envs_dir, env, "conda-meta")):
+            tool_reason = "environment_not_installed"
+        elif any(not which(program) for program in spec.get("path_tools") or []):
+            tool_reason = "program_not_installed"
+        has_database = database_for(tool) is not None
+        result[tool] = {}
+        for op in ops:
+            reason = tool_reason
+            if reason is None and operation_needs_database(config, tool, op) and not has_database:
+                reason = "database_unavailable"
+            result[tool][op] = reason
+    return result
+
+
+def read_capabilities(runtime_dir: str) -> Optional[Dict[str, Dict[str, Optional[str]]]]:
+    """The runner's last report of what it can run, or None when it has not reported one."""
+    beat = read_json(heartbeat_path(runtime_dir))
+    caps = beat.get("capabilities") if beat else None
+    return caps if isinstance(caps, dict) else None
 
 
 def validate_native_spec(tool: str, spec: Dict[str, Any]) -> None:

@@ -85,3 +85,15 @@ gtdbtk (about 110 GB) and iphop (several hundred GB); those tools answer `databa
   imbalanced-learn pandas=1.2 seaborn "numpy<1.24" python=3.8`.
 - `vibrant`: exits 0 even when it fails, so its native command also checks that the output folder is not empty.
 - `checkm`: reads its data from `CHECKM_DATA_PATH` (set by the native command).
+
+## What the model is offered
+
+- The runner writes `capabilities` into `runner.json` every minute: for each native operation, `null` (can run) or why
+  not (`environment_not_installed`, `program_not_installed`, `database_unavailable`).
+- With `BIO_TOOLS_EXECUTION_MODE=native` the app lists and describes only operations that can run, names the rest under
+  `unavailable_tools` / `unavailable_operations`, and builds the tool schema and DeepThink catalog from the native
+  tools only. This is read at app start, so changing the mode needs an app restart.
+- A tool with `"native_only": true` (phabox2: host software, no Docker image) is offered only in `native` and
+  `native_first`.
+- phabox2 lives in `/data1/gagent/conda/envs/phabox2` (a clone of the `phabox_env` environment) with its database in
+  `/data1/gagent/databases/phabox2` (a copy of `~/phabox_database/phabox_db_v2_1`).

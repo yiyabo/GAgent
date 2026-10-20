@@ -33,6 +33,7 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
+from app.services import bio_tools_catalog
 from app.services.deep_think.models import TaskExecutionContext
 from app.services.foundation.settings import CHAT_HISTORY_ABS_MAX, get_settings
 from app.services.response_style import PROFESSIONAL_STYLE_INSTRUCTION
@@ -71,10 +72,10 @@ def _load_bio_tools_catalog() -> Dict[str, List[str]]:
         if not config_path.exists():
             return dict(_BIO_TOOLS_FALLBACK_CATALOG)
         raw = json.loads(config_path.read_text(encoding="utf-8"))
-        catalog: Dict[str, List[str]] = {}
-        for tool_name, info in raw.items():
-            ops = sorted((info or {}).get("operations", {}).keys())
-            catalog[str(tool_name)] = [str(op) for op in ops]
+        catalog = {
+            tool_name: [str(op) for op in ops]
+            for tool_name, ops in bio_tools_catalog.exposed_catalog(raw).items()
+        }
         if not catalog:
             return dict(_BIO_TOOLS_FALLBACK_CATALOG)
         return catalog
