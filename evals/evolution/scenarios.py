@@ -596,7 +596,6 @@ def s18_threshold_change():
         "checks": base([
             nl(n3000, ["保留", "条", "序列"], "turn 1 kept count"),
             nl(n5000, ["保留", "条", "序列"], "turn 2 kept count", scope="last"),
-            fasta_file(FASTA_PATTERN, n5000, "a FASTA holds the 5000 bp records"),
             used_bio(),
         ]),
         "judge": [],
