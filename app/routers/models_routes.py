@@ -58,10 +58,15 @@ _PROVIDER_DISPLAY = {
 }
 
 _MODEL_METADATA = {
+    "qwen3.8-flash": {
+        "provider": "qwen",
+        "name": "Qwen 3.8 Flash",
+        "description": "Default fast Qwen model.",
+    },
     "qwen3.7-max": {
         "provider": "qwen",
         "name": "Qwen 3.7 Max",
-        "description": "Default flagship Qwen model (1M context).",
+        "description": "Qwen flagship model (1M context).",
     },
     "mimo-v2.5-pro-ultraspeed": {
         "provider": "mimo",
@@ -120,5 +125,5 @@ async def list_available_models() -> AvailableModelsResponse:
         providers=providers,
         models=models,
         current_provider=getattr(settings, "llm_provider", "qwen") or "qwen",
-        current_model=getattr(settings, "qwen_model", "qwen3.7-max") or "qwen3.7-max",
+        current_model=getattr(settings, "qwen_model", "qwen3.8-flash") or "qwen3.8-flash",
     )

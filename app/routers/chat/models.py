@@ -176,6 +176,7 @@ class ChatSessionSettings(BaseModel):
     default_search_provider: Optional[Literal["builtin", "perplexity", "tavily"]] = None
     default_base_model: Optional[
         Literal[
+            "qwen3.8-flash",
             "qwen3.7-max",
             "mimo-v2.5-pro-ultraspeed",
             "kimi/kimi-k2.7-code-highspeed",

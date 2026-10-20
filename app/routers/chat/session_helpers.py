@@ -17,6 +17,7 @@ from app.services.llm.llm_service import LLMService, get_llm_service, get_llm_se
 # ---------------------------------------------------------------------------
 VALID_SEARCH_PROVIDERS = {"builtin", "perplexity", "tavily"}
 VALID_BASE_MODELS = {
+    "qwen3.8-flash",
     "qwen3.7-max",
     "mimo-v2.5-pro-ultraspeed",
     "kimi/kimi-k2.7-code-highspeed",
