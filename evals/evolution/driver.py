@@ -38,6 +38,7 @@ FLUSH_GRACE_S = 2.5
 CANCEL_GRACE_S = 20.0
 SIM_MODEL = "qwen3.8-flash"
 JUDGE_MODEL = "qwen3.7-max"
+EVIDENCE_LIMIT = 12000
 QWEN_URL_DEFAULT = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
 BAILOUT_MARKERS = (
     "LLM 模型服务连续调用失败",
@@ -64,7 +65,7 @@ SIM_SYSTEM = (
 JUDGE_SYSTEM = (
     "You grade one aspect of an assistant's replies in a bioinformatics analysis chat. "
     "Score 2 if the rubric is fully met, 1 if it is partly met, 0 if it is not met or the reference facts "
-    "contradict the reply. Judge only from the transcript and the reference facts. "
+    "contradict the reply. Judge only from the transcript, the tool evidence and the reference facts. "
     'Return JSON only: {"score": 0, "reason": "<one short sentence>"}'
 )
 
@@ -174,12 +175,63 @@ def transcript_for_judge(history: list) -> str:
     return "\n\n".join(parts)
 
 
-def judge_item(item: dict, facts: str, transcript_text: str):
+def evidence_digest(events: list, limit: int = EVIDENCE_LIMIT) -> str:
+    """What the tools ran and returned, for the judge. The visible reply alone cannot show whether a
+    claim in it is backed by a tool result. `events` use the events.jsonl layout (turn, payload)."""
+    latest = {}
+    for item in events:
+        payload = item.get("payload") if isinstance(item, dict) else None
+        if not isinstance(payload, dict) or payload.get("type") != "thinking_step":
+            continue
+        step = payload.get("step") or {}
+        if step.get("kind") != "tool" or not step.get("action"):
+            continue
+        latest[(item.get("turn") or 0, step.get("iteration") or 0)] = step
+    entries = []
+    for (turn, iteration), step in sorted(latest.items()):
+        try:
+            calls = json.loads(step["action"]).get("tools") or []
+        except (TypeError, ValueError, AttributeError):
+            calls = []
+        described = []
+        for call in calls:
+            params = call.get("params") if isinstance(call.get("params"), dict) else {}
+            code = params.get("code")
+            detail = code if isinstance(code, str) else json.dumps(params, ensure_ascii=False)
+            described.append(f"{call.get('tool')}({' '.join(detail.split())[:260]})")
+        result = step.get("action_result")
+        result = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, default=str)
+        cut = result.find('"output"')
+        result = " ".join((result[cut:] if cut >= 0 else result).split())[:420]
+        entries.append(f"[turn {turn} step {iteration}] {'; '.join(described) or '(no tool)'}\n  -> {result}")
+    if len("\n".join(entries)) <= limit:
+        return "\n".join(entries)
+    half = limit // 2
+    head, used = [], 0
+    for entry in entries:
+        if used + len(entry) > half:
+            break
+        head.append(entry)
+        used += len(entry) + 1
+    tail, used = [], 0
+    for entry in reversed(entries[len(head):]):
+        if used + len(entry) > half:
+            break
+        tail.append(entry)
+        used += len(entry) + 1
+    tail.reverse()
+    omitted = len(entries) - len(head) - len(tail)
+    return "\n".join(head + [f"... {omitted} steps omitted ..."] + tail)
+
+
+def judge_item(item: dict, facts: str, transcript_text: str, evidence: str = ""):
     user_block = (
         f"Rubric: {item['rubric']}\n\n"
         f"Reference facts (authoritative): {facts or '(none)'}\n\n"
         f"Transcript:\n{transcript_text}"
     )
+    if evidence:
+        user_block += f"\n\nTool evidence (what the tools actually ran and returned, truncated):\n{evidence}"
     text, usage = llm_call(
         JUDGE_MODEL,
         [{"role": "system", "content": JUDGE_SYSTEM}, {"role": "user", "content": user_block}],
@@ -527,7 +579,9 @@ def run_check(check: dict, ctx: dict) -> dict:
     }
 
 
-def write_transcript(path: Path, header: str, runs: list, checks: list, judges: list, usage: dict, notes: list):
+def write_transcript(
+    path: Path, header: str, runs: list, checks: list, judges: list, usage: dict, notes: list, evidence: str = ""
+):
     lines = [header, ""]
     for run in runs:
         lines += [
@@ -558,6 +612,8 @@ def write_transcript(path: Path, header: str, runs: list, checks: list, judges: 
     ]
     if notes:
         lines += ["", "## Notes", ""] + [f"- {note}" for note in notes]
+    if evidence:
+        lines += ["", "## Judge evidence (truncated)", "", "```", evidence, "```"]
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -673,10 +729,11 @@ async def run_scenario(manifest: dict) -> dict:
 
     judges = []
     transcript_text = transcript_for_judge(history)
+    evidence = evidence_digest(all_events) if manifest.get("judge") else ""
     for item in manifest.get("judge") or []:
         try:
             verdict, usage = await loop.run_in_executor(
-                None, judge_item, item, str(manifest.get("facts") or ""), transcript_text
+                None, judge_item, item, str(manifest.get("facts") or ""), transcript_text, evidence
             )
         except Exception as exc:  # noqa: BLE001 - keep the scenario result even if the judge call fails
             verdict = {"id": item.get("id"), "score": None, "reason": f"judge call failed: {str(exc)[:200]}"}
@@ -729,6 +786,7 @@ async def run_scenario(manifest: dict) -> dict:
         judges,
         usage,
         notes,
+        evidence,
     )
     return result
 
@@ -764,7 +822,7 @@ def rejudge(manifest: dict) -> dict:
     verdicts = []
     for item in manifest.get("judge") or []:
         try:
-            verdict, usage = judge_item(item, facts, transcript_text)
+            verdict, usage = judge_item(item, facts, transcript_text, str(manifest.get("evidence") or ""))
         except Exception as exc:  # noqa: BLE001 - keep the other verdicts
             verdict = {"id": item.get("id"), "score": None, "reason": f"judge call failed: {str(exc)[:200]}"}
             usage = {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}

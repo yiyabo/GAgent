@@ -250,6 +250,55 @@ class HarnessV2Tests(unittest.TestCase):
         self.assertEqual(verdict["usage"]["total_tokens"], 15)
         self.assertTrue((tmp / "r" / "SX" / "rejudge_t.json").exists())
 
+    @staticmethod
+    def _tool_event(turn, iteration, tool, params, result):
+        step = {
+            "kind": "tool",
+            "iteration": iteration,
+            "action": json.dumps({"tools": [{"tool": tool, "params": params}]}),
+            "action_result": result,
+        }
+        return {"turn": turn, "payload": {"type": "thinking_step", "step": step}}
+
+    def test_evidence_digest_keeps_the_latest_step_and_tool_output(self):
+        events = [
+            self._tool_event(1, 1, "bio_tools", {"operation": "stats"}, "pending"),
+            self._tool_event(1, 1, "bio_tools", {"operation": "stats"}, '[bio_tools] {"ok": true, "output": "reads 150"}'),
+            {"turn": 1, "payload": {"type": "reasoning_delta", "text": "ignored"}},
+            self._tool_event(1, 2, "execute_code", {"code": "print(1 + 1)"}, '{"output": "2"}'),
+        ]
+        digest = driver.evidence_digest(events)
+        self.assertEqual(digest.count("[turn 1 step 1]"), 1)
+        self.assertIn('"output": "reads 150"', digest)
+        self.assertNotIn("pending", digest)
+        self.assertIn("execute_code(print(1 + 1))", digest)
+        self.assertNotIn("ignored", digest)
+
+    def test_evidence_digest_truncates_the_middle(self):
+        events = [self._tool_event(1, i, "execute_code", {"code": f"step_{i}"}, '{"output": "x"}') for i in range(1, 40)]
+        digest = driver.evidence_digest(events, limit=1200)
+        self.assertLessEqual(len(digest), 1300)
+        self.assertIn("steps omitted", digest)
+        self.assertIn("step 1]", digest)
+        self.assertIn("step 39]", digest)
+
+    def test_judge_prompt_carries_the_tool_evidence(self):
+        original_call = driver.llm_call
+        seen = {}
+
+        def fake_llm(model, messages, *, max_tokens, temperature):
+            seen["prompt"] = messages[-1]["content"]
+            return '{"score": 2, "reason": "ok"}', {"calls": 1, "prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+
+        driver.llm_call = fake_llm
+        try:
+            driver.judge_item({"id": "k", "rubric": "r"}, "f", "USER:\nq", "EVIDENCE-LINE")
+            self.assertIn("EVIDENCE-LINE", seen["prompt"])
+            driver.judge_item({"id": "k", "rubric": "r"}, "f", "USER:\nq")
+            self.assertNotIn("Tool evidence", seen["prompt"])
+        finally:
+            driver.llm_call = original_call
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -29,6 +29,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
+import driver  # noqa: E402  (stdlib-only at import time; used for the judge evidence digest)
 import scenarios  # noqa: E402  (scenario builders import the local fixtures module)
 
 HOST = "phage-server"
@@ -463,11 +464,20 @@ def cmd_handoff(args):
         v2_counts[key] = v2_counts.get(key, 0) + 1
     blind_status = {}
     blind_classes = {}
+    blind_rejudged = 0
     for r in blind:
-        blind_status[effective_status(r)] = blind_status.get(effective_status(r), 0) + 1
-        for item in classify_failures(r):
+        merged = dict(r)
+        rejudges = sorted((Path(args.private_out) / round_id / r["scenario"]).glob("rejudge_*.json"))
+        if rejudges:
+            blind_rejudged += 1
+            merged["judge"] = json.loads(rejudges[-1].read_text(encoding="utf-8")).get("judge", r.get("judge"))
+        state = effective_status(merged)
+        blind_status[state] = blind_status.get(state, 0) + 1
+        for item in classify_failures(merged):
             blind_classes[item["class"]] = blind_classes.get(item["class"], 0) + 1
     blind_lines = ["# 盲测汇总（只含计数，不含场景内容）", "", f"- 场景数：{len(blind)}"]
+    if blind_rejudged:
+        blind_lines.append(f"- 其中 {blind_rejudged} 个按带工具证据的判分重判，计数取重判结果")
     blind_lines += [f"- 状态 {key}：{value}" for key, value in sorted(blind_status.items(), key=lambda kv: str(kv[0]))]
     blind_lines += [f"- 失败类别 {key}：{value}" for key, value in sorted(blind_classes.items())]
     (package / "blind_summary.md").write_text("\n".join(blind_lines) + "\n", encoding="utf-8")
@@ -541,11 +551,18 @@ def cmd_rejudge(args):
     """Re-run only the judge items on a recorded transcript (no agent run, a few thousand tokens)."""
     builders, blind_ids = registry(args.blind_dir)
     sc_id = args.only.strip()
-    if sc_id not in builders or sc_id.startswith("B"):
-        raise SystemExit("rejudge supports public scenarios only")
+    if sc_id not in builders:
+        raise SystemExit(f"unknown scenario id: {sc_id}")
+    is_blind = sc_id in blind_ids
+    root = Path(args.private_out) if is_blind else RUNS_DIR
     spec = build_spec(builders[sc_id], blind_ids)
-    recorded_path = RUNS_DIR / args.from_round / sc_id / "result.json"
+    recorded_path = root / args.from_round / sc_id / "result.json"
     recorded = json.loads(recorded_path.read_text(encoding="utf-8"))
+    events_path = recorded_path.parent / "events.jsonl"
+    evidence = ""
+    if events_path.exists():
+        events = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        evidence = driver.evidence_digest(events)
     history = []
     for run in recorded.get("runs") or []:
         history.append({"role": "user", "text": run["user"]})
@@ -558,6 +575,7 @@ def cmd_rejudge(args):
         "history": history,
         "judge": spec.get("judge", []),
         "facts": spec.get("facts", ""),
+        "evidence": evidence,
     }
     proc = run_remote(compose_script(manifest), timeout=900)
     summary = next(
@@ -574,14 +592,14 @@ def cmd_rejudge(args):
     if fetch.returncode != 0:
         raise SystemExit("could not read the rejudge file")
     verdict = json.loads(fetch.stdout.decode("utf-8"))
-    dest = RUNS_DIR / args.from_round / sc_id / f"rejudge_{args.tag}.json"
+    dest = root / args.from_round / sc_id / f"rejudge_{args.tag}.json"
     dest.write_text(json.dumps(verdict, ensure_ascii=False, indent=1), encoding="utf-8")
     tokens = int(verdict["usage"]["total_tokens"])
     ledger_append({
         "ts": utc_now(),
         "round": f"{args.from_round}-rejudge-{args.tag}",
         "scenario": sc_id,
-        "blind": False,
+        "blind": is_blind,
         "status": "rejudge",
         "total_tokens": tokens,
         "usage_known": True,
@@ -632,6 +650,7 @@ def main():
     rej_p.add_argument("--from-round", required=True)
     rej_p.add_argument("--only", required=True)
     rej_p.add_argument("--tag", required=True)
+    rej_p.add_argument("--private-out", default=str(PRIVATE_OUT_DEFAULT))
     resc_p = sub.add_parser("rescore-route")
     resc_p.add_argument("--round", required=True)
     hand_p = sub.add_parser("handoff")
