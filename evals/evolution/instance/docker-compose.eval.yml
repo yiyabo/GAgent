@@ -1,0 +1,92 @@
+# Evaluation instance for the self-evolution harness (see README.md here).
+# Same image as the live CityU stack, but its own compose project, networks,
+# volume, runtime directory and bio runner. No port is published to the host:
+# the harness talks to the app through `docker exec`.
+name: gagent-eval
+
+services:
+  app:
+    image: gagent-app:${GAGENT_TAG:-p11}
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      APP_RUNTIME_ROOT: /app/runtime
+      DB_ROOT: /app/data/databases
+      HOST_RUNTIME_ROOT: ${GAGENT_RUNTIME_DIR}
+      DOCKER_HOST: tcp://proxy:2375
+      DOCKER_API_VERSION: "1.41"
+      SERVE_SPA: "0"
+      TERMINAL_ENABLED: "0"
+      APP_ENV: ${APP_ENV:-development}
+    volumes:
+      - ${GAGENT_RUNTIME_DIR}:/app/runtime
+      - gagent-eval-data:/app/data
+      - ${GAGENT_REFDATA_DIR:-/data}:/data:ro
+      # Harness output only. Not under /app, so file tools cannot read it.
+      - ${EVAL_OUT_DIR}:/evo-out
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:9000/health/ready', timeout=4)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    networks: [front, sandbox, dockerapi]
+    logging: &logging
+      driver: json-file
+      options: {max-size: "50m", max-file: "10"}
+
+  proxy:
+    image: gagent-app:${GAGENT_TAG:-p11}
+    command: ["python", "-m", "app.ops.docker_proxy"]
+    restart: unless-stopped
+    user: "0:0"
+    environment:
+      DOCKER_PROXY_SOCKET: /var/run/docker.sock
+      DOCKER_PROXY_PORT: "2375"
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      HOST_RUNTIME_ROOT: ${GAGENT_RUNTIME_DIR}
+      GAGENT_REFDATA_DIR: ${GAGENT_REFDATA_DIR:-/data}
+      SANDBOX_PYTHON_IMAGE: ${SANDBOX_PYTHON_IMAGE:-gagent-sandbox-python:latest}
+      SANDBOX_QWEN_IMAGE: ${SANDBOX_QWEN_IMAGE:-gagent-sandbox-qwen:latest}
+      DOCKER_PROXY_POLICY_ENFORCE: ${DOCKER_PROXY_POLICY_ENFORCE:-0}
+      DOCKER_PROXY_ALLOWED_RO_ROOTS: ${DOCKER_PROXY_ALLOWED_RO_ROOTS:-}
+      DOCKER_PROXY_ALLOWED_IMAGE_PREFIXES: ${DOCKER_PROXY_ALLOWED_IMAGE_PREFIXES:-}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:2375/_ping', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    networks: [dockerapi]
+    logging: *logging
+
+volumes:
+  gagent-eval-data:
+    name: gagent-eval-data
+
+networks:
+  front:
+    name: gagent-eval-front
+    internal: false
+    ipam:
+      config:
+        - subnet: 172.36.0.0/24
+  sandbox:
+    name: gagent-eval-sandbox
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.37.0.0/24
+  dockerapi:
+    name: gagent-eval-dockerapi
+    internal: true
+    ipam:
+      config:
+        - subnet: 172.38.0.0/24

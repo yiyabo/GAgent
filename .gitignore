@@ -111,3 +111,5 @@ web-ui/test-results/
 web-ui/playwright-report/
 lightrag.log
 evals/user_journey/runs/
+# Self-evolution harness raw outputs and token ledger (summaries are committed under evals/evolution/<round>/).
+evals/evolution/runs/

@@ -1,0 +1,163 @@
+#!/usr/bin/env python3
+"""Offline self-test for the evolution harness (no network, no LLM, no SSH).
+
+    python3 evals/evolution/selftest.py
+
+Checks oracle helpers, check semantics, failure classification, budget
+accounting and the composed driver script for every public scenario.
+"""
+
+import json
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+
+import controller  # noqa: E402
+import driver  # noqa: E402
+import fixtures as fx  # noqa: E402
+import scenarios  # noqa: E402
+
+KNOWN_CHECK_KINDS = {
+    "run_ok", "no_fallback", "answer_nonempty", "number_line", "number_any", "terms_any", "terms_none",
+    "tool_used", "turns_max", "file_exists", "no_new_files", "file_records", "consistent_count", "consistent_n50",
+}
+
+
+class FixtureTests(unittest.TestCase):
+    def test_n50_matches_definition(self):
+        self.assertEqual(fx.n50([2, 2, 2, 2, 2]), 2)
+        self.assertEqual(fx.n50([10, 5, 3, 2]), 10)  # 10 alone reaches half of 20
+
+    def test_gc_percent(self):
+        self.assertEqual(fx.gc_percent("GGCC"), 100.0)
+        self.assertAlmostEqual(fx.gc_percent("ACGT"), 50.0)
+
+    def test_fasta_round_trip(self):
+        records = [("a", "ACGT" * 30), ("b", "GGCC")]
+        self.assertEqual(fx.parse_fasta(fx.to_fasta(records)), records)
+
+    def test_generators_are_deterministic(self):
+        first = scenarios.s01_seqkit_stats()["fixtures"]["contigs.fasta"]
+        second = scenarios.s01_seqkit_stats()["fixtures"]["contigs.fasta"]
+        self.assertEqual(first, second)
+
+
+class NumberTests(unittest.TestCase):
+    def test_numbers_in_handles_separators_and_signs(self):
+        self.assertEqual(driver.numbers_in("1,234.5 bp and 2024 and -3"), [1234.5, 2024.0, -3.0])
+
+    def test_numbers_do_not_attach_to_identifiers(self):
+        self.assertEqual(driver.numbers_in("ctg01 and N50 is 4321"), [4321.0])
+
+    def test_numbers_on_lines_requires_a_label_on_the_same_line(self):
+        text = "保留 2 条序列\n无关数字 7\n"
+        self.assertEqual(driver.numbers_on_lines(text, ["保留"]), [2.0])
+        self.assertEqual(driver.numbers_on_lines(text, None), [2.0, 7.0])
+
+
+class CheckTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.fasta = self.tmp / "out.fasta"
+        self.fasta.write_text(">a\n" + "A" * 3100 + "\n>b\n" + "C" * 1200 + "\n>c\n" + "G" * 3300 + "\n")
+        self.ctx = {
+            "answers": ["共保留 2 条序列；N50 为 3100。\n- 无关数字 7"],
+            "runs": [{"status": "succeeded", "error": None, "fallback": False, "bailout": False,
+                      "tools_used": ["bio_tools"]}],
+            "files": [{"rel": "out.fasta", "abs": str(self.fasta), "bytes": self.fasta.stat().st_size,
+                       "mtime": self.fasta.stat().st_mtime}],
+        }
+
+    def test_number_line_accepts_labelled_value(self):
+        result = driver.run_check({"kind": "number_line", "value": 2, "terms": ["保留", "条"]}, self.ctx)
+        self.assertTrue(result["passed"])
+
+    def test_number_line_rejects_unlabelled_value(self):
+        result = driver.run_check({"kind": "number_line", "value": 7, "terms": ["保留", "条"]}, self.ctx)
+        self.assertFalse(result["passed"])
+
+    def test_consistent_count_respects_min_len_and_terms(self):
+        check = {"kind": "consistent_count", "pattern": r"out\.fasta$", "format": "fasta", "min_len": 3000,
+                 "terms": ["保留"]}
+        self.assertTrue(driver.run_check(check, self.ctx)["passed"])
+
+    def test_consistent_n50_uses_the_output_file(self):
+        check = {"kind": "consistent_n50", "pattern": r"out\.fasta$", "terms": ["N50"]}
+        self.assertTrue(driver.run_check(check, self.ctx)["passed"])
+
+    def test_file_records_counts_fasta_records(self):
+        check = {"kind": "file_records", "pattern": r"\.fasta$", "format": "fasta", "count": 3}
+        self.assertTrue(driver.run_check(check, self.ctx)["passed"])
+
+    def test_tool_used_and_terms(self):
+        self.assertTrue(driver.run_check({"kind": "tool_used", "name": "bio_tools"}, self.ctx)["passed"])
+        self.assertFalse(driver.run_check({"kind": "terms_none", "terms": ["保留"]}, self.ctx)["passed"])
+        self.assertTrue(driver.run_check({"kind": "terms_any", "terms": ["N50"]}, self.ctx)["passed"])
+
+    def test_unknown_kind_raises(self):
+        with self.assertRaises(ValueError):
+            driver.run_check({"kind": "nope"}, self.ctx)
+
+
+class ClassifyTests(unittest.TestCase):
+    def test_failures_map_to_classes(self):
+        result = {
+            "status": "fail",
+            "checks": [
+                {"kind": "number_line", "passed": False, "label": "count", "observed": "x"},
+                {"kind": "terms_none", "passed": False, "label": "no claim", "observed": "y"},
+                {"kind": "tool_used", "passed": True, "label": "tool", "observed": "z"},
+            ],
+            "judge": [{"id": "clarity", "score": 1, "reason": "partly"}],
+        }
+        classes = [item["class"] for item in controller.classify_failures(result)]
+        self.assertEqual(classes, ["wrong_result", "forbidden_claim_present", "judge_partial"])
+
+    def test_error_without_details_still_reports(self):
+        items = controller.classify_failures({"status": "error", "checks": [], "judge": [], "error": "boom"})
+        self.assertEqual([item["class"] for item in items], ["run_error"])
+
+
+class BudgetTests(unittest.TestCase):
+    def test_ledger_sums_and_stop_line(self):
+        tmp = Path(tempfile.mkdtemp())
+        original = controller.RUNS_DIR
+        controller.RUNS_DIR = tmp
+        try:
+            self.assertEqual(controller.ledger_spent(), 0)
+            controller.ledger_append({"total_tokens": 100})
+            controller.ledger_append({"total_tokens": 250})
+            self.assertEqual(controller.ledger_spent(), 350)
+            json.loads((tmp / "ledger.jsonl").read_text(encoding="utf-8").splitlines()[0])
+        finally:
+            controller.RUNS_DIR = original
+
+
+class ManifestTests(unittest.TestCase):
+    def test_every_public_scenario_is_well_formed(self):
+        for sc_id, builder in sorted(scenarios.BUILDERS.items()):
+            spec = controller.build_spec(builder, set())
+            self.assertEqual(spec["id"], sc_id)
+            for key in ("user_turns", "checks", "fixtures", "budget_tokens", "timeout_seconds"):
+                self.assertIn(key, spec, sc_id)
+            self.assertTrue(spec["user_turns"], sc_id)
+            for check in spec["checks"]:
+                self.assertIn(check["kind"], KNOWN_CHECK_KINDS, (sc_id, check))
+            for judge in spec.get("judge", []):
+                self.assertTrue(judge["rubric"], sc_id)
+            manifest = controller.build_manifest(spec, "selftest")
+            script = controller.compose_script(manifest)
+            compile(script, sc_id, "exec")
+            self.assertEqual(script.decode("utf-8").count("MANIFEST_B64 = "), 1, sc_id)
+
+    def test_pilot_ids_exist(self):
+        for sc_id in scenarios.PILOT:
+            self.assertIn(sc_id, scenarios.BUILDERS)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)
