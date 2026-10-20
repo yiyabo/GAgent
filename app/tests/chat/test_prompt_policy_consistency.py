@@ -147,6 +147,9 @@ def test_deep_think_bio_tools_quick_map_injected_when_available() -> None:
         assert "blast makeblastdb" in prompt
         assert "missing_required_params" in prompt
         assert "retry_hint" not in prompt or "retry" in prompt.lower()
+        # task -> tool routing, so phage questions reach the phage tools instead of being answered from the header
+        for needle in ("genomad end_to_end", "phabox2 phamer", "checkv end_to_end", "gtdbtk classify_wf"):
+            assert needle in prompt
 
 
 def test_deep_think_bio_tools_quick_map_omitted_when_unavailable() -> None:

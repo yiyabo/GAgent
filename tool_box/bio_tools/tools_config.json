@@ -236,10 +236,11 @@
                     "db": {
                         "type": "string",
                         "required": true,
-                        "description": "HMM filename relative to runtime/bio_tools/hmmer/, e.g. Pfam-A.hmm"
+                        "description": "HMM file to index: a name under runtime/bio_tools/hmmer/ (Docker), or the full path of an existing .hmm file such as the output of hmmbuild (native servers)"
                     }
                 },
-                "notes": "db must be an HMM file already uploaded to runtime/bio_tools/hmmer/"
+                "notes": "db must be an HMM file already uploaded to runtime/bio_tools/hmmer/",
+                "native_command": "hmmpress {db}"
             },
             "hmmbuild": {
                 "command": "hmmbuild /work/{output} {input}",
@@ -364,7 +365,7 @@
             "map": {
                 "command": "minimap2 -ax {preset} {reference} {query} > /work/{output}",
                 "description": "Align reads to a reference genome and output in SAM format",
-                "requires_input": true,
+                "requires_input": false,
                 "requires_output": false,
                 "extra_params": {
                     "preset": {
@@ -607,7 +608,7 @@
             "assemble": {
                 "command": "megahit -1 {r1} -2 {r2} -o /work/{output}",
                 "description": "Assemble a metagenome from paired-end Illumina reads",
-                "requires_input": true,
+                "requires_input": false,
                 "requires_output": false,
                 "extra_params": {
                     "r1": {
@@ -684,7 +685,7 @@
             "bin": {
                 "command": "metabat2 -i {contigs} -a {depth} -o /work/{output_prefix}",
                 "description": "Bin contigs into draft genomes using coverage depth and sequence composition",
-                "requires_input": true,
+                "requires_input": false,
                 "requires_output": false,
                 "extra_params": {
                     "contigs": {
@@ -708,7 +709,7 @@
             "depth": {
                 "command": "jgi_summarize_bam_contig_depths --outputDepth /work/{output} {bam_files}",
                 "description": "Calculate per-contig sequencing coverage depth from BAM files (prerequisite for bin operation)",
-                "requires_input": true,
+                "requires_input": false,
                 "requires_output": false,
                 "extra_params": {
                     "output": {
@@ -739,7 +740,7 @@
             "bin": {
                 "command": "concoct --coverage_file /work/{coverage} --contigs_file {contigs} -b /work/{output}",
                 "description": "Bin contigs using coverage depth table and tetranucleotide frequencies",
-                "requires_input": true,
+                "requires_input": false,
                 "requires_output": false,
                 "extra_params": {
                     "coverage": {
@@ -776,7 +777,7 @@
             "bin": {
                 "command": "run_MaxBin.pl -contig {contigs} -out /work/{output} -abundance {abundance}",
                 "description": "Bin contigs using sequencing abundance (coverage) values",
-                "requires_input": true,
+                "requires_input": false,
                 "requires_output": false,
                 "extra_params": {
                     "contigs": {
@@ -813,7 +814,7 @@
             "integrate": {
                 "command": "DAS_Tool -i {bins} -c {contigs} -o /work/{output}",
                 "description": "Integrate multiple binning tool results and output an optimized set of bins",
-                "requires_input": true,
+                "requires_input": false,
                 "requires_output": false,
                 "extra_params": {
                     "bins": {
@@ -911,7 +912,7 @@
             "classify_wf": {
                 "command": "gtdbtk classify_wf --genome_dir {genome_dir} --out_dir /work/{output} --database /work/database -x fa",
                 "description": "Classify genome bins against the GTDB r220 reference database",
-                "requires_input": true,
+                "requires_input": false,
                 "requires_output": false,
                 "extra_params": {
                     "genome_dir": {
@@ -986,7 +987,7 @@
                         "description": "Output directory name, e.g. genomad_provirus_output"
                     }
                 },
-                "native_command": "genomad find-proviruses --threads $GAGENT_CPUS {input} /work/{output} /work/database"
+                "native_command": "genomad annotate --threads $GAGENT_CPUS {input} /work/{output} /work/database && genomad find-proviruses --threads $GAGENT_CPUS {input} /work/{output} /work/database"
             }
         },
         "native": {
@@ -1053,7 +1054,8 @@
                         "required": true,
                         "description": "Output directory name, e.g. checkv_complete_output"
                     }
-                }
+                },
+                "native_command": "checkv contamination {input} /work/{output} -d /work/database -t $GAGENT_CPUS && checkv completeness {input} /work/{output} -d /work/database -t $GAGENT_CPUS && checkv complete_genomes {input} /work/{output}"
             }
         },
         "native": {
@@ -1085,7 +1087,8 @@
                     "min_score": {
                         "type": "number",
                         "required": false,
-                        "description": "Minimum virus score threshold (0-1), default 0.5. Lower values increase recall; higher values increase precision."
+                        "description": "Minimum virus score threshold (0-1), default 0.5. Lower values increase recall; higher values increase precision.",
+                        "default": 0.5
                     },
                     "threads": {
                         "type": "integer",
@@ -1142,6 +1145,40 @@
                     }
                 },
                 "notes": "input must be a reads FASTQ file"
+            },
+            "mem_paired": {
+                "command": "bwa mem -t {threads} {reference} {r1} {r2} > /work/{output}",
+                "description": "Align paired-end reads (two FASTQ files) to an indexed reference with BWA-MEM, output SAM",
+                "requires_input": false,
+                "requires_output": false,
+                "extra_params": {
+                    "reference": {
+                        "type": "string",
+                        "required": true,
+                        "description": "Reference FASTA file; run bwa index on it first"
+                    },
+                    "r1": {
+                        "type": "string",
+                        "required": true,
+                        "description": "Forward reads FASTQ (R1)"
+                    },
+                    "r2": {
+                        "type": "string",
+                        "required": true,
+                        "description": "Reverse reads FASTQ (R2)"
+                    },
+                    "output": {
+                        "type": "string",
+                        "required": true,
+                        "description": "Output SAM filename, e.g. aligned.sam"
+                    },
+                    "threads": {
+                        "type": "integer",
+                        "required": false,
+                        "description": "Number of threads, default 4"
+                    }
+                },
+                "notes": "For single-end reads use bwa mem; for paired-end reads use this operation (r1 and r2)"
             }
         },
         "native": {
@@ -1175,7 +1212,7 @@
             "align": {
                 "command": "bowtie2 -p {threads} -x {index} -1 {r1} -2 {r2} -S /work/{output}",
                 "description": "Align paired-end reads to a reference genome; outputs SAM format",
-                "requires_input": true,
+                "requires_input": false,
                 "requires_output": false,
                 "extra_params": {
                     "index": {
@@ -1223,7 +1260,7 @@
             "easy_search": {
                 "command": "mmseqs easy-search {query} {target} /work/{output} /work/tmp --search-type {search_type} --threads {threads}",
                 "description": "Sequence similarity search (BLAST-like but much faster)",
-                "requires_input": true,
+                "requires_input": false,
                 "requires_output": false,
                 "extra_params": {
                     "query": {
@@ -1244,7 +1281,8 @@
                     "search_type": {
                         "type": "integer",
                         "required": false,
-                        "description": "Search type: 1 = protein vs protein, 3 = nucleotide vs nucleotide (default 3)"
+                        "description": "Search type: 1 = protein vs protein, 3 = nucleotide vs nucleotide (default 3)",
+                        "default": 3
                     },
                     "threads": {
                         "type": "integer",
@@ -1267,7 +1305,8 @@
                     "min_seq_id": {
                         "type": "number",
                         "required": false,
-                        "description": "Minimum sequence identity threshold (0-1), default 0.9 (90% identity)"
+                        "description": "Minimum sequence identity threshold (0-1), default 0.9 (90% identity)",
+                        "default": 0.9
                     },
                     "threads": {
                         "type": "integer",
@@ -1301,17 +1340,20 @@
                     "quality": {
                         "type": "integer",
                         "required": false,
-                        "description": "Phred quality score threshold for 3' end trimming, default 20"
+                        "description": "Phred quality score threshold for 3' end trimming, default 20",
+                        "default": 20
                     },
                     "min_length": {
                         "type": "integer",
                         "required": false,
-                        "description": "Minimum read length to keep after trimming (bp), default 20"
+                        "description": "Minimum read length to keep after trimming (bp), default 20",
+                        "default": 20
                     },
                     "cores": {
                         "type": "integer",
                         "required": false,
-                        "description": "Number of CPU cores, default 1"
+                        "description": "Number of CPU cores, default 1",
+                        "default": 1
                     }
                 },
                 "notes": "input must be a single-end FASTQ file; adapters are detected automatically"
@@ -1319,7 +1361,7 @@
             "trim_paired": {
                 "command": "trim_galore --paired --quality {quality} --length {min_length} --cores {cores} -o /work {r1} {r2}",
                 "description": "Trim adapters and low-quality bases from paired-end reads while maintaining read pairing",
-                "requires_input": true,
+                "requires_input": false,
                 "requires_output": false,
                 "extra_params": {
                     "r1": {
@@ -1335,17 +1377,20 @@
                     "quality": {
                         "type": "integer",
                         "required": false,
-                        "description": "Phred quality score threshold for 3' end trimming, default 20"
+                        "description": "Phred quality score threshold for 3' end trimming, default 20",
+                        "default": 20
                     },
                     "min_length": {
                         "type": "integer",
                         "required": false,
-                        "description": "Minimum read length to keep after trimming (bp), default 20"
+                        "description": "Minimum read length to keep after trimming (bp), default 20",
+                        "default": 20
                     },
                     "cores": {
                         "type": "integer",
                         "required": false,
-                        "description": "Number of CPU cores, default 1"
+                        "description": "Number of CPU cores, default 1",
+                        "default": 1
                     }
                 }
             }
@@ -1381,7 +1426,8 @@
                     "preset": {
                         "type": "string",
                         "required": false,
-                        "description": "Sequencing platform preset: ont (Oxford Nanopore) or pacbio (PacBio), default ont"
+                        "description": "Sequencing platform preset: ont (Oxford Nanopore) or pacbio (PacBio), default ont",
+                        "default": "ont"
                     },
                     "threads": {
                         "type": "integer",
@@ -1444,7 +1490,7 @@
             "compare": {
                 "command": "fastANI -q {query} -r {reference} -o /work/{output} -t {threads}",
                 "description": "Compute the ANI between a query genome and a reference genome",
-                "requires_input": true,
+                "requires_input": false,
                 "requires_output": false,
                 "extra_params": {
                     "query": {
@@ -1558,7 +1604,7 @@
             "run": {
                 "command": "nextflow run {pipeline} -profile docker -work-dir /work/work",
                 "description": "Execute a Nextflow pipeline",
-                "requires_input": true,
+                "requires_input": false,
                 "requires_output": false,
                 "extra_params": {
                     "pipeline": {
@@ -1586,7 +1632,7 @@
             "run": {
                 "command": "snakemake -s {snakefile} --cores {cores} --directory /work",
                 "description": "Execute a Snakemake workflow",
-                "requires_input": true,
+                "requires_input": false,
                 "requires_output": false,
                 "extra_params": {
                     "snakefile": {
@@ -1605,7 +1651,7 @@
             "dry_run": {
                 "command": "snakemake -s {snakefile} -n --directory /work",
                 "description": "Preview the execution plan without running any jobs (dry-run mode)",
-                "requires_input": true,
+                "requires_input": false,
                 "requires_output": false,
                 "extra_params": {
                     "snakefile": {

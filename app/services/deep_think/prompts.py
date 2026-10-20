@@ -403,7 +403,19 @@ def _build_bio_tools_quick_map_block(agent: "DeepThinkAgent") -> str:
         "- blast blastn: {\"tool_name\": \"blast\", \"operation\": \"blastn\", \"input_file\": \"/path/to/query.fasta\", \"params\": {\"db\": \"mydb\", \"output\": \"results.txt\"}}\n"
         "- samtools sort: {\"tool_name\": \"samtools\", \"operation\": \"sort\", \"input_file\": \"/path/to/reads.bam\", \"params\": {\"output\": \"sorted.bam\"}}\n"
         "For inline sequence text (no file), pass sequence_text instead of input_file.\n"
-        "If bio_tools returns error_code='missing_required_params', read missing_params and retry_hint, then retry with corrected params.\n\n"
+        "If bio_tools returns error_code='missing_required_params', read missing_params and retry_hint, then retry with corrected params.\n"
+        "Which tool for what (use the specialised tool, and answer from its output, not from the file name, header or memory):\n"
+        "- phage/virus identity, taxonomy, lifestyle, host: genomad end_to_end; phabox2 phamer (phage or not), phagcn (taxonomy), "
+        "phatyp (lifestyle), cherry (host); virsorter2 run; vibrant run; iphop predict (host range).\n"
+        "- phage genome quality/completeness: checkv end_to_end. Bacterial genome quality: checkm lineage_wf; "
+        "bacterial taxonomy: gtdbtk classify_wf (genome_dir = a directory of .fa files).\n"
+        "- annotation: bakta annotate (bacteria), prodigal (genes only), genomad annotate (viral genes).\n"
+        "- reads: trim_galore; map with bwa mem / bowtie2 (short) or minimap2 / ngmlr (long), then samtools view, sort, index, stats; "
+        "assemble with megahit (short) or flye (long); bin with metabat2 (needs depth) then checkm.\n"
+        "- paired-end reads with bwa: use bwa mem_paired (r1, r2); bwa mem takes a single file.\n"
+        "A tool that reports unavailable or a database error cannot be worked around by guessing: tell the user.\n"
+        "Slow tools (genomad, virsorter2, vibrant, bakta, checkm, gtdbtk, phabox2, flye, megahit): run with background=true, then "
+        "job_status with params={'wait_seconds': 60} (it returns when the job ends or after that long); never poll in a tight loop.\n\n"
     )
 
 

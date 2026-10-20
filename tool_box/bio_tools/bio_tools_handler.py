@@ -373,6 +373,13 @@ def _validate_and_normalize_operation_params(
 
         raise UnsafeParameterError(key)
 
+    # Optional parameters the command template needs get their documented default, so a caller that follows
+    # `help` (where they are optional) is not rejected for leaving them out.
+    extra = op_config.get("extra_params")
+    for key, meta in (extra.items() if isinstance(extra, dict) else ()):
+        if isinstance(meta, dict) and meta.get("default") is not None and key not in normalized:
+            normalized[key] = str(meta["default"])
+
     return normalized
 
 
@@ -1592,23 +1599,49 @@ def _resolve_bio_tools_job_payload(job_id: str) -> Optional[Dict[str, Any]]:
     return payload
 
 
-def _build_job_status_result(job_id: str) -> Dict[str, Any]:
-    job_payload = _resolve_bio_tools_job_payload(job_id)
-    if job_payload is None:
-        return {
-            "success": False,
-            "operation": JOB_STATUS_OPERATION,
-            "job_id": job_id,
-            "error": f"Background bio_tools job '{job_id}' not found.",
-        }
+_JOB_TERMINAL_STATUSES = {"succeeded", "failed", "cancelled", "canceled", "completed", "error", "timeout"}
+MAX_JOB_STATUS_WAIT_SECONDS = 90.0
 
-    return {
+
+def _job_status_wait_seconds(params: Optional[Dict[str, Any]]) -> float:
+    try:
+        wanted = float((params or {}).get("wait_seconds") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+    return max(0.0, min(wanted, MAX_JOB_STATUS_WAIT_SECONDS))
+
+
+async def _build_job_status_result(job_id: str, wait_seconds: float = 0.0) -> Dict[str, Any]:
+    """Status of a background job. With wait_seconds the call returns as soon as the job ends, or after that long
+    (a model that cannot sleep would otherwise poll in a tight loop and run out of steps)."""
+    deadline = time.monotonic() + wait_seconds
+    while True:
+        job_payload = _resolve_bio_tools_job_payload(job_id)
+        if job_payload is None:
+            return {
+                "success": False,
+                "operation": JOB_STATUS_OPERATION,
+                "job_id": job_id,
+                "error": f"Background bio_tools job '{job_id}' not found.",
+            }
+        status = str(job_payload.get("status") or "").lower()
+        if status in _JOB_TERMINAL_STATUSES or time.monotonic() >= deadline:
+            break
+        await asyncio.sleep(2.0)
+
+    result: Dict[str, Any] = {
         "success": True,
         "operation": JOB_STATUS_OPERATION,
         "job_id": job_id,
         "status": job_payload.get("status"),
         "job": job_payload,
     }
+    if status not in _JOB_TERMINAL_STATUSES:
+        result["next_step"] = (
+            "The job is still running. Call job_status again with params={'wait_seconds': 60} to wait up to 60 s "
+            "for it to finish; do not poll in a tight loop."
+        )
+    return result
 
 
 def _run_background_bio_tools_job(
@@ -1842,7 +1875,7 @@ async def bio_tools_handler(
                 error="job_id is required for operation='job_status'.",
                 error_code="missing_job_id",
             )
-        return _build_job_status_result(requested_job_id)
+        return await _build_job_status_result(requested_job_id, _job_status_wait_seconds(params))
     
     # ：
     if operation == "help":
@@ -2016,6 +2049,12 @@ async def bio_tools_handler(
     if normalized_input_file:
         provided_keys.add("input")
     if output_file:
+        provided_keys.add("output")
+    if "output" in required_params and "output" not in provided_keys:
+        # The output name only labels a file or folder inside the run's own directory; a caller that did not
+        # choose one should get a sensible name rather than a round trip to retry with one.
+        clean_params = dict(clean_params or {})
+        clean_params["output"] = f"{tool_name}_{operation}_out"
         provided_keys.add("output")
     missing_params = [p for p in required_params if p not in provided_keys]
     if missing_params:

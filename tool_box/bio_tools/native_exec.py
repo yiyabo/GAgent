@@ -335,6 +335,10 @@ def build_job(
             raise NativeError("Invalid/unsafe parameter: %s" % key, "invalid_parameter")
 
     values = {"input": input_file or "", "output": output_file or ""}  # type: Dict[str, str]
+    # Documented defaults of optional parameters (threads and cores come from the tool's CPU allocation below).
+    for key, meta in (op.get("extra_params") or {}).items() if isinstance(op.get("extra_params"), dict) else ():
+        if isinstance(meta, dict) and meta.get("default") is not None and key not in ("threads", "cores"):
+            values[key] = str(meta["default"])
     values.update(raw)
     fields = _template_fields(template)
     if "query" in fields and not values.get("query") and values.get("input"):
@@ -343,7 +347,9 @@ def build_job(
         values["output"] = "%s_%s.out" % (tool, operation)
     values["output_dir"] = values.get("output_dir") or "."
 
-    missing = sorted(f for f in fields if not f.startswith("_") and values.get(f) in ("", None))
+    missing = sorted(
+        f for f in fields if not f.startswith("_") and f not in ("threads", "cores") and values.get(f) in ("", None)
+    )
     if missing:
         raise NativeError("Missing required parameters for %s.%s: %s" % (tool, operation, ", ".join(missing)),
                           "missing_required_params")
@@ -365,8 +371,9 @@ def build_job(
     cpus = _clamp_cpus(spec, values.get("threads"))
     if "threads" in fields:
         rendered["threads"] = shlex.quote(str(cpus))
-    if "cores" in fields and values.get("cores"):
-        rendered["cores"] = shlex.quote(str(_clamp_cpus(spec, values.get("cores"))))
+    if "cores" in fields:
+        default_cores = ((op.get("extra_params") or {}).get("cores") or {}).get("default")
+        rendered["cores"] = shlex.quote(str(_clamp_cpus(spec, values.get("cores") or default_cores)))
 
     rendered["_work"] = _real(work_dir)
     rendered["_db"] = _real(database_path) if database_path else ""

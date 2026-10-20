@@ -59,6 +59,14 @@ class PathMap:
             "%s is not in a directory the host runner can read" % text, "path_not_allowed"
         )
 
+    def text_to_container(self, text: Optional[str]) -> Optional[str]:
+        """Command lines and tool output mention host paths; show the ones the caller can use."""
+        if not text:
+            return text
+        for container, host in sorted(self.pairs, key=lambda pair: -len(pair[1])):
+            text = text.replace(host, container)
+        return text
+
     def to_container(self, path: str) -> str:
         text = str(path)
         for container, host in self.pairs:
@@ -148,6 +156,33 @@ def _failure(tool: str, operation: str, error: str, code: str, **extra: Any) -> 
     }
     result.update(extra)
     return result
+
+
+MAX_PRODUCED_FILES = 60
+
+
+def _list_produced_files(work_dir: str) -> List[Dict[str, Any]]:
+    """What the run left in its work directory (relative path and size), so a caller can see what a tool that
+    writes a directory actually produced. Capped; deeper levels are summarised by the directory entry."""
+    found = []  # type: List[Dict[str, Any]]
+    base_depth = work_dir.rstrip(os.sep).count(os.sep)
+    try:
+        for root, dirs, files in os.walk(work_dir):
+            dirs.sort()
+            if root.count(os.sep) - base_depth >= 3:
+                dirs[:] = []
+            for name in sorted(files):
+                full = os.path.join(root, name)
+                try:
+                    size = os.path.getsize(full)
+                except OSError:
+                    continue
+                found.append({"path": os.path.relpath(full, work_dir), "size": size})
+                if len(found) >= MAX_PRODUCED_FILES:
+                    return found
+    except OSError:
+        pass
+    return found
 
 
 async def run_native_bio_tool(
@@ -255,21 +290,24 @@ async def run_native_bio_tool(
         "operation": operation,
         "run_id": run_id,
         "state": state,
-        "command": status.get("command"),
+        "command": mapping.text_to_container(status.get("command")),
         "exit_code": status.get("exit_code"),
         "duration_seconds": duration,
-        "stdout": _read_tail(os.path.join(run_dir, native_exec.STDOUT_FILENAME)),
-        "stderr": _read_tail(os.path.join(run_dir, native_exec.STDERR_FILENAME)),
+        "stdout": mapping.text_to_container(_read_tail(os.path.join(run_dir, native_exec.STDOUT_FILENAME))),
+        "stderr": mapping.text_to_container(_read_tail(os.path.join(run_dir, native_exec.STDERR_FILENAME))),
         "execution_mode": "native",
         "execution_host": status.get("host") or "native",
         "slurm_job_id": status.get("slurm_job_id"),
         "work_dir": mapping.to_container(work_dir),
     }
+    produced = _list_produced_files(os.path.join(run_dir, native_exec.WORK_DIRNAME))
+    if produced:
+        result["produced_files"] = produced
     output_path = status.get("output_path")
     if output_path and state == "succeeded":
         result["output_path"] = mapping.to_container(output_path)
     if state != "succeeded":
-        result["error"] = status.get("error") or (
+        result["error"] = mapping.text_to_container(status.get("error")) or (
             "cancelled while waiting for a slot" if cancelled_for_queue else "%s.%s failed" % (tool_name, operation)
         )
         if status.get("error_code"):

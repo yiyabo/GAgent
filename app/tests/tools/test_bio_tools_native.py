@@ -63,6 +63,8 @@ def _job(dirs, tool, op, **kw):
     kw.setdefault("output_file", None)
     kw.setdefault("params", {})
     kw.setdefault("timeout", None)
+    if kw.pop("database", False):
+        kw["database_path"] = str(dirs["tmp"])
     return native_exec.build_job(
         REAL_CONFIG, tool=tool, operation=op, work_dir=str(dirs["work"]), read_roots=[str(dirs["read_root"])], **kw
     )
@@ -454,6 +456,35 @@ def test_the_runner_resumes_runs_that_were_submitted_before_it_restarted(world) 
         os.path.join(native_exec.runs_root(str(world["bio"])), run_id, "status.json"))["state"] == "cancelled"
 
 
+def test_a_run_whose_directory_was_deleted_does_not_stop_the_runner(world) -> None:
+    import shutil
+
+    source = world["runtime"] / "session_a" / "in.txt"
+    source.parent.mkdir(exist_ok=True)
+    source.write_text("still served\n")
+    (world["slurm"]["state"] / "hold").write_text("")
+    with RunnerThread(world["runner"]):
+        async def start_then_delete() -> str:
+            mapping = native_client.PathMap([(str(world["runtime"]), str(world["runtime"]))])
+            task = asyncio.ensure_future(native_client.run_native_bio_tool(
+                config=world["config"], runtime_dir=str(world["bio"]),
+                container_runtime_root=str(world["runtime"]), tool_name="fake", operation="copy",
+                input_file=str(source), output_file=None, params={"output": "o.txt"}, timeout=None, path_map=mapping))
+            await asyncio.sleep(0.8)
+            run_dir = next(Path(native_exec.runs_root(str(world["bio"]))).iterdir())
+            shutil.rmtree(run_dir)
+            task.cancel()
+            return run_dir.name
+        gone = asyncio.run(start_then_delete())
+        for state_file in world["slurm"]["state"].glob("state.*"):
+            state_file.write_text("COMPLETED")  # the orphaned job ends; the runner has no directory to report to
+        time.sleep(0.8)
+        assert gone not in world["runner"].active
+        (world["slurm"]["state"] / "hold").unlink()
+        result = _run(world, input_file=str(source), params={"output": "out.txt"})
+    assert result["success"] is True, result
+
+
 # --------------------------------------------------------------------------- path map
 
 def test_path_map_translates_container_paths_both_ways() -> None:
@@ -641,3 +672,117 @@ def test_the_schema_and_prompt_catalogs_follow_native_mode() -> None:
         done = subprocess.run([sys.executable, "-c", code], cwd=root, capture_output=True, text=True,
                               env={**os.environ, "BIO_TOOLS_EXECUTION_MODE": mode})
         assert done.stdout.strip().splitlines()[-1] == expected, done.stderr[-500:]
+
+
+# --------------------------------------------------------------------------- found by calling every tool the way the agent does
+
+def test_optional_parameters_get_their_documented_default(dirs) -> None:
+    job = _job(dirs, "virsorter2", "run", input_file=str(dirs["query"]), params={"output": "vs"}, database=True)
+    assert "--min-score 0.5" in job["command"] and "-j 8" in job["command"]
+    job = _job(dirs, "trim_galore", "trim", input_file=str(dirs["query"]))
+    assert "--quality 20" in job["command"] and "--length 20" in job["command"] and "--cores 1" in job["command"]
+    job = _job(dirs, "ngmlr", "map", input_file=str(dirs["query"]),
+               params={"reference": str(dirs["query"]), "output": "o.sam"})
+    assert " -x ont " in job["command"]
+    job = _job(dirs, "bwa", "mem", input_file=str(dirs["query"]), params={"reference": str(dirs["query"]), "output": "o.sam"})
+    assert "-t 8" in job["command"]  # threads follow the tool's CPU allocation
+
+
+def test_the_app_side_fills_defaults_too() -> None:
+    filled = handler._validate_and_normalize_operation_params("mmseqs2", "easy_linclust", {"output": "cl"})
+    assert filled["min_seq_id"] == "0.9"
+    kept = handler._validate_and_normalize_operation_params("mmseqs2", "easy_linclust", {"output": "cl", "min_seq_id": "0.5"})
+    assert kept["min_seq_id"] == "0.5"
+
+
+def test_an_operation_only_asks_for_input_when_its_command_uses_it() -> None:
+    for tool, info in REAL_CONFIG.items():
+        for op_name, op in info["operations"].items():
+            if op.get("requires_input"):
+                assert "{input}" in op["command"], f"{tool}.{op_name} requires input but never uses it"
+
+
+def test_hmmpress_indexes_an_existing_hmm_file_given_by_path(dirs) -> None:
+    hmm = dirs["read_root"] / "session_x" / "fam.hmm"
+    hmm.write_text("HMMER3/f\n")
+    job = _job(dirs, "hmmer", "hmmpress", params={"db": str(hmm)})
+    assert job["command"] == f"hmmpress {os.path.realpath(hmm)}"
+
+
+def test_commands_that_need_an_earlier_step_run_it_themselves() -> None:
+    complete = REAL_CONFIG["checkv"]["operations"]["complete_genomes"]["native_command"]
+    assert complete.index("checkv contamination") < complete.index("checkv completeness") < complete.index("checkv complete_genomes")
+    prov = REAL_CONFIG["genomad"]["operations"]["find_proviruses"]["native_command"]
+    assert prov.index("genomad annotate") < prov.index("genomad find-proviruses")
+
+
+def test_results_show_container_paths_and_the_files_a_run_produced(world) -> None:
+    source = world["runtime"] / "session_a" / "in.txt"
+    source.parent.mkdir()
+    source.write_text("hello native\n")
+    with RunnerThread(world["runner"]):
+        result = _run(world, input_file=str(source), params={"output": "out.txt"})
+    assert result["success"] is True, result
+    assert {"path": "out.txt", "size": len("hello native\n")} in result["produced_files"]
+
+
+def test_path_map_rewrites_host_paths_in_text() -> None:
+    mapping = native_client.PathMap([("/app/runtime", "/home/u/gagent/runtime")])
+    text = "seqkit stats /home/u/gagent/runtime/session_a/x.fa -o /home/u/gagent/runtime/bio_tools/_native/runs/1/work/o"
+    assert mapping.text_to_container(text) == "seqkit stats /app/runtime/session_a/x.fa -o /app/runtime/bio_tools/_native/runs/1/work/o"
+    assert mapping.text_to_container(None) is None
+
+
+def test_job_status_can_wait_for_the_job_instead_of_being_polled(monkeypatch) -> None:
+    states = iter(["running", "running", "succeeded"])
+    current = {"status": "running"}
+
+    def payload(job_id):
+        current["status"] = next(states, "succeeded")
+        return {"status": current["status"], "job_type": handler.BIO_TOOLS_BACKGROUND_JOB_TYPE}
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(handler, "_resolve_bio_tools_job_payload", payload)
+    monkeypatch.setattr(handler.asyncio, "sleep", no_sleep)
+    waited = asyncio.run(handler._build_job_status_result("j1", wait_seconds=30))
+    assert waited["status"] == "succeeded" and "next_step" not in waited
+
+    monkeypatch.setattr(handler, "_resolve_bio_tools_job_payload", lambda job_id: {"status": "running"})
+    immediate = asyncio.run(handler._build_job_status_result("j1"))
+    assert immediate["status"] == "running" and "wait_seconds" in immediate["next_step"]
+
+
+def test_job_status_wait_is_capped_and_ignores_junk() -> None:
+    assert handler._job_status_wait_seconds({"wait_seconds": 9999}) == handler.MAX_JOB_STATUS_WAIT_SECONDS
+    assert handler._job_status_wait_seconds({"wait_seconds": "abc"}) == 0.0
+    assert handler._job_status_wait_seconds(None) == 0.0
+
+
+def test_bwa_has_a_paired_end_alignment(dirs) -> None:
+    r1 = dirs["read_root"] / "session_x" / "r1.fq"
+    r2 = dirs["read_root"] / "session_x" / "r2.fq"
+    r1.write_text("@a\nACGT\n+\nIIII\n")
+    r2.write_text("@a\nACGT\n+\nIIII\n")
+    job = _job(dirs, "bwa", "mem_paired",
+               params={"reference": str(dirs["query"]), "r1": str(r1), "r2": str(r2), "output": "o.sam"})
+    assert f"{os.path.realpath(r1)} {os.path.realpath(r2)} > " in job["command"]
+
+
+def test_a_missing_output_name_is_filled_in_before_execution(monkeypatch, tmp_path: Path) -> None:
+    seen: Dict[str, Any] = {}
+
+    async def fake_execute(**kwargs):
+        seen.update(kwargs)
+        return {"success": True}
+
+    monkeypatch.setattr(handler, "_execute_bio_tool_once", fake_execute)
+    source = tmp_path / "in.fa"
+    source.write_text(">a\nACGT\n")
+    asyncio.run(handler.bio_tools_handler(tool_name="seqkit", operation="seq", input_file=str(source)))
+    assert seen["params"]["output"] == "seqkit_seq_out"
+    seen.clear()
+    asyncio.run(handler.bio_tools_handler(tool_name="seqkit", operation="seq", input_file=str(source),
+                                          params={"output": "mine.fa"}))
+    assert seen["params"]["output"] == "mine.fa"
