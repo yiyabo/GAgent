@@ -179,7 +179,10 @@ class Runner:
                 continue
             if not os.path.isfile(os.path.join(run_dir, native_exec.REQUEST_FILENAME)):
                 continue
-            self._claim(run_id, run_dir)
+            try:
+                self._claim(run_id, run_dir)
+            except OSError:
+                logger.exception("run %s: could not be claimed; skipping it", run_id)
 
     def _reject(self, run_dir: str, error: str, code: str) -> None:
         logger.warning("rejected %s: %s", os.path.basename(run_dir), error)
@@ -293,6 +296,13 @@ class Runner:
             return
         for run_id, status in list(self.active.items()):
             run_dir = os.path.join(self._runs, run_id)
+            if not os.path.isdir(run_dir):
+                # Someone removed the run's directory (cleanup, a manual delete). There is nowhere to report to,
+                # and one such run must not stop the others from being served.
+                self._run("scancel", str(status["slurm_job_id"]))
+                self.active.pop(run_id, None)
+                logger.warning("run %s: its directory is gone; cancelled slurm job %s", run_id, status["slurm_job_id"])
+                continue
             if os.path.exists(os.path.join(run_dir, native_exec.CANCEL_FILENAME)) and not status.get("cancel_sent"):
                 self._run("scancel", str(status["slurm_job_id"]))
                 status["cancel_sent"] = True
@@ -306,26 +316,34 @@ class Runner:
         elif done is None:
             return  # the scheduler did not answer; keep what we know
         for run_id, status in list(self.active.items()):
-            job_id = str(status["slurm_job_id"])
-            run_dir = os.path.join(self._runs, run_id)
-            state = listed.get(job_id) or self._accounting_state(job_id)
-            if state is None:
-                if _now() - float(status.get("submitted_at") or 0) > VANISHED_GRACE_SECONDS:
-                    self._finish(run_id, run_dir, status, "failed", error="the scheduler lost the job")
-                continue
-            if state in _SLURM_ACTIVE:
-                mapped = _SLURM_ACTIVE[state]
-                if mapped != status.get("state"):
-                    status["state"] = mapped
-                    if mapped == "running":
-                        status.setdefault("started_at", _now())
-                    native_exec.write_json_atomic(os.path.join(run_dir, native_exec.STATUS_FILENAME), status)
-                continue
-            base = state.split()[0]
-            final = _SLURM_FINAL.get(base)
-            if final is None:
-                continue
-            self._finish(run_id, run_dir, status, final)
+            try:
+                self._advance(run_id, status, listed)
+            except OSError:
+                logger.exception("run %s: could not record its progress; dropping it", run_id)
+                self._run("scancel", str(status["slurm_job_id"]))
+                self.active.pop(run_id, None)
+
+    def _advance(self, run_id: str, status: Dict[str, Any], listed: Dict[str, str]) -> None:
+        job_id = str(status["slurm_job_id"])
+        run_dir = os.path.join(self._runs, run_id)
+        state = listed.get(job_id) or self._accounting_state(job_id)
+        if state is None:
+            if _now() - float(status.get("submitted_at") or 0) > VANISHED_GRACE_SECONDS:
+                self._finish(run_id, run_dir, status, "failed", error="the scheduler lost the job")
+            return
+        if state in _SLURM_ACTIVE:
+            mapped = _SLURM_ACTIVE[state]
+            if mapped != status.get("state"):
+                status["state"] = mapped
+                if mapped == "running":
+                    status.setdefault("started_at", _now())
+                native_exec.write_json_atomic(os.path.join(run_dir, native_exec.STATUS_FILENAME), status)
+            return
+        base = state.split()[0]
+        final = _SLURM_FINAL.get(base)
+        if final is None:
+            return
+        self._finish(run_id, run_dir, status, final)
 
     def _accounting_state(self, job_id: str) -> Optional[str]:
         done = self._run("sacct", "-n", "-P", "-X", "-j", job_id, "-o", "State")

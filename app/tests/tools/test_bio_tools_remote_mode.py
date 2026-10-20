@@ -1287,7 +1287,8 @@ def test_missing_required_params_error_includes_retry_hint() -> None:
     assert result["error_code"] == "missing_required_params"
     assert "missing_params" in result
     assert "pattern" in result["missing_params"]
-    assert "output" in result["missing_params"]
+    # a missing output name is filled in (it only labels a file inside the run's own directory)
+    assert "output" not in result["missing_params"]
     assert "accepted_params" in result
     assert "retry_hint" in result
     hint = result["retry_hint"]
