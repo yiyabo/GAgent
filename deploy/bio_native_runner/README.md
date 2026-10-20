@@ -68,3 +68,20 @@ CONDA_ENVS_PATH=/data1/gagent/conda/envs CONDA_PKGS_DIRS=/data1/gagent/conda/pkg
 
 Databases for the `database: {"subdir": ...}` tools live under `/data1/gagent/databases/<subdir>`; a
 tool whose directory is empty answers `database_unavailable`.
+
+## Reference databases (620b)
+
+`mkdbs.sh <name>` installs one database under `/data1/gagent/databases/<name>` (run it with `sbatch`).
+Installed: genomad, checkv, checkm, bakta (light), virsorter2, vibrant (about 33 GB). Not installed:
+gtdbtk (about 110 GB) and iphop (several hundred GB); those tools answer `database_unavailable`.
+
+## Environment fixes that are not in the package defaults
+
+- `genomad`: needs `tf-keras` and `TF_USE_LEGACY_KERAS=1` (Keras 3 rejects its models). The variable is stored in the
+  environment (`conda env config vars set -n genomad TF_USE_LEGACY_KERAS=1`).
+- `virsorter2`: build it together with its own dependencies, because the runner uses `--use-conda-off` and
+  `virsorter setup --skip-deps-install` (its bundled mamba is broken):
+  `virsorter=2.2.4 last ncbi-genome-download ruamel.yaml prodigal=2.6 screed=1 "hmmer!=3.3.1" scikit-learn=0.22.1
+  imbalanced-learn pandas=1.2 seaborn "numpy<1.24" python=3.8`.
+- `vibrant`: exits 0 even when it fails, so its native command also checks that the output folder is not empty.
+- `checkm`: reads its data from `CHECKM_DATA_PATH` (set by the native command).

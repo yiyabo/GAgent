@@ -865,7 +865,7 @@
                     }
                 },
                 "notes": "input must be the absolute path to a directory containing bin FASTA files (.fa suffix); database is mounted automatically",
-                "native_command": "CHECKM_DATA_PATH=/work/database checkm lineage_wf -t $GAGENT_CPUS -x fa --tabulated -f /work/{output} {input} /work/{output_dir}"
+                "native_command": "CHECKM_DATA_PATH=/work/database checkm lineage_wf -t $GAGENT_CPUS -x fa --tab_table -f /work/{output} {input} /work/{output_dir}"
             },
             "qa": {
                 "command": "checkm qa -o 2 -f /work/{output} --tabulated /work/{tree} {input}",
@@ -889,7 +889,7 @@
                         "description": "Path to the marker file from the lineage_wf output directory"
                     }
                 },
-                "native_command": "CHECKM_DATA_PATH=/work/database checkm qa -o 2 -f /work/{output} --tabulated {tree} {input}"
+                "native_command": "CHECKM_DATA_PATH=/work/database checkm qa -o 2 -f /work/{output} --tab_table {tree} {input}"
             }
         },
         "native": {
@@ -1500,7 +1500,7 @@
                     }
                 },
                 "notes": "input must be a contigs FASTA file; sequences shorter than 1 kb are recommended to be filtered out first",
-                "native_command": "VIBRANT_run.py -d /work/database/databases -i {input} -o /work/{output} -t {threads}"
+                "native_command": "VIBRANT_run.py -d /work/database/databases -i {input} -folder /work/{output} -t {threads} && test -n \"$(ls -A /work/{output} 2>/dev/null)\""
             }
         },
         "native": {
