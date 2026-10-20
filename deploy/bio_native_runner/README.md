@@ -72,8 +72,12 @@ tool whose directory is empty answers `database_unavailable`.
 ## Reference databases (620b)
 
 `mkdbs.sh <name>` installs one database under `/data1/gagent/databases/<name>` (run it with `sbatch`).
-Installed: genomad, checkv, checkm, bakta (light), virsorter2, vibrant (about 33 GB). Not installed:
-gtdbtk (about 110 GB) and iphop (several hundred GB); those tools answer `database_unavailable`.
+Installed: genomad, checkv, checkm, bakta (light), virsorter2, vibrant, phabox2, gtdbtk (release 214, 82 GB, the
+release GTDB-Tk 2.3.2 is built for) and iphop (Aug23_rw, matching iPHoP 1.3.x; the "latest" database needs 1.4).
+Tools whose database is missing answer `database_unavailable`. `mkdbs.sh` downloads in parallel parts (the servers give
+about 5 MB/s per connection) and `KEEP_STAGE=1` resumes an interrupted run. Submit it with `sbatch --export=KEEP_STAGE=1`
+or plain `sbatch`; do not use `--export=ALL` from a shell that loaded modules (it breaks curl's libraries) and give
+iphop at least 32 GB of memory (8 GB was OOM-killed while unpacking).
 
 ## Environment fixes that are not in the package defaults
 

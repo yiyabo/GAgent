@@ -193,6 +193,8 @@ def test_native_commands_use_the_flags_the_installed_versions_accept() -> None:
     # VIBRANT's -o is an ORF count, the output folder is -folder; it also exits 0 on failure.
     assert "-folder /work/{output}" in ops[("vibrant", "run")] and " -o " not in ops[("vibrant", "run")]
     assert "test -n" in ops[("vibrant", "run")]
+    gtdbtk = REAL_CONFIG["gtdbtk"]["operations"]["classify_wf"]["native_command"]
+    assert "--skip_ani_screen" in gtdbtk and gtdbtk.startswith("GTDBTK_DATA_PATH=/work/database ")  # 2.3.2 refuses to run without one of --skip_ani_screen/--mash_db
     assert "--composition_file {contigs}" in ops[("concoct", "bin")] and "--contigs_file" not in ops[("concoct", "bin")]
 
 
