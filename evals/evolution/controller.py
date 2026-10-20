@@ -84,6 +84,9 @@ def build_manifest(spec, round_id, guard_tokens=0):
     fixtures_b64 = {
         name: base64.b64encode(data).decode("ascii") for name, data in spec["fixtures"].items()
     }
+    planted_b64 = {
+        name: base64.b64encode(data).decode("ascii") for name, data in (spec.get("planted") or {}).items()
+    }
     turns = spec["user_turns"]
     return {
         "round": round_id,
@@ -93,6 +96,7 @@ def build_manifest(spec, round_id, guard_tokens=0):
             "persona": spec.get("persona", ""),
             "user_turns": turns,
             "fixtures": fixtures_b64,
+            "planted": planted_b64,
         },
         "checks": spec.get("checks", []),
         "judge": spec.get("judge", []),
@@ -293,9 +297,12 @@ def effective_status(result):
 def v2_status(result, round_id):
     """Status after the route policy, an offline rescore or a rerun; a rerun wins over a rescore."""
     sid = result["scenario"]
-    rerun = RUNS_DIR / f"{round_id}-v2" / sid / "result.json"
-    if rerun.exists():
-        return f"{effective_status(json.loads(rerun.read_text(encoding='utf-8')))}（重跑）"
+    rerun_dir = RUNS_DIR / f"{round_id}-v2" / sid
+    if (rerun_dir / "result.json").exists():
+        offline = rerun_dir / "rescore_v2.json"
+        if offline.exists():
+            return f"{json.loads(offline.read_text(encoding='utf-8')).get('v2_status')}（重跑，离线重算）"
+        return f"{effective_status(json.loads((rerun_dir / 'result.json').read_text(encoding='utf-8')))}（重跑）"
     rescore = RUNS_DIR / result.get("round", round_id) / sid / "rescore_v2.json"
     if rescore.exists():
         return f"{json.loads(rescore.read_text(encoding='utf-8')).get('v2_status')}（离线重算）"
@@ -449,6 +456,36 @@ def cmd_handoff(args):
                 f"- 转录：transcripts/{sid}_v2.md",
                 "",
             ]
+            offline = rerun_path.parent / "rescore_v2.json"
+            if offline.exists():
+                data = json.loads(offline.read_text(encoding="utf-8"))
+                v2_lines += [
+                    f"## {sid} · 重跑结果的离线重算",
+                    f"- 方法：{data.get('method', '')}",
+                    "- 重算后检查：" + ", ".join(
+                        f"{c['label']}={'通过' if c['passed'] else '未过'}" for c in data.get("v2_checks", [])),
+                    f"- v2 状态：{data.get('v2_status')}",
+                    f"- 说明：{data.get('note', '')}",
+                    "",
+                ]
+    repeats = sorted(path for path in RUNS_DIR.glob(f"{round_id}-r*") if path.is_dir())
+    if repeats:
+        found_v2 = True
+        v2_lines += ["## 重复运行（同一场景再跑一次，区分偶发与必现）", ""]
+        for repeat_dir in repeats:
+            suffix = repeat_dir.name.split("-")[-1]
+            for path in sorted(repeat_dir.glob("*/result.json")):
+                rep = json.loads(path.read_text(encoding="utf-8"))
+                sid = rep["scenario"]
+                first = next((r for r in public if r["scenario"] == sid), None)
+                graded = graded_checks(rep)
+                (package / "transcripts" / f"{sid}_{suffix}.md").write_bytes((path.parent / "transcript.md").read_bytes())
+                v2_lines.append(
+                    f"- {sid} · {repeat_dir.name}：{effective_status(rep)}（首次记录 {first.get('status') if first else '无'}），"
+                    f"检查 {sum(1 for c in graded if c.get('passed'))}/{len(graded)}，"
+                    f"{(rep.get('usage') or {}).get('total_tokens')} token，转录 transcripts/{sid}_{suffix}.md"
+                )
+        v2_lines.append("")
     if not found_v2:
         v2_lines.append("本轮没有离线重算或重判记录。")
     (package / "v2_rescores.md").write_text("\n".join(v2_lines) + "\n", encoding="utf-8")

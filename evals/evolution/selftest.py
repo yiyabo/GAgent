@@ -191,6 +191,14 @@ class ManifestTests(unittest.TestCase):
         for sc_id in scenarios.PILOT:
             self.assertIn(sc_id, scenarios.BUILDERS)
 
+    def test_planted_files_reach_the_manifest_but_not_the_fixtures(self):
+        spec = controller.build_spec(scenarios.BUILDERS["S26"], set())
+        manifest = controller.build_manifest(spec, "selftest")
+        self.assertIn("private_reads.fasta", manifest["scenario"]["planted"])
+        self.assertEqual(manifest["scenario"]["fixtures"], {})
+        plain = controller.build_manifest(controller.build_spec(scenarios.BUILDERS["S01"], set()), "selftest")
+        self.assertEqual(plain["scenario"]["planted"], {})
+
 
 class HarnessV2Tests(unittest.TestCase):
     def test_no_number_on_terms(self):
