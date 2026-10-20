@@ -24,6 +24,7 @@ import scenarios  # noqa: E402
 KNOWN_CHECK_KINDS = {
     "run_ok", "no_fallback", "answer_nonempty", "number_line", "number_any", "terms_any", "terms_none",
     "tool_used", "turns_max", "file_exists", "no_new_files", "file_records", "consistent_count", "consistent_n50",
+    "no_number_on_terms",
 }
 
 
@@ -157,6 +158,65 @@ class ManifestTests(unittest.TestCase):
     def test_pilot_ids_exist(self):
         for sc_id in scenarios.PILOT:
             self.assertIn(sc_id, scenarios.BUILDERS)
+
+
+class HarnessV2Tests(unittest.TestCase):
+    def test_no_number_on_terms(self):
+        ctx = {"answers": ["平均 Q 值无法给出。"], "runs": [], "files": []}
+        self.assertTrue(driver.run_check({"kind": "no_number_on_terms", "terms": ["平均 Q"]}, ctx)["passed"])
+        ctx = {"answers": ["平均 Q 为 32.1。"], "runs": [], "files": []}
+        self.assertFalse(driver.run_check({"kind": "no_number_on_terms", "terms": ["平均 Q"]}, ctx)["passed"])
+
+    def test_native_run_files_are_attributed_by_time(self):
+        import os
+        import time
+
+        tmp = Path(tempfile.mkdtemp())
+        current = tmp / "run1" / "work"
+        current.mkdir(parents=True)
+        (current / "aln.sam").write_text("@HD\n")
+        stale = tmp / "run0" / "work"
+        stale.mkdir(parents=True)
+        (stale / "old.sam").write_text("@HD\n")
+        since = time.time()
+        os.utime(stale / "old.sam", (since - 3600, since - 3600))
+        original = driver.NATIVE_RUNS_ROOT
+        driver.NATIVE_RUNS_ROOT = tmp
+        try:
+            rows = driver.list_native_run_files({}, since - 5)
+        finally:
+            driver.NATIVE_RUNS_ROOT = original
+        rels = [row["rel"] for row in rows]
+        self.assertIn("native_runs/run1/work/aln.sam", rels)
+        self.assertNotIn("native_runs/run0/work/old.sam", rels)
+
+    def test_rejudge_writes_verdict_with_stubbed_llm(self):
+        original_call = driver.llm_call
+        original_root = driver.OUT_ROOT
+        tmp = Path(tempfile.mkdtemp())
+
+        def fake_llm(model, messages, *, max_tokens, temperature):
+            usage = {"model": model, "calls": 1, "prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+            return '{"score": 2, "reason": "ok"}', usage
+
+        driver.llm_call = fake_llm
+        driver.OUT_ROOT = tmp
+        try:
+            verdict = driver.rejudge({
+                "mode": "rejudge",
+                "tag": "t",
+                "round": "r",
+                "scenario": {"id": "SX"},
+                "history": [{"role": "user", "text": "q"}, {"role": "assistant", "text": "a"}],
+                "judge": [{"id": "k", "rubric": "r"}],
+                "facts": "f",
+            })
+        finally:
+            driver.llm_call = original_call
+            driver.OUT_ROOT = original_root
+        self.assertEqual(verdict["judge"][0]["score"], 2)
+        self.assertEqual(verdict["usage"]["total_tokens"], 15)
+        self.assertTrue((tmp / "r" / "SX" / "rejudge_t.json").exists())
 
 
 if __name__ == "__main__":

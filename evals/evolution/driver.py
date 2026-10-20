@@ -30,6 +30,7 @@ from pathlib import Path
 
 REPO_ROOT = Path("/app")
 OUT_ROOT = Path("/evo-out")
+NATIVE_RUNS_ROOT = Path(os.environ.get("EVO_NATIVE_RUNS", "/app/runtime/bio_tools/_native/runs"))
 OWNER_ID = "evo_eval"
 TERMINAL_STATUSES = {"succeeded", "failed", "cancelled"}
 POLL_INTERVAL_S = 2.0
@@ -300,6 +301,39 @@ def list_session_files(session_dir: Path, fixture_hashes: dict) -> list:
     return rows
 
 
+def list_native_run_files(fixture_hashes: dict, since: float) -> list:
+    """Outputs the native bio runner wrote for runs started during this scenario.
+
+    Native runs write under <runs>/<run_id>/work/, outside the session directory.
+    Files are attributed by modification time; scenarios run one at a time.
+    """
+    rows = []
+    if not NATIVE_RUNS_ROOT.is_dir():
+        return rows
+    for run_dir in sorted(NATIVE_RUNS_ROOT.iterdir()):
+        work = run_dir / "work"
+        if not work.is_dir():
+            continue
+        for path in sorted(work.rglob("*")):
+            if not path.is_file():
+                continue
+            try:
+                stat = path.stat()
+                if stat.st_mtime < since:
+                    continue
+                if stat.st_size <= 50_000_000 and sha256_file(path) in fixture_hashes:
+                    continue
+            except OSError:
+                continue
+            rows.append({
+                "rel": f"native_runs/{run_dir.name}/work/{path.relative_to(work).as_posix()}",
+                "abs": str(path),
+                "bytes": stat.st_size,
+                "mtime": stat.st_mtime,
+            })
+    return rows
+
+
 def count_records(path: Path, kind: str):
     try:
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
@@ -447,6 +481,10 @@ def run_check(check: dict, ctx: dict) -> dict:
         found = numbers_on_lines(joined, check.get("terms"))
         ok = any(abs(v - t) <= max(tol, rel * abs(t)) for v in found for t in targets)
         observed = "label_line_numbers=" + str(sorted(set(found))[:15])
+    elif kind == "no_number_on_terms":
+        found = numbers_on_lines(joined, check.get("terms"))
+        ok = not found
+        observed = "numbers_on_term_lines=" + str(sorted(set(found))[:10])
     elif kind == "number_any":
         values = [float(v) for v in check["values"]]
         tol = float(check.get("tol", 0))
@@ -532,6 +570,7 @@ async def run_scenario(manifest: dict) -> dict:
     init_db()
     init_llm_usage_table()
     started = time.monotonic()
+    started_wall = time.time()
     scenario = manifest["scenario"]
     round_id = manifest["round"]
     scenario_id = scenario["id"]
@@ -616,7 +655,7 @@ async def run_scenario(manifest: dict) -> dict:
             break
 
     agent = agent_usage(sid)
-    files = list_session_files(session_dir, fixture_hashes)
+    files = list_session_files(session_dir, fixture_hashes) + list_native_run_files(fixture_hashes, started_wall)
     answers = [run["answer"] for run in runs]
     ctx = {"answers": answers, "runs": runs, "files": files}
     checks = []
@@ -716,12 +755,50 @@ def write_error_result(manifest: dict, error: str) -> dict:
     return result
 
 
+def rejudge(manifest: dict) -> dict:
+    """Judge items only, on a transcript recorded by an earlier round (no agent run)."""
+    history = manifest.get("history") or []
+    facts = str(manifest.get("facts") or "")
+    transcript_text = transcript_for_judge(history)
+    total = {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    verdicts = []
+    for item in manifest.get("judge") or []:
+        try:
+            verdict, usage = judge_item(item, facts, transcript_text)
+        except Exception as exc:  # noqa: BLE001 - keep the other verdicts
+            verdict = {"id": item.get("id"), "score": None, "reason": f"judge call failed: {str(exc)[:200]}"}
+            usage = {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        for key in total:
+            total[key] += int(usage.get(key) or 0)
+        verdicts.append(verdict)
+    scenario_id = str((manifest.get("scenario") or {}).get("id"))
+    out_dir = OUT_ROOT / str(manifest.get("round")) / scenario_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+    result = {"tag": manifest.get("tag"), "scenario": scenario_id, "judge": verdicts, "usage": total}
+    (out_dir / f"rejudge_{manifest.get('tag')}.json").write_text(
+        json.dumps(result, ensure_ascii=False, indent=1), encoding="utf-8"
+    )
+    return result
+
+
 def main() -> None:
     manifest = json.loads(base64.b64decode(MANIFEST_B64).decode("utf-8"))
     os.chdir(str(REPO_ROOT))
     strip_proxy_env()
     if str(REPO_ROOT) not in sys.path:
         sys.path.insert(0, str(REPO_ROOT))
+    if manifest.get("mode") == "rejudge":
+        verdict = rejudge(manifest)
+        print(
+            "REJUDGE {scenario} tag={tag} scores={scores} tokens={tokens}".format(
+                scenario=(manifest.get("scenario") or {}).get("id"),
+                tag=manifest.get("tag"),
+                scores=[j.get("score") for j in verdict["judge"]],
+                tokens=verdict["usage"]["total_tokens"],
+            ),
+            flush=True,
+        )
+        sys.exit(0)
     timeout_s = float(manifest.get("timeout_seconds") or 900)
     try:
         result = asyncio.run(asyncio.wait_for(run_scenario(manifest), timeout=timeout_s + CANCEL_GRACE_S + 300))

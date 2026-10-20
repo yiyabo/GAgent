@@ -26,6 +26,13 @@ python3 evals/evolution/controller.py summarize --round pilot1
 
 每个场景开始前，控制器检查账本：已用量加本场景上限若超过停止线（默认 3,600,000 token）就跳过。用量未知时按上限计入，不记为零。
 
+## 预算与顺序
+
+- 程序预算：360 万 token（试点加一轮正式测试）。账本只记录真实用量；用量未知时按上限计入。
+- 每场景上限 `budget_tokens` 同时是驱动内的硬截止；控制器在开始前还要求“已用 + 本场景上限 ≤ 停止线”。
+- 实测：单轮单步场景约 5 万–15 万 token，主要来自 DeepThink 迭代（每次 1 万–1.8 万 prompt token）。多轮场景约为其 2 倍。
+- 正式轮顺序：盲测 B01–B06 优先，然后按覆盖面排公开场景；超出停止线的场景不运行，并在交接包中列为“未运行”。
+
 ## 判定
 
 - 确定性检查：`run_ok`、`no_fallback`、`tool_used`、`number_line`（数字必须出现在含标签词的行里）、`number_any`、`consistent_count` / `consistent_n50`（与 Agent 生成的文件逐一核对）、`file_records`、`file_exists`、`no_new_files`、`terms_any` / `terms_none`、`turns_max`。

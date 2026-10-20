@@ -345,6 +345,25 @@ def cmd_handoff(args):
         problem_lines.append("本轮公开场景没有失败项。")
     (package / "problems.md").write_text("\n".join(problem_lines) + "\n", encoding="utf-8")
 
+    observation_lines = ["# 观察（非检查失败，供策略设计参考）", ""]
+    for r in public:
+        usage = r.get("usage") or {}
+        runs = r.get("runs") or []
+        tools = {tool for run in runs for tool in run.get("tools_used") or []}
+        iterations = sum(int(run.get("iterations") or 0) for run in runs)
+        if "execute_code" in tools and "bio_tools" in tools:
+            observation_lines.append(
+                f"- {r['scenario']} · 同时用到 execute_code 与 bio_tools（代码兜底），迭代 {iterations} 次，用量 {usage.get('total_tokens')} token"
+            )
+        if int(usage.get("total_tokens") or 0) > 120000:
+            observation_lines.append(f"- {r['scenario']} · 用量 {usage.get('total_tokens')} token，迭代 {iterations} 次")
+    if len(observation_lines) == 2:
+        observation_lines.append("本轮没有需要单独记录的观察。")
+    (package / "observations.md").write_text("\n".join(observation_lines) + "\n", encoding="utf-8")
+    review_path = package / "review.md"
+    if not review_path.exists():
+        review_path.write_text("# 人工复核\n\n（由人工填写；重新生成交接包时不会覆盖本文件。）\n", encoding="utf-8")
+
     status_counts = {}
     for r in public:
         status_counts[r.get("status")] = status_counts.get(r.get("status"), 0) + 1
@@ -399,6 +418,8 @@ def cmd_handoff(args):
         "",
         "- scenarios.md：公开场景结果表。",
         "- problems.md：按失败类别整理的问题，附转录位置。",
+        "- observations.md：非检查失败的观察（代码兜底、用量偏高等）。",
+        "- review.md：人工复核记录（重新生成时保留）。",
         "- transcripts/：公开场景的可见转录与检查明细。",
         "- results/：公开场景的结构化结果（不含夹具与 oracle）。",
         "- blind_summary.md：盲测计数。",
@@ -414,6 +435,59 @@ def cmd_handoff(args):
     print(f"handoff written to {package}: {len(public)} public, {len(blind)} blind, {round_total} tokens this round")
 
 
+def cmd_rejudge(args):
+    """Re-run only the judge items on a recorded transcript (no agent run, a few thousand tokens)."""
+    builders, blind_ids = registry(args.blind_dir)
+    sc_id = args.only.strip()
+    if sc_id not in builders or sc_id.startswith("B"):
+        raise SystemExit("rejudge supports public scenarios only")
+    spec = build_spec(builders[sc_id], blind_ids)
+    recorded_path = RUNS_DIR / args.from_round / sc_id / "result.json"
+    recorded = json.loads(recorded_path.read_text(encoding="utf-8"))
+    history = []
+    for run in recorded.get("runs") or []:
+        history.append({"role": "user", "text": run["user"]})
+        history.append({"role": "assistant", "text": run["answer"]})
+    manifest = {
+        "mode": "rejudge",
+        "tag": args.tag,
+        "round": args.from_round,
+        "scenario": {"id": sc_id},
+        "history": history,
+        "judge": spec.get("judge", []),
+        "facts": spec.get("facts", ""),
+    }
+    proc = run_remote(compose_script(manifest), timeout=900)
+    summary = next(
+        (line for line in proc.stdout.decode("utf-8", "replace").splitlines() if line.startswith("REJUDGE ")),
+        "",
+    )
+    if not summary:
+        raise SystemExit(f"rejudge produced no verdict: {proc.stderr.decode('utf-8', 'replace')[-300:]}")
+    fetch = subprocess.run(
+        ["ssh", *SSH_OPTS, HOST, f"cat {REMOTE_OUT}/{args.from_round}/{sc_id}/rejudge_{args.tag}.json"],
+        capture_output=True,
+        timeout=120,
+    )
+    if fetch.returncode != 0:
+        raise SystemExit("could not read the rejudge file")
+    verdict = json.loads(fetch.stdout.decode("utf-8"))
+    dest = RUNS_DIR / args.from_round / sc_id / f"rejudge_{args.tag}.json"
+    dest.write_text(json.dumps(verdict, ensure_ascii=False, indent=1), encoding="utf-8")
+    tokens = int(verdict["usage"]["total_tokens"])
+    ledger_append({
+        "ts": utc_now(),
+        "round": f"{args.from_round}-rejudge-{args.tag}",
+        "scenario": sc_id,
+        "blind": False,
+        "status": "rejudge",
+        "total_tokens": tokens,
+        "usage_known": True,
+        "seconds": 0,
+    })
+    print(f"{summary} | ledger+{tokens} total={ledger_spent()}", flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--blind-dir", default=str(BLIND_DIR_DEFAULT) if BLIND_DIR_DEFAULT.exists() else None)
@@ -427,6 +501,10 @@ def main():
     run_p.add_argument("--private-out", default=str(PRIVATE_OUT_DEFAULT))
     sum_p = sub.add_parser("summarize")
     sum_p.add_argument("--round", required=True)
+    rej_p = sub.add_parser("rejudge")
+    rej_p.add_argument("--from-round", required=True)
+    rej_p.add_argument("--only", required=True)
+    rej_p.add_argument("--tag", required=True)
     hand_p = sub.add_parser("handoff")
     hand_p.add_argument("--round", required=True)
     hand_p.add_argument("--private-out", default=str(PRIVATE_OUT_DEFAULT))
@@ -439,6 +517,8 @@ def main():
         cmd_summarize(args)
     elif args.cmd == "handoff":
         cmd_handoff(args)
+    elif args.cmd == "rejudge":
+        cmd_rejudge(args)
 
 
 if __name__ == "__main__":
