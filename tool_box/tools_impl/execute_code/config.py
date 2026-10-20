@@ -23,6 +23,10 @@ ENV_SCRATCH_DIR = "CODE_MODE_SCRATCH_DIR"
 # child. Off by default — the child path stays the fallback for tests and for
 # hosts without a Docker daemon; the compose stack sets CODE_MODE_SANDBOX=1.
 ENV_SANDBOX = "CODE_MODE_SANDBOX"
+# Local kernels run as the app's own user, so they carry a filesystem/process guard (fs_policy.py).
+# It is on by default; CODE_MODE_FS_GUARD=0 turns it off, CODE_MODE_ALLOW_SUBPROCESS=1 lets cells start programs.
+ENV_FS_GUARD = "CODE_MODE_FS_GUARD"
+ENV_ALLOW_SUBPROCESS = "CODE_MODE_ALLOW_SUBPROCESS"
 
 # v1 allowlist: read-only / information tools only. Enforcement lives in the
 # RPC server (tool_box/tools_impl/execute_code/rpc.py), not in the stubs.

@@ -57,7 +57,10 @@ BASE_DESCRIPTION = (
     "deliverable_submit publishes them into Deliverables. "
     "Limits: 5-minute cell timeout, max 50 tool calls per cell, stdout shown "
     "up to 50KB (head/tail; the full text is auto-saved to a file whose path "
-    "rides in the result). The kernel cannot see host env secrets by design. "
+    "rides in the result). The kernel cannot see host env secrets by design, cannot read other "
+    "sessions' files or the app's own data, writes only inside this session's "
+    "workspace, and cannot start other programs (no subprocess, os.system or exec); "
+    "use the gagent_tools functions or the separate bio_tools tool for that. "
     "Available functions (from gagent_tools import ...):"
 )
 
