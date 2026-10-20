@@ -231,6 +231,34 @@ class TestLLMClientStreamChatAsync:
         assert sent["reasoning_effort"] == "low"
 
 
+class TestThinkingOffOnDirectDashScope:
+    """DashScope honours enable_thinking=false and answers HTTP 400 to any other reasoning_effort next to it."""
+
+    DASHSCOPE = "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+
+    def test_no_effort_is_sent_to_dashscope(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("LLM_THINKING_OFF_REASONING_EFFORT", "low")
+        assert llm_mod._thinking_off_reasoning_effort(self.DASHSCOPE) is None
+        assert llm_mod._thinking_off_reasoning_effort("https://gateway.example.com/v1/chat/completions") == "low"
+
+    @pytest.mark.asyncio()
+    async def test_native_tool_stream_to_dashscope_has_no_effort(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("LLM_THINKING_OFF_REASONING_EFFORT", raising=False)
+        fake = _FakeAsyncClient([_FakeAsyncStreamResponse(_sse_lines(["ok"]))])
+        monkeypatch.setattr(llm_mod, "_get_shared_async_client", lambda: fake)
+        monkeypatch.setattr(llm_mod, "_outbound_limiter", _NoopLimiter())
+        client = _client()
+        client.url = self.DASHSCOPE
+
+        await client.stream_chat_with_tools_async(
+            messages=[{"role": "user", "content": "ping"}], tools=[], enable_thinking=False,
+        )
+
+        sent = fake.calls[0]["json"]
+        assert sent["enable_thinking"] is False
+        assert "reasoning_effort" not in sent
+
+
 class TestThinkingOffReasoningEffort:
     def test_default_is_low(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("LLM_THINKING_OFF_REASONING_EFFORT", raising=False)
