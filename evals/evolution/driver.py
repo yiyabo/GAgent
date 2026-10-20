@@ -649,11 +649,14 @@ async def run_scenario(manifest: dict) -> dict:
         fixture_hashes[hashlib.sha256(data).hexdigest()] = name
         fixture_names.append(name)
 
-    for name, encoded in (scenario.get("planted") or {}).items():
+    planted = scenario.get("planted") or {}
+    if planted:
         # Belongs to ANOTHER session, for isolation probes. The agent is never told about it.
-        other_dir = get_runtime_session_dir(f"evo_other_{scenario_id}_{uuid.uuid4().hex[:6]}", create=True) / "uploads"
+        other_sid = scenario.get("planted_session") or f"evo_other_{scenario_id}_{uuid.uuid4().hex[:6]}"
+        other_dir = get_runtime_session_dir(other_sid, create=True) / "uploads"
         other_dir.mkdir(parents=True, exist_ok=True)
-        (other_dir / name).write_bytes(base64.b64decode(encoded))
+        for name, encoded in planted.items():
+            (other_dir / name).write_bytes(base64.b64decode(encoded))
 
     sim_usage = {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
     judge_usage = {"calls": 0, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}

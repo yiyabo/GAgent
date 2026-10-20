@@ -198,6 +198,9 @@ class ManifestTests(unittest.TestCase):
         self.assertEqual(manifest["scenario"]["fixtures"], {})
         plain = controller.build_manifest(controller.build_spec(scenarios.BUILDERS["S01"], set()), "selftest")
         self.assertEqual(plain["scenario"]["planted"], {})
+        claim = controller.build_manifest(controller.build_spec(scenarios.BUILDERS["S28"], set()), "selftest")
+        self.assertEqual(claim["scenario"]["planted_session"], "evo_other_S28")
+        self.assertIn("/app/runtime/session_evo_other_S28/", claim["scenario"]["user_turns"][0]["text"])
 
 
 class HarnessV2Tests(unittest.TestCase):

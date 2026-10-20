@@ -97,6 +97,7 @@ def build_manifest(spec, round_id, guard_tokens=0):
             "user_turns": turns,
             "fixtures": fixtures_b64,
             "planted": planted_b64,
+            "planted_session": spec.get("planted_session"),
         },
         "checks": spec.get("checks", []),
         "judge": spec.get("judge", []),
