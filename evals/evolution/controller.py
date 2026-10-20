@@ -360,6 +360,41 @@ def cmd_handoff(args):
     if len(observation_lines) == 2:
         observation_lines.append("本轮没有需要单独记录的观察。")
     (package / "observations.md").write_text("\n".join(observation_lines) + "\n", encoding="utf-8")
+    v2_lines = [
+        "# v1 到 v2 的离线重算与重判",
+        "",
+        "以下结果不重跑 Agent，只修正检查或判分的口径问题。v1 原始结果保留在 results/ 与 transcripts/ 中。",
+        "",
+    ]
+    found_v2 = False
+    for r in public:
+        sid = r["scenario"]
+        scenario_dir = RUNS_DIR / r.get("round", round_id) / sid
+        rescore = scenario_dir / "rescore_v2.json"
+        if rescore.exists():
+            found_v2 = True
+            data = json.loads(rescore.read_text(encoding="utf-8"))
+            v2_lines.append(f"## {sid}")
+            v2_lines.append(f"- 方法：{data.get('method', '')}")
+            v2_lines.append("- v1 检查：" + ", ".join(
+                f"{c['label']}={'通过' if c['passed'] else '未过'}" for c in data.get("original_checks", [])))
+            v2_lines.append("- v2 检查：" + ", ".join(
+                f"{c['label']}={'通过' if c['passed'] else '未过'}" for c in data.get("v2_checks", [])))
+            v2_lines.append(f"- v2 状态：{data.get('v2_status')}")
+            if data.get("note"):
+                v2_lines.append(f"- 说明：{data['note']}")
+            v2_lines.append("")
+        for rejudge in sorted(scenario_dir.glob("rejudge_*.json")):
+            found_v2 = True
+            data = json.loads(rejudge.read_text(encoding="utf-8"))
+            v2_lines.append(f"## {sid} · 重判 {data.get('tag')}")
+            for j in data.get("judge", []):
+                v2_lines.append(f"- {j.get('id')}: {j.get('score')} — {str(j.get('reason') or '')[:240]}")
+            v2_lines.append(f"- 用量：{(data.get('usage') or {}).get('total_tokens')} token（只含重判）")
+            v2_lines.append("")
+    if not found_v2:
+        v2_lines.append("本轮没有离线重算或重判记录。")
+    (package / "v2_rescores.md").write_text("\n".join(v2_lines) + "\n", encoding="utf-8")
     review_path = package / "review.md"
     if not review_path.exists():
         review_path.write_text("# 人工复核\n\n（由人工填写；重新生成交接包时不会覆盖本文件。）\n", encoding="utf-8")
@@ -420,6 +455,7 @@ def cmd_handoff(args):
         "- problems.md：按失败类别整理的问题，附转录位置。",
         "- observations.md：非检查失败的观察（代码兜底、用量偏高等）。",
         "- review.md：人工复核记录（重新生成时保留）。",
+        "- v2_rescores.md：v1 到 v2 的离线重算与重判记录（不重跑 Agent）。",
         "- transcripts/：公开场景的可见转录与检查明细。",
         "- results/：公开场景的结构化结果（不含夹具与 oracle）。",
         "- blind_summary.md：盲测计数。",
