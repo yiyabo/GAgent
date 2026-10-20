@@ -104,3 +104,36 @@ def test_no_workspace_no_collection(tmp_path, monkeypatch):
     )
     assert result["success"] is True
     assert "produced_files" not in result
+
+
+@pytest.mark.timeout(60)
+def test_a_file_written_in_the_first_milliseconds_is_still_produced(ctx, monkeypatch):
+    """File mtimes trail time.time_ns() by a few ms (a coarse kernel clock). Simulate a clock that runs
+    20 ms ahead of the filesystem: a watermark taken from time.time_ns() would put the cell's own first
+    write in the past and the file would go unreported."""
+    real = time.time_ns
+    monkeypatch.setattr(kernel_module.time, "time_ns", lambda: real() + 20_000_000)
+    warm = _run("print('warm kernel')", ctx)
+    assert warm["success"] is True
+    result = _run("open('first_write.txt', 'w').write('x')", ctx)
+    assert result["success"] is True
+    assert "first_write.txt" in (result.get("produced_files") or [])
+
+
+@pytest.mark.timeout(60)
+def test_the_clock_probe_leaves_nothing_behind_and_old_files_stay_old(tmp_path):
+    (tmp_path / "old.txt").write_text("old")
+    old_ns = time.time_ns() - 10_000_000_000
+    os.utime(tmp_path / "old.txt", ns=(old_ns, old_ns))
+    mark = kernel_module._fs_watermark_ns(tmp_path)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["old.txt"]
+    assert mark <= time.time_ns()
+    assert (tmp_path / "old.txt").stat().st_mtime_ns < mark
+
+
+@pytest.mark.timeout(60)
+def test_an_unwritable_workspace_falls_back_to_a_slack_watermark(tmp_path):
+    missing = tmp_path / "does-not-exist"
+    mark = kernel_module._fs_watermark_ns(missing)
+    assert time.time_ns() - mark >= kernel_module._CLOCK_SLACK_NS - 1_000_000
+    assert kernel_module._fs_watermark_ns(None) <= time.time_ns()
