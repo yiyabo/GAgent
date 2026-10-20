@@ -183,6 +183,19 @@ def test_a_bad_path_tools_entry_is_a_config_error() -> None:
     assert err.value.code == "bad_config"
 
 
+def test_native_commands_use_the_flags_the_installed_versions_accept() -> None:
+    """Found by running each tool on 620b; the Docker templates for these were wrong or silent on failure."""
+    ops = {(t, o): REAL_CONFIG[t]["operations"][o]["native_command"]
+           for t, o in (("checkm", "lineage_wf"), ("checkm", "qa"), ("vibrant", "run"), ("concoct", "bin"))}
+    assert "--tab_table" in ops[("checkm", "lineage_wf")] and "--tabulated" not in ops[("checkm", "lineage_wf")]
+    assert "--tab_table" in ops[("checkm", "qa")]
+    assert ops[("checkm", "lineage_wf")].startswith("CHECKM_DATA_PATH=/work/database ")
+    # VIBRANT's -o is an ORF count, the output folder is -folder; it also exits 0 on failure.
+    assert "-folder /work/{output}" in ops[("vibrant", "run")] and " -o " not in ops[("vibrant", "run")]
+    assert "test -n" in ops[("vibrant", "run")]
+    assert "--composition_file {contigs}" in ops[("concoct", "bin")] and "--contigs_file" not in ops[("concoct", "bin")]
+
+
 def test_every_native_operation_in_the_shipped_config_renders(dirs) -> None:
     """Every operation that opts into native execution must produce a command from plausible values."""
     database = dirs["tmp"] / "db"
