@@ -269,7 +269,7 @@ async def handle_plan_action(agent: Any, action: LLMAction) -> AgentStep:
                 evaluate_plan_rubric,
                 tree,
                 evaluator_provider="qwen",
-                evaluator_model="qwen3.7-max",
+                evaluator_model="qwen3.8-flash",
                 model_provider=(agent.extra_context or {}).get("model_provider"),
             )
         except Exception as exc:

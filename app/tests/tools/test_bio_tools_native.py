@@ -485,6 +485,34 @@ def test_a_run_whose_directory_was_deleted_does_not_stop_the_runner(world) -> No
     assert result["success"] is True, result
 
 
+def test_finished_runs_older_than_the_retention_are_deleted(world) -> None:
+    runs = Path(native_exec.runs_root(str(world["bio"])))
+    world["runner"].ensure_dirs()
+    old = time.time() - 40 * 86400
+
+    def make(run_id: str, state: str, age_seconds: float) -> Path:
+        d = runs / run_id
+        (d / "work").mkdir(parents=True)
+        (d / "work" / "out.txt").write_text("x")
+        status = d / "status.json"
+        status.write_text(json.dumps({"state": state}))
+        os.utime(status, (time.time() - age_seconds, time.time() - age_seconds))
+        return d
+
+    stale = make("a" * 12, "succeeded", 40 * 86400)
+    stale_failed = make("b" * 12, "failed", 40 * 86400)
+    recent = make("c" * 12, "succeeded", 2 * 86400)
+    unfinished = make("d" * 12, "running", 40 * 86400)
+    not_a_run = runs / "keepme"
+    not_a_run.mkdir()
+    world["runner"].keep_days = 30
+    assert world["runner"].prune_old_runs(force=True) == 2
+    assert not stale.exists() and not stale_failed.exists()
+    assert recent.exists() and unfinished.exists() and not_a_run.exists()
+    world["runner"].keep_days = 0
+    assert world["runner"].prune_old_runs(force=True) == 0  # 0 keeps everything
+
+
 # --------------------------------------------------------------------------- path map
 
 def test_path_map_translates_container_paths_both_ways() -> None:

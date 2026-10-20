@@ -34,6 +34,7 @@ RUNNER_VERSION = 1
 MAX_REQUEST_BYTES = 256 * 1024
 HEARTBEAT_SECONDS = 5.0
 CAPABILITIES_SECONDS = 60.0
+PRUNE_INTERVAL_SECONDS = 3600.0
 SLURM_TIMEOUT_SECONDS = 30
 VANISHED_GRACE_SECONDS = 90
 
@@ -63,6 +64,7 @@ class Runner:
         db_root: Optional[str] = None,
         conda_base: Optional[str] = None,
         conda_envs_dir: Optional[str] = None,
+        keep_days: float = 0,
         max_active: int = 8,
         partition: Optional[str] = None,
         sbatch: str = "sbatch",
@@ -76,6 +78,8 @@ class Runner:
         self.db_root = os.path.realpath(db_root) if db_root else None
         self.conda_base = conda_base
         self.conda_envs_dir = conda_envs_dir
+        self.keep_days = keep_days
+        self._last_prune = 0.0
         self.max_active = max_active
         self.partition = partition
         self.bins = {"sbatch": sbatch, "squeue": squeue, "sacct": sacct, "scancel": scancel}
@@ -119,6 +123,33 @@ class Runner:
         self.heartbeat()
         self.claim_new()
         self.poll_active()
+        self.prune_old_runs()
+
+    def prune_old_runs(self, force: bool = False) -> int:
+        """Delete finished runs older than ``keep_days`` (0 keeps everything). A run's outputs live in its
+        directory, so this is what bounds the disk the native tools use; unfinished runs are never touched."""
+        if self.keep_days <= 0 or (not force and _now() - self._last_prune < PRUNE_INTERVAL_SECONDS):
+            return 0
+        self._last_prune = _now()
+        cutoff = _now() - self.keep_days * 86400
+        removed = 0
+        for run_id, run_dir in self._run_dirs():
+            if run_id in self.active:
+                continue
+            status_path = os.path.join(run_dir, native_exec.STATUS_FILENAME)
+            status = native_exec.read_json(status_path)
+            if not status or status.get("state") not in native_exec.STATES_TERMINAL:
+                continue
+            try:
+                if os.path.getmtime(status_path) >= cutoff:
+                    continue
+            except OSError:
+                continue
+            shutil.rmtree(run_dir, ignore_errors=True)
+            removed += 1
+        if removed:
+            logger.info("pruned %d finished run(s) older than %s day(s)", removed, self.keep_days)
+        return removed
 
     def serve(self, interval: float, stop: "Optional[List[bool]]" = None) -> None:
         self.ensure_dirs()
@@ -387,6 +418,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--db-root", default=None, help="host directory holding reference databases")
     parser.add_argument("--conda-base", default=None)
     parser.add_argument("--conda-envs-dir", default=None, help="directory holding the conda environments")
+    parser.add_argument("--keep-days", type=float, default=0,
+                        help="delete finished runs (and their outputs) older than this many days; 0 keeps everything")
     parser.add_argument("--max-active", type=int, default=8)
     parser.add_argument("--partition", default=None)
     parser.add_argument("--interval", type=float, default=2.0)
@@ -396,7 +429,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     os.umask(0)
     runner = Runner(args.runtime_dir, args.config, args.read_root, db_root=args.db_root,
-                    conda_base=args.conda_base, conda_envs_dir=args.conda_envs_dir, max_active=args.max_active, partition=args.partition)
+                    conda_base=args.conda_base, conda_envs_dir=args.conda_envs_dir, keep_days=args.keep_days, max_active=args.max_active, partition=args.partition)
     runner.ensure_dirs()
     if args.once:
         runner.recover()

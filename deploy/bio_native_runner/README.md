@@ -101,3 +101,10 @@ iphop at least 32 GB of memory (8 GB was OOM-killed while unpacking).
   `native_first`.
 - phabox2 lives in `/data1/gagent/conda/envs/phabox2` (a clone of the `phabox_env` environment) with its database in
   `/data1/gagent/databases/phabox2` (a copy of `~/phabox_database/phabox_db_v2_1`).
+
+## Disk
+
+Each call leaves its outputs in `bio_tools/_native/runs/<id>/work` (a full test pass of all tools is about 2 GB).
+`--keep-days N` (the unit uses 30) makes the runner delete finished runs, outputs included, once their
+`status.json` is older than N days; running runs are never touched. Copy anything that must be kept (for example into
+the session's results) before then.

@@ -151,7 +151,7 @@ Only return JSON, no other content."""
                         provider=_mp.get("type") or "openai",
                         url=_mp["base_url"].rstrip("/") + "/v1/chat/completions",
                         api_key=_mp["api_key"],
-                        model=_mp.get("model") or "qwen3.7-max",
+                        model=_mp.get("model") or "qwen3.8-flash",
                     )
                 else:
                     _client = self.llm_client

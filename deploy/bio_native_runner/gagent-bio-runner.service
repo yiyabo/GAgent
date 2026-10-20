@@ -12,6 +12,7 @@ ExecStart=/usr/bin/python3 /data1/gagent/bio-runner/native_runner.py \
   --db-root /data1/gagent/databases \
   --conda-base /home/wangyichun/miniconda3 \
   --conda-envs-dir /data1/gagent/conda/envs \
+  --keep-days 30 \
   --partition work
 Restart=always
 RestartSec=5

@@ -712,7 +712,7 @@ def _client_from_model_provider(
     api_key = str(model_provider.get("api_key") or "").strip()
     if not base_url or not api_key:
         return None
-    model = str(model_provider.get("model") or fallback_model or "qwen3.7-max").strip()
+    model = str(model_provider.get("model") or fallback_model or "qwen3.8-flash").strip()
     provider = str(model_provider.get("type") or "openai").strip() or "openai"
     try:
         return LLMClient(

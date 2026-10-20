@@ -327,7 +327,7 @@ class StructuredChatAgent:
         mp_base_url = mp.get("base_url") if isinstance(mp, dict) else None
         mp_api_key = mp.get("api_key") if isinstance(mp, dict) else None
         if mp_base_url and mp_api_key:
-            mp_model = mp.get("model") or base_model or "qwen3.7-max"
+            mp_model = mp.get("model") or base_model or "qwen3.8-flash"
             mp_provider = mp.get("type") or "openai"
             mp_url = mp_base_url.rstrip("/") + "/v1/chat/completions"
             override_llm_service = LLMService(LLMClient(
