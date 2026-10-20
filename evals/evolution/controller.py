@@ -43,7 +43,7 @@ SSH_OPTS = [
     "-o", "ControlPath=~/.ssh/cm-evo-%C",
     "-o", "ControlPersist=30m",
 ]
-STOP_TOKENS_DEFAULT = 3_600_000  # program budget: pilot plus one formal round
+STOP_TOKENS_DEFAULT = 5_400_000  # authorized by the user on 2026-10-20: pilot, blind set and all public formal scenarios
 RUNS_DIR = HERE / "runs"
 PRIVATE_OUT_DEFAULT = Path("/Users/apple/code/evolution-private/runs")
 BLIND_DIR_DEFAULT = Path("/Users/apple/code/evolution-private/blind")
