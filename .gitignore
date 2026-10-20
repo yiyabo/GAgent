@@ -111,5 +111,8 @@ web-ui/test-results/
 web-ui/playwright-report/
 lightrag.log
 evals/user_journey/runs/
-# Self-evolution harness raw outputs and token ledger (summaries are committed under evals/evolution/<round>/).
+# Self-evolution harness: raw outputs, the token ledger and the per-round handoff packages stay local.
+# The packages describe unfixed product findings and this repository is public.
 evals/evolution/runs/
+evals/evolution/*/
+!evals/evolution/instance/

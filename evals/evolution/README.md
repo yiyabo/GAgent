@@ -23,7 +23,7 @@ python3 evals/evolution/controller.py run --round pilot1 --only S01,S02 --dry-ru
 python3 evals/evolution/controller.py run --round pilot1 --only S01,S02            # 真实运行，消耗 token
 python3 evals/evolution/controller.py summarize --round pilot1
 python3 evals/evolution/controller.py rescore-route --round formal1   # 离线：只因路线检查失败的旧结果按 v2 口径重算
-python3 evals/evolution/controller.py handoff --round formal1          # 生成交接包 evals/evolution/formal1/
+python3 evals/evolution/controller.py handoff --round formal1          # 生成交接包 evals/evolution/formal1/（只在本地）
 ```
 
 重跑用后缀轮次 `<轮次>-v2`（例如 `formal1-v2`），不会覆盖原结果；交接包把两者并列。
@@ -47,6 +47,8 @@ python3 evals/evolution/controller.py handoff --round formal1          # 生成�
 ## 产物
 
 每个场景写入 `/evo-out/<轮次>/<场景>/`（服务器上 `~/gagent-eval/evo-out`）：`result.json`（检查结果、用量、可见回复）、`transcript.md`（转录）、`events.jsonl`（运行事件）。控制器把公开场景拉回 `evals/evolution/runs/<轮次>/`，盲测拉回私有目录。
+
+交接包 `evals/evolution/<轮次>/`（problems.md、observations.md、review.md、转录等）只留在本地，被 `.gitignore` 忽略：里面写着尚未修复的产品问题，而本仓库是公开的。要交给别人时自行拷贝；盲测内容不进交接包，只有计数。
 
 ## 已知限制
 

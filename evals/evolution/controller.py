@@ -365,20 +365,34 @@ def cmd_handoff(args):
         (package / "results" / f"{sid}.json").write_text(json.dumps(result, ensure_ascii=False, indent=1), encoding="utf-8")
 
     v2_state = {r["scenario"]: v2_status(r, round_id) for r in public}
+    repeat_states = {}
+    multi_state = {}
+    for path in sorted(RUNS_DIR.glob(f"{round_id}-r*/*/result.json")):
+        rep = json.loads(path.read_text(encoding="utf-8"))
+        repeat_states.setdefault(rep["scenario"], []).append(effective_status(rep))
     table = [
-        "| scenario | category | 记录状态 | v2 状态 | checks | judge | tokens | seconds |",
-        "|---|---|---|---|---|---|---|---|",
+        "| scenario | category | 记录状态 | v2 状态 | 多次运行通过 | checks | judge | tokens | seconds |",
+        "|---|---|---|---|---|---|---|---|---|",
     ]
     for r in public:
         checks = graded_checks(r)
         passed = sum(1 for c in checks if c.get("passed"))
         scores = ",".join(str(j.get("score")) for j in r.get("judge") or []) or "-"
         usage = r.get("usage") or {}
+        every_run = [effective_status(r)] + repeat_states.get(r["scenario"], [])
+        multi = f"{every_run.count('pass')}/{len(every_run)}" if r["scenario"] in repeat_states else "-"
+        if multi != "-":
+            multi_state[r["scenario"]] = multi
         table.append(
             f"| {r['scenario']} | {md_cell(categories.get(r['scenario']))} | {r.get('status')} | "
-            f"{v2_state[r['scenario']]} | {passed}/{len(checks)} | {scores} | {usage.get('total_tokens')} | {r.get('seconds')} |"
+            f"{v2_state[r['scenario']]} | {multi} | {passed}/{len(checks)} | {scores} | "
+            f"{usage.get('total_tokens')} | {r.get('seconds')} |"
         )
-    table += ["", "记录状态是运行当时的原始结果；v2 状态在路线不计分、离线重算或重跑之后得出，两者都保留。"]
+    table += [
+        "",
+        "记录状态是运行当时的原始结果；v2 状态在路线不计分、离线重算或重跑之后得出，两者都保留。",
+        "多次运行通过：首次运行加重复运行里，按 v2 口径通过的次数（“-”表示只跑了一次）。",
+    ]
     (package / "scenarios.md").write_text("\n".join(table) + "\n", encoding="utf-8")
 
     grouped = {}
@@ -389,7 +403,10 @@ def cmd_handoff(args):
     for cls in sorted(grouped):
         problem_lines += [f"## {cls}", ""]
         for sid, item in grouped[cls]:
-            problem_lines.append(f"- {sid} · {item['label']}: {item['detail'][:300]}（转录：transcripts/{sid}.md）")
+            tail = f"；v2 状态：{v2_state[sid]}" + (f"；多次运行通过 {multi_state[sid]}" if sid in multi_state else "")
+            problem_lines.append(
+                f"- {sid} · {item['label']}: {item['detail'][:300]}（转录：transcripts/{sid}.md{tail}）"
+            )
         problem_lines.append("")
     if not grouped:
         problem_lines.append("本轮公开场景没有失败项。")
@@ -407,7 +424,7 @@ def cmd_handoff(args):
             )
         if "execute_code" in tools and "bio_tools" in tools:
             observation_lines.append(
-                f"- {r['scenario']} · 同时用到 execute_code 与 bio_tools（代码兜底），迭代 {iterations} 次，用量 {usage.get('total_tokens')} token"
+                f"- {r['scenario']} · 同时用到 execute_code 与 bio_tools，迭代 {iterations} 次，用量 {usage.get('total_tokens')} token"
             )
         if int(usage.get("total_tokens") or 0) > 120000:
             observation_lines.append(f"- {r['scenario']} · 用量 {usage.get('total_tokens')} token，迭代 {iterations} 次")
@@ -473,7 +490,10 @@ def cmd_handoff(args):
                     f"- 说明：{data.get('note', '')}",
                     "",
                 ]
-    repeats = sorted(path for path in RUNS_DIR.glob(f"{round_id}-r*") if path.is_dir())
+    repeats = sorted(
+        (path for path in RUNS_DIR.glob(f"{round_id}-r*") if path.is_dir()),
+        key=lambda p: (int(p.name.rsplit("-r", 1)[-1]) if p.name.rsplit("-r", 1)[-1].isdigit() else 0, p.name),
+    )
     if repeats:
         found_v2 = True
         v2_lines += ["## 重复运行（同一场景再跑一次，区分偶发与必现）", ""]
@@ -566,6 +586,7 @@ def cmd_handoff(args):
         "- 评分口径：答案对就算对，Agent 用 bio_tools 还是自己写代码不计分（用户 2026-10-20 决定）；路线只作为观察记录在 observations.md。",
         "- 环境：620b 隔离实例 `gagent-eval`，镜像 `gagent-app:p11`（主干 a6fb1111），Agent 模型 qwen3.8-flash；模拟用户 qwen3.8-flash；判分 qwen3.7-max。",
         "- 关闭：长期记忆召回（按请求）、技能学习、后台质量评分、AMEM、LightRAG、MCP 扩展。",
+        "- 未关闭：聊天记忆的保存。每轮多出几次 LLM 与嵌入调用，保存的记忆留在评测库里；召回因缺 owner_id 返回空，不影响后续场景。",
         "",
         "## 文件",
         "",
