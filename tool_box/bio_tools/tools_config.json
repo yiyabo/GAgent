@@ -12,14 +12,14 @@
             },
             "grep": {
                 "command": "seqkit grep -p '{pattern}' {input} -o {output}",
-                "description": "Search and extract sequences matching a sequence ID or regex pattern",
+                "description": "Search and extract sequences by exact sequence ID",
                 "requires_input": true,
                 "requires_output": true,
                 "extra_params": {
                     "pattern": {
                         "type": "string",
                         "required": true,
-                        "description": "Sequence ID or regex pattern to match, e.g. 'contig_1' or 'contig_\\d+'"
+                        "description": "Exact sequence ID to match, e.g. contig_1"
                     },
                     "output": {
                         "type": "string",
@@ -51,6 +51,24 @@
                         "type": "integer",
                         "required": true,
                         "description": "Number of sequences to extract, e.g. 10"
+                    }
+                }
+            },
+            "grep_regex": {
+                "command": "seqkit grep -r -p '{pattern}' {input} -o {output}",
+                "description": "Search and extract sequences whose IDs match a regular expression",
+                "requires_input": true,
+                "requires_output": true,
+                "extra_params": {
+                    "pattern": {
+                        "type": "string",
+                        "required": true,
+                        "description": "Regular expression for sequence IDs, e.g. contig_[0-9]+"
+                    },
+                    "output": {
+                        "type": "string",
+                        "required": true,
+                        "description": "Output filename, e.g. result.fa"
                     }
                 }
             }
@@ -367,7 +385,8 @@
                     "threads": {
                         "type": "integer",
                         "required": false,
-                        "description": "Number of threads, default 4"
+                        "description": "Number of threads, default 4",
+                        "default": 4
                     }
                 },
                 "notes": "Preset is fixed to map-ont; use samtools view -f 4 to extract unmapped reads afterward"
@@ -389,7 +408,8 @@
                     "threads": {
                         "type": "integer",
                         "required": false,
-                        "description": "Number of threads, default 4"
+                        "description": "Number of threads, default 4",
+                        "default": 4
                     },
                     "output": {
                         "type": "string",
@@ -408,7 +428,8 @@
                     "threads": {
                         "type": "integer",
                         "required": false,
-                        "description": "Number of threads, default 4"
+                        "description": "Number of threads, default 4",
+                        "default": 4
                     },
                     "output": {
                         "type": "string",
@@ -427,7 +448,8 @@
                     "threads": {
                         "type": "integer",
                         "required": false,
-                        "description": "Number of threads, default 4"
+                        "description": "Number of threads, default 4",
+                        "default": 4
                     },
                     "output": {
                         "type": "string",
@@ -437,11 +459,18 @@
                 }
             },
             "index": {
-                "command": "samtools index {input}",
+                "command": "samtools index {input} /work/{output}",
                 "description": "Build a .bai index for a coordinate-sorted BAM file",
                 "requires_input": true,
                 "requires_output": false,
-                "notes": "input must be a sorted BAM file; the index file is written as input.bam.bai automatically"
+                "notes": "Input BAM is mounted read-only; the index is written into the tool work directory.",
+                "extra_params": {
+                    "output": {
+                        "type": "string",
+                        "required": false,
+                        "description": "Index filename in the tool work directory; defaults to <input>.bai"
+                    }
+                }
             },
             "stats": {
                 "command": "samtools stats {input} > /work/{output}",
@@ -865,7 +894,7 @@
         "image": "quay.io/biocontainers/checkv:1.0.1--pyhdfd78af_0",
         "description": "CheckV - Quality assessment of metagenome-assembled viral genomes",
         "category": "phage",
-        "notes": "Database (~2 GB) is located at /home/zczhao/GAgent/data/databases/bio_tools/checkv/checkv-db-v1.5 and mounted as /work/database",
+        "notes": "The configured CheckV database path must contain genome_db/checkv_reps.dmnd for completeness and end_to_end; a nonempty directory is not sufficient.",
         "operations": {
             "end_to_end": {
                 "command": "checkv end_to_end {input} /work/{output} -d /work/database -t {threads}",
@@ -881,7 +910,8 @@
                     "threads": {
                         "type": "integer",
                         "required": false,
-                        "description": "Number of threads, default 4"
+                        "description": "Number of threads, default 4",
+                        "default": 4
                     }
                 },
                 "notes": "input must be a viral sequences FASTA file; database is mounted automatically"
@@ -900,13 +930,14 @@
                     "threads": {
                         "type": "integer",
                         "required": false,
-                        "description": "Number of threads, default 4"
+                        "description": "Number of threads, default 4",
+                        "default": 4
                     }
                 }
             },
             "complete_genomes": {
                 "command": "checkv complete_genomes {input} /work/{output}",
-                "description": "Identify complete viral genomes by detecting direct or inverted terminal repeats (DTR/ITR)",
+                "description": "Identify complete viral genomes from a prior CheckV completeness result",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": {
@@ -915,7 +946,8 @@
                         "required": true,
                         "description": "Output directory name, e.g. checkv_complete_output"
                     }
-                }
+                },
+                "notes": "Requires <output>/completeness.tsv from checkv completeness or end_to_end in the same tool work directory; this stage does not process a raw FASTA by itself."
             }
         }
     },
@@ -939,12 +971,14 @@
                     "min_score": {
                         "type": "number",
                         "required": false,
-                        "description": "Minimum virus score threshold (0-1), default 0.5. Lower values increase recall; higher values increase precision."
+                        "description": "Minimum virus score threshold (0-1), default 0.5. Lower values increase recall; higher values increase precision.",
+                        "default": 0.5
                     },
                     "threads": {
                         "type": "integer",
                         "required": false,
-                        "description": "Number of threads, default 4"
+                        "description": "Number of threads, default 4",
+                        "default": 4
                     }
                 },
                 "notes": "input must be a contigs FASTA file; database is mounted automatically"
@@ -958,11 +992,18 @@
         "notes": "Standard workflow: run bwa index first, then bwa mem for alignment",
         "operations": {
             "index": {
-                "command": "bwa index {input}",
+                "command": "bwa index -p /work/{index_prefix} {input}",
                 "description": "Build a BWA index for a reference genome (required before alignment)",
                 "requires_input": true,
                 "requires_output": false,
-                "notes": "input must be a reference genome FASTA file; generates .amb .ann .bwt .pac .sa index files automatically"
+                "notes": "Input FASTA is mounted read-only; index files are written into the tool work directory.",
+                "extra_params": {
+                    "index_prefix": {
+                        "type": "string",
+                        "required": false,
+                        "description": "Index prefix in the tool work directory; defaults to the input FASTA stem"
+                    }
+                }
             },
             "mem": {
                 "command": "bwa mem -t {threads} {reference} {input} > /work/{output}",
@@ -973,7 +1014,7 @@
                     "reference": {
                         "type": "string",
                         "required": true,
-                        "description": "Absolute path to the reference genome FASTA file (must have been indexed with bwa index)"
+                        "description": "BWA index prefix returned by bwa.index, usually /work/<index_prefix> or its host work-directory path"
                     },
                     "output": {
                         "type": "string",
@@ -983,7 +1024,8 @@
                     "threads": {
                         "type": "integer",
                         "required": false,
-                        "description": "Number of threads, default 4"
+                        "description": "Number of threads, default 4",
+                        "default": 4
                     }
                 },
                 "notes": "input must be a reads FASTQ file"
@@ -1039,7 +1081,8 @@
                     "threads": {
                         "type": "integer",
                         "required": false,
-                        "description": "Number of threads, default 4"
+                        "description": "Number of threads, default 4",
+                        "default": 4
                     }
                 }
             }
@@ -1075,12 +1118,14 @@
                     "search_type": {
                         "type": "integer",
                         "required": false,
-                        "description": "Search type: 1 = protein vs protein, 3 = nucleotide vs nucleotide (default 3)"
+                        "description": "Search type: 1 = protein vs protein, 3 = nucleotide vs nucleotide (default 3)",
+                        "default": 3
                     },
                     "threads": {
                         "type": "integer",
                         "required": false,
-                        "description": "Number of threads, default 4"
+                        "description": "Number of threads, default 4",
+                        "default": 4
                     }
                 }
             },
@@ -1098,12 +1143,14 @@
                     "min_seq_id": {
                         "type": "number",
                         "required": false,
-                        "description": "Minimum sequence identity threshold (0-1), default 0.9 (90% identity)"
+                        "description": "Minimum sequence identity threshold (0-1), default 0.9 (90% identity)",
+                        "default": 0.9
                     },
                     "threads": {
                         "type": "integer",
                         "required": false,
-                        "description": "Number of threads, default 4"
+                        "description": "Number of threads, default 4",
+                        "default": 4
                     }
                 }
             }
@@ -1124,17 +1171,20 @@
                     "quality": {
                         "type": "integer",
                         "required": false,
-                        "description": "Phred quality score threshold for 3' end trimming, default 20"
+                        "description": "Phred quality score threshold for 3' end trimming, default 20",
+                        "default": 20
                     },
                     "min_length": {
                         "type": "integer",
                         "required": false,
-                        "description": "Minimum read length to keep after trimming (bp), default 20"
+                        "description": "Minimum read length to keep after trimming (bp), default 20",
+                        "default": 20
                     },
                     "cores": {
                         "type": "integer",
                         "required": false,
-                        "description": "Number of CPU cores, default 1"
+                        "description": "Number of CPU cores, default 1",
+                        "default": 1
                     }
                 },
                 "notes": "input must be a single-end FASTQ file; adapters are detected automatically"
@@ -1158,17 +1208,20 @@
                     "quality": {
                         "type": "integer",
                         "required": false,
-                        "description": "Phred quality score threshold for 3' end trimming, default 20"
+                        "description": "Phred quality score threshold for 3' end trimming, default 20",
+                        "default": 20
                     },
                     "min_length": {
                         "type": "integer",
                         "required": false,
-                        "description": "Minimum read length to keep after trimming (bp), default 20"
+                        "description": "Minimum read length to keep after trimming (bp), default 20",
+                        "default": 20
                     },
                     "cores": {
                         "type": "integer",
                         "required": false,
-                        "description": "Number of CPU cores, default 1"
+                        "description": "Number of CPU cores, default 1",
+                        "default": 1
                     }
                 }
             }
@@ -1199,12 +1252,14 @@
                     "preset": {
                         "type": "string",
                         "required": false,
-                        "description": "Sequencing platform preset: ont (Oxford Nanopore) or pacbio (PacBio), default ont"
+                        "description": "Sequencing platform preset: ont (Oxford Nanopore) or pacbio (PacBio), default ont",
+                        "default": "ont"
                     },
                     "threads": {
                         "type": "integer",
                         "required": false,
-                        "description": "Number of threads, default 4"
+                        "description": "Number of threads, default 4",
+                        "default": 4
                     }
                 },
                 "notes": "input must be a FASTQ file; pipe the output SAM through samtools sort and index before running Sniffles2"
@@ -1236,7 +1291,8 @@
                     "threads": {
                         "type": "integer",
                         "required": false,
-                        "description": "Number of threads, default 4"
+                        "description": "Number of threads, default 4",
+                        "default": 4
                     }
                 },
                 "notes": "input must be a coordinate-sorted BAM file with a .bai index"
@@ -1273,7 +1329,8 @@
                     "threads": {
                         "type": "integer",
                         "required": false,
-                        "description": "Number of threads, default 1"
+                        "description": "Number of threads, default 1",
+                        "default": 4
                     }
                 }
             }
@@ -1299,7 +1356,8 @@
                     "threads": {
                         "type": "integer",
                         "required": false,
-                        "description": "Number of threads, default 4"
+                        "description": "Number of threads, default 4",
+                        "default": 4
                     }
                 },
                 "notes": "input must be a contigs FASTA file; sequences shorter than 1 kb are recommended to be filtered out first"
@@ -1326,7 +1384,8 @@
                     "threads": {
                         "type": "integer",
                         "required": false,
-                        "description": "Number of threads, default 4"
+                        "description": "Number of threads, default 4",
+                        "default": 4
                     }
                 },
                 "notes": "input must be a viral sequences FASTA file; database is mounted automatically"
@@ -1381,7 +1440,8 @@
                     "cores": {
                         "type": "integer",
                         "required": false,
-                        "description": "Number of CPU cores to use; defaults to all available cores"
+                        "description": "Number of CPU cores to use; default 1 to keep resource use bounded",
+                        "default": 1
                     }
                 },
                 "notes": "Working directory is fixed to /work; append --use-conda or --use-singularity as needed"

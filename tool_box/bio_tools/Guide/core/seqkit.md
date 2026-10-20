@@ -43,6 +43,8 @@ docker run --rm -v /path/to/data:/data staphb/seqkit:2.8.0 seqkit [command] [arg
    ```bash
    docker run --rm -v /data:/data staphb/seqkit:2.8.0 seqkit grep -p "pattern" /data/input.fasta -o /data/matched.fasta
    ```
+   This command matches an exact ID. For a regular expression, add `-r` or use
+   `bio_tools` with `operation="grep_regex"`.
 
 ---
 

@@ -108,7 +108,8 @@ def _build_bio_tools_schema_description() -> str:
     return (
         "PREFERRED for bioinformatics: Docker-based tools for FASTA/FASTQ/sequence "
         "analysis. Tool list is synced from tools_config.json. "
-        f"Available tools: {names_text}. "
+        f"Configured tools: {names_text}. Availability depends on the execution backend, "
+        "the tool image, inputs, and any required reference database. "
         "Use operation='help' first to inspect exact operations and parameters. "
         "If the user provides inline sequence text instead of a file, pass it via "
         "sequence_text and let bio_tools convert it to FASTA safely. "

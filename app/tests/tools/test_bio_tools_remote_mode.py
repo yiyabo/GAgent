@@ -808,8 +808,8 @@ def test_build_docker_command_database_env_override_ok(
     tmp_path: Path,
 ) -> None:
     db_dir = tmp_path / "checkv_db"
-    db_dir.mkdir()
-    (db_dir / "marker").write_text("x", encoding="utf-8")
+    (db_dir / "genome_db").mkdir(parents=True)
+    (db_dir / "genome_db" / "checkv_reps.dmnd").write_text("index", encoding="utf-8")
     monkeypatch.setenv("BIO_TOOLS_CHECKV_DB_PATH", str(db_dir))
     cmd = bio_handler_module.build_docker_command(
         tool_name="checkv",

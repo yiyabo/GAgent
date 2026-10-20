@@ -20,6 +20,9 @@ from pathlib import Path
 from string import Formatter
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
+from .local_outputs import collect_local_outputs
+from .local_paths import mount_input_parameters
+
 from .remote_executor import (
     RemoteExecutionConfig,
     create_remote_run_dirs,
@@ -35,10 +38,15 @@ logger = logging.getLogger(__name__)
 # 
 BIO_TOOLS_CONFIG_PATH = Path(__file__).parent / "tools_config.json"
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-RUNTIME_BASE_DIR = os.getenv(
-    "BIO_TOOLS_RUNTIME_DIR",
-    str(PROJECT_ROOT / "runtime" / "bio_tools"),
-)
+
+
+def _default_runtime_base_dir() -> str:
+    from app.services.session_paths import get_runtime_root
+
+    return str(get_runtime_root() / "bio_tools")
+
+
+RUNTIME_BASE_DIR = os.getenv("BIO_TOOLS_RUNTIME_DIR") or _default_runtime_base_dir()
 DEFAULT_TIMEOUT = int(os.getenv("BIO_TOOLS_DEFAULT_TIMEOUT", "3600"))
 DEFAULT_EXECUTION_MODE = "local"
 BIO_TOOLS_BACKGROUND_JOB_TYPE = "bio_tools_run"
@@ -62,7 +70,9 @@ class DatabaseUnavailableError(ValueError):
     """工具的参考数据库在本机不可用（路径不存在、为空或不可读）。"""
 
 
-def _resolve_database_mount(tool_name: str, *, validate: bool) -> Optional[str]:
+def _resolve_database_mount(
+    tool_name: str, *, validate: bool, operation: Optional[str] = None
+) -> Optional[str]:
     """返回需挂载到 /work/database 的宿主机数据库路径；无需数据库的工具返回 None。
 
     validate=True（本地执行）时，路径不存在/为空/不可读直接抛 DatabaseUnavailableError，
@@ -91,6 +101,14 @@ def _resolve_database_mount(tool_name: str, *, validate: bool) -> Optional[str]:
             f"ask the operator to install the database or set {env_name} to the "
             "correct location."
         )
+    if tool_name == "checkv" and operation in {"end_to_end", "completeness"}:
+        marker = path_obj / "genome_db" / "checkv_reps.dmnd"
+        if not marker.is_file():
+            raise DatabaseUnavailableError(
+                f"checkv reference database is incomplete: missing '{marker}'. "
+                "The existing directory alone is not enough; install or repair the "
+                "CheckV database before retrying this operation."
+            )
     return db_path
 
 _CONTROL_PARAM_KEYS = {"background", "async", "detached", "wait", "job_id"}
@@ -313,6 +331,17 @@ def _validate_and_normalize_operation_params(
             continue
 
         raise UnsafeParameterError(key)
+
+    raw_schema = op_config.get("extra_params", {})
+    if isinstance(raw_schema, dict):
+        for key, schema in raw_schema.items():
+            if (
+                key not in normalized
+                and isinstance(schema, dict)
+                and not schema.get("required")
+                and "default" in schema
+            ):
+                normalized[key] = schema["default"]
 
     return normalized
 
@@ -613,7 +642,24 @@ def _build_docker_command_args(
         tool_dir = ensure_tool_directory(tool_name)
         tool_dir_abs = str(tool_dir.resolve())
 
-    mounts = [f"{tool_dir_abs}:/work"]
+    from app.services.session_paths import get_runtime_root, host_path_for
+
+    runtime_root = get_runtime_root()
+    container_runtime = (PROJECT_ROOT / "runtime").resolve()
+    if (
+        Path("/var/run/docker.sock").exists()
+        and not os.getenv("HOST_RUNTIME_ROOT")
+        and Path(tool_dir_abs).resolve().is_relative_to(container_runtime)
+        and not Path(tool_dir_abs).resolve().is_relative_to(runtime_root)
+    ):
+        raise ValueError(
+            "Local bio_tools is using the container-only runtime directory. "
+            "Set BIO_TOOLS_RUNTIME_DIR to the host-visible runtime path or "
+            "configure HOST_RUNTIME_ROOT for sibling Docker mounts."
+        )
+
+    mounts = [f"{host_path_for(tool_dir_abs)}:/work"]
+    input_dir_abs: Optional[str] = None
 
     # ，
     if input_file:
@@ -624,15 +670,17 @@ def _build_docker_command_args(
 
         if input_path.exists():
             input_dir_abs = str(input_path.parent.resolve())
-            mounts.append(f"{input_dir_abs}:/input:ro")
+            mounts.append(f"{host_path_for(input_dir_abs)}:/input:ro")
             input_file = f"/input/{input_path.name}"
         elif validate_input_exists:
             logger.warning(f"Input file not found: {input_path}")
 
     # 需要参考数据库的工具统一挂载到 /work/database（路径可用 env 覆盖，本地执行前校验）
-    db_mount_path = _resolve_database_mount(tool_name, validate=validate_database)
+    db_mount_path = _resolve_database_mount(
+        tool_name, validate=validate_database, operation=operation
+    )
     if db_mount_path:
-        mounts.append(f"{db_mount_path}:/work/database")
+        mounts.append(f"{host_path_for(db_mount_path)}:/work/database")
 
     # 
     params = {
@@ -644,6 +692,31 @@ def _build_docker_command_args(
     # 
     if validated_extra_params:
         params.update(validated_extra_params)
+
+    if validate_input_exists:
+        mount_input_parameters(
+            params,
+            mounts,
+            work_dir=tool_dir_abs,
+            input_dir=input_dir_abs,
+            input_keys=INPUT_PATH_PARAM_KEYS,
+            multi_keys=MULTI_PATH_PARAM_KEYS,
+        )
+
+    if tool_name == "samtools" and operation == "index" and not params.get("output") and input_file:
+        params["output"] = Path(input_file).name + ".bai"
+    if tool_name == "bwa" and operation == "index" and not params.get("index_prefix") and input_file:
+        params["index_prefix"] = Path(input_file).stem
+
+    if tool_name == "checkv" and operation == "complete_genomes" and validate_input_exists:
+        output_dir = (Path(tool_dir_abs) / str(params.get("output") or "")).resolve()
+        if not output_dir.is_relative_to(Path(tool_dir_abs).resolve()) or not (
+            output_dir / "completeness.tsv"
+        ).is_file():
+            raise ValueError(
+                "checkv.complete_genomes requires a prior CheckV completeness result "
+                "at <output>/completeness.tsv in the same tool work directory."
+            )
 
     required_fields = _template_fields(command_template)
     if "query" in required_fields and not params.get("query") and params.get("input"):
@@ -663,19 +736,12 @@ def _build_docker_command_args(
             # 
             mount_exists = any(m.startswith(f"{db_dir_abs}:") for m in mounts)
             if not mount_exists:
-                mounts.append(f"{db_dir_abs}:/db:ro")
+                mounts.append(f"{host_path_for(db_dir_abs)}:/db:ro")
                 # 
                 params['db'] = f"/db/{db_path_obj.name}"
         elif not db_path_obj.is_absolute():
             # ， tool_dir 
             params['db'] = f"/work/{db_path}"
-
-    #  minimap2 filter，
-    if tool_name == "minimap2" and operation == "filter":
-        ref_path = params.get('reference', '')
-        if ref_path.endswith('.mmi'):
-            ref_dir = str(Path(ref_path).parent.resolve())
-            mounts.append(f"{ref_dir}:/work/reference:ro")
 
     # Avoid duplicated /work prefix when templates already include /work/{param}
     for key, value in list(params.items()):
@@ -1192,9 +1258,21 @@ async def _execute_local_bio_tool(
     result["command"] = shlex.join(docker_args)
     result["tool"] = tool_name
     result["operation"] = operation
-    if output_file and result.get("success"):
+    if result.get("success"):
         tool_dir = ensure_tool_directory(tool_name)
-        result["output_path"] = str(tool_dir / output_file)
+        discovered_output = output_file
+        discovered_params = dict(params or {})
+        if tool_name == "samtools" and operation == "index" and not discovered_output and input_file:
+            discovered_output = str((params or {}).get("output") or (Path(input_file).name + ".bai"))
+        if tool_name == "bwa" and operation == "index" and input_file:
+            discovered_params.setdefault("index_prefix", Path(input_file).stem)
+        result.update(collect_local_outputs(
+            tool_dir,
+            tool_name=tool_name,
+            operation=operation,
+            output_file=discovered_output,
+            params=discovered_params,
+        ))
     return _apply_execution_metadata(result, mode="local", host="local")
 
 
@@ -1717,6 +1795,11 @@ async def bio_tools_handler(
             "operation": "list",
             "tools": tools,
             "count": len(tools),
+            "note": (
+                "This is the configured catalog, not a successful-run guarantee. "
+                "A tool also needs a working execution backend, its image, inputs, "
+                "and any required reference database."
+            ),
         }
 
     if operation == JOB_STATUS_OPERATION:
@@ -1770,8 +1853,8 @@ async def bio_tools_handler(
             }
             if op_requires_input:
                 example["input_file"] = "/absolute/path/to/input"
-            if accepted_params:
-                example["params"] = {p: "..." for p in accepted_params}
+            if required_params:
+                example["params"] = {p: "..." for p in required_params}
 
             operations_detail[op] = {
                 "description": info.get("description", ""),
