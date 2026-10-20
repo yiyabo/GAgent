@@ -32,7 +32,11 @@ logger = logging.getLogger(__name__)
 _REASONING_EFFORT_LEVELS = ("none", "low", "medium", "high")
 
 
-def _thinking_off_reasoning_effort() -> Optional[str]:
+def _is_direct_dashscope(url: Optional[str]) -> bool:
+    return "dashscope.aliyuncs.com" in str(url or "").lower()
+
+
+def _thinking_off_reasoning_effort(url: Optional[str] = None) -> Optional[str]:
     """``reasoning_effort`` to send when a caller asks for ``enable_thinking=False``.
 
     Probed 2026-10-09 against the production gateway (sub2api → qwen3.8-flash,
@@ -46,6 +50,11 @@ def _thinking_off_reasoning_effort() -> Optional[str]:
     the grade (default ``low``: keep light planning, stop the burn); ``off``
     disables the mapping so only ``enable_thinking`` goes out.
     """
+    # DashScope itself honours enable_thinking=false and rejects any other reasoning_effort next to it
+    # (HTTP 400 "'reasoning_effort' must be 'none' when 'enable_thinking' is false"); the mapping below is
+    # for gateways that ignore enable_thinking.
+    if _is_direct_dashscope(url):
+        return None
     raw = str(os.getenv("LLM_THINKING_OFF_REASONING_EFFORT", "low")).strip().lower()
     if raw in ("off", "disabled", "0"):
         return None
@@ -1237,7 +1246,7 @@ class LLMClient(LLMProvider):
         if isinstance(enable_thinking, bool):
             payload["enable_thinking"] = enable_thinking
             if not enable_thinking:
-                effort = _thinking_off_reasoning_effort()
+                effort = _thinking_off_reasoning_effort(self.url)
                 if effort:
                     payload["reasoning_effort"] = effort
         headers = self._build_headers()
@@ -1542,7 +1551,7 @@ class LLMClient(LLMProvider):
         if enable_thinking is False:
             # The gateway ignores enable_thinking (LOCAL_INFRA §114);
             # reasoning_effort is what actually bounds thinking here.
-            effort = _thinking_off_reasoning_effort()
+            effort = _thinking_off_reasoning_effort(self.url)
             if effort:
                 payload["reasoning_effort"] = effort
 
@@ -1770,7 +1779,7 @@ class LLMClient(LLMProvider):
         if enable_thinking is False:
             # The gateway ignores enable_thinking (LOCAL_INFRA §114);
             # reasoning_effort is what actually bounds thinking here.
-            effort = _thinking_off_reasoning_effort()
+            effort = _thinking_off_reasoning_effort(self.url)
             if effort:
                 payload["reasoning_effort"] = effort
 
