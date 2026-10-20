@@ -15,6 +15,7 @@ import argparse
 import logging
 import os
 import re
+import shutil
 import signal
 import socket
 import subprocess
@@ -32,6 +33,7 @@ logger = logging.getLogger("gagent.bio_native_runner")
 RUNNER_VERSION = 1
 MAX_REQUEST_BYTES = 256 * 1024
 HEARTBEAT_SECONDS = 5.0
+CAPABILITIES_SECONDS = 60.0
 SLURM_TIMEOUT_SECONDS = 30
 VANISHED_GRACE_SECONDS = 90
 
@@ -80,6 +82,8 @@ class Runner:
         self.host = socket.gethostname()
         self.started_at = _now()
         self._last_beat = 0.0
+        self._capabilities = {}  # type: Dict[str, Any]
+        self._capabilities_at = 0.0
         self._config = {}  # type: Dict[str, Any]
         self._config_mtime = -1.0
         self.active = {}  # type: Dict[str, Dict[str, Any]]
@@ -134,8 +138,19 @@ class Runner:
             native_exec.heartbeat_path(self.runtime_dir),
             {"version": RUNNER_VERSION, "protocol": native_exec.PROTOCOL_VERSION, "pid": os.getpid(),
              "host": self.host, "ts": self._last_beat, "started_at": self.started_at,
-             "active": len(self.active), "max_active": self.max_active},
+             "active": len(self.active), "max_active": self.max_active,
+             "capabilities": self.capabilities()},
         )
+
+    def capabilities(self) -> Dict[str, Any]:
+        """Which operations can run on this server right now; recomputed at most once a minute."""
+        if _now() - self._capabilities_at >= CAPABILITIES_SECONDS:
+            self._capabilities = native_exec.compute_capabilities(
+                self.config(), database_for=self._database_path, conda_envs_dir=self.conda_envs_dir,
+                which=shutil.which,
+            )
+            self._capabilities_at = _now()
+        return self._capabilities
 
     # ------------------------------------------------------------------ intake
 

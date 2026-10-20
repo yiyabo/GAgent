@@ -180,11 +180,19 @@ def get_tools_config() -> Dict[str, Any]:
     return _tools_config
 
 
+def _hidden_in_this_mode(info: Dict[str, Any]) -> bool:
+    """Tools marked ``native_only`` (host software, no Docker image) exist only where native execution is on."""
+    mode = _normalize_execution_mode(os.getenv("BIO_TOOLS_EXECUTION_MODE"))
+    return bool((info or {}).get("native_only")) and mode not in {"native", "native_first"}
+
+
 def get_available_bio_tools() -> List[Dict[str, Any]]:
     """"""
     config = get_tools_config()
     tools = []
     for name, info in config.items():
+        if _hidden_in_this_mode(info):
+            continue
         entry = {
             "name": name,
             "description": info.get("description", ""),
@@ -196,6 +204,52 @@ def get_available_bio_tools() -> List[Dict[str, Any]]:
             entry["native_operations"] = native_ops
         tools.append(entry)
     return tools
+
+
+def _native_exposure(config: Dict[str, Any]) -> Optional[Dict[str, Dict[str, Optional[str]]]]:
+    """Under BIO_TOOLS_EXECUTION_MODE=native: tool -> operation -> None (usable) or why it is not.
+
+    Only what can run natively is described, so the model is not offered Docker-only tools that this
+    server cannot start. None in any other mode. Without a runner report everything native is shown
+    as usable and the call itself says the runner is down."""
+    if _normalize_execution_mode(os.getenv("BIO_TOOLS_EXECUTION_MODE")) != "native":
+        return None
+    reported = native_exec.read_capabilities(_native_runtime_dir()) or {}
+    return {
+        tool: {op: (reported.get(tool) or {}).get(op) for op in ops}
+        for tool, ops in native_exec.native_catalog(config).items()
+    }
+
+
+def list_bio_tools_for_model() -> Dict[str, Any]:
+    tools = get_available_bio_tools()
+    config = get_tools_config()
+    exposure = _native_exposure(config)
+    if exposure is None:
+        return {"success": True, "operation": "list", "tools": tools, "count": len(tools)}
+    shown: List[Dict[str, Any]] = []
+    unavailable: Dict[str, Dict[str, str]] = {}
+    for entry in tools:
+        ops = exposure.get(entry["name"])
+        if not ops:
+            continue
+        ready = [op for op, reason in ops.items() if reason is None]
+        missing = {op: reason for op, reason in ops.items() if reason is not None}
+        if not ready:
+            unavailable[entry["name"]] = missing
+            continue
+        entry = dict(entry, operations=ready, native_operations=ready)
+        if missing:
+            entry["unavailable_operations"] = missing
+        shown.append(entry)
+    result: Dict[str, Any] = {"success": True, "operation": "list", "tools": shown, "count": len(shown)}
+    if unavailable:
+        result["unavailable_tools"] = unavailable
+        result["note"] = (
+            "unavailable_tools are installed in the tool list but cannot run on this server yet "
+            "(reason per operation); tell the user instead of calling them."
+        )
+    return result
 
 
 def ensure_tool_directory(tool_name: str) -> Path:
@@ -1778,13 +1832,7 @@ async def bio_tools_handler(
     
     # ：
     if tool_name == "list" or operation == "list":
-        tools = get_available_bio_tools()
-        return {
-            "success": True,
-            "operation": "list",
-            "tools": tools,
-            "count": len(tools),
-        }
+        return list_bio_tools_for_model()
 
     if operation == JOB_STATUS_OPERATION:
         if not requested_job_id:
@@ -1799,16 +1847,37 @@ async def bio_tools_handler(
     # ：
     if operation == "help":
         config = get_tools_config()
-        if tool_name not in config:
+        if tool_name not in config or _hidden_in_this_mode(config[tool_name]):
             return {
                 "success": False,
                 "error": f"Unknown tool: {tool_name}",
-                "available_tools": list(config.keys()),
+                "available_tools": [t for t, info in config.items() if not _hidden_in_this_mode(info)],
             }
         
+        exposure = _native_exposure(config)
+        hidden: Dict[str, str] = {}
+        if exposure is not None:
+            tool_exposure = exposure.get(tool_name) or {}
+            hidden = {op: reason for op, reason in tool_exposure.items() if reason is not None}
+            if not any(reason is None for reason in tool_exposure.values()):
+                return {
+                    "success": False,
+                    "error": (
+                        f"{tool_name} cannot run on this server"
+                        + (f" ({', '.join(sorted(set(hidden.values())))})" if hidden else "")
+                    ),
+                    "error_code": "tool_unavailable",
+                    "unavailable_operations": hidden,
+                    "available_tools": [
+                        t for t, ops in exposure.items() if any(r is None for r in ops.values())
+                    ],
+                }
+
         tool_config = config[tool_name]
         operations_detail = {}
         for op, info in tool_config.get("operations", {}).items():
+            if exposure is not None and (exposure.get(tool_name) or {}).get(op, "not_native") is not None:
+                continue
             raw_params = info.get("extra_params", [])
             if isinstance(raw_params, list):
                 params_detail = {
@@ -1858,7 +1927,8 @@ async def bio_tools_handler(
             "tool": tool_name,
             "description": tool_config.get("description", ""),
             "notes": tool_config.get("notes", ""),
-            "image": tool_config.get("image", ""),
+            **({} if exposure is not None else {"image": tool_config.get("image", "")}),
+            **({"unavailable_operations": hidden} if hidden else {}),
             "native_operations": [
                 op for op in operations_detail if native_exec.supports_native(config, tool_name, op)
             ],
@@ -1867,11 +1937,11 @@ async def bio_tools_handler(
     
     # 
     config = get_tools_config()
-    if tool_name not in config:
+    if tool_name not in config or _hidden_in_this_mode(config[tool_name]):
         return {
             "success": False,
             "error": f"Unknown tool: {tool_name}",
-            "available_tools": list(config.keys()),
+            "available_tools": [t for t, info in config.items() if not _hidden_in_this_mode(info)],
         }
 
     operations = config[tool_name].get("operations", {})

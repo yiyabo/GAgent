@@ -152,7 +152,7 @@ def test_plan_execution_contract_matches_toolbox_and_native_surfaces():
 def test_bio_tools_enum_stays_dynamic_from_tools_config() -> None:
     config_path = PROJECT_ROOT / "tool_box" / "bio_tools" / "tools_config.json"
     config = json.loads(config_path.read_text(encoding="utf-8"))
-    expected = sorted(set(config.keys()))
+    expected = sorted(name for name, info in config.items() if not info.get("native_only"))
     schema = TOOL_REGISTRY["bio_tools"]
     enum_values = schema["function"]["parameters"]["properties"]["tool_name"]["enum"]
     assert enum_values == expected

@@ -520,3 +520,122 @@ def test_list_and_help_say_which_operations_are_native() -> None:
     assert "native_operations" not in by_name["nextflow"]
     helped = asyncio.run(handler.bio_tools_handler(tool_name="samtools", operation="help"))
     assert "sort" in helped["native_operations"]
+
+
+# --------------------------------------------------------------------------- what the model is offered
+
+def _caps_config() -> Dict[str, Any]:
+    return {
+        "dbtool": {"native": {"conda_env": "dbenv", "database": {"subdir": "dbtool"}}, "operations": {
+            "scan": {"command": "dbtool {input} /work/database"},
+            "check": {"command": "dbtool check {input}"},
+        }},
+        "sys": {"native": {"path_tools": ["prodigal"]}, "operations": {"run": {"command": "prodigal -i {input}"}}},
+        "dockeronly": {"operations": {"run": {"command": "x {input}"}}},
+    }
+
+
+def test_capabilities_say_why_an_operation_cannot_run(tmp_path: Path) -> None:
+    envs = tmp_path / "envs"
+    (envs / "dbenv" / "conda-meta").mkdir(parents=True)
+    config = _caps_config()
+    ready = native_exec.compute_capabilities(
+        config, database_for=lambda tool: None, conda_envs_dir=str(envs),
+        which=lambda program: "/usr/bin/" + program,
+    )
+    assert ready == {"dbtool": {"scan": "database_unavailable", "check": None}, "sys": {"run": None}}
+    missing = native_exec.compute_capabilities(
+        config, database_for=lambda tool: "/db", conda_envs_dir=str(tmp_path / "nowhere"), which=lambda program: None,
+    )
+    assert missing == {"dbtool": {"scan": "environment_not_installed", "check": "environment_not_installed"},
+                       "sys": {"run": "program_not_installed"}}
+
+
+def test_the_runner_reports_its_capabilities_in_the_heartbeat(world) -> None:
+    world["runner"].ensure_dirs()
+    world["runner"].heartbeat(force=True)
+    caps = native_exec.read_capabilities(str(world["bio"]))
+    assert caps == {"fake": {op: None for op in world["config"]["fake"]["operations"]}}
+
+
+def _native_mode(monkeypatch, tmp_path: Path, capabilities) -> None:
+    runtime = tmp_path / "bio"
+    runtime.mkdir(exist_ok=True)
+    (runtime / "_native").mkdir(exist_ok=True)
+    if capabilities is not None:
+        (runtime / "_native" / "runner.json").write_text(json.dumps({"ts": time.time(), "capabilities": capabilities}))
+    monkeypatch.setenv("BIO_TOOLS_EXECUTION_MODE", "native")
+    monkeypatch.setattr(handler, "_native_runtime_dir", lambda: str(runtime))
+
+
+def test_native_mode_lists_only_what_the_server_can_run(monkeypatch, tmp_path: Path) -> None:
+    caps = {"genomad": {"end_to_end": "database_unavailable", "annotate": "database_unavailable",
+                        "find_proviruses": "database_unavailable"},
+            "seqkit": {"stats": None, "grep": None, "seq": None, "head": None}}
+    _native_mode(monkeypatch, tmp_path, caps)
+    listing = asyncio.run(handler.bio_tools_handler(tool_name="list", operation="list"))
+    names = {t["name"] for t in listing["tools"]}
+    assert "seqkit" in names and "nextflow" not in names and "dorado" not in names
+    assert "genomad" not in names
+    assert listing["unavailable_tools"]["genomad"]["end_to_end"] == "database_unavailable"
+    blast = next(t for t in listing["tools"] if t["name"] == "blast")
+    assert blast["operations"] == blast["native_operations"]
+
+
+def test_native_mode_help_hides_operations_that_cannot_run(monkeypatch, tmp_path: Path) -> None:
+    caps = {"checkv": {"end_to_end": "database_unavailable", "completeness": "database_unavailable",
+                       "complete_genomes": None}}
+    _native_mode(monkeypatch, tmp_path, caps)
+    helped = asyncio.run(handler.bio_tools_handler(tool_name="checkv", operation="help"))
+    assert list(helped["operations"]) == ["complete_genomes"]
+    assert helped["unavailable_operations"]["end_to_end"] == "database_unavailable"
+    assert "image" not in helped
+    gone = asyncio.run(handler.bio_tools_handler(
+        tool_name="genomad", operation="help"))
+    assert gone["success"] is True  # no report for genomad: shown, the call itself will say why not
+    caps = {"genomad": {"end_to_end": "database_unavailable", "annotate": "database_unavailable",
+                        "find_proviruses": "database_unavailable"}}
+    _native_mode(monkeypatch, tmp_path, caps)
+    refused = asyncio.run(handler.bio_tools_handler(tool_name="genomad", operation="help"))
+    assert refused["success"] is False and refused["error_code"] == "tool_unavailable"
+    assert "genomad" not in refused["available_tools"]
+
+
+def test_native_mode_without_a_runner_report_still_offers_the_native_tools(monkeypatch, tmp_path: Path) -> None:
+    _native_mode(monkeypatch, tmp_path, None)
+    listing = asyncio.run(handler.bio_tools_handler(tool_name="list", operation="list"))
+    names = {t["name"] for t in listing["tools"]}
+    assert "genomad" in names and "nextflow" not in names
+
+
+def test_a_native_only_tool_exists_only_where_native_execution_is_on(monkeypatch) -> None:
+    assert REAL_CONFIG["phabox2"]["native_only"] is True and not REAL_CONFIG["phabox2"]["image"]
+    monkeypatch.delenv("BIO_TOOLS_EXECUTION_MODE", raising=False)
+    names = {t["name"] for t in asyncio.run(handler.bio_tools_handler(tool_name="list", operation="list"))["tools"]}
+    assert "phabox2" not in names
+    refused = asyncio.run(handler.bio_tools_handler(tool_name="phabox2", operation="help"))
+    assert refused["success"] is False and "phabox2" not in refused["available_tools"]
+    monkeypatch.setenv("BIO_TOOLS_EXECUTION_MODE", "native_first")
+    names = {t["name"] for t in asyncio.run(handler.bio_tools_handler(tool_name="list", operation="list"))["tools"]}
+    assert "phabox2" in names
+
+
+def test_other_modes_list_every_tool(monkeypatch) -> None:
+    monkeypatch.delenv("BIO_TOOLS_EXECUTION_MODE", raising=False)
+    listing = asyncio.run(handler.bio_tools_handler(tool_name="list", operation="list"))
+    assert {"nextflow", "dorado", "snakemake"} <= {t["name"] for t in listing["tools"]}
+    assert "unavailable_tools" not in listing
+
+
+def test_the_schema_and_prompt_catalogs_follow_native_mode() -> None:
+    code = (
+        "from app.services import tool_schemas as t\n"
+        "from app.services.deep_think import prompts as p\n"
+        "print(len(t._BIO_TOOL_NAMES), len(p._BIO_TOOLS_CATALOG), 'nextflow' in t._BIO_TOOL_NAMES, "
+        "'dorado' in p._BIO_TOOLS_CATALOG_TEXT, 'genomad' in t._BIO_TOOL_NAMES)\n"
+    )
+    root = str(BIO_DIR.parents[1])
+    for mode, expected in (("native", "30 30 False False True"), ("", "32 32 True True True"), ("native_first", "33 33 True True True")):
+        done = subprocess.run([sys.executable, "-c", code], cwd=root, capture_output=True, text=True,
+                              env={**os.environ, "BIO_TOOLS_EXECUTION_MODE": mode})
+        assert done.stdout.strip().splitlines()[-1] == expected, done.stderr[-500:]

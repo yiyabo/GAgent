@@ -14,7 +14,8 @@ SKILLS_ROOT = PROJECT_ROOT / "skills"
 
 def test_bio_tools_schema_enum_matches_tools_config() -> None:
     config = json.loads(TOOLS_CONFIG_PATH.read_text(encoding="utf-8"))
-    expected_tools = sorted(config.keys())
+    # native_only tools (host software, no Docker image) are offered only under native execution.
+    expected_tools = sorted(name for name, info in config.items() if not info.get("native_only"))
 
     schema = tool_schemas.TOOL_REGISTRY["bio_tools"]
     enum_tools = schema["function"]["parameters"]["properties"]["tool_name"]["enum"]

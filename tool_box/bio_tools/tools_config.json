@@ -1616,5 +1616,118 @@
                 }
             }
         }
+    },
+    "phabox2": {
+        "image": "",
+        "native_only": true,
+        "description": "PhaBOX2 - phage identification, taxonomy, lifestyle and host prediction for contigs (host-installed, no Docker image)",
+        "category": "phage_analysis",
+        "native": {
+            "conda_env": "phabox2",
+            "cpus": 8,
+            "mem_mb": 32768,
+            "time_limit_seconds": 21600,
+            "database": {
+                "subdir": "phabox2"
+            }
+        },
+        "notes": "Input is a nucleotide FASTA of contigs (at least 3000 bp by default). Results are written to the output directory.",
+        "operations": {
+            "end_to_end": {
+                "command": "mkdir -p /work/{output} && phabox2 --task end_to_end --dbdir /work/database --outpth /work/{output} --contigs {input} --threads {threads}",
+                "description": "Run phamer, phagcn, phatyp, cherry and phavip on the contigs",
+                "requires_input": true,
+                "requires_output": false,
+                "extra_params": {
+                    "output": {
+                        "type": "string",
+                        "required": true,
+                        "description": "Output directory name, e.g. phabox_out"
+                    },
+                    "threads": {
+                        "type": "integer",
+                        "required": false,
+                        "description": "Number of threads, default 8"
+                    }
+                },
+                "notes": "Slowest option; use a single task when only one answer is needed"
+            },
+            "phamer": {
+                "command": "mkdir -p /work/{output} && phabox2 --task phamer --dbdir /work/database --outpth /work/{output} --contigs {input} --threads {threads}",
+                "description": "Identify which contigs are phage (virus identification)",
+                "requires_input": true,
+                "requires_output": false,
+                "extra_params": {
+                    "output": {
+                        "type": "string",
+                        "required": true,
+                        "description": "Output directory name, e.g. phabox_out"
+                    },
+                    "threads": {
+                        "type": "integer",
+                        "required": false,
+                        "description": "Number of threads, default 8"
+                    }
+                },
+                "notes": "Writes the phage/non-phage call per contig"
+            },
+            "phagcn": {
+                "command": "mkdir -p /work/{output} && phabox2 --task phagcn --dbdir /work/database --outpth /work/{output} --contigs {input} --threads {threads}",
+                "description": "Taxonomic classification of phage contigs",
+                "requires_input": true,
+                "requires_output": false,
+                "extra_params": {
+                    "output": {
+                        "type": "string",
+                        "required": true,
+                        "description": "Output directory name, e.g. phabox_out"
+                    },
+                    "threads": {
+                        "type": "integer",
+                        "required": false,
+                        "description": "Number of threads, default 8"
+                    }
+                },
+                "notes": "Run on contigs already known to be phage"
+            },
+            "phatyp": {
+                "command": "mkdir -p /work/{output} && phabox2 --task phatyp --dbdir /work/database --outpth /work/{output} --contigs {input} --threads {threads}",
+                "description": "Predict phage lifestyle (virulent or temperate)",
+                "requires_input": true,
+                "requires_output": false,
+                "extra_params": {
+                    "output": {
+                        "type": "string",
+                        "required": true,
+                        "description": "Output directory name, e.g. phabox_out"
+                    },
+                    "threads": {
+                        "type": "integer",
+                        "required": false,
+                        "description": "Number of threads, default 8"
+                    }
+                },
+                "notes": "Run on contigs already known to be phage"
+            },
+            "cherry": {
+                "command": "mkdir -p /work/{output} && phabox2 --task cherry --dbdir /work/database --outpth /work/{output} --contigs {input} --threads {threads}",
+                "description": "Predict the bacterial host of phage contigs",
+                "requires_input": true,
+                "requires_output": false,
+                "extra_params": {
+                    "output": {
+                        "type": "string",
+                        "required": true,
+                        "description": "Output directory name, e.g. phabox_out"
+                    },
+                    "threads": {
+                        "type": "integer",
+                        "required": false,
+                        "description": "Number of threads, default 8"
+                    }
+                },
+                "notes": "Run on contigs already known to be phage"
+            }
+        }
     }
 }
