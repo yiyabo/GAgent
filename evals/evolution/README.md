@@ -22,19 +22,23 @@ python3 evals/evolution/controller.py list
 python3 evals/evolution/controller.py run --round pilot1 --only S01,S02 --dry-run   # 只构造清单，不联网
 python3 evals/evolution/controller.py run --round pilot1 --only S01,S02            # 真实运行，消耗 token
 python3 evals/evolution/controller.py summarize --round pilot1
+python3 evals/evolution/controller.py rescore-route --round formal1   # 离线：只因路线检查失败的旧结果按 v2 口径重算
+python3 evals/evolution/controller.py handoff --round formal1          # 生成交接包 evals/evolution/formal1/
 ```
 
-每个场景开始前，控制器检查账本：已用量加本场景上限若超过停止线（默认 3,600,000 token）就跳过。用量未知时按上限计入，不记为零。
+重跑用后缀轮次 `<轮次>-v2`（例如 `formal1-v2`），不会覆盖原结果；交接包把两者并列。
 
 ## 预算与顺序
 
-- 程序预算：最初为 360 万 token（试点加一轮正式测试）。2026-10-20 经用户批准追加到 540 万 token，覆盖盲测与全部公开正式场景。账本只记录真实用量；用量未知时按上限计入。
-- 每场景上限 `budget_tokens` 同时是驱动内的硬截止；控制器在开始前还要求“已用 + 本场景上限 ≤ 停止线”。
-- 实测：单轮单步场景约 5 万–15 万 token，主要来自 DeepThink 迭代（每次 1 万–1.8 万 prompt token）。多轮场景约为其 2 倍。
-- 正式轮顺序：盲测 B01–B06 优先，然后按覆盖面排公开场景；超出停止线的场景不运行，并在交接包中列为“未运行”。
+- 预算：最初 360 万 token，2026-10-20 追加到约 540 万，同日用户取消预算上限（“没有预算限制，直接跑”）。控制器默认没有停止线（`--stop-tokens 0`）；需要时仍可传 `--stop-tokens N`，此时开始前要求“已用 + 本场景上限 ≤ N”。
+- 账本照常记录真实用量；用量未知时按上限计入，不记为零。
+- 每场景上限 `budget_tokens` 只在两轮之间生效，防止失控；取消预算后控制器把它抬到 `--guard-tokens`（默认 150 万）。单轮内没有截断，只有场景超时。
+- 实测：单轮场景从约 5 万到 50 万 token 不等。提示词占 98% 以上，主要由迭代次数和每次迭代重发的上下文（1 万–2.7 万 token）决定。多轮场景更高。
+- 正式轮顺序：盲测 B01–B06 优先，然后按覆盖面排公开场景。
 
 ## 判定
 
+- 路线不计分：答案对就算对，Agent 用 `bio_tools` 还是自己写 Python 都可以（用户 2026-10-20 决定）。场景里不再放 `tool_used` 检查；路线仍记录在 `result.json` 和交接包的 observations.md。`tool_used` 这种检查类型保留，只给用户明确指定工具的场景使用，控制器对已记录的旧结果统一忽略它。
 - 确定性检查：`run_ok`、`no_fallback`、`tool_used`、`number_line`（数字必须出现在含标签词的行里）、`number_any`、`consistent_count` / `consistent_n50`（与 Agent 生成的文件逐一核对）、`file_records`、`file_exists`、`no_new_files`、`terms_any` / `terms_none`、`turns_max`。
 - 主观项：`judge` 用 `qwen3.7-max` 按评分标准打 0–2 分，只看转录与参考事实。
 - 模拟用户：`qwen3.8-flash`，只看到助手对用户可见的回复，按人设和目标生成下一条消息，或回复 `DONE`。有明确纠正步骤的场景使用脚本化的用户轮次。
@@ -46,6 +50,6 @@ python3 evals/evolution/controller.py summarize --round pilot1
 
 ## 已知限制
 
-- 单次运行有随机性；本轮预算不足以重复多次，结论按单次结果报告。
+- 单次运行有随机性；每个场景通常只跑一次，结论按单次结果报告。
 - 判分也是模型，需要用试点结果校准（见交接包的判分复核部分）。
 - 评测容器的 Docker 代理与线上一样未开启策略强制，见 `instance/README.md` 的残留风险。

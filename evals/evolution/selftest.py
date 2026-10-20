@@ -122,6 +122,21 @@ class ClassifyTests(unittest.TestCase):
         items = controller.classify_failures({"status": "error", "checks": [], "judge": [], "error": "boom"})
         self.assertEqual([item["class"] for item in items], ["run_error"])
 
+    def test_route_check_is_not_graded(self):
+        result = {
+            "status": "fail",
+            "checks": [
+                {"kind": "number_line", "passed": True, "label": "count", "observed": "x"},
+                {"kind": "tool_used", "passed": False, "label": "tool", "observed": "z"},
+            ],
+            "judge": [],
+        }
+        self.assertEqual(controller.classify_failures(result), [])
+        self.assertEqual(controller.effective_status(result), "pass")
+        result["checks"][0]["passed"] = False
+        self.assertEqual(controller.effective_status(result), "fail")
+        self.assertEqual(controller.effective_status({"status": "error", "checks": [], "judge": []}), "error")
+
 
 class BudgetTests(unittest.TestCase):
     def test_ledger_sums_and_stop_line(self):
@@ -138,7 +153,24 @@ class BudgetTests(unittest.TestCase):
             controller.RUNS_DIR = original
 
 
+class StopLineTests(unittest.TestCase):
+    def test_zero_means_no_limit(self):
+        self.assertFalse(controller.over_stop_line(10_000_000, 400_000, 0))
+        self.assertTrue(controller.over_stop_line(5_100_000, 400_000, 5_400_000))
+        self.assertFalse(controller.over_stop_line(5_000_000, 400_000, 5_400_000))
+
+    def test_guard_raises_but_never_lowers_the_cap(self):
+        spec = controller.build_spec(scenarios.BUILDERS["S01"], set())
+        self.assertEqual(controller.build_manifest(spec, "x")["budget_tokens"], spec["budget_tokens"])
+        self.assertEqual(controller.build_manifest(spec, "x", 1_500_000)["budget_tokens"], 1_500_000)
+        self.assertEqual(controller.build_manifest(spec, "x", 10)["budget_tokens"], spec["budget_tokens"])
+
+
 class ManifestTests(unittest.TestCase):
+    def test_no_public_scenario_grades_the_route(self):
+        for sc_id, builder in sorted(scenarios.BUILDERS.items()):
+            self.assertNotIn("tool_used", {check["kind"] for check in builder()["checks"]}, sc_id)
+
     def test_every_public_scenario_is_well_formed(self):
         for sc_id, builder in sorted(scenarios.BUILDERS.items()):
             spec = controller.build_spec(builder, set())

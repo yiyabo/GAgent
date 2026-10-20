@@ -43,7 +43,9 @@ SSH_OPTS = [
     "-o", "ControlPath=~/.ssh/cm-evo-%C",
     "-o", "ControlPersist=30m",
 ]
-STOP_TOKENS_DEFAULT = 5_400_000  # authorized by the user on 2026-10-20: pilot, blind set and all public formal scenarios
+STOP_TOKENS_DEFAULT = 0  # 0 = no stop line: the user lifted the token budget on 2026-10-20 (it was 5.4M); the ledger still records usage
+GUARD_TOKENS_DEFAULT = 1_500_000  # per-scenario runaway guard between turns; raises any smaller scenario cap
+ROUTE_KINDS = {"tool_used"}  # which route the agent took is not graded (user decision, 2026-10-20)
 RUNS_DIR = HERE / "runs"
 PRIVATE_OUT_DEFAULT = Path("/Users/apple/code/evolution-private/runs")
 BLIND_DIR_DEFAULT = Path("/Users/apple/code/evolution-private/blind")
@@ -77,7 +79,7 @@ def build_spec(builder, blind_ids):
     return spec
 
 
-def build_manifest(spec, round_id):
+def build_manifest(spec, round_id, guard_tokens=0):
     fixtures_b64 = {
         name: base64.b64encode(data).decode("ascii") for name, data in spec["fixtures"].items()
     }
@@ -94,7 +96,7 @@ def build_manifest(spec, round_id):
         "checks": spec.get("checks", []),
         "judge": spec.get("judge", []),
         "facts": spec.get("facts", ""),
-        "budget_tokens": int(spec.get("budget_tokens", 150000)),
+        "budget_tokens": max(int(spec.get("budget_tokens", 150000)), int(guard_tokens)),
         "timeout_seconds": int(spec.get("timeout_seconds", 900)),
         "max_turns": int(spec.get("max_turns", len(turns))),
     }
@@ -150,11 +152,15 @@ def utc_now():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def run_one(spec, round_id, stop_tokens, dry_run, private_out):
-    manifest = build_manifest(spec, round_id)
+def over_stop_line(spent, cap, stop_tokens):
+    return bool(stop_tokens) and spent + cap > stop_tokens
+
+
+def run_one(spec, round_id, stop_tokens, dry_run, private_out, guard_tokens=0):
+    manifest = build_manifest(spec, round_id, guard_tokens)
     cap = manifest["budget_tokens"]
     spent = ledger_spent()
-    if spent + cap > stop_tokens:
+    if over_stop_line(spent, cap, stop_tokens):
         print(f"SKIP {spec['id']}: spent {spent} + cap {cap} would pass the stop line {stop_tokens}", flush=True)
         return None
     script = compose_script(manifest)
@@ -217,7 +223,7 @@ def cmd_list(args):
         print(f"{sc_id} blind={spec['blind']} category={spec.get('category')} "
               f"turns={len(spec['user_turns'])} checks={len(spec.get('checks', []))} "
               f"judge={len(spec.get('judge', []))} cap={spec.get('budget_tokens', 150000)}")
-    print(f"ledger spent so far: {ledger_spent()} tokens (stop line {args.stop_tokens})")
+    print(f"ledger spent so far: {ledger_spent()} tokens (stop line {args.stop_tokens or 'none'})")
 
 
 def cmd_run(args):
@@ -228,7 +234,7 @@ def cmd_run(args):
         raise SystemExit(f"unknown scenario ids: {unknown}")
     for sc_id in wanted:
         spec = build_spec(builders[sc_id], blind_ids)
-        run_one(spec, args.round, args.stop_tokens, args.dry_run, Path(args.private_out))
+        run_one(spec, args.round, args.stop_tokens, args.dry_run, Path(args.private_out), args.guard_tokens)
 
 
 def cmd_summarize(args):
@@ -236,12 +242,12 @@ def cmd_summarize(args):
     rows = []
     for path in sorted(base.glob("*/result.json")):
         result = json.loads(path.read_text(encoding="utf-8"))
-        checks = result.get("checks") or []
+        checks = graded_checks(result)
         passed = sum(1 for check in checks if check.get("passed"))
         judges = [str(j.get("score")) for j in result.get("judge") or []]
         usage = result.get("usage") or {}
         rows.append(
-            f"| {result.get('scenario')} | {result.get('status')} | {passed}/{len(checks)} | "
+            f"| {result.get('scenario')} | {effective_status(result)} | {passed}/{len(checks)} | "
             f"{','.join(judges) or '-'} | {usage.get('total_tokens')} | {result.get('seconds')} |"
         )
     text = "\n".join(
@@ -269,9 +275,35 @@ FAILURE_CLASS_BY_KIND = {
 }
 
 
+def graded_checks(result):
+    return [check for check in result.get("checks") or [] if check.get("kind") not in ROUTE_KINDS]
+
+
+def effective_status(result):
+    """Recorded status with the route checks left out (results recorded before the route policy)."""
+    status = result.get("status")
+    if status not in ("pass", "fail"):
+        return status
+    checks_ok = all(check.get("passed") for check in graded_checks(result))
+    judge_ok = all(item.get("score") == 2 for item in result.get("judge") or [])
+    return "pass" if checks_ok and judge_ok else "fail"
+
+
+def v2_status(result, round_id):
+    """Status after the route policy, an offline rescore or a rerun; a rerun wins over a rescore."""
+    sid = result["scenario"]
+    rerun = RUNS_DIR / f"{round_id}-v2" / sid / "result.json"
+    if rerun.exists():
+        return f"{effective_status(json.loads(rerun.read_text(encoding='utf-8')))}（重跑）"
+    rescore = RUNS_DIR / result.get("round", round_id) / sid / "rescore_v2.json"
+    if rescore.exists():
+        return f"{json.loads(rescore.read_text(encoding='utf-8')).get('v2_status')}（离线重算）"
+    return str(effective_status(result))
+
+
 def classify_failures(result):
     problems = []
-    for check in result.get("checks") or []:
+    for check in graded_checks(result):
         if check.get("passed"):
             continue
         problems.append({
@@ -319,16 +351,21 @@ def cmd_handoff(args):
         (package / "transcripts" / f"{sid}.md").write_bytes((RUNS_DIR / round_id / sid / "transcript.md").read_bytes())
         (package / "results" / f"{sid}.json").write_text(json.dumps(result, ensure_ascii=False, indent=1), encoding="utf-8")
 
-    table = ["| scenario | category | status | checks | judge | tokens | seconds |", "|---|---|---|---|---|---|---|"]
+    v2_state = {r["scenario"]: v2_status(r, round_id) for r in public}
+    table = [
+        "| scenario | category | 记录状态 | v2 状态 | checks | judge | tokens | seconds |",
+        "|---|---|---|---|---|---|---|---|",
+    ]
     for r in public:
-        checks = r.get("checks") or []
+        checks = graded_checks(r)
         passed = sum(1 for c in checks if c.get("passed"))
         scores = ",".join(str(j.get("score")) for j in r.get("judge") or []) or "-"
         usage = r.get("usage") or {}
         table.append(
             f"| {r['scenario']} | {md_cell(categories.get(r['scenario']))} | {r.get('status')} | "
-            f"{passed}/{len(checks)} | {scores} | {usage.get('total_tokens')} | {r.get('seconds')} |"
+            f"{v2_state[r['scenario']]} | {passed}/{len(checks)} | {scores} | {usage.get('total_tokens')} | {r.get('seconds')} |"
         )
+    table += ["", "记录状态是运行当时的原始结果；v2 状态在路线不计分、离线重算或重跑之后得出，两者都保留。"]
     (package / "scenarios.md").write_text("\n".join(table) + "\n", encoding="utf-8")
 
     grouped = {}
@@ -351,6 +388,10 @@ def cmd_handoff(args):
         runs = r.get("runs") or []
         tools = {tool for run in runs for tool in run.get("tools_used") or []}
         iterations = sum(int(run.get("iterations") or 0) for run in runs)
+        if "bio_tools" not in tools and "execute_code" in tools:
+            observation_lines.append(
+                f"- {r['scenario']} · 只用代码（没有用 bio_tools），迭代 {iterations} 次，用量 {usage.get('total_tokens')} token（路线不计分）"
+            )
         if "execute_code" in tools and "bio_tools" in tools:
             observation_lines.append(
                 f"- {r['scenario']} · 同时用到 execute_code 与 bio_tools（代码兜底），迭代 {iterations} 次，用量 {usage.get('total_tokens')} token"
@@ -363,7 +404,7 @@ def cmd_handoff(args):
     v2_lines = [
         "# v1 到 v2 的离线重算与重判",
         "",
-        "以下结果不重跑 Agent，只修正检查或判分的口径问题。v1 原始结果保留在 results/ 与 transcripts/ 中。",
+        "离线重算与重判不重跑 Agent，只修正检查或判分的口径问题；重跑（v2 场景）单独标明并计入账本。v1 原始结果保留在 results/ 与 transcripts/ 中。",
         "",
     ]
     found_v2 = False
@@ -392,6 +433,21 @@ def cmd_handoff(args):
                 v2_lines.append(f"- {j.get('id')}: {j.get('score')} — {str(j.get('reason') or '')[:240]}")
             v2_lines.append(f"- 用量：{(data.get('usage') or {}).get('total_tokens')} token（只含重判）")
             v2_lines.append("")
+        rerun_path = RUNS_DIR / f"{round_id}-v2" / sid / "result.json"
+        if rerun_path.exists():
+            found_v2 = True
+            rerun = json.loads(rerun_path.read_text(encoding="utf-8"))
+            (package / "transcripts" / f"{sid}_v2.md").write_bytes((rerun_path.parent / "transcript.md").read_bytes())
+            rerun_checks = graded_checks(rerun)
+            v2_lines += [
+                f"## {sid} · 重跑（v2 场景，原结果保留）",
+                f"- 状态：{effective_status(rerun)}（记录 {rerun.get('status')}）",
+                "- 检查：" + ", ".join(f"{c['label']}={'通过' if c['passed'] else '未过'}" for c in rerun_checks),
+                "- 判分：" + (", ".join(f"{j.get('id')}={j.get('score')}" for j in rerun.get("judge") or []) or "-"),
+                f"- 用量：{(rerun.get('usage') or {}).get('total_tokens')} token（计入账本）",
+                f"- 转录：transcripts/{sid}_v2.md",
+                "",
+            ]
     if not found_v2:
         v2_lines.append("本轮没有离线重算或重判记录。")
     (package / "v2_rescores.md").write_text("\n".join(v2_lines) + "\n", encoding="utf-8")
@@ -400,12 +456,15 @@ def cmd_handoff(args):
         review_path.write_text("# 人工复核\n\n（由人工填写；重新生成交接包时不会覆盖本文件。）\n", encoding="utf-8")
 
     status_counts = {}
+    v2_counts = {}
     for r in public:
         status_counts[r.get("status")] = status_counts.get(r.get("status"), 0) + 1
+        key = v2_state[r["scenario"]].split("（")[0]
+        v2_counts[key] = v2_counts.get(key, 0) + 1
     blind_status = {}
     blind_classes = {}
     for r in blind:
-        blind_status[r.get("status")] = blind_status.get(r.get("status"), 0) + 1
+        blind_status[effective_status(r)] = blind_status.get(effective_status(r), 0) + 1
         for item in classify_failures(r):
             blind_classes[item["class"]] = blind_classes.get(item["class"], 0) + 1
     blind_lines = ["# 盲测汇总（只含计数，不含场景内容）", "", f"- 场景数：{len(blind)}"]
@@ -416,23 +475,28 @@ def cmd_handoff(args):
     ledger = []
     if ledger_path().exists():
         ledger = [json.loads(line) for line in ledger_path().read_text(encoding="utf-8").splitlines() if line.strip()]
-    round_rows = [row for row in ledger if row.get("round") == round_id]
+    round_rows = [
+        row for row in ledger
+        if str(row.get("round")) == round_id or str(row.get("round")).startswith(f"{round_id}-")
+    ]
     round_total = sum(int(row.get("total_tokens") or 0) for row in round_rows)
     cumulative = sum(int(row.get("total_tokens") or 0) for row in ledger)
+    stop_text = f"{args.stop_tokens} token" if args.stop_tokens else "无（用户 2026-10-20 取消预算上限，账本仍记录用量）"
     ledger_lines = [
-        "# 预算账本",
+        "# 用量账本",
         "",
-        f"- 本轮：{round_total} token，{len(round_rows)} 次运行",
+        f"- 本轮（含重跑）：{round_total} token，{len(round_rows)} 次运行",
         f"- 累计（全部轮次）：{cumulative} token",
-        f"- 停止线：{args.stop_tokens} token",
+        f"- 停止线：{stop_text}",
         "",
-        "| scenario | status | tokens | usage known | seconds |",
-        "|---|---|---|---|---|",
+        "| scenario | round | status | tokens | usage known | seconds |",
+        "|---|---|---|---|---|---|",
     ]
     for row in round_rows:
         sid = "blind" if row.get("blind") else row.get("scenario")
         ledger_lines.append(
-            f"| {sid} | {row.get('status')} | {row.get('total_tokens')} | {row.get('usage_known')} | {row.get('seconds')} |"
+            f"| {sid} | {row.get('round')} | {row.get('status')} | {row.get('total_tokens')} | "
+            f"{row.get('usage_known')} | {row.get('seconds')} |"
         )
     (package / "ledger.md").write_text("\n".join(ledger_lines) + "\n", encoding="utf-8")
 
@@ -443,9 +507,11 @@ def cmd_handoff(args):
         "",
         "## 概况",
         "",
-        f"- 公开场景 {len(public)} 个：通过 {status_counts.get('pass', 0)}，失败 {status_counts.get('fail', 0)}，运行错误 {status_counts.get('error', 0)}。",
+        f"- 公开场景 {len(public)} 个。记录状态：通过 {status_counts.get('pass', 0)}，失败 {status_counts.get('fail', 0)}，运行错误 {status_counts.get('error', 0)}。",
+        f"- v2 状态（路线不计分、离线重算或重跑之后）：通过 {v2_counts.get('pass', 0)}，失败 {v2_counts.get('fail', 0)}，运行错误 {v2_counts.get('error', 0)}。",
         f"- 盲测 {len(blind)} 个（只报计数）。",
-        f"- 本轮 token {round_total}；累计 {cumulative}；停止线 {args.stop_tokens}。",
+        f"- 本轮 token {round_total}；累计 {cumulative}；停止线：{stop_text}。",
+        "- 评分口径：答案对就算对，Agent 用 bio_tools 还是自己写代码不计分（用户 2026-10-20 决定）；路线只作为观察记录在 observations.md。",
         "- 环境：620b 隔离实例 `gagent-eval`，镜像 `gagent-app:p11`（主干 a6fb1111），Agent 模型 qwen3.8-flash；模拟用户 qwen3.8-flash；判分 qwen3.7-max。",
         "- 关闭：长期记忆召回（按请求）、技能学习、后台质量评分、AMEM、LightRAG、MCP 扩展。",
         "",
@@ -455,11 +521,11 @@ def cmd_handoff(args):
         "- problems.md：按失败类别整理的问题，附转录位置。",
         "- observations.md：非检查失败的观察（代码兜底、用量偏高等）。",
         "- review.md：人工复核记录（重新生成时保留）。",
-        "- v2_rescores.md：v1 到 v2 的离线重算与重判记录（不重跑 Agent）。",
+        "- v2_rescores.md：v1 到 v2 的离线重算、重判与重跑记录。",
         "- transcripts/：公开场景的可见转录与检查明细。",
         "- results/：公开场景的结构化结果（不含夹具与 oracle）。",
         "- blind_summary.md：盲测计数。",
-        "- ledger.md：本轮用量与停止线。",
+        "- ledger.md：本轮用量。",
         "",
         "## 局限",
         "",
@@ -524,10 +590,35 @@ def cmd_rejudge(args):
     print(f"{summary} | ledger+{tokens} total={ledger_spent()}", flush=True)
 
 
+def cmd_rescore_route(args):
+    """Offline: write rescore_v2.json for recorded results that fail only on a route check."""
+    written = []
+    for path in sorted((RUNS_DIR / args.round).glob("*/result.json")):
+        result = json.loads(path.read_text(encoding="utf-8"))
+        route_failed = [c for c in result.get("checks") or [] if c.get("kind") in ROUTE_KINDS and not c.get("passed")]
+        target = path.parent / "rescore_v2.json"
+        v2 = effective_status(result)
+        if not route_failed or v2 == result.get("status") or target.exists():
+            continue
+        tools = sorted({tool for run in result.get("runs") or [] for tool in run.get("tools_used") or []})
+        target.write_text(json.dumps({
+            "method": "route policy: the route check is left out; no agent run, no tokens",
+            "original_checks": [{"label": c.get("label"), "passed": bool(c.get("passed"))} for c in result.get("checks") or []],
+            "v2_checks": [{"label": c.get("label"), "passed": bool(c.get("passed"))} for c in graded_checks(result)],
+            "v2_status": v2,
+            "note": f"Every graded check passed; only the route check failed (tools used: {', '.join(tools)}). "
+                    "A right answer counts as right whichever route the agent took (user decision, 2026-10-20).",
+        }, ensure_ascii=False, indent=1), encoding="utf-8")
+        written.append(result.get("scenario"))
+    print(f"route rescore written for: {', '.join(written) or 'none'}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--blind-dir", default=str(BLIND_DIR_DEFAULT) if BLIND_DIR_DEFAULT.exists() else None)
-    parser.add_argument("--stop-tokens", type=int, default=STOP_TOKENS_DEFAULT)
+    parser.add_argument("--stop-tokens", type=int, default=STOP_TOKENS_DEFAULT, help="0 = no stop line")
+    parser.add_argument("--guard-tokens", type=int, default=GUARD_TOKENS_DEFAULT,
+                        help="per-scenario runaway guard between turns (0 keeps each scenario's own cap)")
     sub = parser.add_subparsers(dest="cmd", required=True)
     sub.add_parser("list")
     run_p = sub.add_parser("run")
@@ -541,6 +632,8 @@ def main():
     rej_p.add_argument("--from-round", required=True)
     rej_p.add_argument("--only", required=True)
     rej_p.add_argument("--tag", required=True)
+    resc_p = sub.add_parser("rescore-route")
+    resc_p.add_argument("--round", required=True)
     hand_p = sub.add_parser("handoff")
     hand_p.add_argument("--round", required=True)
     hand_p.add_argument("--private-out", default=str(PRIVATE_OUT_DEFAULT))
@@ -555,6 +648,8 @@ def main():
         cmd_handoff(args)
     elif args.cmd == "rejudge":
         cmd_rejudge(args)
+    elif args.cmd == "rescore-route":
+        cmd_rescore_route(args)
 
 
 if __name__ == "__main__":
