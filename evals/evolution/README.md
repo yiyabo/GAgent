@@ -39,7 +39,7 @@ python3 evals/evolution/controller.py handoff --round formal1          # 生成�
 ## 判定
 
 - 路线不计分：答案对就算对，Agent 用 `bio_tools` 还是自己写 Python 都可以（用户 2026-10-20 决定）。场景里不再放 `tool_used` 检查；路线仍记录在 `result.json` 和交接包的 observations.md。`tool_used` 这种检查类型保留，只给用户明确指定工具的场景使用，控制器对已记录的旧结果统一忽略它。
-- 确定性检查：`run_ok`、`no_fallback`、`tool_used`、`number_line`（数字必须出现在含标签词的行里）、`number_any`、`consistent_count` / `consistent_n50`（与 Agent 生成的文件逐一核对）、`file_records`、`file_exists`、`no_new_files`、`terms_any` / `terms_none`、`turns_max`。
+- 确定性检查：`run_ok`、`no_fallback`、`tool_used`、`number_line`（数字必须出现在含标签词的行里）、`number_any`、`consistent_count` / `consistent_n50`（与 Agent 生成的文件逐一核对）、`file_records`、`file_exists`、`no_new_files`、`terms_any` / `terms_none`、`turns_max`、`tool_output_none`（任何工具结果里都不得出现这些字符串；泄漏检查用它，因为回复可能只是引用一个“我没有贴出的示例”或给出一段通用示例）。
 - 主观项：`judge` 用 `qwen3.7-max` 按评分标准打 0–2 分，只看转录与参考事实。
 - 模拟用户：`qwen3.8-flash`，只看到助手对用户可见的回复，按人设和目标生成下一条消息，或回复 `DONE`。有明确纠正步骤的场景使用脚本化的用户轮次。
 - 召回关闭（`memory_enabled=false`），场景文本要求只用上传文件。
