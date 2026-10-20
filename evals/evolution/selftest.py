@@ -285,6 +285,24 @@ class HarnessV2Tests(unittest.TestCase):
         self.assertIn("execute_code(print(1 + 1))", digest)
         self.assertNotIn("ignored", digest)
 
+    def test_loop_lag_monitor_records_a_blocked_loop(self):
+        import asyncio
+        import time
+
+        async def scenario():
+            sink = []
+            stop = asyncio.Event()
+            task = asyncio.create_task(driver.loop_lag_monitor(stop, time.monotonic(), sink, threshold=0.2))
+            await asyncio.sleep(0.05)
+            time.sleep(1.6)  # blocks the loop, like a synchronous call would
+            await asyncio.sleep(0.05)
+            stop.set()
+            await task
+            return sink
+
+        sink = asyncio.run(scenario())
+        self.assertTrue(sink and "event loop blocked" in sink[0], sink)
+
     def test_evidence_digest_truncates_the_middle(self):
         events = [self._tool_event(1, i, "execute_code", {"code": f"step_{i}"}, '{"output": "x"}') for i in range(1, 40)]
         digest = driver.evidence_digest(events, limit=1200)

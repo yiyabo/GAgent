@@ -617,6 +617,22 @@ def write_transcript(
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+async def loop_lag_monitor(stop: asyncio.Event, started: float, sink: list, threshold: float = 3.0) -> None:
+    """Record stalls of the event loop that hosts the run worker. A stall longer than the lease TTL (30 s)
+    stops the lease heartbeat, and the sweeper then fails the run as worker_lease_expired."""
+    last = time.monotonic()
+    while not stop.is_set():
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=1.0)
+        except asyncio.TimeoutError:
+            pass
+        now = time.monotonic()
+        lag = now - last - 1.0
+        if lag > threshold and not stop.is_set():
+            sink.append(f"event loop blocked for {lag:.1f} s at t={now - started:.0f} s")
+        last = now
+
+
 async def run_scenario(manifest: dict) -> dict:
     from app.database import init_db
     from app.repository.llm_usage import init_llm_usage_table
@@ -665,6 +681,8 @@ async def run_scenario(manifest: dict) -> dict:
     all_events: list = []
     notes: list = []
     loop = asyncio.get_running_loop()
+    lag_stop = asyncio.Event()
+    lag_task = asyncio.create_task(loop_lag_monitor(lag_stop, started, notes))
 
     for idx, entry in enumerate(scenario["user_turns"][:max_turns]):
         spent = agent_usage(sid)["total_tokens"] + sim_usage["total_tokens"] + judge_usage["total_tokens"]
@@ -719,6 +737,8 @@ async def run_scenario(manifest: dict) -> dict:
         if turn["error"] or turn["status"] != "succeeded":
             break
 
+    lag_stop.set()
+    await lag_task
     agent = agent_usage(sid)
     files = list_session_files(session_dir, fixture_hashes) + list_native_run_files(fixture_hashes, started_wall)
     answers = [run["answer"] for run in runs]

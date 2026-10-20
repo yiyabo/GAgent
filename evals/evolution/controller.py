@@ -217,6 +217,10 @@ def run_one(spec, round_id, stop_tokens, dry_run, private_out, guard_tokens=0):
         f"total={spent + tokens}",
         flush=True,
     )
+    if proc is not None and proc.stderr:
+        stderr_dir = dest_root / round_id / spec["id"]
+        stderr_dir.mkdir(parents=True, exist_ok=True)
+        (stderr_dir / "driver_stderr.log").write_bytes(proc.stderr[-200_000:])
     if proc is not None and proc.returncode != 0:
         print("driver stderr tail:", proc.stderr.decode("utf-8", "replace")[-400:], flush=True)
     return result
