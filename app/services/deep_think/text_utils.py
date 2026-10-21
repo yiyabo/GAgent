@@ -513,13 +513,43 @@ _EXPECT_KIND_LABEL = {
 }
 
 
+# The chat layer appends blocks to the user's message: the attachment list and its policy text, and
+# grounded direction references. They are instructions to the model, not part of the request, and their
+# wording ("sheet", "report", file paths) must not be read as something the user asked to receive.
+ATTACHMENT_NOTE_MARKER = "\n\n📎 User-uploaded attachments:"
+_INJECTED_CONTEXT_MARKERS = (
+    ATTACHMENT_NOTE_MARKER,
+    "\n\n=== GROUNDED NUMBERED REFERENCES",
+)
+_ATTACHMENT_LINE_RE = re.compile(r"^- (?P<name>[^\n]+?) \((?P<kind>[^)\n]*)\): (?P<path>[^\n]*)$", re.MULTILINE)
+
+
+def user_request_text(query: str) -> str:
+    """The user's own words, without the blocks the chat layer appended to the message."""
+    text = str(query or "")
+    cut = min((i for i in (text.find(marker) for marker in _INJECTED_CONTEXT_MARKERS) if i >= 0), default=-1)
+    return text[:cut].rstrip() if cut >= 0 else text
+
+
+def attachment_names(query: str) -> List[str]:
+    """File names listed in the attachment block of ``query`` (inputs, never deliverables)."""
+    text = str(query or "")
+    start = text.find(ATTACHMENT_NOTE_MARKER)
+    if start < 0:
+        return []
+    block = text[start:]
+    end = block.find("\n\n=== ")
+    block = block[: end if end >= 0 else len(block)]
+    return [m.group("name").strip() for m in _ATTACHMENT_LINE_RE.finditer(block)]
+
+
 def _derive_expected_outputs(query: str) -> List[str]:
     """Heuristically derive required deliverable types from the user request.
 
     Conservative: no clear file-type intent -> no expectations, and the loop
     guard keeps its current fuse-only behaviour.
     """
-    q = str(query or "")
+    q = user_request_text(query)
     expected: List[str] = []
     if _EXPECT_IMAGE_RE.search(q):
         expected.append("image")
