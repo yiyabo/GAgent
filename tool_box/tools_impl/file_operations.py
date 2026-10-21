@@ -302,6 +302,40 @@ def _redirect_mutation_path_to_session(
     return str(redirected)
 
 
+def _database_roots() -> List[Tuple[Path, Path]]:
+    """The directory holding every session's SQLite files, as (as configured, symlinks followed).
+
+    ``data/`` stays open for ordinary project files; only this subtree is closed. It is read from
+    ``DB_ROOT`` on each call because the deployment sets it and tests change it.
+    """
+    raw = (os.getenv("DB_ROOT") or "data/databases").strip()
+    configured = Path(os.path.expanduser(raw))
+    if configured.is_absolute():
+        anchors = [configured]
+    else:
+        anchors = [Path(os.getcwd()) / configured, _get_project_root() / configured]
+
+    roots: List[Tuple[Path, Path]] = []
+    for anchor in anchors:
+        lexical = Path(os.path.abspath(str(anchor)))
+        try:
+            resolved = lexical.resolve(strict=False)
+        except Exception:
+            resolved = lexical
+        roots.append((lexical, resolved))
+    return roots
+
+
+def _database_root_error(candidate_lexical: Path, candidate_resolved: Path) -> Optional[str]:
+    for lexical, resolved in _database_roots():
+        if _path_is_within(candidate_lexical, lexical) or _path_is_within(candidate_resolved, resolved):
+            return (
+                "Access denied: the database directory holds every session's data and is not "
+                "available to file tools. Work inside the current session directory."
+            )
+    return None
+
+
 def _enforce_session_scope(
     candidate_resolved: Path,
     candidate_lexical: Path,
@@ -416,6 +450,10 @@ def _validate_path_security(
     Mutating operations also reject writes into the project source tree /
     repository root (outside runtime/results/data/log/output).
 
+    The database directory (``DB_ROOT``, default ``data/databases``) is refused
+    for every caller, whatever the session, although the rest of ``data/`` is
+    allowed.
+
     Returns:
         (is_safe, error_message)
     """
@@ -423,6 +461,12 @@ def _validate_path_security(
         input_path = Path(file_path).expanduser()
         lexical_abs = Path(os.path.abspath(str(input_path)))
         resolved_abs = input_path.resolve(strict=False)
+
+        # Closed for every caller, with or without a session, and judged before the session check so a
+        # symlink inside a session cannot lead there.
+        database_error = _database_root_error(lexical_abs, resolved_abs)
+        if database_error:
+            return False, database_error
 
         # Session isolation layer (takes precedence over the legacy whitelist
         # so cross-session access cannot be sneaked in via allowed base paths).
