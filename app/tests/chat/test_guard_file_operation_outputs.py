@@ -15,6 +15,10 @@ import pytest
 from app.services.deep_think.guards import _extract_guard_candidates, _verify_guard_path
 
 
+# Candidate extraction only reads strings; a pytest tmp_path under /tmp would be filtered as scratch on Linux.
+ROOT = "/app/runtime/session_guard_test"
+
+
 def _agent():
     return SimpleNamespace(request_profile={}, _acceptance_spec=None)
 
@@ -24,29 +28,29 @@ def _result(tool, params, inner, **outer):
     return {"tool_name": tool, "tool_params": params, "tool_result": payload}
 
 
-def test_a_copy_names_its_destination(tmp_path):
-    destination = str(tmp_path / "results" / "genome_small_proteins.fasta")
+def test_a_copy_names_its_destination():
+    destination = f"{ROOT}/results/genome_small_proteins.fasta"
     item = _result(
         "file_operations", {"operation": "copy"},
-        {"operation": "copy", "source": str(tmp_path / "results" / "a.faa"), "destination": destination},
+        {"operation": "copy", "source": f"{ROOT}/results/a.faa", "destination": destination},
     )
     assert _extract_guard_candidates(_agent(), [item]) == [destination]
 
 
-def test_a_move_names_its_destination(tmp_path):
-    destination = str(tmp_path / "results" / "moved.csv")
+def test_a_move_names_its_destination():
+    destination = f"{ROOT}/results/moved.csv"
     item = _result("file_operations", {"operation": "move"}, {"operation": "move", "source": "x", "destination": destination})
     assert _extract_guard_candidates(_agent(), [item]) == [destination]
 
 
-def test_a_write_names_its_path(tmp_path):
-    path = str(tmp_path / "results" / "table.csv")
+def test_a_write_names_its_path():
+    path = f"{ROOT}/results/table.csv"
     item = _result("file_operations", {"operation": "write"}, {"operation": "write", "path": path, "size": 10})
     assert _extract_guard_candidates(_agent(), [item]) == [path]
 
 
-def test_a_submission_names_the_published_files(tmp_path):
-    path = str(tmp_path / "results" / "genome_small_proteins.fasta")
+def test_a_submission_names_the_published_files():
+    path = f"{ROOT}/results/genome_small_proteins.fasta"
     item = _result(
         "deliverable_submit", {},
         {"deliverable_submit": {"publish": True, "artifacts": [{"path": path, "module": "refs", "reason": "proteins"}]}},
@@ -55,14 +59,14 @@ def test_a_submission_names_the_published_files(tmp_path):
 
 
 @pytest.mark.parametrize("operation", ["read", "list", "exists", "profile"])
-def test_reading_a_file_is_not_producing_it(tmp_path, operation):
-    path = str(tmp_path / "results" / "table.csv")
+def test_reading_a_file_is_not_producing_it(operation):
+    path = f"{ROOT}/results/table.csv"
     item = _result("file_operations", {"operation": operation}, {"operation": operation, "path": path, "destination": path})
     assert _extract_guard_candidates(_agent(), [item]) == []
 
 
-def test_a_failed_copy_is_not_a_deliverable(tmp_path):
-    destination = str(tmp_path / "results" / "x.fasta")
+def test_a_failed_copy_is_not_a_deliverable():
+    destination = f"{ROOT}/results/x.fasta"
     item = {
         "tool_name": "file_operations", "tool_params": {"operation": "copy"},
         "tool_result": {"success": False, "result": {"operation": "copy", "destination": destination, "success": False}},
@@ -70,13 +74,13 @@ def test_a_failed_copy_is_not_a_deliverable(tmp_path):
     assert _extract_guard_candidates(_agent(), [item]) == []
 
 
-def test_scratch_and_non_deliverable_files_still_do_not_count(tmp_path):
-    scratch = str(tmp_path / "scratch" / "notes.txt")
+def test_scratch_and_non_deliverable_files_still_do_not_count():
+    scratch = f"{ROOT}/scratch/notes.txt"
     tmp = "/tmp/out.csv"
     items = [
         _result("file_operations", {"operation": "write"}, {"operation": "write", "path": scratch}),
         _result("file_operations", {"operation": "write"}, {"operation": "write", "path": tmp}),
-        _result("file_operations", {"operation": "write"}, {"operation": "write", "path": str(tmp_path / "results" / "x.bin")}),
+        _result("file_operations", {"operation": "write"}, {"operation": "write", "path": f"{ROOT}/results/x.bin"}),
     ]
     assert _extract_guard_candidates(_agent(), items) == []
 
