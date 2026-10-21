@@ -36,6 +36,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from . import config
 from .env_scrub import build_child_env
+from .fs_policy import build_fs_policy_json, fs_guard_enabled
 from .output import failure_hint, strip_ansi, truncate_stderr, truncate_stdout
 from .rpc import KernelRPCServer
 from .stub_gen import generate_stub_module
@@ -217,11 +218,34 @@ class _BlockedBackendPackageFinder:
 
 sys.meta_path.insert(0, _BlockedBackendPackageFinder())
 
+
+def _install_fs_guard():
+    """Apply the session's filesystem and process policy (local kernels only).
+
+    A sandbox container is its own boundary and gets no policy. A policy that
+    cannot be applied ends the kernel: running a cell unguarded would turn the
+    refusal the model just saw into a suggestion.
+    """
+    # Left in the environment on purpose: Python workers the cell starts read it too (sitecustomize.py).
+    policy = os.environ.get("GAGENT_FS_POLICY", "")
+    if not policy:
+        return
+    try:
+        import gagent_fs_guard
+
+        gagent_fs_guard.install(policy)
+    except Exception:
+        _startup_note("startup_error.txt", "fs guard failed to install:\\n" + traceback.format_exc())
+        raise
+
+
 _start_parent_watchdog()
 
 # Sandbox kernels dial the host; local kernels keep their pipes. Either way the
 # rest of this file only ever sees stdin/stdout/stderr.
 _connect_cell_channel()
+
+_install_fs_guard()
 
 _SENTINEL = os.environ["GAGENT_KERNEL_SENTINEL"]
 _CAPTURE_LIMIT = {capture_limit}
@@ -283,6 +307,27 @@ if __name__ == "__main__":
     capture_limit=config.RUNNER_CAPTURE_BYTES,
     spill_cap=config.MAX_SPILLED_STDOUT_BYTES,
 )
+
+
+# Imported by every Python process whose PYTHONPATH carries the kernel dir, so the workers a cell starts
+# (multiprocessing "spawn", joblib/loky) run under the same guard as the kernel itself. The runner has its
+# own fail-closed install; a worker that cannot install exits instead of running unguarded.
+_WORKER_SITECUSTOMIZE = '''\
+import os
+
+_policy = os.environ.get("GAGENT_FS_POLICY")
+if _policy:
+    try:
+        import gagent_fs_guard
+
+        gagent_fs_guard.install(_policy)
+    except BaseException:
+        import sys, traceback
+
+        sys.stderr.write("fs guard failed to install:\\n" + traceback.format_exc())
+        sys.stderr.flush()
+        os._exit(97)
+'''
 
 
 # ---------------------------------------------------------------------------
@@ -769,6 +814,7 @@ def _spawn(
             kernel,
             runner_path=runner_path,
             child_cwd=child_cwd,
+            scratch_dir=scratch_dir,
             rpc_endpoint=rpc_endpoint,
         )
     for target in (_stdout_reader, _stderr_reader):
@@ -781,9 +827,28 @@ def _spawn_local(
     *,
     runner_path: Path,
     child_cwd: Path,
+    scratch_dir: Path,
     rpc_endpoint: str,
 ) -> None:
-    """The in-process child kernel: pipes, a parent-liveness fd, no container."""
+    """The in-process child kernel: pipes, a parent-liveness fd, no container.
+
+    The child is the app's own user, so it gets the filesystem/process guard
+    (fs_policy.py, enforced by fs_guard_runtime.py inside the kernel).
+    """
+    fs_policy = None
+    if fs_guard_enabled():
+        guard_source = Path(__file__).with_name("fs_guard_runtime.py").read_text(encoding="utf-8")
+        (kernel.kernel_dir / "gagent_fs_guard.py").write_text(guard_source, encoding="utf-8")
+        (kernel.kernel_dir / "sitecustomize.py").write_text(_WORKER_SITECUSTOMIZE, encoding="utf-8")
+        # A speed bump, not a lock: the cell owns this directory and could chmod them back.
+        for name in ("gagent_fs_guard.py", "sitecustomize.py"):
+            (kernel.kernel_dir / name).chmod(0o444)
+        fs_policy = build_fs_policy_json(
+            session_id=str(kernel.key[0]),
+            child_cwd=child_cwd,
+            scratch_dir=scratch_dir,
+            kernel_dir=kernel.kernel_dir,
+        )
     # Parent-liveness pipe: the child watches the read end, we hold the write
     # end. Closing it (or dying) tells the kernel the host is gone.
     parent_read, parent_write = os.pipe()
@@ -794,6 +859,7 @@ def _spawn_local(
         kernel_dir=kernel.kernel_dir,
         sentinel=kernel.sentinel,
         parent_fd=parent_read,
+        fs_policy=fs_policy,
     )
     try:
         kernel.proc = subprocess.Popen(
@@ -996,6 +1062,36 @@ def _with_stderr(stdout_text: str, stderr_text: str) -> str:
 # resolve them against the session root.
 _PRODUCED_FILES_CAP = 40
 _PRODUCED_SCAN_CAP = 200_000
+# Used only when the filesystem clock cannot be read (see _fs_watermark_ns).
+_CLOCK_SLACK_NS = 50_000_000
+
+
+def _fs_watermark_ns(root: Optional[Path]) -> int:
+    """The filesystem's own "now", for the produced-files watermark.
+
+    File timestamps come from a coarse kernel clock that trails time.time_ns()
+    by up to a few milliseconds (5.4 ms measured on the 620b overlay
+    filesystem). A cell that writes a file in its first milliseconds, such as a
+    reused kernel copying a tool output straight away, then looks older than the
+    cell and is missed, and delivery acceptance fails on a file that exists. A
+    probe file stamped by the same clock gives a watermark the cell's own files
+    cannot fall behind.
+    """
+    now = time.time_ns()
+    if root is None:
+        return now
+    probe = Path(root) / f".gagent_clock_{uuid.uuid4().hex[:8]}"
+    try:
+        probe.write_bytes(b"")
+        stamped = probe.stat().st_mtime_ns
+    except OSError:
+        return now - _CLOCK_SLACK_NS
+    finally:
+        try:
+            probe.unlink()
+        except OSError:
+            pass
+    return min(stamped, now)
 
 
 def _collect_produced_files(root: Path, since_ns: int, scratch_dir: Path) -> List[str]:
@@ -1253,7 +1349,7 @@ def _run_cell(
             kernel.raw.drain()
             kernel.stderr.drain()
             kernel.authority = binding
-            cell_start_ns = time.time_ns()
+            cell_start_ns = _fs_watermark_ns(collect_root)
             kernel.proc.stdin.write(
                 (json.dumps({"id": uuid.uuid4().hex, "code": code}) + "\n").encode("utf-8")
             )
