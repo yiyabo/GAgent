@@ -20,7 +20,7 @@ from pathlib import Path
 from string import Formatter
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
-from . import native_client, native_exec, native_publish, session_scope
+from . import native_client, native_exec, native_publish, output_paths, session_scope
 from .remote_executor import (
     RemoteExecutionConfig,
     create_remote_run_dirs,
@@ -1497,12 +1497,17 @@ async def _execute_bio_tool_once(
     execution_mode = _effective_execution_mode(remote_config)
 
     if requested_mode in {"native", "native_first"}:
+        # A native run writes only inside its own directory. An output the caller placed inside its session
+        # runs under a plain name there and is copied to the requested place afterwards.
+        native_output_file, native_params, output_requests = output_paths.plan_session_outputs(
+            output_file, params, native_publish.session_dir_for(tool_context)
+        )
         native_result = await _execute_native_bio_tool(
             tool_name=tool_name,
             operation=operation,
             input_file=input_file,
-            output_file=output_file,
-            params=params,
+            output_file=native_output_file,
+            params=native_params,
             timeout=timeout,
             report=_report,
             log_callback=log_callback,
@@ -1516,7 +1521,7 @@ async def _execute_bio_tool_once(
             # The run's files stay in the native run directory, which no session can read; copy them in.
             if native_result.get("success") and tool_context is not None:
                 native_result = await asyncio.to_thread(
-                    native_publish.publish_for_context, native_result, tool_context
+                    native_publish.publish_for_context, native_result, tool_context, output_requests
                 )
             return native_result
         await _report("running", "Native execution not available, using Docker: %s" % native_result.get("error", ""))
@@ -2093,6 +2098,20 @@ async def bio_tools_handler(
                     tool_name, operation, requires_input=op_requires_input,
                 ),
             },
+        )
+
+    # The chat action bridge strips the native ToolContext and passes only the session id (it rebuilds the
+    # context for file_operations and execute_code, not for this tool). Without a session here nothing
+    # copies a run's files into the session and nothing accepts an output location inside it.
+    if getattr(tool_context, "session_id", None) is None and isinstance(session_id, str) and session_id.strip():
+        import dataclasses
+
+        from tool_box.context import ToolContext
+
+        tool_context = (
+            ToolContext(session_id=session_id.strip())
+            if tool_context is None
+            else dataclasses.replace(tool_context, session_id=session_id.strip())
         )
 
     scope_problem = session_scope.scope_error(
