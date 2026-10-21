@@ -6,7 +6,13 @@
         "operations": {
             "stats": {
                 "command": "seqkit stats {input}",
-                "description": "Compute basic sequence statistics: count, total length, average length, GC content",
+                "description": "Compute basic sequence statistics: count, total length, min/average/max length (use stats_all for N50, GC content and quality)",
+                "requires_input": true,
+                "requires_output": false
+            },
+            "stats_all": {
+                "command": "seqkit stats -a {input}",
+                "description": "Compute extended sequence statistics: count, total/min/average/max length, N50, Q20/Q30, average quality and GC content",
                 "requires_input": true,
                 "requires_output": false
             },
@@ -29,8 +35,8 @@
                 }
             },
             "seq": {
-                "command": "seqkit seq {input} -o {output}",
-                "description": "Convert or filter sequences (reverse complement, remove line wrapping, etc.)",
+                "command": "seqkit seq {input} -m {min_length} -M {max_length} -o {output}",
+                "description": "Convert or filter sequences by length (reverse complement, remove line wrapping, etc.)",
                 "requires_input": true,
                 "requires_output": true,
                 "extra_params": {
@@ -38,6 +44,18 @@
                         "type": "string",
                         "required": true,
                         "description": "Output filename, e.g. output.fa"
+                    },
+                    "min_length": {
+                        "type": "integer",
+                        "required": false,
+                        "default": -1,
+                        "description": "Keep only sequences at least this long (bp or aa); -1 = no lower limit"
+                    },
+                    "max_length": {
+                        "type": "integer",
+                        "required": false,
+                        "default": -1,
+                        "description": "Keep only sequences at most this long (bp or aa); -1 = no upper limit"
                     }
                 }
             },
@@ -83,7 +101,7 @@
                     "db": {
                         "type": "string",
                         "required": true,
-                        "description": "Path prefix of the BLAST nucleotide database, e.g. /work/mydb (created by makeblastdb)"
+                        "description": "Absolute path prefix of a BLAST nucleotide database built in this session with makeblastdb, e.g. the output_path of the makeblastdb step. Public databases such as nt are NOT installed on this server"
                     },
                     "output": {
                         "type": "string",
@@ -102,7 +120,7 @@
                     "db": {
                         "type": "string",
                         "required": true,
-                        "description": "Path prefix of the BLAST protein database, e.g. /work/mydb (created by makeblastdb -dbtype prot)"
+                        "description": "Absolute path prefix of a BLAST protein database built in this session with makeblastdb -dbtype prot, e.g. the output_path of the makeblastdb step. Public databases such as nr are NOT installed on this server"
                     },
                     "output": {
                         "type": "string",
@@ -140,23 +158,44 @@
         "notes": "Use predict for complete genomes; use meta for assembled metagenome contigs",
         "operations": {
             "predict": {
-                "command": "prodigal -i {input} -o /dev/null -a /work/{protein} -d /work/{nucleotide}",
-                "description": "Predict genes from a complete prokaryotic genome; outputs protein and nucleotide sequences",
+                "command": "prodigal -i {input} -p {mode} -g {translation_table} -f gff -o /work/{gff} -a /work/{protein} -d /work/{nucleotide}",
+                "description": "Predict genes from a prokaryotic genome; outputs protein and nucleotide sequences and a GFF gene table",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": {
                     "protein": {
                         "type": "string",
-                        "required": true,
-                        "description": "Output filename for predicted protein sequences, e.g. genes.faa"
+                        "required": false,
+                        "default": "genes.faa",
+                        "description": "Output filename for predicted protein sequences, default genes.faa"
                     },
                     "nucleotide": {
                         "type": "string",
-                        "required": true,
-                        "description": "Output filename for predicted nucleotide sequences, e.g. genes.fna"
+                        "required": false,
+                        "default": "genes.fna",
+                        "description": "Output filename for predicted nucleotide sequences, default genes.fna"
+                    },
+                    "gff": {
+                        "type": "string",
+                        "required": false,
+                        "default": "genes.gff",
+                        "description": "Output filename for the GFF gene table, default genes.gff"
+                    },
+                    "mode": {
+                        "type": "string",
+                        "required": false,
+                        "default": "single",
+                        "enum": ["single", "meta"],
+                        "description": "single = one genome of at least 20 kb (trains on the input); meta = assembled metagenome contigs or short sequences"
+                    },
+                    "translation_table": {
+                        "type": "integer",
+                        "required": false,
+                        "default": 11,
+                        "description": "Genetic code (NCBI translation table), default 11 for bacteria and archaea"
                     }
                 },
-                "notes": "For metagenome-assembled contigs use the meta operation instead"
+                "notes": "Short inputs (under 20 kb) need mode=meta"
             },
             "meta": {
                 "command": "prodigal -i {input} -o /dev/null -a /work/{protein} -p meta",
@@ -166,8 +205,9 @@
                 "extra_params": {
                     "protein": {
                         "type": "string",
-                        "required": true,
-                        "description": "Output filename for predicted protein sequences, e.g. genes.faa"
+                        "required": false,
+                        "default": "genes.faa",
+                        "description": "Output filename for predicted protein sequences, default genes.faa"
                     }
                 },
                 "notes": "The -p meta flag is built into the command"
@@ -449,8 +489,8 @@
                 "notes": "input must be a SAM or BAM file; -f 4 selects reads that failed to map"
             },
             "view": {
-                "command": "samtools view -@ {threads} -b {input} > /work/{output}",
-                "description": "Convert SAM to BAM format",
+                "command": "samtools view -@ {threads} -b -F {exclude_flags} -f {require_flags} -q {min_mapq} {input} > /work/{output}",
+                "description": "Convert SAM to BAM format, optionally keeping only records that pass flag and mapping-quality filters",
                 "requires_input": true,
                 "requires_output": false,
                 "extra_params": {
@@ -463,9 +503,83 @@
                         "type": "string",
                         "required": true,
                         "description": "Output BAM filename, e.g. output.bam"
+                    },
+                    "exclude_flags": {
+                        "type": "integer",
+                        "required": false,
+                        "default": 0,
+                        "description": "Skip records with ANY of these SAM flag bits set (samtools -F), e.g. 4 = unmapped, 256 = secondary, 2048 = supplementary, 260 = unmapped or secondary; 0 = no filter"
+                    },
+                    "require_flags": {
+                        "type": "integer",
+                        "required": false,
+                        "default": 0,
+                        "description": "Keep only records with ALL of these SAM flag bits set (samtools -f), e.g. 4 = unmapped only, 2 = properly paired; 0 = no filter"
+                    },
+                    "min_mapq": {
+                        "type": "integer",
+                        "required": false,
+                        "default": 0,
+                        "description": "Skip records with mapping quality below this value (samtools -q); 0 = no filter"
                     }
                 },
-                "notes": "input must be a SAM file; -b flag is built in to output BAM"
+                "notes": "input must be a SAM file; -b flag is built in to output BAM; to only count reads use the count operation"
+            },
+            "count": {
+                "command": "samtools view -c -@ {threads} -F {exclude_flags} -f {require_flags} -q {min_mapq} {input} > /work/{output}",
+                "description": "Count alignment records (reads) that pass the filters and write the number to a text file, e.g. exclude_flags=4 counts mapped reads, require_flags=4 counts unmapped reads, exclude_flags=260 counts primary mapped reads",
+                "requires_input": true,
+                "requires_output": false,
+                "extra_params": {
+                    "threads": {
+                        "type": "integer",
+                        "required": false,
+                        "description": "Number of threads, default 4"
+                    },
+                    "output": {
+                        "type": "string",
+                        "required": true,
+                        "description": "Output text filename holding the count, e.g. count.txt"
+                    },
+                    "exclude_flags": {
+                        "type": "integer",
+                        "required": false,
+                        "default": 0,
+                        "description": "Skip records with ANY of these SAM flag bits set (samtools -F), e.g. 4 = unmapped, 256 = secondary, 2048 = supplementary, 260 = unmapped or secondary; 0 = no filter"
+                    },
+                    "require_flags": {
+                        "type": "integer",
+                        "required": false,
+                        "default": 0,
+                        "description": "Keep only records with ALL of these SAM flag bits set (samtools -f), e.g. 4 = unmapped only, 2 = properly paired; 0 = no filter"
+                    },
+                    "min_mapq": {
+                        "type": "integer",
+                        "required": false,
+                        "default": 0,
+                        "description": "Skip records with mapping quality below this value (samtools -q); 0 = no filter"
+                    }
+                },
+                "notes": "input may be SAM or BAM; the output file contains a single integer"
+            },
+            "flagstat": {
+                "command": "samtools flagstat -@ {threads} {input} > /work/{output}",
+                "description": "Summarise alignment flags: total, mapped, paired, properly paired, duplicates, secondary and supplementary records",
+                "requires_input": true,
+                "requires_output": false,
+                "extra_params": {
+                    "threads": {
+                        "type": "integer",
+                        "required": false,
+                        "description": "Number of threads, default 4"
+                    },
+                    "output": {
+                        "type": "string",
+                        "required": true,
+                        "description": "Output text filename, e.g. flagstat.txt"
+                    }
+                },
+                "notes": "input may be SAM or BAM"
             },
             "sort": {
                 "command": "samtools sort -@ {threads} {input} -o /work/{output}",
@@ -571,7 +685,7 @@
         "category": "sequence_processing",
         "operations": {
             "sample": {
-                "command": "seqtk sample {input} {fraction} > /work/{output}",
+                "command": "seqtk sample -s {seed} {input} {fraction} > /work/{output}",
                 "description": "Randomly subsample sequences from a FASTA/Q file",
                 "requires_input": true,
                 "requires_output": false,
@@ -585,6 +699,12 @@
                         "type": "string",
                         "required": true,
                         "description": "Output filename, e.g. sampled.fq"
+                    },
+                    "seed": {
+                        "type": "integer",
+                        "required": false,
+                        "default": 11,
+                        "description": "Random seed (seqtk's own default is 11); the same seed on the same input gives the same sample"
                     }
                 }
             },
