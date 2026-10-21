@@ -930,7 +930,10 @@ def main() -> None:
         ),
         flush=True,
     )
-    sys.exit(0)
+    # A terminal session the agent left open parks a to_thread worker in queue.get() forever; a normal exit
+    # would join that worker and hang the driver (and the whole chain) after the result is already on disk.
+    sys.stdout.flush()
+    os._exit(0)
 
 
 if __name__ == "__main__":
