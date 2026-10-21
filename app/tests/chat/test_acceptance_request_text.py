@@ -132,13 +132,22 @@ def test_a_question_with_an_attachment_makes_no_extraction_call(monkeypatch):
 
 def test_a_request_for_a_file_with_an_attachment_is_extracted_from_the_users_words(monkeypatch):
     monkeypatch.setenv("DEEP_THINK_ACCEPTANCE_V2_ENABLED", "1")
-    llm = _Llm('{"required_outputs": [{"kind": "data", "extensions": [".faa"]}]}')
-    spec = _extract(llm, FILE_ASKS[4] + ATTACHMENTS)
-    assert spec is not None and spec.required_outputs[0].extensions == [".faa"]
+    llm = _Llm('{"required_outputs": [{"kind": "data", "extensions": [".fasta"]}]}')
+    spec = _extract(llm, FILE_ASKS[0] + ATTACHMENTS)  # asks for "a new FASTA file", so .fasta is the user's own word
+    assert spec is not None and spec.required_outputs[0].extensions == [".fasta"]
     prompt = llm.prompts[0]
     assert "SPREADSHEET SHEET POLICY" not in prompt and "CURRENT ATTACHMENT POLICY" not in prompt
     assert "Input files already provided" in prompt and "genome_gc.fasta" in prompt
-    assert FILE_ASKS[4] in prompt
+    assert FILE_ASKS[0] in prompt
+
+
+def test_an_extension_the_request_never_names_is_dropped_from_the_extracted_spec(monkeypatch):
+    monkeypatch.setenv("DEEP_THINK_ACCEPTANCE_V2_ENABLED", "1")
+    llm = _Llm('{"required_outputs": [{"kind": "data", "extensions": [".fasta"]}]}')
+    attached = ATTACHMENTS.replace("genome_gc.fasta", "genome_small.fasta")
+    spec = _extract(llm, FILE_ASKS[2] + attached)  # "save the protein sequences to a file", about the attached genome_small.fasta
+    assert spec is not None and spec.required_outputs[0].kind == "data"
+    assert spec.required_outputs[0].extensions == []
 
 
 def test_an_empty_declaration_means_no_file_and_is_not_an_error(monkeypatch, caplog):
@@ -203,3 +212,68 @@ def test_the_json_roundtrip_of_a_tidied_spec_is_valid():
         OutputSpec(required_outputs=[RequiredOutput(kind="data", extensions=[".faa"]), RequiredOutput(kind="other")]), []
     )
     assert json.loads(json.dumps(spec.to_dict()))["required_outputs"][0]["extensions"] == [".faa"]
+
+
+# --------------------------------------------------------------------------- extensions the user never named
+
+@pytest.mark.parametrize(
+    "request_text,inputs,declared,kept",
+    [
+        # The only ".fasta" in the request is the input's name.
+        ("对 genome_small.fasta 做细菌基因预测：把蛋白序列存成文件，并告诉我预测到多少条基因（CDS）。", ["genome_small.fasta"], [".fasta"], []),
+        ("用 prodigal 预测一下 genome_mid.fasta 的基因，把蛋白序列存成文件。", ["genome_mid.fasta"], [".fasta", ".fa"], []),
+        ("Randomly pick 50 reads from reads_long.fastq (seed 7) and save them to a new file.", ["reads_long.fastq"], [".fastq"], []),
+        ("用 PROD 预测 Genome_Mid.FASTA 的基因，存成文件", ["genome_mid.fasta"], [".fasta"], []),
+        # The user names the format.
+        ("把 contigs_mixed.fasta 里长度不少于 3000 bp 的序列筛出来，存成新的 FASTA 文件，并告诉我保留几条。", ["contigs_mixed.fasta"], [".fasta"], [".fasta"]),
+        ("Randomly subsample 100 reads from reads_1.fastq using seed 42 and save them as a new FASTQ file.", ["reads_1.fastq"], [".fastq"], [".fastq"]),
+        ("save it as .fa please", [], [".fa", ".fasta"], [".fa", ".fasta"]),
+        ("Create config.json", [], [".json"], [".json"]),
+        ("Export the table as an Excel workbook", [], [".xlsx"], [".xlsx"]),
+        ("把结果整理成电子表格", [], [".xlsx"], [".xlsx"]),
+        ("write the counts to a CSV", [], [".csv", ".tsv"], [".csv", ".tsv"]),
+        # "fa" inside another word is not a mention of .fa
+        ("Save the facts you find in a file", [], [".fa"], []),
+    ],
+)
+def test_extensions_the_user_never_named_are_dropped(request_text, inputs, declared, kept):
+    spec = OutputSpec(required_outputs=[RequiredOutput(kind="data", extensions=list(declared))])
+    tidy = tidy_extracted_spec(spec, inputs, request_text)
+    assert tidy.required_outputs[0].extensions == kept
+
+
+def test_only_a_data_declaration_without_a_path_loses_extensions():
+    spec = OutputSpec(required_outputs=[
+        RequiredOutput(kind="document", extensions=[".pdf"]),
+        RequiredOutput(kind="data", extensions=[".csv"], target_path="results/out.csv"),
+        RequiredOutput(kind="image", extensions=[".png"]),
+    ])
+    tidy = tidy_extracted_spec(spec, [], "Summarise the run in a file")
+    assert [o.extensions for o in tidy.required_outputs] == [[".pdf"], [".csv"], [".png"]]
+
+
+def test_without_the_request_text_nothing_changes():
+    spec = OutputSpec(required_outputs=[RequiredOutput(kind="data", extensions=[".fasta"])])
+    assert tidy_extracted_spec(spec, []).required_outputs[0].extensions == [".fasta"]
+
+
+def test_the_extraction_prompt_says_which_extensions_to_list():
+    prompt = build_extraction_prompt("把蛋白序列存成文件。" + ATTACHMENTS)
+    assert "list extensions only for a format the user named" in prompt
+
+
+def test_a_protein_file_from_a_tool_satisfies_a_request_that_named_no_format(tmp_path):
+    """S05: the extraction said '.fasta' from the input's name, prodigal wrote .faa, acceptance said 'data' was missing."""
+    from app.services.plans.output_spec import validate_output_spec
+
+    produced = tmp_path / "proteins.faa"
+    produced.write_text(">p1\nMKV\n")
+    request = "对 genome_small.fasta 做细菌基因预测：把蛋白序列存成文件，并告诉我预测到多少条基因（CDS）。"
+
+    def verdict(with_request_text):
+        spec = OutputSpec(required_outputs=[RequiredOutput(kind="data", extensions=[".fasta"])])
+        spec = tidy_extracted_spec(spec, ["genome_small.fasta"], request if with_request_text else None)
+        return validate_output_spec(spec, [str(produced)], base_dir=tmp_path)["status"]
+
+    assert verdict(with_request_text=False) == "failed"
+    assert verdict(with_request_text=True) == "passed"
