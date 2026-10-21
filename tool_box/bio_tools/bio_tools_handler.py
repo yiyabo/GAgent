@@ -20,7 +20,7 @@ from pathlib import Path
 from string import Formatter
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
-from . import native_client, native_exec
+from . import native_client, native_exec, native_publish
 from .remote_executor import (
     RemoteExecutionConfig,
     create_remote_run_dirs,
@@ -1513,6 +1513,11 @@ async def _execute_bio_tool_once(
             native_result.get("fallback_ok") or native_result.get("error_code") == "not_native"
         )
         if not can_fall_through:
+            # The run's files stay in the native run directory, which no session can read; copy them in.
+            if native_result.get("success") and tool_context is not None:
+                native_result = await asyncio.to_thread(
+                    native_publish.publish_for_context, native_result, tool_context
+                )
             return native_result
         await _report("running", "Native execution not available, using Docker: %s" % native_result.get("error", ""))
 
@@ -1644,6 +1649,14 @@ async def _build_job_status_result(job_id: str, wait_seconds: float = 0.0) -> Di
     return result
 
 
+def _background_context(session_id: Optional[str]) -> Optional[Any]:
+    if not session_id:
+        return None
+    from tool_box.context import ToolContext
+
+    return ToolContext(session_id=str(session_id))
+
+
 def _run_background_bio_tools_job(
     *,
     job_id: str,
@@ -1653,6 +1666,7 @@ def _run_background_bio_tools_job(
     output_file: Optional[str],
     params: Optional[Dict[str, Any]],
     timeout: Optional[int],
+    session_id: Optional[str] = None,
 ) -> None:
     manager = _get_plan_job_manager()
     ctx_token = _set_current_job_context(job_id)
@@ -1710,6 +1724,8 @@ def _run_background_bio_tools_job(
                 params=params,
                 timeout=timeout,
                 log_callback=_docker_log_callback,
+                # Lets a native run copy its output files into the session that queued the job.
+                tool_context=_background_context(session_id),
             )
         )
         # Flush any remaining buffered lines before processing result
@@ -1766,6 +1782,7 @@ def _submit_background_bio_tools_job(
     output_file: Optional[str],
     params: Optional[Dict[str, Any]],
     timeout: Optional[int],
+    session_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     manager = _get_plan_job_manager()
     job_id = f"bio_{uuid.uuid4().hex}"
@@ -1808,6 +1825,7 @@ def _submit_background_bio_tools_job(
             "output_file": output_file,
             "params": safe_params,
             "timeout": timeout,
+            "session_id": session_id,
         },
         daemon=True,
     )
@@ -2092,6 +2110,7 @@ async def bio_tools_handler(
                 output_file=output_file,
                 params=validated_params,
                 timeout=effective_timeout,
+                session_id=session_id or getattr(tool_context, "session_id", None),
             )
         else:
             result = await _execute_bio_tool_once(
