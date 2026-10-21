@@ -101,6 +101,21 @@ def _extract_guard_candidates(agent: "DeepThinkAgent", tool_results: List[Dict[s
                         _push(entry.get("path") or entry.get("file_path"))
         for key in (("output_path", "saved_path") if readonly else str_keys):
             _push(payload.get(key))
+        if readonly:
+            return
+        # file_operations reports the file it wrote or copied as ``path``/``destination``, and
+        # deliverable_submit lists what it published; neither uses the keys above, so a deliverable made
+        # (or published) with them was invisible to acceptance.
+        operation = str(payload.get("operation") or "").lower()
+        if operation in {"copy", "move"}:
+            _push(payload.get("destination"))
+        elif operation == "write":
+            _push(payload.get("path"))
+        submitted = payload.get("deliverable_submit")
+        if isinstance(submitted, dict):
+            for artifact in submitted.get("artifacts") or []:
+                if isinstance(artifact, dict):
+                    _push(artifact.get("path"))
 
     for item in tool_results:
         payload = item.get("tool_result")
