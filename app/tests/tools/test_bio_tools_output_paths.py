@@ -197,3 +197,52 @@ def test_the_handler_leaves_a_call_without_a_session_alone(session, monkeypatch)
     seen, result = _call_once(session, monkeypatch, None, output_file=None, params={"protein": value})
     assert seen["params"] == {"protein": value}
     assert "artifact_paths" not in result
+
+
+def _call_main_handler(session, monkeypatch, **kwargs):
+    """The chat action bridge calls the handler like this: a session id, no ToolContext."""
+    seen = {}
+    root = session["root"]
+    upload = root / "uploads" / "c.fasta"
+    upload.write_text(">ctg05\nACGT\n", encoding="utf-8")
+
+    async def fake_native(**inner):
+        seen.update(inner)
+        name = (inner.get("params") or {}).get("output") or inner.get("output_file")
+        return _run(session["tmp"], {name: ">ctg05\nACGT\n"}, tool="seqkit", operation="grep")
+
+    monkeypatch.setattr(bio_tools_handler, "_execute_native_bio_tool", fake_native)
+    result = asyncio.run(
+        bio_tools_handler.bio_tools_handler(
+            tool_name="seqkit", operation="grep", input_file=str(upload), **kwargs
+        )
+    )
+    return seen, result
+
+
+def test_the_session_id_alone_is_enough_for_the_output_location_and_the_copy(session, monkeypatch):
+    target = session["root"] / "results" / "picked.fasta"
+    seen, result = _call_main_handler(
+        session, monkeypatch, params={"pattern": "ctg05", "output": str(target)}, session_id="own", tool_context=None
+    )
+    assert result["success"] is True, result
+    assert seen["params"]["output"] == "picked.fasta"
+    assert result["artifact_paths"] == [str(target)]
+    assert target.is_file()
+
+
+def test_a_context_without_a_session_still_publishes_and_is_not_changed(session, monkeypatch):
+    marker = object()
+    context = ToolContext(work_dir="/somewhere", extra={"keep": marker})
+    target = session["root"] / "results" / "picked.fasta"
+    _, result = _call_main_handler(
+        session, monkeypatch, params={"pattern": "ctg05", "output": str(target)}, session_id="own", tool_context=context
+    )
+    assert result["artifact_paths"] == [str(target)]
+    assert context.session_id is None  # the caller's object is not changed
+
+
+def test_without_any_session_the_handler_publishes_nothing(session, monkeypatch):
+    seen, result = _call_main_handler(session, monkeypatch, params={"pattern": "ctg05", "output": "picked.fasta"})
+    assert result["success"] is True
+    assert "artifact_paths" not in result

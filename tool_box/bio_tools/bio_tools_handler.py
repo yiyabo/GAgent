@@ -2100,6 +2100,20 @@ async def bio_tools_handler(
             },
         )
 
+    # The chat action bridge strips the native ToolContext and passes only the session id (it rebuilds the
+    # context for file_operations and execute_code, not for this tool). Without a session here nothing
+    # copies a run's files into the session and nothing accepts an output location inside it.
+    if getattr(tool_context, "session_id", None) is None and isinstance(session_id, str) and session_id.strip():
+        import dataclasses
+
+        from tool_box.context import ToolContext
+
+        tool_context = (
+            ToolContext(session_id=session_id.strip())
+            if tool_context is None
+            else dataclasses.replace(tool_context, session_id=session_id.strip())
+        )
+
     scope_problem = session_scope.scope_error(
         normalized_input_file or None,
         clean_params,
