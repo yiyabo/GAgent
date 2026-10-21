@@ -10,6 +10,7 @@
 | 容器 | gateway / app / proxy / ops | app / proxy（无 gateway、无 ops） |
 | 对外端口 | 127.0.0.1:40003 | 无；评测经 `docker exec` 进入 app |
 | 网络与子网 | front 172.28.0.0/24，sandbox 172.29.0.0/24，dockerapi 172.30.0.0/24 | gagent-eval-front 172.36.0.0/24，gagent-eval-sandbox 172.37.0.0/24，gagent-eval-dockerapi 172.38.0.0/24 |
+| 沙箱容器网络（`SANDBOX_NETWORK`） | 默认 `gagent-sandbox` | compose 里写死 `gagent-eval-sandbox`；不写时默认值是线上的网络名，终端沙箱会回连到线上 app，每次启动白等 30 秒握手超时 |
 | 数据库卷 | `gagent-data` | `gagent-eval-data`（空卷，启动后自建） |
 | 运行目录 | `~/gagent/runtime` | `~/gagent-eval/runtime` |
 | 产物输出 | 无 | `~/gagent-eval/evo-out` 挂为 `/evo-out`（不在 `/app` 下，文件工具读不到） |
