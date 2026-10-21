@@ -20,7 +20,7 @@ from pathlib import Path
 from string import Formatter
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
-from . import native_client, native_exec, native_publish, output_paths, session_scope
+from . import native_client, native_exec, native_publish, output_paths, param_hints, session_scope
 from .remote_executor import (
     RemoteExecutionConfig,
     create_remote_run_dirs,
@@ -462,6 +462,48 @@ def _build_bio_tools_error(
     if isinstance(extra, dict):
         payload.update(extra)
     return payload
+
+
+def _param_refusal(
+    tool_name: str, operation: str, params: Optional[Dict[str, Any]]
+) -> Optional[Dict[str, Any]]:
+    """An error result when ``params`` has names the operation does not declare, values of the wrong type, or a
+    database prefix given as a bare name; None when the call can go on.
+
+    The result carries what a caller needs to retry (``accepted_params``, ``param_details``, ``param_hint``).
+    The chat layer keeps those keys, so the model sees them instead of only ``Invalid/unsafe parameter: X``.
+    """
+    config = get_tools_config()
+    if not config.get(tool_name, {}).get("operations", {}).get(operation):
+        return None
+    unknown = param_hints.unknown_keys(config, tool_name, operation, params)
+    problem: Optional[str] = None
+    if unknown:
+        problem = "Invalid/unsafe parameter: " + unknown[0]
+    else:
+        problem = param_hints.check_values(config, tool_name, operation, params)
+        if problem is None and _normalize_execution_mode(os.getenv("BIO_TOOLS_EXECUTION_MODE")) in {"native", "native_first"}:
+            prefix = param_hints.relative_prefix_error(config, tool_name, operation, params)
+            problem = prefix[1] if prefix else None
+    if problem is None:
+        return None
+    param_hints.log_refusal(tool_name, operation, unknown or [problem.split(" ", 1)[0]])
+    return _build_bio_tools_error(
+        tool_name=tool_name,
+        operation=operation,
+        error=problem,
+        error_code="invalid_parameter",
+        error_stage="param_validation",
+        extra={
+            "unknown_params": unknown,
+            "accepted_params": _get_operation_all_params(tool_name, operation),
+            "param_details": param_hints.details(config, tool_name, operation),
+            "param_hint": param_hints.hint(config, tool_name, operation, unknown),
+            "retry_hint": _build_retry_hint(
+                tool_name, operation, requires_input=_operation_requires_input(tool_name, operation),
+            ),
+        },
+    )
 
 
 def _operation_requires_input(tool_name: str, operation: str) -> bool:
@@ -2067,6 +2109,13 @@ async def bio_tools_handler(
             },
         )
     
+    clean_params, renamed_params = param_hints.resolve(get_tools_config(), tool_name, operation, clean_params)
+    if renamed_params:
+        param_hints.log_refusal(tool_name, operation, [], renamed_params)
+    refused = _param_refusal(tool_name, operation, clean_params)
+    if refused is not None:
+        return refused
+
     required_params = _get_operation_required_params(tool_name, operation)
     provided_keys = set(clean_params or {})
     if normalized_input_file:
@@ -2165,6 +2214,8 @@ async def bio_tools_handler(
                 tool_context=tool_context,
             )
 
+        if renamed_params and isinstance(result, dict):
+            result.setdefault("param_renames", renamed_params)
         if input_origin:
             result.setdefault("input_origin", input_origin)
         if generated_input_file:
@@ -2180,6 +2231,7 @@ async def bio_tools_handler(
             error_code="invalid_parameter",
             extra={
                 "accepted_params": all_params,
+                "param_details": param_hints.details(get_tools_config(), tool_name, operation),
                 "retry_hint": _build_retry_hint(
                     tool_name, operation, requires_input=op_requires_input,
                 ),
