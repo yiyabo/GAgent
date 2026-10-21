@@ -486,7 +486,9 @@ async def execute_recorded_tool(
 
 async def finalize_output_spec(agent: Any, user_query: str, answer: str) -> tuple[str, dict]:
     from app.services.deep_think.acceptance import acceptance_missing
+    from app.services.deep_think.text_utils import user_request_text
 
+    request_text = user_request_text(user_query)
     missing = await asyncio.to_thread(
         acceptance_missing, agent, getattr(agent, "_expected_outputs_current", []) or [],
         getattr(agent, "_produced_deliverable_paths", []) or [],
@@ -496,11 +498,11 @@ async def finalize_output_spec(agent: Any, user_query: str, answer: str) -> tupl
     report = getattr(agent, "_output_verification", None)
     if report and report.get("authoritative") and report.get("status") == "failed":
         labels = ", ".join(missing) or "required outputs"
-        chinese = any("\u3400" <= char <= "\u9fff" for char in user_query)
+        chinese = any("\u3400" <= char <= "\u9fff" for char in request_text)
         notice = f"本轮交付验收未通过，尚缺或不符合要求：{labels}。" if chinese else f"Output acceptance did not pass: {labels}."
         answer = notice + "\n\n" + (answer or "")
     if getattr(agent, "_execution_issues", []):
-        chinese = any("\u3400" <= char <= "\u9fff" for char in user_query)
+        chinese = any("\u3400" <= char <= "\u9fff" for char in request_text)
         notice = ("本轮未完成：存在结果不确定的工具步骤，需要先核对已有输出或远端任务，才能继续。"
                   if chinese else "This run is incomplete: reconcile uncertain tool steps against existing outputs or remote jobs before continuing.")
         answer = notice + "\n\n" + (answer or "")
