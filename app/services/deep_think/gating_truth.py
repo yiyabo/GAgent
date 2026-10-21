@@ -52,6 +52,11 @@ _UNSUPPORTED_RETRY_RERUN_RE = re.compile(
 )
 
 
+_REFUSED_BEFORE_RUNNING = frozenset(
+    {"invalid_parameter", "missing_required_params", "missing_input_file", "path_not_allowed"}
+)
+
+
 def _collect_execute_truth_events(
     cls: Any,
     steps: Sequence[ThinkingStep],
@@ -168,6 +173,7 @@ def _collect_execute_truth_events(
                     "success": success,
                     "trusted": trusted,
                     "counts_as_failure": counts_as_failure,
+                    "error_code": str(inner.get("error_code") or payload.get("error_code") or "").strip().lower(),
                     "summary_text": summary_text,
                     "error": error_text,
                 }
@@ -301,12 +307,16 @@ def _apply_execute_failure_truth_barrier(
         return _append_produced_image_section(agent, payload, user_query=user_query)
 
     events = agent._collect_execute_truth_events(steps)
+    verified_work = any(event.get("kind") == "execution" and event.get("trusted") for event in events)
     failed_execution_events = [
         event
         for event in events
         if event.get("kind") == "execution"
         and not event.get("success")
         and event.get("counts_as_failure", True)
+        # A call refused before it ran (an undeclared parameter, a missing input) is not an execution that
+        # failed; once the run has verified work of its own it must not turn the answer into "unverified".
+        and not (verified_work and event.get("error_code") in _REFUSED_BEFORE_RUNNING)
     ]
     if not failed_execution_events:
         return text

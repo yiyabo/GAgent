@@ -96,8 +96,9 @@ def test_a_failing_cell_after_a_success_does_not_bring_the_warning_back():
 
 def test_a_cell_before_the_failure_does_not_recover_it():
     before = _step(1, "execute_code", {"code": "print(1)"}, {"success": True, "tool": "execute_code", "result": {"success": True, "output": "1"}})
-    refused = _step(2, "bio_tools", {"tool_name": "samtools", "operation": "view"}, BIO_REFUSED)
-    answer = _barrier([before, refused])
+    crashed = {"success": False, "tool": "bio_tools", "result": {"success": False, "tool": "bio_tools", "error": "samtools.view failed"}}
+    failed = _step(2, "bio_tools", {"tool_name": "samtools", "operation": "view"}, crashed)
+    answer = _barrier([before, failed])
     assert "main execution tool failed" in answer or "主执行工具未成功" in answer
 
 
@@ -108,3 +109,40 @@ def test_cells_are_events_but_never_failures():
         ("execute_code", True, True, False),
         ("execute_code", False, False, False),
     ]
+
+
+# --------------------------------------------------------------------------- a refusal after verified work
+
+def _ok_bio(iteration, operation):
+    payload = {"success": True, "tool": "bio_tools", "result": {"success": True, "tool": "bio_tools", "operation": operation}}
+    return _step(iteration, "bio_tools", {"tool_name": "samtools", "operation": operation}, payload)
+
+
+def test_a_refused_call_after_verified_work_does_not_turn_the_answer_into_unverified():
+    # S09 on p16: sort, index, flagstat and count all succeeded; a last extra call used an undeclared parameter.
+    steps = [_ok_bio(1, "sort"), _ok_bio(2, "flagstat"), _step(3, "bio_tools", {"tool_name": "samtools", "operation": "view"}, BIO_REFUSED)]
+    assert _barrier(steps) == ANSWER
+
+
+def test_a_refusal_with_no_verified_work_still_warns():
+    answer = _barrier([REFUSED])
+    assert "main execution tool failed" in answer or "主执行工具未成功" in answer
+
+
+@pytest.mark.parametrize("code", ["invalid_parameter", "missing_required_params", "missing_input_file", "path_not_allowed"])
+def test_every_refusal_code_is_forgiven_after_verified_work(code):
+    refusal = dict(BIO_REFUSED, result=dict(BIO_REFUSED["result"], error_code=code))
+    steps = [_ok_bio(1, "sort"), _step(2, "bio_tools", {"tool_name": "samtools", "operation": "view"}, refusal)]
+    assert _barrier(steps) == ANSWER
+
+
+def test_a_real_failure_after_verified_work_still_warns():
+    crashed = {"success": False, "tool": "bio_tools", "result": {"success": False, "tool": "bio_tools", "error": "samtools.sort failed"}}
+    steps = [_ok_bio(1, "sort"), _step(2, "bio_tools", {"tool_name": "samtools", "operation": "sort"}, crashed)]
+    answer = _barrier(steps)
+    assert "main execution tool failed" in answer or "主执行工具未成功" in answer
+
+
+def test_events_carry_the_error_code():
+    events = _collect_execute_truth_events(DeepThinkAgent, [REFUSED])
+    assert events[0]["error_code"] == "invalid_parameter"
