@@ -8,6 +8,11 @@ files a tool result names, then failed on files that existed.
 After a successful run the files are copied into ``<session>/results/bio_tools/<tool>_<operation>_<run id>/``
 and the result names them in ``artifact_paths`` and ``session_outputs``. A copy that cannot be made is
 reported, never raised: the run itself succeeded.
+
+An index or other sidecar of the input (``reads.bam`` -> ``reads.bam.bai``, ``ref.fa`` -> ``ref.fa.bwt``) is
+different: the next tool looks for it next to the input, so it is copied there when the input is in the session.
+The host user cannot write into a session directory, so the tool is run to write the sidecar in its own run
+directory (``native_command`` in ``tools_config.json``) and this module puts it where it belongs.
 """
 
 from __future__ import annotations
@@ -40,15 +45,30 @@ def _inside(path: Path, root: Path) -> bool:
         return False
 
 
+def _input_neighbourhood(input_file: Optional[str], session_root: Path) -> "tuple[str, Optional[Path]]":
+    """The input's file name and its directory, the latter only when that directory is inside the session."""
+    text = str(input_file or "").strip()
+    if not text or not os.path.isabs(text):
+        return "", None
+    path = Path(os.path.abspath(text))
+    try:
+        directory = path.parent.resolve()
+    except OSError:
+        return "", None
+    return (path.name, directory) if _inside(directory, session_root.resolve()) else ("", None)
+
+
 def publish_run_outputs(
     result: Dict[str, Any],
     session_dir: Optional[Path],
     requests: Optional[List[output_paths.OutputRequest]] = None,
+    input_file: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Return ``result`` with the run's output files copied into ``session_dir``.
 
     Files the run wrote under a name that ``requests`` maps to a location in the session (see
-    ``output_paths``) go to that location; every other file goes to ``results/bio_tools/<run>/``.
+    ``output_paths``) go to that location; a file named ``<input name>.<extension>`` goes next to ``input_file``
+    when that is in the session; every other file goes to ``results/bio_tools/<run>/``.
 
     Adds ``session_outputs`` (path, source, size per file), ``artifact_paths`` (the absolute session paths),
     ``session_output_dir`` and, per ``produced_files`` entry, ``session_path``; ``session_output_path`` when
@@ -68,6 +88,7 @@ def publish_run_outputs(
         "%s_%s_%s" % (_safe_name(result.get("tool")), _safe_name(result.get("operation")), _safe_name(result.get("run_id"))),
     )
 
+    input_name, input_dir = _input_neighbourhood(input_file, session_root)
     outputs: List[Dict[str, Any]] = []
     skipped: List[Dict[str, str]] = []
     entries: List[Any] = []
@@ -83,7 +104,15 @@ def publish_run_outputs(
             continue
         source = work_dir / rel_path
         requested_target = output_paths.target_for(rel, requests or [])
-        target = Path(requested_target) if requested_target else dest_root / rel_path
+        beside_input = bool(
+            input_dir and not requested_target and len(rel_path.parts) == 1 and rel_path.name.startswith(input_name + ".")
+        )
+        if requested_target:
+            target = Path(requested_target)
+        elif beside_input:
+            target = input_dir / rel_path.name
+        else:
+            target = dest_root / rel_path
         try:
             if source.is_symlink() or not source.is_file():
                 continue
@@ -106,6 +135,8 @@ def publish_run_outputs(
         record = {"path": str(target), "source": str(source), "size": size}
         if requested_target:
             record["requested"] = True
+        if beside_input:
+            record["beside_input"] = True
         outputs.append(record)
 
     if not outputs and not skipped:
@@ -115,7 +146,7 @@ def publish_run_outputs(
     if outputs:
         updated["session_outputs"] = outputs
         updated["artifact_paths"] = [item["path"] for item in outputs]
-        if any(not item.get("requested") for item in outputs):
+        if any(not item.get("requested") and not item.get("beside_input") for item in outputs):
             updated["session_output_dir"] = str(dest_root)
         main_output = copied_by_source.get(str(result.get("output_path") or ""))
         if main_output:
@@ -148,10 +179,11 @@ def publish_for_context(
     result: Dict[str, Any],
     tool_context: Any,
     requests: Optional[List[output_paths.OutputRequest]] = None,
+    input_file: Optional[str] = None,
 ) -> Dict[str, Any]:
     """``publish_run_outputs`` for the session of ``tool_context``; any failure leaves ``result`` as it was."""
     try:
-        return publish_run_outputs(result, session_dir_for(tool_context), requests)
+        return publish_run_outputs(result, session_dir_for(tool_context), requests, input_file)
     except Exception:  # noqa: BLE001 - publishing is a convenience on top of a run that already succeeded
         logger.exception("publishing native bio_tools outputs failed")
         return result

@@ -230,3 +230,112 @@ def test_artifact_paths_reach_delivery_acceptance(tmp_path):
     session.mkdir(parents=True)
     published = native_publish.publish_run_outputs(_run(tmp_path, {"proteins.faa": ">p\nMKV\n"}), session)
     assert dispatch._extract_explicit_artifact_paths(agent, published) == published["artifact_paths"]
+
+
+# --------------------------------------------------------------------------- sidecars of the input
+
+def test_an_index_lands_next_to_its_input_in_the_session(tmp_path):
+    session = tmp_path / "runtime" / "session_s1"
+    (session / "results").mkdir(parents=True)
+    bam = session / "results" / "aligned.sorted.bam"
+    bam.write_bytes(b"bam")
+    result = _run(tmp_path, {"aligned.sorted.bam.bai": "bai"})
+    published = native_publish.publish_run_outputs(result, session, input_file=str(bam))
+
+    assert (session / "results" / "aligned.sorted.bam.bai").read_text() == "bai"
+    assert published["artifact_paths"] == [str(session / "results" / "aligned.sorted.bam.bai")]
+    assert not (session / "results" / "bio_tools").exists(), "one copy, not a second one in the run folder"
+    assert "session_output_dir" not in published
+    assert published["session_outputs"][0]["beside_input"] is True
+
+
+def test_every_file_a_bwa_index_writes_goes_next_to_the_reference(tmp_path):
+    session = tmp_path / "runtime" / "session_s1"
+    (session / "uploads").mkdir(parents=True)
+    ref = session / "uploads" / "ref.fa"
+    ref.write_text(">r\nACGT\n")
+    names = ["ref.fa.amb", "ref.fa.ann", "ref.fa.bwt", "ref.fa.pac", "ref.fa.sa"]
+    result = _run(tmp_path, {name: name for name in names}, tool="bwa")
+    published = native_publish.publish_run_outputs(result, session, input_file=str(ref))
+
+    assert sorted(p.name for p in (session / "uploads").iterdir()) == sorted(names + ["ref.fa"])
+    assert sorted(Path(p).name for p in published["artifact_paths"]) == sorted(names)
+
+
+def test_only_files_named_after_the_input_go_beside_it(tmp_path):
+    session = tmp_path / "runtime" / "session_s1"
+    (session / "uploads").mkdir(parents=True)
+    bam = session / "uploads" / "x.bam"
+    bam.write_bytes(b"bam")
+    result = _run(tmp_path, {"x.bam.bai": "bai", "x.bamx": "other", "stats.txt": "s", "sub/x.bam.bai": "nested"})
+    published = native_publish.publish_run_outputs(result, session, input_file=str(bam))
+
+    assert (session / "uploads" / "x.bam.bai").read_text() == "bai"
+    assert not (session / "uploads" / "x.bamx").exists() and not (session / "uploads" / "stats.txt").exists()
+    dest = session / "results" / "bio_tools" / "samtools_index_abc123def456"
+    assert (dest / "x.bamx").is_file() and (dest / "stats.txt").is_file() and (dest / "sub" / "x.bam.bai").is_file()
+    assert published["session_output_dir"] == str(dest)
+
+
+def test_a_stale_index_is_replaced(tmp_path):
+    session = tmp_path / "runtime" / "session_s1"
+    (session / "results").mkdir(parents=True)
+    bam = session / "results" / "a.bam"
+    bam.write_bytes(b"bam")
+    (session / "results" / "a.bam.bai").write_text("old")
+    native_publish.publish_run_outputs(_run(tmp_path, {"a.bam.bai": "new"}), session, input_file=str(bam))
+    assert (session / "results" / "a.bam.bai").read_text() == "new"
+
+
+@pytest.mark.parametrize("where", ["outside", "relative", "none"])
+def test_an_input_outside_the_session_gets_the_usual_copy(tmp_path, where):
+    session = tmp_path / "runtime" / "session_s1"
+    session.mkdir(parents=True)
+    other = tmp_path / "runtime" / "session_other"
+    other.mkdir()
+    (other / "a.bam").write_bytes(b"bam")
+    input_file = {"outside": str(other / "a.bam"), "relative": "results/a.bam", "none": None}[where]
+    published = native_publish.publish_run_outputs(
+        _run(tmp_path, {"a.bam.bai": "bai"}), session, input_file=input_file
+    )
+    dest = session / "results" / "bio_tools" / "samtools_index_abc123def456"
+    assert (dest / "a.bam.bai").is_file()
+    assert not (other / "a.bam.bai").exists()
+    assert published["session_output_dir"] == str(dest)
+
+
+def test_a_requested_location_wins_over_the_input_directory(tmp_path):
+    from tool_box.bio_tools import output_paths
+
+    session = tmp_path / "runtime" / "session_s1"
+    (session / "results").mkdir(parents=True)
+    bam = session / "results" / "a.bam"
+    bam.write_bytes(b"bam")
+    wanted = session / "results" / "indexes" / "a.bam.bai"
+    requests = [
+        output_paths.OutputRequest(key="output_file", requested=str(wanted), relative="a.bam.bai", target=str(wanted))
+    ]
+    native_publish.publish_run_outputs(_run(tmp_path, {"a.bam.bai": "bai"}), session, requests, input_file=str(bam))
+    assert wanted.read_text() == "bai"
+    assert not (session / "results" / "a.bam.bai").exists()
+
+
+def test_the_handler_hands_the_input_to_the_publisher(_runtime, monkeypatch):
+    session = _runtime / "runtime" / "session_handler-session"
+    (session / "results").mkdir(parents=True)
+    bam = session / "results" / "aligned.sorted.bam"
+    bam.write_bytes(b"bam")
+    native = _run(_runtime, {"aligned.sorted.bam.bai": "bai"})
+
+    async def fake_native(**kwargs):
+        return dict(native)
+
+    monkeypatch.setattr(bio_tools_handler, "_execute_native_bio_tool", fake_native)
+    result = asyncio.run(
+        bio_tools_handler._execute_bio_tool_once(
+            tool_name="samtools", operation="index", input_file=str(bam), output_file=None,
+            params={}, timeout=None, tool_context=ToolContext(session_id="handler-session"),
+        )
+    )
+    assert result["artifact_paths"] == [str(session / "results" / "aligned.sorted.bam.bai")]
+    assert (session / "results" / "aligned.sorted.bam.bai").read_text() == "bai"
