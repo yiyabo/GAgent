@@ -487,6 +487,7 @@
             },
             "index": {
                 "command": "samtools index {input}",
+                "native_command": "if [ -w \"$(dirname {input})\" ]; then samtools index {input}; else samtools index {input} \"$(basename {input}).bai\"; fi",
                 "description": "Build a .bai index for a coordinate-sorted BAM file",
                 "requires_input": true,
                 "requires_output": false,
@@ -1117,6 +1118,7 @@
         "operations": {
             "index": {
                 "command": "bwa index {input}",
+                "native_command": "if [ -w \"$(dirname {input})\" ]; then bwa index {input}; else bwa index -p \"$(basename {input})\" {input}; fi",
                 "description": "Build a BWA index for a reference genome (required before alignment)",
                 "requires_input": true,
                 "requires_output": false,

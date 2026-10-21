@@ -1521,7 +1521,7 @@ async def _execute_bio_tool_once(
             # The run's files stay in the native run directory, which no session can read; copy them in.
             if native_result.get("success") and tool_context is not None:
                 native_result = await asyncio.to_thread(
-                    native_publish.publish_for_context, native_result, tool_context, output_requests
+                    native_publish.publish_for_context, native_result, tool_context, output_requests, input_file
                 )
             return native_result
         await _report("running", "Native execution not available, using Docker: %s" % native_result.get("error", ""))

@@ -814,3 +814,72 @@ def test_a_missing_output_name_is_filled_in_before_execution(monkeypatch, tmp_pa
     asyncio.run(handler.bio_tools_handler(tool_name="seqkit", operation="seq", input_file=str(source),
                                           params={"output": "mine.fa"}))
     assert seen["params"]["output"] == "mine.fa"
+
+
+# --------------------------------------------------------------------------- index operations and read-only inputs
+
+def _fake_samtools_and_bwa(directory: Path) -> Path:
+    """Stand-ins that write what the real tools write, where the real tools write it."""
+    directory.mkdir()
+    (directory / "samtools").write_text(
+        "#!/bin/bash\n"
+        'if [ "$1" != index ]; then exit 2; fi\n'
+        'if [ $# -eq 3 ]; then out="$3"; else out="$2.bai"; fi\n'
+        'echo index > "$out" || { echo "samtools index: failed to create or write index" >&2; exit 1; }\n'
+    )
+    (directory / "bwa").write_text(
+        "#!/bin/bash\n"
+        'if [ "$1" != index ]; then exit 2; fi\n'
+        'if [ "$2" = -p ]; then prefix="$3"; else prefix="$2"; fi\n'
+        'for ext in amb ann bwt pac sa; do echo x > "$prefix.$ext" || exit 1; done\n'
+    )
+    for name in ("samtools", "bwa"):
+        (directory / name).chmod(0o755)
+    return directory
+
+
+def _run_rendered(dirs, tool: str, input_file: Path, shims: Path) -> subprocess.CompletedProcess:
+    job = _job(dirs, tool, "index", input_file=str(input_file))
+    return subprocess.run(
+        ["bash", "-c", job["command"]], cwd=str(dirs["work"]), capture_output=True, text=True,
+        env={**os.environ, "PATH": "%s:%s" % (shims, os.environ["PATH"])},
+    )
+
+
+@pytest.mark.skipif(hasattr(os, "geteuid") and os.geteuid() == 0, reason="root can write into a read-only directory")
+@pytest.mark.parametrize(
+    "tool,name,expected",
+    [
+        ("samtools", "a.bam", ["a.bam.bai"]),
+        ("bwa", "ref.fa", ["ref.fa.amb", "ref.fa.ann", "ref.fa.bwt", "ref.fa.pac", "ref.fa.sa"]),
+    ],
+)
+def test_an_index_of_a_file_in_a_read_only_directory_is_written_to_the_run_directory(
+    dirs, tmp_path, tool, name, expected
+) -> None:
+    """The host user cannot write into a session directory, so ``samtools index`` on a session BAM failed."""
+    shims = _fake_samtools_and_bwa(tmp_path / "shims")
+    source = dirs["read_root"] / "session_x" / name
+    source.write_text("data")
+    source.parent.chmod(0o555)
+    try:
+        done = _run_rendered(dirs, tool, source, shims)
+    finally:
+        source.parent.chmod(0o755)
+    assert done.returncode == 0, done.stderr
+    assert sorted(p.name for p in dirs["work"].iterdir()) == sorted(expected)
+    assert sorted(p.name for p in source.parent.iterdir() if p.name.startswith(name + ".")) == []
+
+
+@pytest.mark.parametrize("tool,name,expected", [("samtools", "a.bam", ["a.bam.bai"]), ("bwa", "ref.fa", ["ref.fa.bwt"])])
+def test_an_index_of_a_file_in_a_writable_directory_stays_beside_it(dirs, tmp_path, tool, name, expected) -> None:
+    """A previous step's output sits in a run directory the host user owns; indexing it there keeps working."""
+    shims = _fake_samtools_and_bwa(tmp_path / "shims")
+    previous = dirs["read_root"] / "bio_tools" / "_native" / "runs" / "bbbbbbbbbbbb" / "work"
+    previous.mkdir(parents=True)
+    source = previous / name
+    source.write_text("data")
+    done = _run_rendered(dirs, tool, source, shims)
+    assert done.returncode == 0, done.stderr
+    assert set(expected) <= {p.name for p in previous.iterdir()}
+    assert list(dirs["work"].iterdir()) == []
