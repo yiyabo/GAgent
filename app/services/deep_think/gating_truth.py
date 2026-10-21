@@ -97,6 +97,7 @@ def _collect_execute_truth_events(
 
             kind: Optional[str] = None
             trusted = False
+            counts_as_failure = True
             if tool_name == "result_interpreter":
                 if operation in {"profile", "metadata"} or (
                     operation == "analyze" and task_type == "text_only"
@@ -115,6 +116,18 @@ def _collect_execute_truth_events(
             elif tool_name in cls._CODE_EXECUTION_TOOLS:
                 kind = "execution"
                 trusted = success
+            elif tool_name == "execute_code":
+                # Code-mode cells are what the model falls back on when a tool call is refused. A cell that
+                # ran and printed or wrote something is a real execution that can recover from an earlier
+                # failed tool call; a failing cell is the model iterating on its own code, not the main
+                # execution tool failing, so it is never the failure the answer gets a warning for.
+                kind = "execution"
+                trusted = success and bool(
+                    str(inner.get("output") or payload.get("output") or "").strip()
+                    or inner.get("produced_files")
+                    or payload.get("produced_files")
+                )
+                counts_as_failure = False
 
             if kind is None:
                 continue
@@ -154,6 +167,7 @@ def _collect_execute_truth_events(
                     "kind": kind,
                     "success": success,
                     "trusted": trusted,
+                    "counts_as_failure": counts_as_failure,
                     "summary_text": summary_text,
                     "error": error_text,
                 }
@@ -290,7 +304,9 @@ def _apply_execute_failure_truth_barrier(
     failed_execution_events = [
         event
         for event in events
-        if event.get("kind") == "execution" and not event.get("success")
+        if event.get("kind") == "execution"
+        and not event.get("success")
+        and event.get("counts_as_failure", True)
     ]
     if not failed_execution_events:
         return text
