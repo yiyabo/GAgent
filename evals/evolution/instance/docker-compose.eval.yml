@@ -17,6 +17,10 @@ services:
       DOCKER_API_VERSION: "1.41"
       SERVE_SPA: "0"
       TERMINAL_ENABLED: "0"
+      # Sandbox containers must join THIS instance's sandbox network. The default is the live stack's
+      # network name, where a terminal sandbox dials back to the live app instead of this one and waits
+      # out its 30 s handshake timeout on every start.
+      SANDBOX_NETWORK: gagent-eval-sandbox
       APP_ENV: ${APP_ENV:-development}
     volumes:
       - ${GAGENT_RUNTIME_DIR}:/app/runtime
