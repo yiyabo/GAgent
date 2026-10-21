@@ -20,7 +20,7 @@ from pathlib import Path
 from string import Formatter
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
-from . import native_client, native_exec, native_publish
+from . import native_client, native_exec, native_publish, session_scope
 from .remote_executor import (
     RemoteExecutionConfig,
     create_remote_run_dirs,
@@ -2091,6 +2091,29 @@ async def bio_tools_handler(
                 "accepted_params": all_params,
                 "retry_hint": _build_retry_hint(
                     tool_name, operation, requires_input=op_requires_input,
+                ),
+            },
+        )
+
+    scope_problem = session_scope.scope_error(
+        normalized_input_file or None,
+        clean_params,
+        tool_context,
+        session_id=session_id,
+        shared_roots=(RUNTIME_BASE_DIR,),
+    )
+    if scope_problem:
+        return _build_bio_tools_error(
+            tool_name=tool_name,
+            operation=operation,
+            error=scope_problem,
+            error_code="path_not_allowed",
+            error_stage="input_validation",
+            no_claude_fallback=True,
+            extra={
+                "retry_hint": (
+                    "Only files in this session can be used. Ask the user to upload the file here; do not look "
+                    "for it in another session or work around this."
                 ),
             },
         )

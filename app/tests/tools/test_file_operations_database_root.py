@@ -109,6 +109,15 @@ def test_a_name_that_only_starts_like_the_database_directory_is_not_closed(proje
     assert _call("read", sibling / "keep.txt")["content"] == "fine"
 
 
+def test_reference_databases_kept_under_the_database_directory_stay_readable(project):
+    reference = project["db_root"] / "bio_tools" / "bakta_db"
+    reference.mkdir(parents=True)
+    (reference / "version.json").write_text('{"v": 1}', encoding="utf-8")
+
+    assert _call("read", reference / "version.json")["content"] == '{"v": 1}'
+    assert _denied(_call("read", project["db_root"] / "sessions" / "victim.sqlite"))
+
+
 def test_a_symlink_from_the_session_into_the_database_directory_is_refused(project):
     session_dir, ctx = _session(project)
     link = session_dir / "results" / "db"

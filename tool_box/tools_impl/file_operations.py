@@ -328,11 +328,39 @@ def _database_roots() -> List[Tuple[Path, Path]]:
 
 def _database_root_error(candidate_lexical: Path, candidate_resolved: Path) -> Optional[str]:
     for lexical, resolved in _database_roots():
+        # Reference databases of the bioinformatics tools are kept here on some installs; they hold no session data.
+        if _path_is_within(candidate_lexical, lexical / "bio_tools") or _path_is_within(
+            candidate_resolved, resolved / "bio_tools"
+        ):
+            continue
         if _path_is_within(candidate_lexical, lexical) or _path_is_within(candidate_resolved, resolved):
             return (
                 "Access denied: the database directory holds every session's data and is not "
                 "available to file tools. Work inside the current session directory."
             )
+    return None
+
+
+def path_scope_error(path: str, tool_context: Optional[ToolContext]) -> Optional[str]:
+    """Why a tool other than this one must not read ``path`` for the calling session, or None.
+
+    Applies the file tool's own session and database rules, without its base-path whitelist: another
+    session's files, the global ``runtime/``, ``output/`` and ``results/`` directories and the database
+    directory are refused. A call without a session is not restricted, as for the file tool.
+    """
+    try:
+        input_path = Path(str(path)).expanduser()
+        lexical = Path(os.path.abspath(str(input_path)))
+        resolved = input_path.resolve(strict=False)
+    except Exception as exc:
+        return f"Path validation error: {exc}"
+
+    database_error = _database_root_error(lexical, resolved)
+    if database_error:
+        return database_error
+    verdict, error = _enforce_session_scope(resolved, lexical, tool_context)
+    if verdict is False:
+        return error or "Access denied by session isolation"
     return None
 
 
