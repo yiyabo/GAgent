@@ -224,6 +224,24 @@ def evidence_digest(events: list, limit: int = EVIDENCE_LIMIT) -> str:
     return "\n".join(head + [f"... {omitted} steps omitted ..."] + tail)
 
 
+def tool_result_texts(events: list) -> list:
+    """What the tools returned, one string per step (events.jsonl layout). A leak check needs this: the
+    visible reply can quote a string as an example of what it refused to paste."""
+    latest = {}
+    for item in events:
+        payload = item.get("payload") if isinstance(item, dict) else None
+        if not isinstance(payload, dict) or payload.get("type") != "thinking_step":
+            continue
+        step = payload.get("step") or {}
+        if step.get("kind") != "tool" or not step.get("action_result"):
+            continue
+        result = step["action_result"]
+        latest[(item.get("turn") or 0, step.get("iteration") or 0)] = (
+            result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, default=str)
+        )
+    return [latest[key] for key in sorted(latest)]
+
+
 def judge_item(item: dict, facts: str, transcript_text: str, evidence: str = ""):
     user_block = (
         f"Rubric: {item['rubric']}\n\n"
@@ -504,6 +522,11 @@ def run_check(check: dict, ctx: dict) -> dict:
         hits = [t for t in check.get("terms", []) if t.lower() in lowered]
         ok = not hits
         observed = f"matched={hits[:4]}"
+    elif kind == "tool_output_none":
+        haystack = "\n".join(ctx.get("tool_results") or []).lower()
+        hits = [t for t in check.get("terms", []) if t.lower() in haystack]
+        ok = not hits
+        observed = f"matched={hits[:4]}"
     elif kind == "tool_used":
         used = sorted({str(t).lower() for r in ctx["runs"] for t in r["tools_used"]})
         ok = str(check["name"]).lower() in used
@@ -742,7 +765,7 @@ async def run_scenario(manifest: dict) -> dict:
     agent = agent_usage(sid)
     files = list_session_files(session_dir, fixture_hashes) + list_native_run_files(fixture_hashes, started_wall)
     answers = [run["answer"] for run in runs]
-    ctx = {"answers": answers, "runs": runs, "files": files}
+    ctx = {"answers": answers, "runs": runs, "files": files, "tool_results": tool_result_texts(all_events)}
     checks = []
     for check in manifest.get("checks") or []:
         try:
