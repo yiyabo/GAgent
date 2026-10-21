@@ -21,6 +21,8 @@ from app.services.deep_think.text_utils import (
     _acceptance_v2_enabled,
     _acceptance_v2_max_tokens,
     _acceptance_v2_timeout_seconds,
+    attachment_names,
+    user_request_text,
 )
 
 from pathlib import Path
@@ -50,7 +52,14 @@ def parse_acceptance_spec(raw: Any) -> Optional[AcceptanceSpec]:
 
 
 def build_extraction_prompt(user_query: str) -> str:
-    query = str(user_query or "").strip()[:_MAX_QUERY_CHARS]
+    inputs = attachment_names(user_query)
+    query = user_request_text(user_query).strip()[:_MAX_QUERY_CHARS]
+    input_rule = (
+        f"Input files already provided (never deliverables unless the user asks to modify one in place): "
+        f"{', '.join(inputs[:20])}.\n"
+        if inputs
+        else ""
+    )
     return (
         "Extract the deliverable specification from the user request below as STRICT JSON only.\n"
         'Schema: {"required_outputs": [{"kind": "image|data|document|other", '
@@ -58,12 +67,39 @@ def build_extraction_prompt(user_query: str) -> str:
         '"constraints": "short content requirement", '
         '"target_path": "relative/path or empty", "in_place": true|false}]}\n'
         "Rules: only include outputs the user explicitly requested as files/deliverables; "
+        "a question, a number, a count or a yes/no answer is NOT a file: when the user only asks to be told "
+        'something, return {"required_outputs": []}; '
+        "a file the user names or attaches to be read is an input, not a deliverable; "
+        "one requested file is exactly one declaration, never add a second declaration for the same file; "
         "use in_place=true when the user asks to modify or overwrite an existing file; "
         "preserve the requested count and every exact target path; never compress a large count to fit the schema; "
         "at most 64 output declarations, 4096 characters per target path, and 8000 per constraint; "
         "no prose, no markdown fence, JSON object only.\n"
+        f"{input_rule}"
         f"User request:\n{query}\n"
     )
+
+
+def tidy_extracted_spec(spec: AcceptanceSpec, inputs: List[str]) -> Optional[AcceptanceSpec]:
+    """Drop declarations the extraction invented; None when nothing real is left.
+
+    A bare ``other`` (no extension, no path) next to a concrete declaration is a second name for the same
+    file, and an unchanged input file cannot be a deliverable.
+    """
+    names = {str(name).strip().lower() for name in inputs if str(name).strip()}
+    kept = list(spec.required_outputs)
+    if any(out.kind != "other" or out.extensions or out.target_path for out in kept):
+        kept = [out for out in kept if not (out.kind == "other" and not out.extensions and not out.target_path)]
+    kept = [
+        out
+        for out in kept
+        if out.in_place or not (out.target_path and Path(out.target_path).name.lower() in names)
+    ]
+    if not kept:
+        return None
+    if len(kept) != len(spec.required_outputs):
+        spec.required_outputs = kept
+    return spec
 
 
 async def extract_acceptance_spec(
@@ -78,7 +114,7 @@ async def extract_acceptance_spec(
     # also arms acceptance v2 (in legacy mode tier=execute covered it).
     if tier not in _ALLOWED_TIERS and not (callable(intent_fn) and intent_fn()):
         return None
-    if not _has_file_deliverable_intent(user_query):
+    if not _has_file_deliverable_intent(user_request_text(user_query)):
         return None
     try:
         raw = await run_stage(
@@ -100,9 +136,17 @@ async def extract_acceptance_spec(
         return None
     spec = parse_acceptance_spec(raw)
     if spec is None:
-        logger.warning(
-            "[DEEP_THINK][acceptance] v2 spec extraction returned invalid JSON, keeping v1 heuristic"
-        )
+        empty = parse_output_spec(raw)
+        if empty is not None:
+            logger.info("[DEEP_THINK][acceptance] v2 spec extraction: the request asks for no file")
+        else:
+            logger.warning(
+                "[DEEP_THINK][acceptance] v2 spec extraction returned invalid JSON, keeping v1 heuristic"
+            )
+        return None
+    spec = tidy_extracted_spec(spec, attachment_names(user_query))
+    if spec is None:
+        logger.info("[DEEP_THINK][acceptance] v2 spec extraction: only input files or duplicates were declared")
         return None
     logger.info(
         "[DEEP_THINK][acceptance] v2 spec: %s",
@@ -169,19 +213,24 @@ def build_acceptance_spec_prompt_block(
     return "\n".join(lines) + "\n"
 
 
+_FILE_VERB_RE = re.compile(
+    r"(?:\b(?:create|generate|produce|write|save|store|export|dump|convert|modify|overwrite|update)\b"
+    r"|生成|创建|产出|写入|写成|写出|写到|保存|存成|存为|存到|存入|另存|落盘|导出|转换|转成|转为|修改|覆盖|更新)",
+    re.I,
+)
+_FILE_NOUN_RE = re.compile(
+    r"(?:文件|表格|报告|文档|\b(?:files?|tables?|reports?|documents?|spreadsheets?|images?|figures?|plots?)\b"
+    r"|\b(?:fasta|fastq|csv|tsv|xlsx?|json|bam|sam|vcf|gff3?|gtf|bed|faa|fna|pdf|docx)\b"
+    r"|\.[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)*(?:\b|[\s`'\"]|$))",
+    re.I,
+)
+
+
 def _has_file_deliverable_intent(query: str) -> bool:
+    """Whether the user's own words ask for a file. ``query`` must not include the chat layer's appended blocks."""
     if _derive_expected_outputs(query):
         return True
-    return bool(
-        re.search(
-            r"(?:create|generate|write|save|export|modify|overwrite|update|生成|创建|写入|保存|导出|修改|覆盖|更新)",
-            query,
-            re.I,
-        )
-        and re.search(
-            r"\.[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)*(?:\b|[\s`'\"]|$)", query, re.I
-        )
-    )
+    return bool(_FILE_VERB_RE.search(query) and _FILE_NOUN_RE.search(query))
 
 
 async def prepare_acceptance_spec(
