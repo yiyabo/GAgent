@@ -56,6 +56,9 @@ ENV_KERNEL_SPILL_DIR = "GAGENT_KERNEL_SPILL_DIR"
 # (start_new_session=True), so it never sees the host's signals: this fd is how
 # it learns the host is gone (EOF) instead of running on as an orphan.
 ENV_KERNEL_PARENT_FD = "GAGENT_KERNEL_PARENT_FD"
+# JSON policy for the in-kernel filesystem/process guard (fs_policy.py). The runner removes it from its own
+# environment once the guard is installed.
+ENV_FS_POLICY = "GAGENT_FS_POLICY"
 
 
 def _is_secret_name(name: str) -> bool:
@@ -85,12 +88,14 @@ def build_child_env(
     sentinel: str,
     parent_fd: Optional[int] = None,
     source_env: Optional[Mapping[str, str]] = None,
+    fs_policy: Optional[str] = None,
 ) -> Dict[str, str]:
     """Scrubbed env + injected kernel protocol variables.
 
     ``kernel_dir`` heads PYTHONPATH so the generated ``gagent_tools`` stub
     module is importable inside the kernel. ``parent_fd`` is the read end of
     the parent-liveness pipe; the runner watches it and exits on EOF.
+    ``fs_policy`` is the JSON policy of the in-kernel filesystem guard.
     """
     env = scrub_child_env(source_env)
     env[ENV_RPC_ENDPOINT] = rpc_endpoint
@@ -99,6 +104,8 @@ def build_child_env(
     env[ENV_KERNEL_SPILL_DIR] = str(kernel_dir)
     if parent_fd is not None:
         env[ENV_KERNEL_PARENT_FD] = str(parent_fd)
+    if fs_policy:
+        env[ENV_FS_POLICY] = fs_policy
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUTF8"] = "1"

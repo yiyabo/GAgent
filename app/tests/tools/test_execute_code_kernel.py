@@ -139,6 +139,9 @@ def test_timeout_kills_whole_process_group_and_reports_state_loss(
 ):
     monkeypatch.setenv("CODE_MODE_CELL_TIMEOUT_SECONDS", "2")
     monkeypatch.setenv("CODE_MODE_KILL_GRACE_SECONDS", "0.5")
+    # Cells cannot start programs by default (fs_guard); the kill contract only
+    # matters for an operator who has allowed it.
+    monkeypatch.setenv("CODE_MODE_ALLOW_SUBPROCESS", "1")
     pid_file = tmp_path / "grandchild.pid"
     code = (
         "import subprocess, sys, time\n"

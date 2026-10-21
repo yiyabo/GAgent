@@ -18,6 +18,23 @@ def session_scope(session_id: str) -> dict | None:
         return dict(row) if row else None
 
 
+def project_session_ids(session_id: str, limit: int = 200) -> list[str]:
+    """The owner's other sessions in the same project: the ones recall may point a run at.
+
+    Same predicate as ``_scope_sql``; a projectless session has no siblings.
+    """
+    scope = session_scope(session_id)
+    if not scope or scope["project_id"] is None:
+        return []
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT id FROM chat_sessions WHERE owner_id=? AND project_id=? AND id<>? "
+            "ORDER BY COALESCE(updated_at, created_at) DESC LIMIT ?",
+            (scope["owner_id"], scope["project_id"], scope["id"], limit),
+        ).fetchall()
+    return [str(row["id"]) for row in rows]
+
+
 def _scope_sql(scope: dict, alias: str = "s") -> tuple[str, list]:
     # A projectless conversation never shares all other projectless histories.
     return (f"{alias}.owner_id=? AND ({alias}.id=? OR (? IS NOT NULL AND {alias}.project_id=?))",
