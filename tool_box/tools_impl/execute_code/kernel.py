@@ -1062,6 +1062,36 @@ def _with_stderr(stdout_text: str, stderr_text: str) -> str:
 # resolve them against the session root.
 _PRODUCED_FILES_CAP = 40
 _PRODUCED_SCAN_CAP = 200_000
+# Used only when the filesystem clock cannot be read (see _fs_watermark_ns).
+_CLOCK_SLACK_NS = 50_000_000
+
+
+def _fs_watermark_ns(root: Optional[Path]) -> int:
+    """The filesystem's own "now", for the produced-files watermark.
+
+    File timestamps come from a coarse kernel clock that trails time.time_ns()
+    by up to a few milliseconds (5.4 ms measured on the 620b overlay
+    filesystem). A cell that writes a file in its first milliseconds, such as a
+    reused kernel copying a tool output straight away, then looks older than the
+    cell and is missed, and delivery acceptance fails on a file that exists. A
+    probe file stamped by the same clock gives a watermark the cell's own files
+    cannot fall behind.
+    """
+    now = time.time_ns()
+    if root is None:
+        return now
+    probe = Path(root) / f".gagent_clock_{uuid.uuid4().hex[:8]}"
+    try:
+        probe.write_bytes(b"")
+        stamped = probe.stat().st_mtime_ns
+    except OSError:
+        return now - _CLOCK_SLACK_NS
+    finally:
+        try:
+            probe.unlink()
+        except OSError:
+            pass
+    return min(stamped, now)
 
 
 def _collect_produced_files(root: Path, since_ns: int, scratch_dir: Path) -> List[str]:
@@ -1319,7 +1349,7 @@ def _run_cell(
             kernel.raw.drain()
             kernel.stderr.drain()
             kernel.authority = binding
-            cell_start_ns = time.time_ns()
+            cell_start_ns = _fs_watermark_ns(collect_root)
             kernel.proc.stdin.write(
                 (json.dumps({"id": uuid.uuid4().hex, "code": code}) + "\n").encode("utf-8")
             )
