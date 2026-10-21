@@ -10,6 +10,14 @@ import pytest
 from app.services.terminal.sandbox_pty_backend import SandboxPTYBackend
 
 
+@pytest.fixture(autouse=True)
+def _fresh_start_breaker():
+    from app.services.terminal import sandbox_pty_backend as module
+    module._BREAKER.reset()
+    yield
+    module._BREAKER.reset()
+
+
 @pytest.mark.asyncio
 async def test_terminal_write_resize_interrupt_and_cleanup(monkeypatch, tmp_path):
     from app.services.terminal import sandbox_pty_backend as module
@@ -22,6 +30,8 @@ async def test_terminal_write_resize_interrupt_and_cleanup(monkeypatch, tmp_path
     captured = {}
     processes = []
     def docker(argv, **kwargs):
+        if argv[1] == 'inspect':
+            return subprocess.CompletedProcess(argv, 1, '', 'not available in this test')
         if argv[1] == 'run':
             captured['argv'] = argv
             env = os.environ.copy()

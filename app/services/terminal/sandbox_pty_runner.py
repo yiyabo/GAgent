@@ -17,7 +17,7 @@ def main():
     host, _, port = endpoint.partition("://")[2].partition(":")
 
     def dial(role):
-        sock = socket.create_connection((host, int(port)), timeout=30)
+        sock = socket.create_connection((host, int(port)), timeout=8)
         sock.settimeout(None)
         sock.sendall((json.dumps({"role": role, "token": os.environ["GAGENT_CELL_TOKEN"]}) + "\n").encode())
         return sock
