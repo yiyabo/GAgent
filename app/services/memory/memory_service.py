@@ -4,6 +4,7 @@ Integrated Memory Service.
 Combines Memory-MCP capabilities with existing system infrastructure
 """
 
+import asyncio
 import json
 import logging
 import sqlite3
@@ -400,7 +401,9 @@ Return the analysis result in JSON format:
 }}
 """
 
-            response = self.llm_client.chat(prompt)
+            # The LLM client is synchronous. Memory saves run as tasks on the chat event loop, so a call
+            # made here directly would stall every stream and the run lease heartbeat for its whole duration.
+            response = await asyncio.to_thread(self.llm_client.chat, prompt)
 
             if isinstance(response, dict):
                 result_text = response.get("content", "")
@@ -479,7 +482,7 @@ Return the analysis result in JSON format:
         try:
             embedding_text = self._build_embedding_text(memory_note)
 
-            embedding = self.embeddings_service.get_single_embedding(embedding_text)
+            embedding = await asyncio.to_thread(self.embeddings_service.get_single_embedding, embedding_text)
 
             if embedding:
                 embedding_json = json.dumps(embedding)
@@ -593,7 +596,7 @@ Return the analysis result in JSON format:
             memory_id = row["id"]
             try:
                 text = self._embedding_text_from_memory_row(row)
-                embedding = self.embeddings_service.get_single_embedding(text)
+                embedding = await asyncio.to_thread(self.embeddings_service.get_single_embedding, text)
                 if not embedding:
                     skipped += 1
                     continue
@@ -634,7 +637,7 @@ Return the analysis result in JSON format:
     ) -> List[Dict[str, Any]]:
         """searchmemory(support session )"""
         try:
-            query_embedding = self.embeddings_service.get_single_embedding(query)
+            query_embedding = await asyncio.to_thread(self.embeddings_service.get_single_embedding, query)
 
             if not query_embedding:
                 return await self._text_search(query, where_conditions, params, limit, session_id)
