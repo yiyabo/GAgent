@@ -45,6 +45,11 @@ _MAX_OUTPUTS = 64
 _MAX_QUERY_CHARS = 4000
 _ALLOWED_TIERS = {"execute", "research"}
 
+_FORMAT_ALIASES = {
+    ".xlsx": ("excel", "spreadsheet", "电子表格"),
+    ".xls": ("excel", "spreadsheet", "电子表格"),
+}
+
 
 def parse_acceptance_spec(raw: Any) -> Optional[AcceptanceSpec]:
     spec = parse_output_spec(raw)
@@ -71,6 +76,8 @@ def build_extraction_prompt(user_query: str) -> str:
         'something, return {"required_outputs": []}; '
         "a file the user names or attaches to be read is an input, not a deliverable; "
         "one requested file is exactly one declaration, never add a second declaration for the same file; "
+        "list extensions only for a format the user named (a FASTA file, .csv, Excel); "
+        "a format that merely appears in an input file's name is not a requested format, leave extensions empty; "
         "use in_place=true when the user asks to modify or overwrite an existing file; "
         "preserve the requested count and every exact target path; never compress a large count to fit the schema; "
         "at most 64 output declarations, 4096 characters per target path, and 8000 per constraint; "
@@ -80,11 +87,22 @@ def build_extraction_prompt(user_query: str) -> str:
     )
 
 
-def tidy_extracted_spec(spec: AcceptanceSpec, inputs: List[str]) -> Optional[AcceptanceSpec]:
+def _user_named_extension(extension: str, words: str) -> bool:
+    extension = str(extension or "").lower()
+    names = (extension.lstrip("."),) + _FORMAT_ALIASES.get(extension, ())
+    return any(re.search(rf"(?<![a-z0-9]){re.escape(name)}(?![a-z0-9])", words) for name in names if name)
+
+
+def tidy_extracted_spec(
+    spec: AcceptanceSpec, inputs: List[str], request_text: Optional[str] = None
+) -> Optional[AcceptanceSpec]:
     """Drop declarations the extraction invented; None when nothing real is left.
 
     A bare ``other`` (no extension, no path) next to a concrete declaration is a second name for the same
-    file, and an unchanged input file cannot be a deliverable.
+    file, and an unchanged input file cannot be a deliverable. With ``request_text``, a data declaration whose
+    extensions the user never named loses them: the extraction copies the input's extension (genome.fasta ->
+    ".fasta"), and a tool that writes the protein file as .faa then fails an acceptance nobody asked for. The
+    kind still decides what counts as data.
     """
     names = {str(name).strip().lower() for name in inputs if str(name).strip()}
     kept = list(spec.required_outputs)
@@ -97,6 +115,20 @@ def tidy_extracted_spec(spec: AcceptanceSpec, inputs: List[str]) -> Optional[Acc
     ]
     if not kept:
         return None
+    if request_text is not None:
+        # The name of an input file (genome.fasta) is not a format the user wants back.
+        words = request_text
+        for name in sorted(names, key=len, reverse=True):
+            words = re.sub(re.escape(name), " ", words, flags=re.IGNORECASE)
+        words = words.lower()
+        for out in kept:
+            if (
+                out.kind == "data"
+                and out.extensions
+                and not out.target_path
+                and not any(_user_named_extension(ext, words) for ext in out.extensions)
+            ):
+                out.extensions = []
     if len(kept) != len(spec.required_outputs):
         spec.required_outputs = kept
     return spec
@@ -144,7 +176,7 @@ async def extract_acceptance_spec(
                 "[DEEP_THINK][acceptance] v2 spec extraction returned invalid JSON, keeping v1 heuristic"
             )
         return None
-    spec = tidy_extracted_spec(spec, attachment_names(user_query))
+    spec = tidy_extracted_spec(spec, attachment_names(user_query), user_request_text(user_query))
     if spec is None:
         logger.info("[DEEP_THINK][acceptance] v2 spec extraction: only input files or duplicates were declared")
         return None
