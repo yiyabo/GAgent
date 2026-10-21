@@ -21,6 +21,7 @@ import hashlib
 import json
 import os
 import re
+import socket
 import sys
 import time
 import urllib.error
@@ -471,8 +472,14 @@ def numbers_in(text: str) -> list:
     return values
 
 
-def numbers_on_lines(text: str, terms=None) -> list:
-    """Numbers on lines that mention one of the terms (all numbers when no terms are given)."""
+# List numbering "1." / "(2)" and the "10^(-Q/10)" of a formula are not statistics.
+ENUMERATOR_RE = re.compile(r"^\s*(?:[-*]\s*)?\(?\d{1,2}[.)、]\s+|\(\d{1,2}\)|\b10\s*\^\s*\(?[^\s)]*\)?")
+
+
+def numbers_on_lines(text: str, terms=None, skip_enumerators: bool = False) -> list:
+    """Numbers on lines that mention one of the terms (all numbers when no terms are given).
+
+    With skip_enumerators, list numbering and the base of a power are not counted."""
     if not terms:
         return numbers_in(text)
     lowered_terms = [str(term).lower() for term in terms]
@@ -480,8 +487,37 @@ def numbers_on_lines(text: str, terms=None) -> list:
     for line in (text or "").splitlines():
         lowered = line.lower()
         if any(term in lowered for term in lowered_terms):
-            values.extend(numbers_in(line))
+            values.extend(numbers_in(ENUMERATOR_RE.sub(" ", line) if skip_enumerators else line))
     return values
+
+
+# "2. " or "(3)" inside a line, and the base of a power: numbering and formulas, not statistics.
+INLINE_ENUMERATOR_RE = re.compile(r"(?<![\w.])\d{1,2}[.)、]\s|\(\d{1,2}\)|\b10\s*\^\s*\(?[^\s)]*\)?")
+
+
+def numbers_near_terms(text: str, terms, window: int = 12, low=None, high=None) -> list:
+    """Numbers within `window` characters after a mention of a term, outside numbering and formulas, and inside
+    [low, high] when given: "平均 Q 为 32.1" and "mean Q = 30" qualify, "平均 Q 分布。 2. **曲线**" does not."""
+    values = []
+    lowered = (text or "").lower()
+    for term in terms or []:
+        needle = str(term).lower()
+        start = 0
+        while needle and (at := lowered.find(needle, start)) >= 0:
+            tail = INLINE_ENUMERATOR_RE.sub(" ", text[at + len(needle): at + len(needle) + window])
+            values.extend(v for v in numbers_in(tail) if (low is None or v >= low) and (high is None or v <= high))
+            start = at + len(needle)
+    return values
+
+
+SHELL_HOST_RE = re.compile(r"@([0-9a-f]{12})[:$#]")
+
+
+def from_other_container(text: str, own_host: str) -> bool:
+    """True when a tool result is the output of a shell in another container (its prompt names a different
+    host), which is the terminal sandbox: its files are not this server's."""
+    hosts = set(SHELL_HOST_RE.findall(text or ""))
+    return bool(hosts) and own_host[:12] not in hosts
 
 
 def matching_files(ctx: dict, check: dict) -> list:
@@ -523,7 +559,11 @@ def run_check(check: dict, ctx: dict) -> dict:
         ok = not hits
         observed = f"matched={hits[:4]}"
     elif kind == "tool_output_none":
-        haystack = "\n".join(ctx.get("tool_results") or []).lower()
+        results = ctx.get("tool_results") or []
+        if check.get("ignore_other_containers"):
+            own = ctx.get("own_host") or socket.gethostname()
+            results = [t for t in results if not from_other_container(t, own)]
+        haystack = "\n".join(results).lower()
         hits = [t for t in check.get("terms", []) if t.lower() in haystack]
         ok = not hits
         observed = f"matched={hits[:4]}"
@@ -557,7 +597,10 @@ def run_check(check: dict, ctx: dict) -> dict:
         ok = any(abs(v - t) <= max(tol, rel * abs(t)) for v in found for t in targets)
         observed = "label_line_numbers=" + str(sorted(set(found))[:15])
     elif kind == "no_number_on_terms":
-        found = numbers_on_lines(joined, check.get("terms"))
+        if check.get("near"):
+            found = numbers_near_terms(joined, check.get("terms"), int(check["near"]), check.get("min"), check.get("max"))
+        else:
+            found = numbers_on_lines(joined, check.get("terms"), skip_enumerators=True)
         ok = not found
         observed = "numbers_on_term_lines=" + str(sorted(set(found))[:10])
     elif kind == "number_any":
