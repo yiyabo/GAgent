@@ -24,7 +24,8 @@ services:
       APP_ENV: ${APP_ENV:-development}
     volumes:
       - ${GAGENT_RUNTIME_DIR}:/app/runtime
-      - gagent-eval-data:/app/data
+      # GAGENT_DATA_DIR (a host path) bind-mounts the database directory; unset keeps the named volume.
+      - ${GAGENT_DATA_DIR:-gagent-eval-data}:/app/data
       - ${GAGENT_REFDATA_DIR:-/data}:/data:ro
       # Harness output only. Not under /app, so file tools cannot read it.
       - ${EVAL_OUT_DIR}:/evo-out
