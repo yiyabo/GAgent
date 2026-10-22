@@ -235,10 +235,11 @@ function isGenericText(text: string | null | undefined, language: 'zh' | 'en'): 
 }
 
 /** Base row-worthiness: active steps, tool steps, and reasoning steps that
- *  already carry thought text. */
+ *  already carry thought or reasoning text. */
 function _passesStepFilter(step: ThinkingStep): boolean {
   if (step.status === 'thinking' || step.status === 'calling_tool' || step.status === 'analyzing') return true;
   if (step.action) return true;
+  if (typeof step.reasoning === 'string' && step.reasoning.trim().length > 0) return true;
   return typeof step.thought === 'string' && step.thought.trim().length > 0;
 }
 
@@ -345,10 +346,14 @@ const ThinkingActivityItem: React.FC<{
   }, [actionDetails]);
 
   const thoughtText = useMemo(() => String(step.thought || '').trim(), [step.thought]);
+  const reasoningText = useMemo(() => String(step.reasoning || '').trim(), [step.reasoning]);
+  const hasThinkText = thoughtText.length > 0 || reasoningText.length > 0;
 
+  // The row being worked on is always openable: with no text yet it says so,
+  // and the text appears as soon as the model starts writing.
   const expandable = isTool
-    ? Boolean(isStepActive || paramsDetail || hasResult || isError)
-    : thoughtText.length > 0;
+    ? Boolean(isStepActive || paramsDetail || hasResult || isError || hasThinkText)
+    : Boolean(isStepActive || hasThinkText);
 
   const liveElapsedMs = useMemo(() => {
     if (!isStepActive) return null;
@@ -359,10 +364,14 @@ const ThinkingActivityItem: React.FC<{
 
   const showHint = isStepActive && !isTool && typeof hintText === 'string' && hintText.trim().length > 0;
 
+  const liveText = useMemo(
+    () => [reasoningText, thoughtText].filter(Boolean).join('\n\n'),
+    [reasoningText, thoughtText],
+  );
   const liveThought = useMemo(() => {
-    if (!thoughtText) return null;
-    return truncateForLiveDisplay(thoughtText);
-  }, [thoughtText]);
+    if (!liveText) return null;
+    return truncateForLiveDisplay(liveText);
+  }, [liveText]);
 
   const icon = useMemo(() => {
     if (isTool) return semantic?.icon || <ToolOutlined />;
@@ -374,7 +383,7 @@ const ThinkingActivityItem: React.FC<{
     if (expanded && isStepActive && streamRef.current && autoScrollRef.current) {
       streamRef.current.scrollTop = streamRef.current.scrollHeight;
     }
-  }, [thoughtText, expanded, isStepActive]);
+  }, [liveText, expanded, isStepActive]);
 
   const renderStatus = () => {
     if (isStepActive) {
@@ -400,6 +409,19 @@ const ThinkingActivityItem: React.FC<{
     }
     return null;
   };
+
+  // Reasoning first, then the thought the model wrote beside it.
+  const renderThinkText = () => (
+    <div className="tp-item-thought">
+      {reasoningText && (
+        <div className="tp-reasoning-text">
+          <MarkdownRenderer content={reasoningText} className="tp-md" sessionId={sessionId} />
+        </div>
+      )}
+      {reasoningText && thoughtText && <div className="tp-thought-divider" />}
+      {thoughtText && <MarkdownRenderer content={thoughtText} className="tp-md" sessionId={sessionId} />}
+    </div>
+  );
 
   const renderDetail = () => {
     if (!expanded || !expandable) return null;
@@ -436,17 +458,23 @@ const ThinkingActivityItem: React.FC<{
           </div>
         );
       }
-      if (!thoughtText) return null;
-      return (
-        <div className="tp-item-thought">
-          <MarkdownRenderer content={thoughtText} className="tp-md" sessionId={sessionId} />
-        </div>
-      );
+      if (!hasThinkText) {
+        return isStepActive ? (
+          <div className="tp-item-waiting">{localize(language, '正在思考…', 'Thinking…')}</div>
+        ) : null;
+      }
+      return renderThinkText();
     }
 
     // Tool detail: params + full result / error.
     return (
       <div className="tp-item-tooldetail">
+        {hasThinkText && (
+          <div className="tp-tool-thinking">
+            <div className="tp-tool-detail-caption">{localize(language, '思考', 'Thinking')}</div>
+            {renderThinkText()}
+          </div>
+        )}
         {paramsDetail && (
           <div className="tp-tool-params">
             <div className="tp-tool-detail-caption">{localize(language, '参数', 'Parameters')}</div>

@@ -54,6 +54,7 @@ function streamContext(fixture: ReturnType<typeof buildStore>): StreamHandlerCon
   const state = {
     streamedContent: '', lastFlushedContent: '', flushHandle: null,
     thinkingDeltaFlushHandle: null, pendingThinkingDeltas: {}, pendingThinkingDeltaStartedAt: {},
+    pendingReasoningDeltas: {}, pendingReasoningDeltaStartedAt: {},
     finalPayload: null, jobFinalized: false, isBackgroundDispatch: false,
   };
   return {

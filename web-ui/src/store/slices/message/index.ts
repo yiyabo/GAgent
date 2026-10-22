@@ -91,7 +91,8 @@ export const _recoverAfterStreamFailure = async (
       const state: StreamMutableState = {
         streamedContent: '', lastFlushedContent: '', flushHandle: null,
         thinkingDeltaFlushHandle: null, pendingThinkingDeltas: {},
-        pendingThinkingDeltaStartedAt: {}, finalPayload: null,
+        pendingThinkingDeltaStartedAt: {}, pendingReasoningDeltas: {},
+        pendingReasoningDeltaStartedAt: {}, finalPayload: null,
         jobFinalized: false, isBackgroundDispatch: false,
       };
       const boundFlush = (force = false) => flushAnalysisText(source.get, opts.assistantMessageId, state, force);
@@ -524,6 +525,8 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => {
   thinkingDeltaFlushHandle: null,
   pendingThinkingDeltas: {},
   pendingThinkingDeltaStartedAt: {},
+  pendingReasoningDeltas: {},
+  pendingReasoningDeltaStartedAt: {},
   finalPayload: null,
   jobFinalized: false,
   isBackgroundDispatch: false,
@@ -738,6 +741,8 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => {
   thinkingDeltaFlushHandle: null,
   pendingThinkingDeltas: {},
   pendingThinkingDeltaStartedAt: {},
+  pendingReasoningDeltas: {},
+  pendingReasoningDeltaStartedAt: {},
   finalPayload: null,
   jobFinalized: false,
   isBackgroundDispatch: false,

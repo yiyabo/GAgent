@@ -9,8 +9,11 @@ vi.mock('@api/chat', () => ({
 
 import { chatApi } from '@api/chat';
 import {
+  flushPendingThinkingDeltas,
   handleJobUpdate,
   handleProgressStatus,
+  handleReasoningDelta,
+  handleThinkingDelta,
   handleThinkingStep,
   processFinalPayload,
 } from './streamHandlers';
@@ -81,6 +84,8 @@ const buildContext = () => {
         thinkingDeltaFlushHandle: null,
         pendingThinkingDeltas: {},
         pendingThinkingDeltaStartedAt: {},
+        pendingReasoningDeltas: {},
+        pendingReasoningDeltaStartedAt: {},
         finalPayload: null,
         jobFinalized: false,
         isBackgroundDispatch: false,
@@ -335,5 +340,93 @@ describe('streamHandlers session sync', () => {
     const metadata: any = store.messages[0].metadata;
     expect(metadata.thinking_visibility).toBe('visible');
     expect(metadata.thinking_display_mode).toBe('full_thinking');
+  });
+});
+
+describe('streamHandlers thinking steps', () => {
+  const stepsOf = (store: any) => store.messages[0].thinking_process.steps as any[];
+
+  it('puts reasoning on the iteration that produced it, not on a shared step', () => {
+    const { store, ctx } = buildContext();
+    handleThinkingStep(ctx as any, { step: { iteration: 1, thought: '', status: 'thinking', kind: 'reasoning' } });
+    handleReasoningDelta(ctx as any, { iteration: 1, delta: 'first look. ' });
+    handleThinkingStep(ctx as any, { step: { iteration: 2, thought: '', status: 'thinking', kind: 'reasoning' } });
+    handleReasoningDelta(ctx as any, { iteration: 2, delta: 'second look. ' });
+    flushPendingThinkingDeltas(ctx as any);
+
+    const steps = stepsOf(store);
+    expect(steps.map((s) => s.iteration)).toEqual([1, 2]);
+    expect(steps[0].reasoning).toBe('first look. ');
+    expect(steps[1].reasoning).toBe('second look. ');
+    expect(steps.every((s) => !s.thought)).toBe(true);
+  });
+
+  it('keeps reasoning and the visible thought apart', () => {
+    const { store, ctx } = buildContext();
+    handleThinkingStep(ctx as any, { step: { iteration: 1, thought: '', status: 'thinking', kind: 'reasoning' } });
+    handleReasoningDelta(ctx as any, { iteration: 1, delta: 'weighing options. ' });
+    handleThinkingDelta(ctx as any, { iteration: 1, delta: 'Running the check now. ' });
+    flushPendingThinkingDeltas(ctx as any);
+
+    const [only] = stepsOf(store);
+    expect(only.reasoning).toBe('weighing options. ');
+    expect(only.thought).toBe('Running the check now. ');
+  });
+
+  it('keeps the reasoning when the backend clears the thought', () => {
+    const { store, ctx } = buildContext();
+    handleThinkingStep(ctx as any, { step: { iteration: 1, thought: '', status: 'thinking', kind: 'reasoning' } });
+    handleReasoningDelta(ctx as any, { iteration: 1, delta: 'why this answer. ' });
+    handleThinkingDelta(ctx as any, { iteration: 1, delta: 'The final answer text.' });
+    flushPendingThinkingDeltas(ctx as any);
+    handleThinkingStep(ctx as any, { step: { iteration: 1, thought: null, status: 'done', kind: 'reasoning' } });
+
+    const [only] = stepsOf(store);
+    expect(only.thought).toBe('');
+    expect(only.reasoning).toBe('why this answer. ');
+  });
+
+  it('creates the step when reasoning arrives before the step event', () => {
+    const { store, ctx } = buildContext();
+    handleReasoningDelta(ctx as any, { iteration: 3, delta: 'early. ' });
+    flushPendingThinkingDeltas(ctx as any);
+
+    const steps = stepsOf(store);
+    expect(steps).toHaveLength(1);
+    expect(steps[0]).toMatchObject({ iteration: 3, kind: 'reasoning', status: 'thinking', reasoning: 'early. ' });
+  });
+
+  it('falls back to the iteration-0 bucket for reasoning that names no iteration', () => {
+    const { store, ctx } = buildContext();
+    handleReasoningDelta(ctx as any, { delta: 'no iteration. ' });
+    flushPendingThinkingDeltas(ctx as any);
+
+    const [only] = stepsOf(store);
+    expect(only).toMatchObject({ iteration: 0, kind: 'summary', reasoning: 'no iteration. ' });
+  });
+
+  it('ends a step when the run moves to the next iteration', () => {
+    const { store, ctx } = buildContext();
+    handleThinkingStep(ctx as any, {
+      step: { iteration: 1, thought: '', status: 'thinking', kind: 'reasoning', started_at: '2026-10-22T01:00:00' },
+    });
+    handleThinkingStep(ctx as any, {
+      step: { iteration: 2, thought: '', status: 'thinking', kind: 'reasoning', started_at: '2026-10-22T01:00:47' },
+    });
+
+    const [first, second] = stepsOf(store);
+    expect(first).toMatchObject({ status: 'done', finished_at: '2026-10-22T01:00:47' });
+    expect(second.status).toBe('thinking');
+  });
+
+  it('ends the older step when a delta opens a newer iteration', () => {
+    const { store, ctx } = buildContext();
+    handleThinkingStep(ctx as any, { step: { iteration: 1, thought: '', status: 'thinking', kind: 'reasoning' } });
+    handleReasoningDelta(ctx as any, { iteration: 2, delta: 'next. ' });
+    flushPendingThinkingDeltas(ctx as any);
+
+    const [first, second] = stepsOf(store);
+    expect(first.status).toBe('done');
+    expect(second).toMatchObject({ iteration: 2, status: 'thinking' });
   });
 });

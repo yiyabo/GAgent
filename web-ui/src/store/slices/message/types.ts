@@ -10,6 +10,9 @@ export interface StreamMutableState {
   thinkingDeltaFlushHandle: number | null;
   pendingThinkingDeltas: Record<number, string>;
   pendingThinkingDeltaStartedAt: Record<number, number>;
+  /** Native model reasoning, buffered per iteration apart from the visible thought text. */
+  pendingReasoningDeltas: Record<number, string>;
+  pendingReasoningDeltaStartedAt: Record<number, number>;
   finalPayload: ChatResponsePayload | null;
   jobFinalized: boolean;
   isBackgroundDispatch: boolean;
