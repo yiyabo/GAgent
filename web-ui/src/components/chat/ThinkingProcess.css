@@ -522,3 +522,28 @@
 .tp-group > .tp-item-row .tp-item-label {
   font-weight: 500;
 }
+
+/* Reasoning and thought share one box; the reasoning reads as the quieter half. */
+.tp-reasoning-text {
+  color: var(--text-tertiary);
+}
+
+.tp-thought-divider {
+  height: 1px;
+  margin: 8px 0;
+  background: var(--surface-hover);
+}
+
+.tp-tool-thinking {
+  margin-bottom: 6px;
+}
+
+.tp-tool-thinking .tp-item-thought {
+  margin: 0;
+}
+
+.tp-item-waiting {
+  margin: 2px 0 8px 34px;
+  font-size: var(--fs-caption);
+  color: var(--text-quaternary, var(--text-tertiary));
+}

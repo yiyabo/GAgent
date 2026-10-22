@@ -48,6 +48,7 @@ import { SessionStorage } from '@/utils/sessionStorage';
 import type { StreamHandlerContext } from './types';
 import { resolveThinkingDisplayMode } from './thinkingPresentation';
 import { scopeStreamContext } from './sessionState';
+import { closeSupersededSteps } from './thinkingSteps';
 
 function inferThinkingLanguage(ctx: StreamHandlerContext): 'zh' | 'en' {
   const messages = ctx.get().messages;
@@ -402,10 +403,11 @@ export function handleThinkingStep(ctx: StreamHandlerContext, event: any): void 
   } else {
     updatedSteps.push(step);
   }
+  const settledSteps = closeSupersededSteps(updatedSteps);
 
   const updatedProcess = {
     ...currentProcess,
-    steps: updatedSteps,
+    steps: settledSteps,
     total_iterations: Math.max(currentProcess.total_iterations ?? 0, step.iteration),
     // Update status based on last step
     status: step.status === 'done' ? 'completed' : (step.status === 'error' ? 'error' : 'active') as 'active' | 'completed' | 'error'
@@ -442,9 +444,23 @@ function _scheduleThinkingDeltaFlush(ctx: StreamHandlerContext): void {
   }, THINKING_DELTA_FLUSH_INTERVAL_MS);
 }
 
+/**
+ * Two kinds of streamed text land on a step: the visible thought the model
+ * writes next to its tool calls (`thinking_delta`) and its native reasoning
+ * (`reasoning_delta`). They are buffered and stored apart because the final
+ * answer clears the thought but the reasoning must stay readable.
+ */
+const DELTA_CHANNELS = [
+  { field: 'thought', pending: 'pendingThinkingDeltas', startedAt: 'pendingThinkingDeltaStartedAt' },
+  { field: 'reasoning', pending: 'pendingReasoningDeltas', startedAt: 'pendingReasoningDeltaStartedAt' },
+] as const;
+
+function _hasPendingThinkingText(ctx: StreamHandlerContext): boolean {
+  return DELTA_CHANNELS.some((channel) => Object.keys(ctx.state[channel.pending]).length > 0);
+}
+
 function _flushThinkingDeltaBuffer(ctx: StreamHandlerContext, force: boolean = false): void {
-  const pendingEntries = Object.entries(ctx.state.pendingThinkingDeltas);
-  if (pendingEntries.length === 0) return;
+  if (!_hasPendingThinkingText(ctx)) return;
   const targetMessage = ctx.get().messages.find((msg: any) => msg.id === ctx.assistantMessageId);
   if (!targetMessage) return;
 
@@ -454,49 +470,52 @@ function _flushThinkingDeltaBuffer(ctx: StreamHandlerContext, force: boolean = f
     status: 'active' as const,
     total_iterations: 0,
   };
-  const updatedSteps = [...currentProcess.steps];
-  const nextPendingThinkingDeltas: Record<number, string> = {};
-  const nextPendingStartedAt: Record<number, number> = {};
+  let updatedSteps = [...currentProcess.steps];
   const now = Date.now();
   let didFlush = false;
 
-  for (const [iterationKey, delta] of pendingEntries) {
-    const iteration = Number(iterationKey);
-    if (!Number.isFinite(iteration)) continue;
-    const bufferedAt = ctx.state.pendingThinkingDeltaStartedAt[iteration] ?? now;
-    const { flushable, remaining } = extractThinkingFlushChunk(delta, force);
-    let idx = updatedSteps.findIndex((s: any) => s.iteration === iteration);
-    if (idx < 0) {
-      updatedSteps.push({
-        iteration,
-        thought: '',
-        display_text: defaultThinkingStepText(ctx, iteration),
-        kind: iteration <= 0 ? 'summary' : 'reasoning',
-        status: 'thinking',
-      });
-      idx = updatedSteps.length - 1;
+  for (const channel of DELTA_CHANNELS) {
+    const nextPending: Record<number, string> = {};
+    const nextPendingStartedAt: Record<number, number> = {};
+    for (const [iterationKey, delta] of Object.entries(ctx.state[channel.pending])) {
+      const iteration = Number(iterationKey);
+      if (!Number.isFinite(iteration)) continue;
+      const bufferedAt = ctx.state[channel.startedAt][iteration] ?? now;
+      const { flushable, remaining } = extractThinkingFlushChunk(delta, force);
+      let idx = updatedSteps.findIndex((s: any) => s.iteration === iteration);
+      if (idx < 0) {
+        updatedSteps.push({
+          iteration,
+          thought: '',
+          display_text: defaultThinkingStepText(ctx, iteration),
+          kind: iteration <= 0 ? 'summary' : 'reasoning',
+          status: 'thinking',
+        });
+        idx = updatedSteps.length - 1;
+      }
+      if (flushable) {
+        didFlush = true;
+        const existing = updatedSteps[idx][channel.field];
+        updatedSteps[idx] = {
+          ...updatedSteps[idx],
+          [channel.field]: `${typeof existing === 'string' ? existing : ''}${flushable}`,
+          display_text:
+            updatedSteps[idx].display_text ||
+            defaultThinkingStepText(ctx, iteration),
+          kind: updatedSteps[idx].kind || (iteration <= 0 ? 'summary' : 'reasoning'),
+        };
+      }
+      if (remaining) {
+        nextPending[iteration] = remaining;
+        nextPendingStartedAt[iteration] = bufferedAt;
+      }
     }
-    if (flushable) {
-      didFlush = true;
-      updatedSteps[idx] = {
-        ...updatedSteps[idx],
-        thought: `${typeof updatedSteps[idx].thought === 'string' ? updatedSteps[idx].thought : ''}${flushable}`,
-        display_text:
-          updatedSteps[idx].display_text ||
-          defaultThinkingStepText(ctx, iteration),
-        kind: updatedSteps[idx].kind || (iteration <= 0 ? 'summary' : 'reasoning'),
-      };
-    }
-    if (remaining) {
-      nextPendingThinkingDeltas[iteration] = remaining;
-      nextPendingStartedAt[iteration] = bufferedAt;
-    }
+    ctx.state[channel.pending] = nextPending;
+    ctx.state[channel.startedAt] = nextPendingStartedAt;
   }
 
-  ctx.state.pendingThinkingDeltas = nextPendingThinkingDeltas;
-  ctx.state.pendingThinkingDeltaStartedAt = nextPendingStartedAt;
-
   if (didFlush) {
+    updatedSteps = closeSupersededSteps(updatedSteps);
     // Ensure thinking_visibility is 'visible' when we flush thinking deltas.
     if ((existingMetadata as any).thinking_visibility !== 'visible') {
       (existingMetadata as any).thinking_visibility = 'visible';
@@ -517,7 +536,7 @@ function _flushThinkingDeltaBuffer(ctx: StreamHandlerContext, force: boolean = f
     ctx.scheduleFlush();
   }
 
-  if (Object.keys(ctx.state.pendingThinkingDeltas).length > 0) {
+  if (_hasPendingThinkingText(ctx)) {
     _scheduleThinkingDeltaFlush(ctx);
   }
 }
@@ -542,13 +561,19 @@ export function handleReasoningDelta(ctx: StreamHandlerContext, event: any): voi
   const delta = event?.delta;
   if (typeof delta !== 'string' || delta.length === 0) return;
 
-  const REASONING_ITERATION = 0;
+  // The backend tags each chunk with the iteration that produced it, so the
+  // reasoning belongs on that iteration's own row. Iteration 0 is only the
+  // bucket for chunks that carry no iteration.
+  const iteration =
+    typeof event?.iteration === 'number' && Number.isFinite(event.iteration) && event.iteration > 0
+      ? event.iteration
+      : 0;
 
-  if (!ctx.state.pendingThinkingDeltas[REASONING_ITERATION]) {
-    ctx.state.pendingThinkingDeltaStartedAt[REASONING_ITERATION] = Date.now();
+  if (!ctx.state.pendingReasoningDeltas[iteration]) {
+    ctx.state.pendingReasoningDeltaStartedAt[iteration] = Date.now();
   }
-  ctx.state.pendingThinkingDeltas[REASONING_ITERATION] =
-    (ctx.state.pendingThinkingDeltas[REASONING_ITERATION] || '') + delta;
+  ctx.state.pendingReasoningDeltas[iteration] =
+    (ctx.state.pendingReasoningDeltas[iteration] || '') + delta;
 
   _scheduleThinkingDeltaFlush(ctx);
 }

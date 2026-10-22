@@ -251,6 +251,8 @@ export interface ChatMessage {
 export interface ThinkingStep {
   iteration: number;
   thought: string;
+  /** Native model reasoning streamed for this iteration. Live only: the backend does not persist it. */
+  reasoning?: string;
   display_text?: string;
   kind?: 'reasoning' | 'tool' | 'summary';
   action?: string | null;
