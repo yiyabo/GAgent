@@ -1,27 +1,29 @@
-# systemd user unit for the evaluation instance's bio_tools runner.
-# Same runner code as the live service (/data1/gagent/bio-runner), but it only
-# watches the evaluation runtime. Install to ~/.config/systemd/user/ on 620b, then:
-#   systemctl --user daemon-reload && systemctl --user enable --now gagent-eval-bio-runner
+# systemd user unit for the evaluation instance's bio_tools runner (account `platform`).
+# Same runner code as the live service (/data3/platform/gagent/bio-runner), but it only
+# watches the evaluation runtime. The unit file lives in /data3/platform/gagent/systemd/;
+# ~/.config/systemd/user/ only holds a link to it:
+#   systemctl --user link /data3/platform/gagent/systemd/gagent-eval-bio-runner.service
+#   systemctl --user enable --now gagent-eval-bio-runner
 [Unit]
 Description=GAgent evaluation instance: native bio_tools runner
 After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=/data1/gagent/bio-runner
-ExecStart=/usr/bin/python3 /data1/gagent/bio-runner/native_runner.py \
-  --runtime-dir /home/wangyichun/gagent-eval/runtime/bio_tools \
-  --read-root /home/wangyichun/gagent-eval/runtime \
-  --read-root /home/wangyichun/gagent/refdata \
-  --db-root /data1/gagent/databases \
-  --conda-base /home/wangyichun/miniconda3 \
-  --conda-envs-dir /data1/gagent/conda/envs \
+WorkingDirectory=/data3/platform/gagent/bio-runner
+ExecStart=/data3/platform/gagent/conda/envs/gagent-host/bin/python /data3/platform/gagent/bio-runner/native_runner.py \
+  --runtime-dir /data3/platform/gagent/eval/runtime/bio_tools \
+  --read-root /data3/platform/gagent/eval/runtime \
+  --read-root /data3/platform/gagent/refdata \
+  --db-root /data3/platform/gagent/databases \
+  --conda-base /data3/platform/gagent/conda/miniforge3 \
+  --conda-envs-dir /data3/platform/gagent/conda/envs \
   --keep-days 7 \
   --partition work
 Restart=always
 RestartSec=5
-StandardOutput=append:/data1/gagent/logs/bio-runner-eval.log
-StandardError=append:/data1/gagent/logs/bio-runner-eval.log
+StandardOutput=append:/data3/platform/gagent/logs/bio-runner-eval.log
+StandardError=append:/data3/platform/gagent/logs/bio-runner-eval.log
 
 [Install]
 WantedBy=default.target

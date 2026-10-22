@@ -32,9 +32,9 @@ sys.path.insert(0, str(HERE))
 import driver  # noqa: E402  (stdlib-only at import time; used for the judge evidence digest)
 import scenarios  # noqa: E402  (scenario builders import the local fixtures module)
 
-HOST = "phage-server"
+HOST = "phage-platform"
 CONTAINER = "gagent-eval-app-1"
-REMOTE_OUT = "~/gagent-eval/evo-out"
+REMOTE_OUT = "/data3/platform/gagent/eval/evo-out"
 DRIVER_PATH = HERE / "driver.py"
 PLACEHOLDER = "MANIFEST_B64 = None  # replaced by controller.py"
 SSH_OPTS = [

@@ -3,24 +3,25 @@
 
 Run on the server (secrets never leave it and are never printed):
 
-    ssh phage-server 'python3 -' < evals/evolution/instance/setup_env.py
+    ssh phage-platform 'python3 -' < evals/evolution/instance/setup_env.py
 
-Every line of ~/gagent/src/deploy/.env is copied unchanged except the keys
+Every line of /data3/platform/gagent/src/deploy/.env is copied unchanged except the keys
 listed in OVERRIDES. The output is written with mode 0600 and only key names
 are printed.
 """
 import os
 import re
 
-HOME = os.path.expanduser("~")
-SRC = os.path.join(HOME, "gagent/src/deploy/.env")
-DST = os.path.join(HOME, "gagent-eval/deploy/.env")
+ROOT = os.environ.get("GAGENT_ROOT", "/data3/platform/gagent")
+SRC = os.path.join(ROOT, "src/deploy/.env")
+DST = os.path.join(ROOT, "eval/deploy/.env")
 
 OVERRIDES = {
-    "GAGENT_TAG": "p11",
-    "GAGENT_RUNTIME_DIR": os.path.join(HOME, "gagent-eval/runtime"),
-    "GAGENT_BACKUP_DIR": os.path.join(HOME, "gagent-eval/backups"),
-    "EVAL_OUT_DIR": os.path.join(HOME, "gagent-eval/evo-out"),
+    "GAGENT_TAG": os.environ.get("EVAL_GAGENT_TAG", "p20"),
+    "GAGENT_RUNTIME_DIR": os.path.join(ROOT, "eval/runtime"),
+    "GAGENT_BACKUP_DIR": os.path.join(ROOT, "eval/backups"),
+    "GAGENT_DATA_DIR": os.path.join(ROOT, "eval/data"),
+    "EVAL_OUT_DIR": os.path.join(ROOT, "eval/evo-out"),
     # Isolation switches: no skill learning, no background quality scoring,
     # no AMEM memory service, no LightRAG gateway, no MCP extensions (these
     # reach external retrieval services). Live value of EXTENSIONS_MCP_ENABLED is 1.
