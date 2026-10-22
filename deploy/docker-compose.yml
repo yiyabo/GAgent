@@ -65,7 +65,9 @@ services:
       APP_ENV: ${APP_ENV:-production}
     volumes:
       - ${GAGENT_RUNTIME_DIR}:/app/runtime
-      - gagent-data:/app/data
+      # GAGENT_DATA_DIR (a host path, owned by APP_UID:APP_GID) bind-mounts /app/data;
+      # unset keeps the named volume gagent-data.
+      - ${GAGENT_DATA_DIR:-gagent-data}:/app/data
       # Read-only reference data, at the SAME container path the old container
       # used. Three things resolve under /data and would silently break without
       # it: the file_operations allowlist (FILE_OPERATIONS_ALLOWED_BASE_PATHS),
@@ -144,7 +146,7 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     volumes:
       - ${GAGENT_RUNTIME_DIR}:/app/runtime
-      - gagent-data:/app/data
+      - ${GAGENT_DATA_DIR:-gagent-data}:/app/data
       - ${GAGENT_BACKUP_DIR}:/backups
     healthcheck:
       # Docker inherits the image's HEALTHCHECK (an HTTP probe on :9000) into
