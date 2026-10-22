@@ -8,7 +8,8 @@ API Endpoint, modelnameparameter.
 from dataclasses import dataclass
 from functools import lru_cache
 import os
-from typing import Optional
+import re
+from typing import Optional, Tuple
 
 from app.services.foundation.llm_config import is_production, platform_profile
 
@@ -52,6 +53,9 @@ class SearchSettings:
     perplexity_timeout: float = 30.0
 
     tavily_api_key: Optional[str] = None
+    # Every configured key, `tavily_api_key` first. Free keys have small quotas, so
+    # the provider spreads calls across all of them and skips one that ran out.
+    tavily_api_keys: Tuple[str, ...] = ()
     tavily_api_url: str = "https://api.tavily.com/search"
     tavily_mcp_url: str = "https://mcp.tavily.com/mcp/"
     tavily_timeout: float = 30.0
@@ -70,6 +74,16 @@ def _env(key: str, default: Optional[str] = None) -> Optional[str]:
         return default
     value = value.strip()
     return value or default
+
+
+def _split_keys(*raw_values: Optional[str]) -> Tuple[str, ...]:
+    """Keys from comma, semicolon or whitespace separated lists, in order, without repeats."""
+    keys: list[str] = []
+    for raw in raw_values:
+        for part in re.split(r"[\s,;]+", raw or ""):
+            if part and part not in keys:
+                keys.append(part)
+    return tuple(keys)
 
 
 @lru_cache(maxsize=1)
@@ -105,7 +119,8 @@ def get_search_settings() -> SearchSettings:
     perplexity_api_url = _env("PERPLEXITY_API_URL", "https://api.perplexity.ai/chat/completions")
     perplexity_model = _env("PERPLEXITY_MODEL", "sonar-pro")
 
-    tavily_api_key = _env("TAVILY_API_KEY")
+    tavily_api_keys = _split_keys(_env("TAVILY_API_KEY"), _env("TAVILY_API_KEYS"))
+    tavily_api_key = tavily_api_keys[0] if tavily_api_keys else None
     tavily_api_url = _env("TAVILY_API_URL", "https://api.tavily.com/search")
     tavily_mcp_url = _env("TAVILY_MCP_URL", "https://mcp.tavily.com/mcp/")
     tavily_tool_name = _env("TAVILY_MCP_TOOL")
@@ -170,6 +185,7 @@ def get_search_settings() -> SearchSettings:
         perplexity_model=perplexity_model or "sonar-pro",
         perplexity_timeout=perplexity_timeout,
         tavily_api_key=tavily_api_key,
+        tavily_api_keys=tavily_api_keys,
         tavily_api_url=tavily_api_url or "https://api.tavily.com/search",
         tavily_mcp_url=tavily_mcp_url or "https://mcp.tavily.com/mcp/",
         tavily_timeout=tavily_timeout,
