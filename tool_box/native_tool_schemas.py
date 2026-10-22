@@ -19,6 +19,7 @@ from typing import Any, Dict
 from app.services.plans.execution_contract import PLAN_EXECUTION_GUIDANCE, execution_target_ids_schema
 
 from .phagescope_gateway_contract import extend_schema as _extend_gateway_schema
+from .web_search_text import provider_param_description, search_description
 
 NATIVE_TOOL_CONTENT: Dict[str, Dict[str, Any]] = {
     "web_search": {
@@ -1192,3 +1193,9 @@ NATIVE_TOOL_CONTENT: Dict[str, Dict[str, Any]] = {
 }
 
 _extend_gateway_schema(NATIVE_TOOL_CONTENT["phagescope"], "parameters")
+
+_web_search = NATIVE_TOOL_CONTENT["web_search"]
+_web_search["description"] = search_description(_web_search["description"])
+_web_search["parameters"]["properties"]["provider"]["description"] = provider_param_description(
+    _web_search["parameters"]["properties"]["provider"]["description"]
+)

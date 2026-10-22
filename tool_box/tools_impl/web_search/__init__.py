@@ -5,6 +5,7 @@ Expose the tool definition and handler compatible with existing toolbox integrat
 """
 
 from .handler import web_search_handler
+from tool_box.web_search_text import provider_param_description, search_description
 
 web_search_tool = {
     "name": "web_search",
@@ -61,5 +62,10 @@ web_search_tool = {
         "Literature background for a metagenomics method",
     ],
 }
+
+web_search_tool["description"] = search_description(web_search_tool["description"])
+web_search_tool["parameters_schema"]["properties"]["provider"]["description"] = provider_param_description(
+    web_search_tool["parameters_schema"]["properties"]["provider"]["description"]
+)
 
 __all__ = ["web_search_tool", "web_search_handler"]
