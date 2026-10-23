@@ -20,6 +20,7 @@ from ..services.request_principal import (
     get_request_principal,
     require_authenticated_principal,
 )
+from ..services.skills.skills_loader import configured_runtime_skills_dir
 from . import register_router
 
 router = APIRouter(prefix="/extensions", tags=["extensions"])
@@ -85,14 +86,14 @@ async def disable_mcp(server_id: str, request: Request) -> Dict[str, Any]:
 @router.get("/skills")
 async def list_skills(request: Request) -> Dict[str, Any]:
     _require_reader(request)
-    return await asyncio.to_thread(skills_view.list_skills, can_manage=_is_admin(request))
+    return await asyncio.to_thread(skills_view.list_skills, can_manage=_is_admin(request), extra_dir=configured_runtime_skills_dir())
 
 
 @router.post("/skills/{name}/enable")
 async def enable_skill(name: str, request: Request) -> Dict[str, Any]:
     _require_admin(request)
     try:
-        return await asyncio.to_thread(skills_view.set_skill_enabled, name, True)
+        return await asyncio.to_thread(skills_view.set_skill_enabled, name, True, extra_dir=configured_runtime_skills_dir())
     except ExtensionError as exc:
         _raise(exc)
 
@@ -101,6 +102,6 @@ async def enable_skill(name: str, request: Request) -> Dict[str, Any]:
 async def disable_skill(name: str, request: Request) -> Dict[str, Any]:
     _require_admin(request)
     try:
-        return await asyncio.to_thread(skills_view.set_skill_enabled, name, False)
+        return await asyncio.to_thread(skills_view.set_skill_enabled, name, False, extra_dir=configured_runtime_skills_dir())
     except ExtensionError as exc:
         _raise(exc)

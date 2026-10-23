@@ -83,22 +83,41 @@ def _describe(name: str, skill_dir: Path, spec_description: str, entry: Optional
     }
 
 
-def list_skills(*, can_manage: bool, skills_dir: Path = PROJECT_SKILLS_DIR) -> Dict[str, Any]:
+def _roots(skills_dir: Path, extra_dir: Optional[Path]) -> List[Path]:
+    """Project directory first (it wins a name clash, as in the loader), then the operator's overlay."""
+    roots = [skills_dir]
+    if extra_dir is not None and extra_dir.is_dir() and extra_dir.resolve() != skills_dir.resolve():
+        roots.append(extra_dir)
+    return roots
+
+
+def _find_skill_dir(name: str, roots: List[Path]) -> Optional[Path]:
+    for root in roots:
+        if (root / name / "SKILL.md").is_file():
+            return root / name
+    return None
+
+
+def list_skills(*, can_manage: bool, skills_dir: Path = PROJECT_SKILLS_DIR, extra_dir: Optional[Path] = None) -> Dict[str, Any]:
+    """``extra_dir`` is the ``SKILLS_RUNTIME_DIR`` overlay: skills kept on the server and out of Git."""
     from app.services.skills.skills_loader import SkillsLoader
 
-    catalog = _load_catalog(skills_dir)
+    roots = _roots(skills_dir, extra_dir)
+    catalog: Dict[str, Any] = {}
+    for root in reversed(roots):
+        catalog.update(_load_catalog(root))
     disabled = {n for n, e in (read_state().get("skills") or {}).items() if isinstance(e, dict) and e.get("enabled") is False}
-    # Same directory for both roots, so the loader scans it once and does not warn about a missing overlay.
-    loader = SkillsLoader(skills_dir=str(skills_dir), project_skills_dir=str(skills_dir))
+    # Without an overlay both roots are the same directory, so the loader scans it once and does not warn about a missing one.
+    loader = SkillsLoader(skills_dir=str(roots[-1]), project_skills_dir=str(skills_dir))
     rows: List[Dict[str, Any]] = []
     seen = set()
     for spec in loader.list_skills():
         seen.add(spec["name"])
         rows.append(_describe(spec["name"], Path(spec["directory"]), spec["description"], catalog.get(spec["name"]), spec["name"] not in disabled))
     for name in sorted(disabled - seen):
-        directory = skills_dir / name
-        skill_md = directory / "SKILL.md"
-        if skill_md.exists():
+        directory = _find_skill_dir(name, roots)
+        if directory is not None:
+            skill_md = directory / "SKILL.md"
             # The loader hides admin-disabled skills; read their description ourselves.
             text = skill_md.read_text(encoding="utf-8", errors="replace")
             description = loader._extract_description(text, loader._extract_frontmatter(text))
@@ -107,9 +126,9 @@ def list_skills(*, can_manage: bool, skills_dir: Path = PROJECT_SKILLS_DIR) -> D
     return {"can_manage": can_manage, "skills": rows}
 
 
-def set_skill_enabled(name: str, enabled: bool, *, skills_dir: Path = PROJECT_SKILLS_DIR) -> Dict[str, Any]:
-    directory = skills_dir / name
-    if not name or "/" in name or name.startswith(".") or not (directory / "SKILL.md").is_file():
+def set_skill_enabled(name: str, enabled: bool, *, skills_dir: Path = PROJECT_SKILLS_DIR, extra_dir: Optional[Path] = None) -> Dict[str, Any]:
+    directory = None if not name or "/" in name or name.startswith(".") else _find_skill_dir(name, _roots(skills_dir, extra_dir))
+    if directory is None:
         raise ExtensionError(404, f"未知的技能: {name}")
     if enabled:
         scan = _scan(directory)
@@ -124,7 +143,7 @@ def set_skill_enabled(name: str, enabled: bool, *, skills_dir: Path = PROJECT_SK
         get_skills_loader().rescan()
     except Exception as exc:
         logger.warning("skill loader rescan failed after toggling %s: %s", name, exc)
-    for row in list_skills(can_manage=True, skills_dir=skills_dir)["skills"]:
+    for row in list_skills(can_manage=True, skills_dir=skills_dir, extra_dir=extra_dir)["skills"]:
         if row["name"] == name:
             return row
     raise ExtensionError(404, f"未知的技能: {name}")

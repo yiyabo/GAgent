@@ -298,3 +298,54 @@ def test_a_blocked_skill_cannot_be_enabled(tmp_path, monkeypatch):
     with pytest.raises(service.ExtensionError) as err:
         skills_view.set_skill_enabled("beta", True, skills_dir=root)
     assert err.value.status == 409
+
+
+# ------------------------------------------------- server-only skills (SKILLS_RUNTIME_DIR)
+def _overlay_dir(tmp_path):
+    overlay = tmp_path / "server-skills"
+    (overlay / "private-lab").mkdir(parents=True)
+    (overlay / "private-lab" / "SKILL.md").write_text("---\nname: private-lab\ndescription: Lab playbook kept off Git.\n---\n# private-lab\n")
+    (overlay / "CATALOG.json").write_text(json.dumps({"schema": 1, "skills": {"private-lab": {"origin": {"kind": "internal", "source": "lab", "license": "private"}, "review": {"scanner": "passed", "reviewed_by": "owner", "reviewed_at": "2026-10-23", "human_signoff": True, "notes": ""}}}}))
+    return overlay
+
+
+def test_server_only_skills_are_listed_with_their_own_catalog(tmp_path, monkeypatch):
+    monkeypatch.setenv(state.STATE_ENV, str(tmp_path / "state.json"))
+    root = _skills_dir(tmp_path)
+    rows = {r["name"]: r for r in skills_view.list_skills(can_manage=True, skills_dir=root, extra_dir=_overlay_dir(tmp_path))["skills"]}
+    assert set(rows) == {"alpha", "beta", "private-lab"}
+    assert rows["private-lab"]["origin"]["license"] == "private"
+    assert rows["private-lab"]["review"]["human_signoff"] is True
+    assert rows["alpha"]["origin"]["kind"] == "third_party"  # the repo catalog still applies to repo skills
+
+
+def test_a_missing_or_identical_overlay_changes_nothing(tmp_path, monkeypatch):
+    monkeypatch.setenv(state.STATE_ENV, str(tmp_path / "state.json"))
+    root = _skills_dir(tmp_path)
+    plain = skills_view.list_skills(can_manage=True, skills_dir=root)
+    assert skills_view.list_skills(can_manage=True, skills_dir=root, extra_dir=tmp_path / "absent") == plain
+    assert skills_view.list_skills(can_manage=True, skills_dir=root, extra_dir=root) == plain
+
+
+def test_a_server_only_skill_can_be_switched_off_and_on(tmp_path, monkeypatch):
+    monkeypatch.setenv(state.STATE_ENV, str(tmp_path / "state.json"))
+    root, overlay = _skills_dir(tmp_path), _overlay_dir(tmp_path)
+    assert skills_view.set_skill_enabled("private-lab", False, skills_dir=root, extra_dir=overlay)["enabled"] is False
+    page = {r["name"]: r for r in skills_view.list_skills(can_manage=True, skills_dir=root, extra_dir=overlay)["skills"]}
+    assert page["private-lab"]["enabled"] is False
+    assert page["private-lab"]["description"] == "Lab playbook kept off Git."
+    assert skills_view.set_skill_enabled("private-lab", True, skills_dir=root, extra_dir=overlay)["enabled"] is True
+    with pytest.raises(service.ExtensionError):
+        skills_view.set_skill_enabled("private-lab", False, skills_dir=root)  # not visible without the overlay
+
+
+def test_the_loader_reads_the_overlay_named_by_the_environment(tmp_path, monkeypatch):
+    from app.services.skills.skills_loader import SkillsLoader, configured_runtime_skills_dir
+
+    root, overlay = _skills_dir(tmp_path), _overlay_dir(tmp_path)
+    monkeypatch.delenv("SKILLS_RUNTIME_DIR", raising=False)
+    assert configured_runtime_skills_dir() is None
+    monkeypatch.setenv("SKILLS_RUNTIME_DIR", str(overlay))
+    assert configured_runtime_skills_dir() == overlay
+    names = {s["name"] for s in SkillsLoader(project_skills_dir=str(root)).list_skills()}
+    assert names == {"alpha", "beta", "private-lab"}

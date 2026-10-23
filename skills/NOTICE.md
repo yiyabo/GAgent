@@ -13,8 +13,8 @@ changes is in `CATALOG.json` (`modifications`). For MIT-licensed skills the
 copyright and permission notice is kept in the skill's `LICENSE.txt`.
 
 Most of the skills below also carry a GAgent-added `config.json` (selection
-keywords and injection budget); `gget` and `bioinformatics` do not. That file
-is not part of the upstream work.
+keywords and injection budget); `gget`, `bioinformatics` and the
+Supervisor-Skills ones do not. That file is not part of the upstream work.
 
 ## From anthropics/skills (Apache-2.0)
 
@@ -71,6 +71,39 @@ and `code-review` (no longer exist upstream).
 
 Source: https://github.com/affaan-m/everything-claude-code.
 Copyright (c) 2026 Affaan Mustafa.
+
+## From HKUSTDial/Supervisor-Skills (CC BY-NC-SA 4.0)
+
+Source: https://github.com/HKUSTDial/Supervisor-Skills at commit
+`a20d76ef3979b804d7dbf599d577826957e0a8a9`.
+Copyright (c) 2026 Yuyu Luo (methodology) and contributors. Licensed under
+[Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International](https://creativecommons.org/licenses/by-nc-sa/4.0/)
+(see each skill's `LICENSE.txt`, a copy of the upstream `LICENSE`).
+
+| Skill | Upstream path | Status |
+|---|---|---|
+| `benchmark-paper-template` | `skills/benchmark-paper-template` | Unmodified |
+| `deep-research` | `skills/deep-research` | Unmodified |
+| `figure-designer` | `skills/figure-designer` | Unmodified |
+| `idea-evaluator` | `skills/idea-evaluator` | Unmodified |
+| `intro-drafter` | `skills/intro-drafter` | Unmodified |
+| `paper-polish` | `skills/paper-polish` | Unmodified |
+| `paper-writer` | `skills/paper-writer` | Unmodified |
+| `pre-submission-reviewer` | `skills/pre-submission-reviewer` | Unmodified |
+| `rebuttal-guidance` | `skills/rebuttal-guidance` | Unmodified |
+| `tech-paper-template` | `skills/tech-paper-template` | Unmodified |
+| `vibe-research-workflow` | `skills/vibe-research-workflow` | Unmodified |
+
+No change was made to the text of these skills, and the only file added to each
+directory is the licence copy. The licence is **NonCommercial and ShareAlike**:
+these skills must not be used for commercial purposes, and anything built from
+them has to be shared under the same licence. For seven of the skills the
+frontmatter says `CC-BY-4.0` or names no licence; the stricter repository-level
+licence is the one that applies here. The upstream project is credited to its authors and does
+not endorse GAgent.
+
+Not imported: `drawio-reconstruction` (13 MB; needs the draw.io desktop app,
+which the server does not have).
 
 ## Proprietary content
 

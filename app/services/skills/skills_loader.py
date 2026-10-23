@@ -22,6 +22,17 @@ VALID_INJECTION_MODES = {"full", "summary", "summary_with_references"}
 
 _SKILL_RELOAD_TTL_ENV = "SKILL_RELOAD_TTL_SECONDS"
 _DEFAULT_RELOAD_TTL_SECONDS = 5.0
+RUNTIME_DIR_ENV = "SKILLS_RUNTIME_DIR"
+
+
+def configured_runtime_skills_dir() -> Optional[Path]:
+    """The overlay directory an operator chose with ``SKILLS_RUNTIME_DIR``, or ``None``.
+
+    Skills in it load next to the ones in the repo but stay out of Git, which is where a deployment
+    keeps skills that must not be published or cannot ship with the image.
+    """
+    raw = os.environ.get(RUNTIME_DIR_ENV, "").strip()
+    return Path(raw).expanduser() if raw else None
 
 
 def _admin_disabled_skills() -> Set[str]:
@@ -101,7 +112,7 @@ class SkillsLoader:
         auto_sync: bool = True,
     ) -> None:
         if skills_dir is None:
-            self.skills_dir = Path.home() / ".claude" / "skills"
+            self.skills_dir = configured_runtime_skills_dir() or Path.home() / ".claude" / "skills"
         else:
             self.skills_dir = Path(skills_dir)
 

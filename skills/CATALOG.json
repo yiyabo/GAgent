@@ -1,6 +1,29 @@
 {
   "schema": 1,
   "skills": {
+    "benchmark-paper-template": {
+      "origin": {
+        "kind": "third_party",
+        "source": "HKUSTDial/Supervisor-Skills",
+        "path": "skills/benchmark-paper-template",
+        "commit": "a20d76ef3979b804d7dbf599d577826957e0a8a9",
+        "license": "CC-BY-NC-SA-4.0"
+      },
+      "modified": false,
+      "modifications": [
+        "Vendored byte-for-byte from HKUSTDial/Supervisor-Skills commit a20d76ef3979b804d7dbf599d577826957e0a8a9 (skills/benchmark-paper-template); SKILL.md and every file under references/ are unmodified.",
+        "LICENSE.txt is the upstream repository-level LICENSE (CC BY-NC-SA 4.0, Copyright (c) 2026 Yuyu Luo (methodology) and contributors), copied into the skill directory unmodified. It was not part of the upstream skill directory.",
+        "The SKILL.md frontmatter says license: CC-BY-4.0, which differs from the repository-level LICENSE. GAgent applies the stricter repository-level CC BY-NC-SA 4.0 (NonCommercial, ShareAlike)."
+      ],
+      "review": {
+        "scanner": "warnings",
+        "scanner_version": 1,
+        "reviewed_by": "claude (AI), static scanner plus targeted greps (URLs, shell commands, hidden characters, encoded blobs); the text was not read in full",
+        "reviewed_at": "2026-10-23",
+        "human_signoff": false,
+        "notes": "Pure guidance text, no scripts. Scanner warning desc.loader_truncation: the description is longer than the loader keeps; the chat index shortens it anyway."
+      }
+    },
     "bio-data-interpreter": {
       "origin": {
         "kind": "internal",
@@ -100,6 +123,51 @@
         "notes": "Scanner warns on run-time `git clone` of two third-party repos and on `sudo apt install` in the environment setup section. Content fetched at run time is outside the vetted tree. Pre-existing skill; not imported in this change."
       }
     },
+    "deep-research": {
+      "origin": {
+        "kind": "third_party",
+        "source": "HKUSTDial/Supervisor-Skills",
+        "path": "skills/deep-research",
+        "commit": "a20d76ef3979b804d7dbf599d577826957e0a8a9",
+        "license": "CC-BY-NC-SA-4.0"
+      },
+      "modified": false,
+      "modifications": [
+        "Vendored byte-for-byte from HKUSTDial/Supervisor-Skills commit a20d76ef3979b804d7dbf599d577826957e0a8a9 (skills/deep-research); SKILL.md and every file under references/ are unmodified.",
+        "LICENSE.txt is the upstream repository-level LICENSE (CC BY-NC-SA 4.0, Copyright (c) 2026 Yuyu Luo (methodology) and contributors), copied into the skill directory unmodified. It was not part of the upstream skill directory."
+      ],
+      "review": {
+        "scanner": "passed",
+        "scanner_version": 1,
+        "reviewed_by": "claude (AI), static scanner plus targeted greps (URLs, shell commands, hidden characters, encoded blobs); the text was not read in full",
+        "reviewed_at": "2026-10-23",
+        "human_signoff": false,
+        "notes": "Pure guidance text, no scripts. It tells the model to search and verify citations with whatever search and fetch tools exist; it does not add any."
+      }
+    },
+    "figure-designer": {
+      "origin": {
+        "kind": "third_party",
+        "source": "HKUSTDial/Supervisor-Skills",
+        "path": "skills/figure-designer",
+        "commit": "a20d76ef3979b804d7dbf599d577826957e0a8a9",
+        "license": "CC-BY-NC-SA-4.0"
+      },
+      "modified": false,
+      "modifications": [
+        "Vendored byte-for-byte from HKUSTDial/Supervisor-Skills commit a20d76ef3979b804d7dbf599d577826957e0a8a9 (skills/figure-designer); SKILL.md and every file under references/ are unmodified.",
+        "LICENSE.txt is the upstream repository-level LICENSE (CC BY-NC-SA 4.0, Copyright (c) 2026 Yuyu Luo (methodology) and contributors), copied into the skill directory unmodified. It was not part of the upstream skill directory.",
+        "The SKILL.md frontmatter says license: CC-BY-4.0, which differs from the repository-level LICENSE. GAgent applies the stricter repository-level CC BY-NC-SA 4.0 (NonCommercial, ShareAlike)."
+      ],
+      "review": {
+        "scanner": "passed",
+        "scanner_version": 1,
+        "reviewed_by": "claude (AI), static scanner plus targeted greps (URLs, shell commands, hidden characters, encoded blobs); the text was not read in full",
+        "reviewed_at": "2026-10-23",
+        "human_signoff": false,
+        "notes": "Pure guidance text, no scripts. It recommends draw.io, PowerPoint or TikZ for figures; GAgent has none of those, so the model can only describe or script the figure."
+      }
+    },
     "frontend-design": {
       "origin": {
         "kind": "third_party",
@@ -146,6 +214,51 @@
         "notes": "The skill instructs the model to `pip install gget` (info only). Third-party package installed at run time is outside the vetted tree."
       }
     },
+    "idea-evaluator": {
+      "origin": {
+        "kind": "third_party",
+        "source": "HKUSTDial/Supervisor-Skills",
+        "path": "skills/idea-evaluator",
+        "commit": "a20d76ef3979b804d7dbf599d577826957e0a8a9",
+        "license": "CC-BY-NC-SA-4.0"
+      },
+      "modified": false,
+      "modifications": [
+        "Vendored byte-for-byte from HKUSTDial/Supervisor-Skills commit a20d76ef3979b804d7dbf599d577826957e0a8a9 (skills/idea-evaluator); SKILL.md and every file under references/ are unmodified.",
+        "LICENSE.txt is the upstream repository-level LICENSE (CC BY-NC-SA 4.0, Copyright (c) 2026 Yuyu Luo (methodology) and contributors), copied into the skill directory unmodified. It was not part of the upstream skill directory.",
+        "The SKILL.md frontmatter says license: CC-BY-4.0, which differs from the repository-level LICENSE. GAgent applies the stricter repository-level CC BY-NC-SA 4.0 (NonCommercial, ShareAlike)."
+      ],
+      "review": {
+        "scanner": "warnings",
+        "scanner_version": 1,
+        "reviewed_by": "claude (AI), static scanner plus targeted greps (URLs, shell commands, hidden characters, encoded blobs); the text was not read in full",
+        "reviewed_at": "2026-10-23",
+        "human_signoff": false,
+        "notes": "Pure guidance text, no scripts. Scanner warning desc.loader_truncation: the description is longer than the loader keeps; the chat index shortens it anyway."
+      }
+    },
+    "intro-drafter": {
+      "origin": {
+        "kind": "third_party",
+        "source": "HKUSTDial/Supervisor-Skills",
+        "path": "skills/intro-drafter",
+        "commit": "a20d76ef3979b804d7dbf599d577826957e0a8a9",
+        "license": "CC-BY-NC-SA-4.0"
+      },
+      "modified": false,
+      "modifications": [
+        "Vendored byte-for-byte from HKUSTDial/Supervisor-Skills commit a20d76ef3979b804d7dbf599d577826957e0a8a9 (skills/intro-drafter); SKILL.md and every file under references/ are unmodified.",
+        "LICENSE.txt is the upstream repository-level LICENSE (CC BY-NC-SA 4.0, Copyright (c) 2026 Yuyu Luo (methodology) and contributors), copied into the skill directory unmodified. It was not part of the upstream skill directory."
+      ],
+      "review": {
+        "scanner": "passed",
+        "scanner_version": 1,
+        "reviewed_by": "claude (AI), static scanner plus targeted greps (URLs, shell commands, hidden characters, encoded blobs); the text was not read in full",
+        "reviewed_at": "2026-10-23",
+        "human_signoff": false,
+        "notes": "Pure guidance text, no scripts. The HTML comments in references name an upstream sync script (scripts/check_shared_sync.py) that is not shipped here."
+      }
+    },
     "mcp-builder": {
       "origin": {
         "kind": "third_party",
@@ -172,6 +285,50 @@
         "notes": "The examples in reference/node_mcp_server.md still use the `mcp` 1.x TypeScript SDK API and reference/python_mcp_server.md examples still use the 1.x `FastMCP` import (flagged at the top of the file); both are guidance for code the model writes in a workspace, not code that runs in the platform. Not verified against a real build in this change."
       }
     },
+    "paper-polish": {
+      "origin": {
+        "kind": "third_party",
+        "source": "HKUSTDial/Supervisor-Skills",
+        "path": "skills/paper-polish",
+        "commit": "a20d76ef3979b804d7dbf599d577826957e0a8a9",
+        "license": "CC-BY-NC-SA-4.0"
+      },
+      "modified": false,
+      "modifications": [
+        "Vendored byte-for-byte from HKUSTDial/Supervisor-Skills commit a20d76ef3979b804d7dbf599d577826957e0a8a9 (skills/paper-polish); SKILL.md and every file under references/ are unmodified.",
+        "LICENSE.txt is the upstream repository-level LICENSE (CC BY-NC-SA 4.0, Copyright (c) 2026 Yuyu Luo (methodology) and contributors), copied into the skill directory unmodified. It was not part of the upstream skill directory."
+      ],
+      "review": {
+        "scanner": "warnings",
+        "scanner_version": 1,
+        "reviewed_by": "claude (AI), static scanner plus targeted greps (URLs, shell commands, hidden characters, encoded blobs); the text was not read in full",
+        "reviewed_at": "2026-10-23",
+        "human_signoff": false,
+        "notes": "Pure guidance text, no scripts. Scanner warning inj.fake_system_tag is a false positive: references/section-conventions.md uses the pattern '[system]' as a title placeholder."
+      }
+    },
+    "paper-writer": {
+      "origin": {
+        "kind": "third_party",
+        "source": "HKUSTDial/Supervisor-Skills",
+        "path": "skills/paper-writer",
+        "commit": "a20d76ef3979b804d7dbf599d577826957e0a8a9",
+        "license": "CC-BY-NC-SA-4.0"
+      },
+      "modified": false,
+      "modifications": [
+        "Vendored byte-for-byte from HKUSTDial/Supervisor-Skills commit a20d76ef3979b804d7dbf599d577826957e0a8a9 (skills/paper-writer); SKILL.md and every file under references/ are unmodified.",
+        "LICENSE.txt is the upstream repository-level LICENSE (CC BY-NC-SA 4.0, Copyright (c) 2026 Yuyu Luo (methodology) and contributors), copied into the skill directory unmodified. It was not part of the upstream skill directory."
+      ],
+      "review": {
+        "scanner": "warnings",
+        "scanner_version": 1,
+        "reviewed_by": "claude (AI), static scanner plus targeted greps (URLs, shell commands, hidden characters, encoded blobs); the text was not read in full",
+        "reviewed_at": "2026-10-23",
+        "human_signoff": false,
+        "notes": "Pure guidance text, no scripts. Scanner warning inj.fake_system_tag is a false positive ('[system]' placeholder in references/section-conventions.md); net.url is the placeholder DOI https://doi.org/10.xxxx/xxxxx."
+      }
+    },
     "phage-genomics-analyst": {
       "origin": {
         "kind": "internal",
@@ -189,6 +346,52 @@
         "reviewed_at": "2026-10-18",
         "human_signoff": false,
         "notes": "Written in-house; commit is the one that added the skill to this repository. Not a third-party import. Lists external reference URLs (databases) only as information."
+      }
+    },
+    "pre-submission-reviewer": {
+      "origin": {
+        "kind": "third_party",
+        "source": "HKUSTDial/Supervisor-Skills",
+        "path": "skills/pre-submission-reviewer",
+        "commit": "a20d76ef3979b804d7dbf599d577826957e0a8a9",
+        "license": "CC-BY-NC-SA-4.0"
+      },
+      "modified": false,
+      "modifications": [
+        "Vendored byte-for-byte from HKUSTDial/Supervisor-Skills commit a20d76ef3979b804d7dbf599d577826957e0a8a9 (skills/pre-submission-reviewer); SKILL.md and every file under references/ are unmodified.",
+        "LICENSE.txt is the upstream repository-level LICENSE (CC BY-NC-SA 4.0, Copyright (c) 2026 Yuyu Luo (methodology) and contributors), copied into the skill directory unmodified. It was not part of the upstream skill directory.",
+        "The SKILL.md frontmatter says license: CC-BY-4.0, which differs from the repository-level LICENSE. GAgent applies the stricter repository-level CC BY-NC-SA 4.0 (NonCommercial, ShareAlike)."
+      ],
+      "review": {
+        "scanner": "passed",
+        "scanner_version": 1,
+        "reviewed_by": "claude (AI), static scanner plus targeted greps (URLs, shell commands, hidden characters, encoded blobs); the text was not read in full",
+        "reviewed_at": "2026-10-23",
+        "human_signoff": false,
+        "notes": "Pure guidance text, no scripts. It reviews LaTeX and figures the user supplies; it cannot compile LaTeX itself."
+      }
+    },
+    "rebuttal-guidance": {
+      "origin": {
+        "kind": "third_party",
+        "source": "HKUSTDial/Supervisor-Skills",
+        "path": "skills/rebuttal-guidance",
+        "commit": "a20d76ef3979b804d7dbf599d577826957e0a8a9",
+        "license": "CC-BY-NC-SA-4.0"
+      },
+      "modified": false,
+      "modifications": [
+        "Vendored byte-for-byte from HKUSTDial/Supervisor-Skills commit a20d76ef3979b804d7dbf599d577826957e0a8a9 (skills/rebuttal-guidance); SKILL.md and every file under references/ are unmodified.",
+        "LICENSE.txt is the upstream repository-level LICENSE (CC BY-NC-SA 4.0, Copyright (c) 2026 Yuyu Luo (methodology) and contributors), copied into the skill directory unmodified. It was not part of the upstream skill directory.",
+        "The SKILL.md frontmatter declares no licence; the repository-level CC BY-NC-SA 4.0 applies."
+      ],
+      "review": {
+        "scanner": "passed",
+        "scanner_version": 1,
+        "reviewed_by": "claude (AI), static scanner plus targeted greps (URLs, shell commands, hidden characters, encoded blobs); the text was not read in full",
+        "reviewed_at": "2026-10-23",
+        "human_signoff": false,
+        "notes": "Pure guidance text, no scripts. The frontmatter has no licence field; the repository-level licence applies."
       }
     },
     "requesting-code-review": {
@@ -320,6 +523,29 @@
         "notes": "Upstream also contains an unsubstantiated 'Real-World Impact' statistics paragraph (15-30 minutes vs 2-3 hours, 95% vs 40%); kept unchanged because it is upstream text, but a human may want to cut it."
       }
     },
+    "tech-paper-template": {
+      "origin": {
+        "kind": "third_party",
+        "source": "HKUSTDial/Supervisor-Skills",
+        "path": "skills/tech-paper-template",
+        "commit": "a20d76ef3979b804d7dbf599d577826957e0a8a9",
+        "license": "CC-BY-NC-SA-4.0"
+      },
+      "modified": false,
+      "modifications": [
+        "Vendored byte-for-byte from HKUSTDial/Supervisor-Skills commit a20d76ef3979b804d7dbf599d577826957e0a8a9 (skills/tech-paper-template); SKILL.md and every file under references/ are unmodified.",
+        "LICENSE.txt is the upstream repository-level LICENSE (CC BY-NC-SA 4.0, Copyright (c) 2026 Yuyu Luo (methodology) and contributors), copied into the skill directory unmodified. It was not part of the upstream skill directory.",
+        "The SKILL.md frontmatter says license: CC-BY-4.0, which differs from the repository-level LICENSE. GAgent applies the stricter repository-level CC BY-NC-SA 4.0 (NonCommercial, ShareAlike)."
+      ],
+      "review": {
+        "scanner": "warnings",
+        "scanner_version": 1,
+        "reviewed_by": "claude (AI), static scanner plus targeted greps (URLs, shell commands, hidden characters, encoded blobs); the text was not read in full",
+        "reviewed_at": "2026-10-23",
+        "human_signoff": false,
+        "notes": "Pure guidance text, no scripts. Scanner warning desc.loader_truncation: the description is longer than the loader keeps; the chat index shortens it anyway."
+      }
+    },
     "test-driven-development": {
       "origin": {
         "kind": "third_party",
@@ -343,6 +569,29 @@
         "reviewed_at": "2026-10-18",
         "human_signoff": false,
         "notes": "Strongly worded absolutist rules ('delete the code and start over') are upstream's own style and were kept; a human may want to soften them for non-code tasks."
+      }
+    },
+    "vibe-research-workflow": {
+      "origin": {
+        "kind": "third_party",
+        "source": "HKUSTDial/Supervisor-Skills",
+        "path": "skills/vibe-research-workflow",
+        "commit": "a20d76ef3979b804d7dbf599d577826957e0a8a9",
+        "license": "CC-BY-NC-SA-4.0"
+      },
+      "modified": false,
+      "modifications": [
+        "Vendored byte-for-byte from HKUSTDial/Supervisor-Skills commit a20d76ef3979b804d7dbf599d577826957e0a8a9 (skills/vibe-research-workflow); SKILL.md and every file under references/ are unmodified.",
+        "LICENSE.txt is the upstream repository-level LICENSE (CC BY-NC-SA 4.0, Copyright (c) 2026 Yuyu Luo (methodology) and contributors), copied into the skill directory unmodified. It was not part of the upstream skill directory.",
+        "The SKILL.md frontmatter says license: CC-BY-4.0, which differs from the repository-level LICENSE. GAgent applies the stricter repository-level CC BY-NC-SA 4.0 (NonCommercial, ShareAlike)."
+      ],
+      "review": {
+        "scanner": "passed",
+        "scanner_version": 1,
+        "reviewed_by": "claude (AI), static scanner plus targeted greps (URLs, shell commands, hidden characters, encoded blobs); the text was not read in full",
+        "reviewed_at": "2026-10-23",
+        "human_signoff": false,
+        "notes": "Pure guidance text, no scripts. It names draw.io and Excalidraw as figure tools and coding assistants such as Claude Code; none of them exist in GAgent."
       }
     },
     "visualization-generator": {
