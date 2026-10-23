@@ -417,6 +417,10 @@ def render_script(
     ]
     if job["modules"]:
         lines.append("type module >/dev/null 2>&1 || . /etc/profile.d/z00_lmod.sh")
+        # An account's own profile may reset LD_LIBRARY_PATH after the default modules were applied (platform's
+        # ~/.bash_profile does), which leaves them "loaded" with their libraries off the path: blastn, hmmsearch,
+        # megahit and mmseqs then fail with GLIBCXX_3.4.29 / libmpi.so.40 not found. Reloading re-applies them.
+        lines.append("module reload >/dev/null 2>&1 || true")
         lines.append("module load %s || { echo 'module load failed: %s' >&2; exit 97; }" % (
             " ".join(shlex.quote(m) for m in job["modules"]),
             " ".join(job["modules"]),
@@ -425,7 +429,10 @@ def render_script(
         if not conda_base:
             raise NativeError("conda is not configured on this server", "bad_config")
         # The login profile loads site modules whose PYTHONPATH/PERL5LIB would shadow the environment's own packages.
-        lines.append("unset PYTHONPATH PYTHONHOME PYTHONSTARTUP PERL5LIB")
+        # The same goes for what belongs to the account rather than to the environment: its ~/.local packages
+        # (a user-site deepspeed made phabox2 phatyp fail on 2026-10-23) and the site compiler's LD_LIBRARY_PATH.
+        lines.append("unset PYTHONPATH PYTHONHOME PYTHONSTARTUP PERL5LIB LD_LIBRARY_PATH LD_PRELOAD")
+        lines.append("export PYTHONNOUSERSITE=1")
         if conda_envs_dir:
             lines.append("export CONDA_ENVS_PATH=%s" % shlex.quote(conda_envs_dir))
         lines.append("source %s/etc/profile.d/conda.sh && conda activate %s || { echo 'conda activate failed' >&2; exit 96; }" % (

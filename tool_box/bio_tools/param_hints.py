@@ -207,10 +207,15 @@ def relative_prefix_error(
     """``(parameter, message)`` for a database/index prefix given as a bare name such as ``nt``.
 
     A native run needs the absolute prefix of a database built in the session; a name is never resolved.
+    A parameter the command writes to (`-out /work/{db}` of makeblastdb, `hmmpress /work/{db}`) is the opposite: it is
+    a name under the work directory, and a bare name is exactly what it takes.
     """
     names = declared(config, tool, operation)
+    command = str(_operation(config, tool, operation).get("command") or "")
     for key in ("db", "index"):
         value = dict(params or {}).get(key)
+        if "/work/{%s}" % key in command:
+            continue
         if key in names and isinstance(value, str) and value.strip() and not value.strip().startswith("/"):
             meta = names[key]
             description = str(meta.get("description") or "").strip()
