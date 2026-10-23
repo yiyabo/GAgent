@@ -22,6 +22,8 @@ from dataclasses import fields, is_dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from tool_box.mcp_mount.config import TOOL_PREFIX as MCP_TOOL_PREFIX
+
 from .session_helpers import (
     _extract_phagescope_task_snapshot,
     _extract_taskid_from_result,
@@ -715,6 +717,15 @@ def sanitize_tool_result(tool_name: str, raw_result: Any) -> Dict[str, Any]:
         summary_value = raw_result.get("summary")
         if isinstance(summary_value, str) and summary_value.strip():
             sanitized["summary"] = _trim_text(summary_value, limit=1000)
+        return sanitized
+
+    if tool_name.startswith(MCP_TOOL_PREFIX) and isinstance(raw_result, dict):
+        # An external server's reply. The generic path below would keep only the
+        # success flag and drop the data and the "untrusted" notice with it.
+        sanitized = {"tool": tool_name, "success": raw_result.get("success", False)}
+        for key in ("source", "server", "untrusted", "notice", "content", "truncated", "error", "error_code"):
+            if key in raw_result:
+                sanitized[key] = raw_result[key]
         return sanitized
 
     if isinstance(raw_result, dict):
@@ -1413,6 +1424,13 @@ def summarize_tool_result(tool_name: str, result: Dict[str, Any]) -> str:
         if isinstance(char_count, int):
             return f"load_skill loaded '{name}' ({char_count} chars){suffix}."
         return f"load_skill loaded '{name}'{suffix}."
+
+    if tool_name.startswith(MCP_TOOL_PREFIX):
+        if result.get("success") is False:
+            return f"{tool_name} failed: {_trim_text(str(result.get('error') or 'external tool reported an error'), limit=400)}"
+        size = len(str(result.get("content") or ""))
+        cut = " (truncated)" if result.get("truncated") else ""
+        return f"{tool_name} returned {size} chars{cut} from external MCP server '{result.get('server') or '?'}' (untrusted data)."
 
     return f"{tool_name} finished execution."
 
