@@ -246,6 +246,14 @@ _PHAGESCOPE_RESEARCH_ACTIONS = {"audit", "research_plan", "prepare_metadata_tabl
 _GENERIC_EXECUTION_TOOLS = frozenset({"execute_code", "delegate_task", "load_skill"})
 _artifact_preflight_service = ArtifactPreflightService()
 
+
+def _is_mounted_mcp_tool(tool_name: str) -> bool:
+    """True for a tool an admin has switched on (an external MCP server's tool)."""
+    from tool_box.mcp_mount import get_mount_manager
+
+    return tool_name in get_mount_manager().tool_names()
+
+
 # ---------------------------------------------------------------------------
 # Aliases matching the names used in the original StructuredChatAgent code
 # ---------------------------------------------------------------------------
@@ -928,6 +936,11 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
             tool_context = _build_chat_tool_context(agent, tool_name)
             if tool_context is not None:
                 params["tool_context"] = tool_context
+
+    elif _is_mounted_mcp_tool(tool_name):
+        # The server's own input schema is the parameter contract, and the mount
+        # handler drops anything that schema does not declare.
+        pass
 
     else:
         return AgentStep(

@@ -210,12 +210,56 @@ describe('Extensions page - MCP tab', () => {
     await waitFor(() => expect(api.enableMcp).toHaveBeenCalledWith('blast'));
     await waitFor(() => expect(within(card).getByRole('switch')).toBeDisabled());
     expect(within(card).getByRole('switch')).toHaveAttribute('aria-checked', 'false');
+    expect(within(card).getByText('启动中…')).toBeInTheDocument();
 
     resolve(server({ state: 'enabled', connected: true, live_tools: ['blast_search'] }));
     await waitFor(() => expect(within(card).getByRole('switch')).toHaveAttribute('aria-checked', 'true'));
     expect(within(card).getByRole('switch')).not.toBeDisabled();
     expect(within(card).getByText('已连接')).toBeInTheDocument();
     expect(api.listMcp).toHaveBeenCalledTimes(1);
+  });
+
+  it('says what switching a server on does, and who may do it', async () => {
+    api.listMcp.mockResolvedValue(mcp());
+    const { unmount } = renderPage();
+    expect(await screen.findByText(/从你的下一条消息起就能调用它的工具，无需重启/)).toBeInTheDocument();
+    expect(screen.queryByText(/只有管理员能开关服务器/)).not.toBeInTheDocument();
+    unmount();
+
+    api.listMcp.mockResolvedValue(mcp({ can_manage: false }));
+    renderPage();
+    expect(await screen.findByText(/只有管理员能开关服务器/)).toBeInTheDocument();
+  });
+
+  it('lists the tools the assistant can call once a server is connected', async () => {
+    api.listMcp.mockResolvedValue(
+      mcp({
+        servers: [
+          server({ state: 'enabled', connected: true, live_tools: ['mcp__blast__blast_search', 'mcp__blast__save_result'] }),
+          server({ id: 'idle', title: 'Idle One' }),
+        ],
+      }),
+    );
+    renderPage();
+
+    const card = await screen.findByTestId('mcp-server-blast');
+    expect(within(card).getByText(/已就绪：助手从你的下一条消息起即可调用这些工具/)).toBeInTheDocument();
+    expect(within(card).getByText('blast_search')).toBeInTheDocument();
+    expect(within(card).getByText('save_result')).toBeInTheDocument();
+    expect(within(card).queryByText(/mcp__/)).not.toBeInTheDocument();
+    expect(screen.getByText('已启用 1 个')).toBeInTheDocument();
+    expect(within(screen.getByTestId('mcp-server-idle')).queryByText(/已就绪/)).not.toBeInTheDocument();
+  });
+
+  it('does not claim a server is ready while it is not connected', async () => {
+    api.listMcp.mockResolvedValue(
+      mcp({ servers: [server({ state: 'enabled', connected: false, live_tools: ['mcp__blast__blast_search'] })] }),
+    );
+    renderPage();
+
+    const card = await screen.findByTestId('mcp-server-blast');
+    expect(within(card).queryByText(/已就绪/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/已启用 \d+ 个/)).not.toBeInTheDocument();
   });
 
   it('disables an enabled server', async () => {
@@ -280,6 +324,7 @@ describe('Extensions page - MCP tab', () => {
     const card = await screen.findByTestId('mcp-server-blast');
     expect(within(card).getByText('spawn failed: ENOENT')).toBeInTheDocument();
     expect(within(card).getByText('出错')).toBeInTheDocument();
+    expect(within(card).getByText('把开关关掉再打开，可以重试。')).toBeInTheDocument();
   });
 
   it('filters by search text and category', async () => {

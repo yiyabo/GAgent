@@ -7,6 +7,7 @@ import {
   IsolationBadge,
   SignoffBadge,
   VerificationBadge,
+  mountedToolLabel,
   shortCommit,
 } from './extensionMeta';
 import { useT } from '@/i18n/useT';
@@ -27,21 +28,25 @@ const McpServerCard: React.FC<McpServerCardProps> = ({ server, blockReason, pend
   const passedCount = verification.checks.filter((check) => check.passed).length;
   // An "error" server is configured on but failing; keep the switch on so it can be turned off.
   const checked = server.state === 'enabled' || server.state === 'error';
-  const stateTag =
-    server.state === 'enabled' ? (
-      <Tag color={server.connected ? 'green' : 'default'}>{server.connected ? t('extensions.connected') : t('extensions.enabled')}</Tag>
-    ) : server.state === 'error' ? (
-      <Tag color="red">{t('extensions.error')}</Tag>
-    ) : server.state === 'unavailable' ? (
-      <Tag>{t('extensions.unavailable')}</Tag>
-    ) : (
-      <Tag>{t('extensions.off')}</Tag>
-    );
+  const ready = server.state === 'enabled' && server.connected;
+  // Starting a container takes a couple of seconds; say so instead of leaving the old state on screen.
+  const stateTag = pending ? (
+    <Tag color="processing">{t(checked ? 'extensions.stopping' : 'extensions.starting')}</Tag>
+  ) : server.state === 'enabled' ? (
+    <Tag color={server.connected ? 'green' : 'default'}>{server.connected ? t('extensions.connected') : t('extensions.enabled')}</Tag>
+  ) : server.state === 'error' ? (
+    <Tag color="red">{t('extensions.error')}</Tag>
+  ) : server.state === 'unavailable' ? (
+    <Tag>{t('extensions.unavailable')}</Tag>
+  ) : (
+    <Tag>{t('extensions.off')}</Tag>
+  );
 
   return (
     <Card
       size="small"
       data-testid={`mcp-server-${server.id}`}
+      style={ready ? { borderInlineStart: '3px solid var(--status-success-fg)' } : undefined}
       title={
         <Space size={8} wrap>
           <Text strong>{server.title}</Text>
@@ -117,13 +122,34 @@ const McpServerCard: React.FC<McpServerCardProps> = ({ server, blockReason, pend
         ) : null}
 
         {server.error ? (
-          <Alert type="error" showIcon message={t('extensions.serverError')} description={server.error} />
+          <Alert
+            type="error"
+            showIcon
+            message={t('extensions.serverError')}
+            description={
+              <>
+                <div>{server.error}</div>
+                {server.state === 'error' ? <div>{t('extensions.errorRetryHint')}</div> : null}
+              </>
+            }
+          />
         ) : null}
 
-        {server.live_tools.length > 0 ? (
-          <Text type="secondary" style={{ fontSize: 12 }}>
-            {t('extensions.liveTools', { list: server.live_tools.join(', ') })}
-          </Text>
+        {ready && server.live_tools.length > 0 ? (
+          <Alert
+            type="success"
+            showIcon
+            message={t('extensions.readyTitle')}
+            description={
+              <Space size={[6, 6]} wrap>
+                {server.live_tools.map((name) => (
+                  <Tag key={name} style={{ marginInlineEnd: 0 }}>
+                    {mountedToolLabel(name)}
+                  </Tag>
+                ))}
+              </Space>
+            }
+          />
         ) : null}
 
         {verification.checks.length > 0 ? (
