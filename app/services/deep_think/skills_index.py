@@ -28,7 +28,9 @@ logger = logging.getLogger(__name__)
 
 ENV_FLAG = "CHAT_SKILLS_INDEX_ENABLED"
 MAX_DESCRIPTION_CHARS = 280
-# Beyond this the descriptions are dropped (names only); entries are never dropped.
+# When the list outgrows the cap, descriptions shrink step by step before they are dropped, so a few
+# extra skills cost some detail on every line instead of wiping all of it. Entries are never dropped.
+SHRINK_DESCRIPTION_CHARS = (MAX_DESCRIPTION_CHARS, 160, 80)
 MAX_INDEX_CHARS = 9_000
 
 _HEADER = (
@@ -76,16 +78,18 @@ def _group(skills: Iterable[Dict[str, Any]]) -> Dict[str, List[Tuple[str, str]]]
             continue
         seen.add(name)
         category = str(row.get("category") or "").strip() or "general"
-        grouped.setdefault(category, []).append((name, _one_line(row.get("description"), MAX_DESCRIPTION_CHARS)))
+        grouped.setdefault(category, []).append((name, _SPACES.sub(" ", str(row.get("description") or "")).strip()))
     return grouped
 
 
-def _render(grouped: Dict[str, List[Tuple[str, str]]], *, descriptions: bool) -> str:
+def _render(grouped: Dict[str, List[Tuple[str, str]]], *, description_chars: int) -> str:
+    """One line per skill; ``description_chars=0`` lists names only."""
     lines: List[str] = []
     for category in sorted(grouped):
         lines.append(f"  {category}:")
         for name, description in sorted(grouped[category]):
-            lines.append(f"    - {name}: {description}" if descriptions and description else f"    - {name}")
+            shown = _one_line(description, description_chars) if description_chars else ""
+            lines.append(f"    - {name}: {shown}" if shown else f"    - {name}")
     return "\n".join(lines)
 
 
@@ -101,9 +105,11 @@ def build_skills_index_block(skills: Optional[Iterable[Dict[str, Any]]] = None) 
     grouped = _group(rows)
     if not grouped:
         return ""
-    body = _render(grouped, descriptions=True)
-    if len(body) > MAX_INDEX_CHARS:
-        body = _render(grouped, descriptions=False)
+    body = ""
+    for limit in (*SHRINK_DESCRIPTION_CHARS, 0):
+        body = _render(grouped, description_chars=limit)
+        if len(body) <= MAX_INDEX_CHARS:
+            break
     return _HEADER + "<available_skills>\n" + body + "\n</available_skills>\n" + _FOOTER
 
 

@@ -542,7 +542,7 @@ def test_catalog_and_skill_directories_match() -> None:
 def test_catalog_entries_are_well_formed_and_honest() -> None:
     required_origin = {"kind", "source", "path", "commit", "license"}
     required_review = {"scanner", "scanner_version", "reviewed_by", "reviewed_at", "human_signoff", "notes"}
-    sources = {"anthropics/skills", "NousResearch/hermes-agent", "affaan-m/everything-claude-code", "gagent"}
+    sources = {"anthropics/skills", "NousResearch/hermes-agent", "affaan-m/everything-claude-code", "HKUSTDial/Supervisor-Skills", "gagent"}
     for name, entry in _catalog()["skills"].items():
         assert set(entry) == {"origin", "modified", "modifications", "review"}, name
         origin, review = entry["origin"], entry["review"]
@@ -582,6 +582,8 @@ def test_third_party_license_text_is_kept() -> None:
             assert "Apache License" in text and "Version 2.0" in text, name
         elif licence == "MIT":
             assert "Permission is hereby granted, free of charge" in text and "Copyright (c)" in text, name
+        elif licence == "CC-BY-NC-SA-4.0":
+            assert "Attribution-NonCommercial-ShareAlike 4.0" in text and "Copyright (c)" in text, name
         else:
             assert "All rights reserved" in text, name
 

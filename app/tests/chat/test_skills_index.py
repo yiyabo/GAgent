@@ -82,14 +82,37 @@ def test_duplicate_names_are_listed_once():
     assert block.count("- same:") == 1 and "first" in block and "second" not in block
 
 
+def _body(block: str) -> str:
+    return block.split("<available_skills>\n", 1)[1].split("</available_skills>", 1)[0]
+
+
 def test_oversized_index_drops_descriptions_but_never_entries():
-    rows = [_row(f"skill-{index:03d}", "d" * MAX_DESCRIPTION_CHARS) for index in range(60)]
+    rows = [_row(f"skill-{index:03d}", "d" * MAX_DESCRIPTION_CHARS) for index in range(150)]
 
-    block = build_skills_index_block(rows)
+    body = _body(build_skills_index_block(rows))
 
-    body = block.split("<available_skills>\n", 1)[1].split("</available_skills>", 1)[0]
     assert len(body) <= MAX_INDEX_CHARS
-    assert all(f"- skill-{index:03d}\n" in body for index in range(60))
+    assert all(f"- skill-{index:03d}\n" in body for index in range(150))
+
+
+def test_a_few_extra_skills_shorten_descriptions_instead_of_dropping_them():
+    rows = [_row(f"skill-{index:03d}", "word " * 100) for index in range(40)]
+    assert len(_body(build_skills_index_block(rows[:20]))) <= MAX_INDEX_CHARS
+
+    body = _body(build_skills_index_block(rows))
+
+    assert len(body) <= MAX_INDEX_CHARS
+    lines = [line for line in body.splitlines() if line.strip().startswith("- skill-")]
+    assert len(lines) == 40
+    assert all(": " in line and line.endswith("…") for line in lines)
+    assert max(len(line.split(": ", 1)[1]) for line in lines) < MAX_DESCRIPTION_CHARS
+
+
+def test_index_below_the_cap_keeps_full_length_descriptions():
+    body = _body(build_skills_index_block([_row("only", "word " * 100)]))
+
+    description = body.splitlines()[1].split(": ", 1)[1]
+    assert len(description) == MAX_DESCRIPTION_CHARS
 
 
 def test_switch_turns_the_index_off(two_skills, monkeypatch):
