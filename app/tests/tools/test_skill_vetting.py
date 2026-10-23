@@ -148,10 +148,18 @@ def test_description_rules(tmp_path: Path) -> None:
     assert result["ok"] is True
 
 
-def test_loader_mismatch_block_scalar_description(tmp_path: Path) -> None:
-    skill = make_skill(tmp_path, frontmatter="name: demo-skill\ndescription: >\n  folded text\n  over two lines")
-    result = scan_skill_dir(skill)
-    assert "fm.loader_mismatch" in rules(result, "block")
+def test_block_scalar_description_is_read_the_same_by_loader_and_yaml(tmp_path: Path) -> None:
+    """The loader used to read ">" for `description: >`, which the vetter had to block.
+
+    It now folds the indented lines, so a block-scalar description matches YAML and
+    nothing is flagged; the mismatch rule still covers nested and duplicate keys below.
+    """
+    for indicator in (">", ">-", "|"):
+        skill = make_skill(tmp_path / indicator.replace(">", "gt").replace("|", "pipe").replace("-", "dash"),
+                           frontmatter=f"name: demo-skill\ndescription: {indicator}\n  folded text\n  over two lines")
+        result = scan_skill_dir(skill)
+        assert "fm.loader_mismatch" not in rules(result), (indicator, result["findings"])
+        assert result["ok"] is True
 
 
 def test_loader_mismatch_nested_name_key(tmp_path: Path) -> None:

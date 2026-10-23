@@ -705,9 +705,16 @@ def sanitize_tool_result(tool_name: str, raw_result: Any) -> Dict[str, Any]:
             sanitized["content"] = _trim_text(content_value, limit=32_000)
         if "error" in raw_result:
             sanitized["error"] = _trim_text(str(raw_result.get("error") or ""), limit=400)
-        for key in ("section", "truncated", "content_chars", "total_chars"):
+        for key in ("section", "file_path", "truncated", "content_chars", "total_chars", "usage_hint"):
             if key in raw_result:
                 sanitized[key] = raw_result.get(key)
+        linked_value = raw_result.get("linked_files")
+        if isinstance(linked_value, dict) and linked_value:
+            sanitized["linked_files"] = {
+                str(group): [str(item) for item in items[:40]]
+                for group, items in linked_value.items()
+                if isinstance(items, list) and items
+            }
         for key in ("available_skills", "available_sections"):
             value = raw_result.get(key)
             if isinstance(value, list) and value:
@@ -1421,9 +1428,10 @@ def summarize_tool_result(tool_name: str, result: Dict[str, Any]) -> str:
         name = str(result.get("name") or "").strip() or "unknown skill"
         suffix = " (truncated; re-call with 'section')" if result.get("truncated") else ""
         char_count = result.get("content_chars")
+        target = f"'{name}' file {result['file_path']}" if result.get("file_path") else f"'{name}'"
         if isinstance(char_count, int):
-            return f"load_skill loaded '{name}' ({char_count} chars){suffix}."
-        return f"load_skill loaded '{name}'{suffix}."
+            return f"load_skill loaded {target} ({char_count} chars){suffix}."
+        return f"load_skill loaded {target}{suffix}."
 
     if tool_name.startswith(MCP_TOOL_PREFIX):
         if result.get("success") is False:

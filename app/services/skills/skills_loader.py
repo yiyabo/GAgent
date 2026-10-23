@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import shutil
 import time
 from dataclasses import asdict, dataclass, field
@@ -532,7 +533,10 @@ class SkillsLoader:
             return {}
 
         payload: Dict[str, str] = {}
-        for line in lines[1:]:
+        index = 1
+        while index < len(lines):
+            line = lines[index]
+            index += 1
             stripped = line.strip()
             if stripped == "---":
                 break
@@ -540,7 +544,16 @@ class SkillsLoader:
                 continue
             key, value = line.split(":", 1)
             text = value.strip()
-            if text.startswith('"') and text.endswith('"'):
+            if re.fullmatch(r"[>|][+\-]?\d*", text):
+                # YAML block scalar (`description: >-` then indented lines). Without this the
+                # value would be the literal ">-" and the skill index would show nothing useful.
+                folded = text[0] == ">"
+                block: List[str] = []
+                while index < len(lines) and (not lines[index].strip() or lines[index][:1] in (" ", "\t")):
+                    block.append(lines[index].strip())
+                    index += 1
+                text = (" " if folded else "\n").join(part for part in block if part)
+            elif text.startswith('"') and text.endswith('"'):
                 text = text[1:-1]
             elif text.startswith("'") and text.endswith("'"):
                 text = text[1:-1]

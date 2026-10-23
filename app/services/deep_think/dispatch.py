@@ -640,7 +640,8 @@ def _build_tool_result_text_for_llm(
         "error": error,
     }
     raw_text = json.dumps(payload, ensure_ascii=False, default=str)
-    if len(raw_text) <= cls.MAX_TOOL_RESULT_TEXT_CHARS:
+    limit = _tool_result_text_limit(cls, tool_name)
+    if len(raw_text) <= limit:
         return raw_text
 
     compact_result = cls._compact_tool_result_for_llm(tool_name, result)
@@ -652,6 +653,7 @@ def _build_tool_result_text_for_llm(
             payload=payload,
             result=result,
             spill_path=_tool_result_spill_path(result),
+            limit=limit,
         )
         logger.info(
             "[DEEP_THINK_NATIVE] Truncated tool result for llm context: tool=%s raw_chars=%s bounded_chars=%s",
@@ -760,8 +762,24 @@ def _head_tail_text(text: str, budget: int, spill_path: Optional[str]) -> str:
     return text[:head] + marker + text[-tail:]
 
 
+# A skill is curated instruction text the model has to read whole: clipping the middle of a
+# playbook (as the head/tail window would for a 13k-char SKILL.md) silently drops steps.
+# load_skill already caps its own content at 30k chars, so the envelope fits in 40k.
+_TOOL_RESULT_TEXT_LIMITS = {"load_skill": 40_000}
+
+
+def _tool_result_text_limit(cls: Any, tool_name: str) -> int:
+    override = _TOOL_RESULT_TEXT_LIMITS.get(str(tool_name or "").strip().lower(), 0)
+    return max(cls.MAX_TOOL_RESULT_TEXT_CHARS, override)
+
+
 def _bound_tool_result_text_for_llm(
-    cls: Any, *, payload: Dict[str, Any], result: Any, spill_path: Optional[str]
+    cls: Any,
+    *,
+    payload: Dict[str, Any],
+    result: Any,
+    spill_path: Optional[str],
+    limit: Optional[int] = None,
 ) -> str:
     """Bound an oversized tool result with no dedicated compactor.
 
@@ -770,7 +788,7 @@ def _bound_tool_result_text_for_llm(
     serialized ``result`` body to a head/tail window around a marker naming how
     much was dropped and where the full output can be read.
     """
-    limit = cls.MAX_TOOL_RESULT_TEXT_CHARS
+    limit = limit or cls.MAX_TOOL_RESULT_TEXT_CHARS
     result_text = json.dumps(result, ensure_ascii=False, default=str)
     # Length of the envelope with a zero-length string value (the two quotes are
     # the cost of the ``result`` slot itself, not the body).

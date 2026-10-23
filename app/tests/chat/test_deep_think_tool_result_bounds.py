@@ -145,3 +145,37 @@ def test_whitelisted_compactor_output_is_unchanged() -> None:
         "result": compacted,
         "error": None,
     }
+
+
+# --------------------------------------------------------------------------
+# load_skill: a skill body is read whole, not clipped to the generic window
+# --------------------------------------------------------------------------
+
+
+def _skill_result(chars: int) -> dict:
+    return {"success": True, "name": "phage-genomics-analyst", "content": "STEP-ONE " + ("m" * chars) + " STEP-LAST", "truncated": False}
+
+
+def test_a_skill_body_larger_than_the_generic_window_reaches_the_model_whole() -> None:
+    body = _skill_result(MAX + 3_000)  # 13k+ chars: clipped (middle dropped) for any other tool
+
+    text = DeepThinkAgent._build_tool_result_text_for_llm(tool_name="load_skill", result=body, success=True, error=None)
+
+    assert len(text) > MAX
+    assert "truncated;" not in text
+    assert json.loads(text)["result"]["content"] == body["content"]
+
+
+def test_the_same_size_from_another_tool_is_still_clipped() -> None:
+    text = DeepThinkAgent._build_tool_result_text_for_llm(tool_name="url_fetch", result=_skill_result(MAX + 3_000), success=True, error=None)
+
+    assert len(text) <= MAX and "truncated" in text
+
+
+def test_a_skill_result_over_the_skill_cap_is_still_bounded() -> None:
+    from app.services.deep_think.dispatch import _TOOL_RESULT_TEXT_LIMITS
+
+    limit = _TOOL_RESULT_TEXT_LIMITS["load_skill"]
+    text = DeepThinkAgent._build_tool_result_text_for_llm(tool_name="load_skill", result=_skill_result(limit * 2), success=True, error=None)
+
+    assert len(text) <= limit and "truncated" in text

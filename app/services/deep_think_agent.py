@@ -1228,6 +1228,9 @@ class DeepThinkAgent:
     def _build_bio_tools_quick_map_block(self) -> str:
         return _prompts._build_bio_tools_quick_map_block(self)
 
+    def _build_skills_index_block(self) -> str:
+        return _prompts._build_skills_index_block(self)
+
     def _build_plan_artifact_discovery_block(
         self,
         context: Optional[Dict[str, Any]] = None,

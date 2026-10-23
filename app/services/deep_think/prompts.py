@@ -419,6 +419,15 @@ def _build_bio_tools_quick_map_block(agent: "DeepThinkAgent") -> str:
     )
 
 
+def _build_skills_index_block(agent: "DeepThinkAgent") -> str:
+    """Level-1 skill index (names + descriptions); opened on demand with load_skill."""
+    if "load_skill" not in agent.available_tools:
+        return ""
+    from .skills_index import build_skills_index_block
+
+    return build_skills_index_block()
+
+
 def _build_plan_artifact_discovery_block(
     agent: "DeepThinkAgent",
     context: Optional[Dict[str, Any]] = None,
@@ -930,6 +939,8 @@ def _build_native_system_prompt(
         + agent._build_grounded_tooling_block()
         + agent._build_artifact_deliverable_workflow_block()
         + agent._build_bio_tools_quick_map_block()
+        # A plan-task run already carries its pre-selected SKILL GUIDANCE above.
+        + ("" if task_preamble else agent._build_skills_index_block())
         + agent._build_plan_artifact_discovery_block(context)
         + agent._build_evidence_scope_block()
         + agent._build_session_isolation_block()
