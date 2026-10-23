@@ -140,6 +140,12 @@ def test_script_loads_modules_and_records_the_exit_code(dirs) -> None:
     assert script.startswith("#!/bin/bash -l")
     assert "module load SAMtools/1.15.1" in script
     assert "umask 000" in script and "trap 'echo $? > /runs/x/exit_code' EXIT" in script
+    # The loaded modules are re-applied first: a login profile that resets LD_LIBRARY_PATH would otherwise leave
+    # them loaded with their libraries off the path.
+    lines = script.splitlines()
+    assert lines.index("module reload >/dev/null 2>&1 || true") < next(
+        i for i, line in enumerate(lines) if line.startswith("module load ")
+    )
 
 
 def test_script_exports_cpus_and_activates_the_conda_env_from_the_configured_dir(dirs) -> None:

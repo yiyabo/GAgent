@@ -417,6 +417,10 @@ def render_script(
     ]
     if job["modules"]:
         lines.append("type module >/dev/null 2>&1 || . /etc/profile.d/z00_lmod.sh")
+        # An account's own profile may reset LD_LIBRARY_PATH after the default modules were applied (platform's
+        # ~/.bash_profile does), which leaves them "loaded" with their libraries off the path: blastn, hmmsearch,
+        # megahit and mmseqs then fail with GLIBCXX_3.4.29 / libmpi.so.40 not found. Reloading re-applies them.
+        lines.append("module reload >/dev/null 2>&1 || true")
         lines.append("module load %s || { echo 'module load failed: %s' >&2; exit 97; }" % (
             " ".join(shlex.quote(m) for m in job["modules"]),
             " ".join(job["modules"]),
