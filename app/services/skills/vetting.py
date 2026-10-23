@@ -71,7 +71,10 @@ def naive_frontmatter(content: str) -> Dict[str, str]:
         return {}
 
     payload: Dict[str, str] = {}
-    for line in lines[1:]:
+    index = 1
+    while index < len(lines):
+        line = lines[index]
+        index += 1
         stripped = line.strip()
         if stripped == "---":
             break
@@ -79,7 +82,14 @@ def naive_frontmatter(content: str) -> Dict[str, str]:
             continue
         key, value = line.split(":", 1)
         text = value.strip()
-        if text.startswith('"') and text.endswith('"'):
+        if re.fullmatch(r"[>|][+\-]?\d*", text):
+            folded = text[0] == ">"
+            block: List[str] = []
+            while index < len(lines) and (not lines[index].strip() or lines[index][:1] in (" ", "\t")):
+                block.append(lines[index].strip())
+                index += 1
+            text = (" " if folded else "\n").join(part for part in block if part)
+        elif text.startswith('"') and text.endswith('"'):
             text = text[1:-1]
         elif text.startswith("'") and text.endswith("'"):
             text = text[1:-1]
