@@ -22,6 +22,8 @@ import logging
 import os
 from typing import Any, Dict, List, Set
 
+from .skills_index import skills_index_active
+
 logger = logging.getLogger(__name__)
 
 META_TOOL_NAME = "load_tool_schema"
@@ -103,6 +105,10 @@ class SchemaDisclosure:
         keep.update(CORE_KEEP_TOOLS)
         if plan_bound:
             keep.update(PLAN_BOUND_KEEP_TOOLS)
+        # The skill index in the system prompt names skills the model opens with
+        # load_skill, so the tool must not wait behind load_tool_schema.
+        if "load_skill" in self._available and skills_index_active():
+            keep.add("load_skill")
         if self.v2:
             keep.add("load_skill")
             self._disclosed.update(keep)

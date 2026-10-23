@@ -438,14 +438,14 @@ NATIVE_TOOL_CONTENT: Dict[str, Dict[str, Any]] = {
         },
     },
     "load_skill": {
-        # 已对齐 impl（2026-09-24 新增）：渐进式披露第④步，模型按需拉取完整 SKILL.md
+        # 已对齐 impl：渐进式披露——索引（系统提示词）→ SKILL.md + linked_files → 单个关联文件
         "description": (
-            "Load the complete SKILL.md of a named runtime skill on demand "
-            "(progressive disclosure). Use when the available-skills summary names a "
-            "skill relevant to the current task and you need its full instructions "
-            "before proceeding. Unknown names return the available skill list. For "
-            "large skills, pass 'section' to fetch one markdown section instead of "
-            "the whole body."
+            "Load a runtime skill on demand (progressive disclosure): a saved, vetted playbook "
+            "for a kind of work. The first call, load_skill(name), returns the complete SKILL.md "
+            "plus a 'linked_files' list (references, templates, scripts). Open one of those only "
+            "when the instructions point to it: load_skill(name, file_path='references/x.md'). "
+            "Unknown names return the available skill list. For long files pass 'section' to "
+            "fetch one markdown section instead of the whole text."
         ),
         "parameters": {
             "type": "object",
@@ -458,7 +458,14 @@ NATIVE_TOOL_CONTENT: Dict[str, Dict[str, Any]] = {
                     "type": "string",
                     "description": (
                         "Optional markdown section filter (case-insensitive substring of a "
-                        "heading). Use it to page through large skills whose body was truncated."
+                        "heading). Use it to page through long text that was truncated."
+                    ),
+                },
+                "file_path": {
+                    "type": "string",
+                    "description": (
+                        "Optional path of a linked file inside the skill, taken from linked_files "
+                        "(e.g. 'references/api.md'). Omit to get the main SKILL.md."
                     ),
                 },
             },
