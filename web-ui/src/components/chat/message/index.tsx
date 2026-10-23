@@ -30,6 +30,7 @@ import MessageActions from './MessageActions';
 import ResumeRunAction from './ResumeRunAction';
 import SkillLearningPanel from './SkillLearningPanel';
 import RecallReferences from './RecallReferences';
+import MessageAttachments from './MessageAttachments';
 import ToolResultDrawer, { ToolStatusBar } from './ToolResultDrawer';
 import { extractLlmReplyMessage } from '@/utils/llmReplyDisplay';
 import { collectArtifactGallery, collectArtifactFiles, filterInlinedGalleryItems } from '@/utils/artifactGallery';
@@ -572,6 +573,7 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
                 )}
                 {showThinkingProcess && renderThinkingProcessBlock()}
                 {summaryBlock ?? renderContent()}
+                {type === 'user' && <MessageAttachments attachments={metadata?.attachments} />}
                 {renderAiDisclaimer()}
                 {showInlineArtifactGallery && (
                   <ArtifactGallery items={artifactGallery} sessionId={effectiveSessionId} />

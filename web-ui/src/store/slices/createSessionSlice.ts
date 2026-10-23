@@ -51,7 +51,7 @@ export const createSessionSlice: ChatSliceCreator = (set, get) => ({
   SessionStorage.clearCurrentSessionId();
   }
 
-  // Composer chips must mirror server uploads disk for this session.
+  // Show this chat's unsent attachments and drop any whose file is gone on the server.
   if (session) {
     void get().syncUploadedFilesFromServer();
   } else {

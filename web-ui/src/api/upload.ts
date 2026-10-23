@@ -1,5 +1,7 @@
 import { BaseApi } from './client';
 
+export const UPLOAD_TIMEOUT_MS = 60 * 60 * 1000;
+
 export interface UploadResponse {
   success: boolean;
   file_id?: string;
@@ -52,15 +54,18 @@ export class UploadApi extends BaseApi {
   headers: {
   'Content-Type': 'multipart/form-data',
   },
+  // Sequencing data can take minutes to send; the 30 s API default would abort it.
+  timeout: UPLOAD_TIMEOUT_MS,
   });
   return response.data;
   };
 
   /**
-  * deletefile
+  * Delete one upload. Uses the raw client so callers keep the HTTP status to explain a failure.
   */
   deleteFile = async (fileId: string, sessionId: string): Promise<{ success: boolean; message: string }> => {
-  return this.delete(`/upload/${fileId}`, { session_id: sessionId });
+  const response = await this.client.delete(`/upload/${encodeURIComponent(fileId)}`, { params: { session_id: sessionId } });
+  return response.data;
   };
 
   /**
@@ -68,24 +73,6 @@ export class UploadApi extends BaseApi {
   */
   listFiles = async (sessionId: string): Promise<FileListResponse> => {
   return this.get('/upload/list', { session_id: sessionId });
-  };
-
-  /**
-   * Clear all session uploads, optionally keeping one file_id.
-   */
-  clearUploads = async (
-    sessionId: string,
-    keepFileId?: string,
-  ): Promise<{ success: boolean; deleted_count?: number; retained_count?: number }> => {
-    const formData = new FormData();
-    formData.append('session_id', sessionId);
-    if (keepFileId) {
-      formData.append('keep_file_id', keepFileId);
-    }
-    const response = await this.client.post('/upload/clear', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-    });
-    return response.data;
   };
 }
 

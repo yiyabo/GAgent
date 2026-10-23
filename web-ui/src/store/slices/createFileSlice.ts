@@ -1,6 +1,8 @@
+import axios from 'axios';
 import { ChatSliceCreator, ChatState } from './types';
 import { uploadApi } from '@api/upload';
-import { UploadedFile } from '@/types';
+import { translate } from '@/i18n/useT';
+import { ChatSession, UploadedFile } from '@/types';
 
 function isLocalAttachmentRef(file?: UploadedFile | null, fileId?: string): boolean {
   if (!file && !fileId) return true;
@@ -28,55 +30,45 @@ function resolveServerFileId(response: {
   return pathLeaf;
 }
 
-function mapServerFileToUploaded(f: {
-  file_id?: string;
-  file_path: string;
-  file_name: string;
-  original_name: string;
-  file_size: string;
-  uploaded_at: string;
-  category?: string;
-  is_archive?: boolean;
-  extracted_path?: string;
-  extracted_files?: number;
-}): UploadedFile {
-  const pathLeaf = (f.file_path || '').split('/').pop() || f.file_name || '';
-  const fileId = resolveServerFileId(f) || pathLeaf;
-  const lower = (f.original_name || f.file_name || pathLeaf).toLowerCase();
-  let file_type = 'application/octet-stream';
-  if (/\.(png|jpe?g|gif|webp|bmp|tiff?)$/.test(lower)) file_type = 'image/*';
-  else if (/\.pdf$/.test(lower)) file_type = 'application/pdf';
-  else if (/\.(xlsx?|csv|tsv)$/.test(lower)) file_type = 'application/vnd.ms-excel';
-  return {
-    file_id: fileId,
-    file_path: f.file_path,
-    file_name: f.file_name || pathLeaf,
-    original_name: f.original_name || f.file_name || pathLeaf,
-    file_size: f.file_size,
-    file_type,
-    uploaded_at: f.uploaded_at,
-    category: f.category,
-    is_archive: f.is_archive,
-    extracted_path: f.extracted_path,
-    extracted_files: f.extracted_files,
-    source: 'server',
-  };
+function apiSessionId(session: ChatSession): string {
+  return session.session_id ?? session.id;
 }
 
+/**
+ * The composer holds the attachments of the message the user has not sent yet, one list per chat
+ * (`attachmentDrafts`, keyed by the local session id). `uploadedFiles` mirrors the current chat's list.
+ * Sending a message takes the list, so a file belongs to exactly one message once it is sent and can no
+ * longer be removed from the composer while the agent works on it.
+ */
 export const createFileSlice: ChatSliceCreator = (set, get) => {
-  let latestSyncRequest: symbol | null = null;
+  const writeDraft = (key: string, update: (files: UploadedFile[]) => UploadedFile[]) => {
+    if (!key) return;
+    set((state: ChatState) => {
+      const next = update(state.attachmentDrafts?.[key] ?? []);
+      const attachmentDrafts = { ...(state.attachmentDrafts ?? {}), [key]: next };
+      return state.currentSession?.id === key ? { attachmentDrafts, uploadedFiles: next } : { attachmentDrafts };
+    });
+  };
+
   return ({
   uploadedFiles: [],
+  attachmentDrafts: {},
   uploadingFiles: [],
 
   uploadFile: async (file: File) => {
     const session = get().currentSession;
     if (!session) {
-      throw new Error('Please create or select a session first');
+      throw new Error(translate('upload.needSession'));
     }
+    // An upload that finishes after the user switched chats still belongs to the chat it started in.
+    const key = session.id;
+    const uploadId = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    set((state: ChatState) => ({
+      uploadingFiles: [...(state.uploadingFiles ?? []), { id: uploadId, name: file.name, sessionKey: key }],
+    }));
 
     try {
-      const response = await uploadApi.uploadFile(file, session.id);
+      const response = await uploadApi.uploadFile(file, apiSessionId(session));
       const serverFileId = resolveServerFileId(response);
       const pathLeaf = response.file_path.split('/').pop() || response.file_name || '';
       const uploadedFile: UploadedFile = {
@@ -93,116 +85,82 @@ export const createFileSlice: ChatSliceCreator = (set, get) => {
         extracted_files: response.extracted_files,
         source: 'server',
       };
-
-      // Replace mode: purge other session uploads on disk so only the latest remains.
-      try {
-        await uploadApi.clearUploads(session.id, uploadedFile.file_id);
-      } catch (e) {
-        console.warn('Failed to clear previous session uploads:', e);
-        const previous = get().uploadedFiles.filter((f) => !isLocalAttachmentRef(f));
-        await Promise.all(
-          previous.map((f) =>
-            f.file_id
-              ? uploadApi.deleteFile(f.file_id, session.id).catch((err) => {
-                  console.warn('Failed to delete previous upload', f.file_id, err);
-                })
-              : Promise.resolve(),
-          ),
-        );
-      }
-
-      // Re-sync from server truth (disk) so UI never drifts.
-      try {
-        await get().syncUploadedFilesFromServer();
-      } catch {
-        const localRefs = get().uploadedFiles.filter((f) => isLocalAttachmentRef(f));
-        set({ uploadedFiles: [...localRefs, uploadedFile] });
-      }
-
+      writeDraft(key, (files) => [...files.filter((f) => f.file_id !== uploadedFile.file_id), uploadedFile]);
       return uploadedFile;
-    } catch (error) {
-      console.error('uploadfilefailed:', error);
-      throw error;
+    } finally {
+      set((state: ChatState) => ({
+        uploadingFiles: (state.uploadingFiles ?? []).filter((u) => u.id !== uploadId),
+      }));
     }
   },
 
   setUploadedFiles: (files: UploadedFile[]) => {
-    set({ uploadedFiles: files });
+    const session = get().currentSession;
+    if (!session) {
+      set({ uploadedFiles: files });
+      return;
+    }
+    writeDraft(session.id, () => files);
   },
 
   syncUploadedFilesFromServer: async () => {
-    const request = Symbol('upload-list');
-    latestSyncRequest = request;
     const session = get().currentSession;
     if (!session) {
       set({ uploadedFiles: [] });
       return;
     }
-    const sessionId = session.session_id ?? session.id;
-    if (!sessionId) {
-      set({ uploadedFiles: [] });
-      return;
-    }
+    const key = session.id;
+    const drafts = get().attachmentDrafts?.[key] ?? [];
+    set({ uploadedFiles: drafts });
 
-    const canApply = (state: ChatState) =>
-      latestSyncRequest === request &&
-      state.currentSession?.id === session.id &&
-      (state.currentSession.session_id ?? state.currentSession.id) === sessionId;
-
+    // Drop chips whose file was deleted on the server meanwhile, so a message never names a missing file.
+    // Only files present when the request started are checked; a file uploaded during the request stays.
+    const checked = drafts.filter((f) => !isLocalAttachmentRef(f)).map((f) => f.file_id);
+    if (checked.length === 0) return;
     try {
-      const res = await uploadApi.listFiles(sessionId);
-      const serverFiles = (res.files || []).map(mapServerFileToUploaded);
-      // Prefer server list as source of truth for real uploads.
-      // A local/project ref that duplicates a server file by display name is
-      // the same attachment added twice via two entries — drop it so the
-      // composer does not render identical chips.
-      const serverNames = new Set(
-        serverFiles.map((f) => f.original_name || f.file_name),
-      );
-      set((state) => {
-        if (!canApply(state)) return {};
-        // Read refs at application time so a project reference added while
-        // this request was waiting is retained by the current session.
-        const localRefs = state.uploadedFiles.filter((f) => isLocalAttachmentRef(f));
-        const dedupedLocalRefs = localRefs.filter(
-          (f) => !serverNames.has(f.original_name || f.file_name),
-        );
-        return { uploadedFiles: [...dedupedLocalRefs, ...serverFiles] };
-      });
+      const res = await uploadApi.listFiles(apiSessionId(session));
+      const present = new Set((res.files || []).map((f) => resolveServerFileId(f)));
+      const gone = new Set(checked.filter((id) => !present.has(id)));
+      if (gone.size === 0) return;
+      writeDraft(key, (files) => files.filter((f) => !gone.has(f.file_id)));
     } catch (error) {
-      if (!canApply(get())) return;
-      console.warn('Failed to sync uploads from server:', error);
-      // Keep the current chips intact. Rebuilding them from a pre-await
-      // snapshot could reintroduce stale refs or drop newly added ones.
+      console.warn('Failed to check pending attachments against the server:', error);
     }
   },
 
   removeUploadedFile: async (fileId: string) => {
     const session = get().currentSession;
-    const target = get().uploadedFiles.find((f) => f.file_id === fileId);
+    if (!session) return;
+    const key = session.id;
+    const target = (get().attachmentDrafts?.[key] ?? []).find((f) => f.file_id === fileId);
+    if (!target) return;
 
-    const dropLocal = () => {
-      set((state) => ({
-        uploadedFiles: state.uploadedFiles.filter((f) => f.file_id !== fileId),
-      }));
-    };
-
-    if (isLocalAttachmentRef(target, fileId) || !session) {
-      dropLocal();
-      return;
+    if (!isLocalAttachmentRef(target, fileId)) {
+      try {
+        await uploadApi.deleteFile(fileId, apiSessionId(session));
+      } catch (error) {
+        // Already gone on the server: the chip is all that is left to remove.
+        if (!(axios.isAxiosError(error) && error.response?.status === 404)) throw error;
+      }
     }
+    writeDraft(key, (files) => files.filter((f) => f.file_id !== fileId));
+  },
 
-    await uploadApi.deleteFile(fileId, session.session_id ?? session.id);
-    // Confirm against disk
-    try {
-      await get().syncUploadedFilesFromServer();
-    } catch {
-      dropLocal();
-    }
+  takeComposerAttachments: () => {
+    const session = get().currentSession;
+    if (!session) return [];
+    const files = get().attachmentDrafts?.[session.id] ?? [];
+    if (files.length > 0) writeDraft(session.id, () => []);
+    return files;
   },
 
   clearUploadedFiles: () => {
-    set({ uploadedFiles: [] });
+    const session = get().currentSession;
+    if (!session) {
+      set({ uploadedFiles: [] });
+      return;
+    }
+    writeDraft(session.id, () => []);
   },
   });
 };

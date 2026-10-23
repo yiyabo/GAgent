@@ -12,7 +12,7 @@ vi.mock('@store/chat', () => {
   const state = () => ({
     currentSession: mocked.session, responseDefaults: null, responsePreferenceSaving: new Set(),
     loadResponseDefaults: vi.fn().mockResolvedValue(undefined), updateResponsePreferences: vi.fn(),
-    uploadedFiles: mocked.files, removeUploadedFile: vi.fn(), syncUploadedFilesFromServer: vi.fn().mockResolvedValue(undefined),
+    uploadedFiles: mocked.files, uploadingFiles: [], removeUploadedFile: vi.fn(), syncUploadedFilesFromServer: vi.fn().mockResolvedValue(undefined),
   });
   const useChatStore: any = (selector: any) => selector(state());
   useChatStore.getState = state;
@@ -27,6 +27,7 @@ vi.mock('@store/auth', () => ({
 import ResponseStyleSelector from './ResponseStyleSelector';
 import UploadedFilesList from './UploadedFilesList';
 import RecallReferences from './message/RecallReferences';
+import MessageAttachments from './message/MessageAttachments';
 import { FigureFineTuneModal } from './FigureFineTuneModal';
 
 const CJK = /[\u4e00-\u9fff]/;
@@ -49,8 +50,20 @@ describe('chat parts in English', () => {
 
   it('the attachment list', () => {
     const { container } = render(<UploadedFilesList />);
-    expect(container.textContent).toContain('Files: 1');
+    expect(container.textContent).toContain('Will be sent with your next message · 1 file(s)');
+    expect(container.textContent).toContain('reads.fasta');
     expect(container.textContent).not.toMatch(CJK);
+  });
+
+  it('the files sent with a message', () => {
+    const { container } = render(<MessageAttachments attachments={[
+      { type: 'file', name: 'lambda.fasta', path: '/u/a1_lambda.fasta' },
+      { type: 'image', name: 'plot.png', path: '/u/b2_plot.png' },
+    ]} />);
+    expect(screen.getByRole('list', { name: 'Files sent with this message (2)' })).toBeTruthy();
+    expect(screen.getAllByRole('listitem').map((item) => item.textContent)).toEqual(['lambda.fasta', 'plot.png']);
+    expect(container.textContent).not.toMatch(CJK);
+    expect(render(<MessageAttachments attachments={[]} />).container.innerHTML).toBe('');
   });
 
   it('recalled memory and history', () => {

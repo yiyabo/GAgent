@@ -6,6 +6,7 @@ import { useAuthStore } from '@store/auth';
 import { UPLOAD_ACCEPT_LIST, isAllowedUploadFile } from '@/constants/uploadFileTypes';
 import FileTreeSelector from './FileTreeSelector';
 import { useT } from '@/i18n/useT';
+import { describeUploadError } from '@/utils/uploadError';
 
 interface FileUploadButtonProps {
   size?: 'small' | 'middle' | 'large';
@@ -16,35 +17,28 @@ const FileUploadButton: React.FC<FileUploadButtonProps> = ({ size = 'middle' }) 
   const uploadFile = useChatStore((s) => s.uploadFile);
   const currentSession = useChatStore((s) => s.currentSession);
   const { projectId } = useAuthStore();
-  const [uploading, setUploading] = useState(false);
   const [treeSelectorVisible, setTreeSelectorVisible] = useState(false);
 
   const handleUpload = async (file: File) => {
     if (!currentSession) {
       message.error(t('upload.needSession'));
-      return false;
+      return;
     }
-
-    setUploading(true);
     try {
       await uploadFile(file);
       message.success(t('upload.uploaded', { name: file.name }));
-      return false;
-    } catch (error: any) {
-      message.error(t('upload.failed', { message: error.message || t('app.unknownError') }));
-      return false;
-    } finally {
-      setUploading(false);
+    } catch (error) {
+      message.error(t('upload.failed', { name: file.name, message: describeUploadError(error, 'upload') }));
     }
   };
 
   const beforeUpload = (file: File) => {
     if (!isAllowedUploadFile(file)) {
-      message.error(t('upload.unsupportedType'));
+      message.error(t('upload.unsupportedType', { name: file.name }));
       return Upload.LIST_IGNORE;
     }
 
-    handleUpload(file);
+    void handleUpload(file);
     return false;
   };
 
@@ -88,14 +82,14 @@ const FileUploadButton: React.FC<FileUploadButtonProps> = ({ size = 'middle' }) 
           beforeUpload={beforeUpload}
           showUploadList={false}
           accept={UPLOAD_ACCEPT_LIST}
-          multiple={false}
+          multiple
         >
           <Tooltip title={t('upload.tip')}>
             <Button
               type="text"
               size={size}
               icon={<PaperClipOutlined />}
-              loading={uploading}
+              aria-label={t('upload.tip')}
               disabled={!currentSession}
             />
           </Tooltip>

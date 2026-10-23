@@ -45,8 +45,11 @@ export interface ChatState {
     // Memory & Files Slice State
     memoryEnabled: boolean;
     relevantMemories: Memory[];
+    /** Attachments of the current chat's next message (mirror of `attachmentDrafts[currentSession.id]`). */
     uploadedFiles: UploadedFile[];
-    uploadingFiles: Array<{ file: File; progress: number }>;
+    /** Unsent attachments per chat, keyed by the local session id. */
+    attachmentDrafts: Record<string, UploadedFile[]>;
+    uploadingFiles: Array<{ id: string; name: string; sessionKey: string }>;
 
     // =========================
     // ACTIONS
@@ -103,6 +106,8 @@ export interface ChatState {
     setUploadedFiles: (files: UploadedFile[]) => void;
     syncUploadedFilesFromServer: () => Promise<void>;
     removeUploadedFile: (fileId: string) => Promise<void>;
+    /** Removes and returns the current chat's composer attachments; used when a message is sent. */
+    takeComposerAttachments: () => UploadedFile[];
     clearUploadedFiles: () => void;
 }
 

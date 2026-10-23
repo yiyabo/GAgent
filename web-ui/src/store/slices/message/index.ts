@@ -24,6 +24,7 @@ import { createSessionAccess, findSession, matchesSession, sessionMessages, sess
 import { resolveRequestFailureMessage } from '@/components/chat/message/utils';
 import { isRecoveryNote, recoverAfterStreamFailure } from './recovery';
 import { translate } from '@/i18n/useT';
+import { toMessageAttachment } from '@/utils/messageAttachments';
 import { mergeUnpersistedTurns } from './turnCorrelation';
 
 /** Recent turns attached to each API request. Align with backend `CHAT_HISTORY_MAX_MESSAGES` (default 80, cap 200). */
@@ -433,7 +434,6 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => {
   currentWorkflowId,
   currentSession,
   memoryEnabled,
-  uploadedFiles,
   processingSessionIds,
   } = get();
 
@@ -443,14 +443,16 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => {
   return;
   }
 
-  const attachments = !metadata?.resume_from_run_id && uploadedFiles.length > 0
-  ? uploadedFiles.map((f) => ({
-  type: (Boolean(f.file_type?.startsWith('image/') || /\.(png|jpe?g|gif|webp|bmp|tiff?)$/i.test(f.original_name || f.file_name)) ? 'image' : 'file') as 'image' | 'file',
-  path: f.file_path,
-  name: f.original_name || f.file_name,
-  ...(f.extracted_path ? { extracted_path: f.extracted_path } : {}),
-  }))
-  : undefined;
+  // A retried message brings its own attachments; a new one takes the composer's, which empties it.
+  let attachments: NonNullable<ChatMessage['metadata']>['attachments'];
+  if (!metadata?.resume_from_run_id) {
+  if (Array.isArray(metadata?.attachments)) {
+  attachments = metadata.attachments.length > 0 ? metadata.attachments : undefined;
+  } else {
+  const pending = get().takeComposerAttachments?.() ?? [];
+  attachments = pending.length > 0 ? pending.map(toMessageAttachment) : undefined;
+  }
+  }
 
   const mergedMetadata = {
   ...metadata,
@@ -497,6 +499,10 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => {
   role: msg.type,
   content: msg.content,
   timestamp: msg.timestamp.toISOString(),
+  // Earlier files stay reachable on follow-up turns; the current message's files travel in context.
+  ...(msg.id !== userMessage.id && msg.metadata?.attachments?.length
+    ? { metadata: { attachments: msg.metadata.attachments } }
+    : {}),
   }));
 
   const chatRequest: any = {
@@ -580,13 +586,6 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => {
 
   await _consumeUnifiedStream(ctx, eventSource);
   await _finalizeAfterUnifiedStream(ctx, state, boundFlush);
-  // Keep composer chips in sync with server uploads (disk truth).
-  // User can ✕ to delete; otherwise same files remain attached for follow-ups.
-  try {
-    await source.get().syncUploadedFilesFromServer();
-  } catch {
-    /* keep current chips */
-  }
   } catch (error) {
   console.error('Failed to send message:', error);
   const apiSid = currentSession?.session_id ?? currentSession?.id ?? undefined;

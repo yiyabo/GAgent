@@ -39,6 +39,7 @@ import type { ChatMessage as ChatMessageType, Memory } from '@/types';
 import VirtualList, { ListRef } from 'rc-virtual-list';
 import { isAllowedUploadFile } from '@/constants/uploadFileTypes';
 import { useT } from '@/i18n/useT';
+import { describeUploadError } from '@/utils/uploadError';
 
 /** FastAPI/axios errors often put the reason in `response.data.detail`; BaseApi may not surface it on `Error.message`. */
 function httpErrorDetail(err: unknown, fallback: string): { status?: number; detail: string } {
@@ -320,6 +321,10 @@ const ChatMainArea: React.FC = () => {
   const [inputText, setInputText] = useState('');
   const [steerSending, setSteerSending] = useState(false);
 
+  const uploadsInFlight = useChatStore((s) =>
+    (s.uploadingFiles ?? []).filter((u) => u.sessionKey === s.currentSession?.id).length,
+  );
+
   const activeRunId = useChatStore((s) => {
     const key = resolveChatSessionProcessingKey(currentSession);
     return s.activeRunIds.get(key) ?? null;
@@ -398,8 +403,8 @@ const ChatMainArea: React.FC = () => {
     try {
       await uploadFile(file);
       message.success(t('chatMain.uploaded', { name: file.name }));
-    } catch (error: any) {
-      message.error(t('chatMain.uploadFailed', { error: error.message || t('chatMain.unknownError') }));
+    } catch (error) {
+      message.error(t('upload.failed', { name: file.name, message: describeUploadError(error, 'upload') }));
     }
   }, [currentSession, uploadFile, message, t]);
 
@@ -501,6 +506,10 @@ const ChatMainArea: React.FC = () => {
     }
 
     if (isProcessing) return;
+    if (uploadsInFlight > 0) {
+      message.info(t('chatMain.waitForUploads', { count: uploadsInFlight }));
+      return;
+    }
 
     const metadata = {
       task_id: selectedTask?.id ?? undefined,
