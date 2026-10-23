@@ -128,10 +128,11 @@ def test_budget_model_window_table(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("DEEP_THINK_CONTEXT_BUDGET_TOKENS", raising=False)
     monkeypatch.delenv("DEEP_THINK_CONTEXT_BUDGET_RATIO", raising=False)
     monkeypatch.delenv("DEEP_THINK_CONTEXT_BUDGET_MAX", raising=False)
-    # qwen3.7-max: 1M * 0.5 = 500k -> capped at 131072
-    assert _resolve_context_budget_tokens("qwen3.7-max") == 131072
-    # qwen3.8-flash: 1M window too (the budget used to fall back to 64000 for it)
-    assert _resolve_context_budget_tokens("qwen3.8-flash") == 131072
+    # qwen3.7-max: 1M * 0.5 = 500k, the Hermes compression point (the cap used
+    # to be 131072, which made a 1M-window model compact at 131k tokens)
+    assert _resolve_context_budget_tokens("qwen3.7-max") == 500000
+    # qwen3.8-flash: 1M window too
+    assert _resolve_context_budget_tokens("qwen3.8-flash") == 500000
     # qwen-max: 262144 * 0.5 = 131072
     assert _resolve_context_budget_tokens("qwen-max-latest") == 131072
     # gpt-4o-mini: 128000 * 0.5 = 64000
@@ -149,7 +150,7 @@ def test_budget_floor_and_ratio_clamp(monkeypatch: pytest.MonkeyPatch) -> None:
     assert _resolve_context_budget_tokens("gpt-4o-mini") == 32000
     # ratio above 0.9 is clamped, then the cap applies
     monkeypatch.setenv("DEEP_THINK_CONTEXT_BUDGET_RATIO", "0.95")
-    assert _resolve_context_budget_tokens("qwen3.7-max") == 131072
+    assert _resolve_context_budget_tokens("qwen3.7-max") == 500000
 
 
 def test_budget_custom_cap(monkeypatch: pytest.MonkeyPatch) -> None:

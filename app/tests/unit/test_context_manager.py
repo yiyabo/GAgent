@@ -204,7 +204,7 @@ class TestCompaction:
     async def test_force_compaction(self):
         mgr = ContextWindowManager(max_context_tokens=100000)
         msgs = [{"role": "system", "content": "sys"}]
-        for i in range(10):
+        for i in range(mgr.KEEP_RECENT + 4):
             msgs.append({"role": "user", "content": f"msg {i}"})
 
         async def summarizer(text: str) -> str:
@@ -218,7 +218,7 @@ class TestCompaction:
     async def test_compaction_count_increments(self):
         mgr = ContextWindowManager(max_context_tokens=50, warning_ratio=0.01)
         msgs = [{"role": "system", "content": "sys"}]
-        for i in range(10):
+        for i in range(mgr.KEEP_RECENT + 4):
             msgs.append({"role": "user", "content": f"msg {i}"})
 
         async def summarizer(text: str) -> str:
@@ -330,7 +330,7 @@ class TestToolConversationCompaction:
                 }],
             },
             {"role": "tool", "tool_call_id": "read-origin", "content": "sample_count=10"},
-            *[{"role": "user", "content": f"Follow-up {i}"} for i in range(8)],
+            *[{"role": "user", "content": f"Follow-up {i}"} for i in range(ContextWindowManager.KEEP_RECENT + 2)],
         ]
         summary_inputs = []
 
@@ -347,3 +347,37 @@ class TestToolConversationCompaction:
         assert "cohort/input.csv" in summary_inputs[0]
         assert "read-origin" in summary_inputs[0]
         assert "sample_count=10" in summary_inputs[0]
+
+
+class TestTokenEstimateCache:
+    def test_large_text_is_measured_once_and_small_text_is_not_cached(self, monkeypatch):
+        from app.services.context import context_manager as cm
+
+        calls = []
+        real = cm._estimate_tokens_uncached
+
+        def counting(text):
+            calls.append(len(text))
+            return real(text)
+
+        monkeypatch.setattr(cm, "_estimate_tokens_uncached", counting)
+        cm._TOKEN_CACHE.clear()
+        big = "tool result line " * 400
+        first = cm.estimate_tokens(big)
+        assert cm.estimate_tokens(big) == first
+        assert cm.estimate_tokens("".join(["tool result line "] * 400)) == first  # equal text, new object
+        assert len(calls) == 1
+        small = "short"
+        cm.estimate_tokens(small)
+        cm.estimate_tokens(small)
+        assert calls.count(len(small)) == 2
+
+    def test_cache_is_bounded_and_keeps_no_message_bodies(self, monkeypatch):
+        from app.services.context import context_manager as cm
+
+        monkeypatch.setattr(cm, "_TOKEN_CACHE_MAX_ENTRIES", 4)
+        cm._TOKEN_CACHE.clear()
+        for i in range(10):
+            cm.estimate_tokens(f"{i} " * 2000)
+        assert len(cm._TOKEN_CACHE) == 4
+        assert all(isinstance(key, tuple) and isinstance(value, int) for key, value in cm._TOKEN_CACHE.items())

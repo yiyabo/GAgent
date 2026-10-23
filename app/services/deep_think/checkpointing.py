@@ -259,12 +259,12 @@ def restore_guard(guard: dict, checkpoint: Any) -> None:
     if not isinstance(raw, dict):
         raise ControllerRestoreError("Invalid guard checkpoint")
     for key, value in raw.items():
-        if key in {"started_at", "acceptance_spec", "expected_outputs"}:
+        # Breaker counters from checkpoints written before the failure-signature
+        # and no-progress guards were removed have no home any more.
+        if key in {"started_at", "acceptance_spec", "expected_outputs", "failure_sig_counts",
+                   "failure_sig_warned", "last_progress_iteration", "no_progress_nudge_sent",
+                   "observation_fingerprints", "acceptance_extend_used"}:
             continue
-        if key == "failure_sig_warned":
-            if not isinstance(value, (list, set)):
-                raise ControllerRestoreError("Invalid guard warning checkpoint")
-            value = set(value)
         if key in guard and type(value) is not type(guard[key]):
             raise ControllerRestoreError(f"Invalid guard checkpoint field: {key}")
         guard[key] = value

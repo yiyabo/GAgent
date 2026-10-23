@@ -1505,7 +1505,7 @@ def build_request_tier_profile(
         plan_new_requested=decision.plan_new_requested,
         plan_conflict_requires_confirmation=decision.plan_conflict_requires_confirmation,
     )
-    flat_cap = 10 if decision.plan_conflict_requires_confirmation else 100
+    flat_cap = 10 if decision.plan_conflict_requires_confirmation else 500
     return RequestTierProfile(
         request_tier="standard",
         thinking_budget=_DEEP_THINK_THINKING_BUDGET,

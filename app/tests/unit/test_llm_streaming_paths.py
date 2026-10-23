@@ -837,3 +837,41 @@ class TestPhaseNarratorStreaming:
         titles = await pn.generate_phase_titles(object())
         assert called["n"] == 1
         assert isinstance(titles, dict)
+
+
+class TestNativeToolCallingPayload:
+    """The closing summary calls the loop's transport with tool calling off."""
+
+    @pytest.mark.asyncio()
+    async def test_tools_and_choice_are_sent_when_tools_are_given(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        fake = _FakeAsyncClient([_FakeAsyncStreamResponse(_sse_lines(["ok"]))])
+        monkeypatch.setattr(llm_mod, "_get_shared_async_client", lambda: fake)
+        monkeypatch.setattr(llm_mod, "_outbound_limiter", _NoopLimiter())
+        tools = [{"type": "function", "function": {"name": "web_search", "parameters": {"type": "object"}}}]
+
+        result = await _client().stream_chat_with_tools_async(
+            [{"role": "user", "content": "hi"}], tools, tool_choice="none", max_tokens=16384
+        )
+
+        sent = fake.calls[0]["json"]
+        assert result.content == "ok"
+        assert sent["tools"] == tools
+        assert sent["tool_choice"] == "none"
+        assert sent["max_tokens"] == 16384
+
+    @pytest.mark.asyncio()
+    @pytest.mark.parametrize("tools", [[], None])
+    async def test_an_empty_tool_list_is_omitted_not_sent(self, monkeypatch: pytest.MonkeyPatch, tools: Any) -> None:
+        """Gateways reject `tools: []`; a tool-less call must leave both fields out."""
+        fake = _FakeAsyncClient([_FakeAsyncStreamResponse(_sse_lines(["ok"]))])
+        monkeypatch.setattr(llm_mod, "_get_shared_async_client", lambda: fake)
+        monkeypatch.setattr(llm_mod, "_outbound_limiter", _NoopLimiter())
+
+        result = await _client().stream_chat_with_tools_async(
+            [{"role": "user", "content": "hi"}], tools, tool_choice="none"
+        )
+
+        sent = fake.calls[0]["json"]
+        assert result.content == "ok"
+        assert "tools" not in sent
+        assert "tool_choice" not in sent

@@ -63,7 +63,8 @@ def _conversation(
     tail_roles: list | None = None,
     tail_content=None,
 ) -> list:
-    roles = tail_roles or ["user", "assistant", "user", "assistant", "user", "assistant"]
+    # Exactly the protected recent window, so the batches above are compactable.
+    roles = tail_roles or ["user", "assistant"] * (ContextWindowManager.KEEP_RECENT // 2)
     messages = [{"role": "system", "content": "You are a research agent."}]
     for batch in batches:
         messages.extend(batch)

@@ -92,9 +92,11 @@ def _resolve_context_budget_tokens(model: str) -> int:
 
     Priority: explicit ``DEEP_THINK_CONTEXT_BUDGET_TOKENS`` override (legacy
     semantics, including 0 = disabled) > model window x
-    ``DEEP_THINK_CONTEXT_BUDGET_RATIO`` (default 0.5), clamped to
-    [32k floor, ``DEEP_THINK_CONTEXT_BUDGET_MAX`` (default 131072)]. The floor
-    preserves the historical 32k behaviour for small-window models.
+    ``DEEP_THINK_CONTEXT_BUDGET_RATIO`` (default 0.5, the Hermes compression
+    point), clamped to [32k floor, ``DEEP_THINK_CONTEXT_BUDGET_MAX`` (default
+    500000)]. The floor preserves the historical 32k behaviour for
+    small-window models. The cap used to be 131072, which pinned the 1M-window
+    qwen3.8-flash to compacting at 131k tokens instead of 500k.
     """
     raw_override = os.getenv("DEEP_THINK_CONTEXT_BUDGET_TOKENS", "").strip()
     if raw_override:
@@ -111,32 +113,22 @@ def _resolve_context_budget_tokens(model: str) -> int:
         ratio = 0.5
     ratio = min(max(ratio, 0.05), 0.9)
     try:
-        cap = int(os.getenv("DEEP_THINK_CONTEXT_BUDGET_MAX", "131072") or "131072")
+        cap = int(os.getenv("DEEP_THINK_CONTEXT_BUDGET_MAX", "500000") or "500000")
     except (TypeError, ValueError):
-        cap = 131_072
+        cap = 500_000
     budget = int(window * ratio)
     return max(_CONTEXT_BUDGET_FLOOR, min(cap, budget))
 
 
 def _default_synthesis_timeout_seconds() -> int:
-    # Thinking models (e.g. qwen3.8-flash) routinely need >60s to synthesize a
-    # long evidence prompt; a 60s cap cancelled forced synthesis on long runs.
-    # Non-streaming calls buffer the whole generation, so allow ample headroom.
-    raw = os.getenv("DEEP_THINK_SYNTHESIS_TIMEOUT_SECONDS", "300")
+    # The closing summary replays the whole conversation to a thinking model and
+    # may write up to _default_synthesis_max_tokens(); the run budget still caps
+    # it from above.
+    raw = os.getenv("DEEP_THINK_SYNTHESIS_TIMEOUT_SECONDS", "600")
     try:
         return max(30, int(raw))
     except (TypeError, ValueError):
-        return 300
-
-
-def _default_fallback_timeout_seconds() -> int:
-    # The evidence fallback also runs non-streaming against a thinking model;
-    # the previous 45s default timed out on every attempt of real long runs.
-    raw = os.getenv("DEEP_THINK_FALLBACK_TIMEOUT_SECONDS", "150")
-    try:
-        return max(30, int(raw))
-    except (TypeError, ValueError):
-        return 150
+        return 600
 
 
 def _acceptance_v2_enabled() -> bool:
@@ -166,43 +158,6 @@ def _acceptance_v2_max_tokens() -> int:
         return 800
 
 
-def _progress_free_nudge_streak() -> int:
-    # Execute-tier runs that stop producing new deliverables get a finalize
-    # nudge after this many consecutive progress-free iterations.
-    raw = os.getenv("DEEP_THINK_PROGRESS_FREE_NUDGE", "8")
-    try:
-        return max(3, int(raw))
-    except (TypeError, ValueError):
-        return 8
-
-
-def _progress_free_break_streak() -> int:
-    # Hard stop for progress-free execute-tier runs. Deliberately looser than
-    # the nudge so slow-but-legitimate pipelines (downloads, renders) are not
-    # killed while still working toward their first deliverable.
-    raw = os.getenv("DEEP_THINK_PROGRESS_FREE_BREAK", "14")
-    try:
-        return max(4, int(raw))
-    except (TypeError, ValueError):
-        return 14
-
-
-def _failure_signature_warn_count() -> int:
-    raw = os.getenv("DEEP_THINK_FAILURE_SIG_WARN", "3")
-    try:
-        return max(2, int(raw))
-    except (TypeError, ValueError):
-        return 3
-
-
-def _failure_signature_break_count() -> int:
-    raw = os.getenv("DEEP_THINK_FAILURE_SIG_BREAK", "5")
-    try:
-        return max(3, int(raw))
-    except (TypeError, ValueError):
-        return 5
-
-
 def _time_budget_nudge_seconds() -> int:
     # Iteration-based endgames cannot bound wall-clock time: one nested
     # qwen-code CLI call takes 6-8 minutes, so 14 "iterations" can exceed an
@@ -223,11 +178,14 @@ def _time_budget_break_seconds() -> int:
 
 
 def _default_synthesis_max_tokens() -> int:
-    raw = os.getenv("DEEP_THINK_SYNTHESIS_MAX_TOKENS", "6000")
+    # Output cap for the closing summary. qwen3.8-flash's thinking tokens count
+    # against it, and an unset/low cap once left the answer empty (the Hermes
+    # iteration-exhaustion bug, issue #35979); 16384 is the value its fix uses.
+    raw = os.getenv("DEEP_THINK_SYNTHESIS_MAX_TOKENS", "16384")
     try:
         return max(1000, int(raw))
     except (TypeError, ValueError):
-        return 6000
+        return 16384
 
 
 _OUTPUT_FILE_RE = re.compile(r"[A-Za-z0-9_\-.]+\.(?:md|csv|xlsx|xls|json|png|html?|txt|fasta|pdf)")

@@ -1752,7 +1752,7 @@ class LLMClient(LLMProvider):
     async def _stream_chat_with_tools_inner(
         self,
         messages: list,
-        tools: List[Dict[str, Any]],
+        tools: Optional[List[Dict[str, Any]]],
         tool_choice: str = "auto",
         model: Optional[str] = None,
         on_content_delta: Optional[Callable[[str], Any]] = None,
@@ -1784,11 +1784,14 @@ class LLMClient(LLMProvider):
         payload: Dict[str, Any] = {
             "model": model or self._effective_model(),
             "messages": messages,
-            "tools": tools,
-            "tool_choice": tool_choice,
             "stream": True,
             "max_tokens": _default_max_tokens() if max_tokens is None else max_tokens,
         }
+        if tools:
+            # An empty tool list is rejected by OpenAI-compatible gateways, so
+            # tool-less calls omit both fields.
+            payload["tools"] = tools
+            payload["tool_choice"] = tool_choice
 
         # Inject thinking parameters (DashScope OpenAI-compatible endpoint
         # accepts these as top-level fields alongside model/messages).
@@ -1904,7 +1907,7 @@ class LLMClient(LLMProvider):
         # leaves a named call nobody can answer. Re-ask once, non-streaming, and
         # take that answer only when it actually carries arguments.
         if _nonstream_toolcall_repair_enabled() and _tool_calls_lost_their_arguments(
-            [c for c in result.tool_calls if not __import__("app.services.deep_think.native_validation",fromlist=["enabled"]).enabled() or next((s.get("function",{}).get("parameters",{}).get("required",[]) for s in tools if s.get("function",{}).get("name")==c.name),[])]
+            [c for c in result.tool_calls if not __import__("app.services.deep_think.native_validation",fromlist=["enabled"]).enabled() or next((s.get("function",{}).get("parameters",{}).get("required",[]) for s in (tools or []) if s.get("function",{}).get("name")==c.name),[])]
         ):
             repaired = await self._repair_tool_calls_nonstream(
                 payload, logical_call_id,

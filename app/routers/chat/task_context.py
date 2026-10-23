@@ -37,8 +37,8 @@ from .code_executor_helpers import (
     extract_task_artifact_paths as _extract_task_artifact_paths_fn,
 )
 
-_DEEP_THINK_MAX_ITER_DEFAULT = 64
-_DEEP_THINK_MAX_ITER_CAP = 128
+_DEEP_THINK_MAX_ITER_DEFAULT = 500
+_DEEP_THINK_MAX_ITER_CAP = 500
 _READ_ONLY_FILE_OPERATIONS = {"read", "list", "exists", "info", "profile", "census"}
 _MANUSCRIPT_CONTEXT_EXTENSIONS = {
     ".md",
@@ -70,7 +70,8 @@ _OBSERVATION_ONLY_TOOLS = {
 def _resolve_deep_think_max_iterations() -> int:
     """
     Each iteration is roughly one LLM turn (optionally plus tool execution).
-    Override with env DEEP_THINK_MAX_ITERATIONS (1..128).
+    Override with env DEEP_THINK_MAX_ITERATIONS (1..500). The default matches
+    Hermes' 500-iteration budget; the run's wall-clock budget is the real bound.
     """
     raw = (os.getenv("DEEP_THINK_MAX_ITERATIONS") or "").strip()
     if not raw:
