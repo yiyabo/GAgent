@@ -4,6 +4,7 @@ import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@store/auth';
 import { useT } from '@/i18n/useT';
 import LanguageSwitch from '@components/common/LanguageSwitch';
+import { describeAuthError } from '@utils/authError';
 
 const { Title, Text } = Typography;
 
@@ -23,7 +24,7 @@ const Login: React.FC = () => {
       await login(values.email, values.password);
       navigate(nextPath, { replace: true });
     } catch (err: any) {
-      setError(err?.message || t('auth.loginFailed'));
+      setError(describeAuthError(err, 'login') || t('auth.loginFailed'));
     }
   };
 

@@ -491,7 +491,24 @@
     "register": "Register",
     "registerFailed": "Registration failed.",
     "haveAccount": "Already have an account?",
-    "signInLink": "Sign in"
+    "signInLink": "Sign in",
+    "error": {
+      "registerClosed": "Registration is closed on this server. Accounts are created by the administrator: ask them to add your email, or sign in if you already have an account.",
+      "emailTaken": "This email is already registered. Sign in instead.",
+      "wrongCredentials": "Wrong email or password.",
+      "wrongCurrentPassword": "The current password is incorrect.",
+      "sessionExpired": "Your session has expired. Sign in again.",
+      "forbidden": "You do not have permission to do this (HTTP 403).",
+      "rejected": "The server rejected the request: {{detail}}",
+      "invalidInput": "The server rejected the request. Check the email and password and try again.",
+      "rateLimited": "Too many attempts. Wait a minute and try again.",
+      "unavailable": "The server is busy, restarting, or limiting repeated attempts (HTTP {{status}}). Wait a minute and try again.",
+      "server": "The server hit an error (HTTP {{status}}). Try again later, and tell the administrator if it keeps happening.",
+      "network": "Cannot reach the server. Check your network connection and try again.",
+      "timeout": "The server did not answer in time. Try again.",
+      "unknown": "The request failed (HTTP {{status}}).",
+      "unknownWithDetail": "The request failed (HTTP {{status}}): {{detail}}"
+    }
   },
   "system": {
     "title": "System Settings",

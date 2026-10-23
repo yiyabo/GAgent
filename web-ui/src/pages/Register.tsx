@@ -4,6 +4,7 @@ import { Link, useNavigate } from 'react-router-dom';
 import { useAuthStore } from '@store/auth';
 import { useT } from '@/i18n/useT';
 import LanguageSwitch from '@components/common/LanguageSwitch';
+import { describeAuthError } from '@utils/authError';
 
 const { Title, Text } = Typography;
 
@@ -23,7 +24,7 @@ const Register: React.FC = () => {
       await register(values.email, values.password);
       navigate('/chat', { replace: true });
     } catch (err: any) {
-      setError(err?.message || t('auth.registerFailed'));
+      setError(describeAuthError(err, 'register') || t('auth.registerFailed'));
     }
   };
 
