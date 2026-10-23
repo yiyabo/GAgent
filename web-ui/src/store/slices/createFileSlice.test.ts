@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { AxiosError } from 'axios';
 import type { FileListResponse } from '@api/upload';
 import type { ChatSession, UploadedFile } from '@/types';
 
-vi.mock('@api/upload', () => ({ uploadApi: { listFiles: vi.fn() } }));
+vi.mock('@api/upload', () => ({ uploadApi: { listFiles: vi.fn(), deleteFile: vi.fn(), uploadFile: vi.fn() } }));
 vi.mock('@api/chat', () => ({ chatApi: {} }));
 vi.mock('@store/auth', () => ({ useAuthStore: { getState: () => ({ projectId: null }) } }));
 vi.mock('@store/tasks', () => ({ useTasksStore: { getState: () => ({}) } }));
@@ -13,25 +14,34 @@ import { createSessionSlice } from './createSessionSlice';
 
 function deferred<T>() {
   let resolve: (value: T) => void;
-  let reject: (error: Error) => void;
-  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
-  return { promise, resolve: resolve!, reject: reject! };
+  const promise = new Promise<T>((res) => { resolve = res; });
+  return { promise, resolve: resolve! };
 }
 
 function session(id: string): ChatSession {
   return { id: `local-${id}`, session_id: `server-${id}`, title: id, messages: [], created_at: new Date(), updated_at: new Date() };
 }
 
-function fileList(id: string, fileId = id): FileListResponse {
-  return {
-    success: true, session_id: `server-${id}`, total: 1,
-    files: [{ file_id: fileId, file_path: `session_${id}/uploads/${fileId}.txt`, file_name: `${fileId}.txt`, original_name: `${fileId}.txt`, file_size: '10 B', uploaded_at: new Date().toISOString() }],
-  };
-}
+const serverFile = (id: string): UploadedFile => ({
+  file_id: id, file_path: `/runtime/uploads/${id}_${id}.fasta`, file_name: `${id}_${id}.fasta`, original_name: `${id}.fasta`,
+  file_size: '10 B', file_type: 'application/octet-stream', uploaded_at: new Date().toISOString(), source: 'server',
+});
 
 const projectRef = (id: string): UploadedFile => ({
   file_id: `project_${id}`, file_path: `project/${id}.txt`, file_name: `${id}.txt`, original_name: `${id}.txt`, file_size: 'Project File', file_type: 'project_reference', uploaded_at: new Date().toISOString(), category: 'project',
 });
+
+function listing(...ids: string[]): FileListResponse {
+  return {
+    success: true, session_id: 'server-A', total: ids.length,
+    files: ids.map((id) => ({ file_id: id, file_path: `/runtime/uploads/${id}_${id}.fasta`, file_name: `${id}_${id}.fasta`, original_name: `${id}.fasta`, file_size: '10 B', uploaded_at: new Date().toISOString() })),
+  };
+}
+
+function httpError(status: number): AxiosError {
+  return new AxiosError(`Request failed with status code ${status}`, 'ERR_BAD_REQUEST', undefined, undefined,
+    { status, data: { detail: 'x' }, statusText: '', headers: {}, config: {} as never });
+}
 
 function buildStore() {
   const a = session('A');
@@ -46,85 +56,85 @@ function buildStore() {
   return { store, a, b };
 }
 
-beforeEach(() => { vi.clearAllMocks(); });
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(uploadApi.listFiles).mockResolvedValue(listing());
+});
 afterEach(() => { vi.restoreAllMocks(); });
 
-describe('session upload synchronization', () => {
-  it('ignores a late A list success after session selection synchronizes B attachments', async () => {
-    const { store, b } = buildStore();
-    const responseA = deferred<FileListResponse>();
-    vi.mocked(uploadApi.listFiles).mockReturnValueOnce(responseA.promise).mockResolvedValueOnce(fileList('B'));
-    const syncingA = store.syncUploadedFilesFromServer();
-    store.setCurrentSession(b); // Exercise the actual session-selection sync hook.
-    await vi.waitFor(() => expect(store.uploadedFiles[0]?.file_id).toBe('B'));
-    const chipsB = store.uploadedFiles;
-    responseA.resolve(fileList('A'));
-    await syncingA;
-    expect(store.currentSession).toBe(b);
-    expect(store.uploadedFiles).toBe(chipsB);
-    expect(uploadApi.listFiles).toHaveBeenNthCalledWith(1, 'server-A');
-    expect(uploadApi.listFiles).toHaveBeenNthCalledWith(2, 'server-B');
-  });
-
-  it('ignores a late A list failure without restoring A local refs over B chips', async () => {
-    const { store, b } = buildStore();
-    const responseA = deferred<FileListResponse>();
-    vi.mocked(uploadApi.listFiles).mockReturnValueOnce(responseA.promise).mockResolvedValueOnce(fileList('B'));
-    store.setUploadedFiles([projectRef('A')]);
-    const syncingA = store.syncUploadedFilesFromServer();
+describe('composer attachments', () => {
+  it('each chat keeps its own unsent attachments across switches', () => {
+    const { store, a, b } = buildStore();
+    store.setUploadedFiles([projectRef('A-notes')]);
     store.setCurrentSession(b);
-    store.setUploadedFiles([projectRef('B-reference')]);
-    await vi.waitFor(() => expect(store.uploadedFiles.some((file: UploadedFile) => file.file_id === 'B')).toBe(true));
-    const chipsB = store.uploadedFiles;
-    responseA.reject(new Error('A list failed'));
-    await syncingA;
-    expect(store.uploadedFiles).toBe(chipsB);
-    expect(store.uploadedFiles.map((file: UploadedFile) => file.file_id)).toEqual(['project_B-reference', 'B']);
+    expect(store.uploadedFiles).toEqual([]);
+    store.setUploadedFiles([projectRef('B-notes')]);
+    store.setCurrentSession(a);
+    expect(store.uploadedFiles.map((f: UploadedFile) => f.file_id)).toEqual(['project_A-notes']);
+    store.setCurrentSession(null);
+    expect(store.uploadedFiles).toEqual([]);
+    expect(store.attachmentDrafts['local-B'].map((f: UploadedFile) => f.file_id)).toEqual(['project_B-notes']);
   });
 
-  it('applies the newest same-session list and ignores an older successful response', async () => {
+  it('removing an unsent chip deletes its server file; a project reference is only unlinked', async () => {
     const { store } = buildStore();
-    const oldResponse = deferred<FileListResponse>();
-    const newResponse = deferred<FileListResponse>();
-    vi.mocked(uploadApi.listFiles).mockReturnValueOnce(oldResponse.promise).mockReturnValueOnce(newResponse.promise);
-    const oldSync = store.syncUploadedFilesFromServer();
-    const newSync = store.syncUploadedFilesFromServer();
-    store.setUploadedFiles([projectRef('added-during-fetch')]);
-    newResponse.resolve(fileList('A', 'latest'));
-    await newSync;
-    const latestChips = store.uploadedFiles;
-    oldResponse.resolve(fileList('A', 'old'));
-    await oldSync;
-    expect(store.uploadedFiles).toBe(latestChips);
-    expect(store.uploadedFiles.map((file: UploadedFile) => file.file_id)).toEqual(['project_added-during-fetch', 'latest']);
+    store.setUploadedFiles([serverFile('f1'), projectRef('p'), serverFile('f2')]);
+    vi.mocked(uploadApi.deleteFile).mockResolvedValue({ success: true, message: 'ok' });
+    await store.removeUploadedFile('f1');
+    expect(uploadApi.deleteFile).toHaveBeenCalledWith('f1', 'server-A');
+    await store.removeUploadedFile('project_p');
+    expect(uploadApi.deleteFile).toHaveBeenCalledTimes(1);
+    expect(store.uploadedFiles.map((f: UploadedFile) => f.file_id)).toEqual(['f2']);
   });
 
-  it('ignores an older same-session failure after a newer list succeeded', async () => {
+  it('a failed removal keeps the chip and reports the error; a file already gone is just dropped', async () => {
     const { store } = buildStore();
-    const oldResponse = deferred<FileListResponse>();
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    vi.mocked(uploadApi.listFiles).mockReturnValueOnce(oldResponse.promise).mockResolvedValueOnce(fileList('A', 'latest'));
-    const oldSync = store.syncUploadedFilesFromServer();
+    store.setUploadedFiles([serverFile('f1'), serverFile('f2')]);
+    vi.mocked(uploadApi.deleteFile).mockRejectedValueOnce(httpError(500));
+    await expect(store.removeUploadedFile('f1')).rejects.toThrow('500');
+    expect(store.uploadedFiles.map((f: UploadedFile) => f.file_id)).toEqual(['f1', 'f2']);
+    vi.mocked(uploadApi.deleteFile).mockRejectedValueOnce(httpError(404));
+    await store.removeUploadedFile('f1');
+    expect(store.uploadedFiles.map((f: UploadedFile) => f.file_id)).toEqual(['f2']);
+  });
+
+  it('a file that is not a pending chip is never deleted from the server', async () => {
+    const { store } = buildStore();
+    await store.removeUploadedFile('sent-earlier');
+    expect(uploadApi.deleteFile).not.toHaveBeenCalled();
+  });
+
+  it('the server check drops chips whose file is gone but keeps one uploaded during the check', async () => {
+    const { store } = buildStore();
+    store.setUploadedFiles([projectRef('p'), serverFile('kept'), serverFile('deleted')]);
+    const list = deferred<FileListResponse>();
+    vi.mocked(uploadApi.listFiles).mockReturnValueOnce(list.promise);
+    const checking = store.syncUploadedFilesFromServer();
+    store.setUploadedFiles([...store.uploadedFiles, serverFile('new')]);
+    list.resolve(listing('kept'));
+    await checking;
+    expect(uploadApi.listFiles).toHaveBeenCalledWith('server-A');
+    expect(store.uploadedFiles.map((f: UploadedFile) => f.file_id)).toEqual(['project_p', 'kept', 'new']);
+  });
+
+  it('the server check does not list files when only project references are pending, and survives a failure', async () => {
+    const { store } = buildStore();
+    store.setUploadedFiles([projectRef('p')]);
     await store.syncUploadedFilesFromServer();
-    const latestChips = store.uploadedFiles;
-    oldResponse.reject(new Error('Old request failed'));
-    await oldSync;
-    expect(store.uploadedFiles).toBe(latestChips);
-    expect(warn).not.toHaveBeenCalled();
+    expect(uploadApi.listFiles).not.toHaveBeenCalled();
+    store.setUploadedFiles([serverFile('f1')]);
+    vi.mocked(uploadApi.listFiles).mockRejectedValueOnce(new Error('offline'));
+    await store.syncUploadedFilesFromServer();
+    expect(store.uploadedFiles.map((f: UploadedFile) => f.file_id)).toEqual(['f1']);
   });
 
-  it('preserves current chips and refs added during a failed current request', async () => {
-    const { store } = buildStore();
-    const response = deferred<FileListResponse>();
-    vi.spyOn(console, 'warn').mockImplementation(() => {});
-    vi.mocked(uploadApi.listFiles).mockReturnValueOnce(response.promise);
-    store.setUploadedFiles([projectRef('initial')]);
-    const syncing = store.syncUploadedFilesFromServer();
-    store.setUploadedFiles([projectRef('new')]);
-    const currentChips = store.uploadedFiles;
-    response.reject(new Error('Current list unavailable'));
-    await syncing;
-    expect(store.uploadedFiles).toBe(currentChips);
-    expect(store.uploadedFiles[0].file_id).toBe('project_new');
+  it('taking the attachments for a message empties only the current chat', () => {
+    const { store, b } = buildStore();
+    store.setUploadedFiles([serverFile('f1')]);
+    store.attachmentDrafts = { ...store.attachmentDrafts, [b.id]: [serverFile('other')] };
+    expect(store.takeComposerAttachments().map((f: UploadedFile) => f.file_id)).toEqual(['f1']);
+    expect(store.uploadedFiles).toEqual([]);
+    expect(store.takeComposerAttachments()).toEqual([]);
+    expect(store.attachmentDrafts[b.id].map((f: UploadedFile) => f.file_id)).toEqual(['other']);
   });
 });

@@ -598,13 +598,30 @@
   },
   "upload": {
     "needSession": "Please create or select a session first.",
-    "uploaded": "File {{name}} uploaded successfully.",
-    "failed": "Upload failed: {{message}}",
-    "unsupportedType": "Unsupported file type.",
+    "uploaded": "{{name}} is attached to your next message.",
+    "failed": "Could not upload {{name}}: {{message}}",
+    "unsupportedType": "{{name}}: this file type is not supported.",
     "alreadyAttached": "Selected files are already attached",
     "addedProjectFiles": "Added {{count}} project files to session",
-    "tip": "Upload file",
-    "fromProject": "Select from project"
+    "tip": "Attach files (you can pick several)",
+    "fromProject": "Select from project",
+    "error": {
+      "tooLarge": "The file is too large for the server to accept.",
+      "tooLargeDetail": "The file is too large: {{detail}}.",
+      "sessionExpired": "Your sign-in has expired. Please sign in again and retry.",
+      "forbidden": "You do not have permission to change files in this chat.",
+      "notFound": "The upload endpoint was not found (HTTP 404). Reload the page and try again.",
+      "alreadyGone": "The file is no longer on the server.",
+      "rejected": "The server rejected the file: {{detail}}",
+      "rejectedNoDetail": "The server rejected the file.",
+      "unavailable": "The server is temporarily unavailable (HTTP {{status}}). Try again in a moment.",
+      "server": "The server failed to store the file (HTTP {{status}}).",
+      "serverDetail": "The server failed to store the file (HTTP {{status}}): {{detail}}",
+      "timeout": "The upload took too long and was stopped. Check the connection and try again.",
+      "network": "Cannot reach the server. Check the network connection and try again.",
+      "unknown": "The request failed (HTTP {{status}}).",
+      "unknownWithDetail": "The request failed (HTTP {{status}}): {{detail}}"
+    }
   },
   "errorBoundary": {
     "crashed": "Component crashed",
@@ -1180,11 +1197,15 @@
     "triggerLabel": "Reply style: {{style}}, length: {{length}}"
   },
   "uploadedFiles": {
-    "removed": "Removed: {{name}}",
-    "removeFailed": "Delete failed (the file is still in the chat): {{detail}}",
-    "unknownError": "Unknown error",
-    "header": "Attachments in this chat (in sync with the server's uploads) · Files: {{count}}",
-    "serverSuffix": " · Server"
+    "removed": "Removed {{name}}",
+    "removeFailed": "Could not remove {{name}} (it is still attached): {{detail}}",
+    "header": "Will be sent with your next message · {{count}} file(s)",
+    "uploadingCount": "uploading {{count}}",
+    "uploadingOne": "Uploading {{name}}...",
+    "removeLabel": "Remove {{name}}"
+  },
+  "messageAttachments": {
+    "label": "Files sent with this message ({{count}})"
   },
   "recall": {
     "unavailable": "Memory recall is temporarily unavailable. This turn did not use any earlier material.",
@@ -1325,7 +1346,6 @@
     "memoryNotice": "Related memories: {{count}}",
     "needSession": "Create or select a chat first",
     "uploaded": "{{name}} uploaded",
-    "uploadFailed": "Upload failed: {{error}}",
     "unknownError": "Unknown error",
     "unsupported": "Unsupported file types: {{names}}",
     "steerSent": "Guidance sent. It will be picked up in the next step.",
@@ -1343,7 +1363,8 @@
     "steerPlaceholder": "Type guidance. The agent will take it into account in the next step...",
     "placeholder": "Type a message... (paste images or drop files to upload)",
     "sendSteer": "Send guidance",
-    "send": "Send"
+    "send": "Send",
+    "waitForUploads": "Wait until the {{count}} upload(s) finish, then send."
   },
   "skills": {
     "candidate": "Candidate · not independently verified",

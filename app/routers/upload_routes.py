@@ -280,7 +280,7 @@ def _validate_file(file: UploadFile, category: Optional[str] = None) -> tuple[bo
         return False, f"unsupported file type: {content_type or 'unknown'}", ""
 
     if category and detected_category != category:
-        return False, f"filetype,  {category},  {detected_category}", ""
+        return False, f"file type mismatch: expected {category}, got {detected_category}", ""
 
     return True, "", detected_category
 
@@ -516,7 +516,7 @@ async def _save_upload_file(
                     file_path.unlink(missing_ok=True)
                     raise HTTPException(
                         status_code=413,
-                        detail=f"file,  {max_size / 1024 / 1024:.1f}MB",
+                        detail=f"File is larger than the {max_size / 1024 / 1024:.0f} MB upload limit",
                     )
                 f.write(chunk)
     except HTTPException:
@@ -524,7 +524,7 @@ async def _save_upload_file(
     except Exception as e:
         logger.error(f"savefilefailed: {e}")
         file_path.unlink(missing_ok=True)
-        raise HTTPException(status_code=500, detail=f"savefilefailed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Could not save the file on the server: {e}")
 
     extracted_path = None
     extracted_files = None
@@ -541,7 +541,7 @@ async def _save_upload_file(
         except Exception as e:
             shutil.rmtree(extract_dir, ignore_errors=True)
             logger.error(f"failed: {e}")
-            raise HTTPException(status_code=500, detail=f"failed: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Could not extract the archive: {e}")
 
     if file_size < 1024:
         size_str = f"{file_size} B"
@@ -586,7 +586,7 @@ async def upload_file(
         uploadresult
     """
     if not session_id or not session_id.strip():
-        raise HTTPException(status_code=400, detail="session_id ")
+        raise HTTPException(status_code=400, detail="session_id is required")
     logger.info(
         "[UPLOAD] POST filename=%s size_hint=%s session=%s",
         file.filename,
@@ -643,7 +643,7 @@ async def upload_image(
         uploadresult
     """
     if not session_id or not session_id.strip():
-        raise HTTPException(status_code=400, detail="session_id ")
+        raise HTTPException(status_code=400, detail="session_id is required")
     _ensure_session_access(session_id, request)
 
     is_valid, error_msg, category = _validate_file(file, category="image")

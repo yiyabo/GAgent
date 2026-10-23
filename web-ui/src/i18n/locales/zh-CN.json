@@ -598,13 +598,30 @@
   },
   "upload": {
     "needSession": "请先创建或选择一个会话。",
-    "uploaded": "文件 {{name}} 上传成功。",
-    "failed": "上传失败：{{message}}",
-    "unsupportedType": "不支持的文件类型。",
+    "uploaded": "{{name}} 已添加，将随下一条消息发送。",
+    "failed": "{{name}} 上传失败：{{message}}",
+    "unsupportedType": "{{name}}：不支持这种文件类型。",
     "alreadyAttached": "所选文件已添加",
     "addedProjectFiles": "已将 {{count}} 个项目文件添加到会话",
-    "tip": "上传文件",
-    "fromProject": "从项目中选择"
+    "tip": "添加附件（可一次选择多个）",
+    "fromProject": "从项目中选择",
+    "error": {
+      "tooLarge": "文件太大，服务器拒绝接收。",
+      "tooLargeDetail": "文件太大：{{detail}}。",
+      "sessionExpired": "登录已过期，请重新登录后再试。",
+      "forbidden": "你没有权限修改这个会话的文件。",
+      "notFound": "找不到上传接口（HTTP 404），请刷新页面后重试。",
+      "alreadyGone": "服务器上已经没有这个文件了。",
+      "rejected": "服务器拒绝了这个文件：{{detail}}",
+      "rejectedNoDetail": "服务器拒绝了这个文件。",
+      "unavailable": "服务器暂时不可用（HTTP {{status}}），请稍后再试。",
+      "server": "服务器保存文件失败（HTTP {{status}}）。",
+      "serverDetail": "服务器保存文件失败（HTTP {{status}}）：{{detail}}",
+      "timeout": "上传时间过长，已中止。请检查网络后重试。",
+      "network": "连接不上服务器，请检查网络后重试。",
+      "unknown": "请求失败（HTTP {{status}}）。",
+      "unknownWithDetail": "请求失败（HTTP {{status}}）：{{detail}}"
+    }
   },
   "errorBoundary": {
     "crashed": "组件出错了",
@@ -1180,11 +1197,15 @@
     "triggerLabel": "回复风格：{{style}}，篇幅：{{length}}"
   },
   "uploadedFiles": {
-    "removed": "已删除：{{name}}",
-    "removeFailed": "删除失败（文件仍保留在会话中）：{{detail}}",
-    "unknownError": "未知错误",
-    "header": "当前会话附件（与服务器 uploads 一致）· {{count}} 个文件",
-    "serverSuffix": " · 服务器"
+    "removed": "已移除 {{name}}",
+    "removeFailed": "{{name}} 移除失败（仍在附件中）：{{detail}}",
+    "header": "将随下一条消息发送 · {{count}} 个文件",
+    "uploadingCount": "正在上传 {{count}} 个",
+    "uploadingOne": "正在上传 {{name}}...",
+    "removeLabel": "移除 {{name}}"
+  },
+  "messageAttachments": {
+    "label": "随此消息发送的文件（{{count}} 个）"
   },
   "recall": {
     "unavailable": "记忆召回暂时不可用，本轮未引用历史资料。",
@@ -1325,7 +1346,6 @@
     "memoryNotice": "{{count}} 条相关记忆",
     "needSession": "请先创建或选择一个会话",
     "uploaded": "{{name}} 上传成功",
-    "uploadFailed": "上传失败: {{error}}",
     "unknownError": "未知错误",
     "unsupported": "不支持的文件类型: {{names}}",
     "steerSent": "引导已发送，将在下一步采纳",
@@ -1343,7 +1363,8 @@
     "steerPlaceholder": "输入引导内容，Agent 将在下一步参考...",
     "placeholder": "输入消息... (可粘贴图片 / 拖放文件上传)",
     "sendSteer": "发送引导",
-    "send": "发送"
+    "send": "发送",
+    "waitForUploads": "还有 {{count}} 个文件在上传，传完再发送。"
   },
   "skills": {
     "candidate": "候选 · 未独立验证",

@@ -56,7 +56,15 @@ def _convert_history_to_agent_format(
     """Transform frontend history messages into agent-ready format."""
     if not history:
         return []
-    return [{"role": msg.role, "content": msg.content} for msg in history]
+    from ...services.chat_attachments import history_attachment_note
+
+    converted: List[Dict[str, Any]] = []
+    for msg in history:
+        content = msg.content
+        if msg.role == "user":
+            content += history_attachment_note(msg.metadata)
+        converted.append({"role": msg.role, "content": content})
+    return converted
 
 
 def _loads_metadata(raw: Optional[str]) -> Optional[Dict[str, Any]]:

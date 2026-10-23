@@ -19,6 +19,7 @@ from app.config.executor_config import get_executor_settings
 from app.repository.chat_action_runs import create_action_run
 from app.repository.plan_storage import append_action_log_entry
 from app.routers import register_router
+from app.services.chat_attachments import attach_message_attachments
 from app.services.llm.llm_service import get_llm_service
 from app.services.moderation import scan_user_input
 from app.services.moderation.refusal_matcher import (
@@ -515,13 +516,14 @@ async def chat_message(
             user_message_metadata = (
                 {"client_message_id": request.client_message_id}
                 if request.client_message_id
-                else None
+                else {}
             )
+            attach_message_attachments(user_message_metadata, context)
             _save_chat_message(
                 request.session_id,
                 "user",
                 request.message,
-                user_message_metadata,
+                user_message_metadata or None,
                 owner_id=owner_id,
             )
             session_settings = _get_session_settings(
