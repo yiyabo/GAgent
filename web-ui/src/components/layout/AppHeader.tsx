@@ -18,6 +18,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import Wordmark from '@components/common/Wordmark';
 import LanguageSwitch from '@components/common/LanguageSwitch';
 import { useT } from '@/i18n/useT';
+import { describeAuthError } from '@utils/authError';
 
 const { Header } = Layout;
 const { Text } = Typography;
@@ -51,7 +52,7 @@ const AppHeader: React.FC = () => {
       if (error?.errorFields) {
         return;
       }
-      message.error(error?.message || t('header.passwordUpdateFailed'));
+      message.error(describeAuthError(error, 'changePassword') || t('header.passwordUpdateFailed'));
     }
   };
 
