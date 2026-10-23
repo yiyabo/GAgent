@@ -30,6 +30,12 @@ export function mcpSwitchBlockReason(args: {
   return null;
 }
 
+/** `mcp__uniprot__uniprot_get_entry` -> `uniprot_get_entry`: the name the server itself gives the tool. */
+export function mountedToolLabel(registeredName: string): string {
+  const parts = registeredName.split('__');
+  return parts.length > 2 && parts[0] === 'mcp' ? parts.slice(2).join('__') : registeredName;
+}
+
 export function skillSwitchBlockReason(canManage: boolean): string | null {
   return canManage ? null : translate('extensions.adminOnly');
 }

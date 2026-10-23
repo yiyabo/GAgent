@@ -55,6 +55,7 @@ const McpTab: React.FC = () => {
   };
 
   const data = query.data;
+  const enabledCount = (data?.servers ?? []).filter((server) => server.state === 'enabled' && server.connected).length;
   const categories = useMemo(
     () => Array.from(new Set((data?.servers ?? []).map((server) => server.category))).sort(),
     [data],
@@ -100,7 +101,14 @@ const McpTab: React.FC = () => {
           message={t('extensions.notConfiguredTitle')}
           description={t('extensions.notConfiguredDesc')}
         />
-      ) : null}
+      ) : (
+        <Alert
+          type="info"
+          showIcon
+          message={t('extensions.mcpIntro')}
+          description={data.can_manage ? undefined : t('extensions.mcpIntroReadOnly')}
+        />
+      )}
 
       <Space wrap>
         <Input.Search
@@ -119,6 +127,7 @@ const McpTab: React.FC = () => {
           options={[{ value: ALL, label: t('extensions.allCategories') }, ...categories.map((item) => ({ value: item, label: item }))]}
         />
         <Text type="secondary">{t('extensions.count', { visible: visible.length, total: data.servers.length })}</Text>
+        {enabledCount > 0 ? <Tag color="green" style={{ marginInlineEnd: 0 }}>{t('extensions.enabledCount', { n: enabledCount })}</Tag> : null}
       </Space>
 
       {data.servers.length === 0 ? (
