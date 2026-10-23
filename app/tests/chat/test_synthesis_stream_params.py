@@ -144,3 +144,61 @@ async def test_two_empty_replies_return_nothing_so_the_fixed_fallback_answers(
 
     assert result == ""
     assert len(llm.calls) == 2
+
+
+@pytest.mark.asyncio()
+async def test_under_a_run_budget_the_summary_ends_before_the_hard_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The hard deadline turns a run into a bare "time limit" failure that loses even
+    the list of produced files. The first attempt keeps 60% of the time left (the
+    retry needs some) and the last stops 5 s early; a timeout is not an error, so
+    the fixed fallback answers instead of the run raising."""
+    import asyncio
+
+    from app.services.run_budget import RunBudget, bind_run_budget, reset_run_budget
+
+    monkeypatch.setattr(synthesis, "get_settings", lambda: SimpleNamespace(thinking_enabled=True))
+    monkeypatch.setenv("DEEP_THINK_SYNTHESIS_TIMEOUT_SECONDS", "5000")
+    timeouts: List[float] = []
+
+    async def fake_run_stage(awaitable: Any, *, stage: str, timeout: Any = None, **_: Any) -> Any:
+        timeouts.append(timeout)
+        awaitable.close()
+        raise asyncio.TimeoutError("stage timeout")
+
+    monkeypatch.setattr(synthesis, "run_stage", fake_run_stage)
+    agent = _real_agent(_NativeRecordingLLM())
+    handle = bind_run_budget(RunBudget(1000))
+    try:
+        result = await synthesis._forced_synthesis_from_steps(
+            agent, _steps(), "Explain what happened", [{"role": "user", "content": "Explain what happened"}]
+        )
+    finally:
+        reset_run_budget(handle)
+
+    assert result == ""
+    assert len(timeouts) == 2
+    remaining = 990  # 1000 s minus the 10 s close reserve
+    assert timeouts[0] == pytest.approx(remaining * 0.6, abs=2)
+    assert timeouts[1] == pytest.approx(remaining - 5, abs=2)
+    assert getattr(agent, "_model_call_failed", False) is False  # running out of time is not a model failure
+
+
+@pytest.mark.asyncio()
+async def test_with_almost_no_time_left_the_summary_is_not_attempted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.services.run_budget import RunBudget, bind_run_budget, reset_run_budget
+
+    llm = _NativeRecordingLLM()
+    handle = bind_run_budget(RunBudget(12))  # close reserve is capped to 6 s -> ~6 s left
+    try:
+        result = await synthesis._forced_synthesis_from_steps(
+            _real_agent(llm), _steps(), "Explain what happened", [{"role": "user", "content": "Explain what happened"}]
+        )
+    finally:
+        reset_run_budget(handle)
+
+    assert result == ""
+    assert llm.calls == []

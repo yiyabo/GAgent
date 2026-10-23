@@ -387,6 +387,30 @@ async def _chat_messages_streaming(
     return text
 
 
+_MIN_ATTEMPT_SECONDS = 5.0
+_FIRST_ATTEMPT_SHARE = 0.6
+_DEADLINE_MARGIN_SECONDS = 5.0
+
+
+def _attempt_timeout(cap: float, *, is_last: bool) -> float:
+    """Time one closing-summary attempt may take.
+
+    Under a run budget the summary must end before the hard deadline: that
+    deadline turns the whole run into a bare "time limit" failure and loses even
+    the list of files the run produced. So the first attempt keeps at most 60%
+    of what is left (the retry needs time too) and the last stops a few seconds
+    early, which lets the fixed fallback message answer instead.
+    """
+    from app.services.run_budget import current_run_budget
+
+    budget = current_run_budget()
+    if budget is None:
+        return cap
+    remaining = budget.remaining_seconds()
+    share = remaining - _DEADLINE_MARGIN_SECONDS if is_last else remaining * _FIRST_ATTEMPT_SHARE
+    return min(cap, share)
+
+
 def _ensure_acceptance_missing(agent: "DeepThinkAgent") -> None:
     """Record which requested deliverable types never appeared.
 
@@ -475,9 +499,13 @@ async def _forced_synthesis_from_steps(
             # output cap reasoning returns nothing visible, and asking again the
             # same way repeats that.
             use_thinking = thinking and attempt == 0
+            attempt_timeout = _attempt_timeout(synthesis_timeout, is_last=attempt == attempts - 1)
+            if attempt_timeout < _MIN_ATTEMPT_SECONDS:
+                logger.warning("[DEEP_THINK_NATIVE] No run time left for closing summary attempt %d", attempt + 1)
+                break
             logger.info(
-                "[DEEP_THINK_NATIVE] Closing summary attempt %d/%d (messages=%d timeout=%ss max_tokens=%s thinking=%s)",
-                attempt + 1, attempts, len(conversation), synthesis_timeout, synthesis_max_tokens, use_thinking,
+                "[DEEP_THINK_NATIVE] Closing summary attempt %d/%d (messages=%d timeout=%.0fs max_tokens=%s thinking=%s)",
+                attempt + 1, attempts, len(conversation), attempt_timeout, synthesis_max_tokens, use_thinking,
             )
             try:
                 raw = await run_stage(
@@ -488,7 +516,7 @@ async def _forced_synthesis_from_steps(
                         thinking_budget=getattr(agent, "thinking_budget", None) if use_thinking else None,
                         tools=tools,
                     ),
-                    stage="deepthink-synthesis", timeout=synthesis_timeout,
+                    stage="deepthink-synthesis", timeout=attempt_timeout,
                 )
             except (RunDeadlineExceeded, ObserverRejected):
                 raise
