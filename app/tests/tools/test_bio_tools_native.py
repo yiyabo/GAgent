@@ -152,10 +152,18 @@ def test_script_exports_cpus_and_activates_the_conda_env_from_the_configured_dir
     assert lines.index("export CONDA_ENVS_PATH=/data/envs") < next(
         i for i, line in enumerate(lines) if "conda activate seqkit" in line
     )
-    assert lines.index("unset PYTHONPATH PYTHONHOME PYTHONSTARTUP PERL5LIB") < next(
-        i for i, line in enumerate(lines) if "conda activate seqkit" in line
-    )
+    activate = next(i for i, line in enumerate(lines) if "conda activate seqkit" in line)
+    assert lines.index("unset PYTHONPATH PYTHONHOME PYTHONSTARTUP PERL5LIB LD_LIBRARY_PATH LD_PRELOAD") < activate
+    # Nothing from the account running the job (~/.local packages, site library paths) may reach the environment.
+    assert lines.index("export PYTHONNOUSERSITE=1") < activate
     assert native_exec.render_script(job, run_dir="/r", conda_base="/opt/conda").count("CONDA_ENVS_PATH") == 0
+
+
+def test_module_jobs_keep_the_site_library_path(dirs) -> None:
+    # Only conda jobs are isolated; a module's LD_LIBRARY_PATH is what makes its program run.
+    job = _job(dirs, "prodigal", "meta", input_file=str(dirs["query"]), params={"protein": "p.faa"})
+    script = native_exec.render_script(job, run_dir="/runs/x")
+    assert "LD_LIBRARY_PATH" not in script and "PYTHONNOUSERSITE" not in script
 
 
 def test_a_system_program_is_checked_before_the_command_runs(dirs) -> None:
