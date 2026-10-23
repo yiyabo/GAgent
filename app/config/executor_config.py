@@ -199,11 +199,10 @@ def get_executor_settings() -> ExecutorSettings:
             os.getenv("CODE_EXECUTOR_DOCKER_IMAGE"),
             default=defaults.code_execution_docker_image,
         ),
-        # Upper clamp raised 50 -> 200 (2026-10-10, LOCAL_INFRA §117): plan
-        # tasks were cut off at the 48-iteration ceiling mid-pipeline;
-        # production now sets DEEP_THINK_MAX_ITERATIONS=96.
+        # Upper clamp raised 50 -> 200 (2026-10-10, LOCAL_INFRA §117), then
+        # 200 -> 500 to match the chat loop and Hermes' iteration budget.
         deep_think_max_iterations=max(
-            1, min(200, _env_int("DEEP_THINK_MAX_ITERATIONS", defaults.deep_think_max_iterations))
+            1, min(500, _env_int("DEEP_THINK_MAX_ITERATIONS", defaults.deep_think_max_iterations))
         ),
         qc_max_session_turns=max(
             10, min(500, _env_int("QC_MAX_SESSION_TURNS", defaults.qc_max_session_turns))

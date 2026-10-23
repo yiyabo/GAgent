@@ -13,6 +13,7 @@ import logging
 import os
 import queue
 import threading
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Any, Callable, Awaitable, Dict, List, Optional
 
@@ -133,6 +134,16 @@ def _get_encoder():
     return _ENCODER
 
 
+# A long run re-measures the whole conversation every iteration, and the budget
+# can now reach hundreds of thousands of tokens (about a second per million on
+# the event loop). Large texts are measured once: the key is the text's hash and
+# length, so no message body is kept alive by the cache.
+_TOKEN_CACHE_MIN_CHARS = 2000
+_TOKEN_CACHE_MAX_ENTRIES = 8192
+_TOKEN_CACHE: "OrderedDict[tuple, int]" = OrderedDict()
+_TOKEN_CACHE_LOCK = threading.Lock()
+
+
 def estimate_tokens(text: str) -> int:
     """Estimate token count using cl100k_base encoding.
 
@@ -143,6 +154,23 @@ def estimate_tokens(text: str) -> int:
     """
     if not text:
         return 0
+    if len(text) < _TOKEN_CACHE_MIN_CHARS:
+        return _estimate_tokens_uncached(text)
+    key = (hash(text), len(text))
+    with _TOKEN_CACHE_LOCK:
+        cached = _TOKEN_CACHE.get(key)
+        if cached is not None:
+            _TOKEN_CACHE.move_to_end(key)
+            return cached
+    tokens = _estimate_tokens_uncached(text)
+    with _TOKEN_CACHE_LOCK:
+        _TOKEN_CACHE[key] = tokens
+        while len(_TOKEN_CACHE) > _TOKEN_CACHE_MAX_ENTRIES:
+            _TOKEN_CACHE.popitem(last=False)
+    return tokens
+
+
+def _estimate_tokens_uncached(text: str) -> int:
     encoder = _get_encoder()
     if encoder is not None:
         try:
@@ -294,7 +322,7 @@ class ContextWindowManager:
 
     # Minimum recent messages to keep intact during compaction. A tool-call
     # batch crossing this boundary is retained in full, including all results.
-    KEEP_RECENT = 6
+    KEEP_RECENT = 12
 
     # Minimum messages required before compaction triggers.
     # No point compacting a 4-message conversation.

@@ -1479,6 +1479,22 @@ class TestTierFlattenMode:
         assert profile.output_bias == "task_completion"
         assert profile.max_iterations == 100
 
+    def test_profile_iteration_cap_follows_hermes_500(self, monkeypatch) -> None:
+        from app.routers.chat.task_context import _resolve_deep_think_max_iterations
+
+        decision = resolve_request_routing(message="你好呀")
+        profile = build_request_tier_profile(decision, default_max_iterations=500)
+        assert profile.max_iterations == 500
+        # a larger configured value is still bounded by the flat 500 cap
+        assert build_request_tier_profile(decision, default_max_iterations=900).max_iterations == 500
+
+        monkeypatch.delenv("DEEP_THINK_MAX_ITERATIONS", raising=False)
+        assert _resolve_deep_think_max_iterations() == 500
+        monkeypatch.setenv("DEEP_THINK_MAX_ITERATIONS", "152")
+        assert _resolve_deep_think_max_iterations() == 152
+        monkeypatch.setenv("DEEP_THINK_MAX_ITERATIONS", "9999")
+        assert _resolve_deep_think_max_iterations() == 500
+
     def test_profile_keeps_plan_conflict_cap(self) -> None:
         decision = resolve_request_routing(message="优化一下计划", context={"plan_id": 42})
         object.__setattr__(decision, "plan_conflict_requires_confirmation", True)

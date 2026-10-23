@@ -1,7 +1,9 @@
-"""Loop-guard tests: deliverable acceptance, failure trap, no-progress endgame.
+"""Loop-guard tests: deliverable tracking, acceptance, and the closing summary.
 
-The guards only fire on pathological patterns; a healthy run must see zero
-behaviour change (scenario C asserts exactly that).
+There is no repeated-failure or no-progress breaker any more (Hermes has none):
+a run ends by its own answer, the iteration cap, the run budget, the identical
+polling guard or the wall-clock fuse, and every early end gets one closing
+summary over the real conversation.
 
 Deliverable fixtures live under ./runtime/ rather than pytest's tmp_path:
 production code deliberately ignores /tmp/ paths as scratch.
@@ -58,10 +60,15 @@ class _LoopLLM:
         self._responses = responses
         self._index = 0
         self.calls: list[list[dict]] = []
+        self.summary_calls: list[dict] = []
         self.chat_async_called = False
 
     async def stream_chat_with_tools_async(self, **kwargs):  # type: ignore[override]
         messages = kwargs.get("messages") or []
+        if kwargs.get("tool_choice") == "none":
+            # The closing summary: one tool-less call over the whole conversation.
+            self.summary_calls.append({**kwargs, "messages": list(messages)})
+            return NativeStreamResult(content=SYNTH_ANSWER, finish_reason="stop")
         self.calls.append(list(messages))
         if self._index >= len(self._responses):
             raise RuntimeError("No more scripted responses")
@@ -98,11 +105,11 @@ def _all_message_text(llm: _LoopLLM) -> str:
     return "\n".join(parts)
 
 
-def test_no_progress_endgame_breaks_after_verified_deliverable(deliverable_file) -> None:
-    """Deliverable verified at step 3, model never finishes -> nudge, then
-    break far below max_iterations, then forced synthesis closes the run."""
+def test_run_without_new_deliverables_is_not_cut_off_and_summary_sees_everything(deliverable_file) -> None:
+    """A deliverable appears at step 3 and nothing new after that. The run is not
+    stopped for lack of progress; it ends at the iteration cap and the closing
+    summary is ONE call over the whole conversation (all 40 tool results)."""
     deliverable = deliverable_file
-
     call_count = {"n": 0}
 
     async def _executor(name: str, params: dict):
@@ -110,11 +117,17 @@ def test_no_progress_endgame_breaks_after_verified_deliverable(deliverable_file)
         if call_count["n"] <= 3:
             deliverable.write_bytes(deliverable.read_bytes() + b"new output")
             return {"success": True, "produced_files": [str(deliverable)]}
-        return {"success": True, "summary": "still probing, nothing new"}
+        return {"success": True, "summary": f"probe {call_count['n']}, nothing new"}
 
-    llm = _LoopLLM(
-        _tool_call_responses("file_operations", {"operation": "read", "path": "/x"}, 40)
-    )
+    # vary params per cycle so the identical-polling guard stays out of the way
+    responses = [
+        NativeStreamResult(
+            content=f"step {i}",
+            tool_calls=[NativeToolCall(id=f"tc{i}", name="file_operations", arguments={"operation": "read", "path": f"/x/{i}"})],
+        )
+        for i in range(40)
+    ]
+    llm = _LoopLLM(responses)
     agent = DeepThinkAgent(
         llm_client=llm,
         available_tools=["file_operations"],
@@ -125,21 +138,28 @@ def test_no_progress_endgame_breaks_after_verified_deliverable(deliverable_file)
 
     result = asyncio.run(agent.think("create the overview figure"))
 
-    # synthesis text is preserved and the produced image is inlined after it
-    assert result.final_answer.startswith(SYNTH_ANSWER)
-    assert "![overview.png](deliverables/latest/chart/overview.png)" in result.final_answer
-    # synthesis must go through streaming — non-streaming gets 504'd upstream
-    assert not llm.chat_async_called
-    # 3 producing steps + break streak (default 14) -> must stop << 40
-    assert result.total_iterations <= 18
+    assert result.total_iterations == 40
     text = _all_message_text(llm)
-    assert "verified on disk" in text
-    assert str(deliverable) in text
-    # the early break reason is surfaced on the step for the UI
-    assert any(
+    assert "No new deliverable" not in text
+    assert "without producing any deliverable" not in text
+    assert not any(
         step.self_correction and "without new deliverables" in step.self_correction
         for step in result.thinking_steps
     )
+    # one closing call, tool calling off, the explicit output cap, nothing clipped
+    assert len(llm.summary_calls) == 1
+    summary = llm.summary_calls[0]
+    assert summary["tool_choice"] == "none"
+    assert summary["max_tokens"] == 16384
+    sent = summary["messages"]
+    assert sum(1 for m in sent if m.get("role") == "tool") == 40
+    assert sent[-1]["role"] == "user" and "Do not call any more tools" in sent[-1]["content"]
+    # the nudge never reaches the conversation that later turns inherit
+    assert not any("Do not call any more tools" in str(m.get("content")) for m in llm.calls[-1])
+    # synthesis text is preserved and the produced image is inlined after it
+    assert result.final_answer.startswith(SYNTH_ANSWER)
+    assert "![overview.png](deliverables/latest/chart/overview.png)" in result.final_answer
+    assert not llm.chat_async_called
 
 
 def test_chat_turn_early_stops_on_substantive_answer_with_process_preface() -> None:
@@ -169,18 +189,38 @@ def test_chat_turn_early_stops_on_substantive_answer_with_process_preface() -> N
     assert not result.fallback_used
 
 
-def test_failure_signature_trap_warns_at_three_and_breaks_at_five() -> None:
-    """Same failure five times -> one warning message, then an early break."""
-    async def _executor(name: str, params: dict):
-        return {
-            "success": False,
-            "error": "target_task_not_atomic",
-            "summary": "code_executor can only execute atomic tasks",
-        }
+def test_different_tracebacks_with_the_same_shape_do_not_end_the_run() -> None:
+    """Eight different Python errors all normalize to "Traceback ... File <path>,
+    line <n>". They were counted as ONE repeated failure and cut a research run
+    off at its fifth; now the model keeps working and finishes on its own."""
+    attempts = {"n": 0}
 
-    llm = _LoopLLM(
-        _tool_call_responses("code_executor", {"task_id": 3, "code": "print(1)"}, 30)
-    )
+    async def _executor(name: str, params: dict):
+        attempts["n"] += 1
+        if attempts["n"] <= 8:
+            return {
+                "success": False,
+                "error": (
+                    'Traceback (most recent call last):\n'
+                    f'  File "/app/runtime/s/run_{attempts["n"]}.py", line {attempts["n"] * 7}, in <module>\n'
+                    f'ValueError: bug number {attempts["n"]} is different from the last one'
+                ),
+            }
+        return {"success": True, "summary": "the fixed script ran"}
+
+    responses = [
+        NativeStreamResult(
+            content=f"attempt {i}",
+            tool_calls=[NativeToolCall(id=f"tc{i}", name="code_executor", arguments={"task_id": 3, "code": f"print({i})"})],
+        )
+        for i in range(9)
+    ] + [
+        NativeStreamResult(
+            content="done",
+            tool_calls=[NativeToolCall(id="final", name="submit_final_answer", arguments={"answer": "完成：脚本修复后已成功运行。", "confidence": 0.9})],
+        )
+    ]
+    llm = _LoopLLM(responses)
     agent = DeepThinkAgent(
         llm_client=llm,
         available_tools=["code_executor"],
@@ -191,25 +231,11 @@ def test_failure_signature_trap_warns_at_three_and_breaks_at_five() -> None:
 
     result = asyncio.run(agent.think("run task 3"))
 
-    # terminal tool errors route to the pre-existing blocked-tool answer,
-    # which fires before forced synthesis — accept either close
-    assert result.final_answer.strip()
-    assert result.final_answer == SYNTH_ANSWER or "target_task_not_atomic" in result.final_answer
-    # break at the 5th identical failure, not at the 30-iteration cap
-    assert result.total_iterations <= 8
-    # the warning is injected exactly once (it shows up in several recorded
-    # snapshots only because message history accumulates across calls)
-    per_snapshot_counts = [
-        sum(
-            1
-            for msg in messages
-            if "same failure has now occurred 3 times" in str(msg.get("content") or "")
-        )
-        for messages in llm.calls
-    ]
-    assert max(per_snapshot_counts) == 1
-    assert sum(per_snapshot_counts) >= 1
-    assert any(
+    assert result.total_iterations == 10
+    assert result.final_answer.startswith("完成：脚本修复后已成功运行")
+    assert not llm.summary_calls
+    assert "same failure has now occurred" not in _all_message_text(llm)
+    assert not any(
         step.self_correction and "repetitions of the same failure" in step.self_correction
         for step in result.thinking_steps
     )
@@ -272,26 +298,6 @@ def test_deliverable_display_names_exclude_inputs_and_logs() -> None:
     )
     names = _collect_deliverable_display_names(evidence)
     assert names == ["data_audit_and_research_directions.md"]
-
-
-def test_humanizer_strips_embedded_cli_protocol_json() -> None:
-    agent = DeepThinkAgent(
-        llm_client=_LoopLLM([]),
-        available_tools=["code_executor"],
-        tool_executor=_noop_tool_executor,
-    )
-    noisy_stdout = (
-        '[{"type":"system","subtype":"init","uuid":"5f0d4824-cd69-568b-8706-799f58187604",'
-        '"session_id":"5f0d4824","cwd":"/app/runtime/session_x","tools":["computer_use_bring_to_front"]}]'
-        "\n"
-        "analysis finished, 30 distinct rows"
-    )
-    humanized = agent._humanize_single_tool_result(
-        "code_executor",
-        {"success": True, "stdout": noisy_stdout, "artifact_paths": ["/app/runtime/s/results/out.csv"]},
-    )
-    assert "subtype" not in humanized
-    assert "analysis finished" in humanized
 
 
 def test_time_budget_breaks_long_tool_runs(monkeypatch) -> None:
@@ -658,10 +664,6 @@ class TestStripRuntimeAbsolutePaths:
 
         return {
             "verified_deliverables": [],
-            "failure_sig_counts": {},
-            "failure_sig_warned": set(),
-            "last_progress_iteration": 0,
-            "no_progress_nudge_sent": False,
             "time_nudge_sent": False,
             "started_at": time.monotonic(),
             "expected_outputs": [],
@@ -812,10 +814,10 @@ class TestDeclarativeAcceptance:
         assert _missing_expectations(["image"], ["/x/a.png"]) == []
         assert _missing_expectations([], []) == []
 
-    def test_extension_granted_then_break_with_gaps(self) -> None:
-        """Asked for a figure but only a csv gets produced: the guard must not
-        break at the normal streak — it extends once, then closes with the gap
-        recorded for the final answer."""
+    def test_missing_deliverable_type_reaches_the_closing_summary(self) -> None:
+        """Asked for a figure but only a csv gets produced and the run hits the
+        iteration cap: nothing extends or breaks the run any more, but the
+        closing summary is still told which deliverable type is missing."""
         csv_dir = _SANDBOX / "deliverables" / "latest"
         csv_dir.mkdir(parents=True, exist_ok=True)
         csv_path = (csv_dir / "scores.csv").resolve()
@@ -824,8 +826,6 @@ class TestDeclarativeAcceptance:
         async def _executor(name: str, params: dict):
             return {"success": True, "artifact_paths": [str(csv_path)]}
 
-        # vary params per cycle so the identical-cycle breaker stays out of the
-        # way and the no-progress path exercises the acceptance extension
         responses = [
             NativeStreamResult(
                 content=f"step {i}",
@@ -837,14 +837,14 @@ class TestDeclarativeAcceptance:
                     )
                 ],
             )
-            for i in range(40)
+            for i in range(6)
         ]
         llm = _LoopLLM(responses)
         agent = DeepThinkAgent(
             llm_client=llm,
             available_tools=["file_operations"],
             tool_executor=_executor,
-            max_iterations=40,
+            max_iterations=6,
             request_profile={"request_tier": "execute", "intent_type": "execute_task"},
         )
         try:
@@ -852,19 +852,16 @@ class TestDeclarativeAcceptance:
         finally:
             shutil.rmtree(_SANDBOX, ignore_errors=True)
 
-        # extension: survived past the normal break streak, then closed shortly after
-        assert result.total_iterations >= 15
-        assert result.total_iterations <= 22
+        assert result.total_iterations == 6
         text = _all_message_text(llm)
-        assert "required deliverable type(s) still missing: image" in text
+        assert "required deliverable type(s) still missing" not in text
         assert agent._acceptance_missing == ["image"]
-        assert any(
-            step.self_correction and "without new deliverables" in step.self_correction
-            for step in result.thinking_steps
-        )
+        assert len(llm.summary_calls) == 1
+        assert "本轮未能产出的交付物类型" in llm.summary_calls[0]["messages"][-1]["content"]
 
     def test_satisfied_expectations_see_no_extension(self, deliverable_file) -> None:
-        """Asked for a figure and it IS produced: normal break, zero gap."""
+        """Asked for a figure and it IS produced: the run ends (here through the
+        identical-polling guard) with zero recorded gap."""
 
         async def _executor(name: str, params: dict):
             deliverable_file.write_bytes(deliverable_file.read_bytes() + b"new output")
@@ -997,8 +994,7 @@ def test_shared_longer_budget_is_not_shortened_by_legacy_local_time_fuse():
     from app.services.run_budget import RunBudget, bind_run_budget, reset_run_budget
     agent = DeepThinkAgent(llm_client=_LoopLLM([]), available_tools=["file_operations"], tool_executor=_noop_tool_executor,
         request_profile={"request_tier": "execute", "intent_type": "execute_task"})
-    guard = {"verified_deliverables": [], "failure_sig_counts": {}, "failure_sig_warned": set(),
-        "last_progress_iteration": 1, "no_progress_nudge_sent": False, "time_nudge_sent": False,
+    guard = {"verified_deliverables": [], "time_nudge_sent": False,
         "started_at": time.monotonic() - 1000, "expected_outputs": [], "acceptance_spec": None}
     messages = []
     handle = bind_run_budget(RunBudget(3600))

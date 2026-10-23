@@ -44,12 +44,17 @@ class _NoStreamLLM:
 
 
 class _NativeDummyLLM:
-    def __init__(self, responses: list[NativeStreamResult]) -> None:
+    def __init__(self, responses: list[NativeStreamResult], summary: str | None = None) -> None:
         self._responses = responses
         self._index = 0
+        self._summary = summary
+        self.summary_calls: list[dict] = []
 
     async def stream_chat_with_tools_async(self, **kwargs):  # type: ignore[override]
-        _ = kwargs
+        if kwargs.get("tool_choice") == "none":
+            # The closing summary call. Unscripted means "the model returned nothing".
+            self.summary_calls.append(dict(kwargs))
+            return NativeStreamResult(content=self._summary or "", finish_reason="stop")
         if self._index >= len(self._responses):
             raise RuntimeError("No more native mock responses")
         value = self._responses[self._index]
@@ -62,13 +67,19 @@ class _NativeDummyLLM:
 
 
 class _RecordingNativeLLM:
-    def __init__(self, responses: list[NativeStreamResult]) -> None:
+    def __init__(self, responses: list[NativeStreamResult], summary: str | None = None) -> None:
         self._responses = responses
         self._index = 0
+        self._summary = summary
         self.calls: list[list[dict]] = []
+        self.summary_calls: list[dict] = []
 
     async def stream_chat_with_tools_async(self, **kwargs):  # type: ignore[override]
         messages = kwargs.get("messages") or []
+        if kwargs.get("tool_choice") == "none":
+            # The closing summary call. Unscripted means "the model returned nothing".
+            self.summary_calls.append({**kwargs, "messages": list(messages)})
+            return NativeStreamResult(content=self._summary or "", finish_reason="stop")
         self.calls.append(list(messages))
         if self._index >= len(self._responses):
             raise RuntimeError("No more native mock responses")
@@ -649,8 +660,10 @@ def test_probe_only_after_real_execution_tool_stops_with_neutral_summary() -> No
     """After a real execution tool runs, at most one observation-only verification
     cycle is allowed. A second probe-only cycle should stop with a neutral
     post-execution summary instead of BLOCKED_DEPENDENCY."""
+    summary = "任务 17 的差异表达分析代码已成功执行，之后几轮只是在读取输出，没有发现新的信息。"
     llm = _RecordingNativeLLM(
-        [
+        summary=summary,
+        responses=[
             # Iteration 1: observation-only (file_operations list)
             NativeStreamResult(
                 content="Inspecting workspace",
@@ -764,12 +777,16 @@ def test_probe_only_after_real_execution_tool_stops_with_neutral_summary() -> No
         )
     )
 
-    # The system should stop the repeated post-execution probing without
-    # rewriting the outcome into BLOCKED_DEPENDENCY.
+    # The system stops the repeated post-execution probing without rewriting
+    # the outcome into BLOCKED_DEPENDENCY; the answer is the model's own closing
+    # summary over the real conversation (including the code_executor result).
     assert "BLOCKED_DEPENDENCY" not in result.final_answer
-    assert "任务 17" in result.final_answer or "差异表达" in result.final_answer
-    assert "观察循环" in result.final_answer or "验证" in result.final_answer
+    assert result.final_answer.startswith(summary)
     assert result.confidence >= 0.8
+    assert len(llm.summary_calls) == 1
+    sent = llm.summary_calls[0]["messages"]
+    assert any(m.get("role") == "tool" and "executed successfully" in str(m.get("content")) for m in sent)
+    assert sent[-1]["role"] == "user" and "不要再调用任何工具" in sent[-1]["content"]
 
 
 def test_blocked_dependency_answer_prefers_structured_document_reader_summary() -> None:
@@ -2019,7 +2036,7 @@ def test_structured_plan_contract_failure_replaces_observation_fallback() -> Non
     )
 
     assert "structured plan contract was not satisfied" in answer
-    assert "Here is what was observed during execution" not in answer
+    assert "No closing summary could be written" not in answer
 
 
 def test_structured_plan_conflict_requires_confirmation_message() -> None:
@@ -2270,7 +2287,67 @@ def test_process_only_answer_detection_passes_substantive_answer_with_preface() 
     assert not is_process_only_answer(long_en)
 
 
-def test_structured_fallback_uses_user_facing_evidence_format() -> None:
+def test_structured_fallback_lists_produced_files_and_never_retells_tool_output() -> None:
+    """The fixed message for a run whose closing summary failed: it names that no
+    summary exists and lists the files the run produced, nothing re-told from
+    clipped tool output."""
+    agent = DeepThinkAgent(
+        llm_client=_DummyLLM([]),
+        available_tools=["code_executor", "file_operations"],
+        tool_executor=_noop_tool_executor,
+        max_iterations=1,
+    )
+    agent._produced_deliverable_paths = [
+        "/app/runtime/s/results/subset_manifest.csv",
+        "/app/runtime/s/results/qc_report.pdf",
+    ]
+    steps = [
+        ThinkingStep(
+            iteration=1,
+            thought="执行pipeline",
+            action='{"tool":"code_executor"}',
+            action_result=(
+                '[code_executor] {"success": true, "tool": "code_executor", "result": {'
+                '"stdout": "Pipeline complete. 9 PASS, 6 FAIL out of 15 total"}}'
+            ),
+            self_correction=None,
+        )
+    ]
+
+    answer = agent._build_structured_fallback(steps, "运行QC流程")
+
+    assert "本轮没能写出最终总结" in answer
+    assert "subset_manifest.csv" in answer and "qc_report.pdf" in answer
+    assert "/app/runtime" not in answer
+    assert '{"tool"' not in answer and "9 PASS" not in answer
+
+
+def test_structured_fallback_without_files_keeps_the_last_real_thoughts() -> None:
+    agent = DeepThinkAgent(
+        llm_client=_DummyLLM([]),
+        available_tools=["file_operations"],
+        tool_executor=_noop_tool_executor,
+        max_iterations=1,
+    )
+    thought = "目录里只有 a.tsv 和 b.tsv 两个文件，其中 b.tsv 缺少表头，所以后续分析只能基于 a.tsv 进行。"
+    steps = [
+        ThinkingStep(
+            iteration=1,
+            thought=thought,
+            action='{"tool":"file_operations","params":{"operation":"list","path":"/tmp"}}',
+            action_result='{"success": true, "summary": "Found 2 files: a.tsv, b.tsv"}',
+            self_correction=None,
+        )
+    ]
+
+    answer = agent._build_structured_fallback(steps, "看看结果")
+
+    assert thought in answer
+    assert "Found 2 files" not in answer
+    assert "[Step 1]" not in answer
+
+
+def test_structured_fallback_with_nothing_to_report_says_so() -> None:
     agent = DeepThinkAgent(
         llm_client=_DummyLLM([]),
         available_tools=["file_operations"],
@@ -2280,8 +2357,8 @@ def test_structured_fallback_uses_user_facing_evidence_format() -> None:
     steps = [
         ThinkingStep(
             iteration=1,
-            thought="先看目录结构，再总结。",
-            action='{"tool":"file_operations","params":{"operation":"list","path":"/tmp"}}',
+            thought="好的",
+            action='{"tool":"file_operations"}',
             action_result='{"success": true, "summary": "Found 2 files: a.tsv, b.tsv"}',
             self_correction=None,
         )
@@ -2289,90 +2366,8 @@ def test_structured_fallback_uses_user_facing_evidence_format() -> None:
 
     answer = agent._build_structured_fallback(steps, "看看结果")
 
-    assert "[Step 1]" not in answer
-    # Should use humanized header, not raw JSON dump
-    assert "以下是本轮" in answer
-    # Evidence should be humanized, not raw JSON
-    assert "Found 2 files" in answer
-
-
-def test_structured_fallback_humanizes_code_executor_success() -> None:
-    """When code_executor succeeds, fallback should show human-readable summary, not raw JSON."""
-    agent = DeepThinkAgent(
-        llm_client=_DummyLLM([]),
-        available_tools=["code_executor", "file_operations"],
-        tool_executor=_noop_tool_executor,
-        max_iterations=1,
-    )
-    # Simulate multi-tool action_result from native tool calling
-    action_result = (
-        '[terminal_session] {"tool": "terminal_session"}\n\n'
-        '[code_executor] {"success": true, "tool": "code_executor", "result": {'
-        '"tool": "code_executor", "success": true, '
-        '"stdout": "Pipeline complete. 9 PASS, 6 FAIL out of 15 total", '
-        '"artifact_paths": ["/run/results", "/run/results/subset_manifest.csv", "/run/results/qc_report.pdf"]'
-        '}}\n\n'
-        '[file_operations] {"success": true, "tool": "file_operations", "result": {'
-        '"tool": "file_operations", "operation": "list", "path": "/run/results", '
-        '"items": [{"name": "subset_manifest.csv", "type": "file", "size": 1526}, '
-        '{"name": "qc_report.pdf", "type": "file", "size": 31140}]'
-        '}}'
-    )
-    steps = [
-        ThinkingStep(
-            iteration=1,
-            thought="执行pipeline",
-            action='{"tool":"code_executor"}',
-            action_result=action_result,
-            self_correction=None,
-        )
-    ]
-
-    answer = agent._build_structured_fallback(steps, "运行QC流程")
-
-    # Should NOT contain raw JSON
-    assert '{"tool"' not in answer
-    assert '{"success"' not in answer
-    # Should contain humanized content
-    assert "代码执行成功" in answer
-    assert "9 PASS" in answer
-    assert "subset_manifest.csv" in answer
-    # Should use success-aware header
-    assert "以下是本轮工具执行的结果摘要" in answer
-    # Noise-only terminal_session should be filtered out
-    assert "terminal_session" not in answer
-
-
-def test_structured_fallback_treats_generic_tool_success_as_success() -> None:
-    """A run of plain `执行完成` bullets is tool success, not mere "observed information".
-
-    Production 2026-10-09 (LOCAL_INFRA §109/§111): twelve successful execute_code
-    cells rendered as the generic bullet, the success markers did not include it,
-    and the user was handed the "observed information" template with the
-    "ask for more detail" footer.
-    """
-    agent = DeepThinkAgent(
-        llm_client=_DummyLLM([]),
-        available_tools=["execute_code"],
-        tool_executor=_noop_tool_executor,
-        max_iterations=1,
-    )
-    steps = [
-        ThinkingStep(
-            iteration=i,
-            thought="跑单元格",
-            action='{"tool":"execute_code"}',
-            action_result='[execute_code] {"success": true, "tool": "execute_code", "result": {"stdout": "ok"}}',
-            self_correction=None,
-        )
-        for i in (1, 2, 3)
-    ]
-
-    answer = agent._build_structured_fallback(steps, "把表格补齐")
-
-    assert "execute_code：执行完成" in answer
-    assert "以下是本轮工具执行的结果摘要" in answer
-    assert "如需更详细的分析" not in answer
+    assert "不足以支撑可靠结论" in answer
+    assert "Found 2 files" not in answer
 
 
 def test_native_retries_external_search_tool_once_before_succeeding() -> None:
@@ -2470,7 +2465,8 @@ def test_native_stops_repeated_identical_polling_cycles() -> None:
         )
         for idx in range(20)
     ]
-    llm = _NativeDummyLLM(repeated_calls)
+    summary = "PhageScope 任务 37430 在多次轮询后状态没有变化（proteins 模块仍在等待），已停止继续轮询，请稍后再查。"
+    llm = _NativeDummyLLM(repeated_calls, summary=summary)
     agent = DeepThinkAgent(
         llm_client=llm,
         available_tools=["phagescope"],
@@ -2481,7 +2477,11 @@ def test_native_stops_repeated_identical_polling_cycles() -> None:
     result = asyncio.run(agent.think("keep polling"))
     assert result.total_iterations < 20
     assert call_count["n"] < 20
-    assert "stopped active polling" in result.final_answer.lower()
+    # The stop is explained by the model's own closing summary, not a canned text.
+    assert result.final_answer.startswith(summary)
+    assert "stopped active polling" not in result.final_answer.lower()
+    assert len(llm.summary_calls) == 1
+    assert llm.summary_calls[0]["tool_choice"] == "none"
 
 
 def test_prompt_based_stops_repeated_identical_polling_cycles() -> None:
@@ -4207,9 +4207,6 @@ def test_bound_execute_task_fallback_never_asks_for_missing_task_definition() ->
             "produced_files": ["/tmp/task48/output.txt"],
         }
 
-    async def _bad_fallback(*_args, **_kwargs):
-        return "请提供 Task 9 的具体内容，并确认是否存在 plan68_task9 目录。"
-
     agent = DeepThinkAgent(
         llm_client=llm,
         available_tools=["file_operations"],
@@ -4221,14 +4218,8 @@ def test_bound_execute_task_fallback_never_asks_for_missing_task_definition() ->
             "explicit_task_override": True,
         },
     )
-    # Tripwire: _fallback_answer_from_steps no longer calls
-    # _generate_fallback_from_evidence (the tier-gated evidence-synthesis branch
-    # was removed), so this patch is unreachable on the flat path. It stays as a
-    # tripwire: if that call is ever re-wired, the assertions below must still
-    # hold. The bound-task guarantee now lives at the end of the controller
-    # (controller.py:1860, _should_reject_missing_task_definition_answer), which
-    # rejects a forced synthesis that asks the user for a task definition.
-    agent._generate_fallback_from_evidence = _bad_fallback  # type: ignore[method-assign]
+    # No closing summary is scripted (the model returns nothing), so the fixed
+    # bound-task message answers instead.
 
     result = asyncio.run(
         agent.think(
@@ -4249,10 +4240,9 @@ def test_bound_execute_task_fallback_never_asks_for_missing_task_definition() ->
 
 
 def test_bound_execute_task_rejects_forced_synthesis_that_asks_for_task_definition() -> None:
-    """Same bound-task identity, enforced where it actually lives now: a forced
-    synthesis that asks the user for the task definition is rejected at the end
-    of the controller (controller.py:1860) and the turn falls back to the
-    observed tool evidence instead of asking the user."""
+    """A closing summary that asks the user for the task definition is rejected
+    at the end of the controller and the turn falls back to the fixed bound-task
+    message instead of asking the user."""
     llm = _NativeDummyLLM(
         [
             NativeStreamResult(
@@ -4306,15 +4296,13 @@ def test_bound_execute_task_rejects_forced_synthesis_that_asks_for_task_definiti
 
     assert "请提供 Task 9" not in result.final_answer
     assert "plan68_task9" not in result.final_answer
-    # Rejected forced synthesis → execute-intent fallback chain; the re-armed
-    # LLM evidence synthesis (④ 2026-10-09) answers from the observed step
-    # instead of parroting the process sentence.
+    # Rejected closing summary → fixed bound-task message, not the rejected text.
     assert result.final_answer.strip()
     assert result.fallback_used is True
     assert result.total_iterations == 1
 
 
-# ---------- Execute-intent evidence synthesis (re-armed 2026-10-09) ----------
+# ---------- Fallback when the closing summary produced nothing ----------
 
 
 def _task48_steps() -> list[ThinkingStep]:
@@ -4329,10 +4317,10 @@ def _task48_steps() -> list[ThinkingStep]:
     ]
 
 
-def test_execute_intent_fallback_prefers_evidence_synthesis() -> None:
-    """Re-armed 2026-10-09: execute-intent forced synthesis tries the LLM
-    evidence synthesis before the structured fallback (the legacy execute
-    tier's path, now keyed off intent instead of tier)."""
+def test_execute_intent_fallback_is_fixed_text_and_makes_no_model_call() -> None:
+    """The evidence-excerpt synthesis call is gone: with no closing summary, an
+    execute-intent run gets the fixed message that lists what it produced. The
+    dummy client raises if anything calls it."""
     agent = DeepThinkAgent(
         llm_client=_DummyLLM([]),
         available_tools=["file_operations"],
@@ -4340,20 +4328,15 @@ def test_execute_intent_fallback_prefers_evidence_synthesis() -> None:
         max_iterations=1,
         request_profile={"intent_type": "execute_task", "current_task_id": 48},
     )
-
-    async def _fake_synthesis(user_query: str, evidence_snippets: str, _steps: list[ThinkingStep]) -> str:
-        assert "output.txt" in evidence_snippets
-        return "当前绑定任务已产出 output.txt，核验通过。"
-
-    agent._generate_fallback_from_evidence = _fake_synthesis  # type: ignore[method-assign]
+    agent._produced_deliverable_paths = ["/tmp/task48/output.txt"]
 
     answer = asyncio.run(agent._fallback_answer_from_steps(_task48_steps(), "继续执行 Task 48"))
+
     assert "output.txt" in answer
+    assert "本轮没能写出最终总结" in answer
 
 
-def test_execute_intent_fallback_rejects_missing_task_definition_answer() -> None:
-    """The evidence-synthesis answer is still passed through
-    `_should_reject_missing_task_definition_answer` before use."""
+def test_execute_intent_bound_task_fallback_never_asks_for_a_task_definition() -> None:
     agent = DeepThinkAgent(
         llm_client=_DummyLLM([]),
         available_tools=["file_operations"],
@@ -4365,11 +4348,6 @@ def test_execute_intent_fallback_rejects_missing_task_definition_answer() -> Non
             "explicit_task_override": True,
         },
     )
-
-    async def _bad_fallback(*_args, **_kwargs) -> str:
-        return "请提供 Task 9 的具体内容，并确认是否存在 plan68_task9 目录。"
-
-    agent._generate_fallback_from_evidence = _bad_fallback  # type: ignore[method-assign]
 
     answer = asyncio.run(
         agent._fallback_answer_from_steps(
@@ -4386,12 +4364,11 @@ def test_execute_intent_fallback_rejects_missing_task_definition_answer() -> Non
     )
     assert "请提供 Task 9" not in answer
     assert "plan68_task9" not in answer
-    assert answer.strip()
+    assert "已绑定任务" in answer
 
 
 def test_chat_intent_fallback_keeps_thought_snippet_path() -> None:
-    """Chat intent is unchanged: no LLM evidence synthesis, the sanitized
-    last-useful-thought snippet answers."""
+    """Chat intent: the sanitized last-useful-thought snippet answers."""
     agent = DeepThinkAgent(
         llm_client=_DummyLLM([]),
         available_tools=["file_operations"],
@@ -4408,17 +4385,8 @@ def test_chat_intent_fallback_keeps_thought_snippet_path() -> None:
             self_correction=None,
         )
     ]
-    called = False
-
-    async def _spy(*_args, **_kwargs) -> str:
-        nonlocal called
-        called = True
-        return "不应走到这里"
-
-    agent._generate_fallback_from_evidence = _spy  # type: ignore[method-assign]
 
     answer = asyncio.run(agent._fallback_answer_from_steps(steps, "结果怎么样"))
-    assert not called
     assert "output.txt" in answer
 
 

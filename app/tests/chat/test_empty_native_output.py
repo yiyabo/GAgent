@@ -45,13 +45,13 @@ async def test_plan_synthesis_failure_uses_one_model_call_when_runtime_v2_is_off
         calls.append(kwargs)
         return ''
 
-    instance = DeepThinkAgent(SimpleNamespace(chat_async=text), [], text,
+    instance = DeepThinkAgent(SimpleNamespace(), [], text,
         request_profile={'plan_budget_enabled': True, 'intent_type': 'execute_task'})
-    monkeypatch.setattr(instance, '_chat_text_streaming', text)
+    monkeypatch.setattr(instance, '_chat_messages_streaming', text)
     steps = [ThinkingStep(iteration=1, thought='Tool input is unavailable.', action='file_operations', action_result='not found', self_correction=None)]
     result = await synthesis._forced_synthesis_from_steps(instance, steps, 'Finish the task', [])
     assert result == ''
     fallback = await synthesis._fallback_answer_from_steps(instance, steps, 'Finish the task')
     assert fallback
     assert len(calls) == 1
-    assert calls[0]['max_tokens'] == 6000
+    assert calls[0]['max_tokens'] == 16384

@@ -51,7 +51,7 @@ from app.services.response_style import sanitize_professional_response_text
 from app.services.run_budget import RunDeadlineExceeded, SoftFinalize, iterate_work_stage, iterate_stage, run_stage
 from app.services.tool_schemas import build_tool_schemas
 from app.services.deep_think.schema_disclosure import SchemaDisclosure
-from app.services.deep_think import checkpointing
+from app.services.deep_think import checkpointing, wrapup
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from app.services.deep_think_agent import DeepThinkAgent
@@ -89,6 +89,7 @@ async def think(
         )
 
     agent._termination_reason = None
+    agent._probe_stop_fallback = None
     recovered(agent)
     if agent._supports_native_tools():
         logger.info("[DEEP_THINK] Using native tool calling path")
@@ -243,10 +244,6 @@ async def _native_run_setup(
 
     loop_guard_state: Dict[str, Any] = {
         "verified_deliverables": produced_paths(context),
-        "failure_sig_counts": {},
-        "failure_sig_warned": set(),
-        "last_progress_iteration": 0,
-        "no_progress_nudge_sent": False,
         "time_nudge_sent": False,
         "started_at": time.monotonic(),
         "expected_outputs": expected_outputs,
@@ -271,7 +268,6 @@ async def _native_run_setup(
         checkpointing.restore_guard(loop_guard_state, restored)
         verified = restored.controller_state.get("guard", {}).get("verified_deliverables") or []
         loop_guard_state["verified_deliverables"] = list(verified)
-        loop_guard_state["last_progress_iteration"] = restored.iteration
         agent._produced_deliverable_paths = list(verified)
         agent._produced_image_paths = list(restored.controller_state.get("produced_image_paths") or [])
         agent._execution_issues = await asyncio.to_thread(
@@ -546,16 +542,9 @@ async def _native_tool_cycle(
             )
             if agent.on_thinking:
                 await agent._safe_callback(current_step)
-            final_answer = agent._build_repetition_stop_answer(
-                tool_results=tool_results,
-                repeated_cycles=repeated_cycles,
-            )
-            if rep_missing:
-                final_answer += (
-                    "\n\nNote: the requested deliverable type(s) are still missing: "
-                    + ", ".join(rep_missing)
-                    + "."
-                )
+            # No canned text: an empty answer sends the run to the closing
+            # summary over the real conversation (missing deliverable types
+            # reach it through agent._acceptance_missing).
             cycle.confidence = max(
                 cycle.confidence,
                 0.75 if agent._contains_tool(tool_results, "phagescope") else 0.5,
@@ -574,9 +563,7 @@ async def _native_tool_cycle(
                     )
                 ),
             )
-            if agent.on_final_delta and final_answer:
-                await agent._stream_final_answer(final_answer)
-            return "break", [], final_call, final_answer
+            return "break", [], final_call, ""
 
         return "ok", tool_results, final_call, ""
 
@@ -656,41 +643,20 @@ async def _native_probe_only_cycle(
                 # Task was executed; post-execution probing exceeded limit.
                 # Do NOT return BLOCKED_DEPENDENCY — we know the task ran.
                 # The AI never submitted submit_final_answer, so final_answer
-                # is likely empty here.  Return a neutral completion notice.
+                # is likely empty here.
                 current_step.self_correction = (
                     "Stopped repeated post-execution observation-only probing."
                 )
+                # An empty answer goes to the closing summary over the full
+                # conversation. This task-scoped text is only the last resort
+                # for when that call itself fails.
                 if not final_answer:
-                    raw_fallback = agent._build_post_execution_probe_stop_answer(
+                    agent._probe_stop_fallback = agent._build_post_execution_probe_stop_answer(
                         task_context=task_context,
                         user_query=user_query,
                         steps=[*thinking_steps, current_step],
                         tool_results=cycle.last_real_execution_tool_results,
                     )
-                    # Try to synthesize a clean answer via LLM instead of
-                    # dumping raw evidence snippets to the user.
-                    try:
-                        synthesized = await agent._generate_fallback_from_evidence(
-                            user_query=user_query,
-                            evidence_snippets=raw_fallback,
-                            steps=[*thinking_steps, current_step],
-                            task_context=task_context,
-                            max_retries=2,
-                            timeout=120,
-                            max_tokens=4000,
-                        )
-                        if len(synthesized) >= 100 or len(synthesized) >= len(raw_fallback) // 2:
-                            final_answer = synthesized
-                        else:
-                            final_answer = raw_fallback
-                    except RunDeadlineExceeded:
-                        raise
-                    except Exception as synth_exc:
-                        logger.warning(
-                            "Post-execution probe-stop LLM synthesis failed, using raw fallback: %s",
-                            str(synth_exc)[:200],
-                        )
-                        final_answer = raw_fallback
             else:
                 if agent._explicit_task_override_active(task_context):
                     # For explicit task override, do NOT return BLOCKED_DEPENDENCY.
@@ -1421,6 +1387,16 @@ async def _think_native(
     consecutive_llm_failures = 0
     max_consecutive_llm_failures = _default_max_consecutive_llm_failures()
     llm_fatal_abort = False
+    wrapup_sent = False
+    tool_schemas = tool_schemas_full
+
+    async def _compact_for_summary(summary_messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        from app.services.deep_think.native_validation import request_kwargs
+
+        return await ctx_mgr.compact_if_needed(
+            summary_messages, summarizer=_summarize_for_compaction,
+            **request_kwargs(agent, user_query, context, summary_messages, iteration, tools_used),
+        )
 
     while iteration < cycle.runtime_iteration_limit:
         from app.services.run_budget import should_finalize
@@ -1452,6 +1428,11 @@ async def _think_native(
             messages, summarizer=_summarize_for_compaction,
             **request_kwargs(agent,user_query,context,messages,iteration,tools_used),
         )
+
+        if not wrapup_sent and wrapup.wrapup_due():
+            wrapup_sent = wrapup.append_wrapup_notice(messages)
+            if wrapup_sent:
+                logger.info("[DEEP_THINK_NATIVE] Run-budget wrap-up notice added at iteration %d", iteration + 1)
 
         iteration += 1
         current_step = ThinkingStep(
@@ -1633,6 +1614,8 @@ async def _think_native(
         tools_used=tools_used,
         messages=messages,
         llm_fatal_abort=llm_fatal_abort,
+        summary_tools=tool_schemas,
+        compact_messages=_compact_for_summary,
     )
     await checkpointing.save_native_checkpoint(
         agent, phase="native_final", iteration=iteration, messages=messages,
@@ -1758,8 +1741,10 @@ async def _native_finalize(
     tools_used: List[str],
     messages: List[Dict[str, Any]],
     llm_fatal_abort: bool,
+    summary_tools: Optional[List[Dict[str, Any]]] = None,
+    compact_messages: Any = None,
 ) -> DeepThinkResult:
-    """Post-loop answer finalization: fallback synthesis chain, truth
+    """Post-loop answer finalization: closing summary, truth
     barriers, structured-plan contract, sanitizing and result assembly.
 
     Extracted verbatim from the tail of ``_think_native`` (same behaviour;
@@ -1773,7 +1758,7 @@ async def _native_finalize(
         from .background_handoff import conclude_background_plan
         return await conclude_background_plan(agent, thinking_steps, tools_used, iteration)
 
-    # ---- Forced synthesis: one more LLM call with all evidence before falling back ----
+    # ---- Blocker answers and the closing summary ----
     # Guard: only emit the "整集阻塞" blocker when the router has explicitly confirmed
     # (via explicit_scope_all_blocked in context) that every task in the named set is
     # unreachable.  Using explicit_task_override alone is insufficient — tools may have
@@ -1809,7 +1794,9 @@ async def _native_finalize(
         )
         if agent.on_final_delta:
             await agent._stream_final_answer(final_answer)
-    elif not final_answer and thinking_steps:
+    elif not final_answer and thinking_steps and not getattr(agent, "_execution_issues", None):
+        # (A run stopped for step reconciliation is reported as failed; the model
+        # is not asked to narrate a state it cannot vouch for.)
         phagescope_failure_answer = agent._build_phagescope_deep_profile_failure_answer(
             user_query=user_query,
             steps=thinking_steps,
@@ -1826,6 +1813,8 @@ async def _native_finalize(
                 user_query,
                 messages,
                 task_context=task_context,
+                tools=summary_tools,
+                compact=compact_messages,
             )
         if final_answer and agent._should_reject_missing_task_definition_answer(
             final_answer,

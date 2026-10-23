@@ -1,7 +1,7 @@
 """Loop guards for the DeepThink agent (god-class split, behaviour zero-change).
 
-Deliverable acceptance, failure-trap, and no-progress endgame logic extracted
-from app.services.deep_think_agent. Each function here is the body of the
+Deliverable tracking and the standalone wall-clock endgame extracted from
+app.services.deep_think_agent. Each function here is the body of the
 like-named DeepThinkAgent method with `self` renamed to `agent`; the class
 keeps thin wrappers so call sites (and subclass overrides) are unaffected.
 
@@ -20,20 +20,14 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from app.services.deep_think.text_utils import (
     _GUARD_DELIVERABLE_EXT_RE,
-    _GUARD_DIGIT_RE,
-    _GUARD_PATH_NORMALIZE_RE,
     _GUARD_PRODUCTIVE_DIR_RE,
     _GUARD_SCRATCH_RE,
     _INLINE_IMAGE_EXT_RE,
     _INLINE_IMAGE_PRODUCTIVE_RE,
     _INLINE_IMAGE_RAW_TMP_RE,
-    _failure_signature_break_count,
-    _failure_signature_warn_count,
     _guard_json_payload,
     _missing_expectations,
     _missing_expectations_detailed,
-    _progress_free_break_streak,
-    _progress_free_nudge_streak,
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -252,34 +246,10 @@ def _collect_inline_image_relpaths(agent: "DeepThinkAgent", limit: int = 8) -> L
     return collected
 
 
-def _failure_signature_for_result(agent: "DeepThinkAgent", item: Dict[str, Any]) -> Optional[str]:
-    """Stable signature for a failed tool result (tool + normalized error)."""
-    payload = item.get("tool_result")
-    if not isinstance(payload, dict):
-        payload = _guard_json_payload(item.get("tool_result_text"))
-    if not isinstance(payload, dict):
-        return None
-    if payload.get("success") is not False:
-        inner = payload.get("result")
-        if not (isinstance(inner, dict) and inner.get("success") is False):
-            return None
-        payload = inner
-    error = str(
-        payload.get("error") or payload.get("stderr") or payload.get("summary") or ""
-    ).strip()
-    if not error:
-        return None
-    error = _GUARD_PATH_NORMALIZE_RE.sub("<path>", error)
-    error = _GUARD_DIGIT_RE.sub("<n>", error)
-    tool_name = str(item.get("tool_name") or "unknown").strip().lower() or "unknown"
-    return f"{tool_name}:{error[:60]}"
-
-
 def _loop_guard_endgame_armed(agent: "DeepThinkAgent") -> bool:
-    # The no-progress endgame only arms for execute-intent work, where a
-    # deliverable is expected; plain chat turns exit via the normal
-    # submit/early-stop paths. (Tier check removed in the 2026-10 tier
-    # removal; the execute-tier nudge ladder it referred to is gone too.)
+    # The standalone wall-clock endgame only arms for execute-intent work,
+    # where a deliverable is expected; plain chat turns exit via the normal
+    # submit/early-stop paths.
     return agent._is_execute_task_request()
 
 
@@ -301,22 +271,17 @@ def _apply_loop_guards(
     iteration: int,
     guard_state: Dict[str, Any],
 ) -> Optional[str]:
-    """Deliverable acceptance, failure-trap, and no-progress endgame.
+    """Track verified deliverables and inline images; enforce the standalone
+    wall-clock endgame.
 
     Returns a break reason when the loop should stop early; otherwise None.
-    Healthy runs see no behaviour change — every mechanism only fires on
-    pathological patterns.
+    Repeated-failure and no-progress breakers used to live here. They were
+    removed (Hermes has neither): a run is bounded by the iteration cap and the
+    shared run budget, and the model reads its own tool errors. Tracebacks of
+    five different bugs collapsed to one "failure signature" and cut a healthy
+    run off at step 32.
     """
     verified: List[str] = guard_state["verified_deliverables"]
-    failure_counts: Dict[str, int] = guard_state["failure_sig_counts"]
-    failure_warned: set = guard_state["failure_sig_warned"]
-    agent_managed = bool(getattr(agent, "_plan_agent_completion", False))
-    if agent_managed:
-        from .observation_progress import observe
-        if observe(tool_results, guard_state):
-            guard_state["last_progress_iteration"] = iteration
-            guard_state["no_progress_nudge_sent"] = False
-            logger.info("[DEEP_THINK][progress] iteration=%s new_observation=true", iteration)
 
     new_verified: List[str] = []
     for candidate in agent._extract_guard_candidates(tool_results):
@@ -334,7 +299,6 @@ def _apply_loop_guards(
         for p in new_verified:
             if p not in produced:
                 produced.append(p)
-        guard_state["last_progress_iteration"] = iteration
         logger.info(
             "[DEEP_THINK][progress] iteration=%s new_deliverables=%s verified_total=%d",
             iteration,
@@ -363,45 +327,6 @@ def _apply_loop_guards(
             ",".join(os.path.basename(p) for p in new_images[:4]),
             len(produced_images),
         )
-
-    for item in tool_results:
-        signature = agent._failure_signature_for_result(item)
-        if not signature:
-            continue
-        failure_counts[signature] = failure_counts.get(signature, 0) + 1
-        count = failure_counts[signature]
-        if count == _failure_signature_warn_count() and signature not in failure_warned:
-            failure_warned.add(signature)
-            messages.append({
-                "role": "user",
-                "content": (
-                    f"The same failure has now occurred {count} times: {signature}. "
-                    "Stop retrying this approach — change strategy, adjust parameters or tools, "
-                    "or wrap up with what has been achieved so far."
-                ),
-            })
-            logger.warning(
-                "[DEEP_THINK][trap] repeated failure signature x%d at iteration=%s: %s",
-                count,
-                iteration,
-                signature,
-            )
-        if count >= _failure_signature_break_count():
-            agent._termination_reason = "repeated_tool_failure"
-            from .acceptance import acceptance_missing
-            trap_missing = acceptance_missing(
-                agent,
-                guard_state.get("expected_outputs") or [],
-                verified,
-                guard_state.get("acceptance_spec"),
-            )
-            if trap_missing:
-                guard_state["missing_expectations"] = trap_missing
-                agent._acceptance_missing = list(trap_missing)
-            return (
-                f"Stopped after {count} repetitions of the same failure ({signature}); "
-                f"wrapping up with {len(verified)} verified deliverable(s)."
-            )
 
     if agent._loop_guard_endgame_armed():
         from .acceptance import acceptance_missing
@@ -446,83 +371,12 @@ def _apply_loop_guards(
                 iteration,
                 int(elapsed),
             )
-        streak = iteration - int(guard_state["last_progress_iteration"])
-        if streak >= _progress_free_nudge_streak() and not guard_state["no_progress_nudge_sent"]:
-            guard_state["no_progress_nudge_sent"] = True
-            if agent_managed:
-                content = (f"The last {streak} steps added no new useful observation, computation or output. "
-                           "Change the ineffective approach, complete the next concrete step using existing materials, "
-                           "or explain the unresolved blocker. Repeating the same probes will not help.")
-            elif verified:
-                files_list = "\n".join(f"- {p}" for p in verified[:6])
-                content = (
-                    f"No new deliverable has been produced in the last {streak} steps. "
-                    f"The following deliverables already exist and are verified on disk:\n{files_list}\n"
-                    "If these satisfy the user's request, call submit_final_answer NOW. "
-                    "Continue only for a concrete missing piece — do not re-probe or re-verify "
-                    "files that already exist."
-                )
-            else:
-                content = (
-                    f"You have run {streak} steps without producing any deliverable. "
-                    "Stop probing and change strategy: produce the requested output now, "
-                    "or call submit_final_answer describing the concrete blocker."
-                )
-            messages.append({"role": "user", "content": content})
-            logger.warning(
-                "[DEEP_THINK][endgame] no-progress nudge at iteration=%s streak=%s verified=%d",
-                iteration,
-                streak,
-                len(verified),
-            )
-        if streak >= _progress_free_break_streak():
-            if missing and not guard_state.get("acceptance_extend_used"):
-                # Declarative acceptance: the run has not delivered what was
-                # asked for — grant one short extension instead of breaking.
-                guard_state["acceptance_extend_used"] = True
-                guard_state["last_progress_iteration"] = iteration - (
-                    _progress_free_break_streak() - 4
-                )
-                labels = ", ".join(missing)
-                messages.append({
-                    "role": "user",
-                    "content": (
-                        f"The run is NOT complete: required deliverable type(s) still missing: {labels}. "
-                        "Produce them NOW as real files under deliverables/ or results/ — "
-                        "do not re-probe, do not describe them in text only. "
-                        "If (and only if) producing them is genuinely impossible, call "
-                        "submit_final_answer and state explicitly which deliverable is missing and why."
-                    ),
-                })
-                logger.warning(
-                    "[DEEP_THINK][acceptance] iteration=%s missing=%s -> extension granted",
-                    iteration,
-                    labels,
-                )
-                return None
-            if missing:
-                guard_state["missing_expectations"] = missing
-                agent._acceptance_missing = list(missing)
-                logger.warning(
-                    "[DEEP_THINK][acceptance] iteration=%s missing=%s -> break with gaps",
-                    iteration,
-                    ",".join(missing),
-                )
-            agent._termination_reason = "no_progress"
-            output_label = "recorded output file(s)" if agent_managed else "verified deliverable(s)"
-            return (
-                f"Stopped after {streak} steps without "
-                + ("new observations, computations or outputs; " if agent_managed else "new deliverables; ")
-                + f"wrapping up with {len(verified)} {output_label}."
-            )
 
     logger.info(
-        "[DEEP_THINK][iter] iteration=%s tier=%s verified=%d failure_sigs=%d last_progress=%s elapsed=%ss",
+        "[DEEP_THINK][iter] iteration=%s tier=%s verified=%d elapsed=%ss",
         iteration,
         agent._request_tier() or "-",
         len(verified),
-        len(failure_counts),
-        guard_state["last_progress_iteration"],
         int(time.monotonic() - float(guard_state["started_at"])),
     )
     return None

@@ -1,40 +1,36 @@
-"""Synthesis and fallback answer builders for the DeepThink agent.
+"""Closing summary and last-resort answers for the DeepThink agent.
 
-God-class split (behaviour zero-change): the bodies of the like-named
-DeepThinkAgent methods with `self`/`cls` renamed to `agent`; the class keeps
-thin wrappers. Display-family helpers (detect_reasoning_language,
+God-class split: the like-named DeepThinkAgent methods delegate here with
+`self`/`cls` renamed to `agent`. Display-family helpers (detect_reasoning_language,
 is_process_only_answer, ...) stay in deep_think_agent and are reached through
-the late-bound `_dta()` so their monkeypatch surface is unchanged; env knobs
-are resolved the same way for the same reason.
+the late-bound `_dta()` so their monkeypatch surface is unchanged.
+
+When a run ends without a final answer (iteration cap, run budget, loop guard,
+repeated polling), the answer comes from ONE more call on the real conversation
+plus a "stop calling tools, write the final reply" nudge, as in Hermes
+`handle_max_iterations`. The earlier design rebuilt a few truncated "evidence
+snippets" and asked the model to summarize those; a failed plotting tail pushed
+all the real results out of the window and the report said so.
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
-import re
 from collections import Counter
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from app.llm import update_usage_context
 from app.services.deep_think.models import (
-    DeepThinkProtocolError,
     TaskExecutionContext,
     ThinkingStep,
 )
 from app.services.deep_think.text_utils import (
     _EXPECT_KIND_LABEL,
-    _collect_deliverable_display_names,
-    _default_fallback_timeout_seconds,
     _default_synthesis_max_tokens,
     _default_synthesis_timeout_seconds,
-    _drop_process_echo_bullets,
-    _ensure_inline_images,
     _strip_runtime_absolute_paths,
-    _strip_cli_noise_from_multiline,
-    _strip_cli_stream_noise,
+    _ensure_inline_images,
 )
 from app.services.foundation.settings import get_settings
 from app.services.execution.llm_observation import ObserverRejected
@@ -57,88 +53,17 @@ def _dta() -> Any:
     return deep_think_agent
 
 
-_TOOL_RESULT_PREFIX_RE = re.compile(r"^\[[^\]]*]\s*")
-
-
-def _storage_candidate_paths(storage: Any) -> List[Path]:
-    if not isinstance(storage, dict):
-        return []
-    candidates: List[Path] = []
-
-    def _append(value: Any) -> None:
-        if not isinstance(value, str) or not value.strip():
-            return
-        raw = value.strip()
-        try:
-            candidates.append(Path(raw).expanduser())
-        except Exception:
-            return
-
-    _append(storage.get("result_path"))
-    relative = storage.get("relative")
-    session_id = str(storage.get("session_id") or "").strip()
-    if isinstance(relative, dict):
-        rel_result = relative.get("result_path")
-        _append(rel_result)
-        if session_id and isinstance(rel_result, str) and rel_result.strip():
-            try:
-                from app.services.upload_storage import ensure_session_dir
-
-                candidates.append(ensure_session_dir(session_id) / rel_result.strip())
-            except Exception:
-                pass
-    return candidates
-
-
-def _load_llm_safe_stored_tool_result(wrapper: Any, *, max_bytes: int = 200_000) -> Optional[Any]:
-    """Load a stored tool ``result.json`` when the existing storage contract says it is safe.
-
-    This reuses ``tool_output_storage`` outputs instead of inventing a second file-read path.
-    It is intentionally narrow: only internal ``tool_outputs/**/result.json`` files are loaded,
-    and sibling ``manifest.json`` must not mark them as too large for LLM use.
-    """
-    if not isinstance(wrapper, dict):
-        return None
-
-    storage_values: List[Any] = []
-    for node in (wrapper, wrapper.get("result") if isinstance(wrapper.get("result"), dict) else None):
-        if isinstance(node, dict):
-            storage_values.append(node.get("storage"))
-
-    for storage in storage_values:
-        for candidate in _storage_candidate_paths(storage):
-            try:
-                path = candidate.resolve()
-            except Exception:
-                continue
-            normalized = str(path).replace("\\", "/").lower()
-            if not normalized.endswith("/result.json") or "/tool_outputs/" not in normalized:
-                continue
-            if not path.exists() or not path.is_file():
-                continue
-            try:
-                if path.stat().st_size > max_bytes:
-                    continue
-                manifest_path = path.with_name("manifest.json")
-                if manifest_path.exists():
-                    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-                    result_meta = manifest.get("result") if isinstance(manifest, dict) else None
-                    if isinstance(result_meta, dict) and result_meta.get("too_large_for_llm") is True:
-                        continue
-                return json.loads(path.read_text(encoding="utf-8"))
-            except Exception:
-                continue
-    return None
-
-
-def _format_count_pairs(value: Any, *, limit: int = 5) -> str:
-    if not isinstance(value, list):
-        return ""
-    parts: List[str] = []
-    for item in value[:limit]:
-        if isinstance(item, (list, tuple)) and len(item) >= 2:
-            parts.append(f"{item[0]}={item[1]}")
-    return ", ".join(parts)
+_SUMMARY_NUDGE = {
+    "zh": (
+        "不要再调用任何工具。请根据上面的全部对话和工具结果，直接给用户写最终答复:"
+        "做了什么、结果是什么、哪些步骤失败了以及原因。用自然的文字回答，不要输出 JSON。"
+    ),
+    "en": (
+        "Do not call any more tools. Using the whole conversation and every tool result above, "
+        "write the final reply to the user now: what was done, what the results are, and which "
+        "steps failed and why. Answer in plain prose, not JSON."
+    ),
+}
 
 
 def _collect_tool_usage_counts(cls: Any, steps: List[ThinkingStep]) -> Dict[str, int]:
@@ -172,323 +97,117 @@ def _select_steps_for_summary(steps: List[ThinkingStep]) -> List[ThinkingStep]:
     return [steps[i] for i in idx]
 
 
-def _slim_evidence_text_for_synthesis(text: str) -> str:
-    """Drop internal tool-output paths and compress terminal_session JSON for synthesis.
+def _summary_constraints(
+    agent: "DeepThinkAgent",
+    *,
+    language: str,
+    task_context: Optional[TaskExecutionContext],
+    structured_plan_outcome: Dict[str, Any],
+) -> List[str]:
+    """Run-specific facts the closing reply must respect (one line each)."""
+    zh = language == "zh"
+    lines: List[str] = []
+    if zh:
+        lines.append("只陈述上面的对话和工具结果里真实出现过的内容；没有读到、没有产出的文件或结果，不要声称已经完成。不要提及内部步骤编号。")
+        lines.append(
+            "引用任何产出文件（清单、正文、图片路径）一律使用会话相对路径"
+            "（如 raw_files/...、deliverables/...），禁止输出以 /app/runtime/ 开头的绝对路径。"
+        )
+    else:
+        lines.append(
+            "State only what the conversation and tool results above actually show; do not claim a file "
+            "was read or produced, or a result obtained, unless a tool result shows it. Do not mention internal step numbers."
+        )
+        lines.append(
+            "Reference every produced file (manifest lists, prose, image paths) with its session-relative "
+            "path (e.g. raw_files/..., deliverables/...); never emit absolute paths starting with /app/runtime/."
+        )
 
-    Important: tool results are often a *single* JSON line containing ``storage`` paths.
-    Line-based removal previously deleted the entire line, leaving **empty evidence** for
-    fallback synthesis — causing the LLM to hallucinate \"no tool output\" answers.
-    """
-    stripped = str(text or "").strip()
-    if not stripped:
-        return ""
-    candidate = _TOOL_RESULT_PREFIX_RE.sub("", stripped).strip()
-
-    def _drop_storage_keys(node: Any) -> Any:
-        if isinstance(node, dict):
-            return {
-                k: _drop_storage_keys(v)
-                for k, v in node.items()
-                if k not in {"storage", "deliverables"}
-            }
-        if isinstance(node, list):
-            return [_drop_storage_keys(x) for x in node]
-        return node
-
-    try:
-        obj = json.loads(candidate)
-    except Exception:
-        # Non-JSON: avoid deleting one-line blobs; redact path substrings only.
-        if "/tool_outputs/" in stripped.lower():
-            redacted = re.sub(
-                r"/[^\s\"']*tool_outputs[^\s\"']*",
-                "[internal_tool_output_path]",
-                stripped,
-                flags=re.IGNORECASE,
+    produced_images = agent._collect_inline_image_relpaths()
+    if produced_images:
+        listing = "\n".join(f"  - {p}" for p in produced_images)
+        if zh:
+            lines.append(
+                "本轮已产出的图片文件（相对路径）：\n" + listing +
+                "\n  在答案相应位置用 `![描述](相对路径)` 把图片内联展示，不要只在文字里提文件名。"
             )
-            return redacted[:12000]
-        return stripped[:12000]
-
-    if isinstance(obj, dict):
-        obj = _drop_storage_keys(obj)
-        if str(obj.get("tool") or "") == "terminal_session" or "terminal_id" in obj:
-            slim: Dict[str, Any] = {
-                "tool": "terminal_session",
-                "operation": obj.get("operation"),
-                "verification_state": obj.get("verification_state"),
-                "command_state": obj.get("command_state"),
-                "exit_code": obj.get("exit_code"),
-                "verification_summary": obj.get("verification_summary"),
-                "status": obj.get("status"),
-                "output": obj.get("output"),
-            }
-            if isinstance(obj.get("verification_evidence"), dict):
-                slim["verification_evidence"] = obj.get("verification_evidence")
-            compact = {k: v for k, v in slim.items() if v is not None}
-            out = json.dumps(compact, ensure_ascii=False)
-            return out[:12000]
-        return json.dumps(obj, ensure_ascii=False)[:12000]
-    return str(obj)[:12000]
-
-
-def _collect_evidence_snippets(
-    agent: "DeepThinkAgent",
-    steps: List[ThinkingStep],
-    *,
-    max_steps: int = 8,
-    max_chars: int = 3000,
-    per_snippet_max: int = 900,
-) -> str:
-    parts: List[str] = []
-    total = 0
-    count = 0
-    for step in reversed(steps):
-        if count >= max_steps:
-            break
-        ar = step.action_result
-        if not isinstance(ar, str) or not ar.strip():
-            continue
-        text = agent._slim_evidence_text_for_synthesis(ar)
-        text = " ".join(text.split()).strip()
-        if len(text) > per_snippet_max:
-            text = text[: per_snippet_max - 3] + "..."
-        block = f"[Step {step.iteration}]\n{text}"
-        if total + len(block) + 2 > max_chars:
-            remaining = max(0, max_chars - total - 20)
-            if remaining > 80:
-                parts.append(f"[Step {step.iteration}]\n{text[:remaining]}...")
-            break
-        parts.append(block)
-        total += len(block) + 2
-        count += 1
-    parts.reverse()
-    return "\n\n".join(parts)
-
-
-def _humanize_single_tool_result(tool_name: str, obj: dict) -> str:
-    """Convert a single parsed tool-result dict into a concise, human-readable line."""
-    success = obj.get("success")
-    result = obj.get("result") or obj
-    stored_result = _load_llm_safe_stored_tool_result(obj)
-    if isinstance(stored_result, dict):
-        result = stored_result
-        success = stored_result.get("success", success)
-    tool = str(result.get("tool", "") or tool_name).strip()
-
-    # --- terminal_session: skip noise-only entries ---
-    if tool == "terminal_session" or "terminal_id" in obj:
-        output = _strip_cli_noise_from_multiline(
-            str(result.get("output") or obj.get("output") or "")
-        ).strip()
-        vs = result.get("verification_summary") or obj.get("verification_summary")
-        if vs:
-            return f"终端会话：{vs}"
-        if output and len(output) > 15:
-            return f"终端输出：{output[:300]}"
-        return ""  # skip noise
-
-    # --- code_executor ---
-    if tool == "code_executor":
-        if success is True or result.get("success") is True:
-            stdout = _strip_cli_noise_from_multiline(
-                str(result.get("stdout") or "")
-            ).strip()
-            artifacts = result.get("artifact_paths") or []
-            result_files = [
-                p for p in artifacts
-                if "/results/" in str(p) and not str(p).rstrip("/").endswith("/results")
-            ]
-            parts: List[str] = ["代码执行成功"]
-            if stdout:
-                # Take the most informative lines (skip blank / separator lines)
-                lines = [ln.strip() for ln in stdout.splitlines() if ln.strip() and ln.strip("=- ")]
-                if lines:
-                    preview = "; ".join(lines[:5])
-                    if len(preview) > 300:
-                        preview = preview[:297] + "..."
-                    parts.append(f"输出：{preview}")
-            if result_files:
-                names = [p.rsplit("/", 1)[-1] for p in result_files[:8]]
-                parts.append(f"产出文件：{', '.join(names)}")
-            return "。".join(parts)
         else:
-            error = str(result.get("error") or result.get("stderr") or "unknown error").strip()
-            if len(error) > 200:
-                error = error[:197] + "..."
-            return f"代码执行失败：{error}"
+            lines.append(
+                "Image files produced in this run (relative paths):\n" + listing +
+                "\n  Embed each image inline at the relevant position with `![caption](relative-path)`; do not merely name the files."
+            )
 
-    # --- file_operations ---
-    if tool == "file_operations":
-        op = str(result.get("operation") or "").strip()
-        if op == "list":
-            items = result.get("items") or []
-            file_names = [
-                f"{it.get('name', '?')} ({it.get('size', '?')} B)"
-                for it in items if isinstance(it, dict)
-            ][:10]
-            if file_names:
-                return f"文件列表：{', '.join(file_names)}"
-            return f"文件列表：空（{result.get('path', '')}）"
-        if op == "read":
-            summary = str(result.get("summary") or "").strip()
-            path = str(result.get("path") or "").strip()
-            fname = path.rsplit("/", 1)[-1] if path else "?"
-            content = str(result.get("content") or "").strip()
-            if content:
-                preview = " ".join(content.split())[:300]
-                return f"文件读取 ({fname})：{preview}"
-            if summary:
-                return f"文件读取 ({fname})：{summary[:200]}"
-            return f"已读取文件：{fname}"
-        if op == "write":
-            path = str(result.get("path") or "").strip()
-            fname = path.rsplit("/", 1)[-1] if path else "?"
-            size = result.get("size", "?")
-            return f"已写入文件：{fname} ({size} B)"
-        return f"文件操作 ({op})：{result.get('summary', '完成')}"
+    acceptance_missing = [m for m in (getattr(agent, "_acceptance_missing", None) or []) if m]
+    if acceptance_missing:
+        if zh:
+            labels = "、".join(_EXPECT_KIND_LABEL.get(m, {}).get("zh", m) for m in acceptance_missing)
+            lines.append(f"本轮未能产出的交付物类型：{labels}。必须在答案开头明确说明哪些没有完成以及原因，不得假装全部完成。")
+        else:
+            labels = ", ".join(_EXPECT_KIND_LABEL.get(m, {}).get("en", m) for m in acceptance_missing)
+            lines.append(
+                f"Deliverable type(s) NOT produced this run: {labels}. "
+                "State this explicitly at the top of the answer with the reason; do not pretend everything completed."
+            )
 
-    # --- phagescope_research ---
-    if tool == "phagescope_research":
-        if success is False or result.get("success") is False:
-            error = str(result.get("error") or "unknown error").strip()
-            return f"phagescope_research 失败：{error[:200]}"
-        action = str(result.get("action") or "").strip() or "operation"
-        if action == "audit":
-            parts: List[str] = ["phagescope_research audit 成功"]
-            if isinstance(result.get("metadata_rows"), int):
-                parts.append(f"metadata_rows={result.get('metadata_rows')}")
-            if isinstance(result.get("unique_phage_ids"), int):
-                parts.append(f"unique_phage_ids={result.get('unique_phage_ids')}")
-            missing = result.get("missing_counts")
-            if isinstance(missing, dict) and missing:
-                parts.append("missing=" + ", ".join(f"{k}={v}" for k, v in list(missing.items())[:4]))
-            source_top = _format_count_pairs(result.get("source_top"), limit=4)
-            if source_top:
-                parts.append(f"top_sources={source_top}")
-            completeness = _format_count_pairs(result.get("completeness_counts"), limit=4)
-            if completeness:
-                parts.append(f"completeness={completeness}")
-            lifestyle = _format_count_pairs(result.get("lifestyle_counts"), limit=3)
-            if lifestyle:
-                parts.append(f"lifestyle={lifestyle}")
-            return "；".join(parts)
-        if action == "deep_profile":
-            parts = ["phagescope_research deep_profile 成功"]
-            if isinstance(result.get("metadata_rows"), int):
-                parts.append(f"metadata_rows={result.get('metadata_rows')}")
-            if isinstance(result.get("metadata_files"), int):
-                parts.append(f"metadata_files={result.get('metadata_files')}")
-            if result.get("metadata_size_human"):
-                parts.append(f"meta_data_size={result.get('metadata_size_human')}")
-            if result.get("total_size_human"):
-                parts.append(f"total_size={result.get('total_size_human')}")
-            ml_table = result.get("ml_metadata_table")
-            if isinstance(ml_table, dict):
-                parts.append(f"ml_table_rows={ml_table.get('rows', '?')}")
-            label_quality = result.get("label_quality")
-            if isinstance(label_quality, dict):
-                parts.append(
-                    f"host_missing={label_quality.get('host_missing_rows', '?')}"
-                )
-            return "；".join(parts)
-        if action == "prepare_metadata_table":
-            rows = result.get("rows_written") or result.get("output_table_rows")
-            labels = result.get("labels_kept")
-            splits = result.get("split_totals")
-            parts = ["phagescope_research prepare_metadata_table 成功"]
-            if rows is not None:
-                parts.append(f"rows_written={rows}")
-            if labels is not None:
-                parts.append(f"labels_kept={labels}")
-            if isinstance(splits, dict):
-                parts.append("splits=" + ", ".join(f"{k}={v}" for k, v in splits.items()))
-            return "；".join(parts)
-        return f"phagescope_research {action} 执行完成"
+    if structured_plan_outcome.get("required") and not structured_plan_outcome.get("satisfied"):
+        detail = str(structured_plan_outcome.get("message") or structured_plan_outcome.get("operation") or "")
+        if zh:
+            lines.append(
+                "本轮请求的计划操作尚未成功完成。按实际回执说明未完成的操作及原因，不要把审核、查询或执行失败说成未创建计划，"
+                "也不要把普通 markdown 文本说成已经创建好的计划。" + (f" 回执：{detail}" if detail else "")
+            )
+        else:
+            lines.append(
+                "The requested Plan operation is incomplete. Report this actual receipt and reason; do not describe a "
+                "failed review/query/execution as failure to create the Plan, and do not present ordinary markdown as "
+                "a created plan." + (f" Receipt: {detail}" if detail else "")
+            )
 
-    # --- generic tool with summary ---
-    summary = str(result.get("summary") or "").strip()
-    if summary and len(summary) > 10:
-        if tool:
-            return f"{tool}：{summary[:300]}"
-        return summary[:300]
-    if success is True:
-        return f"{tool}：执行完成" if tool else "工具执行完成"
-    if success is False:
-        error = str(result.get("error") or "").strip()
-        if tool:
-            return f"{tool}：失败{f' — {error[:150]}' if error else ''}"
-        return f"执行失败{f'：{error[:150]}' if error else ''}"
-    return ""
+    if agent._is_brief_execute_followup():
+        lines.append(
+            "这是一次简短的执行跟进。优先汇报当前任务结果或最新工具结果，不要回顾先前里程碑或“下一步建议”，除非用户明确要求。"
+            if zh else
+            "This is a short execution follow-up. Prioritize the current task outcome or latest tool result; "
+            "do not recap earlier milestones or next-step menus unless the user asked."
+        )
+
+    if agent._is_execute_task_request() and agent._has_bound_task_context(task_context):
+        task_id = agent._current_bound_task_id(task_context)
+        task_name = str(getattr(task_context, "task_name", "") or "").strip()
+        task_label = f"Task {task_id}" if task_id is not None else "the current bound task"
+        if task_name:
+            task_label = f"{task_label} ({task_name})"
+        lines.append(
+            f"本请求已绑定 {task_label}。不要要求用户补充任务定义、任务描述，也不要让用户确认父级目录是否存在；"
+            "若执行提前结束，如实汇报该任务的真实状态和已观察到的产出。"
+            if zh else
+            f"This request is already bound to {task_label}. Do NOT ask the user to provide task definitions or "
+            "descriptions; if execution stopped early, report the real bound-task state and the observed outputs."
+        )
+    return lines
 
 
-def _collect_user_facing_evidence_snippets(
+def _build_summary_nudge(
     agent: "DeepThinkAgent",
-    steps: List[ThinkingStep],
     *,
-    max_steps: int = 8,
-    max_chars: int = 3000,
-    per_snippet_max: int = 900,
+    user_query: str,
+    task_context: Optional[TaskExecutionContext],
+    structured_plan_outcome: Dict[str, Any],
 ) -> str:
-    """Build human-readable bullet list from raw step action_results.
-
-    Unlike _collect_evidence_snippets (which preserves JSON for LLM synthesis),
-    this method humanizes tool results into natural-language summaries for direct
-    display to the user.
-    """
-    bullets: List[str] = []
-    total = 0
-    count = 0
-    for step in reversed(steps):
-        if count >= max_steps:
-            break
-        ar = step.action_result
-        if not isinstance(ar, str) or not ar.strip():
-            continue
-        count += 1
-
-        # action_result may contain multiple tool results:
-        # "[tool_a] {json}\n\n[tool_b] {json}"
-        segments = re.split(r"\n\n(?=\[)", ar)
-        for seg in segments:
-            seg = seg.strip()
-            if not seg:
-                continue
-            # Extract tool name prefix if present: [tool_name] rest
-            prefix_match = re.match(r"^\[([^\]]+)]\s*", seg)
-            tool_name = prefix_match.group(1) if prefix_match else ""
-            body = seg[prefix_match.end():] if prefix_match else seg
-
-            # Try to parse as JSON and humanize
-            humanized = None  # None = not parsed; "" = parsed but skip
-            try:
-                obj = json.loads(body)
-                if isinstance(obj, dict):
-                    humanized = agent._humanize_single_tool_result(tool_name, obj)
-            except Exception:
-                pass
-
-            # humanized == "" means the humanizer explicitly says "skip this"
-            if humanized == "":
-                continue
-            if humanized is None:
-                # Non-JSON or unrecognized: use a trimmed version
-                cleaned = " ".join(body.split()).strip()
-                if len(cleaned) > per_snippet_max:
-                    cleaned = cleaned[: per_snippet_max - 3] + "..."
-                if cleaned and len(cleaned) > 15:
-                    humanized = cleaned
-            if not humanized:
-                continue
-            if len(humanized) > per_snippet_max:
-                humanized = humanized[: per_snippet_max - 3] + "..."
-            bullet = f"- {humanized}"
-            if total + len(bullet) + 1 > max_chars:
-                break
-            bullets.append(bullet)
-            total += len(bullet) + 1
-
-    bullets.reverse()
-    return "\n".join(bullets)
+    language = _dta().detect_reasoning_language(user_query)
+    nudge = _SUMMARY_NUDGE["zh" if language == "zh" else "en"]
+    constraints = _summary_constraints(
+        agent,
+        language=language,
+        task_context=task_context,
+        structured_plan_outcome=structured_plan_outcome,
+    )
+    if constraints:
+        nudge += "\n\n" + "\n".join(f"- {line}" for line in constraints)
+    nudge += "\n" + response_style_instruction(
+        {"chat_response_preferences": getattr(agent, "_chat_response_preferences", {})}
+    )
+    return nudge
 
 
 def _build_bound_execute_task_fallback(
@@ -512,38 +231,41 @@ def _build_bound_execute_task_fallback(
         task_label = f"{task_label} ({task_name})"
     counts = agent._collect_tool_usage_counts(steps)
     stats = agent._format_tool_usage_counts(counts)
-    evidence = agent._collect_evidence_snippets(
-        steps,
-        max_steps=8,
-        max_chars=1800,
-        per_snippet_max=500,
-    ).strip()
     if language == "zh":
         header = f"本轮已经进入已绑定任务执行链{f'（{stats}）' if stats else ''}，但系统在结束前没有成功提交正式最终答案。"
-        lines = [
+        return "\n".join([
             header,
             f"当前绑定任务：{task_label}。",
             "这不表示缺少任务定义；当前任务上下文已经存在，后续应从当前绑定任务继续执行，而不是再要求用户补任务描述。",
-        ]
-        if evidence:
-            lines.extend(["", "已观察到的关键信息：", evidence])
-        return "\n".join(lines).strip()
+        ]).strip()
     header = (
         f"This run stayed inside a bound execute-task chain{f' ({stats})' if stats else ''}, "
         "but it ended before a formal final answer was submitted."
     )
-    lines = [
+    return "\n".join([
         header,
         f"Current bound task: {task_label}.",
         "This does not mean the task definition is missing; the task context is already bound and execution should continue from the current task instead of asking the user to provide task details again.",
-    ]
-    if evidence:
-        lines.extend(["", "Observed evidence:", evidence])
-    return "\n".join(lines).strip()
+    ]).strip()
+
+
+def _produced_file_names(agent: "DeepThinkAgent", limit: int = 6) -> List[str]:
+    names: List[str] = []
+    for candidate in getattr(agent, "_produced_deliverable_paths", None) or []:
+        name = str(candidate or "").strip().rstrip("/").rsplit("/", 1)[-1]
+        if name and name not in names:
+            names.append(name)
+        if len(names) >= limit:
+            break
+    return names
 
 
 def _build_structured_fallback(agent: "DeepThinkAgent", steps: List[ThinkingStep], user_query: str = "") -> str:
-    """Last-resort fallback: include evidence excerpts rather than a generic 'no answer' message."""
+    """Fixed message for when no closing summary could be written.
+
+    Deterministic and short on purpose: it names what happened and lists the
+    files the run did produce, but never re-tells results from clipped tool output.
+    """
     language = _dta().detect_reasoning_language(user_query)
     structured_plan_outcome = agent._summarize_structured_plan_outcome(
         steps,
@@ -555,19 +277,26 @@ def _build_structured_fallback(agent: "DeepThinkAgent", steps: List[ThinkingStep
             user_query=user_query,
         )
 
-    # Collect any meaningful evidence to include in the fallback
-    raw_evidence = _strip_cli_stream_noise(
-        agent._collect_user_facing_evidence_snippets(
-            steps,
-            max_steps=12,
-            max_chars=4000,
-            per_snippet_max=1200,
+    output_files = _produced_file_names(agent)
+    if output_files:
+        names = "\n".join(f"- {name}" for name in output_files)
+        if language == "zh":
+            text = (
+                "本轮没能写出最终总结，但已生成以下交付文件（完整内容见右侧 Artifacts 面板）：\n"
+                f"{names}\n\n"
+                "如需我基于这些结果重新总结、调整内容或导出其他格式，请告诉我。"
+            )
+        else:
+            text = (
+                "No closing summary could be written for this run, but it produced these files "
+                "(see the Artifacts panel for full content):\n"
+                f"{names}\n\n"
+                "Let me know if you want a fresh summary built on them, changes, or a different export format."
+            )
+        return _strip_runtime_absolute_paths(
+            _ensure_inline_images(text, agent._collect_inline_image_relpaths())
         )
-    )
-    output_files = _collect_deliverable_display_names(raw_evidence)
-    deliverable_files = output_files
-    evidence = _drop_process_echo_bullets(raw_evidence)
-    # Also collect useful thoughts
+
     useful_thoughts: List[str] = []
     for s in reversed(steps):
         if isinstance(s.thought, str) and s.thought.strip() and not _dta().is_process_only_answer(s.thought, user_query=user_query):
@@ -577,74 +306,12 @@ def _build_structured_fallback(agent: "DeepThinkAgent", steps: List[ThinkingStep
                 if len(useful_thoughts) >= 3:
                     break
     useful_thoughts.reverse()
-
-    # If we have substantial evidence or thoughts, build a content-rich fallback
-    if evidence.strip() and len(evidence.strip()) > 20:
-        # Check if we have successful tool execution evidence
-        # "执行完成" is the generic per-tool success bullet this module emits for
-        # tool results; without it a run of successful tools read as mere
-        # "observed information" (§109/§111).
-        has_success = "代码执行成功" in evidence or "执行完成" in evidence or "已写入文件" in evidence or "产出文件" in evidence
-        artifact_hint = ""
-        if output_files:
-            if language == "zh":
-                artifact_hint = (
-                    "\n\n本轮已生成以下交付文件（完整内容见右侧 Artifacts 面板）：\n"
-                    + "\n".join(f"- {name}" for name in output_files)
-                )
-            else:
-                artifact_hint = (
-                    "\n\nThe following output files were generated (see the Artifacts panel for full content):\n"
-                    + "\n".join(f"- {name}" for name in output_files)
-                )
-        if language == "zh":
-            if has_success:
-                header = "以下是本轮工具执行的结果摘要：\n\n"
-                footer = artifact_hint
-            else:
-                header = "以下是本轮执行中观察到的信息：\n\n"
-                footer = "\n\n如需更详细的分析，请指出具体要查看的内容。"
-        else:
-            if has_success:
-                header = "Here is the summary of tool execution results:\n\n"
-                footer = artifact_hint
-            else:
-                header = "Here is what was observed during execution:\n\n"
-                footer = "\n\nFor a more detailed analysis, please specify what you'd like to examine."
-        return _strip_runtime_absolute_paths(
-            _ensure_inline_images(
-                header + evidence.strip() + footer,
-                agent._collect_inline_image_relpaths(),
-            )
-        )
-
-    if deliverable_files:
-        # Evidence reduced to process echoes, but the run did produce files —
-        # report the deliverables cleanly instead of dumping debris.
-        names = "\n".join(f"- {name}" for name in deliverable_files)
-        if language == "zh":
-            text = (
-                "本轮执行已生成以下交付文件（完整内容见右侧 Artifacts 面板）：\n"
-                f"{names}\n\n"
-                "如需调整内容或导出其他格式，请告诉我。"
-            )
-        else:
-            text = (
-                "This run produced the following deliverable files (see the Artifacts panel for full content):\n"
-                f"{names}\n\n"
-                "Let me know if you want changes or a different export format."
-            )
-        return _strip_runtime_absolute_paths(
-            _ensure_inline_images(text, agent._collect_inline_image_relpaths())
-        )
-
     if useful_thoughts:
         combined = "\n\n".join(useful_thoughts)
         if language == "zh":
             return f"我先给出目前已经收敛出的关键判断：\n\n{combined}"
         return f"Here are the key conclusions that could still be supported:\n\n{combined}"
 
-    # Truly nothing useful — keep minimal message
     if language == "zh":
         return (
             "这一轮检查还不足以支撑可靠结论。"
@@ -661,144 +328,120 @@ def _synthesis_thinking_enabled() -> bool:
 
     Left unset, the provider default decided (observed 2026-10-09, LOCAL_INFRA
     §109): qwen3.8-flash reasoned through the whole output budget and yielded
-    0 visible chars, so forced synthesis and its three retries all fell through
+    0 visible chars, so forced synthesis and its retries all fell through
     to the structured fallback template.
     """
     return bool(getattr(get_settings(), "thinking_enabled", True))
 
 
-async def _chat_text_streaming(agent: "DeepThinkAgent", prompt: str, *, max_tokens: int) -> str:
-    """Collect a complete synthesis response via streaming.
+async def _chat_messages_streaming(
+    agent: "DeepThinkAgent",
+    messages: List[Dict[str, Any]],
+    *,
+    max_tokens: int,
+    enable_thinking: Optional[bool],
+    thinking_budget: Optional[int] = None,
+    tools: Optional[List[Dict[str, Any]]] = None,
+) -> str:
+    """One completion over ``messages`` with tool calling switched off.
 
-    Non-streaming calls against thinking models sit silent for minutes and
-    get cut by upstream gateways with 504s (observed 2026-09-19: forced
-    synthesis died with HTTPStatusError:504 after 4 attempts); streaming
-    keeps bytes flowing and survives multi-minute generations.
-    ``max_tokens`` and the thinking switch are both sent explicitly (§109).
+    The loop's own transport is used (native tool calling with ``tool_choice``
+    "none" and the same tool list, which keeps the provider's prompt-cache
+    prefix and avoids rejected tool-call history without tool definitions).
+    ``max_tokens`` and the thinking switch are always sent explicitly (§109).
     """
     from .model_failure import remember_failure, recovered
+
+    client = agent.llm_client
+    cancel_event = getattr(agent, "cancel_event", None)
     try:
-        stream_fn = getattr(agent.llm_client, "stream_chat_async", None)
-        if callable(stream_fn):
-            chunks: List[str] = []
-            async for chunk in iterate_stage(stream_fn(prompt=prompt, max_tokens=max_tokens, enable_thinking=_synthesis_thinking_enabled()), stage="deepthink-synthesis-llm", cancel_event=getattr(agent, "cancel_event", None)):
-                chunks.append(str(chunk))
-            result = "".join(chunks)
+        native = getattr(client, "stream_chat_with_tools_async", None)
+        if callable(native):
+            result = await native(
+                messages=messages,
+                tools=list(tools or []),
+                tool_choice="none",
+                enable_thinking=enable_thinking,
+                thinking_budget=thinking_budget,
+                max_tokens=max_tokens,
+            )
+            text = str(getattr(result, "content", "") or "")
         else:
-            result = await run_stage(agent.llm_client.chat_async(prompt=prompt, max_tokens=max_tokens), stage="deepthink-synthesis-llm", cancel_event=getattr(agent, "cancel_event", None))
+            stream_fn = getattr(client, "stream_chat_async", None)
+            if not callable(stream_fn):
+                raise RuntimeError("LLM client cannot stream a closing summary")
+            chunks: List[str] = []
+            async for chunk in iterate_stage(
+                stream_fn(prompt="", messages=messages, max_tokens=max_tokens, enable_thinking=enable_thinking),
+                stage="deepthink-synthesis-llm",
+                cancel_event=cancel_event,
+            ):
+                chunks.append(str(chunk))
+            text = "".join(chunks)
     except (RunDeadlineExceeded, ObserverRejected):
         raise
     except Exception as exc:
         remember_failure(agent, exc)
         raise
     recovered(agent)
-    return result
+    return text
 
 
-async def _generate_fallback_from_evidence(
-    agent: "DeepThinkAgent",
-    user_query: str,
-    evidence_snippets: str,
-    steps: List[ThinkingStep],
-    task_context: Optional[TaskExecutionContext] = None,
-    *,
-    max_retries: int = 3,
-    timeout: Optional[float] = None,
-    max_tokens: int = 2000,
-) -> str:
-    if not hasattr(agent.llm_client, "chat_async"):
-        raise DeepThinkProtocolError("LLM client does not support chat_async")
-    from .native_validation import bounded_synthesis
-    if bounded_synthesis(agent):
-        if getattr(agent,"_synthesis_attempted",False):return _build_structured_fallback(agent,steps,user_query)
-        agent._synthesis_attempted=True;max_retries=1
-    if timeout is None:
-        timeout = float(_default_fallback_timeout_seconds())
-    n = len(steps)
-    uq = (user_query or "").strip()
+_MIN_ATTEMPT_SECONDS = 5.0
+_FIRST_ATTEMPT_SHARE = 0.6
+_DEADLINE_MARGIN_SECONDS = 5.0
+# Measured on the test instance: a closing summary over 58k tokens took 154 s
+# with thinking on (6k completion tokens at ~40 tokens/s). With less than this
+# left in the run budget a thinking summary cannot finish, so it thinks less.
+_THINKING_MIN_REMAINING_SECONDS = 480.0
 
-    # Collect useful thoughts as additional context
-    thought_context = ""
-    useful_thoughts = [
-        s.thought.strip()
-        for s in steps
-        if isinstance(s.thought, str) and len(s.thought.strip()) > 30
-    ]
-    if useful_thoughts:
-        thought_context = (
-            "\n\nAssistant's reasoning during the process:\n"
-            + "\n".join(f"- {t[:300]}" for t in useful_thoughts[-5:])
-            + "\n"
+
+def _budget_remaining() -> Optional[float]:
+    from app.services.run_budget import current_run_budget
+
+    budget = current_run_budget()
+    return None if budget is None else budget.remaining_seconds()
+
+
+def _attempt_timeout(cap: float, *, is_last: bool) -> float:
+    """Time one closing-summary attempt may take.
+
+    Under a run budget the summary must end before the hard deadline: that
+    deadline turns the whole run into a bare "time limit" failure and loses even
+    the list of files the run produced. So the first attempt keeps at most 60%
+    of what is left (the retry needs time too) and the last stops a few seconds
+    early, which lets the fixed fallback message answer instead.
+    """
+    remaining = _budget_remaining()
+    if remaining is None:
+        return cap
+    share = remaining - _DEADLINE_MARGIN_SECONDS if is_last else remaining * _FIRST_ATTEMPT_SHARE
+    return min(cap, share)
+
+
+def _ensure_acceptance_missing(agent: "DeepThinkAgent") -> None:
+    """Record which requested deliverable types never appeared.
+
+    The loop breakers used to do this on their way out; a run that simply hits
+    the iteration cap or the run budget now reaches the closing summary without
+    them, and the summary must still say what is missing.
+    """
+    if getattr(agent, "_acceptance_missing", None) or not agent._is_execute_task_request():
+        return
+    try:
+        from .acceptance import acceptance_missing
+
+        missing = acceptance_missing(
+            agent,
+            getattr(agent, "_expected_outputs_current", None) or [],
+            getattr(agent, "_produced_deliverable_paths", None) or [],
+            getattr(agent, "_acceptance_spec", None),
         )
-
-    focus_instruction = ""
-    if agent._is_brief_execute_followup():
-        focus_instruction = (
-            "7) This is a short execution follow-up. Focus on the current task outcome and latest successful tool result.\n"
-            "8) Do NOT recap prior project milestones, historical progress tables, or next-step menus unless the user explicitly asked for them.\n"
-        )
-    bound_task_instruction = ""
-    if agent._is_execute_task_request() and agent._has_bound_task_context(task_context):
-        task_id = agent._current_bound_task_id(task_context)
-        task_name = str(getattr(task_context, "task_name", "") or "").strip()
-        task_label = f"Task {task_id}" if task_id is not None else "the current bound task"
-        if task_name:
-            task_label = f"{task_label} ({task_name})"
-        bound_task_instruction = (
-            f"9) This request is already bound to {task_label}. "
-            "Do NOT ask the user to provide task definitions, task descriptions, or to confirm whether a parent plan68_task directory exists.\n"
-            "10) If execution stopped early, summarize the real bound-task state and the observed outputs instead of inventing a missing-task-definition blocker.\n"
-        )
-
-    prompt = (
-        f"User question:\n{uq}\n\n"
-        f"Below are excerpts from tool outputs collected during {n} reasoning step(s). "
-        f"The system did not produce a final answer automatically, so you must synthesize one now.\n\n"
-        f"{evidence_snippets}"
-        f"{thought_context}\n\n"
-        "INSTRUCTIONS:\n"
-        "Respond in the same language as the user question. Provide a COMPLETE, USEFUL answer:\n"
-        "1) Directly answer the user's question based on the evidence available.\n"
-        "2) Summarize the key facts, findings, and data points from the excerpts.\n"
-        "3) If the evidence is insufficient for a complete answer, clearly state what was found and what remains unknown.\n"
-        "4) Use clear structure (headings, bullet points) for readability.\n"
-        "5) Do NOT say 'I could not find an answer' if there is ANY useful information — present what was found.\n"
-        "6) Do not invent dates or claims absent from the excerpts.\n"
-        "7) Respect evidence scope: if excerpts show sampled/compacted listings, partial completion, failure status files, "
-        "or status counts, state those limits and do not convert them into all/every/global success claims.\n"
-        f"{focus_instruction}"
-        f"{bound_task_instruction}"
-        f"{response_style_instruction({'chat_response_preferences': getattr(agent, '_chat_response_preferences', {})})}"
-    )
-
-    last_exc: Optional[Exception] = None
-    for attempt in range(max_retries):
-        try:
-            raw = await run_stage(
-                agent._chat_text_streaming(prompt, max_tokens=max_tokens),
-                stage="deepthink-fallback", timeout=timeout,
-            )
-            cleaned = sanitize_professional_response_text(str(raw or "").strip())
-            if len(cleaned) < 20:
-                raise ValueError(f"fallback synthesis too short ({len(cleaned)} chars)")
-            cleaned = _strip_runtime_absolute_paths(
-                _ensure_inline_images(cleaned, agent._collect_inline_image_relpaths())
-            )
-            return cleaned
-        except (RunDeadlineExceeded, ObserverRejected):
-            raise
-        except Exception as exc:
-            last_exc = exc
-            logger.warning(
-                "DeepThink fallback synthesis attempt %d/%d failed: %r",
-                attempt + 1,
-                max_retries,
-                exc,
-            )
-            if attempt < max_retries - 1:
-                await asyncio.sleep(1.0 * (attempt + 1))
-
-    raise last_exc or ValueError("fallback synthesis failed after retries")
+    except Exception as exc:
+        logger.warning("[DEEP_THINK_NATIVE] Could not check missing deliverables before the closing summary: %r", exc)
+        return
+    if missing:
+        agent._acceptance_missing = list(missing)
 
 
 async def _forced_synthesis_from_steps(
@@ -807,214 +450,113 @@ async def _forced_synthesis_from_steps(
     user_query: str,
     messages: List[Dict[str, Any]],
     task_context: Optional[TaskExecutionContext] = None,
+    *,
+    tools: Optional[List[Dict[str, Any]]] = None,
+    compact: Any = None,
 ) -> str:
-    update_usage_context(call_purpose="deep_think_forced_synthesis", phase="deep_think")
-    """Make one final LLM call with all context asking it to synthesize a complete answer.
+    """The closing summary: one more call over the real ``messages``.
 
-    This is more powerful than _generate_fallback_from_evidence because it
-    includes both evidence snippets and the assistant's reasoning thoughts,
-    giving the LLM rich context to produce a quality answer.
+    ``messages`` is not modified: the nudge is added to a copy, so it never
+    leaks into the continuation saved for later turns. ``compact`` (an async
+    callable) is the loop's own context compaction, applied once before the
+    call. Returns "" when no usable answer came back after one retry.
     """
-    if not hasattr(agent.llm_client, "chat_async"):
-        return ""
-
-    try:
-        evidence = _strip_cli_stream_noise(
-            agent._collect_evidence_snippets(
-                steps, max_steps=12, max_chars=6000, per_snippet_max=1500
-            )
-        )
-        uq = (user_query or "").strip()
+    update_usage_context(call_purpose="deep_think_forced_synthesis", phase="deep_think")
+    uq = (user_query or "").strip()
+    conversation = list(messages or [])
+    if not conversation:
         if not uq:
             return ""
+        conversation = [{"role": "user", "content": uq}]
 
-        # Also collect assistant thoughts for additional context
-        thought_lines: List[str] = []
-        for s in steps:
-            if isinstance(s.thought, str) and len(s.thought.strip()) > 30:
-                thought_lines.append(f"[Step {s.iteration} thought]: {s.thought.strip()[:500]}")
-        thoughts_text = "\n".join(thought_lines[-8:]) if thought_lines else ""
+    try:
+        if compact is not None:
+            try:
+                conversation = await compact(conversation)
+            except (RunDeadlineExceeded, ObserverRejected):
+                raise
+            except Exception as exc:
+                logger.warning("[DEEP_THINK_NATIVE] Compaction before the closing summary failed: %r", exc)
 
-        language = _dta().detect_reasoning_language(user_query)
-        structured_plan_outcome = agent._summarize_structured_plan_outcome(
-            steps,
-            user_query=user_query,
-        )
-        if language == "zh":
-            instruction = (
-                "你是一个深度思考AI助手。用户提出了一个问题，系统已经执行了多个工具调用来收集信息。"
-                "现在请基于下面收集到的所有证据和推理过程，直接回答用户的问题。\n"
-                "要求：\n"
-                "- 提供完整、有用的回答\n"
-                "- 使用清晰的结构（标题、要点列表）\n"
-                "- 即使信息不完整，也请尽力基于已有证据给出最佳回答\n"
-                "- 不要说'无法回答'，请展示已找到的信息\n"
-                "- 不要编造证据中没有的信息\n"
-                "- 严禁：若「证据」里没有某文件的完整读取内容，却声称已读取该文件；严禁根据常识列举 "
-                "`.env` 里「通常会有」的 Qwen/OpenAI/GLM 等名称，除非这些字符串出现在证据原文中。\n"
-                "- 若推理里打算读 A 文件，但证据实际只有 B 文件，必须在答案中说明「未读到 A」或「仅见 B」，不得假装已检查 A。\n"
-                "- 若用户要验证 PhageScope 远程访问，而证据中没有任何 phagescope 工具的成功返回，"
-                "必须明确写出「尚未执行 phagescope 远程请求」，不得声称已确认 PhageScope 权限或「优化已验证 PhageScope」。\n"
-                "- PhageScope Agent Gateway 使用 action=gateway：capabilities 仅说明本地配置，不能当作远程连通性证据；"
-                "data_health/analysis_health 才执行对应远程请求。其 data/analysis Key 由服务端配置，"
-                "不需要内容审核；submit 后报告 job_id，用 status/save_results 跟进。明确区分截断预览与完整文件。\n"
-                "- 介绍 PhageScope 旧网站接口时不要臆造「必须去官网用户中心申请 API Token」等；旧网站文档以 `userid` 为主，"
-                "工具里 `token` 为可选；无证据时不要断言具体凭证流程。\n"
-                "- 不要引导用户去查看、粘贴 `.env` 来「验证 PhageScope」；除非用户明确问本地部署密钥。"
-                "连通性应以 `phagescope` 工具（如 ping）为准；勿臆造 `PHAGESCOPE_API_TOKEN` 等变量名。\n"
-                "- 尊重 evidence_scope / completeness_status / status_counts / partial_completion_suspected："
-                "若证据只是采样、压缩列表或存在失败/部分完成信号，必须明确范围限制，不得写成全部/每个样本都成功。"
-            )
-            if structured_plan_outcome.get("required") and not structured_plan_outcome.get("satisfied"):
-                instruction += (
-                    "\n- 本轮请求的计划操作尚未成功完成。按以下实际回执说明未完成的操作及原因，不要把审核、查询或执行失败说成未创建计划："
-                    + str(structured_plan_outcome.get("message") or structured_plan_outcome.get("operation") or "计划操作未完成")
-                    + "\n- 不要把普通 markdown 文本说成已经创建好的计划。"
-                )
-            if agent._is_brief_execute_followup():
-                instruction += (
-                    "\n- 这是一次简短的执行跟进。优先汇报当前任务结果或最新工具结果。"
-                    "\n- 不要回顾先前项目里程碑、旧测试轮次、阶段性总结或“下一步建议”，除非用户明确要求。"
-                )
-        else:
-            instruction = (
-                "You are a Deep Thinking AI assistant. The user asked a question and the system "
-                "has executed multiple tool calls to gather information. Now synthesize ALL the "
-                "evidence and reasoning below into a complete, useful answer.\n"
-                "Requirements:\n"
-                "- Provide a complete, useful answer\n"
-                "- Use clear structure (headings, bullet points)\n"
-                "- Even if information is incomplete, provide the best answer from available evidence\n"
-                "- Do NOT say you cannot answer — present what was found\n"
-                "- Do not invent claims absent from the evidence\n"
-                "- Do not claim a file was read unless its contents (or an explicit excerpt) appear in the evidence; "
-                "if reasoning mentions file A but evidence only shows file B, say so.\n"
-                "- Do not list typical `.env` API provider names unless they appear verbatim in the evidence.\n"
-                "- For PhageScope access checks: if no phagescope tool success appears in the evidence, "
-                "state clearly that remote PhageScope was not exercised; do not claim credentials or that ping succeeded.\n"
-                "- PhageScope Agent Gateway uses action=gateway. capabilities only checks local configuration; "
-                "data_health/analysis_health make remote calls. Gateway data/analysis keys are server-configured; "
-                "no content approval is required. Report submit's job_id, then use status/save_results. "
-                "Distinguish truncated previews from complete files.\n"
-                "- When describing legacy PhageScope API requirements, do not invent a mandatory API token from a "
-                "\"user center\" unless the evidence says so; documented flows center on `userid`; tool `token` is optional.\n"
-                "- Do not tell the user to inspect or paste `.env` for PhageScope verification unless they explicitly "
-                "ask about local secrets; use the appropriate PhageScope health/ping operation. The legacy website documents optional env "
-                "`PHAGESCOPE_BASE_URL` and `PHAGESCOPE_SSL_VERIFY`, not a `PHAGESCOPE_API_TOKEN` variable.\n"
-                "- Respect evidence_scope / completeness_status / status_counts / partial_completion_suspected: if evidence is "
-                "sampled, compacted, or shows failures/partial completion, state the scope limits and do not claim all/every sample succeeded."
-            )
-            if structured_plan_outcome.get("required") and not structured_plan_outcome.get("satisfied"):
-                instruction += (
-                    "\n- The requested Plan operation is incomplete. Report this actual receipt and reason; do not describe a failed review/query/execution as failure to create the Plan: "
-                    + str(structured_plan_outcome.get("message") or structured_plan_outcome.get("operation") or "Plan operation incomplete")
-                    + "\n- Do not present ordinary markdown text as if the system already created the plan."
-                )
-            if agent._is_brief_execute_followup():
-                instruction += (
-                    "\n- This is a short execution follow-up. Prioritize the current task outcome or latest tool result."
-                    "\n- Do not recap prior project milestones, older test rounds, progress summaries, or next-step menus unless the user explicitly asked."
-                )
+        _ensure_acceptance_missing(agent)
+        structured_plan_outcome = agent._summarize_structured_plan_outcome(steps, user_query=user_query)
+        conversation = conversation + [{
+            "role": "user",
+            "content": _build_summary_nudge(
+                agent,
+                user_query=user_query,
+                task_context=task_context,
+                structured_plan_outcome=structured_plan_outcome,
+            ),
+        }]
 
-        produced_images = agent._collect_inline_image_relpaths()
-        if language == "zh":
-            instruction += (
-                "\n- 答案中引用任何产出文件（清单、正文、图片路径）一律使用会话相对路径"
-                "（如 raw_files/...、deliverables/...），禁止输出以 /app/runtime/ 开头的绝对路径。"
-            )
-        else:
-            instruction += (
-                "\n- Reference every produced file (manifest lists, prose, image paths) with its "
-                "session-relative path (e.g. raw_files/..., deliverables/...); never emit "
-                "absolute paths starting with /app/runtime/."
-            )
-        if produced_images:
-            listing = "\n".join(f"- {p}" for p in produced_images)
-            if language == "zh":
-                instruction += (
-                    "\n- 本轮已产出的图片文件（相对路径）：\n" + listing +
-                    "\n  在答案相应位置用 `![描述](相对路径)` 把图片内联展示，不要只在文字里提文件名。"
-                )
-            else:
-                instruction += (
-                    "\n- Image files produced in this run (relative paths):\n" + listing +
-                    "\n  Embed each image inline at the relevant position with `![caption](relative-path)`; do not merely name the files."
-                )
-        acceptance_missing = [m for m in (getattr(agent, "_acceptance_missing", None) or []) if m]
-        if acceptance_missing:
-            if language == "zh":
-                labels_zh = "、".join(
-                    _EXPECT_KIND_LABEL.get(m, {}).get("zh", m) for m in acceptance_missing
-                )
-                instruction += (
-                    f"\n- 本轮未能产出的交付物类型：{labels_zh}。"
-                    "必须在答案开头明确说明哪些没有完成以及原因，不得假装全部完成。"
-                )
-            else:
-                labels_en = ", ".join(
-                    _EXPECT_KIND_LABEL.get(m, {}).get("en", m) for m in acceptance_missing
-                )
-                instruction += (
-                    f"\n- Deliverable type(s) NOT produced this run: {labels_en}. "
-                    "State this explicitly at the top of the answer with the reason; do not pretend everything completed."
-                )
+        from .native_validation import bounded_synthesis
 
-        instruction += "\n" + response_style_instruction({"chat_response_preferences": getattr(agent, "_chat_response_preferences", {})})
-        prompt = (
-            f"{instruction}\n\n"
-            f"User question: {uq}\n\n"
-        )
-        if agent._is_execute_task_request() and agent._has_bound_task_context(task_context):
-            task_id = agent._current_bound_task_id(task_context)
-            task_name = str(getattr(task_context, "task_name", "") or "").strip()
-            task_instruction = str(getattr(task_context, "task_instruction", "") or "").strip()
-            task_label = f"Task {task_id}" if task_id is not None else "the current bound task"
-            if task_name:
-                task_label = f"{task_label} ({task_name})"
-            prompt += (
-                "=== BOUND TASK CONTEXT ===\n"
-                f"Current bound task: {task_label}\n"
-                f"Task instruction: {task_instruction}\n"
-                "This task context is already authoritative. Do NOT ask the user to provide task definitions, task descriptions, or to confirm whether a parent plan68_task directory exists.\n\n"
-            )
-        prompt += f"=== EVIDENCE FROM TOOLS ===\n{evidence}\n\n"
-        if thoughts_text:
-            prompt += f"=== REASONING PROCESS ===\n{thoughts_text}\n\n"
-        prompt += "Please provide your complete answer now:"
+        attempts = 2
+        if bounded_synthesis(agent):
+            if getattr(agent, "_synthesis_attempted", False):
+                return ""
+            agent._synthesis_attempted = True
+            attempts = 1
 
         synthesis_timeout = _default_synthesis_timeout_seconds()
         synthesis_max_tokens = _default_synthesis_max_tokens()
-        logger.info(
-            "[DEEP_THINK_NATIVE] Forced synthesis attempt (timeout=%ss max_tokens=%s)",
-            synthesis_timeout,
-            synthesis_max_tokens,
-        )
-        from .native_validation import bounded_synthesis
-        if bounded_synthesis(agent):
-            if getattr(agent,'_synthesis_attempted',False):return _build_structured_fallback(agent,steps,user_query)
-            agent._synthesis_attempted=True
-        raw = await run_stage(
-            agent._chat_text_streaming(prompt, max_tokens=synthesis_max_tokens),
-            stage="deepthink-synthesis", timeout=synthesis_timeout,
-        )
-        cleaned = sanitize_professional_response_text(str(raw or "").strip())
-        if len(cleaned) < 30 or _dta().is_process_only_answer(cleaned, user_query=user_query):
-            logger.warning("[DEEP_THINK_NATIVE] Forced synthesis produced insufficient content (%d chars)", len(cleaned))
-            return ""
-        if structured_plan_outcome.get("required") and not structured_plan_outcome.get("satisfied"):
-            return agent._build_structured_plan_contract_failure_answer(
-                outcome=structured_plan_outcome,
-                user_query=user_query,
+        thinking = _synthesis_thinking_enabled()
+        left = _budget_remaining()
+        if thinking and left is not None and left < _THINKING_MIN_REMAINING_SECONDS:
+            logger.info("[DEEP_THINK_NATIVE] Only %.0fs of run budget left; the closing summary skips thinking", left)
+            thinking = False
+        for attempt in range(attempts):
+            # The retry turns thinking off: a thinking model that spent the whole
+            # output cap reasoning returns nothing visible, and asking again the
+            # same way repeats that.
+            use_thinking = thinking and attempt == 0
+            attempt_timeout = _attempt_timeout(synthesis_timeout, is_last=attempt == attempts - 1)
+            if attempt_timeout < _MIN_ATTEMPT_SECONDS:
+                logger.warning("[DEEP_THINK_NATIVE] No run time left for closing summary attempt %d", attempt + 1)
+                break
+            logger.info(
+                "[DEEP_THINK_NATIVE] Closing summary attempt %d/%d (messages=%d timeout=%.0fs max_tokens=%s thinking=%s)",
+                attempt + 1, attempts, len(conversation), attempt_timeout, synthesis_max_tokens, use_thinking,
             )
-        cleaned = _strip_runtime_absolute_paths(
-            _ensure_inline_images(cleaned, agent._collect_inline_image_relpaths())
-        )
-        logger.info("[DEEP_THINK_NATIVE] Forced synthesis succeeded (%d chars)", len(cleaned))
-        return cleaned
+            try:
+                raw = await run_stage(
+                    agent._chat_messages_streaming(
+                        conversation,
+                        max_tokens=synthesis_max_tokens,
+                        enable_thinking=use_thinking,
+                        thinking_budget=getattr(agent, "thinking_budget", None) if use_thinking else None,
+                        tools=tools,
+                    ),
+                    stage="deepthink-synthesis", timeout=attempt_timeout,
+                )
+            except (RunDeadlineExceeded, ObserverRejected):
+                raise
+            except Exception as exc:
+                logger.warning("[DEEP_THINK_NATIVE] Closing summary attempt %d failed: %r", attempt + 1, exc)
+                continue
+            cleaned = sanitize_professional_response_text(str(raw or "").strip())
+            if len(cleaned) < 30 or _dta().is_process_only_answer(cleaned, user_query=user_query):
+                logger.warning(
+                    "[DEEP_THINK_NATIVE] Closing summary attempt %d produced insufficient content (%d chars)",
+                    attempt + 1, len(cleaned),
+                )
+                continue
+            if structured_plan_outcome.get("required") and not structured_plan_outcome.get("satisfied"):
+                return agent._build_structured_plan_contract_failure_answer(
+                    outcome=structured_plan_outcome,
+                    user_query=user_query,
+                )
+            cleaned = _strip_runtime_absolute_paths(
+                _ensure_inline_images(cleaned, agent._collect_inline_image_relpaths())
+            )
+            logger.info("[DEEP_THINK_NATIVE] Closing summary succeeded (%d chars)", len(cleaned))
+            return cleaned
+        return ""
     except (RunDeadlineExceeded, ObserverRejected):
         raise
     except Exception as exc:
-        logger.warning("[DEEP_THINK_NATIVE] Forced synthesis failed: %r", exc, exc_info=True)
+        logger.warning("[DEEP_THINK_NATIVE] Closing summary failed: %r", exc, exc_info=True)
         return ""
 
 
@@ -1024,9 +566,7 @@ async def _fallback_answer_from_steps(
     user_query: str = "",
     task_context: Optional[TaskExecutionContext] = None,
 ) -> str:
-    from .native_validation import bounded_synthesis
-    if bounded_synthesis(agent) and getattr(agent,'_synthesis_attempted',False):
-        return _build_structured_fallback(agent,steps,user_query)
+    """Last resort when the closing summary produced nothing (no model call)."""
     language = _dta().detect_reasoning_language(user_query)
     if not steps:
         return _dta()._localized_text(
@@ -1034,34 +574,13 @@ async def _fallback_answer_from_steps(
             "已完成思考，但暂未形成结构化结论。",
             "DeepThink finished without a structured final answer.",
         )
-    evidence = agent._collect_evidence_snippets(steps)
-    uq = (user_query or "").strip()
-    # Execute-intent turns get one LLM evidence-synthesis attempt before the
-    # snippet/structured fallbacks (restored 2026-10-09: the legacy execute
-    # tier had this path; the tier removal keys it off intent instead).
-    if agent._is_execute_task_request() and evidence.strip() and uq:
-        try:
-            fallback_kwargs: Dict[str, Any] = {}
-            if task_context is not None:
-                fallback_kwargs["task_context"] = task_context
-            generated = await agent._generate_fallback_from_evidence(
-                uq,
-                evidence,
-                steps,
-                **fallback_kwargs,
-            )
-            if generated and not agent._should_reject_missing_task_definition_answer(
-                generated,
-                task_context=task_context,
-            ):
-                return generated
-        except (RunDeadlineExceeded, ObserverRejected):
-            raise
-        except Exception:
-            logger.warning(
-                "DeepThink fallback synthesis from tool evidence failed; using structured fallback.",
-                exc_info=True,
-            )
+    probe_stop_text = getattr(agent, "_probe_stop_fallback", None)
+    if probe_stop_text:
+        return probe_stop_text
+    from .native_validation import bounded_synthesis
+
+    if bounded_synthesis(agent) and getattr(agent, "_synthesis_attempted", False):
+        return _build_structured_fallback(agent, steps, user_query)
     useful = [
         s.thought
         for s in steps

@@ -42,7 +42,6 @@ from app.services.deep_think.text_utils import (
     _collect_deliverable_display_names,
     _collect_deliverable_file_names,
     _collect_output_file_names,
-    _default_fallback_timeout_seconds,
     _default_max_consecutive_llm_failures,
     _resolve_context_budget_tokens,
     _default_synthesis_max_tokens,
@@ -53,14 +52,10 @@ from app.services.deep_think.text_utils import (
     _derive_expected_outputs,
     _drop_process_echo_bullets,
     _ensure_inline_images,
-    _failure_signature_break_count,
-    _failure_signature_warn_count,
     _guard_json_payload,
     _looks_like_cli_protocol_json,
     _missing_expectations,
     _missing_expectations_detailed,
-    _progress_free_break_streak,
-    _progress_free_nudge_streak,
     _strip_cli_noise_from_multiline,
     _strip_cli_stream_noise,
     _time_budget_break_seconds,
@@ -1472,9 +1467,6 @@ class DeepThinkAgent:
     def _collect_inline_image_relpaths(self, limit: int = 8) -> List[str]:
         return _guards._collect_inline_image_relpaths(self, limit)
 
-    def _failure_signature_for_result(self, item: Dict[str, Any]) -> Optional[str]:
-        return _guards._failure_signature_for_result(self, item)
-
     def _loop_guard_endgame_armed(self) -> bool:
         return _guards._loop_guard_endgame_armed(self)
 
@@ -1692,46 +1684,6 @@ class DeepThinkAgent:
     def _select_steps_for_summary(steps: List[ThinkingStep]) -> List[ThinkingStep]:
         return _synthesis._select_steps_for_summary(steps)
 
-    @staticmethod
-    def _slim_evidence_text_for_synthesis(text: str) -> str:
-        return _synthesis._slim_evidence_text_for_synthesis(text)
-
-    def _collect_evidence_snippets(
-        self,
-        steps: List[ThinkingStep],
-        *,
-        max_steps: int = 8,
-        max_chars: int = 3000,
-        per_snippet_max: int = 900,
-    ) -> str:
-        return _synthesis._collect_evidence_snippets(
-            self,
-            steps,
-            max_steps=max_steps,
-            max_chars=max_chars,
-            per_snippet_max=per_snippet_max,
-        )
-
-    @staticmethod
-    def _humanize_single_tool_result(tool_name: str, obj: dict) -> str:
-        return _synthesis._humanize_single_tool_result(tool_name, obj)
-
-    def _collect_user_facing_evidence_snippets(
-        self,
-        steps: List[ThinkingStep],
-        *,
-        max_steps: int = 8,
-        max_chars: int = 3000,
-        per_snippet_max: int = 900,
-    ) -> str:
-        return _synthesis._collect_user_facing_evidence_snippets(
-            self,
-            steps,
-            max_steps=max_steps,
-            max_chars=max_chars,
-            per_snippet_max=per_snippet_max,
-        )
-
     def _build_bound_execute_task_fallback(
         self,
         steps: List[ThinkingStep],
@@ -1749,29 +1701,22 @@ class DeepThinkAgent:
     def _build_structured_fallback(self, steps: List[ThinkingStep], user_query: str = "") -> str:
         return _synthesis._build_structured_fallback(self, steps, user_query)
 
-    async def _chat_text_streaming(self, prompt: str, *, max_tokens: int) -> str:
-        return await _synthesis._chat_text_streaming(self, prompt, max_tokens=max_tokens)
-
-    async def _generate_fallback_from_evidence(
+    async def _chat_messages_streaming(
         self,
-        user_query: str,
-        evidence_snippets: str,
-        steps: List[ThinkingStep],
-        task_context: Optional[TaskExecutionContext] = None,
+        messages: List[Dict[str, Any]],
         *,
-        max_retries: int = 3,
-        timeout: Optional[float] = None,
-        max_tokens: int = 2000,
+        max_tokens: int,
+        enable_thinking: Optional[bool],
+        thinking_budget: Optional[int] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
     ) -> str:
-        return await _synthesis._generate_fallback_from_evidence(
+        return await _synthesis._chat_messages_streaming(
             self,
-            user_query,
-            evidence_snippets,
-            steps,
-            task_context,
-            max_retries=max_retries,
-            timeout=timeout,
+            messages,
             max_tokens=max_tokens,
+            enable_thinking=enable_thinking,
+            thinking_budget=thinking_budget,
+            tools=tools,
         )
 
     async def _forced_synthesis_from_steps(
@@ -1780,6 +1725,9 @@ class DeepThinkAgent:
         user_query: str,
         messages: List[Dict[str, Any]],
         task_context: Optional[TaskExecutionContext] = None,
+        *,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        compact: Any = None,
     ) -> str:
         return await _synthesis._forced_synthesis_from_steps(
             self,
@@ -1787,6 +1735,8 @@ class DeepThinkAgent:
             user_query,
             messages,
             task_context,
+            tools=tools,
+            compact=compact,
         )
 
     async def _fallback_answer_from_steps(

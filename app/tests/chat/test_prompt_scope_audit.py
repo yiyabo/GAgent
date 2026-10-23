@@ -157,27 +157,26 @@ def test_strict_plan_catalog_and_retry_nudge_use_supported_operations():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode", ["fallback", "forced"])
-async def test_synthesis_preserves_long_live_request_and_bound_task_instruction(mode):
+async def test_closing_summary_sends_the_live_request_and_bound_task_instruction_unclipped():
     from app.services.deep_think import synthesis
     captured = []
-    async def summarize(prompt, *, max_tokens):
-        captured.append(prompt)
+    async def summarize(messages, *, max_tokens, **_):
+        captured.append(messages)
         return "The available records describe the current state. No new execution was requested or started."
-    agent = DeepThinkAgent(llm_client=SimpleNamespace(chat_async=summarize), available_tools=[],
+    agent = DeepThinkAgent(llm_client=SimpleNamespace(), available_tools=[],
                           tool_executor=lambda *_: None, request_profile={"intent_type": "execute_task"})
-    agent._chat_text_streaming = summarize
+    agent._chat_messages_streaming = summarize
     query = "背景信息 " * 600 + "仅说明当前状态，不要执行计划。"
     instruction = "原任务说明 " * 150 + "原有章节数量必须保留。"
     task = TaskExecutionContext(task_id=4, task_instruction=instruction)
+    history = [{"role": "system", "content": "system prompt with " + instruction},
+               {"role": "user", "content": query}]
     steps = [ThinkingStep(iteration=1, thought="The existing evidence is sufficient to report the current state.",
                           action=None, action_result=None, self_correction=None, status="done")]
-    if mode == "fallback":
-        await synthesis._generate_fallback_from_evidence(agent, user_query=query,
-            evidence_snippets="Existing records", steps=steps, task_context=task)
-    else:
-        await synthesis._forced_synthesis_from_steps(agent, steps, query, [], task_context=task)
+    await synthesis._forced_synthesis_from_steps(agent, steps, query, history, task_context=task)
     assert len(captured) == 1
-    assert query in captured[0]
-    if mode == "forced":
-        assert instruction in captured[0]
+    # the real conversation goes through whole and in order; only the nudge is added
+    assert captured[0][:-1] == history
+    assert captured[0][-1]["role"] == "user" and "不要再调用任何工具" in captured[0][-1]["content"]
+    # and the caller's list (the continuation later turns inherit) is untouched
+    assert len(history) == 2

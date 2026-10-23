@@ -152,11 +152,12 @@ async def test_final_synthesis_retains_preferences(monkeypatch, native):
     if native: agent._build_native_system_prompt(context)
     else: agent._build_system_prompt(context)
     seen = []
-    async def synthesize(prompt, **kwargs):
-        seen.append(prompt)
+    async def synthesize(messages, **kwargs):
+        seen.append(messages)
         return 'This answer is based on the available evidence; additional measurements remain unknown.'
-    monkeypatch.setattr(agent, '_chat_text_streaming', synthesize)
+    monkeypatch.setattr(agent, '_chat_messages_streaming', synthesize)
     result = await agent._forced_synthesis_from_steps([], 'Explain the available evidence', [])
     assert result and len(seen) == 1
-    assert 'Distinguish evidence, inference and uncertainty' in seen[0]
-    assert 'Prefer a brief, direct answer' in seen[0]
+    closing = seen[0][-1]['content']
+    assert 'Distinguish evidence, inference and uncertainty' in closing
+    assert 'Prefer a brief, direct answer' in closing
