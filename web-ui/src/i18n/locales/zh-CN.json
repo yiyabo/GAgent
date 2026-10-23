@@ -491,7 +491,24 @@
     "register": "注册",
     "registerFailed": "注册失败。",
     "haveAccount": "已有账号？",
-    "signInLink": "去登录"
+    "signInLink": "去登录",
+    "error": {
+      "registerClosed": "本服务器已关闭自助注册，账号由管理员创建。请联系管理员为你的邮箱开通账号；如果已经有账号，请直接登录。",
+      "emailTaken": "这个邮箱已经注册过了，请直接登录。",
+      "wrongCredentials": "邮箱或密码不正确。",
+      "wrongCurrentPassword": "当前密码不正确。",
+      "sessionExpired": "登录已过期，请重新登录。",
+      "forbidden": "你没有权限执行这个操作（HTTP 403）。",
+      "rejected": "服务器拒绝了这个请求：{{detail}}",
+      "invalidInput": "服务器拒绝了这个请求，请检查邮箱和密码后重试。",
+      "rateLimited": "尝试次数过多，请等一分钟再试。",
+      "unavailable": "服务器正忙、正在重启，或在限制重复尝试（HTTP {{status}}）。请等一分钟再试。",
+      "server": "服务器出错了（HTTP {{status}}）。请稍后再试；如果一直这样，请告诉管理员。",
+      "network": "连不上服务器，请检查网络后重试。",
+      "timeout": "服务器响应超时，请重试。",
+      "unknown": "请求失败（HTTP {{status}}）。",
+      "unknownWithDetail": "请求失败（HTTP {{status}}）：{{detail}}"
+    }
   },
   "system": {
     "title": "系统设置",
