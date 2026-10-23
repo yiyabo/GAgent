@@ -6,6 +6,7 @@ import logging
 import asyncio
 from typing import Any, Callable, Dict, Optional, Tuple
 
+from app.services.chat_attachments import attach_message_attachments
 from app.services.plans.plan_session import PlanSession
 
 from .models import ChatRequest
@@ -195,13 +196,14 @@ async def build_agent_for_chat_request(
             user_message_metadata = (
                 {"client_message_id": request.client_message_id}
                 if request.client_message_id
-                else None
+                else {}
             )
+            attach_message_attachments(user_message_metadata, context)
             _save_chat_message(
                 request.session_id,
                 "user",
                 request.message,
-                user_message_metadata,
+                user_message_metadata or None,
                 model_provider=context.get("model_provider"),
             )
         session_settings = _get_session_settings(request.session_id)

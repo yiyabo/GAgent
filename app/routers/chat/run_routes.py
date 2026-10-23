@@ -96,9 +96,11 @@ def _save_run_user_message(
         if request.client_message_id
         else None
     )
+    from app.services.chat_attachments import attach_message_attachments
     from app.services.response_style import attach_response_preferences
     user_message_metadata = user_message_metadata or {}
     attach_response_preferences(user_message_metadata, request.context)
+    attach_message_attachments(user_message_metadata, request.context)
     if (request.context or {}).get("resume_from_run_id"):
         user_message_metadata = {**(user_message_metadata or {}), "resume_from_run_id": request.context["resume_from_run_id"]}
     user_message_id = _save_chat_message(
