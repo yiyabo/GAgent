@@ -121,6 +121,15 @@ def test_a_bare_database_name_is_refused_with_the_reason():
     assert param_hints.relative_prefix_error(CONFIG, "blast", "blastn", {"db": "/app/runtime/s/db"}) is None
 
 
+def test_a_name_is_what_the_database_builders_take():
+    # makeblastdb and hmmpress write `/work/{db}`: the value names the new database, so a bare name is right.
+    assert param_hints.relative_prefix_error(CONFIG, "blast", "makeblastdb", {"db": "lambda_db", "type": "prot"}) is None
+    assert param_hints.relative_prefix_error(CONFIG, "hmmer", "hmmpress", {"db": "profiles.hmm"}) is None
+    # The operations that read a database still need the absolute prefix of one built in the session.
+    assert param_hints.relative_prefix_error(CONFIG, "blast", "blastp", {"db": "lambda_db"})[0] == "db"
+    assert param_hints.relative_prefix_error(CONFIG, "hmmer", "hmmscan", {"db": "profiles.hmm"})[0] == "db"
+
+
 # --------------------------------------------------------------------------- through the handler
 
 def _call(tmp_path, tool, op, params):
