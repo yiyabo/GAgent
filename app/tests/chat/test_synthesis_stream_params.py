@@ -202,3 +202,24 @@ async def test_with_almost_no_time_left_the_summary_is_not_attempted(
 
     assert result == ""
     assert llm.calls == []
+
+
+@pytest.mark.asyncio()
+@pytest.mark.parametrize("total, thinking_first", [(2000, True), (100, False)])
+async def test_a_short_run_budget_makes_the_summary_skip_thinking(
+    monkeypatch: pytest.MonkeyPatch, total: int, thinking_first: bool,
+) -> None:
+    """A thinking summary measured 154 s; with under 480 s of budget left it cannot finish."""
+    from app.services.run_budget import RunBudget, bind_run_budget, reset_run_budget
+
+    monkeypatch.setattr(synthesis, "get_settings", lambda: SimpleNamespace(thinking_enabled=True))
+    llm = _NativeRecordingLLM("")  # empty replies: both attempts run, so both switches are seen
+    handle = bind_run_budget(RunBudget(total))
+    try:
+        await synthesis._forced_synthesis_from_steps(
+            _real_agent(llm), _steps(), "Explain what happened", [{"role": "user", "content": "Explain what happened"}]
+        )
+    finally:
+        reset_run_budget(handle)
+
+    assert [c["enable_thinking"] for c in llm.calls] == [thinking_first, False]

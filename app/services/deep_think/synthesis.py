@@ -390,6 +390,17 @@ async def _chat_messages_streaming(
 _MIN_ATTEMPT_SECONDS = 5.0
 _FIRST_ATTEMPT_SHARE = 0.6
 _DEADLINE_MARGIN_SECONDS = 5.0
+# Measured on the test instance: a closing summary over 58k tokens took 154 s
+# with thinking on (6k completion tokens at ~40 tokens/s). With less than this
+# left in the run budget a thinking summary cannot finish, so it thinks less.
+_THINKING_MIN_REMAINING_SECONDS = 480.0
+
+
+def _budget_remaining() -> Optional[float]:
+    from app.services.run_budget import current_run_budget
+
+    budget = current_run_budget()
+    return None if budget is None else budget.remaining_seconds()
 
 
 def _attempt_timeout(cap: float, *, is_last: bool) -> float:
@@ -401,12 +412,9 @@ def _attempt_timeout(cap: float, *, is_last: bool) -> float:
     of what is left (the retry needs time too) and the last stops a few seconds
     early, which lets the fixed fallback message answer instead.
     """
-    from app.services.run_budget import current_run_budget
-
-    budget = current_run_budget()
-    if budget is None:
+    remaining = _budget_remaining()
+    if remaining is None:
         return cap
-    remaining = budget.remaining_seconds()
     share = remaining - _DEADLINE_MARGIN_SECONDS if is_last else remaining * _FIRST_ATTEMPT_SHARE
     return min(cap, share)
 
@@ -494,6 +502,10 @@ async def _forced_synthesis_from_steps(
         synthesis_timeout = _default_synthesis_timeout_seconds()
         synthesis_max_tokens = _default_synthesis_max_tokens()
         thinking = _synthesis_thinking_enabled()
+        left = _budget_remaining()
+        if thinking and left is not None and left < _THINKING_MIN_REMAINING_SECONDS:
+            logger.info("[DEEP_THINK_NATIVE] Only %.0fs of run budget left; the closing summary skips thinking", left)
+            thinking = False
         for attempt in range(attempts):
             # The retry turns thinking off: a thinking model that spent the whole
             # output cap reasoning returns nothing visible, and asking again the
