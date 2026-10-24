@@ -40,7 +40,8 @@ How to work
   MMseqs2 search databases built from sequences in the pipeline; an empty result file is a valid result (no hits), not an
   error; short phage genomes can give empty FastANI or MMseqs2 results.
 - Reference nodes the way the user sees them: by title and label, with the id in brackets when it helps. Answer in the
-  language the user writes in.
+  language of the user's latest message (an English message gets an English answer, a Chinese one a Chinese answer),
+  whatever language the node titles shown to you are in.
 - To interpret results use read_output on the latest run, then explain what the numbers mean for the question asked.
   Do not invent values you have not read.
 
