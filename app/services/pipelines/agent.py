@@ -71,7 +71,9 @@ def _history_for_model(pipeline_id: str) -> List[Dict[str, str]]:
         actions = (message.get("meta") or {}).get("actions") or []
         if message["role"] == "assistant" and actions:
             done = "; ".join(item["summary"] for item in actions if item.get("ok"))
-            if done:
+            if done and (message.get("meta") or {}).get("undone"):
+                text += f"\n[The user undid the canvas changes of that turn ({done}); the canvas is back as it was before them.]"
+            elif done:
                 text += f"\n[Changes made on the canvas in that turn: {done}]"
         result.append({"role": message["role"], "content": text})
     return result

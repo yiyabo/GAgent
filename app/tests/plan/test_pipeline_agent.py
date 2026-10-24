@@ -129,6 +129,18 @@ async def test_history_selection_and_state_reach_the_next_turn(env):
     assert saved[2]["meta"] == {"selected_node": "lambda", "can_undo": False}
 
 
+async def test_the_model_is_told_when_a_turn_was_undone(env):
+    model = use(env, ("", BUILD[:1]), ("Added.", []), ("Nothing there now.", []))
+    pid = new_pipeline()
+    await talk(pid, "add lambda")
+    agent.undo(pid, [m for m in agent.history(pid) if m["role"] == "assistant"][0]["id"])
+    await talk(pid, "what is on the canvas?")
+    sent = model.requests[-1]["messages"]
+    assert "The user undid the canvas changes of that turn" in sent[2]["content"]
+    assert "Changes made on the canvas in that turn" not in sent[2]["content"]
+    assert "The canvas is empty." in sent[0]["content"] and "CURRENT STATE" in sent[0]["content"]
+
+
 async def test_a_turn_can_be_undone_once_and_only_the_latest(env):
     use(env, ("", BUILD[:1]), ("one", []), ("", BUILD[1:2]), ("two", []))
     pipeline_id = new_pipeline()
