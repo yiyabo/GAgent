@@ -1,10 +1,11 @@
 import React, { useState } from 'react';
 import { Button, Divider, Input, InputNumber, Progress, Select, Space, Tag, Typography, Upload } from 'antd';
-import { DeleteOutlined, MessageOutlined, UploadOutlined } from '@ant-design/icons';
+import { CloseCircleOutlined, DeleteOutlined, MessageOutlined, UploadOutlined, WarningOutlined } from '@ant-design/icons';
 import type { NodeCatalog, ParamSpec, PipelineFile, PipelineGraph } from '@api/pipelines';
 import { useLanguageStore } from '@/i18n/language';
 import { useT } from '@/i18n/useT';
 import { pick, specIndex, updateNode, type GraphUpdate } from './graphModel';
+import type { ShownIssue } from './issues';
 
 const { Text, Paragraph } = Typography;
 
@@ -15,7 +16,7 @@ interface Props {
   graph: PipelineGraph;
   nodeId: string;
   files: PipelineFile[];
-  issues: string[];
+  issues: ShownIssue[];
   onChange: (update: GraphUpdate) => void;
   onRemove: (nodeId: string) => void;
   onUpload: (file: File, onProgress: (percent: number) => void) => UploadResult;
@@ -148,13 +149,11 @@ const NodeInspector: React.FC<Props> = ({ catalog, graph, nodeId, files, issues,
       <Button size="small" icon={<MessageOutlined />} onClick={() => onAskAgent(nodeId)} style={{ alignSelf: 'flex-start', marginTop: 6 }}>
         {t('pipelines.agent.askAbout')}
       </Button>
-      {issues.length ? (
-        <div className="pl-issue-box">
-          {issues.map((issue) => (
-            <div key={issue}>{issue}</div>
-          ))}
+      {issues.map((issue, index) => (
+        <div key={index} className={`pl-issue-box${issue.level === 'warning' ? ' pl-issue-box-warning' : ''}`}>
+          {issue.level === 'warning' ? <WarningOutlined /> : <CloseCircleOutlined />} {issue.text}
         </div>
-      ) : null}
+      ))}
 
       <Divider style={{ margin: '10px 0' }} />
       <label className="pl-field-label" htmlFor={`pl-label-${nodeId}`}>

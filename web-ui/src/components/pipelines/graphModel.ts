@@ -15,6 +15,8 @@ export interface PipelineNodeData extends Record<string, unknown> {
   node: GraphNode;
   run?: NodeRun;
   issues: string[];
+  issueLevel?: 'error' | 'warning';
+  readyInputs?: string[];
 }
 
 export type PipelineFlowNode = Node<PipelineNodeData, 'pipeline'>;
@@ -249,6 +251,7 @@ export function toFlow(
   specs: Map<string, NodeTypeSpec>,
   runNodes?: Record<string, NodeRun>,
   issuesByNode?: Map<string, string[]>,
+  issueLevels?: Map<string, 'error' | 'warning'>,
 ): { nodes: PipelineFlowNode[]; edges: Edge[] } {
   const nodes: PipelineFlowNode[] = [];
   const edges: Edge[] = [];
@@ -261,7 +264,13 @@ export function toFlow(
       id,
       type: 'pipeline',
       position,
-      data: { spec, node, run: runNodes?.[id], issues: issuesByNode?.get(id) || [] },
+      data: {
+        spec, node, run: runNodes?.[id], issues: issuesByNode?.get(id) || [],
+        issueLevel: issueLevels?.get(id),
+        readyInputs: Object.entries(node.inputs || {}).filter(([, value]) =>
+          refsOf(value).length > 0 && refsOf(value).every((ref) => runNodes?.[ref.node]?.outputs?.[ref.port]),
+        ).map(([port]) => port),
+      },
     });
     for (const [port, value] of Object.entries(node.inputs || {})) {
       for (const ref of refsOf(value)) {
@@ -274,7 +283,7 @@ export function toFlow(
           target: id,
           targetHandle: port,
           data: { type: outputType(graph, specs, source) },
-          className: `pl-edge pl-type-${outputType(graph, specs, source) || 'unknown'}`,
+          className: `pl-edge pl-edge-${runNodes?.[id]?.status === 'running' ? 'running' : runNodes?.[ref.node]?.outputs?.[ref.port] ? 'ready' : 'pending'}`,
         });
       }
     }

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { App, Button, Input, Popconfirm, Segmented, Spin, Tag, Tooltip, Typography } from 'antd';
+import { App, Button, Input, Popconfirm, Spin, Tag, Tooltip, Typography } from 'antd';
 import { ArrowLeftOutlined, CaretRightOutlined, DeleteOutlined, LockOutlined, PartitionOutlined } from '@ant-design/icons';
 import { useQueryClient } from '@tanstack/react-query';
 import { PipelinesApiError, pipelinesApi } from '@api/pipelines';
@@ -13,6 +13,7 @@ import NodePalette from './NodePalette';
 import PipelineAgentPanel from './PipelineAgentPanel';
 import PipelineCanvas, { type ConnectionProblem, type PipelineFlowInstance } from './PipelineCanvas';
 import PipelineSidePanel from './PipelineSidePanel';
+import PipelineWorkspace from './PipelineWorkspace';
 import RunPanel from './RunPanel';
 import { addNode, autoLayout, freeSpot, normalizeGraph, pick, removeNode, specIndex, type GraphUpdate } from './graphModel';
 import { issuesByNode, shownIssues } from './issues';
@@ -70,6 +71,7 @@ const PipelineEditor: React.FC<Props> = ({ catalog, pipeline, runId, onOpenRun, 
   const [saveState, setSaveState] = useState<SaveState>('saved');
   const [busy, setBusy] = useState<'run' | 'freeze' | 'cancel' | 'delete' | null>(null);
   const [tab, setTab] = useState<'details' | 'agent'>('details');
+  const [panelOpen, setPanelOpen] = useState(true);
   const [agentBusy, setAgentBusy] = useState(false);
   const [prefill, setPrefill] = useState<{ text: string; nonce: number } | null>(null);
 
@@ -183,6 +185,7 @@ const PipelineEditor: React.FC<Props> = ({ catalog, pipeline, runId, onOpenRun, 
         return result.graph;
       });
       setSelected(created);
+      setPanelOpen(true);
     },
     [changeGraph],
   );
@@ -239,6 +242,8 @@ const PipelineEditor: React.FC<Props> = ({ catalog, pipeline, runId, onOpenRun, 
       void queryClient.invalidateQueries({ queryKey: ['pipelines', 'list'] });
       message.success(t('pipelines.runStarted'));
       setRunSelected(null);
+      setPanelOpen(true);
+      setTab('details');
       onOpenRun(started.id);
     },
     [pipeline.id, queryClient, message, t, onOpenRun],
@@ -314,6 +319,11 @@ const PipelineEditor: React.FC<Props> = ({ catalog, pipeline, runId, onOpenRun, 
     [t, validation, graph, specs, language],
   );
   const nodeIssues = useMemo(() => issuesByNode(issues), [issues]);
+  const issueLevels = useMemo(() => {
+    const levels = new Map<string, 'error' | 'warning'>();
+    for (const issue of issues) if (issue.node && levels.get(issue.node) !== 'error') levels.set(issue.node, issue.level);
+    return levels;
+  }, [issues]);
   const nodeName = useCallback(
     (id: string) => {
       const node = graph.nodes[id];
@@ -331,7 +341,10 @@ const PipelineEditor: React.FC<Props> = ({ catalog, pipeline, runId, onOpenRun, 
     setPrefill({ text: t('pipelines.agent.askPrefill'), nonce: Date.now() });
     setTab('agent');
     setSelected(id);
+    setPanelOpen(true);
   };
+  const selectDraft = (id: string | null) => { setSelected(id); setPanelOpen(true); };
+  const selectRun = (id: string | null) => { setRunSelected(id); setPanelOpen(true); };
   const agentSelected = viewingRun ? runSelected : selectedNode;
 
   const side = () => {
@@ -339,6 +352,7 @@ const PipelineEditor: React.FC<Props> = ({ catalog, pipeline, runId, onOpenRun, 
       if (run.data) {
         return (
           <RunPanel
+            key={`${runId}:${runSelected || ''}`}
             catalog={catalog}
             run={run.data}
             selectedNode={runSelected}
@@ -368,7 +382,7 @@ const PipelineEditor: React.FC<Props> = ({ catalog, pipeline, runId, onOpenRun, 
           graph={graph}
           nodeId={selectedNode}
           files={files.data || []}
-          issues={nodeIssues.get(selectedNode) || []}
+          issues={issues.filter((issue) => issue.node === selectedNode)}
           onChange={changeGraph}
           onRemove={(id) => {
             changeGraph((current) => removeNode(current, id));
@@ -385,10 +399,11 @@ const PipelineEditor: React.FC<Props> = ({ catalog, pipeline, runId, onOpenRun, 
         onDescriptionChange={changeDescription}
         issues={issues}
         nodeName={nodeName}
-        onSelectNode={setSelected}
+        onSelectNode={selectDraft}
         runs={runs.data}
         onOpenRun={(id) => {
           setRunSelected(null);
+          setPanelOpen(true);
           onOpenRun(id);
         }}
       />
@@ -465,14 +480,26 @@ const PipelineEditor: React.FC<Props> = ({ catalog, pipeline, runId, onOpenRun, 
           </Tooltip>
         </Popconfirm>
       </div>
-      <div className="pl-body">
-        {!viewingRun ? (
-          <aside className="pl-left">
-            <div className={agentBusy ? 'pl-locked' : undefined}>
-              <NodePalette catalog={catalog} onAdd={add} />
-            </div>
-          </aside>
-        ) : null}
+      <PipelineWorkspace
+        tab={tab}
+        onTabChange={setTab}
+        open={panelOpen}
+        onOpenChange={setPanelOpen}
+        locked={agentBusy}
+        palette={!viewingRun ? <div className={agentBusy ? 'pl-locked' : undefined}><NodePalette catalog={catalog} onAdd={add} /></div> : null}
+        details={side()}
+        assistant={
+          <PipelineAgentPanel
+            pipelineId={pipeline.id}
+            selectedNode={agentSelected ? { id: agentSelected, name: nodeName(agentSelected) } : null}
+            prefill={prefill}
+            beforeSend={save}
+            onGraph={applyServerGraph}
+            onBusyChange={setAgentBusy}
+            onRunStarted={openStartedRun}
+          />
+        }
+      >
         <div className="pl-center" ref={centerRef}>
           {agentBusy && !viewingRun ? (
             <div className="pl-agent-lock-note" role="status">
@@ -488,7 +515,7 @@ const PipelineEditor: React.FC<Props> = ({ catalog, pipeline, runId, onOpenRun, 
                 readOnly
                 runNodes={run.data?.nodes}
                 selectedNode={runSelected}
-                onSelectNode={setRunSelected}
+                onSelectNode={selectRun}
                 onInit={(instance) => {
                   flowRef.current = instance;
                 }}
@@ -504,8 +531,9 @@ const PipelineEditor: React.FC<Props> = ({ catalog, pipeline, runId, onOpenRun, 
               catalog={catalog}
               graph={graph}
               issues={nodeIssues}
+              issueLevels={issueLevels}
               selectedNode={selectedNode}
-              onSelectNode={setSelected}
+              onSelectNode={selectDraft}
               readOnly={agentBusy}
               onChange={changeGraph}
               onRejectConnection={(problem) => void message.warning(t(CONNECTION_KEYS[problem]))}
@@ -515,31 +543,7 @@ const PipelineEditor: React.FC<Props> = ({ catalog, pipeline, runId, onOpenRun, 
             />
           )}
         </div>
-        <aside className={`pl-right${tab === 'agent' ? ' pl-right-agent' : ''}`}>
-          <Segmented
-            block
-            size="small"
-            value={tab}
-            onChange={(value) => setTab(value as 'details' | 'agent')}
-            options={[
-              { value: 'details', label: t('pipelines.tab.details') },
-              { value: 'agent', label: t('pipelines.tab.agent') },
-            ]}
-          />
-          <div className={`pl-right-body${tab === 'agent' ? ' pl-hidden' : ''}${agentBusy ? ' pl-locked' : ''}`}>{side()}</div>
-          <div className={`pl-right-body pl-right-agent-body${tab === 'agent' ? '' : ' pl-hidden'}`}>
-            <PipelineAgentPanel
-              pipelineId={pipeline.id}
-              selectedNode={agentSelected ? { id: agentSelected, name: nodeName(agentSelected) } : null}
-              prefill={prefill}
-              beforeSend={save}
-              onGraph={applyServerGraph}
-              onBusyChange={setAgentBusy}
-              onRunStarted={openStartedRun}
-            />
-          </div>
-        </aside>
-      </div>
+      </PipelineWorkspace>
     </div>
   );
 };
