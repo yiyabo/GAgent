@@ -61,7 +61,7 @@ const AppHeader: React.FC = () => {
 
   return (
     <>
-      <Header className={`app-header ${isChatRoute && workspaceMode === 'plan' ? 'workspace-header' : ''}`}>
+      <Header className={`app-header ${isChatRoute && workspaceMode === 'plan' ? 'workspace-header' : ''}${location.pathname.startsWith('/pipelines') ? ' pipeline-header' : ''}`}>
         <div className="app-logo" role="link" aria-label={t('header.homeAria')} style={{ cursor: 'pointer' }} onClick={() => navigate('/chat')}>
           <ExperimentOutlined className="logo-icon" />
           <Wordmark />

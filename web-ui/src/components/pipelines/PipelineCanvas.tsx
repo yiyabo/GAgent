@@ -16,6 +16,7 @@ import type { NodeCatalog, NodeRun, PipelineGraph } from '@api/pipelines';
 import { useThemeStore } from '@/theme/themeMode';
 import { useT } from '@/i18n/useT';
 import PipelineNodeView from './PipelineNode';
+import { StatusLegend } from './PipelineStatus';
 import {
   connect,
   connectionProblem,
@@ -40,6 +41,7 @@ interface Props {
   readOnly?: boolean;
   runNodes?: Record<string, NodeRun>;
   issues?: Map<string, string[]>;
+  issueLevels?: Map<string, 'error' | 'warning'>;
   selectedNode: string | null;
   onSelectNode: (id: string | null) => void;
   onChange?: (update: GraphUpdate) => void;
@@ -53,6 +55,7 @@ const PipelineCanvas: React.FC<Props> = ({
   readOnly = false,
   runNodes,
   issues,
+  issueLevels,
   selectedNode,
   onSelectNode,
   onChange,
@@ -62,7 +65,7 @@ const PipelineCanvas: React.FC<Props> = ({
   const t = useT();
   const colorMode = useThemeStore((state) => state.mode);
   const specs = useMemo(() => specIndex(catalog), [catalog]);
-  const flow = useMemo(() => toFlow(graph, specs, runNodes, issues), [graph, specs, runNodes, issues]);
+  const flow = useMemo(() => toFlow(graph, specs, runNodes, issues, issueLevels), [graph, specs, runNodes, issues, issueLevels]);
   const [nodes, setNodes] = useState<PipelineFlowNode[]>(flow.nodes);
 
   useEffect(() => {
@@ -174,6 +177,7 @@ const PipelineCanvas: React.FC<Props> = ({
         <Background gap={20} size={1} />
         <Controls showInteractive={false} />
       </ReactFlow>
+      <StatusLegend />
     </div>
   );
 };

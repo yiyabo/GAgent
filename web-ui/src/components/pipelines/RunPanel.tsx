@@ -1,45 +1,20 @@
 import React, { useState } from 'react';
-import { App, Button, Descriptions, Modal, Space, Spin, Tag, Typography } from 'antd';
+import { Button, Descriptions, Space, Typography } from 'antd';
 import { ArrowLeftOutlined, DownloadOutlined, EyeOutlined, StopOutlined } from '@ant-design/icons';
 import { pipelinesApi } from '@api/pipelines';
-import type { NodeCatalog, OutputPreview, PipelineRun } from '@api/pipelines';
-import { MarkdownRenderer } from '@components/chat/MarkdownRenderer';
+import type { NodeCatalog, PipelineRun } from '@api/pipelines';
 import { useLanguageStore } from '@/i18n/language';
 import { useT } from '@/i18n/useT';
 import { parseServerTimeDayjs } from '@utils/serverTime';
 import { pick, specIndex } from './graphModel';
-import { STATUS_KEYS } from './PipelineNode';
+import { StatusTag } from './PipelineStatus';
+import PipelineOutputPreview, { type PreviewTarget } from './PipelineOutputPreview';
+export { StatusTag } from './PipelineStatus';
 
 const { Text, Paragraph } = Typography;
 
-const STATUS_COLORS: Record<string, string> = {
-  succeeded: 'success',
-  cached: 'success',
-  failed: 'error',
-  running: 'processing',
-  queued: 'default',
-  pending: 'default',
-  skipped: 'warning',
-  cancelled: 'warning',
-};
-
 /** A backend timestamp (zone-less UTC) in local time. */
 export const formatServerTime = (value?: string | null): string => parseServerTimeDayjs(value)?.format('YYYY-MM-DD HH:mm:ss') ?? '';
-
-export const StatusTag: React.FC<{ status?: string | null }> = ({ status }) => {
-  const t = useT();
-  if (!status) return null;
-  return <Tag color={STATUS_COLORS[status] || 'default'}>{t(STATUS_KEYS[status] || 'pipelines.status.pending')}</Tag>;
-};
-
-interface PreviewState {
-  title: string;
-  port: string;
-  nodeId: string;
-  path?: string;
-  loading: boolean;
-  data?: OutputPreview;
-}
 
 interface Props {
   catalog: NodeCatalog;
@@ -52,25 +27,16 @@ interface Props {
 
 const RunPanel: React.FC<Props> = ({ catalog, run, selectedNode, onBack, onCancel, cancelling }) => {
   const t = useT();
-  const { message } = App.useApp();
   const language = useLanguageStore((state) => state.language);
-  const [preview, setPreview] = useState<PreviewState | null>(null);
+  const [preview, setPreview] = useState<PreviewTarget | null | undefined>(undefined);
   const specs = specIndex(catalog);
   const active = run.status === 'queued' || run.status === 'running';
   const node = selectedNode ? run.nodes?.[selectedNode] : undefined;
   const graphNode = selectedNode ? run.graph?.nodes[selectedNode] : undefined;
   const spec = specs.get(graphNode?.type || '');
 
-  const openPreview = async (nodeId: string, port: string, title: string, path?: string) => {
-    setPreview({ title, port, nodeId, path, loading: true });
-    try {
-      const data = await pipelinesApi.preview(run.id, nodeId, port, path);
-      setPreview({ title, port, nodeId, path, loading: false, data });
-    } catch (error) {
-      setPreview(null);
-      message.error(t('pipelines.run_view.previewFailed', { error: (error as Error).message }));
-    }
-  };
+  const reportPort = spec?.kind === 'agent' ? Object.entries(node?.outputs || {}).find(([, output]) => /\.md$/i.test(output.name))?.[0] : undefined;
+  const currentPreview = preview === undefined && reportPort ? { port: reportPort, title: node!.outputs[reportPort].name } : preview;
 
   const detail = (node?.detail || {}) as Record<string, unknown>;
   const cachedFrom = detail.cached_from as { run_id?: string } | undefined;
@@ -149,7 +115,7 @@ const RunPanel: React.FC<Props> = ({ catalog, run, selectedNode, onBack, onCance
                       </Text>
                     </div>
                     <Space size={4}>
-                      <Button size="small" icon={<EyeOutlined />} onClick={() => void openPreview(selectedNode, port, title)}>
+                      <Button size="small" icon={<EyeOutlined />} onClick={() => setPreview({ port, title })}>
                         {t('pipelines.run_view.preview')}
                       </Button>
                       {isFile ? (
@@ -162,6 +128,14 @@ const RunPanel: React.FC<Props> = ({ catalog, run, selectedNode, onBack, onCance
                 );
               })
             )}
+            {currentPreview ? <PipelineOutputPreview
+              key={`${run.id}:${selectedNode}:${currentPreview.port}:${currentPreview.path || ''}`}
+              runId={run.id}
+              nodeId={selectedNode}
+              target={currentPreview}
+              onOpen={setPreview}
+              onClose={() => setPreview(null)}
+            /> : null}
             {typeof detail.command === 'string' && detail.command ? (
               <details className="pl-stderr">
                 <summary>{t('pipelines.run_view.command')}</summary>
@@ -178,49 +152,6 @@ const RunPanel: React.FC<Props> = ({ catalog, run, selectedNode, onBack, onCance
         )}
       </div>
 
-      <Modal open={Boolean(preview)} title={preview?.title} footer={null} width={860} onCancel={() => setPreview(null)} destroyOnHidden>
-        {preview?.loading ? <Spin /> : null}
-        {preview?.data?.kind === 'text' ? (
-          <>
-            {preview.data.truncated ? <Paragraph type="secondary">{t('pipelines.run_view.truncated')}</Paragraph> : null}
-            {(preview.data.name || '').toLowerCase().endsWith('.md') ? (
-              <div className="pl-markdown">
-                <MarkdownRenderer content={preview.data.text || ''} />
-              </div>
-            ) : (
-              <pre className="pl-preview">{preview.data.text}</pre>
-            )}
-          </>
-        ) : null}
-        {preview?.data?.kind === 'binary' ? <Paragraph type="secondary">{t('pipelines.run_view.binary')}</Paragraph> : null}
-        {preview?.data && (preview.data.kind === 'dir' || preview.data.kind === 'prefix') ? (
-          <>
-            <Paragraph type="secondary">{t('pipelines.run_view.folderFiles', { count: preview.data.entries?.length || 0 })}</Paragraph>
-            <div className="pl-preview-list">
-              {(preview.data.entries || []).map((entry) => (
-                <div key={entry.path} className="pl-output-row">
-                  <code>{entry.path}</code>
-                  {preview.data?.kind === 'dir' ? (
-                    <Space size={4}>
-                      <Button
-                        size="small"
-                        onClick={() => void openPreview(preview.nodeId, preview.port, entry.path, entry.path)}
-                      >
-                        {t('pipelines.run_view.open')}
-                      </Button>
-                      <Button
-                        size="small"
-                        icon={<DownloadOutlined />}
-                        href={pipelinesApi.downloadUrl(run.id, preview.nodeId, preview.port, entry.path)}
-                      />
-                    </Space>
-                  ) : null}
-                </div>
-              ))}
-            </div>
-          </>
-        ) : null}
-      </Modal>
     </div>
   );
 };

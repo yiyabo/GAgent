@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { App as AntdApp } from 'antd';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { NodeRun, PipelineGraph, PipelineRun } from '@api/pipelines';
 import { pipelinesApi } from '@api/pipelines';
 import { TEST_CATALOG, chainGraph, pipelineDetail } from '@components/pipelines/testCatalog';
@@ -142,6 +142,7 @@ const pipelineRun = (overrides: Partial<PipelineRun> = {}): PipelineRun => ({
 const where = () => screen.getByTestId('where').textContent;
 
 beforeEach(() => {
+  vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
   vi.clearAllMocks();
   status.enabled = true;
   api.catalog.mockResolvedValue(TEST_CATALOG);
@@ -151,6 +152,8 @@ beforeEach(() => {
   api.detail.mockResolvedValue(pipelineDetail());
   api.agentMessages.mockResolvedValue({ messages: [], busy: false });
 });
+
+afterEach(() => vi.unstubAllGlobals());
 
 describe('the pipelines page', () => {
   it('says so when the server has pipelines switched off, and asks nothing else', async () => {

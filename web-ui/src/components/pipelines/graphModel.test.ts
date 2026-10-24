@@ -142,7 +142,8 @@ describe('canvas elements', () => {
     expect(nodes.map((node) => node.id)).toEqual(['dl', 'genes', 'db', 'hits', 'report']);
     const query = edges.find((edge) => edge.id === edgeId(ref('genes', 'proteins'), ref('hits', 'query')));
     expect(query).toMatchObject({ source: 'genes', sourceHandle: 'proteins', target: 'hits', targetHandle: 'query' });
-    expect(query?.className).toContain('pl-type-fasta_aa');
+    expect(query?.data?.type).toBe('fasta_aa');
+    expect(query?.className).toContain('pl-edge-pending');
   });
 
   it('skips nodes whose type the catalog does not know', () => {
