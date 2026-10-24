@@ -143,3 +143,56 @@ def test_pipeline_routes_are_hidden_while_the_feature_is_off(client_env, monkeyp
         assert client.get("/pipelines/items").status_code == 404
         assert client.get("/pipelines/node-types").status_code == 404
         assert client.post("/pipelines/items", json={"name": "x"}).status_code == 404
+
+
+@pytest.mark.integration
+def test_agent_routes_stream_a_turn_keep_the_history_and_belong_to_the_owner(client_env, monkeypatch):
+    import json as _json
+
+    from app.llm import NativeStreamResult, NativeToolCall
+    from app.services.pipelines import agent
+
+    class Model:
+        def __init__(self):
+            self.steps = [
+                ("Adding a genome node.", [("add_node", {"type": "ncbi.genome", "id": "lambda", "params": {"accessions": "NC_001416.1"}})]),
+                ("Done.", []),
+            ]
+
+        async def stream_chat_with_tools_async(self, messages, tools, on_content_delta=None, **_):
+            text, calls = self.steps.pop(0)
+            if text and on_content_delta:
+                await on_content_delta(text)
+            return NativeStreamResult(content=text, tool_calls=[NativeToolCall(id=f"c{i}", name=n, arguments=a) for i, (n, a) in enumerate(calls)])
+
+    monkeypatch.setattr(agent, "_make_client", lambda: Model())
+    factory, _ = client_env
+    with factory() as client:
+        register(client, "owner@example.com")
+        pipeline_id = client.post("/pipelines/items", json={"name": "Agent"}).json()["id"]
+
+        assert client.post(f"/pipelines/{pipeline_id}/agent/messages", json={"message": "  "}).status_code == 422
+        with client.stream("POST", f"/pipelines/{pipeline_id}/agent/messages", json={"message": "add lambda"}) as response:
+            assert response.status_code == 200
+            assert response.headers["content-type"].startswith("text/event-stream")
+            events = [_json.loads(line[6:]) for line in response.iter_lines() if line.startswith("data: ")]
+        assert [event["type"] for event in events][-1] == "done" and any(event["type"] == "graph" for event in events)
+
+        assert list(client.get(f"/pipelines/{pipeline_id}").json()["draft"]["nodes"]) == ["lambda"]
+        history = client.get(f"/pipelines/{pipeline_id}/agent/messages").json()
+        assert [m["role"] for m in history["messages"]] == ["user", "assistant"] and history["busy"] is False
+        assistant = history["messages"][1]
+        assert assistant["meta"]["can_undo"] is True and "before_graph" not in assistant["meta"]
+
+        undone = client.post(f"/pipelines/{pipeline_id}/agent/messages/{assistant['id']}/undo")
+        assert undone.status_code == 200 and undone.json()["draft"]["nodes"] == {}
+        assert client.post(f"/pipelines/{pipeline_id}/agent/messages/{assistant['id']}/undo").status_code == 404
+        assert client.post(f"/pipelines/{pipeline_id}/agent/messages/{assistant['id']}/run-request", json={"decision": "run"}).status_code == 404
+
+        register(client, "other@example.com")
+        assert client.get(f"/pipelines/{pipeline_id}/agent/messages").status_code == 403
+        assert client.post(f"/pipelines/{pipeline_id}/agent/messages", json={"message": "hi"}).status_code == 403
+        assert client.delete(f"/pipelines/{pipeline_id}/agent/messages").status_code == 403
+        login(client, "owner@example.com")
+        assert client.delete(f"/pipelines/{pipeline_id}/agent/messages").status_code == 200
+        assert client.get(f"/pipelines/{pipeline_id}/agent/messages").json()["messages"] == []
