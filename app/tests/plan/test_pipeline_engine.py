@@ -17,6 +17,7 @@ from app.database import init_db
 from app.database_pool import get_db
 from app.repository import pipelines as repo
 from app.services.pipelines import engine, report, service
+from app.services.session_paths import get_runtime_session_dir
 
 FASTA_NT = ">seq1 test genome\nATGCGCGCATATGCGC\n>seq2\nGGGCCCAAATTT\n"
 FASTA_NT2 = ">t7 another genome\nTTTTGGGGCCCCAAAA\n"
@@ -372,6 +373,39 @@ async def test_ncbi_nodes_download_through_sequence_fetch(env, monkeypatch):
     assert seen["session_id"] == engine.pipeline_session_id(pipeline_id)
     second = await run_once(pipeline_id)
     assert second["nodes"]["dl"]["status"] == "cached" and second["nodes"]["p"]["status"] == "cached"
+
+
+async def test_a_download_reused_by_another_pipeline_is_copied_into_its_session(env, monkeypatch):
+    import tool_box.tools_impl.sequence_fetch as sequence_fetch
+
+    async def fake_fetch(**kwargs):
+        target = Path(get_runtime_session_dir(kwargs["session_id"], create=True)) / "tool_outputs" / "fetched.fasta"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(FASTA_NT)
+        return {"success": True, "output_file": str(target), "record_count": 2, "provider": "ncbi_efetch"}
+
+    monkeypatch.setattr(sequence_fetch, "sequence_fetch_handler", fake_fetch)
+
+    def graph_with(consumer: str, port: str) -> Dict[str, Any]:
+        return {
+            "schema": 1,
+            "nodes": {
+                "dl": {"type": "ncbi.genome", "params": {"accessions": "NC_001416.1"}},
+                "use": {"type": consumer, "inputs": {port: {"node": "dl", "port": "genome"}}},
+            },
+        }
+
+    first = make_pipeline(graph_with("prodigal.predict", "genome"), {})
+    await run_once(first)
+    second = make_pipeline(graph_with("seqkit.stats", "sequences"), {})
+    env.calls.clear()
+    detail = await run_once(second)
+
+    assert detail["status"] == "succeeded", detail
+    assert detail["nodes"]["dl"]["status"] == "cached"
+    handed_over = Path(env.calls[0]["input_file"])
+    own = service.session_dir(second).resolve()
+    assert own in handed_over.resolve().parents and handed_over.read_text() == FASTA_NT
 
 
 def test_runs_left_running_by_a_restart_are_failed(env):
