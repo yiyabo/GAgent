@@ -106,6 +106,7 @@ from .action_tool_params import (
     _normalize_result_interpreter_params,
     _normalize_review_pack_writer_params,
     _normalize_scientific_figure_generator_params,
+    _normalize_ncbi_search_params,
     _normalize_sequence_fetch_params,
     _normalize_url_fetch_params,
     _normalize_vision_reader_params,
@@ -793,6 +794,12 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
 
     elif tool_name == "sequence_fetch":
         normalized = _normalize_sequence_fetch_params(agent, action, tool_name, params)
+        if isinstance(normalized, AgentStep):
+            return normalized
+        params = normalized
+
+    elif tool_name == "ncbi_search":
+        normalized = _normalize_ncbi_search_params(agent, action, tool_name, params)
         if isinstance(normalized, AgentStep):
             return normalized
         params = normalized

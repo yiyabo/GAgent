@@ -583,8 +583,32 @@ def _normalize_sequence_fetch_params(
     return params
 
 
-def _normalize_url_fetch_params(
+def _normalize_ncbi_search_params(
     agent: Any,
+    action: LLMAction,
+    tool_name: str,
+    params: Dict[str, Any],
+) -> Any:
+    # The handler validates every field itself; this only drops unknown keys and
+    # attributes the request to the chat session for the per-session NCBI cap.
+    clean_params = {
+        key: params[key]
+        for key in ("action", "db", "term", "ids", "retmax", "retstart")
+        if params.get(key) is not None
+    }
+    if not clean_params.get("action"):
+        return AgentStep(
+            action=action,
+            success=False,
+            message="ncbi_search requires `action` (search, summary or taxonomy).",
+            details={"error": "missing_action", "tool": tool_name},
+        )
+    if isinstance(agent.session_id, str) and agent.session_id.strip():
+        clean_params["session_id"] = agent.session_id.strip()
+    return clean_params
+
+
+def _normalize_url_fetch_params(    agent: Any,
     action: LLMAction,
     tool_name: str,
     params: Dict[str, Any],

@@ -10,11 +10,13 @@ taxonomy, genes, BioProjects/BioSamples or SRA runs.
 
 ## Network facts (read first)
 
-- Code cells and the sandbox have **no internet**. Do not try Biopython `Entrez`, `requests`,
-  `wget`, the `datasets` CLI or EDirect inside code; they will fail. Reach NCBI only through the
-  tools below (from code mode, call them through the tool interface).
-- Every NCBI call from every user shares **one rate limit** (about 2.5 requests per second for the
-  whole server). The tools queue and retry for you. Your job is to make few, large calls.
+- Reach NCBI **only through the tools below**, never with `urllib`, `requests`, Biopython `Entrez`
+  or `curl` from code. Every NCBI call from every user of this server shares **one rate limit**
+  (about 2.5 requests per second); the tools queue and retry within it, direct calls skip it and can
+  get the server's address blocked for everyone. In code mode, call the tools through the tool
+  interface instead.
+- The `datasets` CLI and EDirect are not installed.
+- Your job is to make few, large calls.
 
 ## Tool map
 

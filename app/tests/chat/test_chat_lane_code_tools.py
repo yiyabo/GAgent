@@ -516,3 +516,45 @@ def test_deep_think_param_sanitizer_drops_tool_context() -> None:
 
     assert sanitized["code"] == "print(1+1)"
     assert "tool_context" not in sanitized
+
+def test_ncbi_search_reaches_executor_with_the_chat_session(
+    chat_lane: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    raw_result = {"success": True, "tool": "ncbi_search", "action": "search", "count": 3, "records": []}
+    calls = _record_executor(monkeypatch, {"ncbi_search": raw_result})
+
+    step = asyncio.run(
+        handle_tool_action(
+            _AgentStub(),
+            _action("ncbi_search", {"action": "search", "term": "T7[orgn]", "session_id": "other", "bogus": 1}),
+        )
+    )
+
+    assert step.success is True
+    name, kwargs = calls[0]
+    assert name == "ncbi_search"
+    assert kwargs == {"action": "search", "term": "T7[orgn]", "session_id": _SESSION_ID}
+
+
+def test_every_advertised_tool_has_a_dispatch_branch(
+    chat_lane: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A tool offered to the model but missing from the chain fails only at run time."""
+    from app.routers.chat.request_routing import get_all_tools
+
+    async def _fake_execute_tool(registered_tool_name: str, **_: Any) -> Any:
+        return {"success": True, "tool": registered_tool_name}
+
+    monkeypatch.setattr(action_handlers, "execute_tool", _fake_execute_tool)
+    unsupported = []
+    # plan_operation and verify_task are dispatched by the agent before this chain.
+    for tool_name in sorted(set(get_all_tools()) - {"plan_operation", "verify_task"}):
+        try:
+            step = asyncio.run(handle_tool_action(_AgentStub(), _action(tool_name, {})))
+        except Exception:
+            continue  # a normalizer rejecting empty parameters is fine here
+        if isinstance(step.details, dict) and step.details.get("error") == "unsupported_tool":
+            unsupported.append(tool_name)
+    assert unsupported == []
