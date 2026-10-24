@@ -10,6 +10,7 @@ import {
   ExperimentOutlined,
   ApiOutlined,
   MessageOutlined,
+  NodeIndexOutlined,
 } from '@ant-design/icons';
 import { useSystemStore } from '@store/system';
 import { useLayoutStore } from '@store/layout';
@@ -19,6 +20,7 @@ import Wordmark from '@components/common/Wordmark';
 import LanguageSwitch from '@components/common/LanguageSwitch';
 import { useT } from '@/i18n/useT';
 import { describeAuthError } from '@utils/authError';
+import { usePipelinesEnabled } from '@hooks/usePipelines';
 
 const { Header } = Layout;
 const { Text } = Typography;
@@ -33,6 +35,7 @@ const AppHeader: React.FC = () => {
   const navigate = useNavigate();
   const isChatRoute = location.pathname.startsWith('/chat');
   const canManageLocalSession = user?.auth_source === 'session';
+  const pipelinesEnabled = usePipelinesEnabled();
   const [form] = Form.useForm();
   const [changePasswordOpen, setChangePasswordOpen] = React.useState(false);
 
@@ -101,6 +104,19 @@ const AppHeader: React.FC = () => {
                 {t('header.extensions')}
               </Button>
             </Tooltip>
+            {pipelinesEnabled ? (
+              <Tooltip title={t('header.pipelinesTip')}>
+                <Button
+                  type="text"
+                  icon={<NodeIndexOutlined />}
+                  aria-label={t('header.pipelines')}
+                  style={{ color: location.pathname.startsWith('/pipelines') ? 'var(--text-primary)' : 'var(--text-secondary)' }}
+                  onClick={() => navigate('/pipelines')}
+                >
+                  {t('header.pipelines')}
+                </Button>
+              </Tooltip>
+            ) : null}
             <LanguageSwitch />
             <Text className="workspace-account-email" style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
               {user?.email || t('header.anonymous')}

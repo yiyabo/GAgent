@@ -24,6 +24,19 @@ def probe(root: Path) -> dict:
             return None
 
     chats = count(root/'main'/'plan_registry.db', 'chat_runs')
+    # Older databases have no pipeline_runs table; that means no pipeline work, not an unknown state.
+    pipelines = None
+    try:
+        with closing(sqlite3.connect(f"file:{root/'main'/'plan_registry.db'}?mode=ro", uri=True, timeout=3)) as conn:
+            pipelines = conn.execute(
+                "SELECT COUNT(*) FROM pipeline_runs WHERE status IN ('running','queued')").fetchone()[0]
+    except sqlite3.OperationalError as exc:
+        if 'no such table' in str(exc).lower():
+            pipelines = 0
+        else:
+            errors.append({'database':'plan_registry.db', 'table':'pipeline_runs', 'error':type(exc).__name__})
+    except (OSError, sqlite3.Error) as exc:
+        errors.append({'database':'plan_registry.db', 'table':'pipeline_runs', 'error':type(exc).__name__})
     try:
         plans = root/'plans'
         shards = sorted(path for path in plans.iterdir() if path.suffix == '.sqlite') if plans.exists() else []
@@ -35,9 +48,9 @@ def probe(root: Path) -> dict:
         shards.append(system)
     counts = [count(path, 'decomposition_jobs') for path in shards]
     jobs = sum(value for value in counts if value is not None) if not errors else None
-    state = 'unknown' if errors else 'busy' if chats or jobs else 'idle'
+    state = 'unknown' if errors else 'busy' if chats or jobs or pipelines else 'idle'
     return {'state':state, 'active_chat_runs':chats, 'active_plan_jobs':jobs,
-            'databases_checked':1+len(shards), 'errors':errors}
+            'active_pipeline_runs':pipelines, 'databases_checked':1+len(shards), 'errors':errors}
 
 
 def main():

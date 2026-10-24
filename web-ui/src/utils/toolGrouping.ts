@@ -35,6 +35,7 @@ export type StreamRow<T extends GroupableStep> =
 const KIND_BY_TOOL: Record<string, ToolKind> = {
   web_search: 'search',
   literature_pipeline: 'search',
+  ncbi_search: 'search',
   document_reader: 'read',
   vision_reader: 'read',
   lightrag_query: 'knowledge',

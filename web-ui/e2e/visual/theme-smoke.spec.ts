@@ -14,7 +14,18 @@ import { mockApi } from './mockApi';
  * enforces on the token values: this check measures the rendered page, where antd's own adornments
  * (placeholders, disabled states) legitimately sit lower.
  */
-const ROUTES = ['/chat', '/plans', '/memory', '/dashboard', '/tasks', '/analytics', '/extensions'] as const;
+const ROUTES = [
+  '/chat',
+  '/plans',
+  '/memory',
+  '/dashboard',
+  '/tasks',
+  '/analytics',
+  '/extensions',
+  '/pipelines',
+  '/pipelines?id=pl_fixture',
+  '/pipelines?id=pl_fixture&run=run_fixture',
+] as const;
 
 for (const mode of ['light', 'dark'] as const) {
   test.describe(`${mode} theme`, () => {

@@ -35,6 +35,7 @@ describe('toolNamesFromAction', () => {
 describe('kindForTool', () => {
   it('maps known tools and defaults the rest', () => {
     expect(kindForTool('web_search')).toBe('search');
+    expect(kindForTool('ncbi_search')).toBe('search');
     expect(kindForTool('execute_code')).toBe('code');
     expect(kindForTool('lightrag_query')).toBe('knowledge');
     expect(kindForTool('some_new_tool')).toBe('tool');

@@ -130,7 +130,8 @@ def collect_active_session_ids(main_db: Path, plan_store_dir: Path, system_db: P
     while its lease has not expired, or it never got a lease and is younger
     than the TTL grace window). Decomposition jobs use the same queued/running
     criterion as the deploy gate, scanned across every plan shard and the
-    system-jobs DB. A missing table is treated as "no such work".
+    system-jobs DB; queued/running pipeline runs protect their pipeline's workspace session. A missing
+    table is treated as "no such work".
     """
     active: Set[str] = set()
 
@@ -149,6 +150,17 @@ def collect_active_session_ids(main_db: Path, plan_store_dir: Path, system_db: P
                   )
                 """,
                 (f"-{ttl} seconds",),
+            ).fetchall()
+            active.update(str(row[0]) for row in rows if row[0])
+        except sqlite3.Error as exc:
+            if not _table_missing(exc):
+                raise
+        finally:
+            conn.close()
+        conn = sqlite3.connect(f"file:{main_db}?mode=ro", uri=True)
+        try:
+            rows = conn.execute(
+                "SELECT DISTINCT session_id FROM pipeline_runs WHERE status IN ('queued', 'running')"
             ).fetchall()
             active.update(str(row[0]) for row in rows if row[0])
         except sqlite3.Error as exc:

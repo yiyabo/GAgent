@@ -2,10 +2,14 @@ import React from 'react';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { App as AntdApp } from 'antd';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { useLanguageStore } from '@/i18n/language';
 
 import AppHeader from './AppHeader';
+
+// The header asks the server whether pipelines are on; answer here instead.
+const pipelines = vi.hoisted(() => ({ enabled: false }));
+vi.mock('@hooks/usePipelines', () => ({ usePipelinesEnabled: () => pipelines.enabled }));
 
 const Where = () => <div data-testid="where">{useLocation().pathname}</div>;
 
@@ -39,6 +43,24 @@ describe('AppHeader navigation between chat and extensions', () => {
     renderAt('/extensions');
     fireEvent.click(screen.getByRole('link', { name: 'Phage-Agent 首页' }));
     expect(screen.getByTestId('where').textContent).toBe('/chat');
+  });
+});
+
+describe('AppHeader pipelines entry', () => {
+  afterEach(() => {
+    pipelines.enabled = false;
+  });
+
+  it('is hidden while the server has pipelines switched off', () => {
+    renderAt('/chat');
+    expect(screen.queryByRole('button', { name: '流水线' })).toBeNull();
+  });
+
+  it('opens the pipelines page when the server has them on', () => {
+    pipelines.enabled = true;
+    renderAt('/chat');
+    fireEvent.click(screen.getByRole('button', { name: '流水线' }));
+    expect(screen.getByTestId('where').textContent).toBe('/pipelines');
   });
 });
 

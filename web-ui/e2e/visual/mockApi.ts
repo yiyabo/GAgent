@@ -24,6 +24,13 @@ const TABLE: Record<string, string> = {
   'GET /mcp/memory/stats': 'memory-stats',
   'POST /mcp/query_memory': 'query-memory',
   'GET /upload/list': 'upload-list',
+  'GET /pipelines/status': 'pipelines-status',
+  'GET /pipelines/node-types': 'pipelines-catalog',
+  'GET /pipelines/items': 'pipelines-list',
+  'GET /pipelines/pl_fixture': 'pipelines-detail',
+  'GET /pipelines/pl_fixture/files': 'pipelines-files',
+  'GET /pipelines/pl_fixture/runs': 'pipelines-runs',
+  'GET /pipelines/runs/run_fixture': 'pipelines-run',
 };
 
 export interface MockReport {

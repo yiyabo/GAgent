@@ -58,6 +58,8 @@ def init_db() -> None:
         _ensure_sso_user_columns(conn)
         from app.repository.response_preferences import ensure_schema as ensure_response_preferences_schema
         ensure_response_preferences_schema(conn)
+        from app.repository.pipelines import ensure_schema as ensure_pipelines_schema
+        ensure_pipelines_schema(conn)
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS auth_sessions (
