@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Button, Divider, Input, InputNumber, Progress, Select, Space, Tag, Typography, Upload } from 'antd';
-import { DeleteOutlined, UploadOutlined } from '@ant-design/icons';
+import { DeleteOutlined, MessageOutlined, UploadOutlined } from '@ant-design/icons';
 import type { NodeCatalog, ParamSpec, PipelineFile, PipelineGraph } from '@api/pipelines';
 import { useLanguageStore } from '@/i18n/language';
 import { useT } from '@/i18n/useT';
@@ -19,9 +19,10 @@ interface Props {
   onChange: (update: GraphUpdate) => void;
   onRemove: (nodeId: string) => void;
   onUpload: (file: File, onProgress: (percent: number) => void) => UploadResult;
+  onAskAgent: (nodeId: string) => void;
 }
 
-const NodeInspector: React.FC<Props> = ({ catalog, graph, nodeId, files, issues, onChange, onRemove, onUpload }) => {
+const NodeInspector: React.FC<Props> = ({ catalog, graph, nodeId, files, issues, onChange, onRemove, onUpload, onAskAgent }) => {
   const t = useT();
   const language = useLanguageStore((state) => state.language);
   const [uploading, setUploading] = useState<number | null>(null);
@@ -37,6 +38,16 @@ const NodeInspector: React.FC<Props> = ({ catalog, graph, nodeId, files, issues,
       else params[name] = value;
       return updateNode(current, nodeId, { params });
     });
+
+  const limitsOf = (param: ParamSpec): string => {
+    if (param.kind !== 'integer' && param.kind !== 'number') return '';
+    const parts: string[] = [];
+    if (param.default !== null && param.default !== undefined) parts.push(t('pipelines.inspector.defaultValue', { value: String(param.default) }));
+    if (param.minimum !== undefined && param.maximum !== undefined) {
+      parts.push(t('pipelines.inspector.range', { min: String(param.minimum), max: String(param.maximum) }));
+    }
+    return parts.join(' · ');
+  };
 
   const control = (param: ParamSpec) => {
     const value = node.params?.[param.name];
@@ -94,7 +105,7 @@ const NodeInspector: React.FC<Props> = ({ catalog, graph, nodeId, files, issues,
           value={typeof value === 'number' ? value : (param.default as number | undefined)}
           min={param.minimum}
           max={param.maximum}
-          step={param.kind === 'integer' ? 1 : 0.05}
+          step={param.kind === 'integer' || (param.maximum ?? 1) > 10 ? 1 : 0.05}
           precision={param.kind === 'integer' ? 0 : undefined}
           onChange={(next) => setParam(param.name, next)}
         />
@@ -134,6 +145,9 @@ const NodeInspector: React.FC<Props> = ({ catalog, graph, nodeId, files, issues,
         </Text>
       ) : null}
       {spec.slow ? <Tag className="pl-tag-slow">{t('pipelines.inspector.slow')}</Tag> : null}
+      <Button size="small" icon={<MessageOutlined />} onClick={() => onAskAgent(nodeId)} style={{ alignSelf: 'flex-start', marginTop: 6 }}>
+        {t('pipelines.agent.askAbout')}
+      </Button>
       {issues.length ? (
         <div className="pl-issue-box">
           {issues.map((issue) => (
@@ -171,6 +185,11 @@ const NodeInspector: React.FC<Props> = ({ catalog, graph, nodeId, files, issues,
             {param.help && param.kind !== 'path' ? (
               <Text type="secondary" className="pl-hint">
                 {pick(param.help, language)}
+              </Text>
+            ) : null}
+            {limitsOf(param) ? (
+              <Text type="secondary" className="pl-hint">
+                {limitsOf(param)}
               </Text>
             ) : null}
           </div>

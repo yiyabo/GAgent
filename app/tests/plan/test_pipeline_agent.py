@@ -182,6 +182,13 @@ async def test_a_run_request_for_an_unready_pipeline_is_refused(env):
     assert [item["ok"] for item in events if item["type"] == "tool"] == [True, False]
 
 
+async def test_nothing_is_offered_to_run_on_an_empty_canvas(env):
+    use(env, ("", [("request_run", {"reason": "go"})]), ("Nothing to run.", []))
+    events = await talk(new_pipeline(), "run")
+    assert not any(event["type"] == "run_request" for event in events)
+    assert "nothing to run" in [e for e in events if e["type"] == "tool"][0]["error"]
+
+
 async def test_read_output_returns_what_the_latest_run_wrote(env, tmp_path):
     use(env, ("", [("read_output", {"node": "stats", "port": "stats"})]), ("The file has one sequence.", []))
     pid = new_pipeline()
@@ -249,3 +256,26 @@ async def test_leaving_the_stream_early_does_not_lose_the_turn(env):
         await asyncio.sleep(0.02)
     assert set(service.load(pid)["draft"]["nodes"]) == {"lambda"}
     assert [m["role"] for m in agent.history(pid)] == ["user", "assistant"]
+
+
+async def test_one_owner_cannot_keep_more_than_a_few_conversations_busy(env):
+    model = use(env, *[("ok", []) for _ in range(4)])
+    model.release = asyncio.Event()
+    streams = []
+    for _ in range(agent.MAX_TURNS_PER_OWNER):
+        pid = new_pipeline()
+        streams.append(agent.start_turn(pid, "owner-1", "hello"))
+    await asyncio.sleep(0.05)
+    extra = new_pipeline()
+    with pytest.raises(service.PipelineError) as refused:
+        agent.start_turn(extra, "owner-1", "one more")
+    assert refused.value.status == 429
+    agent.start_turn(extra, "owner-2", "another owner is not affected")  # starts; finished below
+    model.release.set()
+    for stream in streams:
+        async for _ in stream:
+            pass
+    for _ in range(100):
+        if not agent.busy(extra):
+            break
+        await asyncio.sleep(0.02)

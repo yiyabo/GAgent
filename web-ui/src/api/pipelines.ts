@@ -174,6 +174,64 @@ export interface OutputPreview {
   entries?: Array<{ path: string; size?: number }>;
 }
 
+// ---- The agent beside the canvas ----------------------------------------------------
+
+export interface AgentAction {
+  name: string;
+  summary: string;
+  ok: boolean;
+  error?: string;
+}
+
+export interface AgentRunRequest {
+  reason: string;
+  state: 'pending' | 'approved' | 'dismissed';
+}
+
+export interface AgentMessage {
+  id: number;
+  role: 'user' | 'assistant';
+  content: string;
+  created_at?: string;
+  meta: {
+    actions?: AgentAction[];
+    can_undo?: boolean;
+    undone?: boolean;
+    run_request?: AgentRunRequest;
+    selected_node?: string;
+  };
+}
+
+export type AgentEvent =
+  | { type: 'delta'; text: string }
+  | { type: 'tool'; name: string; summary: string; ok: boolean; error?: string | null }
+  | { type: 'graph'; graph: PipelineGraph; validation: ValidationResult }
+  | { type: 'run_request'; reason: string; state: 'pending' }
+  | { type: 'error'; message: string }
+  | { type: 'done'; message: AgentMessage };
+
+/** The events in a block of server-sent text, and whatever trails after the last blank line. */
+export function parseAgentEvents(buffer: string): { events: AgentEvent[]; rest: string } {
+  const events: AgentEvent[] = [];
+  let rest = buffer;
+  for (let boundary = rest.indexOf('\n\n'); boundary !== -1; boundary = rest.indexOf('\n\n')) {
+    const block = rest.slice(0, boundary);
+    rest = rest.slice(boundary + 2);
+    const data = block
+      .split('\n')
+      .filter((line) => line.startsWith('data:'))
+      .map((line) => line.slice(5).trim())
+      .join('');
+    if (!data) continue; // a keepalive comment
+    try {
+      events.push(JSON.parse(data) as AgentEvent);
+    } catch {
+      // A half-written event cannot happen between blank lines; ignore anything else.
+    }
+  }
+  return { events, rest };
+}
+
 /** Error carrying the backend message, the HTTP status, and validation details when there are any. */
 export class PipelinesApiError extends Error {
   status?: number;
@@ -304,6 +362,67 @@ export class PipelinesApi extends BaseApi {
 
   preview(runId: string, nodeId: string, port: string, path?: string): Promise<OutputPreview> {
     return this.request('get', `/pipelines/runs/${enc(runId)}/nodes/${enc(nodeId)}/outputs/${enc(port)}/preview`, undefined, path ? { path } : undefined);
+  }
+
+  agentMessages(id: string): Promise<{ messages: AgentMessage[]; busy: boolean }> {
+    return this.get(`/pipelines/${enc(id)}/agent/messages`);
+  }
+
+  clearAgent(id: string): Promise<{ cleared: boolean }> {
+    return this.delete(`/pipelines/${enc(id)}/agent/messages`);
+  }
+
+  undoAgent(id: string, messageId: number): Promise<{ draft: PipelineGraph; validation: ValidationResult }> {
+    return this.post(`/pipelines/${enc(id)}/agent/messages/${messageId}/undo`);
+  }
+
+  answerRunRequest(id: string, messageId: number, decision: 'run' | 'dismiss'): Promise<{ state: string; run: PipelineRun | null }> {
+    return this.post(`/pipelines/${enc(id)}/agent/messages/${messageId}/run-request`, { decision });
+  }
+
+  /**
+   * Send a message and hand every event of the turn to ``onEvent``. A turn that was started keeps running on
+   * the server when this stops, so aborting only stops listening.
+   */
+  async sendToAgent(
+    id: string,
+    message: string,
+    selectedNode: string | null,
+    onEvent: (event: AgentEvent) => void,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const response = await fetch(`${ENV.API_BASE_URL}/pipelines/${enc(id)}/agent/messages`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+      body: JSON.stringify({ message, selected_node: selectedNode }),
+      signal,
+    });
+    if (!response.ok || !response.body) {
+      let data: unknown = null;
+      try {
+        data = await response.json();
+      } catch {
+        // not JSON
+      }
+      throw new PipelinesApiError(errorFrom(data).message || `HTTP ${response.status}`, response.status);
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let buffer = '';
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const parsed = parseAgentEvents(buffer);
+        buffer = parsed.rest;
+        parsed.events.forEach(onEvent);
+      }
+      parseAgentEvents(buffer + '\n\n').events.forEach(onEvent);
+    } finally {
+      reader.cancel().catch(() => undefined);
+    }
   }
 
   downloadUrl(runId: string, nodeId: string, port: string, path?: string): string {

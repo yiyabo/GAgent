@@ -30,6 +30,7 @@ const TABLE: Record<string, string> = {
   'GET /pipelines/pl_fixture': 'pipelines-detail',
   'GET /pipelines/pl_fixture/files': 'pipelines-files',
   'GET /pipelines/pl_fixture/runs': 'pipelines-runs',
+  'GET /pipelines/pl_fixture/agent/messages': 'pipelines-agent',
   'GET /pipelines/runs/run_fixture': 'pipelines-run',
 };
 

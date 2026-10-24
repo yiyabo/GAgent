@@ -21,6 +21,7 @@ from app.repository import pipelines as repo
 
 from . import agent_context, service
 from .agent_tools import GraphEditor, tool_schemas
+from .node_specs import get_spec
 
 logger = logging.getLogger(__name__)
 
@@ -30,8 +31,10 @@ HISTORY_MESSAGES = 24
 MAX_ANSWER_TOKENS = 4096
 MODEL_TIMEOUT_SECONDS = 180
 READ_LIMIT_CHARS = 6000
+MAX_TURNS_PER_OWNER = 3
 
 _running: Dict[str, asyncio.Task] = {}
+_owners: Dict[str, str] = {}
 _background: set = set()
 
 
@@ -153,6 +156,8 @@ def _apply(editor: GraphEditor, pipeline_id: str, name: str, args: Dict[str, Any
         return _read_output(pipeline_id, args)
     if name == "request_run":
         check = editor.validate()
+        if not any(get_spec(node.get("type")) and get_spec(node.get("type")).kind in {"tool", "agent"} for node in editor.nodes.values()):
+            return {"ok": False, "error": "there is nothing to run yet: the canvas has no tool or report node"}
         if not check["ready_to_run"]:
             return {"ok": False, "error": "the pipeline is not ready to run yet", "errors": check["errors"]}
         state["run_request"] = {"reason": str(args.get("reason") or "")[:400], "state": "pending"}
@@ -226,6 +231,8 @@ async def _turn(pipeline_id: str, owner_id: str, text: str, selected: Optional[s
             calls = list(result.tool_calls or [])
             if not calls:
                 break
+            if content:
+                await emit({"type": "delta", "text": "\n\n"})
             messages.append(
                 {
                     "role": "assistant",
@@ -297,6 +304,9 @@ def start_turn(pipeline_id: str, owner_id: str, text: Any, selected_node: Any = 
         raise service.PipelineError(413, f"the message is longer than {MAX_MESSAGE_CHARS} characters")
     if busy(pipeline_id):
         raise service.PipelineError(409, "the agent is still working on the previous message")
+    working = sum(1 for other, who in _owners.items() if who == owner_id and busy(other))
+    if working >= MAX_TURNS_PER_OWNER:
+        raise service.PipelineError(429, f"{MAX_TURNS_PER_OWNER} assistant conversations are already working; wait for one to finish")
     selected = str(selected_node) if selected_node else None
     queue: asyncio.Queue = asyncio.Queue()
 
@@ -314,6 +324,7 @@ def start_turn(pipeline_id: str, owner_id: str, text: Any, selected_node: Any = 
 
     task = asyncio.get_running_loop().create_task(runner())
     _running[pipeline_id] = task
+    _owners[pipeline_id] = owner_id
     _background.add(task)
     task.add_done_callback(_background.discard)
 
