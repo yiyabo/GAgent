@@ -8,8 +8,8 @@
   "inputs": {},
   "error": null,
   "cancel_requested": false,
-  "created_at": "2026-10-24 07:16:36",
-  "started_at": "2026-10-24 07:16:36",
+  "created_at": "2026-10-24 07:44:35",
+  "started_at": "2026-10-24 07:44:35",
   "finished_at": null,
   "graph": {
     "layout": {
@@ -198,6 +198,22 @@
         "inputs": {
           "evidence": [
             {
+              "node": "lambda",
+              "port": "genome"
+            },
+            {
+              "node": "t7",
+              "port": "genome"
+            },
+            {
+              "node": "lambda_genes",
+              "port": "proteins"
+            },
+            {
+              "node": "t7_genes",
+              "port": "proteins"
+            },
+            {
               "node": "lambda_stats",
               "port": "stats"
             },
@@ -244,7 +260,7 @@
           ]
         },
         "params": {
-          "instructions": "Compare phage lambda (NC_001416.1) with phage T7 (NC_001604.1). Cover genome length and GC content, the number of predicted genes, the geNomad virus call and taxonomy, CheckV completeness and quality, the PhaTYP lifestyle and whether it matches what is known about these two phages, and how similar the two genomes and proteomes are (FastANI, blastp, MMseqs2). Put the key numbers for both phages in one table. Say plainly when a result is missing or when two tools disagree.",
+          "instructions": "Compare phage lambda (NC_001416.1) with phage T7 (NC_001604.1). Cover genome length and GC content (from the genome FASTA), the number of genes Prodigal predicted, the geNomad virus call and taxonomy, CheckV completeness and quality, the PhaTYP lifestyle and whether it matches what is known about these two phages, and how similar the two genomes and proteomes are (FastANI, blastp, MMseqs2), including how many lambda proteins have a significant hit in T7. Put the key numbers for both phages in one table. Say plainly when a result is missing or when two tools disagree.",
           "language": "zh"
         },
         "type": "agent.report"
@@ -333,8 +349,8 @@
     "lambda": {
       "status": "succeeded",
       "error": null,
-      "started_at": "2026-10-24 07:16:36",
-      "finished_at": "2026-10-24 07:16:36",
+      "started_at": "2026-10-24 07:44:35",
+      "finished_at": "2026-10-24 07:44:35",
       "outputs": {
         "genome": {
           "type": "fasta_nt",
@@ -351,10 +367,11 @@
     "lambda_checkv": {
       "status": "running",
       "error": null,
-      "started_at": "2026-10-24 07:16:36",
+      "started_at": "2026-10-24 07:44:35",
       "finished_at": null,
       "outputs": {},
       "detail": {
+        "command": "checkv end_to_end /private/runtime/runtime/session_pipeline_pl_fixture/tool_outputs/run_fixture_lambda.fasta -out /runtime/runtime/bio_tools/_native/runs/364949bd3b11/work/result -evalue 10",
         "execution_mode": "native",
         "exit_code": 0,
         "slurm_job_id": "4242"
@@ -363,8 +380,8 @@
     "lambda_genes": {
       "status": "succeeded",
       "error": null,
-      "started_at": "2026-10-24 07:16:36",
-      "finished_at": "2026-10-24 07:16:36",
+      "started_at": "2026-10-24 07:44:35",
+      "finished_at": "2026-10-24 07:44:35",
       "outputs": {
         "genes": {
           "type": "fasta_nt",
@@ -386,6 +403,7 @@
         }
       },
       "detail": {
+        "command": "prodigal predict /private/runtime/runtime/session_pipeline_pl_fixture/tool_outputs/run_fixture_lambda.fasta -out /runtime/runtime/bio_tools/_native/runs/6c8be89af40f/work/result -evalue 10",
         "execution_mode": "native",
         "exit_code": 0,
         "slurm_job_id": "4242"
@@ -394,8 +412,8 @@
     "lambda_genomad": {
       "status": "succeeded",
       "error": null,
-      "started_at": "2026-10-24 07:16:36",
-      "finished_at": "2026-10-24 07:16:36",
+      "started_at": "2026-10-24 07:44:35",
+      "finished_at": "2026-10-24 07:44:35",
       "outputs": {
         "results": {
           "type": "directory",
@@ -410,6 +428,7 @@
         }
       },
       "detail": {
+        "command": "genomad end_to_end /private/runtime/runtime/session_pipeline_pl_fixture/tool_outputs/run_fixture_lambda.fasta -out /runtime/runtime/bio_tools/_native/runs/6f68349ad3c0/work/result -evalue 10",
         "execution_mode": "native",
         "exit_code": 0,
         "slurm_job_id": "4242"
@@ -418,8 +437,8 @@
     "lambda_lifestyle": {
       "status": "succeeded",
       "error": null,
-      "started_at": "2026-10-24 07:16:36",
-      "finished_at": "2026-10-24 07:16:36",
+      "started_at": "2026-10-24 07:44:35",
+      "finished_at": "2026-10-24 07:44:35",
       "outputs": {
         "prediction": {
           "type": "table",
@@ -434,6 +453,7 @@
         }
       },
       "detail": {
+        "command": "phabox2 phatyp /private/runtime/runtime/session_pipeline_pl_fixture/tool_outputs/run_fixture_lambda.fasta -out /runtime/runtime/bio_tools/_native/runs/55378ed18e48/work/result -evalue 10",
         "execution_mode": "native",
         "exit_code": 0,
         "slurm_job_id": "4242"
@@ -442,8 +462,8 @@
     "lambda_stats": {
       "status": "succeeded",
       "error": null,
-      "started_at": "2026-10-24 07:16:36",
-      "finished_at": "2026-10-24 07:16:36",
+      "started_at": "2026-10-24 07:44:35",
+      "finished_at": "2026-10-24 07:44:35",
       "outputs": {
         "stats": {
           "type": "table",
@@ -453,6 +473,7 @@
         }
       },
       "detail": {
+        "command": "seqkit stats /private/runtime/runtime/session_pipeline_pl_fixture/tool_outputs/run_fixture_lambda.fasta -out /runtime/runtime/bio_tools/_native/runs/a0e63068e839/work/result -evalue 10",
         "execution_mode": "native",
         "exit_code": 0,
         "slurm_job_id": "4242"
@@ -461,8 +482,8 @@
     "t7": {
       "status": "succeeded",
       "error": null,
-      "started_at": "2026-10-24 07:16:36",
-      "finished_at": "2026-10-24 07:16:36",
+      "started_at": "2026-10-24 07:44:35",
+      "finished_at": "2026-10-24 07:44:35",
       "outputs": {
         "genome": {
           "type": "fasta_nt",
@@ -479,8 +500,8 @@
     "ani": {
       "status": "succeeded",
       "error": null,
-      "started_at": "2026-10-24 07:16:36",
-      "finished_at": "2026-10-24 07:16:36",
+      "started_at": "2026-10-24 07:44:35",
+      "finished_at": "2026-10-24 07:44:35",
       "outputs": {
         "ani": {
           "type": "table",
@@ -490,6 +511,7 @@
         }
       },
       "detail": {
+        "command": "fastani compare  -out /runtime/runtime/bio_tools/_native/runs/705a57fa34c7/work/result -evalue 10",
         "execution_mode": "native",
         "exit_code": 0,
         "slurm_job_id": "4242"
@@ -498,8 +520,8 @@
     "t7_checkv": {
       "status": "succeeded",
       "error": null,
-      "started_at": "2026-10-24 07:16:36",
-      "finished_at": "2026-10-24 07:16:36",
+      "started_at": "2026-10-24 07:44:35",
+      "finished_at": "2026-10-24 07:44:35",
       "outputs": {
         "quality": {
           "type": "table",
@@ -514,6 +536,7 @@
         }
       },
       "detail": {
+        "command": "checkv end_to_end /private/runtime/runtime/session_pipeline_pl_fixture/tool_outputs/run_fixture_t7.fasta -out /runtime/runtime/bio_tools/_native/runs/e623178ad6a9/work/result -evalue 10",
         "execution_mode": "native",
         "exit_code": 0,
         "slurm_job_id": "4242"
@@ -522,8 +545,8 @@
     "t7_genes": {
       "status": "cached",
       "error": null,
-      "started_at": "2026-10-24 07:16:36",
-      "finished_at": "2026-10-24 07:16:36",
+      "started_at": "2026-10-24 07:44:35",
+      "finished_at": "2026-10-24 07:44:35",
       "outputs": {
         "genes": {
           "type": "fasta_nt",
@@ -554,17 +577,18 @@
     "mmseqs": {
       "status": "succeeded",
       "error": null,
-      "started_at": "2026-10-24 07:16:36",
-      "finished_at": "2026-10-24 07:16:36",
+      "started_at": "2026-10-24 07:44:35",
+      "finished_at": "2026-10-24 07:44:35",
       "outputs": {
         "hits": {
           "type": "table",
           "kind": "file",
-          "size": 11,
+          "size": 39,
           "name": "mmseqs_hits.m8"
         }
       },
       "detail": {
+        "command": "mmseqs2 easy_search  -out /runtime/runtime/bio_tools/_native/runs/09169f2a1628/work/result -evalue 10",
         "execution_mode": "native",
         "exit_code": 0,
         "slurm_job_id": "4242"
@@ -573,8 +597,8 @@
     "t7_genomad": {
       "status": "succeeded",
       "error": null,
-      "started_at": "2026-10-24 07:16:36",
-      "finished_at": "2026-10-24 07:16:36",
+      "started_at": "2026-10-24 07:44:35",
+      "finished_at": "2026-10-24 07:44:35",
       "outputs": {
         "results": {
           "type": "directory",
@@ -589,6 +613,7 @@
         }
       },
       "detail": {
+        "command": "genomad end_to_end /private/runtime/runtime/session_pipeline_pl_fixture/tool_outputs/run_fixture_t7.fasta -out /runtime/runtime/bio_tools/_native/runs/c0a023530aae/work/result -evalue 10",
         "execution_mode": "native",
         "exit_code": 0,
         "slurm_job_id": "4242"
@@ -597,8 +622,8 @@
     "t7_lifestyle": {
       "status": "succeeded",
       "error": null,
-      "started_at": "2026-10-24 07:16:36",
-      "finished_at": "2026-10-24 07:16:36",
+      "started_at": "2026-10-24 07:44:35",
+      "finished_at": "2026-10-24 07:44:35",
       "outputs": {
         "prediction": {
           "type": "table",
@@ -613,6 +638,7 @@
         }
       },
       "detail": {
+        "command": "phabox2 phatyp /private/runtime/runtime/session_pipeline_pl_fixture/tool_outputs/run_fixture_t7.fasta -out /runtime/runtime/bio_tools/_native/runs/9a4dc5f7b67a/work/result -evalue 10",
         "execution_mode": "native",
         "exit_code": 0,
         "slurm_job_id": "4242"
@@ -621,8 +647,8 @@
     "t7_protdb": {
       "status": "succeeded",
       "error": null,
-      "started_at": "2026-10-24 07:16:36",
-      "finished_at": "2026-10-24 07:16:36",
+      "started_at": "2026-10-24 07:44:35",
+      "finished_at": "2026-10-24 07:44:35",
       "outputs": {
         "db": {
           "type": "blast_db_aa",
@@ -631,6 +657,7 @@
         }
       },
       "detail": {
+        "command": "blast makeblastdb /runtime/runtime/bio_tools/_native/runs/3e86e9686b35/work/proteins.faa -out /runtime/runtime/bio_tools/_native/runs/eea213ace45a/work/result -evalue 10",
         "execution_mode": "native",
         "exit_code": 0,
         "slurm_job_id": "4242"
@@ -639,8 +666,8 @@
     "blastp": {
       "status": "failed",
       "error": "blastp exited with code 2",
-      "started_at": "2026-10-24 07:16:36",
-      "finished_at": "2026-10-24 07:16:36",
+      "started_at": "2026-10-24 07:44:35",
+      "finished_at": "2026-10-24 07:44:35",
       "outputs": {},
       "detail": {
         "exit_code": 2,
@@ -650,8 +677,8 @@
     "t7_stats": {
       "status": "succeeded",
       "error": null,
-      "started_at": "2026-10-24 07:16:36",
-      "finished_at": "2026-10-24 07:16:36",
+      "started_at": "2026-10-24 07:44:35",
+      "finished_at": "2026-10-24 07:44:35",
       "outputs": {
         "stats": {
           "type": "table",
@@ -661,6 +688,7 @@
         }
       },
       "detail": {
+        "command": "seqkit stats /private/runtime/runtime/session_pipeline_pl_fixture/tool_outputs/run_fixture_t7.fasta -out /runtime/runtime/bio_tools/_native/runs/a4c979408ba8/work/result -evalue 10",
         "execution_mode": "native",
         "exit_code": 0,
         "slurm_job_id": "4242"
@@ -673,8 +701,8 @@
       "finished_at": null,
       "outputs": {},
       "detail": {
-        "evidence_chars": 1326,
-        "evidence_items": 11,
+        "evidence_chars": 6355,
+        "evidence_items": 15,
         "evidence_truncated": false,
         "report_chars": 77
       }

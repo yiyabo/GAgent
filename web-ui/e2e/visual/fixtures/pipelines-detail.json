@@ -178,6 +178,22 @@
         "inputs": {
           "evidence": [
             {
+              "node": "lambda",
+              "port": "genome"
+            },
+            {
+              "node": "t7",
+              "port": "genome"
+            },
+            {
+              "node": "lambda_genes",
+              "port": "proteins"
+            },
+            {
+              "node": "t7_genes",
+              "port": "proteins"
+            },
+            {
               "node": "lambda_stats",
               "port": "stats"
             },
@@ -224,7 +240,7 @@
           ]
         },
         "params": {
-          "instructions": "Compare phage lambda (NC_001416.1) with phage T7 (NC_001604.1). Cover genome length and GC content, the number of predicted genes, the geNomad virus call and taxonomy, CheckV completeness and quality, the PhaTYP lifestyle and whether it matches what is known about these two phages, and how similar the two genomes and proteomes are (FastANI, blastp, MMseqs2). Put the key numbers for both phages in one table. Say plainly when a result is missing or when two tools disagree.",
+          "instructions": "Compare phage lambda (NC_001416.1) with phage T7 (NC_001604.1). Cover genome length and GC content (from the genome FASTA), the number of genes Prodigal predicted, the geNomad virus call and taxonomy, CheckV completeness and quality, the PhaTYP lifestyle and whether it matches what is known about these two phages, and how similar the two genomes and proteomes are (FastANI, blastp, MMseqs2), including how many lambda proteins have a significant hit in T7. Put the key numbers for both phages in one table. Say plainly when a result is missing or when two tools disagree.",
           "language": "zh"
         },
         "type": "agent.report"
@@ -301,14 +317,14 @@
   },
   "latest_version": 1,
   "archived": false,
-  "created_at": "2026-10-24 07:16:36",
-  "updated_at": "2026-10-24 07:16:36",
+  "created_at": "2026-10-24 07:44:35",
+  "updated_at": "2026-10-24 07:44:35",
   "versions": [
     {
       "pipeline_id": "pl_fixture",
       "version": 1,
-      "graph_hash": "e3b29b4a990e92d62dbbbd52a21211b39aae916709a5cb27d87f9e3aabad6f6b",
-      "created_at": "2026-10-24 07:16:36"
+      "graph_hash": "80ed20fae593ec840d6d52f6602fd843effaa3ddb14bcf8b20d7ec4afadc98fa",
+      "created_at": "2026-10-24 07:44:35"
     }
   ],
   "active_runs": 0,

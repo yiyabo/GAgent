@@ -36,11 +36,12 @@ def _phage(prefix: str, label: str, accession: str) -> Dict[str, Dict[str, Any]]
 
 
 _LAMBDA_T7_REPORT = (
-    "Compare phage lambda (NC_001416.1) with phage T7 (NC_001604.1). Cover genome length and GC content, "
-    "the number of predicted genes, the geNomad virus call and taxonomy, CheckV completeness and quality, "
-    "the PhaTYP lifestyle and whether it matches what is known about these two phages, and how similar the "
-    "two genomes and proteomes are (FastANI, blastp, MMseqs2). Put the key numbers for both phages in one "
-    "table. Say plainly when a result is missing or when two tools disagree."
+    "Compare phage lambda (NC_001416.1) with phage T7 (NC_001604.1). Cover genome length and GC content (from the "
+    "genome FASTA), the number of genes Prodigal predicted, the geNomad virus call and taxonomy, CheckV completeness "
+    "and quality, the PhaTYP lifestyle and whether it matches what is known about these two phages, and how similar "
+    "the two genomes and proteomes are (FastANI, blastp, MMseqs2), including how many lambda proteins have a "
+    "significant hit in T7. Put the key numbers for both phages in one table. Say plainly when a result is missing "
+    "or when two tools disagree."
 )
 
 _LAMBDA_T7_LAYOUT: Dict[str, Tuple[int, int]] = {
@@ -91,6 +92,10 @@ def _lambda_t7() -> Dict[str, Any]:
                 "params": {"instructions": _LAMBDA_T7_REPORT, "language": "zh"},
                 "inputs": {
                     "evidence": [
+                        _ref("lambda", "genome"),
+                        _ref("t7", "genome"),
+                        _ref("lambda_genes", "proteins"),
+                        _ref("t7_genes", "proteins"),
                         _ref("lambda_stats", "stats"),
                         _ref("t7_stats", "stats"),
                         _ref("lambda_genomad", "virus_summary"),

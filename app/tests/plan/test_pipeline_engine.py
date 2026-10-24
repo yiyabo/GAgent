@@ -56,6 +56,7 @@ class FakeBioTools:
                 "success": True,
                 "tool": tool_name,
                 "operation": operation,
+                "command": f"{tool_name} {operation} {input_file or ''} -out {work}/result -evalue 10",
                 "work_dir": str(work),
                 "stdout": "file\tnum_seqs\nx.fa\t2\n" if tool_name == "seqkit" else "",
                 "execution_mode": "native",
@@ -80,7 +81,9 @@ class FakeBioTools:
         elif tool == "blast" and operation == "makeblastdb":
             for ext in ("pin", "psq", "phr"):
                 put(f"{params['db']}.{ext}", "db")
-        elif tool in {"blast", "fastani", "mmseqs2", "hmmer"}:
+        elif tool in {"blast", "mmseqs2"}:
+            put(params["output"], "q1\tt1\t99.0\t50\t0\t0\t1\t50\t1\t50\t1e-20\t95.1\n")
+        elif tool in {"fastani", "hmmer"}:
             put(params["output"], "q1\tt1\t99.0\n")
         elif tool == "checkv":
             put(f"{params['output']}/quality_summary.tsv", "contig_id\tcheckv_quality\nseq1\tComplete\n")
@@ -199,6 +202,11 @@ async def test_a_pipeline_runs_every_node_with_the_right_calls(env):
     assert report_path.read_text().startswith("# Report")
     assert "num_seqs" in env.last_prompt and "checkv_quality" in env.last_prompt
     assert "records: 2" in env.last_prompt  # FASTA evidence is summarized, not pasted
+    # Each item says how it was made and how to read it; server paths are cut to their last part.
+    assert "command: blast blastp proteins.faa -out result -evalue 10" in env.last_prompt
+    assert "how to read: BLAST tabular (outfmt 6)" in env.last_prompt
+    assert "hit rows: 1; queries with a hit: 1" in env.last_prompt
+    assert str(env.root) not in env.last_prompt
     stats = service.preview(detail["id"], "stats", "stats")
     assert stats["kind"] == "text" and "num_seqs" in stats["text"]
     assert detail["nodes"]["p1"]["outputs"]["proteins"] == {"type": "fasta_aa", "kind": "file", "size": len(FASTA_AA), "name": "proteins.faa"}
@@ -258,6 +266,8 @@ async def test_unchanged_nodes_are_reused_on_the_next_run(env):
     assert states["p1"] == states["bp"] == "cached"
     assert states["rep"] == "succeeded"  # the report is always rewritten
     assert second["nodes"]["bp"]["detail"]["cached_from"]["run_id"] == first["id"]
+    assert second["nodes"]["bp"]["detail"]["command"] == first["nodes"]["bp"]["detail"]["command"]
+    assert "command: blast blastp proteins.faa" in env.last_prompt  # a reused node still tells the report how it ran
 
     detail = service.detail(pipeline_id)
     detail["draft"]["nodes"]["p2"]["params"] = {"mode": "single"}
@@ -377,6 +387,53 @@ def test_runs_left_running_by_a_restart_are_failed(env):
     assert detail["nodes"]["p1"]["status"] == "failed"
 
 
+def test_report_evidence_explains_empty_and_absent_outputs_and_condenses_hit_tables(tmp_path):
+    empty = tmp_path / "fastani.txt"
+    empty.write_text("")
+    hits = tmp_path / "blastp_hits.tsv"
+    hits.write_text(
+        "".join(f"q{index % 7}\ts{index}\t35.0\t50\t30\t1\t1\t50\t1\t50\t{10.0 ** -(index % 9)}\t{20 + index}\n" for index in range(60))
+    )
+    text, cut = report.build_evidence(
+        [
+            {
+                "label": "lambda vs T7",
+                "port_title": "ANI",
+                "node_type": "fastani.compare",
+                "type": "table",
+                "kind": "file",
+                "path": str(empty),
+                "reading": "FastANI reports nothing below about 80% ANI.",
+                "command": "fastANI -q /app/runtime/x/lambda.fasta -r /app/runtime/x/t7.fasta -o /app/runtime/bio_tools/run/work/fastani.txt",
+            },
+            {
+                "label": "lambda",
+                "port_title": "Virus summary",
+                "node_type": "genomad.end_to_end",
+                "type": "table",
+                "absent": True,
+                "reading": "Not produced when no sequence is called viral.",
+            },
+            {
+                "label": "lambda vs T7",
+                "port_title": "Hits",
+                "node_type": "blast.blastp",
+                "type": "table",
+                "kind": "file",
+                "path": str(hits),
+                "digest": "blast_tab",
+            },
+        ]
+    )
+    assert not cut
+    assert "empty file (0 bytes)" in text and "how to read: FastANI reports nothing" in text
+    assert "command: fastANI -q lambda.fasta -r t7.fasta -o fastani.txt" in text
+    assert "not produced" in text and "Not produced when no sequence is called viral." in text
+    assert "hit rows: 60; queries with a hit: 7; subjects hit: 60" in text
+    assert "rows with E-value <= 1e-05: 25; queries with such a hit: 7" in text
+    assert text.count("\nq") == 7  # the best hit of each query, nothing else
+
+
 def test_report_evidence_summarizes_fasta_and_folders_and_marks_cuts(tmp_path):
     fasta = tmp_path / "g.fna"
     fasta.write_text(">a\nATGC\n>b\nGGGGCC\n")
@@ -434,3 +491,6 @@ async def test_the_lambda_t7_template_runs_end_to_end(env, monkeypatch):
     makeblastdb = next(call for call in env.calls if call["operation"] == "makeblastdb")
     assert makeblastdb["params"]["type"] == "prot"
     assert "lambda vs T7" in env.last_prompt and "virulent" in env.last_prompt
+    assert env.last_prompt.count("## Evidence ") == 15
+    assert "GC: " in env.last_prompt  # from the genome FASTA, which SeqKit's table does not carry
+    assert "how to read: FastANI" in env.last_prompt

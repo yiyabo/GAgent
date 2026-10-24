@@ -68,6 +68,10 @@ class OutputPort:
     kind: str
     source: str = ""
     optional: bool = False
+    # For the report node only: how to read this output, above all what an empty or absent file means.
+    reading: str = ""
+    # How the report node condenses the file instead of quoting its beginning ("blast_tab": hit statistics).
+    digest: str = ""
 
 
 @dataclass(frozen=True)
@@ -133,6 +137,10 @@ def _file_input(type_name: str, title: Dict[str, str], description: Dict[str, st
 
 _NT = ("fasta_nt",)
 _AA = ("fasta_aa",)
+_BLAST_READING = (
+    "BLAST tabular (outfmt 6). BLAST keeps hits up to E-value 10 by default, so weak hits are listed; an E-value "
+    "above about 1e-5 is usually not significant. Empty means no hits."
+)
 _THREADS_NOTE = _t("Uses the CPUs the scheduler gives the job.", "使用调度器分配给作业的 CPU。")
 
 NODE_SPECS: Tuple[NodeSpec, ...] = (
@@ -164,7 +172,15 @@ NODE_SPECS: Tuple[NodeSpec, ...] = (
         description=_t(
             "Downloads nucleotide FASTA for the given accessions.", "按登录号下载核酸 FASTA。"
         ),
-        outputs=(OutputPort("genome", "fasta_nt", _t("Genome FASTA", "基因组 FASTA"), "fetched"),),
+        outputs=(
+            OutputPort(
+                "genome",
+                "fasta_nt",
+                _t("Genome FASTA", "基因组 FASTA"),
+                "fetched",
+                reading="The nucleotide records downloaded from NCBI nuccore.",
+            ),
+        ),
         params=(
             Param(
                 "accessions",
@@ -185,7 +201,15 @@ NODE_SPECS: Tuple[NodeSpec, ...] = (
             "Downloads every annotated CDS of the given nucleotide records as protein FASTA.",
             "下载这些核酸记录里全部注释 CDS 的蛋白 FASTA。",
         ),
-        outputs=(OutputPort("proteins", "fasta_aa", _t("Proteins", "蛋白序列"), "fetched"),),
+        outputs=(
+            OutputPort(
+                "proteins",
+                "fasta_aa",
+                _t("Proteins", "蛋白序列"),
+                "fetched",
+                reading="The translations of the CDS features annotated in the NCBI records: one record per annotated CDS.",
+            ),
+        ),
         params=(
             Param(
                 "accessions",
@@ -205,7 +229,16 @@ NODE_SPECS: Tuple[NodeSpec, ...] = (
         title=_t("Sequence statistics (SeqKit)", "序列统计（SeqKit）"),
         description=_t("Counts, lengths and GC content.", "序列条数、长度和 GC 含量。"),
         inputs=(InputPort("sequences", ("fasta_nt", "fasta_aa"), _t("Sequences", "序列")),),
-        outputs=(OutputPort("stats", "table", _t("Statistics", "统计表"), "stdout", "seqkit_stats.txt"),),
+        outputs=(
+            OutputPort(
+                "stats",
+                "table",
+                _t("Statistics", "统计表"),
+                "stdout",
+                "seqkit_stats.txt",
+                reading="SeqKit stats: one row per input file with num_seqs, sum_len, min_len, avg_len and max_len. It has no GC column.",
+            ),
+        ),
         tool="seqkit",
         operation="stats",
     ),
@@ -218,7 +251,14 @@ NODE_SPECS: Tuple[NodeSpec, ...] = (
         description=_t("Predicts protein-coding genes.", "预测蛋白编码基因。"),
         inputs=(InputPort("genome", _NT, _t("Genome", "基因组")),),
         outputs=(
-            OutputPort("proteins", "fasta_aa", _t("Proteins", "蛋白序列"), "file", "proteins.faa"),
+            OutputPort(
+                "proteins",
+                "fasta_aa",
+                _t("Proteins", "蛋白序列"),
+                "file",
+                "proteins.faa",
+                reading="Prodigal: one record per predicted protein-coding gene, so the record count is the number of genes it predicted.",
+            ),
             OutputPort("genes", "fasta_nt", _t("Gene sequences", "基因序列"), "file", "genes.fna"),
             OutputPort("gff", "gff", _t("Gene coordinates", "基因坐标"), "file", "genes.gff"),
         ),
@@ -263,6 +303,11 @@ NODE_SPECS: Tuple[NodeSpec, ...] = (
                 "glob",
                 "genomad_out/*_summary/*_virus_summary.tsv",
                 optional=True,
+                reading=(
+                    "geNomad: one row per sequence it calls viral, with virus_score (0-1), n_genes, n_hallmarks, topology "
+                    "(DTR = direct terminal repeats) and the taxonomy lineage from geNomad's own marker database. "
+                    "Not produced when no sequence is called viral."
+                ),
             ),
             OutputPort("results", "directory", _t("All results", "全部结果"), "dir", "genomad_out"),
         ),
@@ -285,6 +330,10 @@ NODE_SPECS: Tuple[NodeSpec, ...] = (
                 _t("Quality summary", "质量汇总表"),
                 "file",
                 "checkv_out/quality_summary.tsv",
+                reading=(
+                    "CheckV: one row per sequence; checkv_quality is Complete, High-quality, Medium-quality, Low-quality or "
+                    "Not-determined; completeness and contamination are percentages; completeness_method says how it was estimated."
+                ),
             ),
             OutputPort("results", "directory", _t("All results", "全部结果"), "dir", "checkv_out"),
         ),
@@ -308,6 +357,7 @@ NODE_SPECS: Tuple[NodeSpec, ...] = (
                 "file",
                 "virsorter2_out/final-viral-score.tsv",
                 optional=True,
+                reading="VirSorter2: one row per sequence scored as viral with max_score (0-1). Not produced when nothing scores as viral.",
             ),
             OutputPort("results", "directory", _t("All results", "全部结果"), "dir", "virsorter2_out"),
         ),
@@ -351,6 +401,7 @@ NODE_SPECS: Tuple[NodeSpec, ...] = (
                     _t("Prediction", "预测表"),
                     "file",
                     f"phabox_{task}/final_prediction/{task}_prediction.tsv",
+                    reading=reading,
                 ),
                 OutputPort("results", "directory", _t("All results", "全部结果"), "dir", f"phabox_{task}"),
             ),
@@ -359,11 +410,31 @@ NODE_SPECS: Tuple[NodeSpec, ...] = (
             fixed_params={"output": f"phabox_{task}"},
             slow=True,
         )
-        for task, title, description in (
-            ("phamer", _t("Phage identification (PhaMer)", "噬菌体鉴定（PhaMer）"), _t("Is it a phage?", "是不是噬菌体。")),
-            ("phatyp", _t("Lifestyle (PhaTYP)", "生活方式（PhaTYP）"), _t("Virulent or temperate.", "烈性还是温和。")),
-            ("phagcn", _t("Taxonomy (PhaGCN)", "分类（PhaGCN）"), _t("Family-level classification.", "科级分类。")),
-            ("cherry", _t("Host prediction (CHERRY)", "宿主预测（CHERRY）"), _t("Predicted bacterial host.", "预测的细菌宿主。")),
+        for task, title, description, reading in (
+            (
+                "phamer",
+                _t("Phage identification (PhaMer)", "噬菌体鉴定（PhaMer）"),
+                _t("Is it a phage?", "是不是噬菌体。"),
+                "PhaMer: one row per sequence; Pred is phage or non-phage, with a score from 0 to 1.",
+            ),
+            (
+                "phatyp",
+                _t("Lifestyle (PhaTYP)", "生活方式（PhaTYP）"),
+                _t("Virulent or temperate.", "烈性还是温和。"),
+                "PhaTYP: one row per phage sequence; TYPE is virulent or temperate, PhaTYPScore from 0 to 1.",
+            ),
+            (
+                "phagcn",
+                _t("Taxonomy (PhaGCN)", "分类（PhaGCN）"),
+                _t("Family-level classification.", "科级分类。"),
+                "PhaGCN: one row per phage sequence with the predicted lineage and a score.",
+            ),
+            (
+                "cherry",
+                _t("Host prediction (CHERRY)", "宿主预测（CHERRY）"),
+                _t("Predicted bacterial host.", "预测的细菌宿主。"),
+                "CHERRY: one row per phage sequence with the predicted host lineage and a score.",
+            ),
         )
     ),
     # ------------------------------------------------------------------ comparison
@@ -401,7 +472,17 @@ NODE_SPECS: Tuple[NodeSpec, ...] = (
             InputPort("query", _AA, _t("Query proteins", "查询蛋白")),
             InputPort("db", ("blast_db_aa",), _t("Database", "数据库"), param="db"),
         ),
-        outputs=(OutputPort("hits", "table", _t("Hits", "比对结果"), "file", "blastp_hits.tsv"),),
+        outputs=(
+            OutputPort(
+                "hits",
+                "table",
+                _t("Hits", "比对结果"),
+                "file",
+                "blastp_hits.tsv",
+                reading=_BLAST_READING,
+                digest="blast_tab",
+            ),
+        ),
         tool="blast",
         operation="blastp",
         fixed_params={"output": "blastp_hits.tsv"},
@@ -416,7 +497,17 @@ NODE_SPECS: Tuple[NodeSpec, ...] = (
             InputPort("query", _NT, _t("Query sequences", "查询序列")),
             InputPort("db", ("blast_db_nt",), _t("Database", "数据库"), param="db"),
         ),
-        outputs=(OutputPort("hits", "table", _t("Hits", "比对结果"), "file", "blastn_hits.tsv"),),
+        outputs=(
+            OutputPort(
+                "hits",
+                "table",
+                _t("Hits", "比对结果"),
+                "file",
+                "blastn_hits.tsv",
+                reading=_BLAST_READING,
+                digest="blast_tab",
+            ),
+        ),
         tool="blast",
         operation="blastn",
         fixed_params={"output": "blastn_hits.tsv"},
@@ -431,7 +522,21 @@ NODE_SPECS: Tuple[NodeSpec, ...] = (
             InputPort("query", _AA, _t("Query proteins", "查询蛋白"), param="query"),
             InputPort("target", _AA, _t("Target proteins", "目标蛋白"), param="target"),
         ),
-        outputs=(OutputPort("hits", "table", _t("Hits", "比对结果"), "file", "mmseqs_hits.m8"),),
+        outputs=(
+            OutputPort(
+                "hits",
+                "table",
+                _t("Hits", "比对结果"),
+                "file",
+                "mmseqs_hits.m8",
+                reading=(
+                    "MMseqs2 easy-search, BLAST tabular columns. It keeps hits with E-value up to 1e-3 by default, stricter "
+                    "than blastp's default of 10, so it can be empty where blastp lists only weak hits. Empty means no pair "
+                    "passed that cutoff, not that the tool failed."
+                ),
+                digest="blast_tab",
+            ),
+        ),
         tool="mmseqs2",
         operation="easy_search",
         fixed_params={"output": "mmseqs_hits.m8", "search_type": 1},
@@ -446,7 +551,20 @@ NODE_SPECS: Tuple[NodeSpec, ...] = (
             InputPort("query", _NT, _t("Query genome", "查询基因组"), param="query"),
             InputPort("reference", _NT, _t("Reference genome", "参考基因组"), param="reference"),
         ),
-        outputs=(OutputPort("ani", "table", _t("ANI", "ANI 结果"), "file", "fastani.txt"),),
+        outputs=(
+            OutputPort(
+                "ani",
+                "table",
+                _t("ANI", "ANI 结果"),
+                "file",
+                "fastani.txt",
+                reading=(
+                    "FastANI: one line per genome pair (query, reference, ANI %, matching fragments, total query fragments). "
+                    "It reports nothing for pairs below its range (about 80% ANI), so an empty file means the two genomes "
+                    "are not closely related at the nucleotide level; it is a result, not a failure."
+                ),
+            ),
+        ),
         tool="fastani",
         operation="compare",
         fixed_params={"output": "fastani.txt"},
@@ -461,7 +579,19 @@ NODE_SPECS: Tuple[NodeSpec, ...] = (
             InputPort("proteins", _AA, _t("Proteins", "蛋白序列")),
             InputPort("profile", ("hmm",), _t("HMM profile", "HMM 模型"), param="db"),
         ),
-        outputs=(OutputPort("hits", "table", _t("Hits", "比对结果"), "file", "hmmsearch.tblout"),),
+        outputs=(
+            OutputPort(
+                "hits",
+                "table",
+                _t("Hits", "比对结果"),
+                "file",
+                "hmmsearch.tblout",
+                reading=(
+                    "HMMER --tblout: one line per target sequence above the reporting threshold (E-value 10 by default); "
+                    "lines starting with # are comments, so a file with only comments means no hits."
+                ),
+            ),
+        ),
         tool="hmmer",
         operation="hmmsearch",
         fixed_params={"output": "hmmsearch.tblout"},

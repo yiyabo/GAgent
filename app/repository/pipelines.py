@@ -361,14 +361,20 @@ def get_node_run(conn, run_id: str, node_id: str) -> Optional[Dict[str, Any]]:
 
 
 def find_cached_outputs(conn, owner_id: str, cache_key: str) -> List[Dict[str, Any]]:
-    """Outputs of this owner's earlier node runs with the same cache key, newest first."""
+    """Outputs (and run details) of this owner's earlier node runs with the same cache key, newest first."""
     rows = conn.execute(
-        """SELECT n.outputs, n.run_id, n.node_id FROM pipeline_node_runs n
+        """SELECT n.outputs, n.detail, n.run_id, n.node_id FROM pipeline_node_runs n
            JOIN pipeline_runs r ON r.id = n.run_id
            WHERE n.cache_key=? AND n.status='succeeded' AND r.owner_id=?
            ORDER BY n.finished_at DESC LIMIT 5""",
         (cache_key, owner_id),
     ).fetchall()
     return [
-        {"outputs": _loads(row["outputs"], {}), "run_id": row["run_id"], "node_id": row["node_id"]} for row in rows
+        {
+            "outputs": _loads(row["outputs"], {}),
+            "detail": _loads(row["detail"], {}),
+            "run_id": row["run_id"],
+            "node_id": row["node_id"],
+        }
+        for row in rows
     ]

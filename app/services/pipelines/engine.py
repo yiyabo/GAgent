@@ -267,23 +267,28 @@ async def _run_report(ctx: RunContext, node_id: str, node: Dict[str, Any], spec:
     for ref in refs_of((node.get("inputs") or {}).get("evidence")):
         upstream_node = ctx.graph["nodes"].get(ref["node"]) or {}
         upstream_spec = get_spec(upstream_node.get("type"))
-        output = ctx.outcomes[ref["node"]].outputs.get(ref["port"])
-        if not output or upstream_spec is None:
+        if upstream_spec is None:
             continue
+        outcome = ctx.outcomes[ref["node"]]
+        output = outcome.outputs.get(ref["port"])
         port = upstream_spec.output_port(ref["port"])
-        evidence.append(
-            {
-                "node": ref["node"],
-                "label": upstream_node.get("label") or upstream_spec.title.get("en"),
-                "node_type": upstream_spec.type,
-                "port": ref["port"],
-                "port_title": port.title.get("en") if port else ref["port"],
-                "type": output.get("type"),
-                "kind": output.get("kind"),
-                "path": output.get("path"),
-            }
-        )
-    if not evidence:
+        item: Dict[str, Any] = {
+            "node": ref["node"],
+            "label": upstream_node.get("label") or upstream_spec.title.get("en"),
+            "node_type": upstream_spec.type,
+            "port": ref["port"],
+            "port_title": port.title.get("en") if port else ref["port"],
+            "reading": port.reading if port else "",
+            "digest": port.digest if port else "",
+            "command": outcome.detail.get("command"),
+        }
+        if output:
+            item.update(type=output.get("type"), kind=output.get("kind"), path=output.get("path"))
+        else:
+            # An optional output the tool did not write: telling the model so is part of the result.
+            item.update(type=port.type if port else None, kind=None, path=None, absent=True)
+        evidence.append(item)
+    if not any(not item.get("absent") for item in evidence):
         raise NodeFailure("none of the connected results is available")
     target = ctx.run_dir / node_id / spec.outputs[0].source
     detail = await report.write_report(
@@ -355,9 +360,13 @@ async def _run_node(ctx: RunContext, node_id: str, semaphore: asyncio.Semaphore)
             if cached is not None:
                 outputs = cached["outputs"]
                 detail = {"cached_from": {"run_id": cached["run_id"], "node_id": cached["node_id"]}}
+                # The command that produced the reused files, for the run view and the report.
+                command = (cached.get("detail") or {}).get("command")
+                if command:
+                    detail["command"] = command
                 with get_db() as conn:
                     repo.finish_node(conn, ctx.run_id, node_id, "cached", outputs=outputs, detail=detail, cache_key=cache_key)
-                return NodeOutcome("cached", outputs, cache_key)
+                return NodeOutcome("cached", outputs, cache_key, detail)
             with get_db() as conn:
                 repo.set_node_running(conn, ctx.run_id, node_id, cache_key)
             if spec.kind == "ncbi":
