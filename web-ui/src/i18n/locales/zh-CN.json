@@ -1651,7 +1651,9 @@
       "noProblems": "没有发现问题。",
       "runsTitle": "运行记录",
       "noRuns": "还没有运行过。",
-      "descriptionPlaceholder": "这条流水线用来做什么"
+      "descriptionPlaceholder": "这条流水线用来做什么",
+      "defaultValue": "默认值：{{value}}",
+      "range": "范围：{{min}} 到 {{max}}"
     },
     "run_view": {
       "title": "运行 {{id}}",
@@ -1720,6 +1722,42 @@
       "unused_node": "还没有节点读取它的输出",
       "nothing_to_run": "还没有可运行的步骤：请加入工具或报告节点",
       "empty": "流水线里还没有节点"
+    },
+    "tab": {
+      "details": "详情",
+      "agent": "助手"
+    },
+    "agent": {
+      "title": "流水线助手",
+      "intro": "可以问我任何关于节点、工具或你的分析的问题。我也能直接帮你搭流水线，并在聊天中随时调整。",
+      "suggest1": "比较两个噬菌体基因组需要哪些节点？",
+      "suggest2": "帮我搭一条流水线：找细菌基因组里的前噬菌体并评估质量",
+      "suggest3": "解释一下这条流水线里每个节点的作用",
+      "placeholder": "提问，或告诉我要搭什么…（回车发送，Shift+回车换行）",
+      "send": "发送",
+      "clear": "清空对话",
+      "clearConfirm": "清空整个对话？",
+      "working": "处理中…",
+      "aboutNode": "关于节点：{{name}}",
+      "dropNode": "不要针对这个节点",
+      "steps": "画布操作（{{count}} 步）",
+      "stepFailed": "失败",
+      "undo": "撤销这次改动",
+      "undoConfirm": "把画布恢复到这次回答之前的样子？之后你自己做的修改会丢失。",
+      "undone": "已撤销",
+      "undoFailed": "无法撤销：{{error}}",
+      "runRequest": "助手想运行这条流水线",
+      "runApprove": "现在运行",
+      "runDismiss": "先不运行",
+      "runStarted": "已开始运行",
+      "runDismissed": "没有运行",
+      "runFailed": "无法开始运行：{{error}}",
+      "sendFailed": "无法联系助手：{{error}}",
+      "stillWorking": "助手还在处理你上一条消息…",
+      "locked": "助手正在修改画布…",
+      "askAbout": "就这个节点问助手",
+      "askPrefill": "请解释这个节点，以及针对我的分析该怎么设置它的参数。",
+      "loadFailed": "无法加载对话：{{error}}"
     }
   }
 }

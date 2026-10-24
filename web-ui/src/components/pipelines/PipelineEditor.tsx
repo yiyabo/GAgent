@@ -1,15 +1,16 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { App, Button, Input, Popconfirm, Spin, Tag, Tooltip, Typography } from 'antd';
+import { App, Button, Input, Popconfirm, Segmented, Spin, Tag, Tooltip, Typography } from 'antd';
 import { ArrowLeftOutlined, CaretRightOutlined, DeleteOutlined, LockOutlined, PartitionOutlined } from '@ant-design/icons';
 import { useQueryClient } from '@tanstack/react-query';
 import { PipelinesApiError, pipelinesApi } from '@api/pipelines';
-import type { NodeCatalog, NodeTypeSpec, PipelineDetail, PipelineFile, PipelineGraph, ValidationResult } from '@api/pipelines';
+import type { NodeCatalog, NodeTypeSpec, PipelineDetail, PipelineFile, PipelineGraph, PipelineRun, ValidationResult } from '@api/pipelines';
 import { isActiveRun, usePipelineFiles, usePipelineRun, usePipelineRuns } from '@hooks/usePipelines';
 import { useLanguageStore } from '@/i18n/language';
 import type { TranslationKey } from '@/i18n/keys';
 import { useT } from '@/i18n/useT';
 import NodeInspector from './NodeInspector';
 import NodePalette from './NodePalette';
+import PipelineAgentPanel from './PipelineAgentPanel';
 import PipelineCanvas, { type ConnectionProblem, type PipelineFlowInstance } from './PipelineCanvas';
 import PipelineSidePanel from './PipelineSidePanel';
 import RunPanel from './RunPanel';
@@ -68,6 +69,9 @@ const PipelineEditor: React.FC<Props> = ({ catalog, pipeline, runId, onOpenRun, 
   const [runSelected, setRunSelected] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<SaveState>('saved');
   const [busy, setBusy] = useState<'run' | 'freeze' | 'cancel' | 'delete' | null>(null);
+  const [tab, setTab] = useState<'details' | 'agent'>('details');
+  const [agentBusy, setAgentBusy] = useState(false);
+  const [prefill, setPrefill] = useState<{ text: string; nonce: number } | null>(null);
 
   // What the next save sends. Updated synchronously, so a save never sends an older edit.
   const latest = useRef({ graph, name, description });
@@ -208,6 +212,38 @@ const PipelineEditor: React.FC<Props> = ({ catalog, pipeline, runId, onOpenRun, 
     void queryClient.invalidateQueries({ queryKey: ['pipelines', 'list'] });
   };
 
+  // The assistant edits the saved draft on the server; what it sends back replaces the canvas without a save of ours.
+  const applyServerGraph = useCallback(
+    (next: PipelineGraph, nextValidation: ValidationResult) => {
+      window.clearTimeout(timer.current);
+      const normalized = normalizeGraph(next);
+      latest.current = { ...latest.current, graph: normalized };
+      savedSeq.current = editSeq.current;
+      setGraph(normalized);
+      setValidation(nextValidation);
+      setSaveState('saved');
+      queryClient.setQueryData(['pipelines', 'detail', pipeline.id], (old: PipelineDetail | undefined) =>
+        old ? { ...old, draft: next, validation: nextValidation } : old,
+      );
+      void queryClient.invalidateQueries({ queryKey: ['pipelines', 'list'] });
+      window.setTimeout(() => void flowRef.current?.fitView({ padding: 0.15, maxZoom: 1, duration: 300 }), 80);
+    },
+    [pipeline.id, queryClient],
+  );
+
+  const openStartedRun = useCallback(
+    (started: PipelineRun) => {
+      setLatestVersion(started.version);
+      queryClient.setQueryData(['pipelines', 'run', started.id], started);
+      void queryClient.invalidateQueries({ queryKey: ['pipelines', 'runs', pipeline.id] });
+      void queryClient.invalidateQueries({ queryKey: ['pipelines', 'list'] });
+      message.success(t('pipelines.runStarted'));
+      setRunSelected(null);
+      onOpenRun(started.id);
+    },
+    [pipeline.id, queryClient, message, t, onOpenRun],
+  );
+
   const freeze = async () => {
     setBusy('freeze');
     try {
@@ -232,13 +268,7 @@ const PipelineEditor: React.FC<Props> = ({ catalog, pipeline, runId, onOpenRun, 
     setBusy('run');
     try {
       if (!(await save())) return;
-      const started = await pipelinesApi.startRun(pipeline.id);
-      setLatestVersion(started.version);
-      queryClient.setQueryData(['pipelines', 'run', started.id], started);
-      refreshAfterRunChange();
-      message.success(t('pipelines.runStarted'));
-      setRunSelected(null);
-      onOpenRun(started.id);
+      openStartedRun(await pipelinesApi.startRun(pipeline.id));
     } catch (error) {
       if (error instanceof PipelinesApiError && error.validation) setValidation(error.validation);
       message.error(t('pipelines.runFailed', { error: errorText(error) }));
@@ -297,6 +327,13 @@ const PipelineEditor: React.FC<Props> = ({ catalog, pipeline, runId, onOpenRun, 
   const selectedNode = selected && graph.nodes[selected] ? selected : null;
   const errorsCount = validation.errors.length;
 
+  const askAgentAbout = (id: string) => {
+    setPrefill({ text: t('pipelines.agent.askPrefill'), nonce: Date.now() });
+    setTab('agent');
+    setSelected(id);
+  };
+  const agentSelected = viewingRun ? runSelected : selectedNode;
+
   const side = () => {
     if (viewingRun) {
       if (run.data) {
@@ -338,6 +375,7 @@ const PipelineEditor: React.FC<Props> = ({ catalog, pipeline, runId, onOpenRun, 
             setSelected(null);
           }}
           onUpload={upload}
+          onAskAgent={askAgentAbout}
         />
       );
     }
@@ -394,13 +432,13 @@ const PipelineEditor: React.FC<Props> = ({ catalog, pipeline, runId, onOpenRun, 
         <span className="pl-toolbar-spacer" />
         {!viewingRun ? (
           <Tooltip title={t('pipelines.tidyTip')}>
-            <Button icon={<PartitionOutlined />} onClick={tidy} disabled={!Object.keys(graph.nodes).length}>
+            <Button icon={<PartitionOutlined />} onClick={tidy} disabled={!Object.keys(graph.nodes).length || agentBusy}>
               {t('pipelines.tidy')}
             </Button>
           </Tooltip>
         ) : null}
         <Tooltip title={errorsCount ? t('pipelines.fixFirst') : t('pipelines.freezeTip')}>
-          <Button icon={<LockOutlined />} loading={busy === 'freeze'} disabled={Boolean(errorsCount) || busy !== null} onClick={() => void freeze()}>
+          <Button icon={<LockOutlined />} loading={busy === 'freeze'} disabled={Boolean(errorsCount) || busy !== null || agentBusy} onClick={() => void freeze()}>
             {t('pipelines.freeze')}
           </Button>
         </Tooltip>
@@ -409,7 +447,7 @@ const PipelineEditor: React.FC<Props> = ({ catalog, pipeline, runId, onOpenRun, 
             type="primary"
             icon={<CaretRightOutlined />}
             loading={busy === 'run'}
-            disabled={Boolean(errorsCount) || busy !== null}
+            disabled={Boolean(errorsCount) || busy !== null || agentBusy}
             onClick={() => void startRun()}
           >
             {t('pipelines.run')}
@@ -430,10 +468,17 @@ const PipelineEditor: React.FC<Props> = ({ catalog, pipeline, runId, onOpenRun, 
       <div className="pl-body">
         {!viewingRun ? (
           <aside className="pl-left">
-            <NodePalette catalog={catalog} onAdd={add} />
+            <div className={agentBusy ? 'pl-locked' : undefined}>
+              <NodePalette catalog={catalog} onAdd={add} />
+            </div>
           </aside>
         ) : null}
         <div className="pl-center" ref={centerRef}>
+          {agentBusy && !viewingRun ? (
+            <div className="pl-agent-lock-note" role="status">
+              <Spin size="small" /> {t('pipelines.agent.locked')}
+            </div>
+          ) : null}
           {viewingRun ? (
             runGraph ? (
               <PipelineCanvas
@@ -461,6 +506,7 @@ const PipelineEditor: React.FC<Props> = ({ catalog, pipeline, runId, onOpenRun, 
               issues={nodeIssues}
               selectedNode={selectedNode}
               onSelectNode={setSelected}
+              readOnly={agentBusy}
               onChange={changeGraph}
               onRejectConnection={(problem) => void message.warning(t(CONNECTION_KEYS[problem]))}
               onInit={(instance) => {
@@ -469,7 +515,30 @@ const PipelineEditor: React.FC<Props> = ({ catalog, pipeline, runId, onOpenRun, 
             />
           )}
         </div>
-        <aside className="pl-right">{side()}</aside>
+        <aside className={`pl-right${tab === 'agent' ? ' pl-right-agent' : ''}`}>
+          <Segmented
+            block
+            size="small"
+            value={tab}
+            onChange={(value) => setTab(value as 'details' | 'agent')}
+            options={[
+              { value: 'details', label: t('pipelines.tab.details') },
+              { value: 'agent', label: t('pipelines.tab.agent') },
+            ]}
+          />
+          <div className={`pl-right-body${tab === 'agent' ? ' pl-hidden' : ''}${agentBusy ? ' pl-locked' : ''}`}>{side()}</div>
+          <div className={`pl-right-body pl-right-agent-body${tab === 'agent' ? '' : ' pl-hidden'}`}>
+            <PipelineAgentPanel
+              pipelineId={pipeline.id}
+              selectedNode={agentSelected ? { id: agentSelected, name: nodeName(agentSelected) } : null}
+              prefill={prefill}
+              beforeSend={save}
+              onGraph={applyServerGraph}
+              onBusyChange={setAgentBusy}
+              onRunStarted={openStartedRun}
+            />
+          </div>
+        </aside>
       </div>
     </div>
   );

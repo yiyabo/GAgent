@@ -6,15 +6,19 @@ editor hides its entry point. Every pipeline and run belongs to one owner; other
 
 from __future__ import annotations
 
+import asyncio
+import json
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Body, File, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
-from ..services.pipelines import service
+from ..services.pipelines import agent, service
 from ..services.pipelines.graph import validate_graph
 from ..services.request_principal import ensure_owner_access, get_request_owner_id
 from . import register_router
+
+SSE_KEEPALIVE_SECONDS = 15
 
 router = APIRouter(prefix="/pipelines", tags=["pipelines"])
 
@@ -190,3 +194,68 @@ async def start_run(request: Request, pipeline_id: str, payload: Dict[str, Any] 
     if inputs is not None and not isinstance(inputs, dict):
         raise HTTPException(status_code=422, detail={"message": "inputs must map input node ids to files"})
     return _call(service.start_run, pipeline_id, pipeline["owner_id"], inputs)
+
+
+# ------------------------------------------------------------------ agent conversation
+@router.get("/{pipeline_id}/agent/messages", summary="The agent conversation of this pipeline")
+async def agent_messages(request: Request, pipeline_id: str) -> Dict[str, Any]:
+    _enabled()
+    _owned_pipeline(request, pipeline_id)
+    return {"messages": _call(agent.history, pipeline_id), "busy": agent.busy(pipeline_id)}
+
+
+@router.post("/{pipeline_id}/agent/messages", summary="Send a message to the agent (server-sent events)")
+async def agent_send(request: Request, pipeline_id: str, payload: Dict[str, Any] = Body(...)) -> StreamingResponse:
+    _enabled()
+    pipeline = _owned_pipeline(request, pipeline_id)
+    text = payload.get("message")
+    selected = payload.get("selected_node")
+    stream = _call(agent.start_turn, pipeline_id, pipeline["owner_id"], text, selected)
+
+    async def events():
+        # A comment line every few seconds keeps the proxies from closing a stream that is waiting for the model.
+        pending = asyncio.ensure_future(stream.__anext__())
+        try:
+            while True:
+                done, _ = await asyncio.wait({pending}, timeout=SSE_KEEPALIVE_SECONDS)
+                if not done:
+                    yield ": keepalive\n\n"
+                    continue
+                try:
+                    event = pending.result()
+                except StopAsyncIteration:
+                    return
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                pending = asyncio.ensure_future(stream.__anext__())
+        finally:
+            pending.cancel()
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.delete("/{pipeline_id}/agent/messages", summary="Clear the agent conversation")
+async def agent_clear(request: Request, pipeline_id: str) -> Dict[str, Any]:
+    _enabled()
+    _owned_pipeline(request, pipeline_id)
+    _call(agent.clear, pipeline_id)
+    return {"cleared": True}
+
+
+@router.post("/{pipeline_id}/agent/messages/{message_id}/undo", summary="Undo the canvas changes of one agent turn")
+async def agent_undo(request: Request, pipeline_id: str, message_id: int) -> Dict[str, Any]:
+    _enabled()
+    _owned_pipeline(request, pipeline_id)
+    return _call(agent.undo, pipeline_id, message_id)
+
+
+@router.post("/{pipeline_id}/agent/messages/{message_id}/run-request", summary="Answer the agent's request to run")
+async def agent_run_request(
+    request: Request, pipeline_id: str, message_id: int, payload: Dict[str, Any] = Body(...)
+) -> Dict[str, Any]:
+    _enabled()
+    pipeline = _owned_pipeline(request, pipeline_id)
+    return _call(agent.resolve_run_request, pipeline_id, pipeline["owner_id"], message_id, str(payload.get("decision") or ""))

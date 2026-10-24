@@ -103,3 +103,27 @@ for (const mode of ['light', 'dark'] as const) {
     else expect(luminance, `dominant canvas colour ${sample} is too dark for light`).toBeGreaterThan(0.7);
   });
 }
+
+/** The assistant tab: a conversation with steps, an undo button and a pending run request. */
+for (const mode of ['light', 'dark'] as const) {
+  test(`${mode}: the pipeline assistant tab has readable text`, async ({ page }) => {
+    const errors: string[] = [];
+    page.on('pageerror', (error) => errors.push(error.message));
+    await mockApi(page);
+    await page.addInitScript((value) => window.localStorage.setItem('gagent.theme', value), mode);
+    await page.goto('/chat');
+    await page.waitForLoadState('networkidle');
+    await page.evaluate(() => {
+      window.history.pushState({}, '', '/pipelines?id=pl_fixture');
+      window.dispatchEvent(new PopStateEvent('popstate'));
+    });
+    await page.waitForLoadState('networkidle');
+    await page.locator('.ant-segmented-item', { hasText: /Assistant|助手/ }).click();
+    await expect(page.getByText(/Run now|现在运行/)).toBeVisible();
+    await page.waitForTimeout(500);
+
+    const findings = await scanPage(page, mode);
+    expect(errors, 'uncaught page errors').toEqual([]);
+    expect(findings.map((f) => `${f.kind}: ${f.detail}`)).toEqual([]);
+  });
+}

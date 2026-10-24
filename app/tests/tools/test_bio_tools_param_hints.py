@@ -108,6 +108,9 @@ def test_wrong_types_and_choices_are_reported(tool, op, params, message):
         ("seqtk", "sample", {"fraction": 0.1}),
         ("seqtk", "sample", {"fraction": "1000"}),
         ("prodigal", "predict", {"mode": "META"}),
+        ("blast", "blastp", {"evalue": 1e-5}),
+        ("blast", "blastp", {"evalue": "1e-05"}),
+        ("blast", "blastp", {"evalue": "2.5E-3"}),
     ],
 )
 def test_valid_values_pass(tool, op, params):

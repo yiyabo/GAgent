@@ -35,6 +35,11 @@ vi.mock('@api/pipelines', async (importOriginal) => {
       cancelRun: vi.fn(),
       preview: vi.fn(),
       downloadUrl: vi.fn(() => '#'),
+      agentMessages: vi.fn(),
+      sendToAgent: vi.fn(),
+      clearAgent: vi.fn(),
+      undoAgent: vi.fn(),
+      answerRunRequest: vi.fn(),
     },
   };
 });
@@ -144,6 +149,7 @@ beforeEach(() => {
   api.files.mockResolvedValue({ files: [] });
   api.runs.mockResolvedValue({ runs: [] });
   api.detail.mockResolvedValue(pipelineDetail());
+  api.agentMessages.mockResolvedValue({ messages: [], busy: false });
 });
 
 describe('the pipelines page', () => {

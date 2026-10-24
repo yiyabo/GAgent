@@ -1651,7 +1651,9 @@
       "noProblems": "No problems found.",
       "runsTitle": "Runs",
       "noRuns": "No runs yet.",
-      "descriptionPlaceholder": "What this pipeline is for"
+      "descriptionPlaceholder": "What this pipeline is for",
+      "defaultValue": "Default: {{value}}",
+      "range": "Range: {{min}} to {{max}}"
     },
     "run_view": {
       "title": "Run {{id}}",
@@ -1720,6 +1722,42 @@
       "unused_node": "Nothing reads this node's output yet",
       "nothing_to_run": "Add a tool or a report node: there is nothing to run yet",
       "empty": "The pipeline has no nodes yet"
+    },
+    "tab": {
+      "details": "Details",
+      "agent": "Assistant"
+    },
+    "agent": {
+      "title": "Pipeline assistant",
+      "intro": "Ask anything about the nodes, the tools or your analysis. I can also build the pipeline for you and change it as we talk.",
+      "suggest1": "Which nodes do I need to compare two phage genomes?",
+      "suggest2": "Build a pipeline to find prophages in a bacterial genome and check their quality",
+      "suggest3": "Explain what each node in this pipeline does",
+      "placeholder": "Ask a question, or tell me what to build…  (Enter to send, Shift+Enter for a new line)",
+      "send": "Send",
+      "clear": "Clear conversation",
+      "clearConfirm": "Clear the whole conversation?",
+      "working": "Working…",
+      "aboutNode": "About the node: {{name}}",
+      "dropNode": "Do not refer to this node",
+      "steps": "Canvas steps ({{count}})",
+      "stepFailed": "failed",
+      "undo": "Undo these changes",
+      "undoConfirm": "Put the canvas back as it was before this answer? Edits you made since then are lost.",
+      "undone": "Undone",
+      "undoFailed": "Could not undo: {{error}}",
+      "runRequest": "The assistant would like to run this pipeline",
+      "runApprove": "Run now",
+      "runDismiss": "Not now",
+      "runStarted": "Run started",
+      "runDismissed": "Not run",
+      "runFailed": "Could not start the run: {{error}}",
+      "sendFailed": "The assistant could not be reached: {{error}}",
+      "stillWorking": "The assistant is still working on your last message…",
+      "locked": "The assistant is editing the canvas…",
+      "askAbout": "Ask the assistant about this node",
+      "askPrefill": "Explain this node and how I should set its parameters for my analysis.",
+      "loadFailed": "Could not load the conversation: {{error}}"
     }
   }
 }

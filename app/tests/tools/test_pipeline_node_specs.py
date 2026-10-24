@@ -44,7 +44,10 @@ def test_tool_outputs_live_under_the_names_the_node_fixes(spec):
         if port.kind == "stdout":
             continue
         top = port.source.split("/", 1)[0]
-        assert top in fixed_values, f"{spec.type}: output {port.name} ({port.source}) is not under a fixed output name"
+        # Some tools take an output prefix and add their own suffixes (mmseqs easy-linclust: <prefix>_rep_seq.fasta).
+        assert top in fixed_values or any(top.startswith(value + "_") for value in fixed_values), (
+            f"{spec.type}: output {port.name} ({port.source}) is not under a fixed output name"
+        )
 
 
 def test_catalog_is_bilingual_serializable_and_has_one_terminal_report():

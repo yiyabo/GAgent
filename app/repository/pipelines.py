@@ -73,6 +73,17 @@ def ensure_schema(conn) -> None:
         )"""
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_pipeline_node_runs_cache ON pipeline_node_runs(cache_key, status)")
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS pipeline_messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            pipeline_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            meta TEXT,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )"""
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_pipeline_messages_pipeline ON pipeline_messages(pipeline_id, id)")
 
 
 def _loads(text: Any, default: Any) -> Any:
@@ -378,3 +389,41 @@ def find_cached_outputs(conn, owner_id: str, cache_key: str) -> List[Dict[str, A
         }
         for row in rows
     ]
+
+
+# ------------------------------------------------------------------ agent conversation
+def _message_row(row: Any) -> Dict[str, Any]:
+    item = dict(row)
+    item["meta"] = _loads(item.get("meta"), {})
+    return item
+
+
+def add_message(conn, pipeline_id: str, role: str, content: str, meta: Optional[Dict[str, Any]] = None) -> int:
+    cursor = conn.execute(
+        "INSERT INTO pipeline_messages (pipeline_id, role, content, meta) VALUES (?, ?, ?, ?)",
+        (pipeline_id, role, content, _dumps(meta or {})),
+    )
+    return int(cursor.lastrowid)
+
+
+def list_messages(conn, pipeline_id: str, limit: int = 200) -> List[Dict[str, Any]]:
+    """The newest ``limit`` messages, oldest first."""
+    rows = conn.execute(
+        "SELECT * FROM pipeline_messages WHERE pipeline_id=? ORDER BY id DESC LIMIT ?", (pipeline_id, limit)
+    ).fetchall()
+    return [_message_row(row) for row in reversed(rows)]
+
+
+def get_message(conn, pipeline_id: str, message_id: int) -> Optional[Dict[str, Any]]:
+    row = conn.execute(
+        "SELECT * FROM pipeline_messages WHERE pipeline_id=? AND id=?", (pipeline_id, message_id)
+    ).fetchone()
+    return _message_row(row) if row else None
+
+
+def update_message_meta(conn, message_id: int, meta: Dict[str, Any]) -> None:
+    conn.execute("UPDATE pipeline_messages SET meta=? WHERE id=?", (_dumps(meta), message_id))
+
+
+def clear_messages(conn, pipeline_id: str) -> None:
+    conn.execute("DELETE FROM pipeline_messages WHERE pipeline_id=?", (pipeline_id,))
