@@ -17,6 +17,7 @@ import hashlib
 import json
 import logging
 import re
+import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -322,6 +323,37 @@ def _ncbi_key(spec: NodeSpec, params: Dict[str, Any]) -> Optional[str]:
     return cache_key_for(spec, {"accessions": sorted(accessions)}, {})
 
 
+def _in_other_session(path: Path, ctx: RunContext) -> bool:
+    if _inside(path, ctx.session_dir):
+        return False
+    try:
+        relative = path.resolve().relative_to(ctx.session_dir.resolve().parent)
+    except (OSError, ValueError):
+        return False
+    return bool(relative.parts) and relative.parts[0].startswith("session_")
+
+
+def _adopt_cached_outputs(ctx: RunContext, node_id: str, outputs: Dict[str, Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """Copy reused files that sit in another pipeline's session into this run.
+
+    bio_tools only lets a session read its own files (and the shared Slurm run directories), so a result
+    that an earlier pipeline downloaded or wrote to its own folder would be refused as an input here.
+    """
+    adopted: Dict[str, Dict[str, Any]] = {}
+    for name, entry in outputs.items():
+        path = Path(str(entry.get("path") or ""))
+        if entry.get("kind") in ("file", "dir") and _in_other_session(path, ctx):
+            target = ctx.run_dir / node_id / path.name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            if entry["kind"] == "dir":
+                shutil.copytree(path, target, dirs_exist_ok=True)
+            else:
+                shutil.copy2(path, target)
+            entry = {**entry, "path": str(target)}
+        adopted[name] = entry
+    return adopted
+
+
 def _lookup_cache(ctx: RunContext, cache_key: Optional[str]) -> Optional[Dict[str, Any]]:
     if not cache_key:
         return None
@@ -358,7 +390,7 @@ async def _run_node(ctx: RunContext, node_id: str, semaphore: asyncio.Semaphore)
             # Looked up only once a slot is free, so a duplicate of a node that just finished reuses it.
             cached = await asyncio.to_thread(_lookup_cache, ctx, cache_key)
             if cached is not None:
-                outputs = cached["outputs"]
+                outputs = await asyncio.to_thread(_adopt_cached_outputs, ctx, node_id, cached["outputs"])
                 detail = {"cached_from": {"run_id": cached["run_id"], "node_id": cached["node_id"]}}
                 # The command that produced the reused files, for the run view and the report.
                 command = (cached.get("detail") or {}).get("command")
