@@ -242,6 +242,10 @@ if _USE_PYDANTIC:
         plan_execution_budget_enabled: bool = Field(default=False, env="PLAN_EXECUTION_BUDGET_ENABLED")
         plan_output_contracts_required: bool = Field(default=False, env="PLAN_OUTPUT_CONTRACTS_REQUIRED")
         plan_acceptance_enabled: bool = Field(default=False, env="PLAN_ACCEPTANCE_ENABLED")
+        # Node pipelines (/pipelines): typed tool graphs run as background jobs through bio_tools.
+        pipelines_enabled: bool = Field(default=False, env="PIPELINES_ENABLED")
+        pipelines_max_parallel_nodes: int = Field(default=4, ge=1, le=16, env="PIPELINES_MAX_PARALLEL_NODES")
+        pipelines_max_upload_mb: int = Field(default=1024, ge=1, le=10240, env="PIPELINES_MAX_UPLOAD_MB")
         plan_task_budget_seconds: float = Field(default=7200, gt=0, le=86400, env="PLAN_TASK_BUDGET_SECONDS")
         plan_job_budget_seconds: float = Field(default=43200, gt=0, le=604800, env="PLAN_JOB_BUDGET_SECONDS")
         plan_synthesis_reserve_seconds: float = Field(default=120, ge=0, le=300, env="PLAN_SYNTHESIS_RESERVE_SECONDS")
@@ -651,6 +655,9 @@ else:
             self.plan_execution_budget_enabled = os.getenv('PLAN_EXECUTION_BUDGET_ENABLED','0').lower() in {'1','true','yes','on'}
             self.plan_output_contracts_required = os.getenv('PLAN_OUTPUT_CONTRACTS_REQUIRED','0').lower() in {'1','true','yes','on'}
             self.plan_acceptance_enabled = os.getenv('PLAN_ACCEPTANCE_ENABLED','0').lower() in {'1','true','yes','on'}
+            self.pipelines_enabled = os.getenv('PIPELINES_ENABLED','0').lower() in {'1','true','yes','on'}
+            self.pipelines_max_parallel_nodes = max(1,min(16,int(os.getenv('PIPELINES_MAX_PARALLEL_NODES','4'))))
+            self.pipelines_max_upload_mb = max(1,min(10240,int(os.getenv('PIPELINES_MAX_UPLOAD_MB','1024'))))
             self.plan_task_budget_seconds = max(1,min(86400,float(os.getenv('PLAN_TASK_BUDGET_SECONDS','7200'))))
             self.plan_job_budget_seconds = max(1,min(604800,float(os.getenv('PLAN_JOB_BUDGET_SECONDS','43200'))))
             self.plan_synthesis_reserve_seconds = max(0,min(300,float(os.getenv('PLAN_SYNTHESIS_RESERVE_SECONDS','120'))))

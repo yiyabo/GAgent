@@ -144,6 +144,18 @@ async def lifespan(_fastapi_app: FastAPI):
     except Exception as e:
         logging.getLogger("app.main").warning("Failed to fix stale chat runs: %s", e)
 
+    # Pipeline runs: their worker threads are gone after a restart too.
+    try:
+        from .services.pipelines.service import recover_on_startup
+
+        pipeline_fixed = recover_on_startup()
+        if pipeline_fixed > 0:
+            logging.getLogger("app.main").info(
+                "Marked %d interrupted pipeline run(s) as failed after restart", pipeline_fixed
+            )
+    except Exception as e:
+        logging.getLogger("app.main").warning("Failed to fix stale pipeline runs: %s", e)
+
     # Periodic lease sweep: reap runs whose worker died without releasing its
     # lease (multi-instance safe; see design/2026-09-24-run-signals-lease-state-machine.md).
     from .services.chat_run_signals import run_lease_sweeper

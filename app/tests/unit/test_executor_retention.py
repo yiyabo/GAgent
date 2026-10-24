@@ -21,6 +21,7 @@ from pathlib import Path
 
 from app.ops.retention import (
     SessionRecord,
+    collect_active_session_ids,
     disk_usage_report,
     effective_cap_gb,
     prune_session_archives,
@@ -389,3 +390,21 @@ def test_run_retention_prunes_expired_archives_only(isolated_app_env) -> None:
     assert report["archives_deleted"] == 1
     assert not stale.exists() and middle.exists() and recent.exists()
     assert "disk_free_pct" in report and "cap_gb_effective" in report
+
+def test_active_pipeline_runs_protect_their_workspace_session(isolated_app_env) -> None:
+    from app.database import init_db
+    from app.database_pool import get_db
+
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            "INSERT INTO pipeline_runs (id, pipeline_id, version, owner_id, session_id, status) "
+            "VALUES ('plr_a', 'pl_a', 1, 'u', 'pipeline_pl_a', 'running')"
+        )
+        conn.execute(
+            "INSERT INTO pipeline_runs (id, pipeline_id, version, owner_id, session_id, status) "
+            "VALUES ('plr_b', 'pl_b', 1, 'u', 'pipeline_pl_b', 'succeeded')"
+        )
+    kwargs = _retention_kwargs(isolated_app_env, isolated_app_env["db_root"] / "ops_backups")
+    active = collect_active_session_ids(kwargs["main_db"], kwargs["plan_store_dir"], kwargs["system_db"])
+    assert "pipeline_pl_a" in active and "pipeline_pl_b" not in active

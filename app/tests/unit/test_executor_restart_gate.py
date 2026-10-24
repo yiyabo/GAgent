@@ -79,3 +79,16 @@ def test_docker_ps_failure_does_not_mean_no_app(shell_stack):
     assert result.returncode != 0
     assert 'unknown' in result.stderr
     assert len((root/'calls').read_text().splitlines()) == 1
+
+def test_gate_counts_pipeline_runs_and_tolerates_databases_without_them(tmp_path):
+    database(tmp_path/'main/plan_registry.db', 'chat_runs')
+    state = probe(tmp_path)
+    assert state['state'] == 'idle' and state['active_pipeline_runs'] == 0
+    with sqlite3.connect(tmp_path/'main/plan_registry.db') as conn:
+        conn.execute('CREATE TABLE pipeline_runs(status TEXT)')
+        conn.execute("INSERT INTO pipeline_runs VALUES('succeeded')")
+    assert probe(tmp_path)['state'] == 'idle'
+    with sqlite3.connect(tmp_path/'main/plan_registry.db') as conn:
+        conn.execute("INSERT INTO pipeline_runs VALUES('running')")
+    state = probe(tmp_path)
+    assert state['state'] == 'busy' and state['active_pipeline_runs'] == 1
