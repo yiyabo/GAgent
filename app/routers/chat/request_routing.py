@@ -960,6 +960,7 @@ ALL_TOOLS: List[str] = [
     "review_pack_writer",
     "manuscript_writer",
     "sequence_fetch",
+    "ncbi_search",
     "url_fetch",
     "bio_tools",
     "phagescope",

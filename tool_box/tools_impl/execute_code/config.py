@@ -39,6 +39,7 @@ DEFAULT_ALLOWED_TOOLS = (
     "vision_reader",
     "lightrag_query",
     "sequence_fetch",
+    "ncbi_search",
     "url_fetch",
 )
 

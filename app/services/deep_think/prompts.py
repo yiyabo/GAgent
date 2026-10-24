@@ -546,6 +546,7 @@ def _build_shared_strategy_block(agent: "DeepThinkAgent") -> str:
         "code blocks, and do not dump all images at the end of the reply.\n\n"
         "=== TOOL PRIORITY ===\n"
         "- For accession-based FASTA downloads, call sequence_fetch first.\n"
+        "- To find accessions, genomes or assemblies at NCBI, summarize known accessions, or get a taxon's lineage, call ncbi_search; pass many ids in one call instead of looping one call per id.\n"
         "- For FASTA/FASTQ/sequence work, ALWAYS try bio_tools first before ad-hoc scripting (execute_code).\n"
         "- If the user provides inline sequence text (not a file), pass it as bio_tools(sequence_text=...).\n"
         "- If bio_tools routing is uncertain, call bio_tools(operation='help') first; use web_search only when help is insufficient.\n"
@@ -1025,8 +1026,18 @@ def _build_system_prompt(
             "Use for FASTA downloads by accession IDs before analysis. "
             "Params: {\"accession\": \"NC_001416.1\"} or "
             "{\"accessions\": [\"NC_001416.1\", \"NC_001417.1\"], "
-            "\"database\": \"nuccore|protein\", \"format\": \"fasta\"}. "
+            "\"database\": \"nuccore|protein\", \"format\": \"fasta|genbank|fasta_cds_aa|fasta_cds_na\"}. "
+            "genbank gives the annotated record; fasta_cds_aa gives every CDS protein of a genome. "
             "Do not script around a sequence_fetch failure with execute_code."
+        ),
+        "ncbi_search": (
+            "Read-only NCBI Entrez lookups. action='search' runs an Entrez query and returns record summaries "
+            "(accession, title, organism, taxid, length; assemblies also give https download links); "
+            "action='summary' summarizes known accessions/UIDs (up to 200 per call); action='taxonomy' gives a "
+            "taxon's lineage. Params: {\"action\": \"search\", \"db\": \"nuccore\", \"term\": "
+            "\"Klebsiella phage[title] AND complete genome[title]\", \"retmax\": 20}. "
+            "Host names go in [title]; [orgn] needs an existing taxon name. "
+            "Download sequences afterwards with sequence_fetch."
         ),
         "url_fetch": (
             "Public file downloader for direct http/https links. "

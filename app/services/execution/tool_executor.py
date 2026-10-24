@@ -72,6 +72,8 @@ class UnifiedToolExecutor:
         # CancelledError.
         "web_search": 600,
         "sequence_fetch": 120,
+        # Retries under the shared NCBI rate limit can queue a call for a while.
+        "ncbi_search": 120,
         "url_fetch": 180,
         "document_reader": 200,
         "graph_rag": 600,

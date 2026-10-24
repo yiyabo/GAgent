@@ -1,7 +1,9 @@
 """Sequence fetch tool.
 
-Deterministic accession -> FASTA downloader with strict domain allowlist,
-file output persistence, and structured error semantics.
+Deterministic accession -> FASTA / GenBank / CDS FASTA downloader with strict
+domain allowlist, file output persistence, and structured error semantics.
+NCBI requests go through the shared E-utilities client in ``ncbi_eutils``
+(one rate limit for the whole process, retries on 429).
 """
 
 from __future__ import annotations
@@ -16,6 +18,8 @@ from uuid import uuid4
 
 import httpx
 
+from . import ncbi_eutils
+
 _ALLOWED_HOSTS = {
     "eutils.ncbi.nlm.nih.gov",
     "www.ebi.ac.uk",
@@ -26,6 +30,20 @@ _DEFAULT_TIMEOUT_SEC = 30.0
 _DEFAULT_MAX_BYTES = 10 * 1024 * 1024
 _ACCESSION_PATTERN = re.compile(r"^[A-Za-z]{1,6}_?\d+(?:\.\d+)?$")
 _UNIPROT_PATTERN = re.compile(r"^[A-Za-z0-9]{6,10}$")
+_VERSIONED_ACCESSION = re.compile(r"\.\d+$")
+# One efetch request per this many accessions; longer id lists make the URL fragile.
+_EFETCH_BATCH = 200
+
+# format -> efetch rettype per database, plus the file suffix. CDS formats exist for nuccore only.
+_FORMATS: Dict[str, Dict[str, str]] = {
+    "fasta": {"nuccore": "fasta", "protein": "fasta", "suffix": ".fasta"},
+    "genbank": {"nuccore": "gb", "protein": "gp", "suffix": ".gb"},
+    "fasta_cds_aa": {"nuccore": "fasta_cds_aa", "suffix": ".faa"},
+    "fasta_cds_na": {"nuccore": "fasta_cds_na", "suffix": ".fna"},
+}
+
+# A versioned accession never changes, so its records can be reused across calls and sessions.
+_RECORD_CACHE = ncbi_eutils.TextCache()
 
 
 class SequenceFetchError(RuntimeError):
@@ -153,7 +171,7 @@ def _resolve_output_dir(session_id: Optional[str]) -> Path:
         ) from exc
 
 
-def _safe_output_name(value: Optional[str], first_accession: str) -> str:
+def _safe_output_name(value: Optional[str], first_accession: str, suffix: str = ".fasta") -> str:
     if isinstance(value, str) and value.strip():
         name = value.strip()
         if "/" in name or "\\" in name:
@@ -162,14 +180,14 @@ def _safe_output_name(value: Optional[str], first_accession: str) -> str:
                 code="invalid_output_name",
                 stage="input_validation",
             )
-        if not name.lower().endswith(".fasta"):
-            name = f"{name}.fasta"
+        if not name.lower().endswith(suffix):
+            name = f"{name}{suffix}"
         return name
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    suffix = uuid4().hex[:8]
+    random_part = uuid4().hex[:8]
     safe_acc = re.sub(r"[^A-Za-z0-9_.-]+", "_", first_accession)[:32] or "sequence"
-    return f"seqfetch_{safe_acc}_{timestamp}_{suffix}.fasta"
+    return f"seqfetch_{safe_acc}_{timestamp}_{random_part}{suffix}"
 
 
 def _ensure_host_allowed(url: str) -> None:
@@ -219,6 +237,40 @@ def _validate_fasta_text(text: str, *, max_bytes: int) -> Tuple[str, int]:
     return stripped + "\n", byte_count
 
 
+def _count_genbank_records(text: str) -> int:
+    return sum(1 for line in text.splitlines() if line.startswith("LOCUS "))
+
+
+def _validate_genbank_text(text: str, *, max_bytes: int) -> Tuple[str, int]:
+    byte_count = len(text.encode("utf-8", errors="replace"))
+    if byte_count > max_bytes:
+        raise SequenceFetchError(
+            f"Downloaded content exceeds max_bytes={max_bytes}",
+            code="payload_too_large",
+            stage="validation",
+        )
+    stripped = text.strip()
+    if not stripped or _count_genbank_records(stripped) <= 0:
+        raise SequenceFetchError(
+            "Downloaded payload is not a GenBank record.",
+            code="invalid_genbank",
+            stage="validation",
+        )
+    return stripped + "\n", byte_count
+
+
+def _validate_records(fmt: str, text: str, *, max_bytes: int) -> Tuple[str, int]:
+    if fmt == "genbank":
+        return _validate_genbank_text(text, max_bytes=max_bytes)
+    if fmt.startswith("fasta_cds") and not text.strip():
+        raise SequenceFetchError(
+            "NCBI returned no CDS features for these accessions (the record may be unannotated).",
+            code="no_cds_features",
+            stage="validation",
+        )
+    return _validate_fasta_text(text, max_bytes=max_bytes)
+
+
 def _normalize_database(database: Optional[str]) -> str:
     value = str(database or "nuccore").strip().lower()
     if value not in {"nuccore", "protein"}:
@@ -230,11 +282,18 @@ def _normalize_database(database: Optional[str]) -> str:
     return value
 
 
-def _normalize_format(fmt: Optional[str]) -> str:
+def _normalize_format(fmt: Optional[str], database: str = "nuccore") -> str:
     value = str(fmt or "fasta").strip().lower()
-    if value != "fasta":
+    spec = _FORMATS.get(value)
+    if spec is None:
         raise SequenceFetchError(
-            "Only FASTA format is supported.",
+            "format must be one of: " + ", ".join(_FORMATS),
+            code="invalid_format",
+            stage="input_validation",
+        )
+    if database not in spec:
+        raise SequenceFetchError(
+            f"format {value} is only available for database nuccore.",
             code="invalid_format",
             stage="input_validation",
         )
@@ -259,6 +318,43 @@ async def _http_get_text(
     return response.text
 
 
+async def _fetch_ncbi_records(
+    client: httpx.AsyncClient,
+    accessions: Sequence[str],
+    *,
+    database: str,
+    rettype: str,
+    timeout_sec: float,
+) -> str:
+    """efetch in batches of _EFETCH_BATCH through the shared rate limit; versioned batches are cached."""
+    parts: List[str] = []
+    for start in range(0, len(accessions), _EFETCH_BATCH):
+        batch = [str(item) for item in accessions[start : start + _EFETCH_BATCH]]
+        cacheable = all(_VERSIONED_ACCESSION.search(item) for item in batch)
+        key = ("efetch", database, rettype, tuple(item.upper() for item in batch))
+        text = _RECORD_CACHE.get(key) if cacheable else None
+        if text is None:
+            try:
+                response = await ncbi_eutils.request(
+                    "efetch.fcgi",
+                    {"db": database, "rettype": rettype, "retmode": "text", "id": ",".join(batch)},
+                    client=client,
+                    timeout=timeout_sec,
+                )
+            except ncbi_eutils.NcbiRequestError as exc:
+                raise SequenceFetchError(
+                    str(exc),
+                    code="upstream_rate_limited" if exc.rate_limited else "upstream_http_error",
+                    stage="network_request",
+                ) from exc
+            text = response.text
+            if cacheable and text.strip():
+                _RECORD_CACHE.put(key, text)
+        if text.strip():
+            parts.append(text.strip())
+    return "\n".join(parts) + ("\n" if parts else "")
+
+
 async def _fetch_ncbi_fasta(
     client: httpx.AsyncClient,
     accessions: Sequence[str],
@@ -266,14 +362,9 @@ async def _fetch_ncbi_fasta(
     database: str,
     timeout_sec: float,
 ) -> str:
-    url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
-    params = {
-        "db": database,
-        "rettype": "fasta",
-        "retmode": "text",
-        "id": ",".join(accessions),
-    }
-    return await _http_get_text(client, url, params=params, timeout_sec=timeout_sec)
+    return await _fetch_ncbi_records(
+        client, accessions, database=database, rettype="fasta", timeout_sec=timeout_sec
+    )
 
 
 async def _fetch_ena_fasta(
@@ -317,17 +408,18 @@ async def sequence_fetch_handler(
     max_bytes: Optional[Any] = None,
     persist: bool = True,
 ) -> Dict[str, Any]:
-    """Download FASTA records for accession(s).
+    """Download FASTA, GenBank or CDS FASTA records for accession(s).
 
-    By default the FASTA is persisted to the runtime output directory. With
+    By default the records are persisted to the runtime output directory. With
     ``persist=False`` nothing is written: no output directory is resolved or
-    created, and the FASTA is returned inline as ``fasta`` instead.
+    created, and the text is returned inline as ``fasta`` (or ``genbank``).
     """
 
     try:
         normalized_accessions = _normalize_accessions(accession, accessions)
         normalized_database = _normalize_database(database)
-        _normalize_format(format)
+        normalized_format = _normalize_format(format, normalized_database)
+        format_spec = _FORMATS[normalized_format]
         max_bytes_value = _parse_max_bytes(max_bytes)
 
         timeout = float(timeout_sec) if timeout_sec is not None else _DEFAULT_TIMEOUT_SEC
@@ -341,7 +433,7 @@ async def sequence_fetch_handler(
         output_path: Optional[Path] = None
         if persist:
             output_dir = _resolve_output_dir(session_id)
-            filename = _safe_output_name(output_name, normalized_accessions[0])
+            filename = _safe_output_name(output_name, normalized_accessions[0], suffix=format_spec["suffix"])
             output_path = (output_dir / filename).resolve()
             if output_path.parent != output_dir:
                 raise SequenceFetchError(
@@ -355,70 +447,90 @@ async def sequence_fetch_handler(
         byte_count = 0
         last_error: Optional[SequenceFetchError] = None
 
-        async with httpx.AsyncClient(follow_redirects=True) as client:
-            provider_chain = [
-                (
-                    "ncbi_efetch",
-                    lambda: _fetch_ncbi_fasta(
-                        client,
-                        normalized_accessions,
-                        database=normalized_database,
-                        timeout_sec=timeout,
-                    ),
-                ),
-            ]
-            if normalized_database == "nuccore":
-                provider_chain.append(
-                    (
-                        "ena_fasta",
-                        lambda: _fetch_ena_fasta(
-                            client,
-                            normalized_accessions,
-                            timeout_sec=timeout,
+        with ncbi_eutils.owner_scope(session_id):
+            async with httpx.AsyncClient(follow_redirects=True) as client:
+                if normalized_format == "fasta":
+                    provider_chain = [
+                        (
+                            "ncbi_efetch",
+                            lambda: _fetch_ncbi_fasta(
+                                client,
+                                normalized_accessions,
+                                database=normalized_database,
+                                timeout_sec=timeout,
+                            ),
                         ),
-                    )
-                )
-            elif normalized_database == "protein":
-                provider_chain.append(
-                    (
-                        "uniprot_fasta",
-                        lambda: _fetch_uniprot_fasta(
-                            client,
-                            normalized_accessions,
-                            timeout_sec=timeout,
+                    ]
+                    if normalized_database == "nuccore":
+                        provider_chain.append(
+                            (
+                                "ena_fasta",
+                                lambda: _fetch_ena_fasta(
+                                    client,
+                                    normalized_accessions,
+                                    timeout_sec=timeout,
+                                ),
+                            )
+                        )
+                    elif normalized_database == "protein":
+                        provider_chain.append(
+                            (
+                                "uniprot_fasta",
+                                lambda: _fetch_uniprot_fasta(
+                                    client,
+                                    normalized_accessions,
+                                    timeout_sec=timeout,
+                                ),
+                            )
+                        )
+                else:
+                    # GenBank and CDS FASTA exist only at NCBI: no ENA/UniProt fallback.
+                    provider_chain = [
+                        (
+                            "ncbi_efetch",
+                            lambda: _fetch_ncbi_records(
+                                client,
+                                normalized_accessions,
+                                database=normalized_database,
+                                rettype=format_spec[normalized_database],
+                                timeout_sec=timeout,
+                            ),
                         ),
-                    )
-                )
+                    ]
 
-            for candidate_provider, fetcher in provider_chain:
-                try:
-                    candidate_text = await fetcher()
-                    validated_text, validated_bytes = _validate_fasta_text(
-                        candidate_text,
-                        max_bytes=max_bytes_value,
-                    )
-                    provider = candidate_provider
-                    fasta_text = validated_text
-                    byte_count = validated_bytes
-                    last_error = None
-                    break
-                except SequenceFetchError as exc:
-                    last_error = exc
+                for candidate_provider, fetcher in provider_chain:
+                    try:
+                        candidate_text = await fetcher()
+                        validated_text, validated_bytes = _validate_records(
+                            normalized_format,
+                            candidate_text,
+                            max_bytes=max_bytes_value,
+                        )
+                        provider = candidate_provider
+                        fasta_text = validated_text
+                        byte_count = validated_bytes
+                        last_error = None
+                        break
+                    except SequenceFetchError as exc:
+                        last_error = exc
 
-            if not fasta_text:
-                if last_error is not None:
-                    raise last_error
-                raise SequenceFetchError(
-                    "No sequence provider returned valid FASTA data.",
-                    code="download_failed",
-                    stage="network_request",
-                )
+                if not fasta_text:
+                    if last_error is not None:
+                        raise last_error
+                    raise SequenceFetchError(
+                        "No sequence provider returned valid records.",
+                        code="download_failed",
+                        stage="network_request",
+                    )
 
         if output_path is not None:
             output_path.write_text(fasta_text, encoding="utf-8")
 
         sha256 = hashlib.sha256(fasta_text.encode("utf-8", errors="replace")).hexdigest()
-        record_count = _count_fasta_records(fasta_text)
+        if normalized_format == "genbank":
+            record_count = _count_genbank_records(fasta_text)
+        else:
+            record_count = _count_fasta_records(fasta_text)
 
         output_file_rel: Optional[str] = None
         if output_path is not None and isinstance(session_id, str) and session_id.strip():
@@ -435,7 +547,7 @@ async def sequence_fetch_handler(
             "tool": "sequence_fetch",
             "accessions": normalized_accessions,
             "database": normalized_database,
-            "format": "fasta",
+            "format": normalized_format,
             "provider": provider,
             "record_count": record_count,
             "bytes": byte_count,
@@ -445,7 +557,7 @@ async def sequence_fetch_handler(
         if output_path is not None:
             payload["output_file"] = str(output_path)
         else:
-            payload["fasta"] = fasta_text
+            payload["genbank" if normalized_format == "genbank" else "fasta"] = fasta_text
         if output_file_rel:
             payload["output_file_rel"] = output_file_rel
         return payload
@@ -469,8 +581,10 @@ async def sequence_fetch_handler(
 sequence_fetch_tool = {
     "name": "sequence_fetch",
     "description": (
-        "Deterministic accession-to-FASTA downloader with strict allowlist. "
-        "Use this when users ask to download sequence FASTA by accession IDs."
+        "Deterministic accession downloader with strict allowlist: FASTA, GenBank "
+        "(annotation), or a genome's CDS proteins / CDS nucleotides as FASTA. "
+        "Use this when users ask to download sequences or records by accession IDs; "
+        "pass many accessions in one call instead of one call per accession."
     ),
     "category": "bioinformatics",
     "parameters_schema": {
@@ -493,9 +607,13 @@ sequence_fetch_tool = {
             },
             "format": {
                 "type": "string",
-                "enum": ["fasta"],
+                "enum": ["fasta", "genbank", "fasta_cds_aa", "fasta_cds_na"],
                 "default": "fasta",
-                "description": "Sequence output format.",
+                "description": (
+                    "fasta: sequences. genbank: full annotated record (features, products). "
+                    "fasta_cds_aa / fasta_cds_na: every annotated CDS of a nuccore record as protein / "
+                    "nucleotide FASTA (nuccore only)."
+                ),
             },
             "session_id": {
                 "type": "string",
@@ -503,7 +621,7 @@ sequence_fetch_tool = {
             },
             "output_name": {
                 "type": "string",
-                "description": "Optional output filename ('.fasta' appended if missing).",
+                "description": "Optional output filename (the format's suffix .fasta/.gb/.faa/.fna is appended if missing).",
             },
             "timeout_sec": {
                 "type": "number",
@@ -522,9 +640,10 @@ sequence_fetch_tool = {
         ],
     },
     "handler": sequence_fetch_handler,
-    "tags": ["sequence", "fasta", "accession", "download", "ncbi", "ena"],
+    "tags": ["sequence", "fasta", "genbank", "cds", "accession", "download", "ncbi", "ena"],
     "examples": [
         "Download NC_001416.1 as FASTA",
         "Download accessions NC_001416.1 and NC_001417.1",
+        "Download the proteins of NC_001604.1 (format fasta_cds_aa)",
     ],
 }

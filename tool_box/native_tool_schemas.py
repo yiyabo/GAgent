@@ -70,8 +70,10 @@ NATIVE_TOOL_CONTENT: Dict[str, Dict[str, Any]] = {
     "sequence_fetch": {
         # 已对齐 impl（2026-09-24 漂移合并）：文案与默认值同步 impl
         "description": (
-            "Deterministic accession-to-FASTA downloader with strict allowlist. "
-            "Use this when users ask to download sequence FASTA by accession IDs."
+            "Deterministic accession downloader with strict allowlist: FASTA, GenBank "
+            "(annotation), or a genome's CDS proteins / CDS nucleotides as FASTA. "
+            "Use this when users ask to download sequences or records by accession IDs; "
+            "pass many accessions in one call instead of one call per accession."
         ),
         "parameters": {
             "type": "object",
@@ -93,9 +95,13 @@ NATIVE_TOOL_CONTENT: Dict[str, Dict[str, Any]] = {
                 },
                 "format": {
                     "type": "string",
-                    "enum": ["fasta"],
+                    "enum": ["fasta", "genbank", "fasta_cds_aa", "fasta_cds_na"],
                     "default": "fasta",
-                    "description": "Sequence output format.",
+                    "description": (
+                        "fasta: sequences. genbank: full annotated record (features, products). "
+                        "fasta_cds_aa / fasta_cds_na: every annotated CDS of a nuccore record as protein / "
+                        "nucleotide FASTA (nuccore only)."
+                    ),
                 },
                 "session_id": {
                     "type": "string",
@@ -103,7 +109,7 @@ NATIVE_TOOL_CONTENT: Dict[str, Dict[str, Any]] = {
                 },
                 "output_name": {
                     "type": "string",
-                    "description": "Optional output filename ('.fasta' appended if missing).",
+                    "description": "Optional output filename (the format's suffix .fasta/.gb/.faa/.fna is appended if missing).",
                 },
                 "timeout_sec": {
                     "type": "number",
@@ -120,6 +126,64 @@ NATIVE_TOOL_CONTENT: Dict[str, Dict[str, Any]] = {
                 {"required": ["accession"]},
                 {"required": ["accessions"]},
             ],
+        },
+    },
+    "ncbi_search": {
+        # Same content as tools_impl/ncbi_search.py (locked by test_native_tool_schemas).
+        "description": (
+            "Search NCBI Entrez and read record summaries: find accessions with an Entrez query "
+            "(nuccore, protein, assembly, taxonomy, gene, bioproject, biosample, sra), summarize known "
+            "accessions or UIDs, or look up a taxon's lineage. Returns compact metadata only: download "
+            "sequences or GenBank records with sequence_fetch, and assembly files from the https links it "
+            "returns with url_fetch. All NCBI calls share one rate limit, so summarize many ids in one call."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["search", "summary", "taxonomy"],
+                    "description": (
+                        "search: run an Entrez query (term) and return the matching records' summaries. "
+                        "summary: summaries for given ids (UIDs or accessions; GCF_/GCA_ accessions for assembly). "
+                        "taxonomy: lineage, rank and names for a taxon name (term) or taxids (ids)."
+                    ),
+                },
+                "db": {
+                    "type": "string",
+                    "enum": ["nuccore", "protein", "assembly", "taxonomy", "gene", "bioproject", "biosample", "sra"],
+                    "default": "nuccore",
+                    "description": "Entrez database for search and summary (taxonomy always uses the taxonomy database).",
+                },
+                "term": {
+                    "type": "string",
+                    "description": (
+                        "Entrez query, e.g. 'Escherichia phage T7[orgn] AND complete genome[title]', "
+                        "'Klebsiella phage[title] AND complete genome[title] AND srcdb_refseq[prop]', "
+                        "'Viruses[orgn] AND Klebsiella[title] AND 30000:60000[slen]'. [orgn] needs an existing taxon "
+                        "name, so put host names in [title]. For taxonomy, a taxon name."
+                    ),
+                },
+                "ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "UIDs or accessions for summary, or taxids for taxonomy (at most 200).",
+                },
+                "retmax": {
+                    "type": "integer",
+                    "default": 20,
+                    "minimum": 1,
+                    "maximum": 100,
+                    "description": "How many matches search returns (the total is in count).",
+                },
+                "retstart": {
+                    "type": "integer",
+                    "default": 0,
+                    "minimum": 0,
+                    "description": "Offset into the matches for paging through a search (use next_retstart).",
+                },
+            },
+            "required": ["action"],
         },
     },
     "url_fetch": {

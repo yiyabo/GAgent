@@ -114,6 +114,7 @@ _READ_ONLY_CONCURRENT_TOOLS = {
     "lightrag_query",
     "graph_rag",
     "sequence_fetch",
+    "ncbi_search",
 }
 
 # Tools that MUST NOT be concurrent-safe

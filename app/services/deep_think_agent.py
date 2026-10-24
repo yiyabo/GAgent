@@ -263,6 +263,8 @@ def summarize_tool_step_display(step: ThinkingStep, *, language: str) -> str:
         return _localized_text(language, "处理文件内容", "Working with files")
     if tool_name == "code_executor":
         return _localized_text(language, "执行代码与分析", "Executing code and analysis")
+    if tool_name == "ncbi_search":
+        return _localized_text(language, "查询 NCBI", "Querying NCBI")
     if tool_name in {"bio_tools", "phagescope", "sequence_fetch", "url_fetch"}:
         return _localized_text(language, "运行分析工具", "Running analysis tools")
     if tool_name == "vision_reader":

@@ -22,6 +22,7 @@ from .phagescope_research import phagescope_research_tool
 from .result_interpreter import result_interpreter_tool
 from .plan_tools import plan_operation_tool
 from .sequence_fetch import sequence_fetch_tool
+from .ncbi_search import ncbi_search_tool
 from .url_fetch import url_fetch_tool
 from .scientific_figure_generator import scientific_figure_generator_tool
 from .terminal_session import terminal_session_tool
@@ -88,6 +89,7 @@ __all__ = [
     "result_interpreter_tool",
     "plan_operation_tool",
     "sequence_fetch_tool",
+    "ncbi_search_tool",
     "url_fetch_tool",
     "scientific_figure_generator_tool",
     "terminal_session_tool",

@@ -30,6 +30,7 @@ from .tools_impl import (
     review_pack_writer_tool,
     scientific_figure_generator_tool,
     sequence_fetch_tool,
+    ncbi_search_tool,
     url_fetch_tool,
     terminal_session_tool,
     execute_code_tool,
@@ -85,6 +86,11 @@ _TOOL_METADATA: Dict[str, Dict[str, Any]] = {
         "is_read_only": True,
         "is_concurrent_safe": True,
         "search_hint": "ncbi genbank sequence fasta accession fetch",
+    },
+    "ncbi_search": {
+        "is_read_only": True,
+        "is_concurrent_safe": True,
+        "search_hint": "ncbi entrez search accession summary taxonomy lineage assembly genome metadata",
     },
     "url_fetch": {
         "search_hint": "download public url link file http https fetch",
@@ -175,6 +181,7 @@ _STANDARD_TOOLS: List[Dict[str, Any]] = [
     phagescope_tool,
     phagescope_research_tool,
     sequence_fetch_tool,
+    ncbi_search_tool,
     url_fetch_tool,
     terminal_session_tool,
     bio_tools_tool,

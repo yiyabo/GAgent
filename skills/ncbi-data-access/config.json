@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "category": "router",
+  "scope": "both",
+  "priority": 60,
+  "selection": {
+    "keywords": [
+      "ncbi",
+      "entrez",
+      "genbank",
+      "refseq",
+      "accession",
+      "nuccore",
+      "assembly",
+      "taxid",
+      "taxonomy lineage",
+      "download genome",
+      "download sequence",
+      "proteome",
+      "sra",
+      "bioproject",
+      "biosample"
+    ],
+    "path_suffixes": [
+      ".gb",
+      ".gbk",
+      ".gbff"
+    ],
+    "tool_hints": [
+      "ncbi_search",
+      "sequence_fetch",
+      "url_fetch"
+    ]
+  },
+  "injection": {
+    "mode": "summary_with_references",
+    "max_chars": 4000
+  },
+  "references": [
+    "references/entrez-query-cookbook.md",
+    "references/limits-and-bulk.md"
+  ],
+  "scripts": []
+}
