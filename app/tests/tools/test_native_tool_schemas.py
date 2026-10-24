@@ -55,6 +55,7 @@ ALL_NATIVE_TOOLS = [
     "literature_pipeline",
     "load_skill",
     "manuscript_writer",
+    "ncbi_search",
     "phagescope",
     "phagescope_research",
     "plan_operation",
@@ -244,6 +245,12 @@ def test_drift_merged_entries_track_impl_truth() -> None:
         for param, spec in impl_props(tool).items():
             if "default" in spec:
                 assert native_props(name)[param].get("default") == spec["default"], (name, param)
+
+    # ncbi_search: native content is a verbatim copy of the impl schema and description.
+    from tool_box.tools_impl import ncbi_search_tool
+
+    assert content["ncbi_search"]["parameters"] == ncbi_search_tool["parameters_schema"]
+    assert content["ncbi_search"]["description"] == ncbi_search_tool["description"]
 
     # graph_rag: the phantom `mode` param (silently dropped by the handler) stays gone.
     assert "mode" not in native_props("graph_rag")

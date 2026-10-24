@@ -93,6 +93,8 @@ def _retention_kwargs(isolated_app_env: dict, backup_dir: Path) -> dict:
         "main_db": Path(db.get_main_db_path()),
         "plan_store_dir": db.get_plan_store_dir(),
         "system_db": Path(db.get_system_jobs_db_path()),
+        # The free-space floor depends on the machine's disk; effective_cap_gb has its own test.
+        "free_floor_gb": 0.0,
     }
 
 

@@ -36,6 +36,8 @@ from xml.etree import ElementTree as ET
 
 import httpx
 
+from . import ncbi_eutils
+
 logger = logging.getLogger(__name__)
 
 _PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve()
@@ -94,29 +96,19 @@ _PMC_LEGACY_PDF_TIMEOUT = 30.0
 _PMC_DOWNLOAD_CONCURRENCY = 6
 
 # ---------------------------------------------------------------------------
-# NCBI rate limiter — global singleton
-# NCBI allows 3 requests/sec without API key, 10 with key.
-# We use a conservative 2.5 req/s to stay well within limits across
-# concurrent literature_pipeline invocations.
+# NCBI pacing: E-utility calls share one process-wide schedule with every other
+# tool (ncbi_eutils), so literature searches and sequence downloads cannot
+# exceed NCBI's per-IP limit together.
 # ---------------------------------------------------------------------------
-_NCBI_RATE_LIMIT_INTERVAL = 0.4  # seconds between requests (≈2.5 req/s)
 _NCBI_MAX_RETRIES = 3
 _NCBI_RETRY_BACKOFF_BASE = 2.0  # seconds; doubling each retry
-_ncbi_rate_lock = asyncio.Lock()
-_ncbi_last_request_time: float = 0.0
 
 
 async def _ncbi_throttle() -> None:
-    """Ensure at least _NCBI_RATE_LIMIT_INTERVAL seconds between NCBI calls."""
-    global _ncbi_last_request_time
-    import time
+    """Wait for this request's slot in the shared NCBI E-utilities schedule."""
+    await ncbi_eutils.wait_for_slot()
 
-    async with _ncbi_rate_lock:
-        now = time.monotonic()
-        elapsed = now - _ncbi_last_request_time
-        if elapsed < _NCBI_RATE_LIMIT_INTERVAL:
-            await asyncio.sleep(_NCBI_RATE_LIMIT_INTERVAL - elapsed)
-        _ncbi_last_request_time = time.monotonic()
+
 _COVERAGE_THRESHOLDS = {
     "min_total_studies": 15,
     "min_full_text_studies": 6,
@@ -424,6 +416,7 @@ async def _pubmed_esearch(client: httpx.AsyncClient, term: str, retmax: int) -> 
         "retmode": "json",
         "retmax": str(max(1, min(int(retmax), 500))),
         "term": term,
+        **ncbi_eutils.common_params(),
     }
     last_exc: Optional[Exception] = None
     for attempt in range(_NCBI_MAX_RETRIES):
@@ -462,6 +455,7 @@ async def _pubmed_efetch_xml(client: httpx.AsyncClient, pmids: List[str]) -> str
         "db": "pubmed",
         "retmode": "xml",
         "id": ",".join(pmids),
+        **ncbi_eutils.common_params(),
     }
     last_exc: Optional[Exception] = None
     for attempt in range(_NCBI_MAX_RETRIES):

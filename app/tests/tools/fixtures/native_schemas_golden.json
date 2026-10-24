@@ -44,7 +44,7 @@
     },
     {
       "function": {
-        "description": "Deterministic accession-to-FASTA downloader with strict allowlist. Use this when users ask to download sequence FASTA by accession IDs.",
+        "description": "Deterministic accession downloader with strict allowlist: FASTA, GenBank (annotation), or a genome's CDS proteins / CDS nucleotides as FASTA. Use this when users ask to download sequences or records by accession IDs; pass many accessions in one call instead of one call per accession.",
         "name": "sequence_fetch",
         "parameters": {
           "anyOf": [
@@ -82,9 +82,12 @@
             },
             "format": {
               "default": "fasta",
-              "description": "Sequence output format.",
+              "description": "fasta: sequences. genbank: full annotated record (features, products). fasta_cds_aa / fasta_cds_na: every annotated CDS of a nuccore record as protein / nucleotide FASTA (nuccore only).",
               "enum": [
-                "fasta"
+                "fasta",
+                "genbank",
+                "fasta_cds_aa",
+                "fasta_cds_na"
               ],
               "type": "string"
             },
@@ -94,7 +97,7 @@
               "type": "integer"
             },
             "output_name": {
-              "description": "Optional output filename ('.fasta' appended if missing).",
+              "description": "Optional output filename (the format's suffix .fasta/.gb/.faa/.fna is appended if missing).",
               "type": "string"
             },
             "session_id": {
@@ -107,6 +110,69 @@
               "type": "number"
             }
           },
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
+        "description": "Search NCBI Entrez and read record summaries: find accessions with an Entrez query (nuccore, protein, assembly, taxonomy, gene, bioproject, biosample, sra), summarize known accessions or UIDs, or look up a taxon's lineage. Returns compact metadata only: download sequences or GenBank records with sequence_fetch, and assembly files from the https links it returns with url_fetch. All NCBI calls share one rate limit, so summarize many ids in one call.",
+        "name": "ncbi_search",
+        "parameters": {
+          "properties": {
+            "action": {
+              "description": "search: run an Entrez query (term) and return the matching records' summaries. summary: summaries for given ids (UIDs or accessions; GCF_/GCA_ accessions for assembly). taxonomy: lineage, rank and names for a taxon name (term) or taxids (ids).",
+              "enum": [
+                "search",
+                "summary",
+                "taxonomy"
+              ],
+              "type": "string"
+            },
+            "db": {
+              "default": "nuccore",
+              "description": "Entrez database for search and summary (taxonomy always uses the taxonomy database).",
+              "enum": [
+                "nuccore",
+                "protein",
+                "assembly",
+                "taxonomy",
+                "gene",
+                "bioproject",
+                "biosample",
+                "sra"
+              ],
+              "type": "string"
+            },
+            "ids": {
+              "description": "UIDs or accessions for summary, or taxids for taxonomy (at most 200).",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "retmax": {
+              "default": 20,
+              "description": "How many matches search returns (the total is in count).",
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "retstart": {
+              "default": 0,
+              "description": "Offset into the matches for paging through a search (use next_retstart).",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "term": {
+              "description": "Entrez query, e.g. 'Escherichia phage T7[orgn] AND complete genome[title]', 'Klebsiella phage[title] AND complete genome[title] AND srcdb_refseq[prop]', 'Viruses[orgn] AND Klebsiella[title] AND 30000:60000[slen]'. [orgn] needs an existing taxon name, so put host names in [title]. For taxonomy, a taxon name.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "action"
+          ],
           "type": "object"
         }
       },
@@ -1649,6 +1715,69 @@
     },
     {
       "function": {
+        "description": "Search NCBI Entrez and read record summaries: find accessions with an Entrez query (nuccore, protein, assembly, taxonomy, gene, bioproject, biosample, sra), summarize known accessions or UIDs, or look up a taxon's lineage. Returns compact metadata only: download sequences or GenBank records with sequence_fetch, and assembly files from the https links it returns with url_fetch. All NCBI calls share one rate limit, so summarize many ids in one call.",
+        "name": "ncbi_search",
+        "parameters": {
+          "properties": {
+            "action": {
+              "description": "search: run an Entrez query (term) and return the matching records' summaries. summary: summaries for given ids (UIDs or accessions; GCF_/GCA_ accessions for assembly). taxonomy: lineage, rank and names for a taxon name (term) or taxids (ids).",
+              "enum": [
+                "search",
+                "summary",
+                "taxonomy"
+              ],
+              "type": "string"
+            },
+            "db": {
+              "default": "nuccore",
+              "description": "Entrez database for search and summary (taxonomy always uses the taxonomy database).",
+              "enum": [
+                "nuccore",
+                "protein",
+                "assembly",
+                "taxonomy",
+                "gene",
+                "bioproject",
+                "biosample",
+                "sra"
+              ],
+              "type": "string"
+            },
+            "ids": {
+              "description": "UIDs or accessions for summary, or taxids for taxonomy (at most 200).",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "retmax": {
+              "default": 20,
+              "description": "How many matches search returns (the total is in count).",
+              "maximum": 100,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "retstart": {
+              "default": 0,
+              "description": "Offset into the matches for paging through a search (use next_retstart).",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "term": {
+              "description": "Entrez query, e.g. 'Escherichia phage T7[orgn] AND complete genome[title]', 'Klebsiella phage[title] AND complete genome[title] AND srcdb_refseq[prop]', 'Viruses[orgn] AND Klebsiella[title] AND 30000:60000[slen]'. [orgn] needs an existing taxon name, so put host names in [title]. For taxonomy, a taxon name.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "action"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
         "description": "Agent Gateway: action=gateway, gateway_action=capabilities discovers configured channels. gateway_action supports data_health, analysis_health, overview, datasets, phages, phage, phage_proteins, phage_features, phage_sequence, protein, hosts, families, family, family_members, structures, submit, status, results, save_results. Put inputs in gateway_params. Use phage_id for the numeric catalog id; use job_id for an analysis job. submit accepts modules and exactly one of fasta, file_path, accession; returns a job_id promptly. Then query status and save_results into the current task workspace. API keys come from server configuration. Results may be truncated previews: inspect truncation metadata before using them as full input. No content approval is required. Legacy website actions remain available. PhageScope cloud platform for phage genome analysis. ASYNC service. Use for reachability and remote workflow questions: call action=ping first (HTTP check); do not infer connectivity from local file listing. Documented flows center on userid; do not ask users for a generic 'API Token' unless they or platform docs explicitly require Bearer auth. Workflow: submit -> task_list/task_detail -> result. After submit, report the taskid and tell the user to check status later. IMPORTANT: result/quality/task_detail/download return API/JSON (or one file), not a full local folder tree; for a complete on-disk bundle (metadata/, annotation/, raw_api_responses/, summary.json), use action=save_all with the numeric taskid after the remote task succeeds. Batch: action=batch_submit submits multiple phage ids (default strategy multi_one_task = one remote taskid) and writes a manifest JSON under the session work directory; batch_reconcile diffs requested ids vs result/phage rows; batch_retry re-submits missing ids one strain per task. Prefer these over memorizing taskids in chat.",
         "name": "phagescope",
         "parameters": {
@@ -2339,7 +2468,7 @@
     },
     {
       "function": {
-        "description": "Deterministic accession-to-FASTA downloader with strict allowlist. Use this when users ask to download sequence FASTA by accession IDs.",
+        "description": "Deterministic accession downloader with strict allowlist: FASTA, GenBank (annotation), or a genome's CDS proteins / CDS nucleotides as FASTA. Use this when users ask to download sequences or records by accession IDs; pass many accessions in one call instead of one call per accession.",
         "name": "sequence_fetch",
         "parameters": {
           "anyOf": [
@@ -2377,9 +2506,12 @@
             },
             "format": {
               "default": "fasta",
-              "description": "Sequence output format.",
+              "description": "fasta: sequences. genbank: full annotated record (features, products). fasta_cds_aa / fasta_cds_na: every annotated CDS of a nuccore record as protein / nucleotide FASTA (nuccore only).",
               "enum": [
-                "fasta"
+                "fasta",
+                "genbank",
+                "fasta_cds_aa",
+                "fasta_cds_na"
               ],
               "type": "string"
             },
@@ -2389,7 +2521,7 @@
               "type": "integer"
             },
             "output_name": {
-              "description": "Optional output filename ('.fasta' appended if missing).",
+              "description": "Optional output filename (the format's suffix .fasta/.gb/.faa/.fna is appended if missing).",
               "type": "string"
             },
             "session_id": {
@@ -2677,6 +2809,7 @@
   "executor_available_tools": [
     "web_search",
     "sequence_fetch",
+    "ncbi_search",
     "url_fetch",
     "bio_tools",
     "scientific_figure_generator",

@@ -1,42 +1,45 @@
-"""Tests for NCBI rate-limiting and retry logic in literature_pipeline."""
+"""literature_pipeline paces its NCBI calls through the shared E-utilities schedule."""
 from __future__ import annotations
 
-import asyncio
 import time
 
 import pytest
 
-from tool_box.tools_impl.literature_pipeline import (
-    _ncbi_throttle,
-    _NCBI_RATE_LIMIT_INTERVAL,
-)
+from tool_box.tools_impl import ncbi_eutils
+from tool_box.tools_impl.literature_pipeline import _ncbi_throttle
+
+
+@pytest.fixture(autouse=True)
+def _fresh_schedule(monkeypatch):
+    monkeypatch.delenv(ncbi_eutils.ENV_API_KEY, raising=False)
+    monkeypatch.delenv(ncbi_eutils.ENV_MAX_RPS, raising=False)
+    ncbi_eutils._SCHEDULE.reset()
+    yield
+    ncbi_eutils._SCHEDULE.reset()
 
 
 @pytest.mark.asyncio
 async def test_ncbi_throttle_enforces_interval():
-    """Two consecutive _ncbi_throttle() calls should be spaced by at least the interval."""
-    # Reset the global state
-    import tool_box.tools_impl.literature_pipeline as mod
-    mod._ncbi_last_request_time = 0.0
-
+    """Two consecutive _ncbi_throttle() calls are spaced by at least one interval."""
+    interval = 1.0 / ncbi_eutils.max_requests_per_second()
     start = time.monotonic()
     await _ncbi_throttle()
     await _ncbi_throttle()
-    elapsed = time.monotonic() - start
-
-    # Second call should have waited at least _NCBI_RATE_LIMIT_INTERVAL
-    assert elapsed >= _NCBI_RATE_LIMIT_INTERVAL * 0.9  # small tolerance
+    assert time.monotonic() - start >= interval * 0.9
 
 
 @pytest.mark.asyncio
 async def test_ncbi_throttle_no_wait_after_interval():
-    """If enough time has passed, _ncbi_throttle() should not sleep."""
-    import tool_box.tools_impl.literature_pipeline as mod
-    # Pretend the last request was long ago
-    mod._ncbi_last_request_time = time.monotonic() - 10.0
-
+    """With no recent NCBI call, _ncbi_throttle() returns almost immediately."""
     start = time.monotonic()
     await _ncbi_throttle()
-    elapsed = time.monotonic() - start
+    assert time.monotonic() - start < 0.1
 
-    assert elapsed < 0.1  # should return almost immediately
+
+@pytest.mark.asyncio
+async def test_a_slot_booked_by_another_tool_delays_literature_calls():
+    """sequence_fetch and literature_pipeline share one schedule, so together they stay under NCBI's limit."""
+    ncbi_eutils._SCHEDULE.reserve(0.3)  # another tool just booked the current slot
+    start = time.monotonic()
+    await _ncbi_throttle()
+    assert time.monotonic() - start >= 0.25

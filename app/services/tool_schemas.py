@@ -327,6 +327,7 @@ SUBMIT_FINAL_ANSWER_SCHEMA: Dict[str, Any] = {
 EXECUTOR_AVAILABLE_TOOLS: List[str] = [
     "web_search",
     "sequence_fetch",
+    "ncbi_search",
     "url_fetch",
     "bio_tools",
     "scientific_figure_generator",

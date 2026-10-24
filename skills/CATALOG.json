@@ -285,6 +285,25 @@
         "notes": "The examples in reference/node_mcp_server.md still use the `mcp` 1.x TypeScript SDK API and reference/python_mcp_server.md examples still use the 1.x `FastMCP` import (flagged at the top of the file); both are guidance for code the model writes in a workspace, not code that runs in the platform. Not verified against a real build in this change."
       }
     },
+    "ncbi-data-access": {
+      "origin": {
+        "kind": "internal",
+        "source": "gagent",
+        "path": "skills/ncbi-data-access",
+        "commit": "c4855da1732feaa29b296519d2cb5cbe1b22644a",
+        "license": "internal"
+      },
+      "modified": false,
+      "modifications": [],
+      "review": {
+        "scanner": "passed",
+        "scanner_version": 1,
+        "reviewed_by": "claude (AI), full text read",
+        "reviewed_at": "2026-10-24",
+        "human_signoff": false,
+        "notes": "Written in-house alongside the ncbi_search tool; commit is the base it was written on. Every example query was run against the live E-utilities before it was written down. No scripts, no external URLs."
+      }
+    },
     "paper-polish": {
       "origin": {
         "kind": "third_party",

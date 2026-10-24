@@ -283,7 +283,7 @@ class _DeepThinkMethods:
         _tool_names_in_instruction = [
             t for t in [
                 "literature_pipeline", "web_search", "code_executor", "bio_tools",
-                "sequence_fetch", "document_reader", "vision_reader", "graph_rag",
+                "sequence_fetch", "ncbi_search", "document_reader", "vision_reader", "graph_rag",
                 "phagescope_research", "phagescope", "manuscript_writer", "review_pack_writer",
                 "file_operations", "terminal_session", "deliverable_submit",
             ]
@@ -564,7 +564,7 @@ class _DeepThinkMethods:
         repair_resume = bool(repair_finalization and
                              repair_finalization.payload.get("metadata", {}).get("resumed_delivery_gap"))
         tool_names = [
-            "web_search", "graph_rag", "sequence_fetch", "code_executor",
+            "web_search", "graph_rag", "sequence_fetch", "ncbi_search", "code_executor",
             "file_operations", "document_reader", "vision_reader", "bio_tools",
             "literature_pipeline", "review_pack_writer", "phagescope_research",
             "phagescope", "plan_operation", "manuscript_writer",
@@ -572,7 +572,7 @@ class _DeepThinkMethods:
         ]
         if repair_resume:
             tool_names = [name for name in tool_names if name not in {
-                "web_search", "graph_rag", "sequence_fetch", "literature_pipeline",
+                "web_search", "graph_rag", "sequence_fetch", "ncbi_search", "literature_pipeline",
                 "phagescope_research", "phagescope", "plan_operation",
             }]
             tool_names.append("scientific_figure_generator")

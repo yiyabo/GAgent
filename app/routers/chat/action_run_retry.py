@@ -44,6 +44,7 @@ _AUTO_DEEP_THINK_RETRY_AVAILABLE_TOOLS: List[str] = [
     "lightrag_query",
     "graph_rag",
     "sequence_fetch",
+    "ncbi_search",
     "url_fetch",
     "scientific_figure_generator",
     "code_executor",

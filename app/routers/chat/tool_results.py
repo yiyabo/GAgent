@@ -726,6 +726,36 @@ def sanitize_tool_result(tool_name: str, raw_result: Any) -> Dict[str, Any]:
             sanitized["summary"] = _trim_text(summary_value, limit=1000)
         return sanitized
 
+    if tool_name == "ncbi_search" and isinstance(raw_result, dict):
+        # The generic path keeps only three title/url rows; NCBI records are the whole answer.
+        sanitized = {"tool": tool_name, "success": raw_result.get("success", False)}
+        for key in (
+            "action",
+            "db",
+            "term",
+            "query",
+            "count",
+            "retstart",
+            "returned",
+            "requested",
+            "next_retstart",
+            "query_translation",
+            "error",
+            "error_code",
+            "retry_hint",
+        ):
+            if key in raw_result:
+                sanitized[key] = raw_result[key]
+        for key in ("records", "taxa"):
+            value = raw_result.get(key)
+            if isinstance(value, list):
+                sanitized[key] = value[:100]
+        for key in ("notes", "missing"):
+            value = raw_result.get(key)
+            if isinstance(value, list) and value:
+                sanitized[key] = [str(item)[:300] for item in value[:50]]
+        return sanitized
+
     if tool_name.startswith(MCP_TOOL_PREFIX) and isinstance(raw_result, dict):
         # An external server's reply. The generic path below would keep only the
         # success flag and drop the data and the "untrusted" notice with it.
@@ -1345,6 +1375,28 @@ def summarize_tool_result(tool_name: str, result: Dict[str, Any]) -> str:
             parts.append(f"provider={provider}")
         if isinstance(output_file, str) and output_file:
             parts.append(f"saved to {output_file}")
+        return "; ".join(parts) + "."
+
+    if tool_name == "ncbi_search":
+        if result.get("success") is False:
+            return f"NCBI search failed: {result.get('error') or 'unknown error'}"
+        action = result.get("action") or "search"
+        if action == "taxonomy":
+            taxa = [item for item in result.get("taxa") or [] if isinstance(item, dict)]
+            names = ", ".join(
+                f"{item.get('scientific_name')} ({item.get('rank')}, taxid {item.get('taxid')})" for item in taxa[:3]
+            )
+            return f"NCBI taxonomy: {len(taxa)} taxa" + (f": {names}" if names else "") + "."
+        parts: List[str] = [f"NCBI {action} on {result.get('db') or 'nuccore'}"]
+        count = result.get("count")
+        if isinstance(count, int):
+            parts.append(f"{count} matches")
+        returned = result.get("returned")
+        if isinstance(returned, int):
+            parts.append(f"{returned} records returned")
+        missing = result.get("missing")
+        if isinstance(missing, list) and missing:
+            parts.append(f"{len(missing)} ids not found")
         return "; ".join(parts) + "."
 
     if tool_name == "url_fetch":

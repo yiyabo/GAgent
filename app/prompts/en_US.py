@@ -38,7 +38,8 @@ PROMPTS_EN_US = {
             "base_actions": [
                 "- system_operation: help",
                 "- tool_operation: web_search (use for live web information; requires `query`, optional provider/max_results/target_task_id)",
-                "- tool_operation: sequence_fetch (deterministic accession-to-FASTA download; requires `accession` or `accessions`, optional database/format/session_id/output_name/timeout_sec/max_bytes/target_task_id)",
+                "- tool_operation: sequence_fetch (deterministic accession download as FASTA, GenBank or CDS FASTA; requires `accession` or `accessions`, optional database/format/session_id/output_name/timeout_sec/max_bytes/target_task_id)",
+                "- tool_operation: ncbi_search (read-only NCBI Entrez lookups: action search/summary/taxonomy; requires `action`, optional db/term/ids/retmax/retstart/target_task_id)",
                 "- tool_operation: url_fetch (download a file from a public http/https URL; requires `url`, optional output_name/session_id/timeout_sec/max_bytes/allowed_content_types/sha256/target_task_id)",
                 "- tool_operation: lightrag_query (PREFERRED knowledge-graph/literature RAG over the large LightRAG 8-shard corpus; requires `query`, optional mode/top_k/max_chunks/max_references/include_references/target_task_id)",
                 "- tool_operation: graph_rag (LEGACY small local triples graph; prefer lightrag_query; requires `query`, optional top_k/hops/return_subgraph/focus_entities/target_task_id)",

@@ -39,7 +39,8 @@ jobs:
           uv run --frozen --no-dev --python ${{ matrix.python-version }} python -m pytest app/tests -q -m "not external"
 
   frontend-regressions:
-    runs-on: ubuntu-latest
+    # Playwright's --with-deps install does not support ubuntu 26.04 (the current ubuntu-latest) yet.
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     defaults:
       run:
