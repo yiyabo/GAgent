@@ -76,11 +76,51 @@ def test_blastn_renders_host_paths_and_loads_the_module(dirs) -> None:
     work = os.path.realpath(dirs["work"])
     assert job["command"] == (
         f"blastn -query {os.path.realpath(dirs['query'])} "
-        f"-db {os.path.realpath(dirs['read_root'])}/session_x/db/viral -out {work}/hits.tsv -outfmt 6"
+        f"-db {os.path.realpath(dirs['read_root'])}/session_x/db/viral -out {work}/hits.tsv -outfmt 6 "
+        "-task megablast -evalue 10 -max_target_seqs 500 -perc_identity 0 -qcov_hsp_perc 0"
     )
     assert job["modules"] == ["BLAST+/2.12.0"]
     assert job["output_path"] == f"{work}/hits.tsv"
     assert "/work" not in job["command"].replace(work, "")
+
+
+def test_search_thresholds_are_parameters_and_default_to_the_tools_own_values(dirs) -> None:
+    db = str(dirs["read_root"] / "session_x" / "db" / "viral")
+    tuned = _job(dirs, "blast", "blastp", input_file=str(dirs["query"]),
+                 params={"db": db, "output": "h.tsv", "evalue": 1e-5, "max_target_seqs": 25, "qcov_hsp_perc": 50})
+    assert "-evalue 1e-05 -max_target_seqs 25 -qcov_hsp_perc 50" in tuned["command"]
+    plain = _job(dirs, "blast", "blastp", input_file=str(dirs["query"]), params={"db": db, "output": "h.tsv"})
+    assert "-evalue 10 -max_target_seqs 500 -qcov_hsp_perc 0" in plain["command"]
+
+    mm = _job(dirs, "mmseqs2", "easy_search", input_file=None,
+              params={"query": str(dirs["query"]), "target": str(dirs["query"]), "output": "m.m8", "search_type": 1,
+                      "sensitivity": 7.5, "evalue": 1, "min_coverage": 0.5})
+    assert "-s 7.5 -e 1 --min-seq-id 0 -c 0.5" in mm["command"]
+    plain_mm = _job(dirs, "mmseqs2", "easy_search", input_file=None,
+                    params={"query": str(dirs["query"]), "target": str(dirs["query"]), "output": "m.m8"})
+    assert "-s 5.7 -e 0.001 --min-seq-id 0 -c 0" in plain_mm["command"]
+
+    ani = _job(dirs, "fastani", "compare", input_file=None,
+               params={"query": str(dirs["query"]), "reference": str(dirs["query"]), "output": "a.txt", "frag_len": 500})
+    assert "--fragLen 500 --minFraction 0.2 -k 16" in ani["command"]
+
+    gn = _job(dirs, "genomad", "end_to_end", input_file=str(dirs["query"]), params={"output": "g", "min_score": 0.5,
+              "preset": "conservative"}, database=True)
+    assert "[ conservative = conservative ] && echo --conservative" in gn["command"]
+    vs = _job(dirs, "virsorter2", "run", input_file=str(dirs["query"]), params={"output": "v", "min_length": 5000},
+              database=True)
+    assert "--min-score 0.5 --min-length 5000" in vs["command"]
+
+
+def test_genomad_preset_flag_comes_out_of_the_shell_snippet(dirs) -> None:
+    for preset, flag in (("conservative", "--conservative"), ("relaxed", "--relaxed"), ("default", "")):
+        job = _job(dirs, "genomad", "end_to_end", input_file=str(dirs["query"]), params={"output": "g", "preset": preset},
+                   database=True)
+        snippet = job["command"][job["command"].index("$("):].split(")", 1)[0] + ")"
+        done = subprocess.run(["bash", "-c", f"echo {snippet}"], capture_output=True, text=True)
+        # geNomad refuses a preset together with --min-score, so the score only goes in with "default".
+        expected = "--min-score 0.7" if preset == "default" else flag
+        assert done.stdout.strip() == expected, (preset, snippet, done.stdout)
 
 
 def test_makeblastdb_reports_the_prefix_a_later_step_should_use(dirs) -> None:

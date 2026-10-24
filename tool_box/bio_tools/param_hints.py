@@ -72,7 +72,7 @@ ALIASES: Dict[Tuple[str, str], Dict[str, str]] = {
 # Keys the handler itself understands inside ``params`` (see ``_SYSTEM_RESERVED_PARAM_KEYS``).
 RESERVED_KEYS = frozenset({"input_file", "output_file", "params", "timeout", "background", "job_id"})
 
-_NUMBER_RE = re.compile(r"^[+-]?\d+(\.\d+)?$")
+_NUMBER_RE = re.compile(r"^[+-]?(\d+(\.\d*)?|\.\d+)([eE][+-]?\d+)?$")
 _INTEGER_RE = re.compile(r"^[+-]?\d+$")
 _MAX_DESCRIPTION = 140
 

@@ -141,6 +141,11 @@ _BLAST_READING = (
     "BLAST tabular (outfmt 6). BLAST keeps hits up to E-value 10 by default, so weak hits are listed; an E-value "
     "above about 1e-5 is usually not significant. Empty means no hits."
 )
+def _evalue(default: float, help_en: str, help_zh: str) -> Param:
+    return Param("evalue", "number", _t("E-value cutoff", "E 值上限"), default=default, minimum=0.0, maximum=1000.0,
+                 help=_t(help_en, help_zh))
+
+
 _THREADS_NOTE = _t("Uses the CPUs the scheduler gives the job.", "使用调度器分配给作业的 CPU。")
 
 NODE_SPECS: Tuple[NodeSpec, ...] = (
@@ -242,6 +247,64 @@ NODE_SPECS: Tuple[NodeSpec, ...] = (
         tool="seqkit",
         operation="stats",
     ),
+    NodeSpec(
+        type="seqkit.filter_length",
+        category="sequence",
+        kind="tool",
+        title=_t("Filter by length (SeqKit)", "按长度过滤（SeqKit）"),
+        description=_t(
+            "Keeps the nucleotide sequences within a length range, e.g. to drop short contigs before a tool that needs several kb.",
+            "保留长度在范围内的核酸序列，例如在需要几 kb 输入的工具之前去掉短重叠群。",
+        ),
+        inputs=(InputPort("sequences", _NT, _t("Sequences", "序列")),),
+        outputs=(
+            OutputPort(
+                "sequences",
+                "fasta_nt",
+                _t("Kept sequences", "保留的序列"),
+                "file",
+                "filtered.fasta",
+                reading="The sequences that passed the length filter. An empty file means none did.",
+            ),
+        ),
+        params=(
+            Param("min_length", "integer", _t("Minimum length (bp)", "最短长度（bp）"), default=0, minimum=0, maximum=100000000,
+                  help=_t("Drop sequences shorter than this. 0 = no lower limit.", "丢弃短于此长度的序列。0 表示不设下限。")),
+            Param("max_length", "integer", _t("Maximum length (bp)", "最长长度（bp）"), default=-1, minimum=-1, maximum=100000000,
+                  help=_t("Drop sequences longer than this. -1 = no upper limit.", "丢弃长于此长度的序列。-1 表示不设上限。")),
+        ),
+        tool="seqkit",
+        operation="seq",
+        fixed_params={"output": "filtered.fasta"},
+    ),
+    NodeSpec(
+        type="seqkit.grep",
+        category="sequence",
+        kind="tool",
+        title=_t("Pick a sequence by ID (SeqKit)", "按 ID 选序列（SeqKit）"),
+        description=_t(
+            "Keeps the nucleotide sequence whose ID (the first word of the FASTA header) matches exactly.",
+            "保留 ID（FASTA 标题行的第一个词）完全匹配的核酸序列。",
+        ),
+        inputs=(InputPort("sequences", _NT, _t("Sequences", "序列")),),
+        outputs=(
+            OutputPort(
+                "sequences",
+                "fasta_nt",
+                _t("Selected sequence", "选出的序列"),
+                "file",
+                "selected.fasta",
+                reading="The sequence with that ID. An empty file means no sequence has this exact ID.",
+            ),
+        ),
+        params=(
+            Param("pattern", "string", _t("Sequence ID", "序列 ID"), required=True, max_length=200,
+                  help=_t("Exact ID, e.g. NC_001416.1 or contig_3.", "完整的 ID，例如 NC_001416.1 或 contig_3。")),
+        ),
+        tool="seqkit",
+        operation="grep",
+        fixed_params={"output": "selected.fasta"},
+    ),
     # ------------------------------------------------------------------ genes
     NodeSpec(
         type="prodigal.predict",
@@ -311,6 +374,23 @@ NODE_SPECS: Tuple[NodeSpec, ...] = (
             ),
             OutputPort("results", "directory", _t("All results", "全部结果"), "dir", "genomad_out"),
         ),
+        params=(
+            Param(
+                "min_score", "number", _t("Minimum score", "最低得分"), default=0.7, minimum=0.0, maximum=1.0,
+                help=_t(
+                    "Sequences scoring below this are not called virus or plasmid (geNomad's default is 0.7). Lower it to catch divergent phages, raise it for fewer false positives.",
+                    "得分低于此值的序列不会被判为病毒或质粒（geNomad 默认 0.7）。调低可找回较分歧的噬菌体，调高则假阳性更少。",
+                ),
+            ),
+            Param(
+                "preset", "enum", _t("Filtering preset", "过滤预设"), default="default",
+                choices=("default", "conservative", "relaxed"),
+                help=_t(
+                    "conservative drops weakly supported calls (fewer false positives); relaxed keeps every call. geNomad cannot combine a preset with a score threshold, so the minimum score only applies with default.",
+                    "conservative 会去掉证据较弱的判定（假阳性更少）；relaxed 保留所有判定。geNomad 不允许预设和得分阈值同时使用，所以最低得分只在 default 时生效。",
+                ),
+            ),
+        ),
         tool="genomad",
         operation="end_to_end",
         fixed_params={"output": "genomad_out"},
@@ -362,7 +442,15 @@ NODE_SPECS: Tuple[NodeSpec, ...] = (
             OutputPort("results", "directory", _t("All results", "全部结果"), "dir", "virsorter2_out"),
         ),
         params=(
-            Param("min_score", "number", _t("Minimum score", "最低得分"), default=0.5, minimum=0.0, maximum=1.0),
+            Param(
+                "min_score", "number", _t("Minimum score", "最低得分"), default=0.5, minimum=0.0, maximum=1.0,
+                help=_t("Sequences scoring below this are dropped as non-viral. Default 0.5.", "得分低于此值的序列被当作非病毒丢弃。默认 0.5。"),
+            ),
+            Param(
+                "min_length", "integer", _t("Minimum length (bp)", "最短长度（bp）"), default=0, minimum=0, maximum=1000000,
+                help=_t("Skip sequences shorter than this. 0 keeps everything; VirSorter2 scores short fragments unreliably.",
+                        "跳过短于此长度的序列。0 表示不过滤；VirSorter2 对很短的片段打分不可靠。"),
+            ),
         ),
         tool="virsorter2",
         operation="run",
@@ -383,6 +471,68 @@ NODE_SPECS: Tuple[NodeSpec, ...] = (
         tool="vibrant",
         operation="run",
         fixed_params={"output": "vibrant_out"},
+        slow=True,
+    ),
+    NodeSpec(
+        type="genomad.find_proviruses",
+        category="virus",
+        kind="tool",
+        title=_t("Find prophages (geNomad)", "找前噬菌体（geNomad）"),
+        description=_t(
+            "Finds integrated prophages in a bacterial genome and extracts them as sequences.",
+            "在细菌基因组中找整合的前噬菌体，并把它们提取成序列。",
+        ),
+        inputs=(InputPort("genome", _NT, _t("Bacterial genome", "细菌基因组")),),
+        outputs=(
+            OutputPort(
+                "proviruses",
+                "fasta_nt",
+                _t("Prophage sequences", "前噬菌体序列"),
+                "glob",
+                "genomad_provirus/*_find_proviruses/*_provirus.fna",
+                optional=True,
+                reading="One record per prophage region geNomad found. Not produced when the genome has none.",
+            ),
+            OutputPort(
+                "table",
+                "table",
+                _t("Prophage table", "前噬菌体表"),
+                "glob",
+                "genomad_provirus/*_find_proviruses/*_provirus.tsv",
+                optional=True,
+                reading="One row per prophage region with its coordinates in the host sequence. Not produced when there are none.",
+            ),
+            OutputPort("results", "directory", _t("All results", "全部结果"), "dir", "genomad_provirus"),
+        ),
+        tool="genomad",
+        operation="find_proviruses",
+        fixed_params={"output": "genomad_provirus"},
+        slow=True,
+    ),
+    NodeSpec(
+        type="genomad.annotate",
+        category="annotation",
+        kind="tool",
+        title=_t("Gene annotation (geNomad)", "基因注释（geNomad）"),
+        description=_t(
+            "Predicts genes and annotates them against geNomad's viral marker database, without classifying the sequence.",
+            "预测基因，并用 geNomad 的病毒标记数据库注释，不做序列分类。",
+        ),
+        inputs=(InputPort("sequences", _NT, _t("Sequences", "序列")),),
+        outputs=(
+            OutputPort(
+                "genes",
+                "table",
+                _t("Gene table", "基因表"),
+                "glob",
+                "genomad_annotate/*_annotate/*_genes.tsv",
+                reading="One row per predicted gene with its annotation, taxonomy hit and whether it is a viral or plasmid marker.",
+            ),
+            OutputPort("results", "directory", _t("All results", "全部结果"), "dir", "genomad_annotate"),
+        ),
+        tool="genomad",
+        operation="annotate",
+        fixed_params={"output": "genomad_annotate"},
         slow=True,
     ),
     # ------------------------------------------------------------------ phage traits (PhaBOX2)
@@ -483,6 +633,14 @@ NODE_SPECS: Tuple[NodeSpec, ...] = (
                 digest="blast_tab",
             ),
         ),
+        params=(
+            _evalue(10, "Keep hits at or below this E-value. BLAST's default is 10 (lists weak hits); 1e-5 keeps significant hits only.",
+                    "只保留 E 值不高于此值的比对。BLAST 默认 10（会列出很弱的比对）；1e-5 只留显著比对。"),
+            Param("max_target_seqs", "integer", _t("Hits per query", "每条查询保留的命中数"), default=500, minimum=1, maximum=100000,
+                  help=_t("Maximum number of database sequences reported per query.", "每条查询最多报告的数据库序列数。")),
+            Param("qcov_hsp_perc", "number", _t("Minimum query coverage (%)", "最低查询覆盖度（%）"), default=0, minimum=0.0, maximum=100.0,
+                  help=_t("Drop hits that cover less than this percent of the query. 0 = no filter.", "丢弃覆盖查询序列不足此百分比的比对。0 表示不过滤。")),
+        ),
         tool="blast",
         operation="blastp",
         fixed_params={"output": "blastp_hits.tsv"},
@@ -507,6 +665,20 @@ NODE_SPECS: Tuple[NodeSpec, ...] = (
                 reading=_BLAST_READING,
                 digest="blast_tab",
             ),
+        ),
+        params=(
+            Param("task", "enum", _t("Program", "算法"), default="megablast",
+                  choices=("megablast", "dc-megablast", "blastn", "blastn-short"),
+                  help=_t("megablast finds near-identical sequences (fast); dc-megablast and blastn are progressively more sensitive for related but diverged genomes; blastn-short is for queries under 50 nt.",
+                          "megablast 找近乎相同的序列（快）；dc-megablast 和 blastn 对亲缘较远的基因组依次更灵敏；blastn-short 用于短于 50 nt 的查询。")),
+            _evalue(10, "Keep hits at or below this E-value. BLAST's default is 10; 1e-5 keeps significant hits only.",
+                    "只保留 E 值不高于此值的比对。BLAST 默认 10；1e-5 只留显著比对。"),
+            Param("max_target_seqs", "integer", _t("Hits per query", "每条查询保留的命中数"), default=500, minimum=1, maximum=100000,
+                  help=_t("Maximum number of database sequences reported per query.", "每条查询最多报告的数据库序列数。")),
+            Param("perc_identity", "number", _t("Minimum identity (%)", "最低一致性（%）"), default=0, minimum=0.0, maximum=100.0,
+                  help=_t("Drop hits below this percent identity. 0 = no filter.", "丢弃一致性低于此百分比的比对。0 表示不过滤。")),
+            Param("qcov_hsp_perc", "number", _t("Minimum query coverage (%)", "最低查询覆盖度（%）"), default=0, minimum=0.0, maximum=100.0,
+                  help=_t("Drop hits that cover less than this percent of the query. 0 = no filter.", "丢弃覆盖查询序列不足此百分比的比对。0 表示不过滤。")),
         ),
         tool="blast",
         operation="blastn",
@@ -537,9 +709,58 @@ NODE_SPECS: Tuple[NodeSpec, ...] = (
                 digest="blast_tab",
             ),
         ),
+        params=(
+            Param("sensitivity", "number", _t("Sensitivity", "灵敏度"), default=5.7, minimum=1.0, maximum=7.5,
+                  help=_t("MMseqs2 -s: 1 is fastest, 7.5 most sensitive; default 5.7. Raise it to find remote homologs.",
+                          "MMseqs2 的 -s：1 最快，7.5 最灵敏；默认 5.7。调高可找到远缘同源序列。")),
+            _evalue(0.001, "Keep hits at or below this E-value. MMseqs2's default is 0.001; raise it (e.g. 10) to list weak hits as blastp does.",
+                    "只保留 E 值不高于此值的比对。MMseqs2 默认 0.001；调高（如 10）可像 blastp 一样列出弱比对。"),
+            Param("min_seq_id", "number", _t("Minimum identity (0-1)", "最低一致性（0-1）"), default=0, minimum=0.0, maximum=1.0,
+                  help=_t("Drop hits below this sequence identity. 0 = no filter.", "丢弃序列一致性低于此值的比对。0 表示不过滤。")),
+            Param("min_coverage", "number", _t("Minimum coverage (0-1)", "最低覆盖度（0-1）"), default=0, minimum=0.0, maximum=1.0,
+                  help=_t("Minimum fraction of both query and target an alignment must cover. 0 = no filter.",
+                          "比对需同时覆盖查询和目标序列的最小比例。0 表示不过滤。")),
+        ),
         tool="mmseqs2",
         operation="easy_search",
         fixed_params={"output": "mmseqs_hits.m8", "search_type": 1},
+    ),
+    NodeSpec(
+        type="mmseqs2.cluster_proteins",
+        category="compare",
+        kind="tool",
+        title=_t("Cluster proteins (MMseqs2)", "蛋白聚类（MMseqs2）"),
+        description=_t(
+            "Groups similar proteins and keeps one representative per group, e.g. to dereplicate proteins from several phages.",
+            "把相似的蛋白分组，每组留一条代表序列，例如给多个噬菌体的蛋白去冗余。",
+        ),
+        inputs=(InputPort("proteins", _AA, _t("Proteins", "蛋白序列")),),
+        outputs=(
+            OutputPort(
+                "representatives",
+                "fasta_aa",
+                _t("Representative proteins", "代表蛋白"),
+                "file",
+                "clusters_rep_seq.fasta",
+                reading="One record per cluster, so the record count is the number of protein clusters.",
+            ),
+            OutputPort(
+                "clusters",
+                "table",
+                _t("Cluster membership", "聚类成员表"),
+                "file",
+                "clusters_cluster.tsv",
+                reading="Two columns: the cluster representative and one member; a representative also lists itself.",
+            ),
+        ),
+        params=(
+            Param("min_seq_id", "number", _t("Minimum identity (0-1)", "最低一致性（0-1）"), default=0.9, minimum=0.0, maximum=1.0,
+                  help=_t("Proteins at least this identical, over most of their length, share a cluster. Default 0.9.",
+                          "一致性不低于此值（在大部分长度上）的蛋白归为一组。默认 0.9。")),
+        ),
+        tool="mmseqs2",
+        operation="easy_linclust",
+        fixed_params={"output": "clusters"},
     ),
     NodeSpec(
         type="fastani.compare",
@@ -564,6 +785,16 @@ NODE_SPECS: Tuple[NodeSpec, ...] = (
                     "are not closely related at the nucleotide level; it is a result, not a failure."
                 ),
             ),
+        ),
+        params=(
+            Param("frag_len", "integer", _t("Fragment length (bp)", "片段长度（bp）"), default=3000, minimum=160, maximum=100000,
+                  help=_t("FastANI cuts the query into fragments of this length. The default 3000 suits bacteria; use 500-1000 for short phage genomes.",
+                          "FastANI 把查询序列切成此长度的片段。默认 3000 适合细菌；短的噬菌体基因组可用 500-1000。")),
+            Param("min_fraction", "number", _t("Minimum shared fraction (0-1)", "最低共享比例（0-1）"), default=0.2, minimum=0.0, maximum=1.0,
+                  help=_t("Report a pair only if at least this fraction of the genome is shared (default 0.2).",
+                          "只有基因组共享比例不低于此值才报告（默认 0.2）。")),
+            Param("kmer", "integer", _t("k-mer size", "k-mer 大小"), default=16, minimum=4, maximum=16,
+                  help=_t("At most 16. Smaller values (e.g. 14) are more sensitive for distant genomes.", "最大 16。较小的值（如 14）对亲缘较远的基因组更灵敏。")),
         ),
         tool="fastani",
         operation="compare",
@@ -591,6 +822,10 @@ NODE_SPECS: Tuple[NodeSpec, ...] = (
                     "lines starting with # are comments, so a file with only comments means no hits."
                 ),
             ),
+        ),
+        params=(
+            _evalue(10, "Report sequences at or below this E-value. HMMER's default is 10; use 1e-5 for significant hits only.",
+                    "报告 E 值不高于此值的序列。HMMER 默认 10；只要显著命中可用 1e-5。"),
         ),
         tool="hmmer",
         operation="hmmsearch",
