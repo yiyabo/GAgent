@@ -53,6 +53,11 @@
   --status-skipped-fg: #5c636b; --status-skipped-bg: #f1f3f5; --status-skipped-border: #ced4da;
   --status-pending-fg: #46526c; --status-pending-bg: #ffffff; --status-pending-border: #d6ddea;
 
+  /* data types of node-pipeline ports: handle and link colours. Never the only cue, ports are named. */
+  --data-fasta-nt: #2f8f62; --data-fasta-aa: #7c4ddb; --data-gff: #c26a00; --data-table: #2f6fd6;
+  --data-directory: #7d879a; --data-blast-db-nt: #0f857a; --data-blast-db-aa: #c22a6c; --data-hmm: #96600a;
+  --data-report: #c94545; --data-any: #7d879a;
+
   /* type: Chinese-first stacks. The *Variable families are the self-hosted fonts (see styles/fonts.css). */
   --font-sans: 'Inter Variable', 'Noto Sans SC Variable', 'PingFang SC', 'Microsoft YaHei', system-ui, -apple-system, 'Segoe UI', sans-serif;
   --font-serif: 'Source Serif 4 Variable', 'Noto Serif SC Variable', 'Songti SC', Georgia, serif;
@@ -161,6 +166,10 @@
   --status-blocked-fg: #d3a9e6; --status-blocked-bg: #2a1c33; --status-blocked-border: #593a6b;
   --status-skipped-fg: #9aa5bd; --status-skipped-bg: #1a2338; --status-skipped-border: #33415f;
   --status-pending-fg: #8fa0c2; --status-pending-bg: #121c32; --status-pending-border: #273656;
+
+  --data-fasta-nt: #5cc596; --data-fasta-aa: #a98bf5; --data-gff: #eda24a; --data-table: #6ea5ff;
+  --data-directory: #9aa5bd; --data-blast-db-nt: #4cc4b8; --data-blast-db-aa: #f07aaa; --data-hmm: #d9a646;
+  --data-report: #f08a8a; --data-any: #9aa5bd;
 
   --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
   --shadow-2: 0 4px 12px rgba(0, 0, 0, 0.45);

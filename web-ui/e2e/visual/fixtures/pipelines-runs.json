@@ -1,0 +1,18 @@
+{
+  "runs": [
+    {
+      "id": "run_fixture",
+      "pipeline_id": "pl_fixture",
+      "version": 1,
+      "owner_id": "user_fixture",
+      "session_id": "pipeline_pl_fixture",
+      "status": "running",
+      "inputs": {},
+      "error": null,
+      "cancel_requested": false,
+      "created_at": "2026-10-24 07:16:36",
+      "started_at": "2026-10-24 07:16:36",
+      "finished_at": null
+    }
+  ]
+}

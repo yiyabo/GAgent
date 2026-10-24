@@ -18,6 +18,7 @@ const Plans = retryLazy(() => import('@pages/Plans'));
 const Memory = retryLazy(() => import('@pages/Memory'));
 const QualityAnalytics = retryLazy(() => import('@pages/QualityAnalytics'));
 const Extensions = retryLazy(() => import('@pages/Extensions'));
+const Pipelines = retryLazy(() => import('@pages/Pipelines'));
 const System = retryLazy(() => import('@pages/System'));
 const Login = retryLazy(() => import('@pages/Login'));
 const Register = retryLazy(() => import('@pages/Register'));
@@ -218,6 +219,7 @@ function App() {
           <Route path="/memory" element={<RouteContent><Memory /></RouteContent>} />
           <Route path="/analytics" element={<RouteContent><QualityAnalytics /></RouteContent>} />
           <Route path="/extensions" element={<RouteContent><Extensions /></RouteContent>} />
+          <Route path="/pipelines" element={<RouteContent><Pipelines /></RouteContent>} />
           <Route path="/system" element={<RouteContent><System /></RouteContent>} />
         </Route>
       </Route>

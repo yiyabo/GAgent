@@ -213,7 +213,6 @@ const REFERENCED = new Set(
  */
 const UNWIRED = [
   '--ease-out',
-  '--focus-ring',
   '--fs-h4',
   '--info-bg',
   '--lh-tight',
@@ -226,14 +225,6 @@ const UNWIRED = [
   '--space-6',
   '--space-8',
   '--space-10',
-  '--status-pending-bg',
-  '--status-pending-border',
-  '--status-pending-fg',
-  '--status-running-bg',
-  '--status-running-border',
-  '--status-running-fg',
-  '--status-skipped-bg',
-  '--status-skipped-border',
   '--surface-scrim',
 ];
 

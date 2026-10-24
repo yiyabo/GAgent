@@ -1,0 +1,339 @@
+{
+  "id": "pl_fixture",
+  "owner_id": "user_fixture",
+  "name": "Phage basics: lambda vs T7",
+  "description": "Lambda and T7 side by side.",
+  "draft": {
+    "layout": {
+      "ani": {
+        "x": 300,
+        "y": 480
+      },
+      "blastp": {
+        "x": 860,
+        "y": 420
+      },
+      "lambda": {
+        "x": 0,
+        "y": 170
+      },
+      "lambda_checkv": {
+        "x": 580,
+        "y": 140
+      },
+      "lambda_genes": {
+        "x": 300,
+        "y": 130
+      },
+      "lambda_genomad": {
+        "x": 580,
+        "y": 0
+      },
+      "lambda_lifestyle": {
+        "x": 580,
+        "y": 280
+      },
+      "lambda_stats": {
+        "x": 300,
+        "y": 0
+      },
+      "mmseqs": {
+        "x": 860,
+        "y": 580
+      },
+      "report": {
+        "x": 1160,
+        "y": 500
+      },
+      "t7": {
+        "x": 0,
+        "y": 830
+      },
+      "t7_checkv": {
+        "x": 580,
+        "y": 900
+      },
+      "t7_genes": {
+        "x": 300,
+        "y": 800
+      },
+      "t7_genomad": {
+        "x": 580,
+        "y": 760
+      },
+      "t7_lifestyle": {
+        "x": 580,
+        "y": 1040
+      },
+      "t7_protdb": {
+        "x": 580,
+        "y": 560
+      },
+      "t7_stats": {
+        "x": 300,
+        "y": 980
+      }
+    },
+    "nodes": {
+      "ani": {
+        "inputs": {
+          "query": {
+            "node": "lambda",
+            "port": "genome"
+          },
+          "reference": {
+            "node": "t7",
+            "port": "genome"
+          }
+        },
+        "label": "lambda vs T7",
+        "type": "fastani.compare"
+      },
+      "blastp": {
+        "inputs": {
+          "db": {
+            "node": "t7_protdb",
+            "port": "db"
+          },
+          "query": {
+            "node": "lambda_genes",
+            "port": "proteins"
+          }
+        },
+        "label": "lambda vs T7",
+        "type": "blast.blastp"
+      },
+      "lambda": {
+        "label": "lambda",
+        "params": {
+          "accessions": "NC_001416.1"
+        },
+        "type": "ncbi.genome"
+      },
+      "lambda_checkv": {
+        "inputs": {
+          "sequences": {
+            "node": "lambda",
+            "port": "genome"
+          }
+        },
+        "label": "lambda",
+        "type": "checkv.end_to_end"
+      },
+      "lambda_genes": {
+        "inputs": {
+          "genome": {
+            "node": "lambda",
+            "port": "genome"
+          }
+        },
+        "label": "lambda",
+        "type": "prodigal.predict"
+      },
+      "lambda_genomad": {
+        "inputs": {
+          "sequences": {
+            "node": "lambda",
+            "port": "genome"
+          }
+        },
+        "label": "lambda",
+        "type": "genomad.end_to_end"
+      },
+      "lambda_lifestyle": {
+        "inputs": {
+          "sequences": {
+            "node": "lambda",
+            "port": "genome"
+          }
+        },
+        "label": "lambda",
+        "type": "phabox2.phatyp"
+      },
+      "lambda_stats": {
+        "inputs": {
+          "sequences": {
+            "node": "lambda",
+            "port": "genome"
+          }
+        },
+        "label": "lambda",
+        "type": "seqkit.stats"
+      },
+      "mmseqs": {
+        "inputs": {
+          "query": {
+            "node": "lambda_genes",
+            "port": "proteins"
+          },
+          "target": {
+            "node": "t7_genes",
+            "port": "proteins"
+          }
+        },
+        "label": "lambda vs T7",
+        "type": "mmseqs2.protein_search"
+      },
+      "report": {
+        "inputs": {
+          "evidence": [
+            {
+              "node": "lambda_stats",
+              "port": "stats"
+            },
+            {
+              "node": "t7_stats",
+              "port": "stats"
+            },
+            {
+              "node": "lambda_genomad",
+              "port": "virus_summary"
+            },
+            {
+              "node": "t7_genomad",
+              "port": "virus_summary"
+            },
+            {
+              "node": "lambda_checkv",
+              "port": "quality"
+            },
+            {
+              "node": "t7_checkv",
+              "port": "quality"
+            },
+            {
+              "node": "lambda_lifestyle",
+              "port": "prediction"
+            },
+            {
+              "node": "t7_lifestyle",
+              "port": "prediction"
+            },
+            {
+              "node": "ani",
+              "port": "ani"
+            },
+            {
+              "node": "blastp",
+              "port": "hits"
+            },
+            {
+              "node": "mmseqs",
+              "port": "hits"
+            }
+          ]
+        },
+        "params": {
+          "instructions": "Compare phage lambda (NC_001416.1) with phage T7 (NC_001604.1). Cover genome length and GC content, the number of predicted genes, the geNomad virus call and taxonomy, CheckV completeness and quality, the PhaTYP lifestyle and whether it matches what is known about these two phages, and how similar the two genomes and proteomes are (FastANI, blastp, MMseqs2). Put the key numbers for both phages in one table. Say plainly when a result is missing or when two tools disagree.",
+          "language": "zh"
+        },
+        "type": "agent.report"
+      },
+      "t7": {
+        "label": "T7",
+        "params": {
+          "accessions": "NC_001604.1"
+        },
+        "type": "ncbi.genome"
+      },
+      "t7_checkv": {
+        "inputs": {
+          "sequences": {
+            "node": "t7",
+            "port": "genome"
+          }
+        },
+        "label": "T7",
+        "type": "checkv.end_to_end"
+      },
+      "t7_genes": {
+        "inputs": {
+          "genome": {
+            "node": "t7",
+            "port": "genome"
+          }
+        },
+        "label": "T7",
+        "type": "prodigal.predict"
+      },
+      "t7_genomad": {
+        "inputs": {
+          "sequences": {
+            "node": "t7",
+            "port": "genome"
+          }
+        },
+        "label": "T7",
+        "type": "genomad.end_to_end"
+      },
+      "t7_lifestyle": {
+        "inputs": {
+          "sequences": {
+            "node": "t7",
+            "port": "genome"
+          }
+        },
+        "label": "T7",
+        "type": "phabox2.phatyp"
+      },
+      "t7_protdb": {
+        "inputs": {
+          "proteins": {
+            "node": "t7_genes",
+            "port": "proteins"
+          }
+        },
+        "label": "T7",
+        "type": "blast.makeblastdb_aa"
+      },
+      "t7_stats": {
+        "inputs": {
+          "sequences": {
+            "node": "t7",
+            "port": "genome"
+          }
+        },
+        "label": "T7",
+        "type": "seqkit.stats"
+      }
+    },
+    "schema": 1
+  },
+  "latest_version": 1,
+  "archived": false,
+  "created_at": "2026-10-24 07:16:36",
+  "updated_at": "2026-10-24 07:16:36",
+  "versions": [
+    {
+      "pipeline_id": "pl_fixture",
+      "version": 1,
+      "graph_hash": "e3b29b4a990e92d62dbbbd52a21211b39aae916709a5cb27d87f9e3aabad6f6b",
+      "created_at": "2026-10-24 07:16:36"
+    }
+  ],
+  "active_runs": 0,
+  "validation": {
+    "ok": true,
+    "errors": [],
+    "warnings": [],
+    "order": [
+      "lambda",
+      "lambda_checkv",
+      "lambda_genes",
+      "lambda_genomad",
+      "lambda_lifestyle",
+      "lambda_stats",
+      "t7",
+      "ani",
+      "t7_checkv",
+      "t7_genes",
+      "mmseqs",
+      "t7_genomad",
+      "t7_lifestyle",
+      "t7_protdb",
+      "blastp",
+      "t7_stats",
+      "report"
+    ]
+  }
+}

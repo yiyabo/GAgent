@@ -1,0 +1,683 @@
+{
+  "id": "run_fixture",
+  "pipeline_id": "pl_fixture",
+  "version": 1,
+  "owner_id": "user_fixture",
+  "session_id": "pipeline_pl_fixture",
+  "status": "running",
+  "inputs": {},
+  "error": null,
+  "cancel_requested": false,
+  "created_at": "2026-10-24 07:16:36",
+  "started_at": "2026-10-24 07:16:36",
+  "finished_at": null,
+  "graph": {
+    "layout": {
+      "ani": {
+        "x": 300.0,
+        "y": 480.0
+      },
+      "blastp": {
+        "x": 860.0,
+        "y": 420.0
+      },
+      "lambda": {
+        "x": 0.0,
+        "y": 170.0
+      },
+      "lambda_checkv": {
+        "x": 580.0,
+        "y": 140.0
+      },
+      "lambda_genes": {
+        "x": 300.0,
+        "y": 130.0
+      },
+      "lambda_genomad": {
+        "x": 580.0,
+        "y": 0.0
+      },
+      "lambda_lifestyle": {
+        "x": 580.0,
+        "y": 280.0
+      },
+      "lambda_stats": {
+        "x": 300.0,
+        "y": 0.0
+      },
+      "mmseqs": {
+        "x": 860.0,
+        "y": 580.0
+      },
+      "report": {
+        "x": 1160.0,
+        "y": 500.0
+      },
+      "t7": {
+        "x": 0.0,
+        "y": 830.0
+      },
+      "t7_checkv": {
+        "x": 580.0,
+        "y": 900.0
+      },
+      "t7_genes": {
+        "x": 300.0,
+        "y": 800.0
+      },
+      "t7_genomad": {
+        "x": 580.0,
+        "y": 760.0
+      },
+      "t7_lifestyle": {
+        "x": 580.0,
+        "y": 1040.0
+      },
+      "t7_protdb": {
+        "x": 580.0,
+        "y": 560.0
+      },
+      "t7_stats": {
+        "x": 300.0,
+        "y": 980.0
+      }
+    },
+    "nodes": {
+      "ani": {
+        "inputs": {
+          "query": {
+            "node": "lambda",
+            "port": "genome"
+          },
+          "reference": {
+            "node": "t7",
+            "port": "genome"
+          }
+        },
+        "label": "lambda vs T7",
+        "params": {},
+        "type": "fastani.compare"
+      },
+      "blastp": {
+        "inputs": {
+          "db": {
+            "node": "t7_protdb",
+            "port": "db"
+          },
+          "query": {
+            "node": "lambda_genes",
+            "port": "proteins"
+          }
+        },
+        "label": "lambda vs T7",
+        "params": {},
+        "type": "blast.blastp"
+      },
+      "lambda": {
+        "inputs": {},
+        "label": "lambda",
+        "params": {
+          "accessions": "NC_001416.1"
+        },
+        "type": "ncbi.genome"
+      },
+      "lambda_checkv": {
+        "inputs": {
+          "sequences": {
+            "node": "lambda",
+            "port": "genome"
+          }
+        },
+        "label": "lambda",
+        "params": {},
+        "type": "checkv.end_to_end"
+      },
+      "lambda_genes": {
+        "inputs": {
+          "genome": {
+            "node": "lambda",
+            "port": "genome"
+          }
+        },
+        "label": "lambda",
+        "params": {
+          "mode": "meta",
+          "translation_table": 11
+        },
+        "type": "prodigal.predict"
+      },
+      "lambda_genomad": {
+        "inputs": {
+          "sequences": {
+            "node": "lambda",
+            "port": "genome"
+          }
+        },
+        "label": "lambda",
+        "params": {},
+        "type": "genomad.end_to_end"
+      },
+      "lambda_lifestyle": {
+        "inputs": {
+          "sequences": {
+            "node": "lambda",
+            "port": "genome"
+          }
+        },
+        "label": "lambda",
+        "params": {},
+        "type": "phabox2.phatyp"
+      },
+      "lambda_stats": {
+        "inputs": {
+          "sequences": {
+            "node": "lambda",
+            "port": "genome"
+          }
+        },
+        "label": "lambda",
+        "params": {},
+        "type": "seqkit.stats"
+      },
+      "mmseqs": {
+        "inputs": {
+          "query": {
+            "node": "lambda_genes",
+            "port": "proteins"
+          },
+          "target": {
+            "node": "t7_genes",
+            "port": "proteins"
+          }
+        },
+        "label": "lambda vs T7",
+        "params": {},
+        "type": "mmseqs2.protein_search"
+      },
+      "report": {
+        "inputs": {
+          "evidence": [
+            {
+              "node": "lambda_stats",
+              "port": "stats"
+            },
+            {
+              "node": "t7_stats",
+              "port": "stats"
+            },
+            {
+              "node": "lambda_genomad",
+              "port": "virus_summary"
+            },
+            {
+              "node": "t7_genomad",
+              "port": "virus_summary"
+            },
+            {
+              "node": "lambda_checkv",
+              "port": "quality"
+            },
+            {
+              "node": "t7_checkv",
+              "port": "quality"
+            },
+            {
+              "node": "lambda_lifestyle",
+              "port": "prediction"
+            },
+            {
+              "node": "t7_lifestyle",
+              "port": "prediction"
+            },
+            {
+              "node": "ani",
+              "port": "ani"
+            },
+            {
+              "node": "blastp",
+              "port": "hits"
+            },
+            {
+              "node": "mmseqs",
+              "port": "hits"
+            }
+          ]
+        },
+        "params": {
+          "instructions": "Compare phage lambda (NC_001416.1) with phage T7 (NC_001604.1). Cover genome length and GC content, the number of predicted genes, the geNomad virus call and taxonomy, CheckV completeness and quality, the PhaTYP lifestyle and whether it matches what is known about these two phages, and how similar the two genomes and proteomes are (FastANI, blastp, MMseqs2). Put the key numbers for both phages in one table. Say plainly when a result is missing or when two tools disagree.",
+          "language": "zh"
+        },
+        "type": "agent.report"
+      },
+      "t7": {
+        "inputs": {},
+        "label": "T7",
+        "params": {
+          "accessions": "NC_001604.1"
+        },
+        "type": "ncbi.genome"
+      },
+      "t7_checkv": {
+        "inputs": {
+          "sequences": {
+            "node": "t7",
+            "port": "genome"
+          }
+        },
+        "label": "T7",
+        "params": {},
+        "type": "checkv.end_to_end"
+      },
+      "t7_genes": {
+        "inputs": {
+          "genome": {
+            "node": "t7",
+            "port": "genome"
+          }
+        },
+        "label": "T7",
+        "params": {
+          "mode": "meta",
+          "translation_table": 11
+        },
+        "type": "prodigal.predict"
+      },
+      "t7_genomad": {
+        "inputs": {
+          "sequences": {
+            "node": "t7",
+            "port": "genome"
+          }
+        },
+        "label": "T7",
+        "params": {},
+        "type": "genomad.end_to_end"
+      },
+      "t7_lifestyle": {
+        "inputs": {
+          "sequences": {
+            "node": "t7",
+            "port": "genome"
+          }
+        },
+        "label": "T7",
+        "params": {},
+        "type": "phabox2.phatyp"
+      },
+      "t7_protdb": {
+        "inputs": {
+          "proteins": {
+            "node": "t7_genes",
+            "port": "proteins"
+          }
+        },
+        "label": "T7",
+        "params": {},
+        "type": "blast.makeblastdb_aa"
+      },
+      "t7_stats": {
+        "inputs": {
+          "sequences": {
+            "node": "t7",
+            "port": "genome"
+          }
+        },
+        "label": "T7",
+        "params": {},
+        "type": "seqkit.stats"
+      }
+    },
+    "schema": 1
+  },
+  "nodes": {
+    "lambda": {
+      "status": "succeeded",
+      "error": null,
+      "started_at": "2026-10-24 07:16:36",
+      "finished_at": "2026-10-24 07:16:36",
+      "outputs": {
+        "genome": {
+          "type": "fasta_nt",
+          "kind": "file",
+          "size": 54,
+          "name": "run_fixture_lambda.fasta"
+        }
+      },
+      "detail": {
+        "provider": "ncbi_efetch",
+        "record_count": 1
+      }
+    },
+    "lambda_checkv": {
+      "status": "running",
+      "error": null,
+      "started_at": "2026-10-24 07:16:36",
+      "finished_at": null,
+      "outputs": {},
+      "detail": {
+        "execution_mode": "native",
+        "exit_code": 0,
+        "slurm_job_id": "4242"
+      }
+    },
+    "lambda_genes": {
+      "status": "succeeded",
+      "error": null,
+      "started_at": "2026-10-24 07:16:36",
+      "finished_at": "2026-10-24 07:16:36",
+      "outputs": {
+        "genes": {
+          "type": "fasta_nt",
+          "kind": "file",
+          "size": 54,
+          "name": "genes.fna"
+        },
+        "gff": {
+          "type": "gff",
+          "kind": "file",
+          "size": 16,
+          "name": "genes.gff"
+        },
+        "proteins": {
+          "type": "fasta_aa",
+          "kind": "file",
+          "size": 43,
+          "name": "proteins.faa"
+        }
+      },
+      "detail": {
+        "execution_mode": "native",
+        "exit_code": 0,
+        "slurm_job_id": "4242"
+      }
+    },
+    "lambda_genomad": {
+      "status": "succeeded",
+      "error": null,
+      "started_at": "2026-10-24 07:16:36",
+      "finished_at": "2026-10-24 07:16:36",
+      "outputs": {
+        "results": {
+          "type": "directory",
+          "kind": "dir",
+          "name": "genomad_out"
+        },
+        "virus_summary": {
+          "type": "table",
+          "kind": "file",
+          "size": 31,
+          "name": "x_virus_summary.tsv"
+        }
+      },
+      "detail": {
+        "execution_mode": "native",
+        "exit_code": 0,
+        "slurm_job_id": "4242"
+      }
+    },
+    "lambda_lifestyle": {
+      "status": "succeeded",
+      "error": null,
+      "started_at": "2026-10-24 07:16:36",
+      "finished_at": "2026-10-24 07:16:36",
+      "outputs": {
+        "prediction": {
+          "type": "table",
+          "kind": "file",
+          "size": 29,
+          "name": "phatyp_prediction.tsv"
+        },
+        "results": {
+          "type": "directory",
+          "kind": "dir",
+          "name": "phabox_phatyp"
+        }
+      },
+      "detail": {
+        "execution_mode": "native",
+        "exit_code": 0,
+        "slurm_job_id": "4242"
+      }
+    },
+    "lambda_stats": {
+      "status": "succeeded",
+      "error": null,
+      "started_at": "2026-10-24 07:16:36",
+      "finished_at": "2026-10-24 07:16:36",
+      "outputs": {
+        "stats": {
+          "type": "table",
+          "kind": "file",
+          "size": 21,
+          "name": "seqkit_stats.txt"
+        }
+      },
+      "detail": {
+        "execution_mode": "native",
+        "exit_code": 0,
+        "slurm_job_id": "4242"
+      }
+    },
+    "t7": {
+      "status": "succeeded",
+      "error": null,
+      "started_at": "2026-10-24 07:16:36",
+      "finished_at": "2026-10-24 07:16:36",
+      "outputs": {
+        "genome": {
+          "type": "fasta_nt",
+          "kind": "file",
+          "size": 36,
+          "name": "run_fixture_t7.fasta"
+        }
+      },
+      "detail": {
+        "provider": "ncbi_efetch",
+        "record_count": 1
+      }
+    },
+    "ani": {
+      "status": "succeeded",
+      "error": null,
+      "started_at": "2026-10-24 07:16:36",
+      "finished_at": "2026-10-24 07:16:36",
+      "outputs": {
+        "ani": {
+          "type": "table",
+          "kind": "file",
+          "size": 11,
+          "name": "fastani.txt"
+        }
+      },
+      "detail": {
+        "execution_mode": "native",
+        "exit_code": 0,
+        "slurm_job_id": "4242"
+      }
+    },
+    "t7_checkv": {
+      "status": "succeeded",
+      "error": null,
+      "started_at": "2026-10-24 07:16:36",
+      "finished_at": "2026-10-24 07:16:36",
+      "outputs": {
+        "quality": {
+          "type": "table",
+          "kind": "file",
+          "size": 39,
+          "name": "quality_summary.tsv"
+        },
+        "results": {
+          "type": "directory",
+          "kind": "dir",
+          "name": "checkv_out"
+        }
+      },
+      "detail": {
+        "execution_mode": "native",
+        "exit_code": 0,
+        "slurm_job_id": "4242"
+      }
+    },
+    "t7_genes": {
+      "status": "cached",
+      "error": null,
+      "started_at": "2026-10-24 07:16:36",
+      "finished_at": "2026-10-24 07:16:36",
+      "outputs": {
+        "genes": {
+          "type": "fasta_nt",
+          "kind": "file",
+          "size": 54,
+          "name": "genes.fna"
+        },
+        "gff": {
+          "type": "gff",
+          "kind": "file",
+          "size": 16,
+          "name": "genes.gff"
+        },
+        "proteins": {
+          "type": "fasta_aa",
+          "kind": "file",
+          "size": 43,
+          "name": "proteins.faa"
+        }
+      },
+      "detail": {
+        "cached_from": {
+          "run_id": "run_earlier",
+          "node_id": "t7_genes"
+        }
+      }
+    },
+    "mmseqs": {
+      "status": "succeeded",
+      "error": null,
+      "started_at": "2026-10-24 07:16:36",
+      "finished_at": "2026-10-24 07:16:36",
+      "outputs": {
+        "hits": {
+          "type": "table",
+          "kind": "file",
+          "size": 11,
+          "name": "mmseqs_hits.m8"
+        }
+      },
+      "detail": {
+        "execution_mode": "native",
+        "exit_code": 0,
+        "slurm_job_id": "4242"
+      }
+    },
+    "t7_genomad": {
+      "status": "succeeded",
+      "error": null,
+      "started_at": "2026-10-24 07:16:36",
+      "finished_at": "2026-10-24 07:16:36",
+      "outputs": {
+        "results": {
+          "type": "directory",
+          "kind": "dir",
+          "name": "genomad_out"
+        },
+        "virus_summary": {
+          "type": "table",
+          "kind": "file",
+          "size": 31,
+          "name": "x_virus_summary.tsv"
+        }
+      },
+      "detail": {
+        "execution_mode": "native",
+        "exit_code": 0,
+        "slurm_job_id": "4242"
+      }
+    },
+    "t7_lifestyle": {
+      "status": "succeeded",
+      "error": null,
+      "started_at": "2026-10-24 07:16:36",
+      "finished_at": "2026-10-24 07:16:36",
+      "outputs": {
+        "prediction": {
+          "type": "table",
+          "kind": "file",
+          "size": 29,
+          "name": "phatyp_prediction.tsv"
+        },
+        "results": {
+          "type": "directory",
+          "kind": "dir",
+          "name": "phabox_phatyp"
+        }
+      },
+      "detail": {
+        "execution_mode": "native",
+        "exit_code": 0,
+        "slurm_job_id": "4242"
+      }
+    },
+    "t7_protdb": {
+      "status": "succeeded",
+      "error": null,
+      "started_at": "2026-10-24 07:16:36",
+      "finished_at": "2026-10-24 07:16:36",
+      "outputs": {
+        "db": {
+          "type": "blast_db_aa",
+          "kind": "prefix",
+          "name": "blast_db"
+        }
+      },
+      "detail": {
+        "execution_mode": "native",
+        "exit_code": 0,
+        "slurm_job_id": "4242"
+      }
+    },
+    "blastp": {
+      "status": "failed",
+      "error": "blastp exited with code 2",
+      "started_at": "2026-10-24 07:16:36",
+      "finished_at": "2026-10-24 07:16:36",
+      "outputs": {},
+      "detail": {
+        "exit_code": 2,
+        "stderr_tail": "BLAST Database error: No alias or index file found"
+      }
+    },
+    "t7_stats": {
+      "status": "succeeded",
+      "error": null,
+      "started_at": "2026-10-24 07:16:36",
+      "finished_at": "2026-10-24 07:16:36",
+      "outputs": {
+        "stats": {
+          "type": "table",
+          "kind": "file",
+          "size": 21,
+          "name": "seqkit_stats.txt"
+        }
+      },
+      "detail": {
+        "execution_mode": "native",
+        "exit_code": 0,
+        "slurm_job_id": "4242"
+      }
+    },
+    "report": {
+      "status": "skipped",
+      "error": "skipped: blastp failed",
+      "started_at": null,
+      "finished_at": null,
+      "outputs": {},
+      "detail": {
+        "evidence_chars": 1326,
+        "evidence_items": 11,
+        "evidence_truncated": false,
+        "report_chars": 77
+      }
+    }
+  }
+}

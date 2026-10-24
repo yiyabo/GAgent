@@ -1,0 +1,1424 @@
+{
+  "spec_version": 1,
+  "any_type": "any",
+  "data_types": [
+    {
+      "id": "fasta_nt",
+      "title": {
+        "en": "Nucleotide FASTA",
+        "zh": "核酸 FASTA"
+      }
+    },
+    {
+      "id": "fasta_aa",
+      "title": {
+        "en": "Protein FASTA",
+        "zh": "蛋白 FASTA"
+      }
+    },
+    {
+      "id": "gff",
+      "title": {
+        "en": "GFF annotation",
+        "zh": "GFF 注释"
+      }
+    },
+    {
+      "id": "table",
+      "title": {
+        "en": "Table",
+        "zh": "表格"
+      }
+    },
+    {
+      "id": "directory",
+      "title": {
+        "en": "Result folder",
+        "zh": "结果目录"
+      }
+    },
+    {
+      "id": "blast_db_nt",
+      "title": {
+        "en": "BLAST nucleotide database",
+        "zh": "BLAST 核酸库"
+      }
+    },
+    {
+      "id": "blast_db_aa",
+      "title": {
+        "en": "BLAST protein database",
+        "zh": "BLAST 蛋白库"
+      }
+    },
+    {
+      "id": "hmm",
+      "title": {
+        "en": "HMM profile",
+        "zh": "HMM 模型"
+      }
+    },
+    {
+      "id": "report",
+      "title": {
+        "en": "Report",
+        "zh": "报告"
+      }
+    }
+  ],
+  "categories": [
+    {
+      "id": "input",
+      "title": {
+        "en": "Inputs",
+        "zh": "输入"
+      }
+    },
+    {
+      "id": "ncbi",
+      "title": {
+        "en": "NCBI download",
+        "zh": "NCBI 下载"
+      }
+    },
+    {
+      "id": "sequence",
+      "title": {
+        "en": "Sequences",
+        "zh": "序列"
+      }
+    },
+    {
+      "id": "genes",
+      "title": {
+        "en": "Genes",
+        "zh": "基因"
+      }
+    },
+    {
+      "id": "virus",
+      "title": {
+        "en": "Virus identification and quality",
+        "zh": "病毒鉴定与质量"
+      }
+    },
+    {
+      "id": "phage",
+      "title": {
+        "en": "Phage traits",
+        "zh": "噬菌体特性"
+      }
+    },
+    {
+      "id": "compare",
+      "title": {
+        "en": "Comparison",
+        "zh": "比对与比较"
+      }
+    },
+    {
+      "id": "annotation",
+      "title": {
+        "en": "Annotation",
+        "zh": "注释"
+      }
+    },
+    {
+      "id": "report",
+      "title": {
+        "en": "Report",
+        "zh": "报告"
+      }
+    }
+  ],
+  "node_types": [
+    {
+      "type": "input.genome",
+      "category": "input",
+      "kind": "input",
+      "title": {
+        "en": "Genome / contigs",
+        "zh": "基因组／重叠群"
+      },
+      "description": {
+        "en": "A nucleotide FASTA file you uploaded.",
+        "zh": "你上传的核酸 FASTA 文件。"
+      },
+      "tool": null,
+      "operation": null,
+      "slow": false,
+      "terminal": false,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "file",
+          "type": "fasta_nt",
+          "title": {
+            "en": "Nucleotide FASTA",
+            "zh": "核酸 FASTA"
+          },
+          "optional": false
+        }
+      ],
+      "params": [
+        {
+          "name": "path",
+          "kind": "path",
+          "title": {
+            "en": "File",
+            "zh": "文件"
+          },
+          "default": null,
+          "required": false,
+          "help": {
+            "en": "Upload a file to this pipeline, then pick it here.",
+            "zh": "先把文件上传到这条流水线，再在这里选择。"
+          }
+        }
+      ]
+    },
+    {
+      "type": "input.proteins",
+      "category": "input",
+      "kind": "input",
+      "title": {
+        "en": "Proteins",
+        "zh": "蛋白序列"
+      },
+      "description": {
+        "en": "A protein FASTA file you uploaded.",
+        "zh": "你上传的蛋白 FASTA 文件。"
+      },
+      "tool": null,
+      "operation": null,
+      "slow": false,
+      "terminal": false,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "file",
+          "type": "fasta_aa",
+          "title": {
+            "en": "Protein FASTA",
+            "zh": "蛋白 FASTA"
+          },
+          "optional": false
+        }
+      ],
+      "params": [
+        {
+          "name": "path",
+          "kind": "path",
+          "title": {
+            "en": "File",
+            "zh": "文件"
+          },
+          "default": null,
+          "required": false,
+          "help": {
+            "en": "Upload a file to this pipeline, then pick it here.",
+            "zh": "先把文件上传到这条流水线，再在这里选择。"
+          }
+        }
+      ]
+    },
+    {
+      "type": "input.hmm",
+      "category": "input",
+      "kind": "input",
+      "title": {
+        "en": "HMM profile",
+        "zh": "HMM 模型"
+      },
+      "description": {
+        "en": "An HMMER profile (.hmm) you uploaded, for hmmsearch.",
+        "zh": "你上传的 HMMER 模型文件（.hmm），供 hmmsearch 使用。"
+      },
+      "tool": null,
+      "operation": null,
+      "slow": false,
+      "terminal": false,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "file",
+          "type": "hmm",
+          "title": {
+            "en": "HMM profile",
+            "zh": "HMM 模型"
+          },
+          "optional": false
+        }
+      ],
+      "params": [
+        {
+          "name": "path",
+          "kind": "path",
+          "title": {
+            "en": "File",
+            "zh": "文件"
+          },
+          "default": null,
+          "required": false,
+          "help": {
+            "en": "Upload a file to this pipeline, then pick it here.",
+            "zh": "先把文件上传到这条流水线，再在这里选择。"
+          }
+        }
+      ]
+    },
+    {
+      "type": "ncbi.genome",
+      "category": "ncbi",
+      "kind": "ncbi",
+      "title": {
+        "en": "NCBI genome download",
+        "zh": "NCBI 基因组下载"
+      },
+      "description": {
+        "en": "Downloads nucleotide FASTA for the given accessions.",
+        "zh": "按登录号下载核酸 FASTA。"
+      },
+      "tool": null,
+      "operation": null,
+      "slow": false,
+      "terminal": false,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "genome",
+          "type": "fasta_nt",
+          "title": {
+            "en": "Genome FASTA",
+            "zh": "基因组 FASTA"
+          },
+          "optional": false
+        }
+      ],
+      "params": [
+        {
+          "name": "accessions",
+          "kind": "accessions",
+          "title": {
+            "en": "Accessions",
+            "zh": "登录号"
+          },
+          "default": null,
+          "required": true,
+          "max_length": 2000,
+          "help": {
+            "en": "Comma separated, e.g. NC_001416.1, NC_001604.1",
+            "zh": "用逗号分隔，例如 NC_001416.1, NC_001604.1"
+          }
+        }
+      ]
+    },
+    {
+      "type": "ncbi.cds_proteins",
+      "category": "ncbi",
+      "kind": "ncbi",
+      "title": {
+        "en": "NCBI CDS proteins",
+        "zh": "NCBI CDS 蛋白"
+      },
+      "description": {
+        "en": "Downloads every annotated CDS of the given nucleotide records as protein FASTA.",
+        "zh": "下载这些核酸记录里全部注释 CDS 的蛋白 FASTA。"
+      },
+      "tool": null,
+      "operation": null,
+      "slow": false,
+      "terminal": false,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "proteins",
+          "type": "fasta_aa",
+          "title": {
+            "en": "Proteins",
+            "zh": "蛋白序列"
+          },
+          "optional": false
+        }
+      ],
+      "params": [
+        {
+          "name": "accessions",
+          "kind": "accessions",
+          "title": {
+            "en": "Accessions",
+            "zh": "登录号"
+          },
+          "default": null,
+          "required": true,
+          "max_length": 2000,
+          "help": {
+            "en": "Comma separated nucleotide accessions",
+            "zh": "用逗号分隔的核酸登录号"
+          }
+        }
+      ]
+    },
+    {
+      "type": "seqkit.stats",
+      "category": "sequence",
+      "kind": "tool",
+      "title": {
+        "en": "Sequence statistics (SeqKit)",
+        "zh": "序列统计（SeqKit）"
+      },
+      "description": {
+        "en": "Counts, lengths and GC content.",
+        "zh": "序列条数、长度和 GC 含量。"
+      },
+      "tool": "seqkit",
+      "operation": "stats",
+      "slow": false,
+      "terminal": false,
+      "inputs": [
+        {
+          "name": "sequences",
+          "types": [
+            "fasta_nt",
+            "fasta_aa"
+          ],
+          "title": {
+            "en": "Sequences",
+            "zh": "序列"
+          },
+          "required": true,
+          "multiple": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "stats",
+          "type": "table",
+          "title": {
+            "en": "Statistics",
+            "zh": "统计表"
+          },
+          "optional": false
+        }
+      ],
+      "params": []
+    },
+    {
+      "type": "prodigal.predict",
+      "category": "genes",
+      "kind": "tool",
+      "title": {
+        "en": "Gene prediction (Prodigal)",
+        "zh": "基因预测（Prodigal）"
+      },
+      "description": {
+        "en": "Predicts protein-coding genes.",
+        "zh": "预测蛋白编码基因。"
+      },
+      "tool": "prodigal",
+      "operation": "predict",
+      "slow": false,
+      "terminal": false,
+      "inputs": [
+        {
+          "name": "genome",
+          "types": [
+            "fasta_nt"
+          ],
+          "title": {
+            "en": "Genome",
+            "zh": "基因组"
+          },
+          "required": true,
+          "multiple": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "proteins",
+          "type": "fasta_aa",
+          "title": {
+            "en": "Proteins",
+            "zh": "蛋白序列"
+          },
+          "optional": false
+        },
+        {
+          "name": "genes",
+          "type": "fasta_nt",
+          "title": {
+            "en": "Gene sequences",
+            "zh": "基因序列"
+          },
+          "optional": false
+        },
+        {
+          "name": "gff",
+          "type": "gff",
+          "title": {
+            "en": "Gene coordinates",
+            "zh": "基因坐标"
+          },
+          "optional": false
+        }
+      ],
+      "params": [
+        {
+          "name": "mode",
+          "kind": "enum",
+          "title": {
+            "en": "Mode",
+            "zh": "模式"
+          },
+          "default": "meta",
+          "required": false,
+          "choices": [
+            "meta",
+            "single"
+          ],
+          "help": {
+            "en": "meta works for short or mixed sequences such as phage genomes; single trains on one larger genome.",
+            "zh": "meta 适合噬菌体等较短或混合的序列；single 用一条较大的基因组自行训练。"
+          }
+        },
+        {
+          "name": "translation_table",
+          "kind": "integer",
+          "title": {
+            "en": "Translation table",
+            "zh": "密码子表"
+          },
+          "default": 11,
+          "required": false,
+          "minimum": 1,
+          "maximum": 33
+        }
+      ]
+    },
+    {
+      "type": "genomad.end_to_end",
+      "category": "virus",
+      "kind": "tool",
+      "title": {
+        "en": "Virus and plasmid identification (geNomad)",
+        "zh": "病毒与质粒鉴定（geNomad）"
+      },
+      "description": {
+        "en": "Classifies sequences as virus, plasmid or chromosome, with taxonomy.",
+        "zh": "把序列判为病毒、质粒或染色体，并给出分类。"
+      },
+      "tool": "genomad",
+      "operation": "end_to_end",
+      "slow": true,
+      "terminal": false,
+      "inputs": [
+        {
+          "name": "sequences",
+          "types": [
+            "fasta_nt"
+          ],
+          "title": {
+            "en": "Sequences",
+            "zh": "序列"
+          },
+          "required": true,
+          "multiple": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "virus_summary",
+          "type": "table",
+          "title": {
+            "en": "Virus summary",
+            "zh": "病毒汇总表"
+          },
+          "optional": true
+        },
+        {
+          "name": "results",
+          "type": "directory",
+          "title": {
+            "en": "All results",
+            "zh": "全部结果"
+          },
+          "optional": false
+        }
+      ],
+      "params": []
+    },
+    {
+      "type": "checkv.end_to_end",
+      "category": "virus",
+      "kind": "tool",
+      "title": {
+        "en": "Virus genome quality (CheckV)",
+        "zh": "病毒基因组质量（CheckV）"
+      },
+      "description": {
+        "en": "Completeness, contamination and quality tier.",
+        "zh": "完整度、污染和质量等级。"
+      },
+      "tool": "checkv",
+      "operation": "end_to_end",
+      "slow": true,
+      "terminal": false,
+      "inputs": [
+        {
+          "name": "sequences",
+          "types": [
+            "fasta_nt"
+          ],
+          "title": {
+            "en": "Viral sequences",
+            "zh": "病毒序列"
+          },
+          "required": true,
+          "multiple": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "quality",
+          "type": "table",
+          "title": {
+            "en": "Quality summary",
+            "zh": "质量汇总表"
+          },
+          "optional": false
+        },
+        {
+          "name": "results",
+          "type": "directory",
+          "title": {
+            "en": "All results",
+            "zh": "全部结果"
+          },
+          "optional": false
+        }
+      ],
+      "params": []
+    },
+    {
+      "type": "virsorter2.run",
+      "category": "virus",
+      "kind": "tool",
+      "title": {
+        "en": "Virus identification (VirSorter2)",
+        "zh": "病毒鉴定（VirSorter2）"
+      },
+      "description": {
+        "en": "Scores sequences for viral signal.",
+        "zh": "给序列的病毒信号打分。"
+      },
+      "tool": "virsorter2",
+      "operation": "run",
+      "slow": true,
+      "terminal": false,
+      "inputs": [
+        {
+          "name": "sequences",
+          "types": [
+            "fasta_nt"
+          ],
+          "title": {
+            "en": "Sequences",
+            "zh": "序列"
+          },
+          "required": true,
+          "multiple": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "scores",
+          "type": "table",
+          "title": {
+            "en": "Viral scores",
+            "zh": "病毒得分表"
+          },
+          "optional": true
+        },
+        {
+          "name": "results",
+          "type": "directory",
+          "title": {
+            "en": "All results",
+            "zh": "全部结果"
+          },
+          "optional": false
+        }
+      ],
+      "params": [
+        {
+          "name": "min_score",
+          "kind": "number",
+          "title": {
+            "en": "Minimum score",
+            "zh": "最低得分"
+          },
+          "default": 0.5,
+          "required": false,
+          "minimum": 0.0,
+          "maximum": 1.0
+        }
+      ]
+    },
+    {
+      "type": "vibrant.run",
+      "category": "virus",
+      "kind": "tool",
+      "title": {
+        "en": "Phage identification (VIBRANT)",
+        "zh": "噬菌体鉴定（VIBRANT）"
+      },
+      "description": {
+        "en": "Identifies phage sequences and their lifestyle; inputs shorter than 1 kb are skipped.",
+        "zh": "鉴定噬菌体序列及其生活方式；短于 1 kb 的序列会被跳过。"
+      },
+      "tool": "vibrant",
+      "operation": "run",
+      "slow": true,
+      "terminal": false,
+      "inputs": [
+        {
+          "name": "sequences",
+          "types": [
+            "fasta_nt"
+          ],
+          "title": {
+            "en": "Sequences",
+            "zh": "序列"
+          },
+          "required": true,
+          "multiple": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "results",
+          "type": "directory",
+          "title": {
+            "en": "All results",
+            "zh": "全部结果"
+          },
+          "optional": false
+        }
+      ],
+      "params": []
+    },
+    {
+      "type": "phabox2.phamer",
+      "category": "phage",
+      "kind": "tool",
+      "title": {
+        "en": "Phage identification (PhaMer)",
+        "zh": "噬菌体鉴定（PhaMer）"
+      },
+      "description": {
+        "en": "Is it a phage?",
+        "zh": "是不是噬菌体。"
+      },
+      "tool": "phabox2",
+      "operation": "phamer",
+      "slow": true,
+      "terminal": false,
+      "inputs": [
+        {
+          "name": "sequences",
+          "types": [
+            "fasta_nt"
+          ],
+          "title": {
+            "en": "Phage sequences",
+            "zh": "噬菌体序列"
+          },
+          "required": true,
+          "multiple": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "prediction",
+          "type": "table",
+          "title": {
+            "en": "Prediction",
+            "zh": "预测表"
+          },
+          "optional": false
+        },
+        {
+          "name": "results",
+          "type": "directory",
+          "title": {
+            "en": "All results",
+            "zh": "全部结果"
+          },
+          "optional": false
+        }
+      ],
+      "params": []
+    },
+    {
+      "type": "phabox2.phatyp",
+      "category": "phage",
+      "kind": "tool",
+      "title": {
+        "en": "Lifestyle (PhaTYP)",
+        "zh": "生活方式（PhaTYP）"
+      },
+      "description": {
+        "en": "Virulent or temperate.",
+        "zh": "烈性还是温和。"
+      },
+      "tool": "phabox2",
+      "operation": "phatyp",
+      "slow": true,
+      "terminal": false,
+      "inputs": [
+        {
+          "name": "sequences",
+          "types": [
+            "fasta_nt"
+          ],
+          "title": {
+            "en": "Phage sequences",
+            "zh": "噬菌体序列"
+          },
+          "required": true,
+          "multiple": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "prediction",
+          "type": "table",
+          "title": {
+            "en": "Prediction",
+            "zh": "预测表"
+          },
+          "optional": false
+        },
+        {
+          "name": "results",
+          "type": "directory",
+          "title": {
+            "en": "All results",
+            "zh": "全部结果"
+          },
+          "optional": false
+        }
+      ],
+      "params": []
+    },
+    {
+      "type": "phabox2.phagcn",
+      "category": "phage",
+      "kind": "tool",
+      "title": {
+        "en": "Taxonomy (PhaGCN)",
+        "zh": "分类（PhaGCN）"
+      },
+      "description": {
+        "en": "Family-level classification.",
+        "zh": "科级分类。"
+      },
+      "tool": "phabox2",
+      "operation": "phagcn",
+      "slow": true,
+      "terminal": false,
+      "inputs": [
+        {
+          "name": "sequences",
+          "types": [
+            "fasta_nt"
+          ],
+          "title": {
+            "en": "Phage sequences",
+            "zh": "噬菌体序列"
+          },
+          "required": true,
+          "multiple": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "prediction",
+          "type": "table",
+          "title": {
+            "en": "Prediction",
+            "zh": "预测表"
+          },
+          "optional": false
+        },
+        {
+          "name": "results",
+          "type": "directory",
+          "title": {
+            "en": "All results",
+            "zh": "全部结果"
+          },
+          "optional": false
+        }
+      ],
+      "params": []
+    },
+    {
+      "type": "phabox2.cherry",
+      "category": "phage",
+      "kind": "tool",
+      "title": {
+        "en": "Host prediction (CHERRY)",
+        "zh": "宿主预测（CHERRY）"
+      },
+      "description": {
+        "en": "Predicted bacterial host.",
+        "zh": "预测的细菌宿主。"
+      },
+      "tool": "phabox2",
+      "operation": "cherry",
+      "slow": true,
+      "terminal": false,
+      "inputs": [
+        {
+          "name": "sequences",
+          "types": [
+            "fasta_nt"
+          ],
+          "title": {
+            "en": "Phage sequences",
+            "zh": "噬菌体序列"
+          },
+          "required": true,
+          "multiple": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "prediction",
+          "type": "table",
+          "title": {
+            "en": "Prediction",
+            "zh": "预测表"
+          },
+          "optional": false
+        },
+        {
+          "name": "results",
+          "type": "directory",
+          "title": {
+            "en": "All results",
+            "zh": "全部结果"
+          },
+          "optional": false
+        }
+      ],
+      "params": []
+    },
+    {
+      "type": "blast.makeblastdb_aa",
+      "category": "compare",
+      "kind": "tool",
+      "title": {
+        "en": "BLAST protein database",
+        "zh": "建 BLAST 蛋白库"
+      },
+      "description": {
+        "en": "Builds a protein BLAST database for blastp.",
+        "zh": "建一个蛋白 BLAST 库，供 blastp 使用。"
+      },
+      "tool": "blast",
+      "operation": "makeblastdb",
+      "slow": false,
+      "terminal": false,
+      "inputs": [
+        {
+          "name": "proteins",
+          "types": [
+            "fasta_aa"
+          ],
+          "title": {
+            "en": "Proteins",
+            "zh": "蛋白序列"
+          },
+          "required": true,
+          "multiple": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "db",
+          "type": "blast_db_aa",
+          "title": {
+            "en": "BLAST protein database",
+            "zh": "BLAST 蛋白库"
+          },
+          "optional": false
+        }
+      ],
+      "params": []
+    },
+    {
+      "type": "blast.makeblastdb_nt",
+      "category": "compare",
+      "kind": "tool",
+      "title": {
+        "en": "BLAST nucleotide database",
+        "zh": "建 BLAST 核酸库"
+      },
+      "description": {
+        "en": "Builds a nucleotide BLAST database for blastn.",
+        "zh": "建一个核酸 BLAST 库，供 blastn 使用。"
+      },
+      "tool": "blast",
+      "operation": "makeblastdb",
+      "slow": false,
+      "terminal": false,
+      "inputs": [
+        {
+          "name": "sequences",
+          "types": [
+            "fasta_nt"
+          ],
+          "title": {
+            "en": "Sequences",
+            "zh": "序列"
+          },
+          "required": true,
+          "multiple": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "db",
+          "type": "blast_db_nt",
+          "title": {
+            "en": "BLAST nucleotide database",
+            "zh": "BLAST 核酸库"
+          },
+          "optional": false
+        }
+      ],
+      "params": []
+    },
+    {
+      "type": "blast.blastp",
+      "category": "compare",
+      "kind": "tool",
+      "title": {
+        "en": "Protein search (blastp)",
+        "zh": "蛋白比对（blastp）"
+      },
+      "description": {
+        "en": "Searches query proteins against a protein database (tabular output).",
+        "zh": "用查询蛋白搜索蛋白库（表格输出）。"
+      },
+      "tool": "blast",
+      "operation": "blastp",
+      "slow": false,
+      "terminal": false,
+      "inputs": [
+        {
+          "name": "query",
+          "types": [
+            "fasta_aa"
+          ],
+          "title": {
+            "en": "Query proteins",
+            "zh": "查询蛋白"
+          },
+          "required": true,
+          "multiple": false
+        },
+        {
+          "name": "db",
+          "types": [
+            "blast_db_aa"
+          ],
+          "title": {
+            "en": "Database",
+            "zh": "数据库"
+          },
+          "required": true,
+          "multiple": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "hits",
+          "type": "table",
+          "title": {
+            "en": "Hits",
+            "zh": "比对结果"
+          },
+          "optional": false
+        }
+      ],
+      "params": []
+    },
+    {
+      "type": "blast.blastn",
+      "category": "compare",
+      "kind": "tool",
+      "title": {
+        "en": "Nucleotide search (blastn)",
+        "zh": "核酸比对（blastn）"
+      },
+      "description": {
+        "en": "Searches query sequences against a nucleotide database (tabular output).",
+        "zh": "用查询序列搜索核酸库（表格输出）。"
+      },
+      "tool": "blast",
+      "operation": "blastn",
+      "slow": false,
+      "terminal": false,
+      "inputs": [
+        {
+          "name": "query",
+          "types": [
+            "fasta_nt"
+          ],
+          "title": {
+            "en": "Query sequences",
+            "zh": "查询序列"
+          },
+          "required": true,
+          "multiple": false
+        },
+        {
+          "name": "db",
+          "types": [
+            "blast_db_nt"
+          ],
+          "title": {
+            "en": "Database",
+            "zh": "数据库"
+          },
+          "required": true,
+          "multiple": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "hits",
+          "type": "table",
+          "title": {
+            "en": "Hits",
+            "zh": "比对结果"
+          },
+          "optional": false
+        }
+      ],
+      "params": []
+    },
+    {
+      "type": "mmseqs2.protein_search",
+      "category": "compare",
+      "kind": "tool",
+      "title": {
+        "en": "Protein search (MMseqs2)",
+        "zh": "蛋白比对（MMseqs2）"
+      },
+      "description": {
+        "en": "Fast protein-to-protein search (tabular .m8 output).",
+        "zh": "快速的蛋白对蛋白搜索（.m8 表格输出）。"
+      },
+      "tool": "mmseqs2",
+      "operation": "easy_search",
+      "slow": false,
+      "terminal": false,
+      "inputs": [
+        {
+          "name": "query",
+          "types": [
+            "fasta_aa"
+          ],
+          "title": {
+            "en": "Query proteins",
+            "zh": "查询蛋白"
+          },
+          "required": true,
+          "multiple": false
+        },
+        {
+          "name": "target",
+          "types": [
+            "fasta_aa"
+          ],
+          "title": {
+            "en": "Target proteins",
+            "zh": "目标蛋白"
+          },
+          "required": true,
+          "multiple": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "hits",
+          "type": "table",
+          "title": {
+            "en": "Hits",
+            "zh": "比对结果"
+          },
+          "optional": false
+        }
+      ],
+      "params": []
+    },
+    {
+      "type": "fastani.compare",
+      "category": "compare",
+      "kind": "tool",
+      "title": {
+        "en": "Average nucleotide identity (FastANI)",
+        "zh": "平均核苷酸一致性（FastANI）"
+      },
+      "description": {
+        "en": "ANI between two genomes; no output line means ANI is too low to report.",
+        "zh": "两条基因组的 ANI；没有结果行表示 ANI 太低、无法报告。"
+      },
+      "tool": "fastani",
+      "operation": "compare",
+      "slow": false,
+      "terminal": false,
+      "inputs": [
+        {
+          "name": "query",
+          "types": [
+            "fasta_nt"
+          ],
+          "title": {
+            "en": "Query genome",
+            "zh": "查询基因组"
+          },
+          "required": true,
+          "multiple": false
+        },
+        {
+          "name": "reference",
+          "types": [
+            "fasta_nt"
+          ],
+          "title": {
+            "en": "Reference genome",
+            "zh": "参考基因组"
+          },
+          "required": true,
+          "multiple": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "ani",
+          "type": "table",
+          "title": {
+            "en": "ANI",
+            "zh": "ANI 结果"
+          },
+          "optional": false
+        }
+      ],
+      "params": []
+    },
+    {
+      "type": "hmmer.hmmsearch",
+      "category": "compare",
+      "kind": "tool",
+      "title": {
+        "en": "Profile search (hmmsearch)",
+        "zh": "模型搜索（hmmsearch）"
+      },
+      "description": {
+        "en": "Searches proteins with an HMM profile (per-sequence table).",
+        "zh": "用 HMM 模型搜索蛋白（逐条序列结果表）。"
+      },
+      "tool": "hmmer",
+      "operation": "hmmsearch",
+      "slow": false,
+      "terminal": false,
+      "inputs": [
+        {
+          "name": "proteins",
+          "types": [
+            "fasta_aa"
+          ],
+          "title": {
+            "en": "Proteins",
+            "zh": "蛋白序列"
+          },
+          "required": true,
+          "multiple": false
+        },
+        {
+          "name": "profile",
+          "types": [
+            "hmm"
+          ],
+          "title": {
+            "en": "HMM profile",
+            "zh": "HMM 模型"
+          },
+          "required": true,
+          "multiple": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "hits",
+          "type": "table",
+          "title": {
+            "en": "Hits",
+            "zh": "比对结果"
+          },
+          "optional": false
+        }
+      ],
+      "params": []
+    },
+    {
+      "type": "bakta.annotate",
+      "category": "annotation",
+      "kind": "tool",
+      "title": {
+        "en": "Genome annotation (Bakta)",
+        "zh": "基因组注释（Bakta）"
+      },
+      "description": {
+        "en": "Annotates a bacterial genome (genes, products, GFF3).",
+        "zh": "注释细菌基因组（基因、产物、GFF3）。"
+      },
+      "tool": "bakta",
+      "operation": "annotate",
+      "slow": true,
+      "terminal": false,
+      "inputs": [
+        {
+          "name": "genome",
+          "types": [
+            "fasta_nt"
+          ],
+          "title": {
+            "en": "Genome",
+            "zh": "基因组"
+          },
+          "required": true,
+          "multiple": false
+        }
+      ],
+      "outputs": [
+        {
+          "name": "proteins",
+          "type": "fasta_aa",
+          "title": {
+            "en": "Proteins",
+            "zh": "蛋白序列"
+          },
+          "optional": false
+        },
+        {
+          "name": "gff",
+          "type": "gff",
+          "title": {
+            "en": "Annotation (GFF3)",
+            "zh": "注释（GFF3）"
+          },
+          "optional": false
+        },
+        {
+          "name": "results",
+          "type": "directory",
+          "title": {
+            "en": "All results",
+            "zh": "全部结果"
+          },
+          "optional": false
+        }
+      ],
+      "params": []
+    },
+    {
+      "type": "agent.report",
+      "category": "report",
+      "kind": "agent",
+      "title": {
+        "en": "Agent report",
+        "zh": "Agent 报告"
+      },
+      "description": {
+        "en": "The model reads the connected results and writes a report. Only allowed at the end of a pipeline.",
+        "zh": "由模型读取接入的结果并写报告。只能放在流水线末端。"
+      },
+      "tool": null,
+      "operation": null,
+      "slow": false,
+      "terminal": true,
+      "inputs": [
+        {
+          "name": "evidence",
+          "types": [
+            "any"
+          ],
+          "title": {
+            "en": "Results to read",
+            "zh": "要读取的结果"
+          },
+          "required": true,
+          "multiple": true
+        }
+      ],
+      "outputs": [
+        {
+          "name": "report",
+          "type": "report",
+          "title": {
+            "en": "Report",
+            "zh": "报告"
+          },
+          "optional": false
+        }
+      ],
+      "params": [
+        {
+          "name": "instructions",
+          "kind": "text",
+          "title": {
+            "en": "What the report should cover",
+            "zh": "报告要回答什么"
+          },
+          "default": "Summarize what each result shows, list the key numbers in a table, point out where tools agree or disagree, and say which conclusions are uncertain.",
+          "required": false,
+          "max_length": 4000
+        },
+        {
+          "name": "language",
+          "kind": "enum",
+          "title": {
+            "en": "Language",
+            "zh": "语言"
+          },
+          "default": "zh",
+          "required": false,
+          "choices": [
+            "zh",
+            "en"
+          ]
+        }
+      ]
+    }
+  ],
+  "templates": [
+    {
+      "id": "phage_lambda_t7",
+      "title": {
+        "en": "Phage basics: lambda vs T7",
+        "zh": "噬菌体基础分析：lambda 对比 T7"
+      },
+      "description": {
+        "en": "Downloads lambda and T7 from NCBI, runs statistics, gene prediction, geNomad, CheckV and PhaTYP on each, compares them with FastANI, blastp and MMseqs2, and ends with an agent report. No upload needed.",
+        "zh": "从 NCBI 下载 lambda 和 T7，分别做序列统计、基因预测、geNomad、CheckV 和 PhaTYP，再用 FastANI、blastp 和 MMseqs2 比较两者，最后由 Agent 写报告。无需上传文件。"
+      },
+      "node_count": 17
+    }
+  ]
+}
