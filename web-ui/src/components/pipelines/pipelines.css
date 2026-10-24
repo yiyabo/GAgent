@@ -1,5 +1,14 @@
 /* State colours describe execution. Port data types have neutral text labels. */
 
+@media (max-width: 850px) {
+  .pipeline-header { gap: 12px; padding-inline: 12px; }
+  .pipeline-header .app-logo { flex: none; }
+  .pipeline-header .app-header-actions { min-width: 0; overflow-x: auto; overflow-y: hidden; }
+  .pipeline-header .app-header-actions > .ant-space { flex: none; }
+  .pipeline-header .app-header-actions > .ant-space:first-child,
+  .pipeline-header .workspace-account-email { display: none; }
+}
+
 .pl-page {
   display: flex;
   flex-direction: column;
