@@ -53,6 +53,7 @@ const NewPipelineModal: React.FC<Props> = ({ open, templates, initialTemplate, c
       okButtonProps={{ disabled: !name.trim() }}
       onCancel={onCancel}
       onOk={submit}
+      destroyOnHidden
     >
       <label className="pl-field-label" htmlFor="pl-new-name">
         {t('pipelines.inspector.name')}

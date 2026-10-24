@@ -261,6 +261,24 @@ describe('the pipelines page', () => {
     expect(await screen.findByTestId('canvas')).toHaveAttribute('data-readonly', 'false');
   });
 
+  it('previews a Markdown report as formatted text', async () => {
+    api.run.mockResolvedValue(
+      pipelineRun({
+        status: 'succeeded',
+        nodes: {
+          dl: { ...nodeRun('succeeded'), outputs: { genome: { name: 'report.md', type: 'report', kind: 'file', size: 40 } } },
+        },
+      }),
+    );
+    api.preview.mockResolvedValue({ kind: 'text', name: 'report.md', size: 40, truncated: false, text: '# Lambda vs T7\n\n| GC | 49.86% |\n|---|---|\n| T7 | 48.40% |\n' });
+    renderPage('/pipelines?id=pl1&run=r1');
+    fireEvent.click(await screen.findByRole('button', { name: 'select-dl' }));
+    fireEvent.click(await screen.findByRole('button', { name: /预览/ }));
+    expect(await screen.findByRole('heading', { name: 'Lambda vs T7' })).toBeInTheDocument();
+    expect(screen.getByRole('cell', { name: '48.40%' })).toBeInTheDocument();
+    expect(api.preview).toHaveBeenCalledWith('r1', 'dl', 'genome', undefined);
+  });
+
   it('explains why a run could not start', async () => {
     const { PipelinesApiError } = await import('@api/pipelines');
     api.startRun.mockRejectedValue(

@@ -346,6 +346,12 @@
   overflow: auto;
 }
 
+.pl-markdown {
+  max-height: 65vh;
+  overflow: auto;
+  padding: 4px 8px;
+}
+
 /* ---- canvas ---- */
 .pl-canvas {
   position: absolute;

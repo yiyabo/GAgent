@@ -3,6 +3,7 @@ import { App, Button, Descriptions, Modal, Space, Spin, Tag, Typography } from '
 import { ArrowLeftOutlined, DownloadOutlined, EyeOutlined, StopOutlined } from '@ant-design/icons';
 import { pipelinesApi } from '@api/pipelines';
 import type { NodeCatalog, OutputPreview, PipelineRun } from '@api/pipelines';
+import { MarkdownRenderer } from '@components/chat/MarkdownRenderer';
 import { useLanguageStore } from '@/i18n/language';
 import { useT } from '@/i18n/useT';
 import { parseServerTimeDayjs } from '@utils/serverTime';
@@ -177,12 +178,18 @@ const RunPanel: React.FC<Props> = ({ catalog, run, selectedNode, onBack, onCance
         )}
       </div>
 
-      <Modal open={Boolean(preview)} title={preview?.title} footer={null} width={860} onCancel={() => setPreview(null)}>
+      <Modal open={Boolean(preview)} title={preview?.title} footer={null} width={860} onCancel={() => setPreview(null)} destroyOnHidden>
         {preview?.loading ? <Spin /> : null}
         {preview?.data?.kind === 'text' ? (
           <>
             {preview.data.truncated ? <Paragraph type="secondary">{t('pipelines.run_view.truncated')}</Paragraph> : null}
-            <pre className="pl-preview">{preview.data.text}</pre>
+            {(preview.data.name || '').toLowerCase().endsWith('.md') ? (
+              <div className="pl-markdown">
+                <MarkdownRenderer content={preview.data.text || ''} />
+              </div>
+            ) : (
+              <pre className="pl-preview">{preview.data.text}</pre>
+            )}
           </>
         ) : null}
         {preview?.data?.kind === 'binary' ? <Paragraph type="secondary">{t('pipelines.run_view.binary')}</Paragraph> : null}
