@@ -12,6 +12,7 @@ import logging
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional
 
+from app.services.foundation.settings import chat_default_model, get_settings
 from app.services.plans.plan_decomposer import PlanDecomposer
 from app.services.plans.plan_generation import (
     create_plan_and_generate,
@@ -530,11 +531,13 @@ async def _review_plan(plan_id: Optional[int], tool_context: Optional[Any] = Non
         # -----------------------------
         # Rubric evaluation (strict, English)
         # -----------------------------
+        rubric_settings = get_settings()
+        rubric_on_openai = str(rubric_settings.llm_provider or "").strip().lower() == "openai"
         rubric_result = await asyncio.to_thread(
             evaluate_plan_rubric,
             plan_tree,
-            evaluator_provider="qwen",
-            evaluator_model="qwen3.7-max",
+            evaluator_provider=rubric_settings.llm_provider if rubric_on_openai else "qwen",
+            evaluator_model=chat_default_model() if rubric_on_openai else "qwen3.7-max",
             model_provider=getattr(tool_context, "model_provider", None) if tool_context is not None else None,
         )
 

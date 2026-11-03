@@ -33,6 +33,7 @@ from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
+from app.services.foundation.settings import chat_default_model, get_settings
 from app.services.plans.decomposition_jobs import reset_current_job, set_current_job
 from app.services.plans.plan_decomposer import PlanDecomposer
 from app.services.plans.plan_executor import ExecutionConfig
@@ -268,8 +269,8 @@ async def handle_plan_action(agent: Any, action: LLMAction) -> AgentStep:
             rubric_result = await asyncio.to_thread(
                 evaluate_plan_rubric,
                 tree,
-                evaluator_provider="qwen",
-                evaluator_model="qwen3.8-flash",
+                evaluator_provider=get_settings().llm_provider,
+                evaluator_model=chat_default_model(),
                 model_provider=(agent.extra_context or {}).get("model_provider"),
             )
         except Exception as exc:
