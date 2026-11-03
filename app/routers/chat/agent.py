@@ -22,7 +22,7 @@ from app.llm import LLMClient
 from app.services.llm.llm_service import LLMProviderError
 from app.services.run_budget import RunDeadlineExceeded, cancel_and_join, iterate_stage
 from app.services.cancellation import current_cancel_token
-from app.services.foundation.settings import CHAT_HISTORY_ABS_MAX, get_settings
+from app.services.foundation.settings import CHAT_HISTORY_ABS_MAX, chat_default_model, get_settings
 from app.services.llm.decomposer_service import PlanDecomposerLLMService
 from app.services.llm.llm_service import LLMService, get_llm_service
 from app.services.llm.structured_response import (
@@ -327,7 +327,7 @@ class StructuredChatAgent:
         mp_base_url = mp.get("base_url") if isinstance(mp, dict) else None
         mp_api_key = mp.get("api_key") if isinstance(mp, dict) else None
         if mp_base_url and mp_api_key:
-            mp_model = mp.get("model") or base_model or "qwen3.8-flash"
+            mp_model = mp.get("model") or base_model or chat_default_model()
             mp_provider = mp.get("type") or "openai"
             mp_url = mp_base_url.rstrip("/") + "/v1/chat/completions"
             override_llm_service = LLMService(LLMClient(

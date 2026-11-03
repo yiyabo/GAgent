@@ -150,6 +150,7 @@ if _USE_PYDANTIC:
         global_index_path: str = Field(default="INDEX.md", env="GLOBAL_INDEX_PATH")
 
         openai_api_key: Optional[str] = Field(default=None, env=["OPENAI_API_KEY", "GPT_API_KEY"])
+        openai_model: Optional[str] = Field(default=None, env="OPENAI_MODEL")
         xai_api_key: Optional[str] = Field(default=None, env=["XAI_API_KEY", "GROK_API_KEY"])
         anthropic_api_key: Optional[str] = Field(default=None, env=["ANTHROPIC_API_KEY", "CLAUDE_API_KEY"])
         tavily_api_key: Optional[str] = Field(default=None, env="TAVILY_API_KEY")
@@ -428,6 +429,7 @@ else:
             except Exception:
                 self.llm_outbound_rpm = 0
             self.openai_api_key = os.getenv("OPENAI_API_KEY") or os.getenv("GPT_API_KEY")
+            self.openai_model = os.getenv("OPENAI_MODEL") or None
             self.xai_api_key = os.getenv("XAI_API_KEY") or os.getenv("GROK_API_KEY")
             self.anthropic_api_key = os.getenv("ANTHROPIC_API_KEY") or os.getenv("CLAUDE_API_KEY")
             self.tavily_api_key = os.getenv("TAVILY_API_KEY")
@@ -817,3 +819,13 @@ def get_settings() -> AppSettings:
         settings.base_url = f"http://{host}:{port}"
 
     return settings
+
+
+def chat_default_model() -> str:
+    """Default chat model for the provider selected by LLM_PROVIDER (plan review, fallbacks)."""
+    settings = get_settings()
+    if str(settings.llm_provider or "").strip().lower() == "openai":
+        if not settings.openai_model:
+            raise RuntimeError("LLM_PROVIDER=openai requires OPENAI_MODEL")
+        return settings.openai_model
+    return settings.qwen_model or "qwen3.8-flash"
