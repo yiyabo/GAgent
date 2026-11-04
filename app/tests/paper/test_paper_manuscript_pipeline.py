@@ -1618,43 +1618,34 @@ def test_review_pack_writer_rejects_absolute_output_path_outside_project_before_
 
 
 
-def test_download_pmc_pdf_uses_oa_package_full_text(
+def test_download_pmc_pdf_uses_europe_pmc_full_text(
     tmp_path: Path,
 ) -> None:
     from tool_box.tools_impl import literature_pipeline as literature_pipeline_module
 
-    package_buf = io.BytesIO()
-    with tarfile.open(fileobj=package_buf, mode="w:gz") as archive:
-        body = (
-            b"<article><body><sec><title>Results</title>"
-            b"<p>The phage reduced bacterial burden by 2 log CFU in murine infection models.</p>"
-            b"</sec></body></article>"
-        )
-        info = tarfile.TarInfo(name="PMC123456/article.nxml")
-        info.size = len(body)
-        archive.addfile(info, io.BytesIO(body))
-    package_bytes = package_buf.getvalue()
+    body_text = (
+        "The phage reduced bacterial burden by 2 log CFU in murine infection models. "
+        "Treatment started at day one and was repeated every 24 hours for one week, "
+        "and bacterial counts were measured from lung homogenates at each time point."
+    )
+    full_text_xml = (
+        "<article><body><sec><title>Results</title>"
+        f"<p>{body_text}</p>"
+        "</sec></body></article>"
+    ).encode("utf-8")
 
     class _Response:
-        def __init__(self, *, text: str = "", content: bytes = b"", status_code: int = 200, headers: dict[str, str] | None = None):
-            self.text = text
+        def __init__(self, *, content: bytes = b"", status_code: int = 200, headers: dict[str, str] | None = None):
             self.content = content
+            self.text = content.decode("utf-8", "replace")
             self.status_code = status_code
             self.headers = headers or {}
 
     class _Client:
         async def get(self, url: str, **kwargs):
             _ = kwargs
-            if "oa.fcgi" in url:
-                return _Response(
-                    text=(
-                        '<OA><records><record id="PMC123456">'
-                        '<link format="tgz" href="ftp://ftp.ncbi.nlm.nih.gov/pub/pmc/oa_package/aa/bb/PMC123456.tar.gz" />'
-                        "</record></records></OA>"
-                    )
-                )
-            if "PMC123456.tar.gz" in url:
-                return _Response(content=package_bytes, headers={"content-type": "application/gzip"})
+            if "fullTextXML" in url:
+                return _Response(content=full_text_xml, headers={"content-type": "text/xml"})
             raise AssertionError(f"Unexpected URL: {url}")
 
     ok, err, full_text = asyncio.run(
