@@ -621,3 +621,23 @@ def test_delegate_task_catalog_entry_absent_when_delegation_disabled(monkeypatch
     monkeypatch.delenv("DELEGATE_TASK_ENABLED", raising=False)
     prompt = _delegation_agent()._build_system_prompt()
     assert "- delegate_task:" not in prompt
+
+
+def test_native_prompt_requires_web_search_for_current_ictv_classification() -> None:
+    # The agent must check the current ICTV classification with a tool, not answer from
+    # memory or from a skill's reference table. This guards the rule against silent removal.
+    prompt = _build_deep_think_agent()._build_native_system_prompt(context={})
+    rule = next(line for line in prompt.split("\n") if "Virus taxonomy (ICTV)" in line)
+    assert "MUST call web_search first" in rule
+    assert "Do not answer from memory" in rule
+    assert "Cite the URLs" in rule
+    assert "say so" in rule
+
+
+def test_ictv_rule_names_a_tool_the_agent_actually_offers() -> None:
+    # The rule tells the model to use web_search. Fail if web_search is no longer offered,
+    # so the rule cannot silently point at a missing tool.
+    agent = _build_deep_think_agent()
+    assert "web_search" in agent.available_tools
+    prompt = agent._build_native_system_prompt(context={})
+    assert "MUST call web_search first" in prompt
