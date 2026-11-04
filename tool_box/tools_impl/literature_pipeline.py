@@ -45,7 +45,6 @@ _RUNTIME_DIR = _PROJECT_ROOT / "runtime"
 _MAX_FULLTEXT_CHARS = int(os.getenv("LITERATURE_MAX_FULLTEXT_CHARS", "12000") or "12000")
 _LITERATURE_CACHE_DIR = _RUNTIME_DIR / "literature_cache"
 _LITERATURE_CACHE_TTL_SEC = int(os.getenv("LITERATURE_CACHE_TTL_SEC", str(7 * 24 * 3600)) or "604800")
-_PMC_OA_UTILITY_TIMEOUT = 30.0
 
 
 def _literature_cache_paths(pmcid: str) -> Tuple[Path, Path]:
@@ -790,13 +789,6 @@ def _is_pdf_payload(content: bytes, content_type: Optional[str], source_url: Opt
     return url.endswith(".pdf") and content.startswith(b"%PDF-")
 
 
-def _normalize_oa_href(href: str) -> str:
-    normalized = str(href or "").strip()
-    if normalized.startswith("ftp://ftp.ncbi.nlm.nih.gov/"):
-        return "https://ftp.ncbi.nlm.nih.gov/" + normalized[len("ftp://ftp.ncbi.nlm.nih.gov/") :]
-    return normalized
-
-
 def _extract_text_from_oa_xml(xml_bytes: bytes) -> str:
     try:
         root = ET.fromstring(xml_bytes)
@@ -808,93 +800,6 @@ def _extract_text_from_oa_xml(xml_bytes: bytes) -> str:
         if normalized:
             texts.append(normalized)
     return "\n".join(texts)
-
-
-def _extract_oa_package_payload(package_bytes: bytes, out_path: Path) -> Tuple[Optional[Path], Optional[str], Optional[str]]:
-    try:
-        with tarfile.open(fileobj=io.BytesIO(package_bytes), mode="r:gz") as archive:
-            members = [member for member in archive.getmembers() if member.isfile()]
-
-            pdf_member = next(
-                (
-                    member
-                    for member in members
-                    if member.name.lower().endswith(".pdf")
-                ),
-                None,
-            )
-            if pdf_member is not None:
-                extracted = archive.extractfile(pdf_member)
-                pdf_bytes = extracted.read() if extracted is not None else b""
-                if _is_pdf_payload(pdf_bytes, "application/pdf", pdf_member.name):
-                    out_path.parent.mkdir(parents=True, exist_ok=True)
-                    out_path.write_bytes(pdf_bytes)
-                    return out_path, None, None
-
-            xml_member = next(
-                (
-                    member
-                    for member in members
-                    if member.name.lower().endswith(".nxml") or member.name.lower().endswith(".xml")
-                ),
-                None,
-            )
-            if xml_member is not None:
-                extracted = archive.extractfile(xml_member)
-                xml_bytes = extracted.read() if extracted is not None else b""
-                full_text = _extract_text_from_oa_xml(xml_bytes)
-                if full_text.strip():
-                    return None, full_text, None
-            return None, None, "OA package did not contain usable PDF or XML full text"
-    except Exception as exc:
-        return None, None, f"Failed to extract OA package: {exc}"
-
-
-async def _download_pmc_oa_fulltext(
-    client: httpx.AsyncClient, pmcid: str, out_path: Path
-) -> Tuple[Optional[Path], Optional[str], Optional[str]]:
-    oa_url = f"https://www.ncbi.nlm.nih.gov/pmc/utils/oa/oa.fcgi?id={pmcid}"
-    response = await client.get(oa_url, timeout=_PMC_OA_UTILITY_TIMEOUT)
-    if response.status_code >= 400:
-        return None, None, f"OA utility HTTP {response.status_code}"
-
-    try:
-        root = ET.fromstring(response.text)
-    except ET.ParseError as exc:
-        return None, None, f"OA utility XML parse failed: {exc}"
-
-    links: List[Tuple[str, str]] = []
-    for link_node in root.findall(".//record/link"):
-        href = str(link_node.attrib.get("href") or "").strip()
-        if not href:
-            continue
-        links.append((str(link_node.attrib.get("format") or "").strip().lower(), _normalize_oa_href(href)))
-
-    if not links:
-        return None, None, "OA utility returned no downloadable assets"
-
-    pdf_links = [href for fmt, href in links if fmt == "pdf" or href.lower().endswith(".pdf")]
-    for href in pdf_links:
-        asset = await client.get(href, timeout=_PMC_OA_PDF_TIMEOUT, follow_redirects=True)
-        if asset.status_code >= 400:
-            continue
-        if _is_pdf_payload(asset.content, asset.headers.get("content-type"), href):
-            out_path.parent.mkdir(parents=True, exist_ok=True)
-            out_path.write_bytes(asset.content)
-            return out_path, None, None
-
-    archive_links = [href for fmt, href in links if fmt == "tgz" or href.lower().endswith((".tar.gz", ".tgz"))]
-    for href in archive_links:
-        asset = await client.get(href, timeout=_PMC_OA_ARCHIVE_TIMEOUT, follow_redirects=True)
-        if asset.status_code >= 400:
-            continue
-        extracted_path, full_text, error = _extract_oa_package_payload(asset.content, out_path)
-        if extracted_path is not None or (full_text and full_text.strip()):
-            return extracted_path, full_text, None
-        if error:
-            logger.warning("OA package for %s unusable: %s", pmcid, error)
-
-    return None, None, "OA utility assets did not yield usable PDF or XML full text"
 
 
 def _fallback_pubmed_query(raw_query: str) -> Optional[str]:
@@ -947,19 +852,7 @@ async def _download_pmc_pdf(
     if cached_text is not None:
         logger.info("literature cache hit for %s (%d chars)", pmcid, len(cached_text))
         return True, None, cached_text
-    oa_error: Optional[str] = None
-    try:
-        oa_pdf_path, oa_full_text, oa_error = await _download_pmc_oa_fulltext(client, pmcid, out_path)
-        if oa_pdf_path is not None:
-            return True, None, None
-        if oa_full_text and oa_full_text.strip():
-            _literature_cache_write(pmcid, oa_full_text)
-            return True, None, oa_full_text
-    except Exception as exc:
-        oa_error = f"OA utility error: {type(exc).__name__}: {exc}"
-        logger.debug("OA utility failed for %s: %s", pmcid, oa_error)
-
-    # Fallback: Europe PMC full-text XML API.
+    # Europe PMC full-text XML API (JATS, same structure as the PMC open-access package).
     # This is not blocked by reCAPTCHA and works reliably through proxies.
     # Prioritize this over PMC PDF page scraping since PMC now uses reCAPTCHA.
     epmc_id = pmcid if pmcid.upper().startswith("PMC") else f"PMC{pmcid}"
@@ -998,7 +891,7 @@ async def _download_pmc_pdf(
     except Exception:
         pass
 
-    return False, oa_error or f"All PDF/fulltext sources failed for {pmcid}", None
+    return False, f"All PDF/fulltext sources failed for {pmcid}", None
 
 
 def _write_jsonl(path: Path, items: Iterable[Dict[str, Any]]) -> None:
