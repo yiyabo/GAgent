@@ -17,6 +17,8 @@ from app.services.plans.plan_models import PlanNode, PlanTree
 logger = logging.getLogger(__name__)
 
 RUBRIC_VERSION = "plan_rubric_v1"
+# Total evaluator calls per review when the reply is not usable JSON (first call + retries).
+PLAN_RUBRIC_MAX_ATTEMPTS = 3
 
 
 RubricScores = Dict[str, Dict[str, float]]
@@ -841,24 +843,42 @@ Your job is to score each subcriterion and provide concrete evidence.
 {strict_rules}
 """
 
-    raw = ""
     parsed: Optional[Dict[str, Any]] = None
     eval_error_reason = ""
-    try:
-        raw = _invoke_evaluator_client(
-            client,
-            prompt=prompt,
-            evaluator_model=evaluator_model,
-        )
+    # A reply that is not usable JSON (or does not match the schema) is retried up to
+    # PLAN_RUBRIC_MAX_ATTEMPTS times in total. Transport errors and run-budget stops are
+    # not retried here: they keep their existing handling below.
+    for attempt in range(1, PLAN_RUBRIC_MAX_ATTEMPTS + 1):
+        try:
+            raw = _invoke_evaluator_client(
+                client,
+                prompt=prompt,
+                evaluator_model=evaluator_model,
+            )
+        except RunDeadlineExceeded:
+            raise
+        except Exception as exc:  # noqa: BLE001 - isolate evaluator failures
+            logger.warning("Rubric evaluator call failed: %s", exc)
+            parsed = None
+            eval_error_reason = f"Evaluator LLM call failed: {exc}"
+            break
         parsed = _extract_json_block(raw) or None
         if not isinstance(parsed, dict):
+            parsed = None
             eval_error_reason = "Evaluator returned invalid JSON; strict rubric scoring was aborted."
-    except RunDeadlineExceeded:
-        raise
-    except Exception as exc:  # noqa: BLE001 - isolate evaluator failures
-        logger.warning("Rubric evaluator call failed: %s", exc)
-        parsed = None
-        eval_error_reason = f"Evaluator LLM call failed: {exc}"
+        else:
+            payload_shape_error = _validate_rubric_payload_shape(parsed, rubric)
+            if not payload_shape_error:
+                eval_error_reason = ""
+                break
+            parsed = None
+            eval_error_reason = f"Evaluator payload schema mismatch: {payload_shape_error}"
+        logger.warning(
+            "Rubric evaluator returned an unusable reply (attempt %d/%d): %s",
+            attempt,
+            PLAN_RUBRIC_MAX_ATTEMPTS,
+            eval_error_reason,
+        )
 
     if not isinstance(parsed, dict):
         return _build_unavailable_rubric_result(
