@@ -77,9 +77,6 @@ const McpServerCard: React.FC<McpServerCardProps> = ({ server, blockReason, pend
           <VerificationBadge status={verification.status} />
           <SignoffBadge humanSignoff={verification.human_signoff} />
           <IsolationBadge isolation={server.isolation} />
-          <Text type="secondary">
-            v{server.version} · {server.license}
-          </Text>
         </Space>
 
         {server.state === 'unavailable' && server.unavailable_reason ? (
@@ -121,6 +118,11 @@ const McpServerCard: React.FC<McpServerCardProps> = ({ server, blockReason, pend
               label: t('extensions.detailsToggle'),
               children: (
                 <Space direction="vertical" size={10} style={{ width: '100%' }}>
+                  <Space size={[8, 6]} wrap>
+                    <Text type="secondary">
+                      v{server.version} · {server.license}
+                    </Text>
+                  </Space>
                   <Text type="secondary" style={{ fontSize: 12 }}>
                     {t('extensions.sourceLabel')}<ExternalLink href={server.source.repo}>{server.source.repo}</ExternalLink>
                     {server.source.commit ? <> @ <Text code>{shortCommit(server.source.commit)}</Text></> : null}
