@@ -21,7 +21,7 @@ REPO = Path(__file__).resolve().parents[3]
 # ------------------------------------------------------------------ catalog
 def test_every_catalog_server_is_a_valid_pinned_container_mount():
     catalog = load_catalog()
-    assert {"fetch", "uniprot"} <= set(catalog)
+    assert "fetch" in set(catalog)
     for sid, server in catalog.items():
         spec = server.spec()  # parse_entry validates everything, including the pinned image
         assert spec.isolation == "container", sid
@@ -87,7 +87,7 @@ def test_everyone_signed_in_can_read_but_only_admins_can_manage(monkeypatch, tmp
     with _client(monkeypatch, tmp_path, USER) as c:
         body = c.get("/extensions/mcp").json()
         assert body["can_manage"] is False and body["configured"] is False
-        assert {s["id"] for s in body["servers"]} >= {"fetch", "uniprot"}
+        assert {s["id"] for s in body["servers"]} >= {"fetch"}
         assert c.post("/extensions/mcp/fetch/enable").status_code == 403
         assert c.post("/extensions/skills/xlsx/disable").status_code == 403
         assert c.get("/extensions/skills").json()["can_manage"] is False

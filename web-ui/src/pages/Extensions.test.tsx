@@ -393,6 +393,35 @@ describe('Extensions page - MCP tab', () => {
   });
 });
 
+describe('Extensions page - catalog copy language', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    useLanguageStore.getState().setLanguage('zh-CN');
+    api.listSkills.mockResolvedValue(skills());
+  });
+
+  it('shows the Chinese catalog copy in the Chinese UI', async () => {
+    api.listMcp.mockResolvedValue(
+      mcp({
+        servers: [
+          server({
+            id: 'fetch',
+            title: '网页抓取 (Fetch)',
+            description: '抓取网页并转成 Markdown',
+            title_en: 'Web Fetch (Fetch)',
+            description_en: 'Fetch a web page and convert it to Markdown.',
+          }),
+        ],
+      }),
+    );
+    renderPage();
+    const card = await screen.findByTestId('mcp-server-fetch');
+    expect(within(card).getByText('网页抓取 (Fetch)')).toBeInTheDocument();
+    expect(within(card).getByText('抓取网页并转成 Markdown')).toBeInTheDocument();
+    expect(within(card).queryByText('Web Fetch (Fetch)')).not.toBeInTheDocument();
+  });
+});
+
 describe('Extensions page - Skills tab', () => {
   beforeEach(() => {
     vi.resetAllMocks();
@@ -515,6 +544,27 @@ describe('Extensions page in English', () => {
     api.listSkills.mockResolvedValue(skills());
   });
   afterEach(() => useLanguageStore.getState().setLanguage('zh-CN'));
+
+  it('shows the catalog title and description in English, never the Chinese copy', async () => {
+    api.listMcp.mockResolvedValue(
+      mcp({
+        servers: [
+          server({
+            id: 'fetch',
+            title: '网页抓取 (Fetch)',
+            description: '抓取网页并转成 Markdown',
+            title_en: 'Web Fetch (Fetch)',
+            description_en: 'Fetch a web page and convert it to Markdown.',
+          }),
+        ],
+      }),
+    );
+    renderPage();
+    const card = await screen.findByTestId('mcp-server-fetch');
+    expect(within(card).getByText('Web Fetch (Fetch)')).toBeInTheDocument();
+    expect(within(card).getByText('Fetch a web page and convert it to Markdown.')).toBeInTheDocument();
+    expect(card.textContent).not.toMatch(cjk);
+  });
 
   it('shows the MCP card, its badges, tools and checks in English', async () => {
     api.listMcp.mockResolvedValue(mcp());

@@ -11,6 +11,7 @@ import {
   shortCommit,
 } from './extensionMeta';
 import { useT } from '@/i18n/useT';
+import { useLanguageStore } from '@/i18n/language';
 
 const { Text, Paragraph } = Typography;
 
@@ -24,6 +25,10 @@ interface McpServerCardProps {
 
 const McpServerCard: React.FC<McpServerCardProps> = ({ server, blockReason, pending, onToggle }) => {
   const t = useT();
+  const language = useLanguageStore((state) => state.language);
+  // Catalog copy: English for the English UI (falls back to the Chinese fields when absent).
+  const title = language === 'en' ? server.title_en ?? server.title : server.title;
+  const description = language === 'en' ? server.description_en ?? server.description : server.description;
   const { verification } = server;
   const passedCount = verification.checks.filter((check) => check.passed).length;
   // An "error" server is configured on but failing; keep the switch on so it can be turned off.
@@ -49,7 +54,7 @@ const McpServerCard: React.FC<McpServerCardProps> = ({ server, blockReason, pend
       style={ready ? { borderInlineStart: '3px solid var(--status-success-fg)' } : undefined}
       title={
         <Space size={8} wrap>
-          <Text strong>{server.title}</Text>
+          <Text strong>{title}</Text>
           <Tag style={{ marginInlineEnd: 0 }}>{server.category}</Tag>
           {stateTag}
         </Space>
@@ -61,7 +66,7 @@ const McpServerCard: React.FC<McpServerCardProps> = ({ server, blockReason, pend
               checked={checked}
               loading={pending}
               disabled={pending || blockReason !== null}
-              aria-label={t(checked ? 'extensions.switchDisableAria' : 'extensions.switchEnableAria', { title: server.title })}
+              aria-label={t(checked ? 'extensions.switchDisableAria' : 'extensions.switchEnableAria', { title })}
               checkedChildren={t('extensions.switchOn')}
               unCheckedChildren={t('extensions.switchOff')}
               onChange={(next) => onToggle(server, next)}
@@ -71,7 +76,7 @@ const McpServerCard: React.FC<McpServerCardProps> = ({ server, blockReason, pend
       }
     >
       <Space direction="vertical" size={10} style={{ width: '100%' }}>
-        <Paragraph style={{ marginBottom: 0 }}>{server.description}</Paragraph>
+        <Paragraph style={{ marginBottom: 0 }}>{description}</Paragraph>
 
         <Space size={[8, 6]} wrap>
           <VerificationBadge status={verification.status} />

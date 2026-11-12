@@ -36,6 +36,9 @@ export interface McpServer {
   id: string;
   title: string;
   description: string;
+  /** English copy for the English UI; optional so older payloads still render (falls back to the above). */
+  title_en?: string;
+  description_en?: string;
   category: McpCategory;
   homepage: string;
   license: string;
