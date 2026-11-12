@@ -2,8 +2,8 @@
   "schema": 1,
   "servers": {
     "fetch": {
-      "title": "网页抓取 (Fetch)",
-      "description": "抓取网页并转成 Markdown,供模型阅读;遵守 robots.txt,拒绝内网、回环和云元数据地址。",
+      "title": "\u7f51\u9875\u6293\u53d6 (Fetch)",
+      "description": "\u6293\u53d6\u7f51\u9875\u5e76\u8f6c\u6210 Markdown,\u4f9b\u6a21\u578b\u9605\u8bfb;\u9075\u5b88 robots.txt,\u62d2\u7edd\u5185\u7f51\u3001\u56de\u73af\u548c\u4e91\u5143\u6570\u636e\u5730\u5740\u3002",
       "title_en": "Web Fetch (Fetch)",
       "description_en": "Fetch a web page and convert it to Markdown for the model to read. Respects robots.txt and refuses internal networks, loopback and cloud-metadata addresses.",
       "category": "web",
@@ -42,34 +42,186 @@
         "human_signoff": false,
         "checks": [
           {
-            "name": "源码通读",
+            "name": "\u6e90\u7801\u901a\u8bfb",
             "passed": true,
-            "detail": "已通读服务器自身源码 server.py(521 行):只发出 HTTP GET,不写文件、不起子进程;默认拒绝私有/回环/链路本地地址,并在每次请求时解析校验。未审计其传递依赖(httpx、readabilipy、lxml 等,共数十个),靠哈希锁定和容器隔离控制风险。"
+            "detail": "\u5df2\u901a\u8bfb\u670d\u52a1\u5668\u81ea\u8eab\u6e90\u7801 server.py(521 \u884c):\u53ea\u53d1\u51fa HTTP GET,\u4e0d\u5199\u6587\u4ef6\u3001\u4e0d\u8d77\u5b50\u8fdb\u7a0b;\u9ed8\u8ba4\u62d2\u7edd\u79c1\u6709/\u56de\u73af/\u94fe\u8def\u672c\u5730\u5730\u5740,\u5e76\u5728\u6bcf\u6b21\u8bf7\u6c42\u65f6\u89e3\u6790\u6821\u9a8c\u3002\u672a\u5ba1\u8ba1\u5176\u4f20\u9012\u4f9d\u8d56(httpx\u3001readabilipy\u3001lxml \u7b49,\u5171\u6570\u5341\u4e2a),\u9760\u54c8\u5e0c\u9501\u5b9a\u548c\u5bb9\u5668\u9694\u79bb\u63a7\u5236\u98ce\u9669\u3002"
           },
           {
-            "name": "依赖锁定",
+            "name": "\u4f9d\u8d56\u9501\u5b9a",
             "passed": true,
-            "detail": "全部 Python 依赖按 sha256 哈希锁定(--require-hashes),基础镜像按摘要锁定。"
+            "detail": "\u5168\u90e8 Python \u4f9d\u8d56\u6309 sha256 \u54c8\u5e0c\u9501\u5b9a(--require-hashes),\u57fa\u7840\u955c\u50cf\u6309\u6458\u8981\u9501\u5b9a\u3002"
           },
           {
-            "name": "容器加固",
+            "name": "\u5bb9\u5668\u52a0\u56fa",
             "passed": true,
-            "detail": "非 root、只读根文件系统、丢弃全部能力、no-new-privileges、无挂载、内存 512m / 1 核 / 128 进程。"
+            "detail": "\u975e root\u3001\u53ea\u8bfb\u6839\u6587\u4ef6\u7cfb\u7edf\u3001\u4e22\u5f03\u5168\u90e8\u80fd\u529b\u3001no-new-privileges\u3001\u65e0\u6302\u8f7d\u3001\u5185\u5b58 512m / 1 \u6838 / 128 \u8fdb\u7a0b\u3002"
           },
           {
-            "name": "出网控制",
+            "name": "\u51fa\u7f51\u63a7\u5236",
             "passed": true,
-            "detail": "只能经出网代理访问 443 端口的公网主机;私有地址、IP 字面量、非 443 端口均被代理拒绝(已用对抗请求实测)。"
+            "detail": "\u53ea\u80fd\u7ecf\u51fa\u7f51\u4ee3\u7406\u8bbf\u95ee 443 \u7aef\u53e3\u7684\u516c\u7f51\u4e3b\u673a;\u79c1\u6709\u5730\u5740\u3001IP \u5b57\u9762\u91cf\u3001\u975e 443 \u7aef\u53e3\u5747\u88ab\u4ee3\u7406\u62d2\u7edd(\u5df2\u7528\u5bf9\u6297\u8bf7\u6c42\u5b9e\u6d4b)\u3002"
           },
           {
-            "name": "真实调用",
+            "name": "\u771f\u5b9e\u8c03\u7528",
             "passed": true,
-            "detail": "容器内抓取 https://example.com 成功。"
+            "detail": "\u5bb9\u5668\u5185\u6293\u53d6 https://example.com \u6210\u529f\u3002"
           },
           {
-            "name": "已知限制",
+            "name": "\u5df2\u77e5\u9650\u5236",
             "passed": false,
-            "detail": "可抓取任意公网页面,页面内容可能含提示注入;输出已按不可信数据封装。网页内容不经过我们的内容审查。"
+            "detail": "\u53ef\u6293\u53d6\u4efb\u610f\u516c\u7f51\u9875\u9762,\u9875\u9762\u5185\u5bb9\u53ef\u80fd\u542b\u63d0\u793a\u6ce8\u5165;\u8f93\u51fa\u5df2\u6309\u4e0d\u53ef\u4fe1\u6570\u636e\u5c01\u88c5\u3002\u7f51\u9875\u5185\u5bb9\u4e0d\u7ecf\u8fc7\u6211\u4eec\u7684\u5185\u5bb9\u5ba1\u67e5\u3002"
+          }
+        ]
+      }
+    },
+    "arxiv": {
+      "title": "arXiv \u8bba\u6587\u68c0\u7d22",
+      "title_en": "arXiv Paper Search",
+      "description": "\u68c0\u7d22\u3001\u9605\u8bfb\u548c\u5f15\u7528 arXiv \u9884\u5370\u672c:\u641c\u7d22\u8bba\u6587\u3001\u53d6\u6458\u8981\u4e0e\u5168\u6587\u3001\u5f15\u7528\u56fe\u548c LaTeX \u5206\u8282\u3002\u65e0\u9700 API key\u3002",
+      "description_en": "Search, read and cite arXiv preprints: search papers, get abstracts and full text, citation graphs and LaTeX sections. No API key needed.",
+      "category": "literature",
+      "homepage": "https://github.com/blazickjp/arxiv-mcp-server",
+      "license": "Apache-2.0",
+      "version": "0.8.2",
+      "source": {
+        "repo": "https://github.com/blazickjp/arxiv-mcp-server",
+        "commit": "572e301bb3198962c025d5ed5e14becb86868daa",
+        "package": "pypi:arxiv-mcp-server==0.8.2"
+      },
+      "mount": {
+        "transport": "stdio",
+        "command": "python",
+        "args": [
+          "-m",
+          "arxiv_mcp_server"
+        ],
+        "container": {
+          "image": "gagent-mcp-arxiv:0.8.2",
+          "egress": [
+            "export.arxiv.org",
+            "arxiv.org",
+            "api.semanticscholar.org"
+          ],
+          "memory": "512m",
+          "cpus": 1,
+          "pids_limit": 128
+        },
+        "timeout_sec": 90,
+        "max_result_chars": 30000
+      },
+      "tools": [
+        {
+          "name": "search_papers",
+          "read_only": true
+        },
+        {
+          "name": "download_paper",
+          "read_only": false
+        },
+        {
+          "name": "list_papers",
+          "read_only": true
+        },
+        {
+          "name": "read_paper",
+          "read_only": true
+        },
+        {
+          "name": "get_abstract",
+          "read_only": true
+        },
+        {
+          "name": "semantic_search",
+          "read_only": true
+        },
+        {
+          "name": "reindex",
+          "read_only": false
+        },
+        {
+          "name": "citation_graph",
+          "read_only": true
+        },
+        {
+          "name": "export_citations",
+          "read_only": true
+        },
+        {
+          "name": "watch_topic",
+          "read_only": false
+        },
+        {
+          "name": "check_alerts",
+          "read_only": false
+        },
+        {
+          "name": "list_watches",
+          "read_only": true
+        },
+        {
+          "name": "unwatch_topic",
+          "read_only": false
+        },
+        {
+          "name": "get_paper_latex",
+          "read_only": false
+        },
+        {
+          "name": "list_paper_latex_sections",
+          "read_only": false
+        },
+        {
+          "name": "get_paper_latex_section",
+          "read_only": false
+        },
+        {
+          "name": "get_paper_outline",
+          "read_only": true
+        },
+        {
+          "name": "read_paper_section",
+          "read_only": true
+        },
+        {
+          "name": "search_paper_text",
+          "read_only": true
+        }
+      ],
+      "verification": {
+        "status": "verified",
+        "reviewed_at": "2026-11-12",
+        "reviewer": "claude (AI): read arxiv_mcp_server source and dependency lock (uv.lock) for network/fs/process use",
+        "human_signoff": false,
+        "checks": [
+          {
+            "name": "\u6e90\u7801\u5ba1\u8ba1",
+            "passed": true,
+            "detail": "\u5df2\u68c0\u67e5\u8fd0\u884c\u65f6\u5916\u8fde:export.arxiv.org(\u641c\u7d22/\u4e0b\u8f7d)\u3001arxiv.org(HTML/\u6458\u8981)\u3001api.semanticscholar.org(\u5f15\u7528\u56fe)\u3002\u6e90\u7801\u65e0 subprocess/eval/exec/pickle/shell=True\u3002"
+          },
+          {
+            "name": "\u4f9d\u8d56\u9501\u5b9a",
+            "passed": true,
+            "detail": "uv.lock \u968f\u56fa\u5b9a commit \u63d0\u4f9b,sha256 \u9501\u5b9a;\u955c\u50cf\u6309 uv sync --frozen \u5b89\u88c5\u3002"
+          },
+          {
+            "name": "\u5bb9\u5668\u52a0\u56fa",
+            "passed": true,
+            "detail": "\u975e root 10001\u3001\u53ea\u8bfb\u6839\u6587\u4ef6\u7cfb\u7edf\u3001\u4e22\u5f03\u5168\u90e8\u80fd\u529b\u3001no-new-privileges\u3001\u5185\u5b58 512m / 1 \u6838 / 128 \u8fdb\u7a0b\u3002\u9ed8\u8ba4\u5b58\u50a8 ~/.arxiv-mcp-server \u843d\u5728 64m tmpfs \u7684 /tmp \u5185\u3002"
+          },
+          {
+            "name": "\u51fa\u7f51\u63a7\u5236",
+            "passed": true,
+            "detail": "\u767d\u540d\u5355\u4ec5 export.arxiv.org\u3001arxiv.org\u3001api.semanticscholar.org \u4e09\u4e2a\u4e3b\u673a,\u5747\u4e3a\u8fd0\u884c\u65f6\u771f\u5b9e\u8c03\u7528\u7684\u5730\u5740\u3002"
+          },
+          {
+            "name": "\u5df2\u77e5\u9650\u5236",
+            "passed": false,
+            "detail": "8 \u4e2a\u5de5\u5177\u6709\u526f\u4f5c\u7528(\u4e0b\u8f7d\u3001\u91cd\u5efa\u7d22\u5f15\u3001\u76d1\u89c6\u4e3b\u9898\u3001LaTeX \u8bfb\u53d6\u7b49),\u5df2\u5982\u5b9e\u6807\u4e3a read_only=false,\u4e32\u884c\u6267\u884c\u3002LaTeX \u7cfb\u5217\u5de5\u5177\u7684\u526f\u4f5c\u7528\u672a\u9010\u4e00\u6838\u5b9e,\u6309\u4fdd\u5b88\u65b9\u5f0f\u6807\u8bb0\u3002"
+          },
+          {
+            "name": "\u771f\u5b9e\u8c03\u7528",
+            "passed": false,
+            "detail": "\u5c1a\u672a\u7ecf\u5e94\u7528\u51fa\u7f51\u4ee3\u7406\u505a\u771f\u5b9e\u68c0\u7d22(\u9700\u5728 620b \u6d4b\u8bd5\u73af\u5883\u90e8\u7f72\u540e\u9a8c\u8bc1)\u3002\u63e1\u624b\u4e0e\u5de5\u5177\u5217\u8868\u5df2\u5728\u6b63\u5f0f\u955c\u50cf gagent-mcp-arxiv:0.8.2 \u4e0a\u901a\u8fc7,bridge \u5165\u53e3\u5df2\u7aef\u5230\u7aef\u9a8c\u8bc1\u3002"
           }
         ]
       }
