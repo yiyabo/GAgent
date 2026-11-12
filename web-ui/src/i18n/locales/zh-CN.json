@@ -1508,6 +1508,7 @@
     "enabledCount": "已启用 {{n}} 个",
     "mcpIntro": "打开某个服务器的开关后，对话里的助手从你的下一条消息起就能调用它的工具，无需重启。",
     "mcpIntroReadOnly": "你可以查看目录，但只有管理员能开关服务器。",
+    "detailsToggle": "详情",
     "checksLabel": "验证检查（{{passed}}/{{total}} 通过）",
     "checkPassed": "通过",
     "checkFailed": "未通过",
