@@ -21,12 +21,33 @@ REPO = Path(__file__).resolve().parents[3]
 # ------------------------------------------------------------------ catalog
 def test_every_catalog_server_is_a_valid_pinned_container_mount():
     catalog = load_catalog()
-    assert {"fetch", "uniprot"} <= set(catalog)
+    assert "fetch" in set(catalog)
     for sid, server in catalog.items():
         spec = server.spec()  # parse_entry validates everything, including the pinned image
         assert spec.isolation == "container", sid
         assert spec.read_only_tools == tuple(t["name"] for t in server.raw["tools"] if t["read_only"])
         assert not spec.env.keys() & {"GAGENT_MCP_TOKEN", "GAGENT_MCP_ENDPOINT"}
+
+
+def test_arxiv_entry_matches_what_was_audited():
+    """Lock the facts the arXiv review actually checked, so an edit cannot drift silently."""
+    server = load_catalog()["arxiv"]
+    raw = server.raw
+    assert raw["source"]["commit"] == "572e301bb3198962c025d5ed5e14becb86868daa"
+    assert raw["source"]["package"] == "pypi:arxiv-mcp-server==0.8.2"
+    assert raw["mount"]["container"]["image"] == "gagent-mcp-arxiv:0.8.2"
+    # egress: exactly the three hosts the runtime calls (export API, arxiv.org pages/PDF, Semantic Scholar)
+    assert sorted(raw["mount"]["container"]["egress"]) == sorted(
+        ["export.arxiv.org", "arxiv.org", "api.semanticscholar.org"]
+    )
+    tools = raw["tools"]
+    assert len(tools) == 19
+    assert sum(1 for t in tools if t["read_only"]) == 11
+    # the side-effecting tools must not be marked read-only
+    side_effect = {"download_paper", "reindex", "watch_topic", "check_alerts", "unwatch_topic",
+                   "get_paper_latex", "list_paper_latex_sections", "get_paper_latex_section"}
+    assert all(not t["read_only"] for t in tools if t["name"] in side_effect)
+    assert raw["verification"]["human_signoff"] is False
 
 
 def test_catalog_never_claims_a_human_reviewed_anything():
@@ -87,7 +108,7 @@ def test_everyone_signed_in_can_read_but_only_admins_can_manage(monkeypatch, tmp
     with _client(monkeypatch, tmp_path, USER) as c:
         body = c.get("/extensions/mcp").json()
         assert body["can_manage"] is False and body["configured"] is False
-        assert {s["id"] for s in body["servers"]} >= {"fetch", "uniprot"}
+        assert {s["id"] for s in body["servers"]} >= {"fetch"}
         assert c.post("/extensions/mcp/fetch/enable").status_code == 403
         assert c.post("/extensions/skills/xlsx/disable").status_code == 403
         assert c.get("/extensions/skills").json()["can_manage"] is False

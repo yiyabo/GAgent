@@ -1508,6 +1508,7 @@
     "enabledCount": "{{n}} on",
     "mcpIntro": "Switch a server on and the assistant in chat can call its tools from your next message. No restart needed.",
     "mcpIntroReadOnly": "You can browse the catalogue, but only administrators can switch servers on or off.",
+    "detailsToggle": "Details",
     "checksLabel": "Verification checks ({{passed}}/{{total}} passed)",
     "checkPassed": "Passed",
     "checkFailed": "Failed",

@@ -11,6 +11,7 @@ import {
   shortCommit,
 } from './extensionMeta';
 import { useT } from '@/i18n/useT';
+import { useLanguageStore } from '@/i18n/language';
 
 const { Text, Paragraph } = Typography;
 
@@ -24,6 +25,10 @@ interface McpServerCardProps {
 
 const McpServerCard: React.FC<McpServerCardProps> = ({ server, blockReason, pending, onToggle }) => {
   const t = useT();
+  const language = useLanguageStore((state) => state.language);
+  // Catalog copy: English for the English UI (falls back to the Chinese fields when absent).
+  const title = language === 'en' ? server.title_en ?? server.title : server.title;
+  const description = language === 'en' ? server.description_en ?? server.description : server.description;
   const { verification } = server;
   const passedCount = verification.checks.filter((check) => check.passed).length;
   // An "error" server is configured on but failing; keep the switch on so it can be turned off.
@@ -49,7 +54,7 @@ const McpServerCard: React.FC<McpServerCardProps> = ({ server, blockReason, pend
       style={ready ? { borderInlineStart: '3px solid var(--status-success-fg)' } : undefined}
       title={
         <Space size={8} wrap>
-          <Text strong>{server.title}</Text>
+          <Text strong>{title}</Text>
           <Tag style={{ marginInlineEnd: 0 }}>{server.category}</Tag>
           {stateTag}
         </Space>
@@ -61,7 +66,7 @@ const McpServerCard: React.FC<McpServerCardProps> = ({ server, blockReason, pend
               checked={checked}
               loading={pending}
               disabled={pending || blockReason !== null}
-              aria-label={t(checked ? 'extensions.switchDisableAria' : 'extensions.switchEnableAria', { title: server.title })}
+              aria-label={t(checked ? 'extensions.switchDisableAria' : 'extensions.switchEnableAria', { title })}
               checkedChildren={t('extensions.switchOn')}
               unCheckedChildren={t('extensions.switchOff')}
               onChange={(next) => onToggle(server, next)}
@@ -71,50 +76,12 @@ const McpServerCard: React.FC<McpServerCardProps> = ({ server, blockReason, pend
       }
     >
       <Space direction="vertical" size={10} style={{ width: '100%' }}>
-        <Paragraph style={{ marginBottom: 0 }}>{server.description}</Paragraph>
+        <Paragraph style={{ marginBottom: 0 }}>{description}</Paragraph>
 
         <Space size={[8, 6]} wrap>
           <VerificationBadge status={verification.status} />
           <SignoffBadge humanSignoff={verification.human_signoff} />
           <IsolationBadge isolation={server.isolation} />
-          <Text type="secondary">
-            v{server.version} · {server.license}
-          </Text>
-        </Space>
-
-        <Text type="secondary" style={{ fontSize: 12 }}>
-          {t('extensions.sourceLabel')}<ExternalLink href={server.source.repo}>{server.source.repo}</ExternalLink>
-          {server.source.commit ? <> @ <Text code>{shortCommit(server.source.commit)}</Text></> : null}
-          {server.source.package ? <> · {t('extensions.packageLabel')}<Text code>{server.source.package}</Text></> : null}
-          {server.homepage ? <> · <ExternalLink href={server.homepage}>{t('extensions.homepage')}</ExternalLink></> : null}
-          {verification.reviewer || verification.reviewed_at ? (
-            <> · {t('extensions.reviewLabel')}{[verification.reviewer, verification.reviewed_at].filter(Boolean).join(' ')}</>
-          ) : null}
-        </Text>
-
-        <Space size={[6, 6]} wrap align="center">
-          <Text type="secondary">{t('extensions.egressLabel')}</Text>
-          {server.egress.length === 0 ? (
-            <Tag color="green">{t('extensions.noNetwork')}</Tag>
-          ) : (
-            server.egress.map((host) => (
-              <Tag key={host}>{host}</Tag>
-            ))
-          )}
-        </Space>
-
-        <Space size={[6, 6]} wrap align="center">
-          <Text type="secondary">{t('extensions.toolsLabel')}</Text>
-          {server.tools.length === 0 ? <Text type="secondary">{t('extensions.none')}</Text> : null}
-          {server.tools.map((tool) => (
-            <Tag
-              key={tool.name}
-              color={tool.read_only ? 'blue' : 'volcano'}
-              aria-label={`${tool.name}：${tool.read_only ? t('extensions.readOnly') : t('extensions.sideEffects')}`}
-            >
-              {tool.name} · {tool.read_only ? t('extensions.readOnly') : t('extensions.sideEffects')}
-            </Tag>
-          ))}
         </Space>
 
         {server.state === 'unavailable' && server.unavailable_reason ? (
@@ -136,49 +103,98 @@ const McpServerCard: React.FC<McpServerCardProps> = ({ server, blockReason, pend
         ) : null}
 
         {ready && server.live_tools.length > 0 ? (
-          <Alert
-            type="success"
-            showIcon
-            message={t('extensions.readyTitle')}
-            description={
-              <Space size={[6, 6]} wrap>
-                {server.live_tools.map((name) => (
-                  <Tag key={name} style={{ marginInlineEnd: 0 }}>
-                    {mountedToolLabel(name)}
-                  </Tag>
-                ))}
-              </Space>
-            }
-          />
+          <Space size={[6, 6]} wrap align="center">
+            <Text style={{ color: 'var(--status-success-fg)' }}>{t('extensions.readyTitle')}</Text>
+            {server.live_tools.map((name) => (
+              <Tag key={name} style={{ marginInlineEnd: 0 }}>
+                {mountedToolLabel(name)}
+              </Tag>
+            ))}
+          </Space>
         ) : null}
 
-        {verification.checks.length > 0 ? (
-          <Collapse
-            ghost
-            size="small"
-            items={[
-              {
-                key: 'checks',
-                label: t('extensions.checksLabel', { passed: passedCount, total: verification.checks.length }),
-                children: (
-                  <ul style={{ margin: 0, paddingLeft: 0, listStyle: 'none' }}>
-                    {verification.checks.map((check) => (
-                      <li key={check.name} style={{ marginBottom: 4 }}>
-                        {check.passed ? (
-                          <CheckCircleOutlined style={{ color: 'var(--status-success-fg)' }} role="img" aria-label={t('extensions.checkPassed')} />
-                        ) : (
-                          <CloseCircleOutlined style={{ color: 'var(--status-error-fg)' }} role="img" aria-label={t('extensions.checkFailed')} />
-                        )}{' '}
-                        <Text strong>{check.name}</Text>
-                        {check.detail ? <Text type="secondary"> — {check.detail}</Text> : null}
-                      </li>
+        {/* Source, egress, tool list and checks are reference detail: collapsed by default. */}
+        <Collapse
+          ghost
+          size="small"
+          items={[
+            {
+              key: 'details',
+              label: t('extensions.detailsToggle'),
+              children: (
+                <Space direction="vertical" size={10} style={{ width: '100%' }}>
+                  <Space size={[8, 6]} wrap>
+                    <Text type="secondary">
+                      v{server.version} · {server.license}
+                    </Text>
+                  </Space>
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    {t('extensions.sourceLabel')}<ExternalLink href={server.source.repo}>{server.source.repo}</ExternalLink>
+                    {server.source.commit ? <> @ <Text code>{shortCommit(server.source.commit)}</Text></> : null}
+                    {server.source.package ? <> · {t('extensions.packageLabel')}<Text code>{server.source.package}</Text></> : null}
+                    {server.homepage ? <> · <ExternalLink href={server.homepage}>{t('extensions.homepage')}</ExternalLink></> : null}
+                    {verification.reviewer || verification.reviewed_at ? (
+                      <> · {t('extensions.reviewLabel')}{[verification.reviewer, verification.reviewed_at].filter(Boolean).join(' ')}</>
+                    ) : null}
+                  </Text>
+
+                  <Space size={[6, 6]} wrap align="center">
+                    <Text type="secondary">{t('extensions.egressLabel')}</Text>
+                    {server.egress.length === 0 ? (
+                      <Tag color="green">{t('extensions.noNetwork')}</Tag>
+                    ) : (
+                      server.egress.map((host) => (
+                        <Tag key={host}>{host}</Tag>
+                      ))
+                    )}
+                  </Space>
+
+                  <Space size={[6, 6]} wrap align="center">
+                    <Text type="secondary">{t('extensions.toolsLabel')}</Text>
+                    {server.tools.length === 0 ? <Text type="secondary">{t('extensions.none')}</Text> : null}
+                    {server.tools.map((tool) => (
+                      <Tag
+                        key={tool.name}
+                        color={tool.read_only ? 'blue' : 'volcano'}
+                        aria-label={`${tool.name}：${tool.read_only ? t('extensions.readOnly') : t('extensions.sideEffects')}`}
+                      >
+                        {tool.name} · {tool.read_only ? t('extensions.readOnly') : t('extensions.sideEffects')}
+                      </Tag>
                     ))}
-                  </ul>
-                ),
-              },
-            ]}
-          />
-        ) : null}
+                  </Space>
+
+                  {verification.checks.length > 0 ? (
+                    <Collapse
+                      ghost
+                      size="small"
+                      items={[
+                        {
+                          key: 'checks',
+                          label: t('extensions.checksLabel', { passed: passedCount, total: verification.checks.length }),
+                          children: (
+                            <ul style={{ margin: 0, paddingLeft: 0, listStyle: 'none' }}>
+                              {verification.checks.map((check) => (
+                                <li key={check.name} style={{ marginBottom: 4 }}>
+                                  {check.passed ? (
+                                    <CheckCircleOutlined style={{ color: 'var(--status-success-fg)' }} role="img" aria-label={t('extensions.checkPassed')} />
+                                  ) : (
+                                    <CloseCircleOutlined style={{ color: 'var(--status-error-fg)' }} role="img" aria-label={t('extensions.checkFailed')} />
+                                  )}{' '}
+                                  <Text strong>{check.name}</Text>
+                                  {check.detail ? <Text type="secondary"> — {check.detail}</Text> : null}
+                                </li>
+                              ))}
+                            </ul>
+                          ),
+                        },
+                      ]}
+                    />
+                  ) : null}
+                </Space>
+              ),
+            },
+          ]}
+        />
       </Space>
     </Card>
   );

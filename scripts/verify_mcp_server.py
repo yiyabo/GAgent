@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Check a catalog MCP server against what the catalog says about it.
 
-    python scripts/verify_mcp_server.py fetch uniprot
+    python scripts/verify_mcp_server.py fetch
     python scripts/verify_mcp_server.py --all [--json]
 
 For each server it starts the real container exactly as the app would and checks:

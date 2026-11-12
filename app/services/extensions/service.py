@@ -121,6 +121,9 @@ async def describe_server(server: CatalogServer, *, state: Dict[str, Any], confi
         "id": server.id,
         "title": raw["title"],
         "description": raw["description"],
+        # English copy for the English UI; the frontend picks by language.
+        "title_en": raw.get("title_en") or raw["title"],
+        "description_en": raw.get("description_en") or raw["description"],
         "category": raw["category"],
         "homepage": raw["homepage"],
         "license": raw["license"],

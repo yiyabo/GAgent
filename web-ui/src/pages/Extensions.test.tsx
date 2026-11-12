@@ -126,6 +126,12 @@ async function openSkillsTab() {
   return user;
 }
 
+
+/** Details (source, egress, tools, checks) are collapsed by default; open them before asserting on them. */
+function openDetails(card: HTMLElement, label = '详情') {
+  fireEvent.click(within(card).getByText(label));
+}
+
 describe('Extensions page - MCP tab', () => {
   beforeEach(() => {
     vi.resetAllMocks();
@@ -137,6 +143,7 @@ describe('Extensions page - MCP tab', () => {
     renderPage();
 
     const card = await screen.findByTestId('mcp-server-blast');
+    openDetails(card);
     expect(within(card).getByText('BLAST Search')).toBeInTheDocument();
     expect(within(card).getByText('bioinformatics')).toBeInTheDocument();
     expect(within(card).getByText('已验证')).toBeInTheDocument();
@@ -171,6 +178,7 @@ describe('Extensions page - MCP tab', () => {
     renderPage();
 
     const host = await screen.findByTestId('mcp-server-hosty');
+    openDetails(host);
     expect(within(host).getByText('已验证')).toBeInTheDocument();
     expect(within(host).getByText('待人工确认')).toBeInTheDocument();
     expect(within(host).getByText('本机进程 — 未隔离')).toBeInTheDocument();
@@ -188,6 +196,7 @@ describe('Extensions page - MCP tab', () => {
     renderPage();
 
     const card = await screen.findByTestId('mcp-server-blast');
+    openDetails(card);
     await user.click(within(card).getByText(/验证检查（1\/2 通过）/));
     expect(await within(card).findByText(/commit is pinned/)).toBeInTheDocument();
     expect(within(card).getByText(/wildcard egress found/)).toBeInTheDocument();
@@ -244,6 +253,7 @@ describe('Extensions page - MCP tab', () => {
 
     const card = await screen.findByTestId('mcp-server-blast');
     expect(within(card).getByText(/已就绪：助手从你的下一条消息起即可调用这些工具/)).toBeInTheDocument();
+    openDetails(card);
     expect(within(card).getByText('blast_search')).toBeInTheDocument();
     expect(within(card).getByText('save_result')).toBeInTheDocument();
     expect(within(card).queryByText(/mcp__/)).not.toBeInTheDocument();
@@ -383,6 +393,35 @@ describe('Extensions page - MCP tab', () => {
   });
 });
 
+describe('Extensions page - catalog copy language', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    useLanguageStore.getState().setLanguage('zh-CN');
+    api.listSkills.mockResolvedValue(skills());
+  });
+
+  it('shows the Chinese catalog copy in the Chinese UI', async () => {
+    api.listMcp.mockResolvedValue(
+      mcp({
+        servers: [
+          server({
+            id: 'fetch',
+            title: '网页抓取 (Fetch)',
+            description: '抓取网页并转成 Markdown',
+            title_en: 'Web Fetch (Fetch)',
+            description_en: 'Fetch a web page and convert it to Markdown.',
+          }),
+        ],
+      }),
+    );
+    renderPage();
+    const card = await screen.findByTestId('mcp-server-fetch');
+    expect(within(card).getByText('网页抓取 (Fetch)')).toBeInTheDocument();
+    expect(within(card).getByText('抓取网页并转成 Markdown')).toBeInTheDocument();
+    expect(within(card).queryByText('Web Fetch (Fetch)')).not.toBeInTheDocument();
+  });
+});
+
 describe('Extensions page - Skills tab', () => {
   beforeEach(() => {
     vi.resetAllMocks();
@@ -506,11 +545,33 @@ describe('Extensions page in English', () => {
   });
   afterEach(() => useLanguageStore.getState().setLanguage('zh-CN'));
 
+  it('shows the catalog title and description in English, never the Chinese copy', async () => {
+    api.listMcp.mockResolvedValue(
+      mcp({
+        servers: [
+          server({
+            id: 'fetch',
+            title: '网页抓取 (Fetch)',
+            description: '抓取网页并转成 Markdown',
+            title_en: 'Web Fetch (Fetch)',
+            description_en: 'Fetch a web page and convert it to Markdown.',
+          }),
+        ],
+      }),
+    );
+    renderPage();
+    const card = await screen.findByTestId('mcp-server-fetch');
+    expect(within(card).getByText('Web Fetch (Fetch)')).toBeInTheDocument();
+    expect(within(card).getByText('Fetch a web page and convert it to Markdown.')).toBeInTheDocument();
+    expect(card.textContent).not.toMatch(cjk);
+  });
+
   it('shows the MCP card, its badges, tools and checks in English', async () => {
     api.listMcp.mockResolvedValue(mcp());
     const { container } = renderPage();
     const card = await screen.findByTestId('mcp-server-blast');
     expect(within(card).getByText('Verified')).toBeInTheDocument();
+    openDetails(card, 'Details');
     expect(within(card).getByText('Human sign-off done')).toBeInTheDocument();
     expect(within(card).getByText('Container-isolated')).toBeInTheDocument();
     expect(within(card).getByText('blast_search · Read-only')).toBeInTheDocument();
