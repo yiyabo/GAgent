@@ -22,6 +22,26 @@ MAX_PREVIEW_STRING = 2000
 MAX_ARTIFACTS = 200
 MAX_SCAN_DEPTH = 5
 MAX_SCAN_ITEMS = 200
+# High-signal fields that must survive the preview regardless of dict order.
+# A tool's most useful output often lives past the first few keys (bio_tools
+# puts stdout after success/tool/operation/run_id/state, so a 5-key preview
+# used to hide the whole stats table from the model).
+PREVIEW_PRIORITY_KEYS = (
+    "stdout",
+    "stderr",
+    "error",
+    "error_code",
+    "summary",
+    "command",
+    "exit_code",
+    "slurm_job_id",
+    "state",
+    "count",
+    "returned",
+    "output_directory",
+    "produced_files",
+)
+MAX_PREVIEW_PRIORITY_KEYS = 8
 
 
 @dataclass(frozen=True)
@@ -116,9 +136,9 @@ def store_tool_output(
     _write_json(manifest_path, manifest, compact=False)
 
     return StoredToolOutput(
-        output_dir=_rel_path(output_dir, session_root),
-        result_path=_rel_path(result_path, session_root),
-        manifest_path=_rel_path(manifest_path, session_root),
+        output_dir=_rel_path(output_dir, session_root) or "",
+        result_path=_rel_path(result_path, session_root) or "",
+        manifest_path=_rel_path(manifest_path, session_root) or "",
         preview_path=_rel_path(preview_path, session_root) if preview_path else None,
         size_bytes=size_bytes,
         too_large_for_llm=too_large,
@@ -276,7 +296,13 @@ def _build_preview(value: Any, depth: int = MAX_SCAN_DEPTH) -> Optional[Any]:
         return value
     if isinstance(value, dict):
         preview: Dict[str, Any] = {}
-        for key in list(value.keys())[:MAX_PREVIEW_ITEMS]:
+        keys = list(value.keys())[:MAX_PREVIEW_ITEMS]
+        for key in PREVIEW_PRIORITY_KEYS:
+            if len(keys) >= MAX_PREVIEW_ITEMS + MAX_PREVIEW_PRIORITY_KEYS:
+                break
+            if key in value and key not in keys:
+                keys.append(key)
+        for key in keys:
             preview[key] = _build_preview(value[key], depth=depth - 1)
         return preview
     if isinstance(value, list):

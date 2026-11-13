@@ -20,6 +20,7 @@ from . import client
 from .config import (
     PhageScopeDataError,
     contained,
+    fasta_roots_for_dataset,
     pdb_root,
     safe_component,
     safe_filename_stem,
@@ -175,6 +176,7 @@ async def materialize_phage_bundle(
     saved_files: dict[str, str] = {}
     missing: list[dict[str, str]] = []
     truncated_items: list[str] = []
+    diagnostics: list[dict[str, str]] = []
 
     if "metadata_tsv" in kinds:
         tsv_path = write_phages_tsv(phages, bundle_dir / "metadata.tsv")
@@ -194,13 +196,23 @@ async def materialize_phage_bundle(
 
         if "fasta" in kinds:
             fasta_text: str | None = None
-            if sr is not None and ds and acc:
-                cand = contained(
-                    sr / "phage_fasta" / safe_component(ds) / (safe_component(acc) + ".fasta"),
-                    sr,
-                )
-                if cand.is_file():
-                    fasta_text = cand.read_text(encoding="utf-8", errors="replace")
+            fasta_truncated = False
+            local_unavailable: str | None = None
+            if ds and acc:
+                dataset_key = safe_component(ds)
+                accession_key = safe_component(acc)
+                for root_dir, ds_dir in fasta_roots_for_dataset(dataset_key):
+                    try:
+                        cand = contained(ds_dir / (accession_key + ".fasta"), root_dir)
+                    except PhageScopeDataError:
+                        # A dataset directory that is a symlink to storage outside
+                        # the mounted tree (620b: MetaVR -> /data1/...). Not an
+                        # error: the extension mount may still have it.
+                        local_unavailable = "dataset_dir_outside_mount"
+                        continue
+                    if cand.is_file():
+                        fasta_text = cand.read_text(encoding="utf-8", errors="replace")
+                        break
             if fasta_text is None:
                 try:
                     seq_resp = await client.call_service(
@@ -213,12 +225,36 @@ async def materialize_phage_bundle(
                     seq_body = str(seq_resp.get("sequence") or "")
                     if seq_body:
                         fasta_text = hdr + "\n" + _wrap_fasta_seq(seq_body) + "\n"
-                        if seq_resp.get("truncated"):
-                            truncated_items.append(f"fasta:{acc}")
+                        fasta_truncated = bool(seq_resp.get("truncated"))
                 except PhageScopeDataError as exc:
                     missing.append({"phage": acc, "kind": "fasta", "reason": exc.message})
 
-            if fasta_text:
+            if fasta_text and fasta_truncated:
+                # Never present a capped preview as the full genome: keep it in a
+                # clearly named .preview file and out of the combined FASTA.
+                rel = f"fasta/{stem}.fasta.preview"
+                fp = contained(bundle_dir / rel, bundle_dir)
+                fp.parent.mkdir(parents=True, exist_ok=True)
+                _ = fp.write_text(fasta_text, encoding="utf-8")
+                saved_files[rel] = str(fp)
+                truncated_items.append(f"fasta:{acc}")
+                missing.append(
+                    {
+                        "phage": acc,
+                        "kind": "fasta",
+                        "reason": "fasta_truncated_no_full_source",
+                        "detail": "full genome not reachable from the mounted trees; only a 200,000 bp preview was returned",
+                    }
+                )
+                diagnostics.append(
+                    {
+                        "phage": acc,
+                        "dataset": ds,
+                        "kind": "fasta",
+                        "reason": local_unavailable or "local_file_missing",
+                    }
+                )
+            elif fasta_text:
                 fasta_count += 1
                 if not fasta_text.endswith("\n"):
                     fasta_text += "\n"
@@ -231,7 +267,22 @@ async def materialize_phage_bundle(
                     _ = fp.write_text(fasta_text, encoding="utf-8")
                     saved_files[rel] = str(fp)
             elif not any(m.get("phage") == acc and m.get("kind") == "fasta" for m in missing):
-                missing.append({"phage": acc, "kind": "fasta", "reason": "file_not_found"})
+                missing.append(
+                    {
+                        "phage": acc,
+                        "kind": "fasta",
+                        "reason": local_unavailable or "file_not_found",
+                        "detail": f"dataset={ds}",
+                    }
+                )
+                diagnostics.append(
+                    {
+                        "phage": acc,
+                        "dataset": ds,
+                        "kind": "fasta",
+                        "reason": local_unavailable or "file_not_found",
+                    }
+                )
 
         if "faa" in kinds:
             faa_text: str | None = None
@@ -303,6 +354,7 @@ async def materialize_phage_bundle(
             "materialized_counts": {"fasta": fasta_count, "faa": faa_count, "gff3": gff_count},
             "truncated_items": truncated_items,
             "missing": missing[:50],
+            "diagnostics": diagnostics[:50],
         },
     )
     saved_files["manifest.json"] = str(bundle_dir / "manifest.json")
@@ -315,6 +367,7 @@ async def materialize_phage_bundle(
         "materialized_counts": {"fasta": fasta_count, "faa": faa_count, "gff3": gff_count},
         "truncated_items": truncated_items,
         "missing": missing[:50],
+        "diagnostics": diagnostics[:50],
         "manifest": manifest,
     }
     return attach_artifacts(result, bundle_dir, saved_files, context)
