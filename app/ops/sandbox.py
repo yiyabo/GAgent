@@ -127,8 +127,7 @@ def require_translatable(container_path: str) -> str:
     if get_host_runtime_root() and source == str(container_path):
         raise ValueError(
             "refusing to mount %s: outside the runtime root (%s) and "
-            "HOST_RUNTIME_ROOT is set, so its host path is unknown"
-            % (container_path, get_runtime_root())
+            "HOST_RUNTIME_ROOT is set, so its host path is unknown" % (container_path, get_runtime_root())
         )
     return source
 
@@ -174,6 +173,8 @@ class SandboxRunSpec:
     user: Optional[str] = None
     #: (container_path, mode) — sources are host-translated at build time.
     mounts: Sequence[Tuple[str, str]] = ()
+    #: Explicit operator-configured host sources, read-only (no runtime translation).
+    host_ro_mounts: Sequence[tuple[str, str]] = ()
     env: Mapping[str, str] = field(default_factory=dict)
     network: Optional[str] = None
     memory: Optional[str] = None
@@ -230,6 +231,10 @@ def build_sandbox_run_args(spec: SandboxRunSpec, *, docker_bin: str = "docker") 
     args.extend(["--network", spec.resolved_network()])
     for container_path, mode in spec.mounts:
         args.extend(["-v", translate_mount(container_path, mode=mode)])
+    for host_path, container_path in spec.host_ro_mounts:
+        if not host_path.startswith("/") or not container_path.startswith("/") or ":" in host_path + container_path:
+            raise ValueError("host_ro_mounts must be absolute paths without colons")
+        args.extend(["-v", f"{host_path}:{container_path}:ro"])
     for key, value in sorted(spec.env.items()):
         args.extend(["-e", f"{key}={value}"])
     if spec.workdir:
@@ -257,8 +262,14 @@ def as_run_kwargs(spec: SandboxRunSpec) -> dict:
         "security_opt": ["no-new-privileges"],
         "network": spec.resolved_network(),
         "volumes": {
-            host_path_for(str(container_path)): {"bind": str(container_path), "mode": mode}
-            for container_path, mode in spec.mounts
+            **{
+                host_path_for(str(container_path)): {"bind": str(container_path), "mode": mode}
+                for container_path, mode in spec.mounts
+            },
+            **{
+                str(host_path): {"bind": str(container_path), "mode": "ro"}
+                for host_path, container_path in spec.host_ro_mounts
+            },
         },
         "environment": {str(k): str(v) for k, v in spec.env.items()},
         "working_dir": str(spec.workdir) if spec.workdir else None,

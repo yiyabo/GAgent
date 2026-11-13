@@ -24,10 +24,12 @@ from typing import Any
 from urllib.parse import parse_qs, urlencode, urlsplit
 
 try:
+    from . import accel_engine as ae
     from . import db_queries as dq
 except ImportError:  # pragma: no cover - direct script execution on host
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     dq = importlib.import_module("db_queries")
+    ae = importlib.import_module("accel_engine")
 
 logger = logging.getLogger("phagescope_data_service")
 
@@ -52,6 +54,7 @@ class DataServiceState:
         fasta_ext_root: Path | None = None,
         csv_download_root: Path | None = None,
         pdb_host_prefix: str = "/data4/back_up_platform/esmfold_pdb/",
+        accel_root: Path | None = None,
     ) -> None:
         self.api_key = api_key
         self.conn_provider = conn_provider
@@ -60,6 +63,41 @@ class DataServiceState:
         self.fasta_ext_root = fasta_ext_root
         self.csv_download_root = csv_download_root
         self.pdb_host_prefix = pdb_host_prefix
+        self.accel_root = accel_root
+        engine = ae.AccelEngine(accel_root) if accel_root is not None else None
+        self.accel = engine if engine is not None and engine.available else None
+        if engine is not None and self.accel is None:
+            logger.warning("Acceleration build missing or manifest integrity check failed: %s", accel_root)
+
+
+def _require_accel(state: DataServiceState):
+    if state.accel is None:
+        raise dq.ServiceQueryError(
+            "accel_unavailable", "Requested filter or grouping needs a validated Parquet build.", 503
+        )
+    return state.accel
+
+
+def _accel_sample_rows(
+    state: DataServiceState, ids: list[int], *, include_host_ranks: bool = True
+) -> list[dict[str, Any]]:
+    if not ids:
+        return []
+    with state.conn_provider() as conn:
+        ds_by_id, _ = dq._dataset_maps(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                'SELECT p.id, p."Acession_ID", p."Data_Sets_id", p.length, p.gc_content, '
+                "p.host, p.completeness, p.taxonomy, p.cluster, p.subcluster, p.is_mapped, p.is_rep "
+                "FROM phages p WHERE p.id = ANY(%s)",
+                (ids,),
+            )
+            raw = cur.fetchall()
+        enriched = dq._enrich_phage_rows(conn, raw, ds_by_id, include_host_ranks=include_host_ranks)
+    by_id = {row["id"]: row for row in enriched}
+    if any(pid not in by_id for pid in ids):
+        raise dq.ServiceQueryError("accel_stale", "The catalog changed since the Parquet build; rebuild it.", 503)
+    return [by_id[pid] for pid in ids]
 
 
 def _page_links(
@@ -90,8 +128,10 @@ def dispatch_request(
 ) -> tuple[int, dict[str, Any]]:
     lower_headers = {str(k).lower(): str(v) for k, v in headers.items()}
     presented = lower_headers.get("x-api-key", "")
-    if not state.api_key or not presented or not hmac.compare_digest(
-        presented.encode("utf-8"), state.api_key.encode("utf-8")
+    if (
+        not state.api_key
+        or not presented
+        or not hmac.compare_digest(presented.encode("utf-8"), state.api_key.encode("utf-8"))
     ):
         return 401, {"error": {"code": "unauthorized", "message": "A valid X-API-Key header is required."}}
 
@@ -158,8 +198,17 @@ def _handle_get(
         page = _int_param(qs, "page", 1)
         pagesize = min(_int_param(qs, "pagesize", 20), 50)
         allowed = {
-            "accession", "dataset", "completeness", "lifestyle",
-            "taxonomy", "host", "cluster", "length_min", "length_max", "gc_min", "gc_max",
+            "accession",
+            "dataset",
+            "completeness",
+            "lifestyle",
+            "taxonomy",
+            "host",
+            "cluster",
+            "length_min",
+            "length_max",
+            "gc_min",
+            "gc_max",
         }
         filters = {k: v for k, v in qs.items() if k in allowed and v != ""}
         with state.conn_provider() as conn:
@@ -193,7 +242,9 @@ def _handle_get(
                 res = dq.query_phage_proteins(
                     conn, phage_id=pid, include_sequence=inc_seq, page=page, pagesize=pagesize, max_pagesize=50
                 )
-            nxt, prev = _page_links(base_url, f"/agent-api/v1/data/phages/{pid}/proteins/", qs, page, pagesize, res["count"])
+            nxt, prev = _page_links(
+                base_url, f"/agent-api/v1/data/phages/{pid}/proteins/", qs, page, pagesize, res["count"]
+            )
             return 200, {"count": res["count"], "next": nxt, "previous": prev, "results": res["results"]}
         if sub == "features":
             ftype = qs.get("type", "")
@@ -210,7 +261,9 @@ def _handle_get(
                     page=page,
                     pagesize=pagesize,
                 )
-            nxt, prev = _page_links(base_url, f"/agent-api/v1/data/phages/{pid}/features/", qs, page, pagesize, res["count"])
+            nxt, prev = _page_links(
+                base_url, f"/agent-api/v1/data/phages/{pid}/features/", qs, page, pagesize, res["count"]
+            )
             return 200, {"count": res["count"], "next": nxt, "previous": prev, "results": res["results"]}
         if sub == "sequence":
             max_bases = _int_param(qs, "max_bases", 20000)
@@ -271,7 +324,9 @@ def _handle_get(
             res = dq.list_family_members(
                 conn, family_id=fid, dataset=qs.get("dataset"), page=page, pagesize=pagesize, max_pagesize=50
             )
-        nxt, prev = _page_links(base_url, f"/agent-api/v1/data/families/{fid}/members/", qs, page, pagesize, res["count"])
+        nxt, prev = _page_links(
+            base_url, f"/agent-api/v1/data/families/{fid}/members/", qs, page, pagesize, res["count"]
+        )
         return 200, {"count": res["count"], "next": nxt, "previous": prev, "results": res["results"]}
 
     if norm == "/agent-api/v1/data/structures/available/":
@@ -319,6 +374,28 @@ def _handle_post(
         sort_by = str(payload.get("sort_by") or "id").strip()
         raw_filters = payload.get("filters")
         filters: dict[str, Any] = raw_filters if isinstance(raw_filters, dict) else payload
+        if ae.AccelEngine.requires_accel(filters):
+            engine = _require_accel(state)
+            try:
+                ids, total = engine.filter_ids(
+                    filters,
+                    sort_by=sort_by,
+                    offset=(max(1, page) - 1) * max(1, min(pagesize, max_ps)),
+                    limit=max(1, min(pagesize, max_ps)),
+                )
+            except (ValueError, TypeError) as exc:
+                raise dq.ServiceQueryError("invalid_parameter", str(exc)) from exc
+            rows = _accel_sample_rows(state, ids, include_host_ranks=bool(payload.get("include_host_ranks", True)))
+            offset = (max(1, page) - 1) * max(1, min(pagesize, max_ps))
+            size = max(1, min(pagesize, max_ps))
+            return 200, {
+                "count": total if include_total else offset + len(rows) + (offset + len(rows) < total),
+                "total_exact": include_total,
+                "page": max(1, page),
+                "pagesize": size,
+                "has_more": offset + len(rows) < total,
+                "results": rows,
+            }
         with state.conn_provider() as conn:
             return 200, dq.query_phages(
                 conn,
@@ -330,6 +407,16 @@ def _handle_post(
                 include_host_ranks=bool(payload.get("include_host_ranks", True)),
                 sort_by=sort_by,
             )
+
+    if norm == "/agent-api/v1/data/v2/phages/availability/":
+        raw_ids = payload.get("phage_ids")
+        if not isinstance(raw_ids, list) or not 1 <= len(raw_ids) <= 200:
+            raise dq.ServiceQueryError("invalid_parameter", "phage_ids must be a list of 1..200 integers")
+        try:
+            ids = [int(pid) for pid in raw_ids]
+        except (TypeError, ValueError) as exc:
+            raise dq.ServiceQueryError("invalid_parameter", "phage_ids must contain integers") from exc
+        return 200, {"source": "accel_parquet", "results": _require_accel(state).availability(ids)}
 
     if norm == "/agent-api/v1/data/v2/phages/detail/":
         pid = payload.get("phage_id")
@@ -343,14 +430,23 @@ def _handle_post(
             )
 
     if norm == "/agent-api/v1/data/v2/phages/aggregate/":
-        group_by = str(payload.get("group_by") or "").strip()
+        group_by = payload.get("group_by")
         raw_filters = payload.get("filters")
         filters = raw_filters if isinstance(raw_filters, dict) else {}
         limit = _int_param(payload, "limit", 50)
+        if ae.AccelEngine.requires_accel(filters, group_by):
+            engine = _require_accel(state)
+            try:
+                return 200, engine.aggregate(filters, group_by, limit=limit)
+            except (ValueError, TypeError) as exc:
+                raise dq.ServiceQueryError("invalid_parameter", str(exc)) from exc
+        if isinstance(group_by, (list, tuple)) and len(group_by) != 1:
+            raise dq.ServiceQueryError("invalid_parameter", "group_by must be a dimension or a list of 1-3 dimensions")
+        sql_group_by = group_by[0] if isinstance(group_by, (list, tuple)) and group_by else group_by
         with state.conn_provider() as conn:
             return 200, dq.aggregate_phages(
                 conn,
-                group_by=group_by,
+                group_by=str(sql_group_by or ""),
                 filters=filters,
                 overview=state.overview,
                 limit=limit,
@@ -359,6 +455,16 @@ def _handle_post(
     if norm == "/agent-api/v1/data/v2/phages/cohort_report/":
         raw_filters = payload.get("filters")
         filters = raw_filters if isinstance(raw_filters, dict) else {}
+        if ae.AccelEngine.requires_accel(filters):
+            engine = _require_accel(state)
+            try:
+                sample_limit = max(1, min(_int_param(payload, "sample_limit", 5), 20))
+                sort_by = str(payload.get("sort_by") or "id")
+                report = engine.cohort_report(filters, sample_limit=sample_limit, sort_by=sort_by)
+                report["sample_rows"] = _accel_sample_rows(state, report.pop("sample_ids"))
+                return 200, report
+            except (ValueError, TypeError) as exc:
+                raise dq.ServiceQueryError("invalid_parameter", str(exc)) from exc
         with state.conn_provider() as conn:
             return 200, dq.cohort_report(
                 conn,
@@ -551,6 +657,7 @@ def main() -> None:  # pragma: no cover - host entrypoint
         fasta_ext_root=Path(fasta_ext_env) if fasta_ext_env else None,
         csv_download_root=Path(csv_env) if csv_env else None,
         pdb_host_prefix=os.environ.get("PHAGE_PDB_HOST_PREFIX", "/data4/back_up_platform/esmfold_pdb/"),
+        accel_root=ae.accel_root_from_env(),
     )
 
     bind_host = os.environ.get("BIND_HOST", "127.0.0.1")

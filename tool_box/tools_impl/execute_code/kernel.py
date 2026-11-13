@@ -312,7 +312,7 @@ if __name__ == "__main__":
 # Imported by every Python process whose PYTHONPATH carries the kernel dir, so the workers a cell starts
 # (multiprocessing "spawn", joblib/loky) run under the same guard as the kernel itself. The runner has its
 # own fail-closed install; a worker that cannot install exits instead of running unguarded.
-_WORKER_SITECUSTOMIZE = '''\
+_WORKER_SITECUSTOMIZE = """\
 import os
 
 _policy = os.environ.get("GAGENT_FS_POLICY")
@@ -327,7 +327,7 @@ if _policy:
         sys.stderr.write("fs guard failed to install:\\n" + traceback.format_exc())
         sys.stderr.flush()
         os._exit(97)
-'''
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -685,9 +685,7 @@ def _ensure_background_reaper() -> None:
         if _REAPER_STARTED:
             return
         _REAPER_STARTED = True
-    threading.Thread(
-        target=_background_reaper, daemon=True, name="gagent-code-mode-reaper"
-    ).start()
+    threading.Thread(target=_background_reaper, daemon=True, name="gagent-code-mode-reaper").start()
 
 
 def _background_reaper() -> None:
@@ -744,11 +742,11 @@ def _stdout_reader(kernel: SessionKernel) -> None:
                 spill = buf[: -len(marker)] if len(buf) > len(marker) else b""
                 if spill:
                     raw(spill)
-                    buf = buf[len(spill):]
+                    buf = buf[len(spill) :]
                 break
             if index:
                 raw(buf[:index])
-            rest = buf[index + len(marker):]
+            rest = buf[index + len(marker) :]
             newline = rest.find(b"\n")
             if newline < 0:
                 buf = buf[index:]
@@ -759,7 +757,7 @@ def _stdout_reader(kernel: SessionKernel) -> None:
                 raw(marker)
                 buf = rest
                 continue
-            body = rest[newline + 1:]
+            body = rest[newline + 1 :]
             while len(body) < length:
                 more = _safe_read1(stream, length - len(body))
                 if not more:
@@ -796,9 +794,7 @@ def _spawn(
     kernel.rpc_server = KernelRPCServer(kernel)
     rpc_endpoint = kernel.rpc_server.start()
 
-    (kernel.kernel_dir / "gagent_tools.py").write_text(
-        generate_stub_module(sorted(allowlist)), encoding="utf-8"
-    )
+    (kernel.kernel_dir / "gagent_tools.py").write_text(generate_stub_module(sorted(allowlist)), encoding="utf-8")
     runner_path = kernel.kernel_dir / "gagent_kernel_runner.py"
     runner_path.write_text(KERNEL_RUNNER_SOURCE, encoding="utf-8")
 
@@ -835,6 +831,8 @@ def _spawn_local(
     The child is the app's own user, so it gets the filesystem/process guard
     (fs_policy.py, enforced by fs_guard_runtime.py inside the kernel).
     """
+    # The kernel directory is established before either spawn path starts.
+    assert kernel.kernel_dir is not None
     fs_policy = None
     if fs_guard_enabled():
         guard_source = Path(__file__).with_name("fs_guard_runtime.py").read_text(encoding="utf-8")
@@ -889,9 +887,7 @@ def _force_remove_container(name: str) -> None:
     if not name:
         return
     try:
-        subprocess.run(
-            ["docker", "rm", "-f", name], capture_output=True, timeout=20, check=False
-        )
+        subprocess.run(["docker", "rm", "-f", name], capture_output=True, timeout=20, check=False)
     except Exception:  # noqa: BLE001 - cleanup must not mask the real error
         pass
 
@@ -950,6 +946,7 @@ def _spawn_sandbox(
         # resolve identically inside the sandbox. require_translatable refuses
         # a source outside the runtime root, where the host path is unknowable.
         sandbox_ops.require_translatable(workdir)
+        accel_host_dir = config.phagescope_accel_host_dir()
         spec = sandbox_ops.SandboxRunSpec(
             image=sandbox_ops.sandbox_python_image(),
             kind="python",
@@ -959,6 +956,7 @@ def _spawn_sandbox(
             session_id=str(kernel.key[0]),
             user=f"{os.getuid()}:{os.getgid()}",
             mounts=session_mounts(workdir, str(kernel.key[0])),
+            host_ro_mounts=([(accel_host_dir, config.PHAGESCOPE_ACCEL_CONTAINER_DIR)] if accel_host_dir else []),
             env=sandbox_ops.build_sandbox_env(
                 workdir=workdir,
                 extra={
@@ -994,16 +992,12 @@ def _spawn_sandbox(
                 + (completed.stderr or completed.stdout or "").strip()[:400]
             )
         try:
-            stdout, stdin, stderr = channel.wait_for_streams(
-                timeout=_SANDBOX_DIAL_TIMEOUT_SECONDS
-            )
+            stdout, stdin, stderr = channel.wait_for_streams(timeout=_SANDBOX_DIAL_TIMEOUT_SECONDS)
         except TimeoutError as exc:
             detail = _sandbox_prelude_error(kernel)
             if detail:
                 logger.error("code-mode sandbox prelude failed: %s", detail[:800])
-                raise TimeoutError(
-                    "sandbox kernel prelude failed: " + detail[:400]
-                ) from exc
+                raise TimeoutError("sandbox kernel prelude failed: " + detail[:400]) from exc
             raise
         detail = _sandbox_prelude_error(kernel)
         if detail:
@@ -1207,9 +1201,7 @@ def _cell_result(
             output=(stdout_text + "\n\n[timeout] " + message) if stdout_text else message,
         )
     elif status == "interrupted":
-        message = (
-            "Execution interrupted; the session kernel was killed and its state was lost."
-        )
+        message = "Execution interrupted; the session kernel was killed and its state was lost."
         result.update(
             success=False,
             exit_code=-1,
@@ -1223,9 +1215,7 @@ def _cell_result(
             status="error",
             exit_code=1,
             error=trace or "Cell raised an exception.",
-            output=_with_stderr(stdout_text, cell_stderr + trace)
-            if (cell_stderr or trace)
-            else stdout_text,
+            output=_with_stderr(stdout_text, cell_stderr + trace) if (cell_stderr or trace) else stdout_text,
         )
         hint = failure_hint(trace, sorted(kernel.allowlist))
         if hint:
@@ -1350,9 +1340,7 @@ def _run_cell(
             kernel.stderr.drain()
             kernel.authority = binding
             cell_start_ns = _fs_watermark_ns(collect_root)
-            kernel.proc.stdin.write(
-                (json.dumps({"id": uuid.uuid4().hex, "code": code}) + "\n").encode("utf-8")
-            )
+            kernel.proc.stdin.write((json.dumps({"id": uuid.uuid4().hex, "code": code}) + "\n").encode("utf-8"))
             kernel.proc.stdin.flush()
             status, payload = _await_cell(kernel, timeout, abort_check)
             result = _cell_result(

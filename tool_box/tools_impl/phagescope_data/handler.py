@@ -44,6 +44,13 @@ _PHAGE_FILTER_KEYS = (
     "length_max",
     "gc_min",
     "gc_max",
+    # Phase 2 agent-only predicates (served by the acceleration layer)
+    "amr_free",
+    "virulence_free",
+    "min_trna",
+    "has_crispr",
+    "has_anticrispr",
+    "require_files",
 )
 
 
@@ -247,7 +254,9 @@ async def phagescope_data_handler(
             return out
 
         if op == "aggregate":
-            group_by = str(kwargs.get("group_by") or "").strip()
+            group_by = kwargs.get("group_by")
+            if isinstance(group_by, str):
+                group_by = group_by.strip()
             if not group_by:
                 raise PhageScopeDataError("invalid_parameter", "aggregate requires group_by.")
             filters = _extract_phage_filters(kwargs)
@@ -496,7 +505,36 @@ async def phagescope_data_handler(
                 "error_code": "not_found",
                 "error": "No phages matched the requested identifiers or filters.",
             }
-        kinds_list = [str(k) for k in raw_kinds] if isinstance(raw_kinds, list) and raw_kinds else ["fasta", "metadata_tsv"]
+        kinds_list = (
+            [str(k) for k in raw_kinds] if isinstance(raw_kinds, list) and raw_kinds else ["fasta", "metadata_tsv"]
+        )
+        # Advisory snapshot only: a missing file can still be supplied by the
+        # live SQL sequence/protein fallback, so the materializer decides.
+        precheck: dict[str, Any] | None = None
+        wanted = set(kinds_list) & {"fasta", "faa", "gff3"}
+        if wanted:
+            try:
+                availability = await client.call_service(
+                    "v2/phages/availability/",
+                    method="POST",
+                    body={"phage_ids": [int(p["id"]) for p in phages]},
+                    timeout=timeout,
+                )
+                found = {int(row["id"]): int(row["avail_mask"]) for row in availability.get("results", [])}
+                missing_snapshot = [
+                    {"phage": str(p.get("Acession_ID") or ""), "kind": kind}
+                    for p in phages
+                    for kind, bit in (("fasta", 1), ("faa", 2), ("gff3", 4))
+                    if kind in wanted and not (found.get(int(p["id"]), 0) & bit)
+                ]
+                precheck = {
+                    "status": "snapshot_advisory",
+                    "checked": len(found),
+                    "missing_snapshot": missing_snapshot[:50],
+                    "missing_snapshot_count": len(missing_snapshot),
+                }
+            except (PhageScopeDataError, ValueError, TypeError) as exc:
+                precheck = {"status": "unavailable", "reason": getattr(exc, "code", "invalid_snapshot")}
         mat_g = await materialize_phage_bundle(
             phages,
             kinds=kinds_list,
@@ -507,6 +545,8 @@ async def phagescope_data_handler(
             timeout=timeout,
         )
         mat_g["tool"] = "phagescope_data"
+        if precheck is not None:
+            mat_g["availability_precheck"] = precheck
         return mat_g
 
     except PhageScopeDataError as exc:

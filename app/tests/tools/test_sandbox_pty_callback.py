@@ -49,14 +49,19 @@ async def test_terminal_write_resize_interrupt_and_cleanup(monkeypatch, tmp_path
     monkeypatch.setattr(module.subprocess, 'run', docker)
     backend = SandboxPTYBackend();backend.session_id = 'session_demo'
     async def until(token):
+        output = bytearray()
         async def collect():
-            output = b''
             while token not in output:
                 chunk = await backend.read()
-                assert chunk, output
-                output += chunk
-            return output
-        return await asyncio.wait_for(collect(), 8)
+                assert chunk, bytes(output)
+                output.extend(chunk)
+            return bytes(output)
+        try:
+            return await asyncio.wait_for(collect(), 8)
+        except TimeoutError as exc:
+            raise AssertionError(
+                f'PTY did not produce {token!r}; output={bytes(output)!r}; closed={backend.is_closed}'
+            ) from exc
     try:
         await backend.spawn(cwd=str(cwd), exec_args=['/bin/bash'])
         assert not any('passwd' in arg for arg in captured['argv'])
@@ -66,8 +71,8 @@ async def test_terminal_write_resize_interrupt_and_cleanup(monkeypatch, tmp_path
         await backend.resize(101, 37)
         await backend.write(b'stty size\n')
         assert b'37 101' in await until(b'37 101')
-        await backend.write(b'sleep 30\n')
-        await asyncio.sleep(.1)
+        await backend.write(b"printf 'read_%s\\n' ready; read -r ignored\n")
+        assert b'read_ready' in await until(b'read_ready')
         await backend.write(b'\x03')
         await backend.write(b"printf 'after_%s\\n' interrupt\n")
         assert b'after_interrupt' in await until(b'after_interrupt')

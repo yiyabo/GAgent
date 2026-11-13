@@ -83,6 +83,8 @@ services:
       - ${PHAGESCOPE_FASTA_EXT_HOST_DIR:-${GAGENT_REFDATA_DIR:-/data}}:/phagescope/phage_fasta_ext:ro
       - ${PHAGESCOPE_CSV_HOST_DIR:-${GAGENT_REFDATA_DIR:-/data}}:/phagescope/csv_data/Download:ro
       - ${PHAGESCOPE_PDB_HOST_DIR:-${GAGENT_REFDATA_DIR:-/data}}:/phagescope/esmfold_pdb:ro
+      # GAgent-owned, versioned Parquet snapshot for code-mode DataFrame reads.
+      - ${PHAGESCOPE_ACCEL_HOST_DIR:-${GAGENT_REFDATA_DIR:-/data}}:/phagescope/accel:ro
     extra_hosts:
       # Host services the app must reach: LLM gateway (sub2api), platform API,
       # and the host-side SOCKS/HTTP egress tunnels.
@@ -119,7 +121,7 @@ services:
       SANDBOX_PYTHON_IMAGE: ${SANDBOX_PYTHON_IMAGE:-gagent-sandbox-python:latest}
       SANDBOX_QWEN_IMAGE: ${SANDBOX_QWEN_IMAGE:-gagent-sandbox-qwen:latest}
       DOCKER_PROXY_POLICY_ENFORCE: ${DOCKER_PROXY_POLICY_ENFORCE:-0}
-      DOCKER_PROXY_ALLOWED_RO_ROOTS: ${DOCKER_PROXY_ALLOWED_RO_ROOTS:-}
+      DOCKER_PROXY_ALLOWED_RO_ROOTS: ${DOCKER_PROXY_ALLOWED_RO_ROOTS:-},${PHAGESCOPE_ACCEL_HOST_DIR:-}
       DOCKER_PROXY_ALLOWED_IMAGE_PREFIXES: ${DOCKER_PROXY_ALLOWED_IMAGE_PREFIXES:-}
     volumes:
       # The daemon socket is mounted into THIS container only, never the app's.
