@@ -16,6 +16,10 @@
 ARG GATEWAY_BASE_IMAGE=docker.byoryn.cn/ms/webui:ms
 FROM ${GATEWAY_BASE_IMAGE}
 
+# brotli-libs: the nginx base (alpine 3.23.4) ships a brotli with a CRITICAL CVE whose fix is
+# in Alpine's repository (Trivy gate: --severity CRITICAL --ignore-unfixed). Upgrade only this package.
+RUN apk add --no-cache --upgrade brotli-libs
+
 # Replace the base image's own site config and static assets with ours.
 #
 # Removing default.conf is NOT enough: the base image's entrypoint runs
