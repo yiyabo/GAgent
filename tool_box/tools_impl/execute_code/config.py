@@ -78,6 +78,17 @@ def sandbox_enabled() -> bool:
 # delegate_task only while that tool is actually offered (LOCAL_INFRA §115).
 ENV_DELEGATE_ENABLED = "DELEGATE_TASK_ENABLED"
 ENV_PHAGESCOPE_DATA_ENABLED = "PHAGESCOPE_DATA_ENABLED"
+PHAGESCOPE_ACCEL_CONTAINER_DIR = "/phagescope/accel"
+
+
+def phagescope_accel_host_dir() -> str | None:
+    """Operator-selected, validated read-only source for code-mode sandbox kernels."""
+    raw = os.environ.get("PHAGESCOPE_ACCEL_HOST_DIR", "").strip()
+    if not phagescope_data_offered() or not raw.startswith("/") or ":" in raw or ".." in raw.split("/"):
+        return None
+    if not (Path(PHAGESCOPE_ACCEL_CONTAINER_DIR) / "current" / "manifest.json").is_file():
+        return None
+    return raw
 
 
 def delegate_task_offered() -> bool:

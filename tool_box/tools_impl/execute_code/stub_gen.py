@@ -166,7 +166,9 @@ def build_signature(name: str, parameters: Dict[str, Any]) -> str:
     """Python parameter list for one tool's JSON schema."""
     properties = parameters.get("properties") or {}
     required_names = [key for key in parameters.get("required") or [] if key in properties]
-    parts: List[str] = [f"{key}: {_annotation(properties[key])}" if _annotation(properties[key]) else key for key in required_names]
+    parts: List[str] = [
+        f"{key}: {_annotation(properties[key])}" if _annotation(properties[key]) else key for key in required_names
+    ]
     for key, spec in properties.items():
         if key in required_names:
             continue
@@ -209,7 +211,31 @@ def generate_stub_module(tool_names: List[str]) -> str:
             f"    {_docstring(description)}\n"
             f"    return _call({name!r}, {args_expr})\n"
         )
-    docs={name:{"description":content[0],"parameters":content[1]} for name in sorted(set(tool_names)) if (content:=_load_tool_content(name)) is not None}
+    if "phagescope_data" in tool_names:
+        chunks.append('''\
+def phagescope_dataset(root="/phagescope/accel/current"):
+    """Open the validated GAgent-owned PhageScope Parquet snapshot as an Arrow dataset."""
+    import pyarrow.dataset as ds
+    from pathlib import Path
+    path = Path(root)
+    if not (path / "manifest.json").is_file():
+        raise FileNotFoundError("PhageScope acceleration snapshot is unavailable")
+    return ds.dataset(str(path / "phages_wide.parquet"), format="parquet")
+
+
+def phagescope_dataframe(columns=None, filter_expr=None, limit=50000, root="/phagescope/accel/current"):
+    """Read at most 100,000 matching catalog rows into pandas; filter_expr is an Arrow expression."""
+    if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 100000:
+        raise ValueError("limit must be an integer from 1 to 100000")
+    return phagescope_dataset(root).head(limit, columns=columns, filter=filter_expr).to_pandas()
+''')
+    docs = {
+        name: {"description": content[0], "parameters": content[1]}
+        for name in sorted(set(tool_names))
+        if (content := _load_tool_content(name)) is not None
+    }
     chunks.append("_TOOL_DOCS = " + repr(docs))
-    chunks.append("def list_tools():\n    return sorted(_TOOL_DOCS)\ndef describe(name):\n    return _TOOL_DOCS[name]\n")
+    chunks.append(
+        "def list_tools():\n    return sorted(_TOOL_DOCS)\ndef describe(name):\n    return _TOOL_DOCS[name]\n"
+    )
     return "\n".join(chunks) + "\n"

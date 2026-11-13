@@ -190,7 +190,11 @@ def build_fs_policy(
     return {
         "allow_subprocess": allow_subprocess(),
         "rw_roots": _resolved(rw),
-        "ro_roots": _resolved([Path(item) for item in _SYSTEM_READABLE] + _project_sibling_dirs(session_id)),
+        "ro_roots": _resolved(
+            [Path(item) for item in _SYSTEM_READABLE]
+            + _project_sibling_dirs(session_id)
+            + ([Path(config.PHAGESCOPE_ACCEL_CONTAINER_DIR)] if config.phagescope_accel_host_dir() else [])
+        ),
         "blind_roots": _resolved(blind),
         "deny_roots": _resolved(deny),
     }

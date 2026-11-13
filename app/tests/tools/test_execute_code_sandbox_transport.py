@@ -21,6 +21,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -47,7 +48,7 @@ class _FakeChannel:
         self.stopped = True
 
 
-def _dial(host: str, port: int, token: str, role: str) -> socket.socket:
+def _dial(host: str, port: str | int, token: str, role: str) -> socket.socket:
     conn = socket.create_connection((host, int(port)), timeout=5)
     conn.sendall((json.dumps({"token": token, "role": role}) + "\n").encode("utf-8"))
     return conn
@@ -71,6 +72,8 @@ def test_channel_round_trips_and_publishes_eof() -> None:
 
     threading.Thread(target=client, daemon=True).start()
     out, inp, errs = server.wait_for_streams(5)
+    out = cast(io.BufferedReader, out)
+    inp = cast(io.BufferedWriter, inp)
     inp.write(b"CELL-1\n")
     inp.flush()
     assert out.read1(4096) == b"REPLY-1\n"
@@ -181,6 +184,7 @@ def _spawn_env(monkeypatch) -> None:
 
 def test_spawn_sandbox_wires_a_hardened_container(monkeypatch, tmp_path) -> None:
     _spawn_env(monkeypatch)
+    monkeypatch.setattr(kernel_module.config, "phagescope_accel_host_dir", lambda: str(tmp_path / "accel"))
     monkeypatch.setattr(cell_channel, "CellChannelServer", _FakeChannel)
     captured: dict = {}
 
@@ -207,6 +211,7 @@ def test_spawn_sandbox_wires_a_hardened_container(monkeypatch, tmp_path) -> None
     assert argv[argv.index("--network") + 1] == "gagent-sandbox"
     # The mount SOURCE must be the host path: the daemon resolves it, not us.
     assert "/data/phage-agent/runtime/session_x:/app/runtime/session_x:rw" in argv
+    assert f"{tmp_path}/accel:/phagescope/accel:ro" in argv
     joined = " ".join(argv)
     assert "GAGENT_CELL_ENDPOINT=tcp://app:12345" in joined
     assert "GAGENT_CELL_TOKEN=" in joined
