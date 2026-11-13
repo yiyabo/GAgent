@@ -1,5 +1,14 @@
 # PhageScope Dataset Guide
 
+## Preferred GAgent Tool: `phagescope_data` (PhageScope V2)
+
+When `phagescope_data` is available (CityU 620b deployment), prefer it for all catalog lookups, cohort statistics, protein/family discovery, functional feature searches, and untruncated sequence/annotation/PDB materialization:
+
+- **V2 Scale (`checked_on: 2026-09-11`)**: 2,576,926 total genomes (1,350,637 annotated + 1,226,289 mapped) across 27 datasets; 131,509,307 proteins; 12,610,425 protein families; 4,723 host species; 7 feature tracks (`trna`, `crispr`, `anticrispr`, `terminator`, `virulence`, `amr`, `transmembrane`); ESMFold/AFDB predicted 3D structures.
+- **Query & Aggregate**: `overview`, `datasets`, `get_phage`, `search_phages` (supports batch `accessions`, multi-`datasets`, `host_rank`+`host_name`, `completeness`, `lifestyle`, `is_rep`, `save_tsv=true`), `aggregate` (`group_by` across `dataset`, `completeness`, `lifestyle`, `host_genus`, `host_species`, `host_family`, `taxonomy`, `cluster`).
+- **Proteins, Features & Structures**: `search_proteins` (`by_phage`, `by_ids`, or 12.6M `family_query`), `family_members`, `features`, `structures` (`materialize_pdb=true`).
+- **Untruncated Materialization**: `materialize` writes full-length `.fasta` (no 200kb cap), `.faa` (all 27 datasets), `.gff3`, `.tsv`, and `.pdb` files into `results/phagescope/<subdir>/` so `bio_tools` and `execute_code` can consume them directly. In `execute_code`, bulk V2 TSVs are also readable under `/phagescope/csv_data/Download/`.
+
 ## Agent Gateway tools
 
 Use the existing `phagescope` tool with `action="gateway"` and a

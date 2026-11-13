@@ -19,6 +19,10 @@ from typing import Any, Dict
 from app.services.plans.execution_contract import PLAN_EXECUTION_GUIDANCE, execution_target_ids_schema
 
 from .phagescope_gateway_contract import extend_schema as _extend_gateway_schema
+from .tools_impl.phagescope_data.schema import (
+    DESCRIPTION as _PHAGESCOPE_DATA_DESC,
+    PARAMETERS_SCHEMA as _PHAGESCOPE_DATA_PARAMS,
+)
 from .web_search_text import provider_param_description, search_description
 
 NATIVE_TOOL_CONTENT: Dict[str, Dict[str, Any]] = {
@@ -1260,6 +1264,10 @@ NATIVE_TOOL_CONTENT: Dict[str, Dict[str, Any]] = {
             },
             "required": ["operation"],
         },
+    },
+    "phagescope_data": {
+        "description": _PHAGESCOPE_DATA_DESC,
+        "parameters": _PHAGESCOPE_DATA_PARAMS,
     },
 }
 

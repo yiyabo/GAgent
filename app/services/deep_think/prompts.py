@@ -416,6 +416,22 @@ def _build_bio_tools_quick_map_block(agent: "DeepThinkAgent") -> str:
         "A tool that reports unavailable or a database error cannot be worked around by guessing: tell the user.\n"
         "Slow tools (genomad, virsorter2, vibrant, bakta, checkm, gtdbtk, phabox2, flye, megahit): run with background=true, then "
         "job_status with params={'wait_seconds': 60} (it returns when the job ends or after that long); never poll in a tight loop.\n\n"
+        + (
+            "=== PHAGESCOPE V2 DATA & WORKFLOWS ===\n"
+            "When working with bacteriophage catalog data, sequences, proteins, host ranges, functional elements, or 3D structures:\n"
+            "- Prefer `phagescope_data` over legacy website calls: it queries the local PhageScope V2 catalog "
+            "(2,576,926 genomes across 27 datasets, 131.5M proteins, 12.61M protein families, 4,723 host species, "
+            "tRNA/CRISPR/anti-CRISPR/terminator/VFDB/CARD/TMHMM features, and ESMFold/AFDB structures) in milliseconds.\n"
+            "- For statistical distributions or cross-tabulations across cohorts, call `phagescope_data(operation='aggregate', group_by=..., ...)` "
+            "or `search_phages(..., save_tsv=True)` and analyze the exported TSV in `execute_code`.\n"
+            "- In `execute_code`, you can both call `from gagent_tools import phagescope_data` AND directly read full V2 bulk TSVs "
+            "under `/phagescope/csv_data/Download/` (read-only) when streaming large tables with pandas.\n"
+            "- To run `bio_tools` (CheckV, geNomad, PhaBOX2 phamer/phagcn/phatyp/cherry, Prodigal, HMMER, MMseqs2, FastANI, BLAST, SeqKit) "
+            "on PhageScope phages or protein families, FIRST call `phagescope_data(operation='materialize', kinds=['fasta','faa','gff3','metadata_tsv'], ...)` "
+            "to export untruncated full-length files into `results/phagescope/`, then pass those session paths into `bio_tools`.\n\n"
+            if "phagescope_data" in agent.available_tools
+            else ""
+        )
     )
 
 
@@ -694,7 +710,7 @@ def _extract_history_messages(
     # Remove the full live turn before reference clipping; otherwise a long
     # query becomes a second, shortened user message with different constraints.
     history = (context or {}).get("chat_history")
-    if current_user_query and isinstance(history, list) and history:
+    if current_user_query and isinstance(history, list) and history and isinstance(context, dict):
         last = history[-1]
         if (isinstance(last, dict) and last.get("role") == "user"
                 and str(last.get("content") or "").strip() == str(current_user_query).strip()):
@@ -883,7 +899,7 @@ def _build_native_system_prompt(
     """System prompt for native tool calling mode (no JSON formatting rules)."""
     from app.services.response_style import SNAPSHOT_KEY
     snapshot = (context or {}).get(SNAPSHOT_KEY)
-    agent._chat_response_preferences = dict(snapshot) if isinstance(snapshot, dict) else {}
+    agent.__dict__["_chat_response_preferences"] = dict(snapshot) if isinstance(snapshot, dict) else {}
     task_preamble = ""
     if task_context and task_context.task_instruction:
         lines = [
@@ -1021,7 +1037,7 @@ def _build_system_prompt(
     """Construct the system prompt for DeepThink, task-aware when available."""
     from app.services.response_style import SNAPSHOT_KEY
     snapshot = (context or {}).get(SNAPSHOT_KEY)
-    agent._chat_response_preferences = dict(snapshot) if isinstance(snapshot, dict) else {}
+    agent.__dict__["_chat_response_preferences"] = dict(snapshot) if isinstance(snapshot, dict) else {}
     from app.services.plans.execution_contract import PLAN_EXECUTION_GUIDANCE
     # Build detailed tool descriptions
     tool_descriptions = {

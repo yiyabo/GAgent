@@ -77,6 +77,7 @@ def sandbox_enabled() -> bool:
 # Offer flag of the *other* lane. The execute_code copy points long goals at
 # delegate_task only while that tool is actually offered (LOCAL_INFRA §115).
 ENV_DELEGATE_ENABLED = "DELEGATE_TASK_ENABLED"
+ENV_PHAGESCOPE_DATA_ENABLED = "PHAGESCOPE_DATA_ENABLED"
 
 
 def delegate_task_offered() -> bool:
@@ -89,10 +90,18 @@ def delegate_task_offered() -> bool:
     return os.environ.get(ENV_DELEGATE_ENABLED, "").strip() == "1"
 
 
+def phagescope_data_offered() -> bool:
+    """Whether ``phagescope_data`` is offered and callable in code-mode cells."""
+    return os.environ.get(ENV_PHAGESCOPE_DATA_ENABLED, "").strip() == "1"
+
+
 def allowed_tools() -> List[str]:
     raw = os.environ.get(ENV_ALLOWED_TOOLS, "").strip()
     if not raw:
-        return list(DEFAULT_ALLOWED_TOOLS)
+        tools: list[str] = list(DEFAULT_ALLOWED_TOOLS)
+        if phagescope_data_offered():
+            tools.append("phagescope_data")
+        return tools
     names = [part.strip() for part in raw.split(",") if part.strip()]
     # preserve order, drop duplicates
     return list(dict.fromkeys(names))
