@@ -450,3 +450,147 @@ async def test_mounted_server_cannot_borrow_our_model(tmp_path):
         assert result["content"].startswith("refused")
     finally:
         await manager.shutdown()
+
+
+# ------------------------------------------- structured chat & catalog parity
+async def test_managed_catalog_mount_without_mounts_file_reaches_structured_chat_catalog(
+    fake_server, monkeypatch
+):
+    """Regression (620b p38): catalog servers enabled without MCP_MOUNTS_FILE must
+    appear in BOTH get_all_tools() and StructuredChatAgent's action catalog."""
+    from app.routers.chat import prompt_builder
+    from app.routers.chat.agent import StructuredChatAgent
+    from app.routers.chat.request_routing import get_all_tools
+    from tool_box.mcp_mount import manager as manager_module
+
+    monkeypatch.delenv("MCP_MOUNTS_FILE", raising=False)
+    monkeypatch.delenv("TOOL_ALLOWLIST", raising=False)
+    monkeypatch.delenv("TOOL_DENYLIST", raising=False)
+
+    manager = MountManager()
+    monkeypatch.setattr(manager_module, "_manager", manager)
+    spec = parse_entry(
+        "arxiv",
+        {
+            "transport": "stdio",
+            "command": sys.executable,
+            "args": [str(fake_server)],
+            "read_only_tools": ["echo"],
+            "timeout_sec": 30,
+        },
+    )
+
+    agent_stub = SimpleNamespace(
+        plan_session=SimpleNamespace(
+            plan_id=None,
+            outline=lambda **_: "[plan outline]",
+            summaries_for_prompt=lambda **_: "[plan catalog]",
+        ),
+        extra_context={},
+        history=[],
+        mode="assistant",
+        conversation_id="conv-1",
+        schema_json='{"llm_reply": {}, "actions": []}',
+        _extract_tool_name=StructuredChatAgent._extract_tool_name,
+    )
+
+    unmounted_catalog = prompt_builder.compose_action_catalog(agent_stub, plan_bound=False)
+    assert "mcp__arxiv__echo" not in unmounted_catalog
+
+    await manager.set_managed("arxiv", spec)
+    try:
+        assert "mcp__arxiv__echo" in get_all_tools()
+        catalog = prompt_builder.compose_action_catalog(agent_stub, plan_bound=False)
+        assert "- tool_operation: mcp__arxiv__echo (" in catalog
+        assert "[external MCP: arxiv] Echo text back" in catalog
+        assert "requires `text`" in catalog
+        assert "optional target_task_id" in catalog
+        # Inserted before the trailing NOTE line rather than after plan_actions.
+        assert catalog.index("mcp__arxiv__echo") < catalog.index("NOTE: All tool_operation actions")
+
+        full_prompt = prompt_builder.build_prompt(agent_stub, "用 arXiv 搜 bacteriophage genome")
+        assert "mcp__arxiv__echo" in full_prompt
+
+        monkeypatch.setenv("TOOL_DENYLIST", "mcp__arxiv__echo")
+        denied_catalog = prompt_builder.compose_action_catalog(agent_stub, plan_bound=False)
+        assert "mcp__arxiv__echo" not in denied_catalog
+        monkeypatch.delenv("TOOL_DENYLIST", raising=False)
+
+        await manager.set_managed("arxiv", None)
+        assert prompt_builder.compose_action_catalog(agent_stub, plan_bound=False) == unmounted_catalog
+    finally:
+        await manager.shutdown()
+
+
+async def test_structured_chat_guardrails_and_tool_analysis_preserve_mcp_output(
+    mounted, monkeypatch
+):
+    """POST /chat/message path: guardrails must not clobber mcp__* download/export
+    actions, and _generate_tool_analysis must receive the external MCP content."""
+    from app.routers.chat import action_execution
+    from app.routers.chat.guardrail_handlers import apply_phagescope_fallback
+    from app.services.llm.structured_response import LLMReply, LLMStructuredResponse
+
+    # Guardrail check: "Download ... 2309.08600v1 and summarize" contains "download",
+    # "summarize", and "v1" (matches accession regex), which previously clobbered
+    # non-plan actions with sequence_fetch / phagescope(save_all).
+    guard_agent = SimpleNamespace(
+        _current_user_message="Download arXiv paper 2309.08600v1 and summarize it",
+        history=[],
+    )
+    structured = LLMStructuredResponse(
+        llm_reply=LLMReply(message="Searching arXiv via MCP."),
+        actions=[
+            LLMAction(
+                kind="tool_operation",
+                name="mcp__fake__echo",
+                parameters={"text": "Paper 1: Bacteriophage T4 genome"},
+                order=1,
+                blocking=True,
+            )
+        ],
+    )
+    guarded = apply_phagescope_fallback(guard_agent, structured)
+    assert [a.name for a in guarded.actions] == ["mcp__fake__echo"]
+
+    step = await handle_tool_action(_ChatAgentStub(), guarded.actions[0])
+    assert step.success is True
+
+    captured_prompts: list[str] = []
+
+    class _FakeLLM:
+        async def chat_async(self, prompt: str) -> str:
+            captured_prompts.append(prompt)
+            return "Found Paper 1: Bacteriophage T4 genome."
+
+    monkeypatch.setattr(
+        action_execution,
+        "_get_llm_service_for_provider",
+        lambda _provider: _FakeLLM(),
+    )
+    analysis = await action_execution._generate_tool_analysis(
+        user_message="用 arXiv 搜 bacteriophage genome",
+        tool_results=[
+            {
+                "name": step.action.name,
+                "summary": step.details.get("summary"),
+                "parameters": step.details.get("parameters"),
+                "result": step.details.get("result"),
+            }
+        ],
+        session_id="session_mcp_analysis",
+    )
+    assert analysis == "Found Paper 1: Bacteriophage T4 genome."
+    assert len(captured_prompts) == 1
+    assert "Paper 1: Bacteriophage T4 genome" in captured_prompts[0]
+    assert "untrusted: True" in captured_prompts[0]
+    assert "server: fake" in captured_prompts[0]
+
+
+async def test_format_mounted_tool_catalog_entry_summarizes_schema(mounted):
+    from app.services.tool_schemas import format_mounted_tool_catalog_entry
+
+    assert format_mounted_tool_catalog_entry("web_search") is None
+    assert format_mounted_tool_catalog_entry("mcp__fake__missing") is None
+    entry = format_mounted_tool_catalog_entry("mcp__fake__echo", include_target_task_id=True)
+    assert entry == "[external MCP: fake] Echo text back; requires `text`; optional target_task_id"

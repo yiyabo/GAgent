@@ -318,6 +318,22 @@ def compose_plan_artifact_access_hint(agent: Any, plan_bound: bool) -> str:
     return "\n".join(lines)
 
 
+def _mounted_action_lines(policy: dict[str, Any], existing_names: set[str]) -> list[str]:
+    from app.services.tool_schemas import format_mounted_tool_catalog_entry
+    from tool_box.mcp_mount import get_mount_manager
+
+    lines: list[str] = []
+    for name in get_mount_manager().tool_names():
+        if name in existing_names or not is_tool_allowed(name, policy):
+            continue
+        detail = format_mounted_tool_catalog_entry(name, include_target_task_id=True)
+        if detail:
+            lines.append(f"- tool_operation: {name} ({detail})")
+        else:
+            lines.append(f"- tool_operation: {name}")
+    return lines
+
+
 def compose_action_catalog(agent: Any, plan_bound: bool) -> str:
     prompts = get_structured_agent_prompts()
     base_actions = list(prompts["action_catalog"]["base_actions"])
@@ -325,11 +341,23 @@ def compose_action_catalog(agent: Any, plan_bound: bool) -> str:
     selected_plan_actions = plan_actions["bound" if plan_bound else "unbound"]
     policy = get_tool_policy()
     filtered_base_actions: List[str] = []
+    existing_names: set[str] = set()
+    note_index: int | None = None
     for line in base_actions:
         tool_name = agent._extract_tool_name(line)
-        if tool_name and not is_tool_allowed(tool_name, policy):
-            continue
+        if tool_name:
+            if not is_tool_allowed(tool_name, policy):
+                continue
+            existing_names.add(tool_name)
+        elif note_index is None and line.lstrip().startswith("NOTE:"):
+            note_index = len(filtered_base_actions)
         filtered_base_actions.append(line)
+    mounted_lines = _mounted_action_lines(policy, existing_names)
+    if mounted_lines:
+        if note_index is not None:
+            filtered_base_actions[note_index:note_index] = mounted_lines
+        else:
+            filtered_base_actions.extend(mounted_lines)
     return "\n".join(filtered_base_actions + list(selected_plan_actions))
 
 
