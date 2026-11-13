@@ -956,7 +956,7 @@ def list_family_members(
             "SELECT protein_id, family_id, subfamily_id, dataset, phage_accession_id,",
             "protein_product, protein_function_class FROM phage_protein_family_member WHERE",
             where_sql,
-            "ORDER BY id ASC LIMIT %s OFFSET %s",
+            "ORDER BY protein_id ASC LIMIT %s OFFSET %s",
         )
         cur.execute(cnt_stmt, params)
         total = int(cur.fetchone()[0])
