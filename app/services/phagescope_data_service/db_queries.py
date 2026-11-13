@@ -896,7 +896,7 @@ def search_protein_families(
             "consensus_product, subfamily_count, representative_protein_id, dataset_count",
             "FROM phage_protein_family WHERE",
             " AND ".join(clauses),
-            "ORDER BY member_count DESC, family_id ASC LIMIT %s OFFSET %s",
+            "ORDER BY member_count DESC, family_id DESC LIMIT %s OFFSET %s",
         )
         cur.execute(stmt, [*params, pagesize + 1, offset])
         raw = cur.fetchall()
