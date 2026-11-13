@@ -218,7 +218,7 @@ async def materialize_phage_bundle(
                     seq_resp = await client.call_service(
                         f"phages/{pid}/sequence/",
                         method="GET",
-                        query={"max_bases": 200000},
+                        query={"max_bases": 5_000_000},
                         timeout=timeout,
                     )
                     hdr = str(seq_resp.get("header") or f">{acc}")
@@ -243,7 +243,7 @@ async def materialize_phage_bundle(
                         "phage": acc,
                         "kind": "fasta",
                         "reason": "fasta_truncated_no_full_source",
-                        "detail": "full genome not reachable from the mounted trees; only a 200,000 bp preview was returned",
+                        "detail": "full genome not reachable from the mounted trees; only a capped preview was returned",
                     }
                 )
                 diagnostics.append(

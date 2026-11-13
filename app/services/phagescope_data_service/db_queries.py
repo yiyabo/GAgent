@@ -207,6 +207,9 @@ ORDER_BY_SQL: dict[str, str] = {
     "length_desc": "p.length DESC NULLS LAST, p.id DESC",
     "length_asc": "p.length ASC NULLS LAST, p.id ASC",
 }
+# Jumbo phages exceed the old 200 kb gateway cap; the caller still chooses
+# ``max_bases`` and this is only the ceiling.
+MAX_SEQUENCE_BASES = 5_000_000
 FEATURE_TYPES = frozenset(
     {"trna", "crispr", "anticrispr", "terminator", "virulence", "amr", "transmembrane"}
 )
@@ -1408,7 +1411,7 @@ def read_phage_sequence_preview(
             break
     if path is None:
         raise ServiceQueryError("not_found", "Sequence file was not found.", 404)
-    limit = max(1, min(int(max_bases), 200000))
+    limit = max(1, min(int(max_bases), MAX_SEQUENCE_BASES))
     header = ""
     chunks: list[str] = []
     remaining = limit
