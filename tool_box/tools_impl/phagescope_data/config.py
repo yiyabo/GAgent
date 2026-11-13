@@ -12,10 +12,16 @@ ENV_ENABLED = "PHAGESCOPE_DATA_ENABLED"
 ENV_SERVICE_URL = "PHAGESCOPE_DATA_SERVICE_URL"
 ENV_SERVICE_KEY = "PHAGESCOPE_DATA_SERVICE_KEY"
 ENV_SEQ_DIR = "PHAGESCOPE_SEQ_DIR"
+ENV_FASTA_EXT_DIR = "PHAGESCOPE_FASTA_EXT_DIR"
 ENV_CSV_DIR = "PHAGESCOPE_CSV_DOWNLOAD_DIR"
 ENV_PDB_DIR = "PHAGESCOPE_PDB_DIR"
 
 DEFAULT_SEQ_DIR = "/phagescope/phage_sequence"
+# Some datasets keep their per-genome FASTA in a separate tree that the catalog
+# links in with a symlink (620b: phage_fasta/MetaVR ->
+# /data1/.../phage_fasta_ext/MetaVR). That symlink escapes the sequence mount,
+# so the extension tree gets its own read-only mount and is tried second.
+DEFAULT_FASTA_EXT_DIR = "/phagescope/phage_fasta_ext"
 DEFAULT_CSV_DIR = "/phagescope/csv_data/Download"
 DEFAULT_PDB_DIR = "/phagescope/esmfold_pdb"
 
@@ -57,6 +63,32 @@ def seq_root() -> Path | None:
     return p if (p / "phage_fasta").is_dir() else None
 
 
+def fasta_ext_root() -> Path | None:
+    raw = os.environ.get(ENV_FASTA_EXT_DIR, DEFAULT_FASTA_EXT_DIR).strip()
+    if not raw:
+        return None
+    p = Path(raw)
+    return p if p.is_dir() else None
+
+
+def fasta_roots_for_dataset(dataset: str) -> list[tuple[Path, Path]]:
+    """(root, dataset_dir) pairs to try for a dataset's per-genome FASTA files.
+
+    The primary tree is tried first; the extension tree covers datasets whose
+    catalog directory is a symlink to storage outside the sequence mount.
+    ``dataset`` must already have passed :func:`safe_component`.
+    """
+    pairs: list[tuple[Path, Path]] = []
+    sr = seq_root()
+    if sr is not None:
+        base = sr / "phage_fasta"
+        pairs.append((base, base / dataset))
+    er = fasta_ext_root()
+    if er is not None:
+        pairs.append((er, er / dataset))
+    return pairs
+
+
 def csv_download_root() -> Path | None:
     raw = os.environ.get(ENV_CSV_DIR, DEFAULT_CSV_DIR).strip()
     if not raw:
@@ -75,11 +107,14 @@ def pdb_root() -> Path | None:
 
 def local_mounts_status() -> dict[str, Any]:
     sr = seq_root()
+    er = fasta_ext_root()
     cr = csv_download_root()
     pr = pdb_root()
     return {
         "sequence_mount_ready": sr is not None,
         "sequence_mount_path": str(sr) if sr is not None else None,
+        "sequence_ext_mount_ready": er is not None,
+        "sequence_ext_mount_path": str(er) if er is not None else None,
         "csv_download_mount_ready": cr is not None,
         "csv_download_mount_path": str(cr) if cr is not None else None,
         "pdb_mount_ready": pr is not None,

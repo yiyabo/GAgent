@@ -78,6 +78,9 @@ services:
       # Optional read-only PhageScope V2 public catalog mounts (620b sets host dirs in .env;
       # other hosts default harmlessly to GAGENT_REFDATA_DIR).
       - ${PHAGESCOPE_SEQ_HOST_DIR:-${GAGENT_REFDATA_DIR:-/data}}:/phagescope/phage_sequence:ro
+      # Some datasets keep per-genome FASTA in a separate tree (620b: MetaVR lives
+      # under /data1/.../phage_fasta_ext and is symlinked into the catalog).
+      - ${PHAGESCOPE_FASTA_EXT_HOST_DIR:-${GAGENT_REFDATA_DIR:-/data}}:/phagescope/phage_fasta_ext:ro
       - ${PHAGESCOPE_CSV_HOST_DIR:-${GAGENT_REFDATA_DIR:-/data}}:/phagescope/csv_data/Download:ro
       - ${PHAGESCOPE_PDB_HOST_DIR:-${GAGENT_REFDATA_DIR:-/data}}:/phagescope/esmfold_pdb:ro
     extra_hosts:

@@ -49,6 +49,7 @@ class DataServiceState:
         conn_provider: Callable[[], contextlib.AbstractContextManager[Any]],
         overview: dict[str, Any],
         fasta_root: Path | None = None,
+        fasta_ext_root: Path | None = None,
         csv_download_root: Path | None = None,
         pdb_host_prefix: str = "/data4/back_up_platform/esmfold_pdb/",
     ) -> None:
@@ -56,6 +57,7 @@ class DataServiceState:
         self.conn_provider = conn_provider
         self.overview = overview
         self.fasta_root = fasta_root
+        self.fasta_ext_root = fasta_ext_root
         self.csv_download_root = csv_download_root
         self.pdb_host_prefix = pdb_host_prefix
 
@@ -214,7 +216,11 @@ def _handle_get(
             max_bases = _int_param(qs, "max_bases", 20000)
             with state.conn_provider() as conn:
                 seq = dq.read_phage_sequence_preview(
-                    conn, phage_id=pid, fasta_root=state.fasta_root, max_bases=max_bases
+                    conn,
+                    phage_id=pid,
+                    fasta_root=state.fasta_root,
+                    fasta_ext_root=state.fasta_ext_root,
+                    max_bases=max_bases,
                 )
             seq.pop("dataset", None)
             return 200, seq
@@ -523,12 +529,14 @@ def main() -> None:  # pragma: no cover - host entrypoint
             logger.warning("Failed to load overview.json: %s", exc)
 
     fasta_env = os.environ.get("PHAGE_FASTA_ROOT", "").strip()
+    fasta_ext_env = os.environ.get("PHAGE_FASTA_EXT_ROOT", "").strip()
     csv_env = os.environ.get("PHAGE_CSV_DOWNLOAD_ROOT", "").strip()
     state = DataServiceState(
         api_key=api_key,
         conn_provider=borrow_conn,
         overview=overview,
         fasta_root=Path(fasta_env) if fasta_env else None,
+        fasta_ext_root=Path(fasta_ext_env) if fasta_ext_env else None,
         csv_download_root=Path(csv_env) if csv_env else None,
         pdb_host_prefix=os.environ.get("PHAGE_PDB_HOST_PREFIX", "/data4/back_up_platform/esmfold_pdb/"),
     )

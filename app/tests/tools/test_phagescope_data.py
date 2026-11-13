@@ -456,3 +456,125 @@ async def test_untruncated_jumbo_phage_and_metavr_faa_and_pdb_materialization(
     )
     assert analysis == "Identified family PFAM_LYSIN_001 (1280 members)."
     assert "PFAM_LYSIN_001" in captured[0]
+
+
+# ------------------------------------------------ materialize degradation paths
+
+
+async def test_materialize_reads_dataset_from_extension_tree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, flag_on: None
+) -> None:
+    """620b regression: a dataset whose catalog dir is a symlink outside the
+    sequence mount (MetaVR) must be served from the extension tree instead of
+    failing with a bare ``path_rejected``."""
+    seq_dir = tmp_path / "phage_sequence"
+    (seq_dir / "phage_fasta").mkdir(parents=True)
+    external = tmp_path / "external" / "MetaVR"
+    external.mkdir(parents=True)
+    acc = "IMGVR_UViG_2049941000_000179|2049941000|900MB_Assembly_NODE_1046067_len_460105_cov_16_166935"
+    (external / f"{acc}.fasta").write_text(
+        ">" + acc + "\n" + ("ACGT" * 115_000) + "\n", encoding="utf-8"
+    )
+    # The catalog entry is a symlink to storage outside the mounted root.
+    (seq_dir / "phage_fasta" / "MetaVR").symlink_to(external, target_is_directory=True)
+
+    ext_dir = tmp_path / "phage_fasta_ext"
+    (ext_dir / "MetaVR").mkdir(parents=True)
+    (ext_dir / "MetaVR" / f"{acc}.fasta").write_text(
+        ">" + acc + "\n" + ("ACGT" * 115_000) + "\n", encoding="utf-8"
+    )
+
+    monkeypatch.setenv("PHAGESCOPE_SEQ_DIR", str(seq_dir))
+    monkeypatch.setenv("PHAGESCOPE_FASTA_EXT_DIR", str(ext_dir))
+    monkeypatch.setenv("APP_RUNTIME_ROOT", str(tmp_path / "runtime"))
+
+    work_dir = tmp_path / "runtime" / "session_ext"
+    work_dir.mkdir(parents=True)
+    ctx = ToolContext(session_id="session_ext", work_dir=str(work_dir))
+    phage = {
+        "id": 1302237,
+        "Acession_ID": acc,
+        "dataset": "MetaVR",
+        "length": 460105,
+        "gc_content": "23.7",
+        "host": "Pseudomonas aeruginosa",
+        "completeness": "High-quality",
+        "taxonomy": "Caudoviricetes",
+        "cluster": "Cluster_383787",
+        "subcluster": "Subcluster_524442",
+        "is_mapped": False,
+        "lifestyle": "virulent",
+    }
+    from tool_box.tools_impl.phagescope_data import materialize as mat
+
+    out = await mat.materialize_phage_bundle(
+        [phage], kinds=["fasta", "metadata_tsv"], output_subdir="ext_bundle", context=ctx
+    )
+    assert out["success"] is True, out
+    assert out["materialized_counts"]["fasta"] == 1
+    assert out["truncated_items"] == []
+    assert out["missing"] == []
+    fasta = (Path(out["output_directory"]) / "genomes.fasta").read_text()
+    assert len(fasta) >= 460_000
+
+
+async def test_materialize_never_passes_a_truncated_genome_as_complete(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, flag_on: None
+) -> None:
+    """When no local source exists and the service caps the sequence, the file
+    is written as ``.preview`` and the record is reported missing."""
+    seq_dir = tmp_path / "phage_sequence"
+    (seq_dir / "phage_fasta").mkdir(parents=True)
+    empty_ext = tmp_path / "phage_fasta_ext"
+    empty_ext.mkdir()
+    monkeypatch.setenv("PHAGESCOPE_SEQ_DIR", str(seq_dir))
+    monkeypatch.setenv("PHAGESCOPE_FASTA_EXT_DIR", str(empty_ext))
+    monkeypatch.setenv("APP_RUNTIME_ROOT", str(tmp_path / "runtime"))
+
+    async def _fake_call_service(path: str, **_: Any) -> dict[str, Any]:
+        return {"header": ">NC_999.1", "sequence": "ACGT" * 25, "truncated": True}
+
+    from tool_box.tools_impl.phagescope_data import materialize as mat
+
+    monkeypatch.setattr(mat.client, "call_service", _fake_call_service)
+    work_dir = tmp_path / "runtime" / "session_trunc"
+    work_dir.mkdir(parents=True)
+    ctx = ToolContext(session_id="session_trunc", work_dir=str(work_dir))
+    phage = {
+        "id": 42,
+        "Acession_ID": "NC_999.1",
+        "dataset": "MetaVR",
+        "length": 900000,
+        "is_mapped": False,
+    }
+    out = await mat.materialize_phage_bundle(
+        [phage], kinds=["fasta"], output_subdir="trunc_bundle", context=ctx
+    )
+    assert "fasta:NC_999.1" in out["truncated_items"]
+    assert any(m.get("reason") == "fasta_truncated_no_full_source" for m in out["missing"])
+    bundle = Path(out["output_directory"])
+    assert (bundle / "fasta" / "NC_999.1.fasta.preview").is_file()
+    assert not (bundle / "genomes.fasta").exists()
+
+
+def test_tool_output_preview_keeps_high_signal_fields() -> None:
+    """bio_tools puts stdout after five metadata keys; a positional-only preview
+    used to hide the whole stats table from the model."""
+    from app.services.tool_output_storage import _build_preview
+
+    raw = {
+        "success": True,
+        "tool": "seqkit",
+        "operation": "stats",
+        "run_id": "2e131ea968cc",
+        "state": "succeeded",
+        "command": "seqkit stats genomes.fasta",
+        "exit_code": 0,
+        "stdout": "file format type num_seqs sum_len\n...  FASTA DNA 2 1,075,843\n",
+        "stderr": "",
+        "slurm_job_id": "1643880",
+    }
+    preview = _build_preview(raw)
+    assert preview["stdout"].startswith("file format")
+    assert preview["slurm_job_id"] == "1643880"
+    assert preview["exit_code"] == 0
