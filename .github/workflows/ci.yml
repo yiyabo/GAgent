@@ -109,7 +109,7 @@ jobs:
             --build-arg APT_MIRROR_HOST= --build-arg PIP_INDEX_URL=https://pypi.org/simple \
             --build-arg APP_UID=1001 --build-arg APP_GID=1001 .
           DOCKER_BUILDKIT=1 docker build -f deploy/Dockerfile.gateway -t gagent-gateway:latest \
-            --build-arg GATEWAY_BASE_IMAGE=nginx:1.29-alpine .
+            --build-arg GATEWAY_BASE_IMAGE=nginx:1.31-alpine3.24 .
 
       - name: Check SSE delivery through two nginx hops
         run: python3 deploy/verify-sse-chain.py
