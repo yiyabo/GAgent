@@ -17,6 +17,7 @@ from .services import (
     plan_repository,
 )
 from .reference_resolution import maybe_inject_direction_resolution
+from .execution_ledger import apply_execution_ledger
 from .session_helpers import (
     _convert_history_to_agent_format,
     _derive_conversation_id,
@@ -182,6 +183,7 @@ async def build_agent_for_chat_request(
         context.pop("plan_id", None)
 
     converted_history = _convert_history_to_agent_format(request.history)
+    converted_history = apply_execution_ledger(converted_history, request.session_id)
     message_to_send = maybe_inject_direction_resolution(
         message_to_send,
         converted_history,

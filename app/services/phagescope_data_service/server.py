@@ -356,6 +356,18 @@ def _handle_post(
                 limit=limit,
             )
 
+    if norm == "/agent-api/v1/data/v2/phages/cohort_report/":
+        raw_filters = payload.get("filters")
+        filters = raw_filters if isinstance(raw_filters, dict) else {}
+        with state.conn_provider() as conn:
+            return 200, dq.cohort_report(
+                conn,
+                filters,
+                sample_limit=_int_param(payload, "sample_limit", 5),
+                sort_by=str(payload.get("sort_by") or "id"),
+                overview=state.overview,
+            )
+
     if norm == "/agent-api/v1/data/v2/proteins/query/":
         mode = str(payload.get("mode") or "by_phage").strip()
         inc_seq = bool(payload.get("include_sequence", False))

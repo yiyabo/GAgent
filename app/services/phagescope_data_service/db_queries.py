@@ -690,6 +690,70 @@ def aggregate_phages(
     return {"group_by": group_by, "source": "postgresql_live", "groups": groups}
 
 
+def cohort_report(
+    conn: Any,
+    filters: dict[str, Any] | None = None,
+    *,
+    sample_limit: int = 5,
+    sort_by: str = "id",
+    overview: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """One-round-trip cohort summary (Phase 1).
+
+    Replaces the 5-6 tool calls a model used to need (overview + search +
+    several single-dimension aggregates + export) with a single response:
+    exact count, length stats, dataset/completeness/lifestyle/host facets,
+    and a small sample of representative rows. Facets reuse
+    :func:`aggregate_phages` so join/filter semantics stay identical to the
+    existing single-dimension endpoint.
+    """
+    filters = filters or {}
+    sample_limit = max(1, min(int(sample_limit), 20))
+    ds_by_id, ds_by_lower = _dataset_maps(conn)
+    if filters:
+        joins, params, clauses = _build_phage_where(filters, ds_by_lower)
+    else:
+        joins, params, clauses = [], [], ["p.is_mapped = FALSE"]
+
+    with conn.cursor() as cur:
+        stmt = _compose_sql(
+            "SELECT COUNT(*), MIN(p.length), ROUND(AVG(p.length))::bigint, MAX(p.length) FROM phages p",
+            " ".join(joins),
+            "WHERE",
+            " AND ".join(clauses),
+        )
+        # pi-lens-ignore: python.lang.security.audit.sqli
+        cur.execute(stmt, [*params])
+        total, min_len, avg_len, max_len = cur.fetchone()
+
+    facets = {
+        "by_dataset": aggregate_phages(conn, group_by="dataset", filters=filters, overview=overview, limit=30)["groups"],
+        "by_completeness": aggregate_phages(conn, group_by="completeness", filters=filters, overview=overview, limit=8)["groups"],
+        "by_lifestyle": aggregate_phages(conn, group_by="lifestyle", filters=filters, overview=overview, limit=4)["groups"],
+        "top_host_genera": aggregate_phages(conn, group_by="host_genus", filters=filters, limit=10)["groups"],
+    }
+    samples = query_phages(
+        conn,
+        filters,
+        page=1,
+        pagesize=sample_limit,
+        max_pagesize=20,
+        include_total=False,
+        include_host_ranks=True,
+        sort_by=sort_by,
+    )
+    return {
+        "count": int(total or 0),
+        "length": {
+            "min": int(min_len) if min_len is not None else None,
+            "avg": int(avg_len) if avg_len is not None else None,
+            "max": int(max_len) if max_len is not None else None,
+        },
+        "facets": facets,
+        "sample_rows": samples["results"],
+    }
+
+
 def _format_protein_row(
     row: tuple[Any, ...],
     *,

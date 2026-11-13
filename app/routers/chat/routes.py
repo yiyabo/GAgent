@@ -66,6 +66,7 @@ from .services import (
     session_title_service,
 )
 from .reference_resolution import maybe_inject_direction_resolution
+from .execution_ledger import apply_execution_ledger
 from .session_helpers import (
     _convert_history_to_agent_format,
     _derive_conversation_id,
@@ -456,6 +457,7 @@ async def chat_message(
             context.pop("plan_id", None)
 
         converted_history = _convert_history_to_agent_format(request.history)
+        converted_history = apply_execution_ledger(converted_history, request.session_id)
         message_to_send = maybe_inject_direction_resolution(
             message_to_send,
             converted_history,
@@ -1137,9 +1139,13 @@ async def update_chat_session(
             )
             params.extend([session_id, owner_id])
             if save_defaults:
+                if settings_update is None:
+                    # Unreachable: save_defaults already validated settings above.
+                    raise HTTPException(status_code=422, detail="Reply preferences are required when saving defaults")
                 # The pool uses autocommit: start an explicit short transaction
                 # so defaults and this session's choice cannot partially apply.
                 from app.repository.response_preferences import save_preferences
+                from app.services.response_style import ResponsePreferences
                 conn.execute("BEGIN IMMEDIATE")
                 save_preferences(conn, owner_id, ResponsePreferences(**{
                     key: settings_update[key] for key in ResponsePreferences.model_fields
@@ -1432,6 +1438,7 @@ async def _execute_confirmed_actions(
         # Execute each action.
         for action in actions:
             try:
+                # pi-lens-ignore: reportAttributeAccessIssue
                 step = await agent._dispatch_action(action)
                 logger.info(
                     f"[CONFIRMATION] Action {action.name} completed: success={step.success}"

@@ -218,7 +218,7 @@ async def _native_run_setup(
     tool_schemas = build_tool_schemas(agent.available_tools)
     # Progressive schema disclosure (2026-09-27): iteration 1 sends the full
     # payload, later iterations trim to used ∪ core ∪ loaded ∪ load_tool_schema.
-    agent._schema_disclosure = SchemaDisclosure(tool_schemas, agent.available_tools)
+    agent._schema_disclosure = SchemaDisclosure(tool_schemas, agent.available_tools, task_hint=user_query)
 
     expected_outputs = _derive_expected_outputs(user_query)
     from app.services.deep_think.acceptance import prepare_acceptance_spec
@@ -252,7 +252,7 @@ async def _native_run_setup(
     agent._produced_deliverable_paths = produced_paths(context)
     agent._produced_image_paths = []
     agent._execution_issues = []
-    agent._acceptance_missing: List[str] = []
+    agent._acceptance_missing = []
     agent._acceptance_spec = acceptance_spec
     agent._expected_outputs_current = list(loop_guard_state["expected_outputs"])
     if restored is not None:
@@ -595,9 +595,9 @@ async def _native_probe_only_cycle(
         tool_results,
         task_context=task_context,
     )
+    probe_limit = 6 if cycle.had_real_execution_tool else 12
     if is_probe_only_cycle:
         cycle.probe_only_execution_cycles += 1
-        probe_limit = 6 if cycle.had_real_execution_tool else 12
         if (
             not cycle.had_real_execution_tool
             and cycle.probe_only_execution_cycles >= 2
@@ -1673,7 +1673,7 @@ async def _native_llm_step(
 
         _pin_iteration_billing_context()
         from app.services.deep_think.native_validation import next_call_options,observe_result
-        from app.services.run_budget import run_work_stage,SoftFinalize
+        from app.services.run_budget import run_work_stage
         result = await run_work_stage(agent.llm_client.stream_chat_with_tools_async(
             messages=messages,
             tools=tool_schemas,
@@ -1919,8 +1919,8 @@ async def _native_finalize(
     )
 
 
-async def _think_prompt_based(
-    agent: "DeepThinkAgent",
+async def _think_prompt_based(  # pyright: ignore[reportGeneralTypeIssues] -- legacy monolithic loop; split tracked separately
+    agent: DeepThinkAgent,
     user_query: str,
     context: Optional[Dict[str, Any]] = None,
     task_context: Optional[TaskExecutionContext] = None,

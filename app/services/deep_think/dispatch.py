@@ -19,7 +19,13 @@ import logging
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import (  # noqa: UP035 -- legacy annotations throughout this module
+    TYPE_CHECKING,
+    Any,
+    Dict,
+    List,
+    Optional,
+)
 
 from app.services.deep_think.models import ThinkingStep
 from app.services.deep_think.schema_disclosure import META_TOOL_NAME
@@ -327,7 +333,7 @@ async def _execute_native_tool_call(
         ),
         extra={
             "plan_tree_edit_allowed": agent.request_profile.get("plan_tree_edit_allowed"),
-            "chat_history": list(agent.messages[-20:]) if getattr(agent, "messages", None) else [],
+            "chat_history": list((getattr(agent, "messages", None) or [])[-20:]),
             "paper_mode": bool(agent.request_profile.get("paper_mode", False)),
             "deep_think_enabled": True,
         },
@@ -684,6 +690,10 @@ def _compact_tool_result_for_llm(
 ) -> Optional[Dict[str, Any]]:
     if str(tool_name or "").strip().lower() == "file_operations":
         return cls._compact_file_operations_result_for_llm(result)
+    if str(tool_name or "").strip().lower() == "phagescope_data":
+        return cls._compact_phagescope_data_result_for_llm(result)
+    if str(tool_name or "").strip().lower() == "bio_tools":
+        return cls._compact_bio_tools_result_for_llm(result)
     if str(tool_name or "").strip().lower() == "phagescope_research":
         return cls._compact_phagescope_research_result_for_llm(result)
     if str(tool_name or "").strip().lower() == "code_executor":
@@ -788,7 +798,7 @@ def _bound_tool_result_text_for_llm(
     serialized ``result`` body to a head/tail window around a marker naming how
     much was dropped and where the full output can be read.
     """
-    limit = limit or cls.MAX_TOOL_RESULT_TEXT_CHARS
+    limit = limit if isinstance(limit, int) else int(cls.MAX_TOOL_RESULT_TEXT_CHARS)
     result_text = json.dumps(result, ensure_ascii=False, default=str)
     # Length of the envelope with a zero-length string value (the two quotes are
     # the cost of the ``result`` slot itself, not the body).
@@ -894,14 +904,140 @@ def _compact_execute_code_result_for_llm(
     return compact
 
 
+def _compact_phagescope_data_result_for_llm(
+    cls: Any, result: Any
+) -> dict[str, Any] | None:
+    """Keep phagescope_data results structured instead of head/tail strings.
+
+    The 2026-11-13 live audit showed the generic binder cutting oversized
+    catalog responses into two half-strings, which forced the model into six
+    redundant file_operations(read) calls just to recover record counts and
+    materialized file paths. This compactor always preserves the fields the
+    model reasons over (counts, facets/groups, output paths, diagnostics) and
+    projects bulky record rows onto their decision-relevant columns.
+    """
+    if not isinstance(result, dict):
+        return None
+    compact: dict[str, Any] = {
+        "tool": "phagescope_data",
+        "success": bool(result.get("success", True)),
+        "llm_compacted": True,
+    }
+    for key in (
+        "operation", "mode", "feature_type", "count", "total_exact", "has_more",
+        "page", "pagesize", "returned", "saved_rows", "group_by", "family",
+        "phage", "materialized_counts", "output_directory", "cohort_tsv",
+        "error", "error_code", "status_code", "summary", "next_actions",
+    ):
+        value = result.get(key)
+        if value is not None and value != "":
+            compact[key] = value
+    facets = result.get("facets")
+    if isinstance(facets, dict):
+        compact["facets"] = facets
+    groups = result.get("groups")
+    if isinstance(groups, list):
+        compact["groups"] = groups[:50]
+        if len(groups) > 50:
+            compact["groups_omitted"] = len(groups) - 50
+    for key in ("produced_files", "artifact_paths"):
+        value = result.get(key)
+        if isinstance(value, list) and value:
+            compact[key] = [str(item) for item in value[:40]]
+            if len(value) > 40:
+                compact[f"{key}_omitted"] = len(value) - 40
+    for key in ("missing", "truncated_items", "diagnostics"):
+        value = result.get(key)
+        if isinstance(value, list) and value:
+            compact[key] = value[:20]
+            if len(value) > 20:
+                compact[f"{key}_omitted"] = len(value) - 20
+
+    rows_key = next(
+        (key for key in ("results", "members", "datasets", "proteins") if isinstance(result.get(key), list)),
+        None,
+    )
+    if rows_key is not None:
+        rows = result[rows_key]
+        projected = []
+        for row in rows[:15]:
+            if isinstance(row, dict):
+                projected.append({k: v for k, v in row.items() if k in _PHAGESCOPE_DATA_ROW_KEYS})
+            else:
+                projected.append(row)
+        compact[rows_key] = projected
+        compact["rows_returned"] = len(rows)
+        if len(rows) > len(projected):
+            compact["rows_omitted"] = len(rows) - len(projected)
+        compact["rows_note"] = (
+            "Rows are projected onto key columns; full fields and further pages "
+            "are available via phagescope_data (page/pagesize, save_tsv=true). "
+            "Do NOT read internal result.json/spill files to recover them."
+        )
+    return compact
+
+
+_PHAGESCOPE_DATA_ROW_KEYS = (
+    "id", "phage_id", "accession", "dataset", "length", "completeness",
+    "lifestyle", "taxonomy", "host", "host_genus", "host_species", "cluster",
+    "protein_count", "family_id", "member_count", "consensus_product",
+    "dominant_class", "protein_id", "product", "function_classification",
+    "name", "annotated_genomes", "count", "value", "plddt", "structure_available",
+)
+
+
+def _compact_bio_tools_result_for_llm(
+    cls: Any, result: Any
+) -> dict[str, Any] | None:
+    """Preserve bio_tools stdout/stderr and Slurm metadata for the model.
+
+    seqkit/checkv/prodigal/hmmer output *is* the answer; the generic binder
+    used to cut it in half, and the storage preview dropped stdout entirely.
+    Keep a bounded head/tail of stdout plus the fields needed to cite or
+    re-run the job.
+    """
+    if not isinstance(result, dict):
+        return None
+    compact: dict[str, Any] = {
+        "tool": "bio_tools",
+        "success": bool(result.get("success", True)),
+        "llm_compacted": True,
+    }
+    bio_tool = result.get("tool")
+    if bio_tool:
+        compact["bio_tool"] = bio_tool
+    for key in (
+        "operation", "state", "exit_code", "slurm_job_id", "command", "run_id",
+        "output_dir", "output_directory", "error", "error_code", "duration_seconds",
+    ):
+        value = result.get(key)
+        if value is not None and value != "":
+            compact[key] = value
+    for key in ("output_files", "produced_files", "artifact_paths"):
+        value = result.get(key)
+        if isinstance(value, list) and value:
+            compact[key] = [str(item) for item in value[:40]]
+    stdout = str(result.get("stdout") or "")
+    if stdout:
+        if len(stdout) > 4000:
+            compact["stdout"] = stdout[:3000] + "\n…[truncated]…\n" + stdout[-1000:]
+            compact["stdout_truncated"] = True
+        else:
+            compact["stdout"] = stdout
+    stderr = str(result.get("stderr") or "")
+    if stderr:
+        compact["stderr"] = stderr[:1000] + ("…[truncated]" if len(stderr) > 1000 else "")
+    return compact
+
+
 def _compact_phagescope_research_result_for_llm(
     cls: Any, result: Any
-) -> Optional[Dict[str, Any]]:
+) -> dict[str, Any] | None:
     if not isinstance(result, dict):
         return None
     if str(result.get("action") or "").strip().lower() != "deep_profile":
         return None
-    compact: Dict[str, Any] = {
+    compact: dict[str, Any] = {
         "tool": "phagescope_research",
         "action": "deep_profile",
         "success": bool(result.get("success", True)),
@@ -958,12 +1094,12 @@ def _compact_phagescope_research_result_for_llm(
 
 def _compact_file_operations_result_for_llm(
     cls: Any, result: Any
-) -> Optional[Dict[str, Any]]:
+) -> dict[str, Any] | None:
     if not isinstance(result, dict):
         return None
     operation = str(result.get("operation") or "").strip().lower()
     if operation in {"profile", "census"}:
-        compact: Dict[str, Any] = {
+        compact: dict[str, Any] = {
             "operation": operation,
             "path": str(result.get("path") or "").strip(),
             "success": bool(result.get("success", True)),
@@ -994,7 +1130,7 @@ def _compact_file_operations_result_for_llm(
 
     count_raw = result.get("count")
     try:
-        total_count = int(count_raw)
+        total_count = int(count_raw) if count_raw is not None else len(items)
     except Exception:
         total_count = len(items)
 

@@ -237,9 +237,8 @@ def summarize_tool_step_display(step: ThinkingStep, *, language: str) -> str:
         parsed = json.loads(action_raw) if action_raw else {}
         if isinstance(parsed, dict):
             tool_name = str(parsed.get("tool") or "").strip().lower()
-            params = (
-                parsed.get("params") if isinstance(parsed.get("params"), dict) else {}
-            )
+            raw_params = parsed.get("params")
+            params = raw_params if isinstance(raw_params, dict) else {}
     except Exception:
         tool_name = ""
         params = {}
@@ -383,6 +382,24 @@ class DeepThinkAgent:
     MAX_EXTERNAL_TOOL_RETRIES = 1
     MAX_TOOL_RESULT_TEXT_CHARS = 12_000
     MAX_FILE_OPERATION_LIST_SAMPLE_ITEMS = 40
+
+    # Run state attached dynamically by the controller modules (annotation-only:
+    # no runtime defaults are created here; assignments happen in the loop).
+    _termination_reason: Any
+    _probe_stop_fallback: Any
+    _checkpoint_namespace: Any
+    _checkpoint_key: Any
+    _schema_disclosure: Any
+    _acceptance_base_dir: Any
+    _produced_deliverable_paths: Any
+    _produced_image_paths: Any
+    _execution_issues: Any
+    _acceptance_missing: Any
+    _acceptance_spec: Any
+    _expected_outputs_current: Any
+    _native_cap_escalations: Any
+    _native_empty_truncated_streak: Any
+    _replayed_python_state_lost: Any
 
     ARTIFACT_PATH_RE = re.compile(
         r'(?:saved?|writ(?:ten|e)|created?|generated?|output|produced?|exported?)\s+'
@@ -1566,9 +1583,21 @@ class DeepThinkAgent:
         return _dispatch._compact_phagescope_research_result_for_llm(cls, result)
 
     @classmethod
+    def _compact_phagescope_data_result_for_llm(
+        cls, result: Any
+    ) -> dict[str, Any] | None:
+        return _dispatch._compact_phagescope_data_result_for_llm(cls, result)
+
+    @classmethod
+    def _compact_bio_tools_result_for_llm(
+        cls, result: Any
+    ) -> dict[str, Any] | None:
+        return _dispatch._compact_bio_tools_result_for_llm(cls, result)
+
+    @classmethod
     def _compact_file_operations_result_for_llm(
         cls, result: Any
-    ) -> Optional[Dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         return _dispatch._compact_file_operations_result_for_llm(cls, result)
 
     @staticmethod
