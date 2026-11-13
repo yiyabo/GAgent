@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from typing import Any, Dict, List, Set
 
 from .skills_index import skills_index_active
@@ -39,11 +40,22 @@ _META_DESCRIPTION = (
     "Load another tool's schema so you can call it in later iterations. "
     "Call this when the task needs a tool you know exists but is not in your "
     "current tool list (e.g. vision_reader, document_reader, "
-    "literature_pipeline, phagescope, result_interpreter, url_fetch). "
+    "literature_pipeline, phagescope_data, bio_tools, result_interpreter, url_fetch). "
     "The tool becomes callable from the next iteration — do not retry the "
     "same step, proceed with the newly loaded tool. "
     "Params: {\"name\": \"<tool name>\"}."
 )
+
+# Phage/genomics intent (Phase 1, 2026-11-13): when the user's request clearly
+# concerns phages or phage genomics and phagescope_data is deployed, disclose
+# it together with bio_tools from iteration 1 instead of charging the run one
+# or two load_tool_schema round-trips before any real work can start.
+_PHAGE_INTENT_PATTERN = re.compile(
+    r"(?i)(phagescope|phage|噬菌体|prophage|前噬菌体|裂解酶|endolysin|lysin|holin|"
+    r"depolymerase|checkv|genomad|phabox|seqkit|fastani|mmseqs|hmmer|prodigal|"
+    r"crispr|anticrispr|trna|esmfold)"
+)
+_PHAGE_INTENT_TOOLS = ("phagescope_data", "bio_tools")
 
 
 def progressive_enabled() -> bool:
@@ -53,7 +65,7 @@ def progressive_enabled() -> bool:
 class SchemaDisclosure:
     """Per-run progressive-disclosure state (attached to the agent at setup)."""
 
-    def __init__(self, full_schemas: List[Dict[str, Any]], available_tools: List[str]) -> None:
+    def __init__(self, full_schemas: list[dict[str, Any]], available_tools: list[str], task_hint: str = "") -> None:
         self._full = list(full_schemas or [])
         self._available: Set[str] = {str(name) for name in (available_tools or [])}
         self._loaded: Set[str] = set()
@@ -62,6 +74,11 @@ class SchemaDisclosure:
         self.v2 = configured_policy()['schemas']
         self._disclosed: Set[str] = set()
         self.enabled = progressive_enabled() and bool(self._full)
+        self._phage_intent = (
+            "phagescope_data" in self._available
+            and bool(task_hint)
+            and bool(_PHAGE_INTENT_PATTERN.search(task_hint))
+        )
 
     @property
     def loaded(self) -> Set[str]:
@@ -103,6 +120,8 @@ class SchemaDisclosure:
         keep = set(self._loaded)
         keep.update(str(tool) for tool in (tools_used or []) if tool)
         keep.update(CORE_KEEP_TOOLS)
+        if self._phage_intent:
+            keep.update(tool for tool in _PHAGE_INTENT_TOOLS if tool in self._available)
         if plan_bound:
             keep.update(PLAN_BOUND_KEEP_TOOLS)
         # The skill index in the system prompt names skills the model opens with

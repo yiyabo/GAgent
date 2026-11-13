@@ -1,30 +1,38 @@
 import asyncio
 import contextlib
 import contextvars
-import traceback
-import uuid
 import functools
 import json
 import logging
 import os
 import random
-import time
 import threading
+import time
+import traceback
+import uuid
 import weakref
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator, Callable, Dict, Iterator, List, Optional
+from typing import (
+    Any,
+    Optional,
+    cast,
+)
 
 import httpx
 
 from .interfaces import LLMProvider
 from .services.execution.llm_observation import ObserverRejected
-from .services.execution.response_diagnostics import LLMResponseContentError, text_completion
-from .services.foundation.settings import get_settings
+from .services.execution.response_diagnostics import (
+    LLMResponseContentError,
+    text_completion,
+)
 from .services.foundation.llm_config import (
     is_production,
     platform_profile,
     validate_project_gateway_base_url,
 )
+from .services.foundation.settings import get_settings
 
 logger = logging.getLogger(__name__)
 
@@ -32,11 +40,11 @@ logger = logging.getLogger(__name__)
 _REASONING_EFFORT_LEVELS = ("none", "low", "medium", "high")
 
 
-def _is_direct_dashscope(url: Optional[str]) -> bool:
+def _is_direct_dashscope(url: str | None) -> bool:
     return "dashscope.aliyuncs.com" in str(url or "").lower()
 
 
-def _thinking_off_reasoning_effort(url: Optional[str] = None) -> Optional[str]:
+def _thinking_off_reasoning_effort(url: str | None = None) -> str | None:
     """``reasoning_effort`` to send when a caller asks for ``enable_thinking=False``.
 
     Probed 2026-10-09 against the production gateway (sub2api → qwen3.8-flash,
@@ -63,7 +71,7 @@ def _thinking_off_reasoning_effort(url: Optional[str] = None) -> Optional[str]:
     return "low"
 
 
-def _thinking_on_reasoning_effort() -> Optional[str]:
+def _thinking_on_reasoning_effort() -> str | None:
     """``reasoning_effort`` to send when thinking is on (``LLM_THINKING_ON_REASONING_EFFORT``; unset keeps the
     ``thinking_budget`` behaviour).
 
@@ -108,7 +116,7 @@ _BALANCE_ERROR_MARKERS = (
 )
 
 
-def _user_facing_http_error(status: Optional[int], detail: str) -> Optional[str]:
+def _user_facing_http_error(status: int | None, detail: str) -> str | None:
     """Map provider account/permission failures to an actionable message for end users.
 
     Returns None when the raw upstream detail should be kept. Full upstream
@@ -145,21 +153,11 @@ def _format_http_error(exc: "httpx.HTTPStatusError", *, body: str = "") -> str:
             if isinstance(obj, dict):
                 err = obj.get("error")
                 if isinstance(err, dict):
-                    detail = (
-                        err.get("message")
-                        or err.get("msg")
-                        or err.get("code")
-                        or raw
-                    )
+                    detail = err.get("message") or err.get("msg") or err.get("code") or raw
                 elif isinstance(err, str) and err.strip():
                     detail = err.strip()
                 else:
-                    detail = (
-                        obj.get("message")
-                        or obj.get("msg")
-                        or obj.get("detail")
-                        or raw
-                    )
+                    detail = obj.get("message") or obj.get("msg") or obj.get("detail") or raw
                 if isinstance(detail, (dict, list)):
                     detail = json.dumps(detail, ensure_ascii=False)
         except Exception:
@@ -203,11 +201,27 @@ async def _read_stream_error_body(response: "httpx.Response") -> str:
             return ""
 
 
-from .billing_keys import billing_key_for_purpose, normalize_billing_key
+from .billing_keys import billing_key_for_purpose, normalize_billing_key  # noqa: E402
 
-_usage_context: contextvars.ContextVar[Optional[Dict[str, Any]]] = contextvars.ContextVar(
+_usage_context: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
     "llm_usage_context", default=None
 )
+
+# OpenAI-compatible gateways only return token usage on streaming responses
+# when the request asks for it via ``stream_options.include_usage``. Some
+# gateways reject that field outright; remember them per-URL for the process
+# lifetime so the first rejection is also the last.
+_STREAM_OPTIONS_UNSUPPORTED_URLS: set = set()
+
+
+def _stream_include_usage_enabled() -> bool:
+    return os.environ.get("LLM_STREAM_INCLUDE_USAGE", "1").strip() != "0"
+
+
+def _stream_options_rejected(body: str | None) -> bool:
+    text = (body or "").lower()
+    return "stream_options" in text or "include_usage" in text
+
 
 # ---------------------------------------------------------------------------
 # Per-project LLM credentials (billing split step 4)
@@ -224,20 +238,20 @@ _usage_context: contextvars.ContextVar[Optional[Dict[str, Any]]] = contextvars.C
 # never logged beyond an identifying prefix.
 # ---------------------------------------------------------------------------
 
-_project_llm_creds: contextvars.ContextVar[Optional[Dict[str, Any]]] = contextvars.ContextVar(
+_project_llm_creds: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
     "llm_project_credentials", default=None
 )
-_SESSION_LLM_CRED_REGISTRY: Dict[str, Dict[str, Any]] = {}
+_SESSION_LLM_CRED_REGISTRY: dict[str, dict[str, Any]] = {}
 _PROJECT_CRED_REGISTRY_LIMIT = 512
 _PROJECT_CRED_TTL_SECONDS = 12 * 3600
 
 
 def register_project_llm_credentials(
     *,
-    session_id: Optional[str],
-    api_key: Optional[str],
-    base_url: Optional[str],
-    model: Optional[str] = None,
+    session_id: str | None,
+    api_key: str | None,
+    base_url: str | None,
+    model: str | None = None,
 ) -> bool:
     """Validate and activate a platform-delivered project LLM credential.
 
@@ -265,7 +279,8 @@ def register_project_llm_credentials(
     if sid:
         now = time.time()
         expired = [
-            k for k, v in _SESSION_LLM_CRED_REGISTRY.items()
+            k
+            for k, v in _SESSION_LLM_CRED_REGISTRY.items()
             if now - float(v.get("ts", 0.0)) > _PROJECT_CRED_TTL_SECONDS
         ]
         for k in expired:
@@ -283,7 +298,7 @@ def register_project_llm_credentials(
     return True
 
 
-def get_project_llm_credentials() -> Optional[Dict[str, Any]]:
+def get_project_llm_credentials() -> dict[str, Any] | None:
     """Resolve the active project credential: request task first, then the session registry."""
     creds = _project_llm_creds.get()
     if isinstance(creds, dict) and creds.get("api_key"):
@@ -301,20 +316,18 @@ def get_project_llm_credentials() -> Optional[Dict[str, Any]]:
 
 def set_usage_context(
     *,
-    session_id: Optional[str] = None,
-    plan_id: Optional[int] = None,
-    task_id: Optional[int] = None,
-    call_purpose: Optional[str] = None,
-    run_id: Optional[str] = None,
-    parent_run_id: Optional[str] = None,
-    phase: Optional[str] = None,
-    tool_name: Optional[str] = None,
-    billing_key: Optional[str] = None,
-    billing_lane: Optional[str] = None,
+    session_id: str | None = None,
+    plan_id: int | None = None,
+    task_id: int | None = None,
+    call_purpose: str | None = None,
+    run_id: str | None = None,
+    parent_run_id: str | None = None,
+    phase: str | None = None,
+    tool_name: str | None = None,
+    billing_key: str | None = None,
+    billing_lane: str | None = None,
 ) -> contextvars.Token:
-    resolved_billing_key = normalize_billing_key(
-        billing_key or billing_key_for_purpose(call_purpose, tool_name)
-    )
+    resolved_billing_key = normalize_billing_key(billing_key or billing_key_for_purpose(call_purpose, tool_name))
     ctx = {
         "session_id": session_id,
         "plan_id": plan_id,
@@ -342,13 +355,26 @@ def update_usage_context(**fields: Any) -> None:
     ctx = dict(ctx) if isinstance(ctx, dict) else {}
     attribution_changed = False
     for key, value in fields.items():
-        if key in {"session_id", "plan_id", "task_id", "call_purpose", "run_id", "parent_run_id", "phase", "tool_name", "billing_key"} and value is not None:
+        if (
+            key
+            in {
+                "session_id",
+                "plan_id",
+                "task_id",
+                "call_purpose",
+                "run_id",
+                "parent_run_id",
+                "phase",
+                "tool_name",
+                "billing_key",
+            }
+            and value is not None
+        ):
             ctx[key] = value
             attribution_changed = attribution_changed or key in {"call_purpose", "tool_name", "billing_key"}
     if attribution_changed:
         ctx["billing_key"] = normalize_billing_key(
-            fields.get("billing_key")
-            or billing_key_for_purpose(ctx.get("call_purpose"), ctx.get("tool_name"))
+            fields.get("billing_key") or billing_key_for_purpose(ctx.get("call_purpose"), ctx.get("tool_name"))
         )
     _usage_context.set(ctx)
 
@@ -357,7 +383,7 @@ def clear_usage_context(token: contextvars.Token) -> None:
     _usage_context.reset(token)
 
 
-def current_usage_context() -> Dict[str, Any]:
+def current_usage_context() -> dict[str, Any]:
     """Snapshot of the ambient usage context (empty dict when unset)."""
     ctx = _usage_context.get()
     return dict(ctx) if isinstance(ctx, dict) else {}
@@ -378,7 +404,7 @@ def usage_context_override(**fields: Any) -> Iterator[None]:
         _usage_context.set(prev)
 
 
-def resolve_parent_run_id(child_run_id: Optional[str] = None) -> Optional[str]:
+def resolve_parent_run_id(child_run_id: str | None = None) -> str | None:
     """Run id of the ambient usage context — the parent of a delegated run.
 
     A delegation records its own ``run_id`` (the child run).  This resolves the
@@ -421,7 +447,9 @@ def resolve_parent_run_id(child_run_id: Optional[str] = None) -> Optional[str]:
 # ``close_current_loop_async_client()`` before the loop is closed.
 # ---------------------------------------------------------------------------
 
-_shared_async_clients: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, httpx.AsyncClient]" = weakref.WeakKeyDictionary()
+_shared_async_clients: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, httpx.AsyncClient]" = (
+    weakref.WeakKeyDictionary()
+)
 _async_clients_lock = threading.RLock()
 
 # Registry of asyncio tasks currently blocked inside an outbound LLM call.
@@ -431,7 +459,7 @@ _inflight_llm_tasks: "weakref.WeakSet[asyncio.Task]" = weakref.WeakSet()
 _inflight_llm_lock = threading.RLock()
 
 
-def _register_inflight_task() -> "Optional[asyncio.Task]":
+def _register_inflight_task() -> "asyncio.Task | None":
     try:
         task = asyncio.current_task()
     except RuntimeError:
@@ -442,7 +470,7 @@ def _register_inflight_task() -> "Optional[asyncio.Task]":
     return task
 
 
-def _unregister_inflight_task(task: "Optional[asyncio.Task]") -> None:
+def _unregister_inflight_task(task: "asyncio.Task | None") -> None:
     if task is None:
         return
     with _inflight_llm_lock:
@@ -501,7 +529,9 @@ async def cancel_inflight_llm_calls(grace_sec: float = 5.0) -> int:
         )
     return len(tasks)
 
-_shared_sync_client: Optional[httpx.Client] = None
+
+_shared_sync_client: httpx.Client | None = None
+
 
 # Default pool limits — generous enough for multi-provider concurrent usage
 # while keeping resource consumption bounded.
@@ -521,6 +551,8 @@ def _sync_pool_limits() -> httpx.Limits:
         max_keepalive_connections=int(getattr(s, "llm_sync_pool_max_keepalive", 5)),
         keepalive_expiry=900.0,
     )
+
+
 # Default connect timeout (TCP + TLS); per-request read timeout is overridden
 # at call sites to match the configured ``self.timeout`` / ``self.stream_timeout``.
 _DEFAULT_CONNECT_TIMEOUT = 10.0
@@ -532,7 +564,7 @@ class _OutboundRateLimiter:
 
     def __init__(self, window_seconds: float = 60.0) -> None:
         self._lock = threading.Lock()
-        self._events: List[float] = []
+        self._events: list[float] = []
         self._window = window_seconds
 
     def _rpm(self) -> int:
@@ -573,7 +605,7 @@ class _OutboundRateLimiter:
 _outbound_limiter = _OutboundRateLimiter()
 
 
-def _make_request_timeout(overall: Optional[float]) -> Optional[httpx.Timeout]:
+def _make_request_timeout(overall: float | None) -> httpx.Timeout | None:
     """Build a per-request ``httpx.Timeout`` that respects the caller's budget.
 
     The connect phase timeout is capped at ``_DEFAULT_CONNECT_TIMEOUT`` (10 s) but
@@ -679,7 +711,7 @@ async def close_shared_clients() -> None:
         _shared_sync_client = None
 
 
-def _normalize_timeout(timeout: Optional[float], fallback: Optional[float]) -> Optional[float]:
+def _normalize_timeout(timeout: float | None, fallback: float | None) -> float | None:
     candidate = timeout
     if candidate is None:
         candidate = fallback
@@ -701,14 +733,22 @@ def _new_logical_call_id() -> str:
 def _record_attempt_context(
     logical_call_id: str,
     attempt_no: int,
-    upstream_request_id: Optional[str] = None,
-    usage: Optional[Dict[str, Any]] = None,
-    request_metadata: Optional[Dict[str, Any]] = None,
+    upstream_request_id: str | None = None,
+    usage: dict[str, Any] | None = None,
+    request_metadata: dict[str, Any] | None = None,
 ) -> None:
     """Attach attempt-level ledger fields to the current usage context."""
     from app.services.execution.llm_observation import emit
+
     details = {"request_metadata": request_metadata} if request_metadata is not None else {}
-    emit("attempt", logical_call_id=logical_call_id, attempt_no=attempt_no, usage=usage, upstream_request_id=upstream_request_id, **details)
+    emit(
+        "attempt",
+        logical_call_id=logical_call_id,
+        attempt_no=attempt_no,
+        usage=usage,
+        upstream_request_id=upstream_request_id,
+        **details,
+    )
     try:
         ctx = _usage_context.get()
         ctx = dict(ctx) if isinstance(ctx, dict) else {}
@@ -725,15 +765,27 @@ def _record_attempt_context(
         pass
 
 
-def _request_metadata(payload: Dict[str, Any]) -> Dict[str, Any]:
+def _request_metadata(payload: dict[str, Any]) -> dict[str, Any]:
     """Effective inference controls, without prompts, tools, headers or credentials."""
-    return {key: payload[key] for key in (
-        "model", "max_tokens", "max_completion_tokens", "enable_thinking", "thinking_budget",
-        "temperature", "top_p", "reasoning_effort", "stream", "tool_choice",
-    ) if key in payload}
+    return {
+        key: payload[key]
+        for key in (
+            "model",
+            "max_tokens",
+            "max_completion_tokens",
+            "enable_thinking",
+            "thinking_budget",
+            "temperature",
+            "top_p",
+            "reasoning_effort",
+            "stream",
+            "tool_choice",
+        )
+        if key in payload
+    }
 
 
-def _billing_request_headers(logical_call_id: str, attempt_no: int) -> Dict[str, str]:
+def _billing_request_headers(logical_call_id: str, attempt_no: int) -> dict[str, str]:
     """X-Agent-* attribution headers for one upstream attempt.
 
     Header names are env-configurable so sub2api can align naming without a
@@ -743,8 +795,7 @@ def _billing_request_headers(logical_call_id: str, attempt_no: int) -> Dict[str,
         return {}
     ctx = _usage_context.get() or {}
     billing_key = normalize_billing_key(
-        ctx.get("billing_key")
-        or billing_key_for_purpose(ctx.get("call_purpose"), ctx.get("tool_name"))
+        ctx.get("billing_key") or billing_key_for_purpose(ctx.get("call_purpose"), ctx.get("tool_name"))
     )
     key_header = os.getenv("LLM_BILLING_KEY_HEADER", "X-Agent-Tool-Key").strip()
     call_header = os.getenv("LLM_BILLING_CALL_ID_HEADER", "X-Agent-Call-ID").strip()
@@ -752,7 +803,7 @@ def _billing_request_headers(logical_call_id: str, attempt_no: int) -> Dict[str,
     user_header = os.getenv("LLM_BILLING_USER_HEADER", "X-Agent-User").strip()
     session_header = os.getenv("LLM_BILLING_SESSION_HEADER", "X-Agent-Session").strip()
     plan_header = os.getenv("LLM_BILLING_PLAN_HEADER", "X-Agent-Plan").strip()
-    headers: Dict[str, str] = {}
+    headers: dict[str, str] = {}
     if key_header:
         headers[key_header] = billing_key
     if call_header and logical_call_id:
@@ -768,7 +819,7 @@ def _billing_request_headers(logical_call_id: str, attempt_no: int) -> Dict[str,
     return headers
 
 
-def _cached_tokens_of(usage: Optional[Dict[str, Any]]) -> int:
+def _cached_tokens_of(usage: dict[str, Any] | None) -> int:
     """Extract prompt-cache hit tokens from an upstream usage dict (0 when absent)."""
     if not isinstance(usage, dict):
         return 0
@@ -787,12 +838,20 @@ def _log_usage(
     prompt_tokens: int,
     completion_tokens: int,
     total_tokens: int,
-    call_status: Optional[str] = None,
-    duration_ms: Optional[float] = None,
+    call_status: str | None = None,
+    duration_ms: float | None = None,
 ) -> None:
     try:
         from .repository.llm_usage import log_llm_usage
+
         ctx = _usage_context.get() or {}
+        # ``dict[str, Any]`` keeps the conditional kwargs unpack compatible
+        # with the typed scalar params of log_llm_usage (pyright), and the
+        # parent_run_id key stays absent when there is no parent run.
+        extra_usage: dict[str, Any] = {}
+        _parent = _usage_parent_run(ctx)
+        if _parent:
+            extra_usage["parent_run_id"] = _parent
         log_llm_usage(
             provider=provider,
             model=model,
@@ -804,14 +863,13 @@ def _log_usage(
             task_id=ctx.get("task_id"),
             call_purpose=ctx.get("call_purpose"),
             run_id=ctx.get("run_id"),
-            **({"parent_run_id":_usage_parent_run(ctx)} if _usage_parent_run(ctx) else {}),
+            **extra_usage,
             phase=ctx.get("phase") or "uncategorized",
             tool_name=ctx.get("tool_name"),
             call_status=call_status or "ok",
             duration_ms=duration_ms,
             billing_key=normalize_billing_key(
-                ctx.get("billing_key")
-                or billing_key_for_purpose(ctx.get("call_purpose"), ctx.get("tool_name"))
+                ctx.get("billing_key") or billing_key_for_purpose(ctx.get("call_purpose"), ctx.get("tool_name"))
             ),
             logical_call_id=ctx.get("logical_call_id"),
             attempt_no=ctx.get("attempt_no"),
@@ -831,9 +889,9 @@ def _log_call_metrics(
     status: str,
     latency_ms: float,
     attempts: int = 1,
-    usage: Optional[Dict[str, Any]] = None,
-    ttft_ms: Optional[float] = None,
-    error: Optional[str] = None,
+    usage: dict[str, Any] | None = None,
+    ttft_ms: float | None = None,
+    error: str | None = None,
 ) -> None:
     """Emit one structured latency/token line per LLM call; must never raise."""
     try:
@@ -870,9 +928,10 @@ def _log_call_metrics(
 @dataclass
 class NativeToolCall:
     """A single tool call returned by the model via native function calling."""
+
     id: str
     name: str
-    arguments: Dict[str, Any]
+    arguments: dict[str, Any]
     argument_status: str = "unknown"
     argument_chars: int = 0
     argument_sha256: str = ""
@@ -881,15 +940,16 @@ class NativeToolCall:
 @dataclass
 class NativeStreamResult:
     """Accumulated result from a streaming response with native tool calls."""
+
     content: str = ""
     reasoning_content: str = ""
-    tool_calls: List[NativeToolCall] = field(default_factory=list)
-    finish_reason: Optional[str] = None
-    usage: Optional[Dict[str, int]] = None
-    diagnostics: Dict[str, Any] = field(default_factory=dict)
+    tool_calls: list[NativeToolCall] = field(default_factory=list)
+    finish_reason: str | None = None
+    usage: dict[str, int] | None = None
+    diagnostics: dict[str, Any] = field(default_factory=dict)
 
 
-def _truthy(val: Optional[str]) -> bool:
+def _truthy(val: str | None) -> bool:
     return str(val).strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
@@ -906,20 +966,18 @@ class LLMClient(LLMProvider):
 
     def __init__(
         self,
-        provider: Optional[str] = None,
-        api_key: Optional[str] = None,
-        url: Optional[str] = None,
-        model: Optional[str] = None,
-        timeout: Optional[float] = None,
-        stream_timeout: Optional[float] = None,
-        retries: Optional[int] = None,
-        backoff_base: Optional[float] = None,
+        provider: str | None = None,
+        api_key: str | None = None,
+        url: str | None = None,
+        model: str | None = None,
+        timeout: float | None = None,
+        stream_timeout: float | None = None,
+        retries: int | None = None,
+        backoff_base: float | None = None,
     ) -> None:
         settings = get_settings()
 
-        requested_provider = (
-            provider or os.getenv("LLM_PROVIDER") or settings.llm_provider or "qwen"
-        )
+        requested_provider = provider or os.getenv("LLM_PROVIDER") or settings.llm_provider or "qwen"
         requested_provider = str(requested_provider).strip().lower()
         if is_production():
             profile = platform_profile()
@@ -954,7 +1012,12 @@ class LLMClient(LLMProvider):
             env_url = os.getenv("QWEN_API_URL")
             env_model = os.getenv("QWEN_MODEL")
             self.api_key = api_key or env_api_key or settings.qwen_api_key
-            self.url = url or env_url or settings.qwen_api_url or "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+            self.url = (
+                url
+                or env_url
+                or settings.qwen_api_url
+                or "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+            )
             selected_model = model or env_model or settings.qwen_model or "qwen3.8-flash"
             selected_model_str = str(selected_model).strip().lower()
             if selected_model_str and not selected_model_str.startswith("qwen"):
@@ -980,28 +1043,11 @@ class LLMClient(LLMProvider):
             settings_model = getattr(settings, "kimi_model", None)
             # Prefer explicit args > KIMI_* > settings.kimi_*; then fallback to QWEN_* if still missing
             self.api_key = (
-                api_key
-                or env_api_key
-                or settings_api_key
-                or qwen_api_key
-                or getattr(settings, "qwen_api_key", None)
+                api_key or env_api_key or settings_api_key or qwen_api_key or getattr(settings, "qwen_api_key", None)
             )
-            self.url = (
-                url
-                or env_url
-                or settings_api_url
-                or qwen_api_url
-                or getattr(settings, "qwen_api_url", None)
-            )
+            self.url = url or env_url or settings_api_url or qwen_api_url or getattr(settings, "qwen_api_url", None)
             # Default to user requested model name; allow override via env/args
-            self.model = (
-                model
-                or env_model
-                or settings_model
-                or qwen_kimi_model_new
-                or qwen_kimi_model
-                or "kimi-k2.5"
-            )
+            self.model = model or env_model or settings_model or qwen_kimi_model_new or qwen_kimi_model or "kimi-k2.5"
         elif provider_name == "mimo":
             env_api_key = os.getenv("MIMO_API_KEY")
             env_url = os.getenv("MIMO_API_URL")
@@ -1013,12 +1059,7 @@ class LLMClient(LLMProvider):
                 or getattr(settings, "mimo_api_url", None)
                 or "https://api.xiaomimimo.com/v1/chat/completions"
             )
-            self.model = (
-                model
-                or env_model
-                or getattr(settings, "mimo_model", None)
-                or "mimo-v2.5-pro-ultraspeed"
-            )
+            self.model = model or env_model or getattr(settings, "mimo_model", None) or "mimo-v2.5-pro-ultraspeed"
         elif provider_name == "openai":
             env_api_key = os.getenv("OPENAI_API_KEY") or os.getenv("OPENAI_API")
             env_url = os.getenv("OPENAI_URL")
@@ -1077,8 +1118,8 @@ class LLMClient(LLMProvider):
         self,
         prompt: str,
         force_real: bool = False,
-        model: Optional[str] = None,
-        messages: Optional[list] = None,
+        model: str | None = None,
+        messages: list | None = None,
         **kwargs: Any,
     ) -> str:
         if self.mock and not force_real:
@@ -1111,7 +1152,7 @@ class LLMClient(LLMProvider):
         timeout = _make_request_timeout(timeout_override)
 
         client = _get_shared_sync_client()
-        last_err: Optional[Exception] = None
+        last_err: Exception | None = None
         _t0 = time.perf_counter()
         logical_call_id = _new_logical_call_id()
         for attempt in range(request_retries + 1):
@@ -1121,14 +1162,15 @@ class LLMClient(LLMProvider):
                 attempt_headers.update(_billing_request_headers(logical_call_id, attempt + 1))
                 _record_attempt_context(logical_call_id, attempt + 1, request_metadata=_request_metadata(payload))
                 response = client.post(
-                    self._effective_url(), headers=attempt_headers, json=payload,
+                    self._effective_url(),
+                    headers=attempt_headers,
+                    json=payload,
                     timeout=timeout,
                 )
                 _record_attempt_context(
                     logical_call_id,
                     attempt + 1,
-                    upstream_request_id=response.headers.get("x-request-id")
-                    or response.headers.get("request-id"),
+                    upstream_request_id=response.headers.get("x-request-id") or response.headers.get("request-id"),
                 )
                 response.raise_for_status()
                 obj = response.json()
@@ -1153,9 +1195,13 @@ class LLMClient(LLMProvider):
                         )
                     content = text_completion(obj, logical_call_id=logical_call_id, attempt_no=attempt + 1)
                     _log_call_metrics(
-                        method="chat", provider=self.provider, model=model or self.model,
-                        status="ok", latency_ms=(time.perf_counter() - _t0) * 1000,
-                        attempts=attempt + 1, usage=usage,
+                        method="chat",
+                        provider=self.provider,
+                        model=model or self.model,
+                        status="ok",
+                        latency_ms=(time.perf_counter() - _t0) * 1000,
+                        attempts=attempt + 1,
+                        usage=usage,
                     )
                     _warn_if_answer_was_capped(
                         prompt=prompt,
@@ -1165,7 +1211,7 @@ class LLMClient(LLMProvider):
                         provider=self.provider,
                         model=model or self.model,
                     )
-                    return content
+                    return cast(str, content)
                 except (ObserverRejected, LLMResponseContentError):
                     raise
                 except Exception:
@@ -1188,9 +1234,13 @@ class LLMClient(LLMProvider):
                     _ra = None
                 _ra_suffix = f" (retry_after={_ra})" if _ra else ""
                 _log_call_metrics(
-                    method="chat", provider=self.provider, model=model or self.model,
-                    status="error", latency_ms=(time.perf_counter() - _t0) * 1000,
-                    attempts=attempt + 1, error=f"HTTPStatusError:{status_code}",
+                    method="chat",
+                    provider=self.provider,
+                    model=model or self.model,
+                    status="error",
+                    latency_ms=(time.perf_counter() - _t0) * 1000,
+                    attempts=attempt + 1,
+                    error=f"HTTPStatusError:{status_code}",
                 )
                 raise RuntimeError(_format_http_error(e, body=body) + _ra_suffix) from e
             except (ObserverRejected, LLMResponseContentError):
@@ -1203,18 +1253,25 @@ class LLMClient(LLMProvider):
                     last_err = e
                     continue
                 _log_call_metrics(
-                    method="chat", provider=self.provider, model=model or self.model,
-                    status="error", latency_ms=(time.perf_counter() - _t0) * 1000,
-                    attempts=attempt + 1, error=type(e).__name__,
+                    method="chat",
+                    provider=self.provider,
+                    model=model or self.model,
+                    status="error",
+                    latency_ms=(time.perf_counter() - _t0) * 1000,
+                    attempts=attempt + 1,
+                    error=type(e).__name__,
                 )
                 raise RuntimeError(f"LLM request failed: {e}")
+        if last_err is not None:
+            raise RuntimeError(f"LLM request failed: {last_err}")
+        raise RuntimeError("LLM request failed: retries exhausted")
 
     def stream_chat(
         self,
         prompt: str,
         force_real: bool = False,
-        model: Optional[str] = None,
-        messages: Optional[list] = None,
+        model: str | None = None,
+        messages: list | None = None,
         **kwargs: Any,
     ) -> Iterator[str]:
         """Synchronous streaming variant of :meth:`chat`: yields content deltas.
@@ -1270,10 +1327,10 @@ class LLMClient(LLMProvider):
         timeout = _make_request_timeout(timeout_override)
 
         client = _get_shared_sync_client()
-        last_err: Optional[Exception] = None
+        last_err: Exception | None = None
         _t0 = time.perf_counter()
         logical_call_id = _new_logical_call_id()
-        _last_usage: Optional[Dict[str, Any]] = None
+        _last_usage: dict[str, Any] | None = None
         _attempts = 0
         for attempt in range(request_retries + 1):
             _attempts = attempt + 1
@@ -1284,14 +1341,16 @@ class LLMClient(LLMProvider):
                 attempt_headers.update(_billing_request_headers(logical_call_id, attempt + 1))
                 _record_attempt_context(logical_call_id, attempt + 1, request_metadata=_request_metadata(payload))
                 with client.stream(
-                    "POST", self._effective_url(), headers=attempt_headers, json=payload,
+                    "POST",
+                    self._effective_url(),
+                    headers=attempt_headers,
+                    json=payload,
                     timeout=timeout,
                 ) as resp:
                     _record_attempt_context(
                         logical_call_id,
                         attempt + 1,
-                        upstream_request_id=resp.headers.get("x-request-id")
-                        or resp.headers.get("request-id"),
+                        upstream_request_id=resp.headers.get("x-request-id") or resp.headers.get("request-id"),
                     )
                     if resp.status_code >= 400:
                         # httpx streams must be read before .text is available;
@@ -1303,7 +1362,7 @@ class LLMClient(LLMProvider):
                             continue
                         if not line.startswith("data:"):
                             continue
-                        data = line[len("data:"):].strip()
+                        data = line[len("data:") :].strip()
                         if not data:
                             continue
                         if data == "[DONE]":
@@ -1319,8 +1378,7 @@ class LLMClient(LLMProvider):
                             _record_attempt_context(
                                 logical_call_id,
                                 attempt + 1,
-                                upstream_request_id=resp.headers.get("x-request-id")
-                                or resp.headers.get("request-id"),
+                                upstream_request_id=resp.headers.get("x-request-id") or resp.headers.get("request-id"),
                                 usage=usage,
                             )
 
@@ -1342,16 +1400,21 @@ class LLMClient(LLMProvider):
                             duration_ms=(time.perf_counter() - _t0) * 1000,
                         )
                     _log_call_metrics(
-                        method="stream_chat", provider=self.provider, model=model or self.model,
-                        status="ok", latency_ms=(time.perf_counter() - _t0) * 1000,
-                        attempts=attempt + 1, usage=_last_usage,
+                        method="stream_chat",
+                        provider=self.provider,
+                        model=model or self.model,
+                        status="ok",
+                        latency_ms=(time.perf_counter() - _t0) * 1000,
+                        attempts=attempt + 1,
+                        usage=_last_usage,
                     )
                     return
             except httpx.HTTPStatusError as e:
                 status_code = e.response.status_code if e.response is not None else None
                 if (
                     not emitted_any
-                    and isinstance(status_code, int) and 500 <= status_code < 600
+                    and isinstance(status_code, int)
+                    and 500 <= status_code < 600
                     and attempt < request_retries
                 ):
                     delay = max(0.0, self.backoff_base * (2**attempt) + random.uniform(0, self.backoff_base / 4.0))
@@ -1369,9 +1432,13 @@ class LLMClient(LLMProvider):
                     _ra = None
                 _ra_suffix = f" (retry_after={_ra})" if _ra else ""
                 _log_call_metrics(
-                    method="stream_chat", provider=self.provider, model=model or self.model,
-                    status="error", latency_ms=(time.perf_counter() - _t0) * 1000,
-                    attempts=attempt + 1, error=f"HTTPStatusError:{status_code}",
+                    method="stream_chat",
+                    provider=self.provider,
+                    model=model or self.model,
+                    status="error",
+                    latency_ms=(time.perf_counter() - _t0) * 1000,
+                    attempts=attempt + 1,
+                    error=f"HTTPStatusError:{status_code}",
                 )
                 raise RuntimeError(_format_http_error(e, body=body) + _ra_suffix) from e
             except ObserverRejected:
@@ -1384,9 +1451,13 @@ class LLMClient(LLMProvider):
                     last_err = e
                     continue
                 _log_call_metrics(
-                    method="stream_chat", provider=self.provider, model=model or self.model,
-                    status="error", latency_ms=(time.perf_counter() - _t0) * 1000,
-                    attempts=attempt + 1, error=type(e).__name__,
+                    method="stream_chat",
+                    provider=self.provider,
+                    model=model or self.model,
+                    status="error",
+                    latency_ms=(time.perf_counter() - _t0) * 1000,
+                    attempts=attempt + 1,
+                    error=type(e).__name__,
                 )
                 raise RuntimeError(f"LLM request failed: {e}")
         if last_err is not None:
@@ -1397,8 +1468,8 @@ class LLMClient(LLMProvider):
         self,
         prompt: str,
         force_real: bool = False,
-        model: Optional[str] = None,
-        messages: Optional[list] = None,
+        model: str | None = None,
+        messages: list | None = None,
         **kwargs: Any,
     ) -> str:
         if self.mock and not force_real:
@@ -1435,14 +1506,15 @@ class LLMClient(LLMProvider):
                 attempt_headers.update(_billing_request_headers(logical_call_id, attempt + 1))
                 _record_attempt_context(logical_call_id, attempt + 1, request_metadata=_request_metadata(payload))
                 response = await client.post(
-                    self._effective_url(), headers=attempt_headers, json=payload,
+                    self._effective_url(),
+                    headers=attempt_headers,
+                    json=payload,
                     timeout=timeout,
                 )
                 _record_attempt_context(
                     logical_call_id,
                     attempt + 1,
-                    upstream_request_id=response.headers.get("x-request-id")
-                    or response.headers.get("request-id"),
+                    upstream_request_id=response.headers.get("x-request-id") or response.headers.get("request-id"),
                 )
                 response.raise_for_status()
                 obj = response.json()
@@ -1467,9 +1539,13 @@ class LLMClient(LLMProvider):
                         )
                     content = text_completion(obj, logical_call_id=logical_call_id, attempt_no=attempt + 1)
                     _log_call_metrics(
-                        method="chat_async", provider=self.provider, model=model or self.model,
-                        status="ok", latency_ms=(time.perf_counter() - _t0) * 1000,
-                        attempts=attempt + 1, usage=usage,
+                        method="chat_async",
+                        provider=self.provider,
+                        model=model or self.model,
+                        status="ok",
+                        latency_ms=(time.perf_counter() - _t0) * 1000,
+                        attempts=attempt + 1,
+                        usage=usage,
                     )
                     _warn_if_answer_was_capped(
                         prompt=prompt,
@@ -1479,7 +1555,7 @@ class LLMClient(LLMProvider):
                         provider=self.provider,
                         model=model or self.model,
                     )
-                    return content
+                    return cast(str, content)
                 except (ObserverRejected, LLMResponseContentError):
                     raise
                 except Exception:
@@ -1501,9 +1577,13 @@ class LLMClient(LLMProvider):
                     _ra = None
                 _ra_suffix = f" (retry_after={_ra})" if _ra else ""
                 _log_call_metrics(
-                    method="chat_async", provider=self.provider, model=model or self.model,
-                    status="error", latency_ms=(time.perf_counter() - _t0) * 1000,
-                    attempts=attempt + 1, error=f"HTTPStatusError:{status_code}",
+                    method="chat_async",
+                    provider=self.provider,
+                    model=model or self.model,
+                    status="error",
+                    latency_ms=(time.perf_counter() - _t0) * 1000,
+                    attempts=attempt + 1,
+                    error=f"HTTPStatusError:{status_code}",
                 )
                 raise RuntimeError(_format_http_error(e, body=body) + _ra_suffix) from e
             except (ObserverRejected, LLMResponseContentError):
@@ -1514,23 +1594,28 @@ class LLMClient(LLMProvider):
                     await asyncio.sleep(delay)
                     continue
                 _log_call_metrics(
-                    method="chat_async", provider=self.provider, model=model or self.model,
-                    status="error", latency_ms=(time.perf_counter() - _t0) * 1000,
-                    attempts=attempt + 1, error=type(e).__name__,
+                    method="chat_async",
+                    provider=self.provider,
+                    model=model or self.model,
+                    status="error",
+                    latency_ms=(time.perf_counter() - _t0) * 1000,
+                    attempts=attempt + 1,
+                    error=type(e).__name__,
                 )
                 raise RuntimeError(f"LLM request failed: {e}")
+        raise RuntimeError("LLM request failed: retries exhausted")
 
     @_track_inflight_gen
     async def stream_chat_async(
         self,
         prompt: str,
         force_real: bool = False,
-        model: Optional[str] = None,
-        messages: Optional[list] = None,
-        enable_thinking: Optional[bool] = None,
-        thinking_budget: Optional[int] = None,
-        on_reasoning_delta: Optional[Callable[[str], Any]] = None,
-        max_tokens: Optional[int] = None,
+        model: str | None = None,
+        messages: list | None = None,
+        enable_thinking: bool | None = None,
+        thinking_budget: int | None = None,
+        on_reasoning_delta: Callable[[str], Any] | None = None,
+        max_tokens: int | None = None,
         **_: Any,
     ) -> AsyncIterator[str]:
         """Stream a chat completion, optionally with thinking enabled.
@@ -1554,8 +1639,11 @@ class LLMClient(LLMProvider):
 
         # ``max_tokens`` used to fall into ``**_`` and vanish (LOCAL_INFRA §109):
         # forced synthesis asked for 6000 and every call went out at LLM_MAX_TOKENS.
-        if max_tokens is not None and (isinstance(max_tokens,bool) or not isinstance(max_tokens,int) or max_tokens<1):raise ValueError("max_tokens must be a positive integer")
-        payload: Dict[str, Any] = {
+        if max_tokens is not None and (
+            isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens < 1
+        ):
+            raise ValueError("max_tokens must be a positive integer")
+        payload: dict[str, Any] = {
             "model": model or self._effective_model(),
             "messages": payload_messages,
             "stream": True,
@@ -1582,15 +1670,18 @@ class LLMClient(LLMProvider):
         timeout = _make_request_timeout(self.stream_timeout)
         client = _get_shared_async_client()
         _t0 = time.perf_counter()
-        _ttft_ms: Optional[float] = None
-        _last_usage: Optional[Dict[str, Any]] = None
+        _ttft_ms: float | None = None
+        _last_usage: dict[str, Any] | None = None
         _stream_status = "ok"
-        _stream_err: Optional[str] = None
+        _stream_err: str | None = None
         try:
             await _outbound_limiter.acquire_async()
             _record_attempt_context(logical_call_id, 1, request_metadata=_request_metadata(payload))
             async with client.stream(
-                "POST", self._effective_url(), headers=headers, json=payload,
+                "POST",
+                self._effective_url(),
+                headers=headers,
+                json=payload,
                 timeout=timeout,
             ) as resp:
                 _record_attempt_context(logical_call_id, 1, request_metadata=_request_metadata(payload))
@@ -1607,7 +1698,7 @@ class LLMClient(LLMProvider):
                         continue
                     if not line.startswith("data:"):
                         continue
-                    data = line[len("data:"):].strip()
+                    data = line[len("data:") :].strip()
                     if not data:
                         continue
                     if data == "[DONE]":
@@ -1660,23 +1751,28 @@ class LLMClient(LLMProvider):
             raise
         finally:
             _log_call_metrics(
-                method="stream_chat", provider=self.provider, model=model or self.model,
-                status=_stream_status, latency_ms=(time.perf_counter() - _t0) * 1000,
-                ttft_ms=_ttft_ms, usage=_last_usage, error=_stream_err,
+                method="stream_chat",
+                provider=self.provider,
+                model=model or self.model,
+                status=_stream_status,
+                latency_ms=(time.perf_counter() - _t0) * 1000,
+                ttft_ms=_ttft_ms,
+                usage=_last_usage,
+                error=_stream_err,
             )
 
     @_track_inflight
     async def stream_chat_with_tools_async(
         self,
         messages: list,
-        tools: List[Dict[str, Any]],
+        tools: list[dict[str, Any]],
         tool_choice: str = "auto",
-        model: Optional[str] = None,
-        on_content_delta: Optional[Callable[[str], Any]] = None,
-        on_reasoning_delta: Optional[Callable[[str], Any]] = None,
-        enable_thinking: Optional[bool] = None,
-        thinking_budget: Optional[int] = None,
-        max_tokens: Optional[int] = None,
+        model: str | None = None,
+        on_content_delta: Callable[[str], Any] | None = None,
+        on_reasoning_delta: Callable[[str], Any] | None = None,
+        enable_thinking: bool | None = None,
+        thinking_budget: int | None = None,
+        max_tokens: int | None = None,
     ) -> NativeStreamResult:
         """
         Stream a chat completion with native tool calling support.
@@ -1690,7 +1786,7 @@ class LLMClient(LLMProvider):
         reasoning content, **and** any tool calls the model decided to make.
         """
         max_retries = max(0, self.retries)
-        last_err: Optional[Exception] = None
+        last_err: Exception | None = None
         _t0 = time.perf_counter()
         for attempt in range(max_retries + 1):
             try:
@@ -1706,12 +1802,23 @@ class LLMClient(LLMProvider):
                     max_tokens=max_tokens,
                 )
                 from app.services.execution.llm_observation import emit
-                emit("native_result", provider=self.provider, model=model or self.model, finish_reason=result.finish_reason, usage=result.usage, arguments=[{"name":c.name,"arguments":c.arguments} for c in result.tool_calls])
+
+                emit(
+                    "native_result",
+                    provider=self.provider,
+                    model=model or self.model,
+                    finish_reason=result.finish_reason,
+                    usage=result.usage,
+                    arguments=[{"name": c.name, "arguments": c.arguments} for c in result.tool_calls],
+                )
                 _log_call_metrics(
-                    method="stream_chat_with_tools", provider=self.provider,
-                    model=model or self.model, status="ok",
+                    method="stream_chat_with_tools",
+                    provider=self.provider,
+                    model=model or self.model,
+                    status="ok",
                     latency_ms=(time.perf_counter() - _t0) * 1000,
-                    attempts=attempt + 1, usage=result.usage,
+                    attempts=attempt + 1,
+                    usage=result.usage,
                 )
                 return result
             except ObserverRejected:
@@ -1725,24 +1832,32 @@ class LLMClient(LLMProvider):
                     or isinstance(e, (httpx.ConnectError, httpx.RemoteProtocolError))
                 )
                 if is_transient and attempt < max_retries:
-                    delay = max(0.5, self.backoff_base * (2 ** attempt))
+                    delay = max(0.5, self.backoff_base * (2**attempt))
                     logger.warning(
                         "[LLM] stream_chat_with_tools transient error (attempt %d/%d): %s. Retrying in %.1fs",
-                        attempt + 1, max_retries + 1, e, delay,
+                        attempt + 1,
+                        max_retries + 1,
+                        e,
+                        delay,
                     )
                     await asyncio.sleep(delay)
                     last_err = e
                     continue
                 _log_call_metrics(
-                    method="stream_chat_with_tools", provider=self.provider,
-                    model=model or self.model, status="error",
+                    method="stream_chat_with_tools",
+                    provider=self.provider,
+                    model=model or self.model,
+                    status="error",
                     latency_ms=(time.perf_counter() - _t0) * 1000,
-                    attempts=attempt + 1, error=type(e).__name__,
+                    attempts=attempt + 1,
+                    error=type(e).__name__,
                 )
                 raise
         _log_call_metrics(
-            method="stream_chat_with_tools", provider=self.provider,
-            model=model or self.model, status="error",
+            method="stream_chat_with_tools",
+            provider=self.provider,
+            model=model or self.model,
+            status="error",
             latency_ms=(time.perf_counter() - _t0) * 1000,
             attempts=max_retries + 1,
             error=type(last_err).__name__ if last_err else "unknown",
@@ -1752,14 +1867,14 @@ class LLMClient(LLMProvider):
     async def _stream_chat_with_tools_inner(
         self,
         messages: list,
-        tools: Optional[List[Dict[str, Any]]],
+        tools: list[dict[str, Any]] | None,
         tool_choice: str = "auto",
-        model: Optional[str] = None,
-        on_content_delta: Optional[Callable[[str], Any]] = None,
-        on_reasoning_delta: Optional[Callable[[str], Any]] = None,
-        enable_thinking: Optional[bool] = None,
-        thinking_budget: Optional[int] = None,
-        max_tokens: Optional[int] = None,
+        model: str | None = None,
+        on_content_delta: Callable[[str], Any] | None = None,
+        on_reasoning_delta: Callable[[str], Any] | None = None,
+        enable_thinking: bool | None = None,
+        thinking_budget: int | None = None,
+        max_tokens: int | None = None,
     ) -> NativeStreamResult:
         if self.mock:
             mock_content = "This is a mock completion."
@@ -1777,11 +1892,14 @@ class LLMClient(LLMProvider):
                 finish_reason="stop",
             )
 
-        if max_tokens is not None and (isinstance(max_tokens,bool) or not isinstance(max_tokens,int) or max_tokens<1):raise ValueError("max_tokens must be a positive integer")
+        if max_tokens is not None and (
+            isinstance(max_tokens, bool) or not isinstance(max_tokens, int) or max_tokens < 1
+        ):
+            raise ValueError("max_tokens must be a positive integer")
         if not self._effective_api_key():
             raise RuntimeError(f"{self.provider.upper()}_API_KEY is not set")
 
-        payload: Dict[str, Any] = {
+        payload: dict[str, Any] = {
             "model": model or self._effective_model(),
             "messages": messages,
             "stream": True,
@@ -1813,92 +1931,114 @@ class LLMClient(LLMProvider):
         logical_call_id = _new_logical_call_id()
         headers.update(_billing_request_headers(logical_call_id, 1))
 
-        result = NativeStreamResult(diagnostics={"requested_max_tokens":payload["max_tokens"],"done_seen":False})
+        effective_url = self._effective_url()
+        use_stream_options = _stream_include_usage_enabled() and effective_url not in _STREAM_OPTIONS_UNSUPPORTED_URLS
+        if use_stream_options:
+            payload["stream_options"] = {"include_usage": True}
+
+        result = NativeStreamResult(diagnostics={"requested_max_tokens": payload["max_tokens"], "done_seen": False})
         # Accumulator for streamed tool_calls keyed by index
-        tc_accum: Dict[int, Dict[str, str]] = {}
+        tc_accum: dict[int, dict[str, str]] = {}
 
         timeout = _make_request_timeout(self.stream_timeout)
         client = _get_shared_async_client()
-        await _outbound_limiter.acquire_async()
-        _record_attempt_context(logical_call_id, 1, request_metadata=_request_metadata(payload))
-        async with client.stream("POST", self._effective_url(), headers=headers, json=payload,
-                                 timeout=timeout) as resp:
-            if resp.status_code >= 400:
-                body = await _read_stream_error_body(resp)
-                try:
-                    resp.raise_for_status()
-                except httpx.HTTPStatusError as e:
-                    _ra = resp.headers.get("retry-after")
-                    _ra_suffix = f" (retry_after={_ra})" if _ra else ""
-                    raise RuntimeError(_format_http_error(e, body=body) + _ra_suffix) from e
-            async for line in resp.aiter_lines():
-                if not line or not line.startswith("data:"):
-                    continue
-                data = line[len("data:"):].strip()
-                if data=="[DONE]":
-                    result.diagnostics["done_seen"]=True
-                    continue
-                if not data:continue
-                try:
-                    obj = json.loads(data)
-                except json.JSONDecodeError:
-                    continue
-
-                # Extract usage from last chunk
-                usage = obj.get("usage")
-                if isinstance(usage, dict):
-                    result.usage = usage
-                    _record_attempt_context(logical_call_id, 1, usage=usage)
-                    _log_usage(
-                        provider=self.provider,
-                        model=model or self.model,
-                        prompt_tokens=usage.get("prompt_tokens", 0),
-                        completion_tokens=usage.get("completion_tokens", 0),
-                        total_tokens=usage.get("total_tokens", 0),
-                        call_status="ok",
-                    )
-
-                choices = obj.get("choices")
-                if not isinstance(choices, list) or not choices:
-                    continue
-                choice = choices[0]
-                if not isinstance(choice, dict):
-                    continue
-
-                fr = choice.get("finish_reason")
-                if isinstance(fr, str):
-                    result.finish_reason = fr
-
-                delta = choice.get("delta")
-                if not isinstance(delta, dict):
-                    continue
-
-                # Reasoning content delta (thinking tokens from enable_thinking)
-                reasoning = delta.get("reasoning_content")
-                if isinstance(reasoning, str) and reasoning:
-                    result.reasoning_content += reasoning
-                    if on_reasoning_delta is not None:
+        for _stream_attempt in range(2):
+            await _outbound_limiter.acquire_async()
+            _record_attempt_context(logical_call_id, 1, request_metadata=_request_metadata(payload))
+            retry_without_stream_options = False
+            async with client.stream("POST", effective_url, headers=headers, json=payload, timeout=timeout) as resp:
+                if resp.status_code >= 400:
+                    body = await _read_stream_error_body(resp)
+                    if use_stream_options and resp.status_code == 400 and _stream_options_rejected(body):
+                        # Gateway does not understand stream_options: remember
+                        # it and re-issue the same request without the field.
+                        _STREAM_OPTIONS_UNSUPPORTED_URLS.add(effective_url)
+                        payload.pop("stream_options", None)
+                        logger.warning(
+                            "[LLM] gateway rejected stream_options.include_usage; "
+                            "retrying without it and disabling it for %s",
+                            effective_url,
+                        )
+                        retry_without_stream_options = True
+                    else:
                         try:
-                            ret = on_reasoning_delta(reasoning)
-                            if asyncio.iscoroutine(ret):
-                                await ret
-                        except Exception:
-                            pass
+                            resp.raise_for_status()
+                        except httpx.HTTPStatusError as e:
+                            _ra = resp.headers.get("retry-after")
+                            _ra_suffix = f" (retry_after={_ra})" if _ra else ""
+                            raise RuntimeError(_format_http_error(e, body=body) + _ra_suffix) from e
+                if retry_without_stream_options:
+                    continue
+                async for line in resp.aiter_lines():
+                    if not line or not line.startswith("data:"):
+                        continue
+                    data = line[len("data:") :].strip()
+                    if data == "[DONE]":
+                        result.diagnostics["done_seen"] = True
+                        continue
+                    if not data:
+                        continue
+                    try:
+                        obj = json.loads(data)
+                    except json.JSONDecodeError:
+                        continue
 
-                # Content delta
-                content = delta.get("content")
-                if isinstance(content, str) and content:
-                    result.content += content
-                    if on_content_delta is not None:
-                        try:
-                            ret = on_content_delta(content)
-                            if asyncio.iscoroutine(ret):
-                                await ret
-                        except Exception:
-                            pass
+                    # Extract usage from last chunk
+                    usage = obj.get("usage")
+                    if isinstance(usage, dict):
+                        result.usage = usage
+                        _record_attempt_context(logical_call_id, 1, usage=usage)
+                        _log_usage(
+                            provider=self.provider,
+                            model=model or self.model,
+                            prompt_tokens=usage.get("prompt_tokens", 0),
+                            completion_tokens=usage.get("completion_tokens", 0),
+                            total_tokens=usage.get("total_tokens", 0),
+                            call_status="ok",
+                        )
 
-                # Tool call deltas
-                _accumulate_native_tool_call_deltas(tc_accum, delta.get("tool_calls"))
+                    choices = obj.get("choices")
+                    if not isinstance(choices, list) or not choices:
+                        continue
+                    choice = choices[0]
+                    if not isinstance(choice, dict):
+                        continue
+
+                    fr = choice.get("finish_reason")
+                    if isinstance(fr, str):
+                        result.finish_reason = fr
+
+                    delta = choice.get("delta")
+                    if not isinstance(delta, dict):
+                        continue
+
+                    # Reasoning content delta (thinking tokens from enable_thinking)
+                    reasoning = delta.get("reasoning_content")
+                    if isinstance(reasoning, str) and reasoning:
+                        result.reasoning_content += reasoning
+                        if on_reasoning_delta is not None:
+                            try:
+                                ret = on_reasoning_delta(reasoning)
+                                if asyncio.iscoroutine(ret):
+                                    await ret
+                            except Exception:
+                                pass
+
+                    # Content delta
+                    content = delta.get("content")
+                    if isinstance(content, str) and content:
+                        result.content += content
+                        if on_content_delta is not None:
+                            try:
+                                ret = on_content_delta(content)
+                                if asyncio.iscoroutine(ret):
+                                    await ret
+                            except Exception:
+                                pass
+
+                    # Tool call deltas
+                    _accumulate_native_tool_call_deltas(tc_accum, delta.get("tool_calls"))
+            break
 
         # Parse accumulated tool calls
         result.tool_calls.extend(_parse_native_tool_calls(tc_accum))
@@ -1907,10 +2047,23 @@ class LLMClient(LLMProvider):
         # leaves a named call nobody can answer. Re-ask once, non-streaming, and
         # take that answer only when it actually carries arguments.
         if _nonstream_toolcall_repair_enabled() and _tool_calls_lost_their_arguments(
-            [c for c in result.tool_calls if not __import__("app.services.deep_think.native_validation",fromlist=["enabled"]).enabled() or next((s.get("function",{}).get("parameters",{}).get("required",[]) for s in (tools or []) if s.get("function",{}).get("name")==c.name),[])]
+            [
+                c
+                for c in result.tool_calls
+                if not __import__("app.services.deep_think.native_validation", fromlist=["enabled"]).enabled()
+                or next(
+                    (
+                        s.get("function", {}).get("parameters", {}).get("required", [])
+                        for s in (tools or [])
+                        if s.get("function", {}).get("name") == c.name
+                    ),
+                    [],
+                )
+            ]
         ):
             repaired = await self._repair_tool_calls_nonstream(
-                payload, logical_call_id,
+                payload,
+                logical_call_id,
             )
             if repaired:
                 logger.warning(
@@ -1920,19 +2073,21 @@ class LLMClient(LLMProvider):
                     [tc.name for tc in repaired],
                 )
                 result.tool_calls = repaired
-                replacement=getattr(repaired,"response",None)
+                replacement = getattr(repaired, "response", None)
                 if replacement:
-                    result.diagnostics["original_usage"]=result.usage
-                    result.diagnostics["repair_complete"]=True
-                    result.content=replacement["content"];result.finish_reason=replacement["finish_reason"];result.usage=replacement["usage"]
+                    result.diagnostics["original_usage"] = result.usage
+                    result.diagnostics["repair_complete"] = True
+                    result.content = replacement["content"]
+                    result.finish_reason = replacement["finish_reason"]
+                    result.usage = replacement["usage"]
 
         return result
 
     async def _repair_tool_calls_nonstream(
         self,
-        payload: Dict[str, Any],
+        payload: dict[str, Any],
         logical_call_id: str,
-    ) -> List["NativeToolCall"]:
+    ) -> list["NativeToolCall"]:
         """Re-issue *payload* without ``stream`` and return its tool calls.
 
         Returns an empty list on any failure or when the re-ask is just as
@@ -1941,7 +2096,7 @@ class LLMClient(LLMProvider):
         a second attempt at one logical call, and the usage ledger already has
         the column for that.
         """
-        body = {k: v for k, v in payload.items() if k != "stream"}
+        body = {k: v for k, v in payload.items() if k not in {"stream", "stream_options"}}
         body["stream"] = False
         headers = self._build_headers()
         headers.update(_billing_request_headers(logical_call_id, 2))
@@ -1951,7 +2106,10 @@ class LLMClient(LLMProvider):
             await _outbound_limiter.acquire_async()
             _record_attempt_context(logical_call_id, 2, request_metadata=_request_metadata(body))
             resp = await client.post(
-                self._effective_url(), headers=headers, json=body, timeout=timeout,
+                self._effective_url(),
+                headers=headers,
+                json=body,
+                timeout=timeout,
             )
             if resp.status_code >= 400:
                 text = resp.text
@@ -1980,18 +2138,22 @@ class LLMClient(LLMProvider):
                 call_status="ok",
             )
         choices = data.get("choices")
-        message = None
+        first_choice: dict[str, Any] = {}
         if isinstance(choices, list) and choices and isinstance(choices[0], dict):
-            message = choices[0].get("message")
-        calls = _parse_message_tool_calls(
-            message.get("tool_calls") if isinstance(message, dict) else None
-        )
+            first_choice = choices[0]
+        message_raw = first_choice.get("message")
+        message: dict[str, Any] = message_raw if isinstance(message_raw, dict) else {}
+        calls = _parse_message_tool_calls(message.get("tool_calls"))
         if not calls or _tool_calls_lost_their_arguments(calls):
             return []
         from app.services.deep_think.native_validation import ToolCallRepair
-        return ToolCallRepair(calls,{"content":message.get("content") or "","finish_reason":choices[0].get("finish_reason"),"usage":usage})
 
-    def _extract_stream_delta(self, payload: Dict[str, Any]) -> Optional[str]:
+        return ToolCallRepair(
+            calls,
+            {"content": message.get("content") or "", "finish_reason": first_choice.get("finish_reason"), "usage": usage},
+        )
+
+    def _extract_stream_delta(self, payload: dict[str, Any]) -> str | None:
         choices = payload.get("choices")
         if isinstance(choices, list) and choices:
             choice = choices[0] if isinstance(choices[0], dict) else None
@@ -2015,13 +2177,13 @@ class LLMClient(LLMProvider):
         creds = get_project_llm_credentials()
         if creds and creds.get("api_key"):
             return str(creds["api_key"])
-        return self.api_key
+        return str(self.api_key or "")
 
     def _effective_url(self) -> str:
         creds = get_project_llm_credentials()
         if creds and creds.get("chat_url"):
             return str(creds["chat_url"])
-        return self.url
+        return str(self.url or "")
 
     def _effective_model(self) -> str:
         creds = get_project_llm_credentials()
@@ -2029,7 +2191,7 @@ class LLMClient(LLMProvider):
             return str(creds["model"])
         return self.model
 
-    def _build_headers(self) -> Dict[str, str]:
+    def _build_headers(self) -> dict[str, str]:
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self._effective_api_key()}",
@@ -2052,7 +2214,7 @@ class LLMClient(LLMProvider):
         except Exception:
             return False
 
-    def config(self) -> Dict[str, Any]:
+    def config(self) -> dict[str, Any]:
         return {
             "url": self.url,
             "model": self.model,
@@ -2061,7 +2223,7 @@ class LLMClient(LLMProvider):
         }
 
 
-def _accumulate_native_tool_call_deltas(tc_accum: Dict[Any, Dict[str, str]], tcs: Any) -> None:
+def _accumulate_native_tool_call_deltas(tc_accum: dict[Any, dict[str, str]], tcs: Any) -> None:
     """Merge one streaming ``tool_calls`` delta batch into *tc_accum*.
 
     Argument fragments arrive as JSON *strings* on every provider seen so far,
@@ -2095,9 +2257,9 @@ def _accumulate_native_tool_call_deltas(tc_accum: Dict[Any, Dict[str, str]], tcs
                 tc_accum[idx]["arguments"] += json.dumps(fn_args, ensure_ascii=False)
 
 
-def _parse_native_tool_calls(tc_accum: Dict[Any, Dict[str, str]]) -> List["NativeToolCall"]:
+def _parse_native_tool_calls(tc_accum: dict[Any, dict[str, str]]) -> list["NativeToolCall"]:
     """Turn the accumulator into tool calls, keeping argument loss visible."""
-    parsed: List[NativeToolCall] = []
+    parsed: list[NativeToolCall] = []
     for idx in sorted(tc_accum.keys()):
         raw = tc_accum[idx]
         try:
@@ -2118,7 +2280,7 @@ def _parse_native_tool_calls(tc_accum: Dict[Any, Dict[str, str]]) -> List["Nativ
     return parsed
 
 
-def _tool_calls_lost_their_arguments(tool_calls: List["NativeToolCall"]) -> bool:
+def _tool_calls_lost_their_arguments(tool_calls: list["NativeToolCall"]) -> bool:
     """True when the stream named a tool but handed it no arguments.
 
     Measured 2026-09-26 against sub2api -> ``qwen3.8-flash``: a streamed
@@ -2136,14 +2298,14 @@ def _nonstream_toolcall_repair_enabled() -> bool:
     return _truthy(os.getenv("LLM_NONSTREAM_TOOLCALL_REPAIR", "1"))
 
 
-def _parse_message_tool_calls(raw_calls: Any) -> List["NativeToolCall"]:
+def _parse_message_tool_calls(raw_calls: Any) -> list["NativeToolCall"]:
     """Parse a **non-streaming** ``message.tool_calls`` payload.
 
     Unlike the streaming accumulator this arrives whole, with ``arguments`` as a
     JSON string (some upstreams hand it over already parsed, so both shapes are
     accepted — the same lesson as ``_accumulate_native_tool_call_deltas``).
     """
-    parsed: List[NativeToolCall] = []
+    parsed: list[NativeToolCall] = []
     if not isinstance(raw_calls, list):
         return parsed
     for raw in raw_calls:
@@ -2155,7 +2317,7 @@ def _parse_message_tool_calls(raw_calls: Any) -> List["NativeToolCall"]:
         if not name:
             continue
         raw_args = fn.get("arguments")
-        arguments: Dict[str, Any]
+        arguments: dict[str, Any]
         if isinstance(raw_args, dict):
             arguments = raw_args
         elif isinstance(raw_args, str) and raw_args.strip():
@@ -2180,8 +2342,8 @@ def _parse_message_tool_calls(raw_calls: Any) -> List["NativeToolCall"]:
 def _warn_if_answer_was_capped(
     *,
     prompt: str,
-    messages: Optional[list],
-    payload: Dict[str, Any],
+    messages: list | None,
+    payload: dict[str, Any],
     obj: Any,
     provider: str,
     model: str,
@@ -2239,7 +2401,7 @@ def _warn_if_answer_was_capped(
         pass
 
 
-_default_client: Optional[LLMClient] = None
+_default_client: LLMClient | None = None
 
 # Wall-clock bound for one synchronous streaming collection. Generous on
 # purpose (a long report is legitimately slow) but finite: an upstream that
@@ -2251,7 +2413,7 @@ def stream_chat_collect(
     client: Any,
     prompt: str,
     *,
-    total_timeout: Optional[float] = _STREAM_COLLECT_DEFAULT_TIMEOUT_SEC,
+    total_timeout: float | None = _STREAM_COLLECT_DEFAULT_TIMEOUT_SEC,
     **kwargs: Any,
 ) -> str:
     """Collect a complete chat response through the client's streaming API.
@@ -2277,18 +2439,13 @@ def stream_chat_collect(
     if callable(stream_fn):
         for attempt_kwargs in (kwargs, {}):
             try:
-                chunks: List[str] = []
+                chunks: list[str] = []
                 started = time.perf_counter()
-                for chunk in stream_fn(prompt, **attempt_kwargs):
+                for chunk in cast(Iterator[Any], stream_fn(prompt, **attempt_kwargs)):
                     if chunk:
                         chunks.append(str(chunk))
-                    if (
-                        total_timeout is not None
-                        and (time.perf_counter() - started) > total_timeout
-                    ):
-                        raise TimeoutError(
-                            f"streamed chat exceeded {total_timeout:.0f}s"
-                        )
+                    if total_timeout is not None and (time.perf_counter() - started) > total_timeout:
+                        raise TimeoutError(f"streamed chat exceeded {total_timeout:.0f}s")
                 text = "".join(chunks)
             except TypeError:
                 # Implementation that does not accept these kwargs.
@@ -2303,9 +2460,9 @@ def stream_chat_collect(
     if not callable(chat_fn):
         raise RuntimeError("LLM client supports neither stream_chat nor chat")
     try:
-        return chat_fn(prompt, **kwargs)
+        return cast(str, chat_fn(prompt, **kwargs))
     except TypeError:
-        return chat_fn(prompt)
+        return cast(str, chat_fn(prompt))
 
 
 async def stream_chat_collect_async(client: Any, prompt: str, **kwargs: Any) -> str:
@@ -2318,14 +2475,14 @@ async def stream_chat_collect_async(client: Any, prompt: str, **kwargs: Any) -> 
     """
     stream_fn = getattr(client, "stream_chat_async", None)
     if callable(stream_fn):
-        chunks: List[str] = []
-        async for chunk in stream_fn(prompt, **kwargs):
+        chunks: list[str] = []
+        async for chunk in cast(AsyncIterator[Any], stream_fn(prompt, **kwargs)):
             if chunk:
                 chunks.append(str(chunk))
         return "".join(chunks)
     chat_async_fn = getattr(client, "chat_async", None)
     if callable(chat_async_fn):
-        return await chat_async_fn(prompt, **kwargs)
+        return await cast(Awaitable[str], chat_async_fn(prompt, **kwargs))
     # to_thread copies the current contextvars (usage attribution) into the
     # worker thread; run_in_executor would drop them (the no-session leak).
     return await asyncio.to_thread(client.chat, prompt, **kwargs)
@@ -2355,9 +2512,10 @@ def _usage_parent_run(ctx):
     # Background auxiliary calls run after the source claim has been released.
     # Their explicitly bound source remains the parent; do not infer it from
     # whichever unrelated chat claim happens to be active in the caller.
-    parent = ctx.get('parent_run_id')
+    parent = ctx.get("parent_run_id")
     if parent is not None:
-        return parent if parent != ctx.get('run_id') else None
+        return parent if parent != ctx.get("run_id") else None
     from app.services.chat_run_state import chat_run_claim
-    claim=chat_run_claim.get()
-    return claim[0] if claim and claim[0]!=ctx.get('run_id') else None
+
+    claim = chat_run_claim.get()
+    return claim[0] if claim and claim[0] != ctx.get("run_id") else None

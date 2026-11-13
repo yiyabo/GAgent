@@ -1646,13 +1646,23 @@ def append_recent_tool_result(
             "error": sanitized.get("error"),
         }
         # Preserve some commonly used small fields.
-        for key in ["file_path", "file_name", "total", "count", "status"]:
+        for key in ["file_path", "file_name", "total", "count", "status", "operation", "output_directory"]:
             if key in sanitized and sanitized[key] is not None:
                 val = sanitized[key]
-                if isinstance(val, str) and len(val) < 200:
+                if (isinstance(val, str) and len(val) < 400) or isinstance(val, (int, float, bool)):
                     compressed_result[key] = val
-                elif isinstance(val, (int, float, bool)):
-                    compressed_result[key] = val
+        # PhageScope cohort/materialize receipts must survive compaction: these
+        # are the fields the model cites in its next step (Phase 1).
+        for key in ("groups", "produced_files", "missing", "truncated_items", "diagnostics"):
+            value = sanitized.get(key)
+            if isinstance(value, list) and value:
+                compressed_result[key] = value[:20]
+        materialized_counts = sanitized.get("materialized_counts")
+        if isinstance(materialized_counts, dict):
+            compressed_result["materialized_counts"] = materialized_counts
+        facets = sanitized.get("facets")
+        if isinstance(facets, dict):
+            compressed_result["facets"] = truncate_large_fields(facets, max_field_length=500)
         for key in ("artifact_paths", "artifact_gallery"):
             value = sanitized.get(key)
             if isinstance(value, list) and value:

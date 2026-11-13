@@ -585,6 +585,13 @@ def _build_shared_strategy_block(agent: "DeepThinkAgent") -> str:
         "- For web_search: cite verifiable sources. When stating time-sensitive or factual claims, include URLs from the tool JSON "
         "`results` list (title/url) in your final answer. If `results` is empty and the tool response has no URLs, say sources were "
         "not returned and avoid presenting specific claims as independently verified.\n"
+        "- VERIFIED EXECUTION LEDGER: history messages may end with a bracketed "
+        "`[Verified Execution Ledger ...]` block rebuilt from the run database. Every tool call and "
+        "artifact listed there is a system-recorded fact about earlier turns: never deny that those "
+        "executions happened (e.g. do not claim 'no tool was executed' when a ledger lists calls), "
+        "never contradict their recorded outcomes, and never invent executions that no ledger or "
+        "current-run step records. When the user asks what was done in earlier turns, answer from "
+        "the ledger and the current run's tool results.\n"
     ) + agent._build_compliance_policy_block()
 
 

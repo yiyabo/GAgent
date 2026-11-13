@@ -199,6 +199,53 @@ async def phagescope_data_handler(
                 out["saved_rows"] = len(rows)
             return out
 
+        if op == "cohort_report":
+            filters = _extract_phage_filters(kwargs)
+            sample_limit = min(max(_int_arg(kwargs.get("sample_size"), 5), 1), 20)
+            resp = await client.call_service(
+                "v2/phages/cohort_report/",
+                method="POST",
+                body={
+                    "filters": filters,
+                    "sample_limit": sample_limit,
+                    "sort_by": kwargs.get("sort_by") or "id",
+                },
+                timeout=timeout,
+            )
+            out: dict[str, Any] = {
+                "success": True,
+                "tool": "phagescope_data",
+                "operation": "cohort_report",
+                "filters": filters,
+                **resp,
+            }
+            if kwargs.get("save_tsv"):
+                # Persist the full cohort table next to the report so the model
+                # never has to re-page through results just to export them.
+                export = await client.call_service(
+                    "v2/phages/query/",
+                    method="POST",
+                    body={
+                        "filters": filters,
+                        "page": 1,
+                        "pagesize": min(max(_int_arg(kwargs.get("max_items"), 2000), 1), 2000),
+                        "export_mode": True,
+                        "include_total": False,
+                        "include_host_ranks": True,
+                        "sort_by": kwargs.get("sort_by") or "id",
+                    },
+                    timeout=timeout,
+                )
+                raw_rows = export.get("results")
+                rows = list(raw_rows) if isinstance(raw_rows, list) else []
+                if rows:
+                    bdir = resolve_bundle_dir(tool_context, kwargs.get("output_subdir"))
+                    tsv_path = write_phages_tsv(rows, bdir / "phages_cohort.tsv")
+                    saved = {"phages_cohort.tsv": str(tsv_path)}
+                    out = attach_artifacts(out, bdir, saved, tool_context)
+                    out["saved_rows"] = len(rows)
+            return out
+
         if op == "aggregate":
             group_by = str(kwargs.get("group_by") or "").strip()
             if not group_by:

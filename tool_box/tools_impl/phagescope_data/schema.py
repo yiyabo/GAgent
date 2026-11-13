@@ -10,6 +10,7 @@ OPERATIONS = (
     "search_phages",
     "get_phage",
     "aggregate",
+    "cohort_report",
     "search_proteins",
     "family_members",
     "features",
@@ -19,26 +20,23 @@ OPERATIONS = (
 
 DESCRIPTION = (
     "PREFERRED read-only PhageScope V2 catalog query, aggregation, and untruncated sequence/annotation/structure "
-    "materializer (2,576,926 phages across 27 datasets, 131.5M proteins, 12.61M protein families, 4,723 host species, "
-    "7 functional feature tracks, and ESMFold/AFDB structures). "
+    "materializer (2.58M phages / 27 datasets, 131.5M proteins, 12.61M protein families, 7 feature tracks, ESMFold structures). "
     "Operations: "
-    "(1) overview / datasets — catalog totals, dataset names, and live DB/mount status; "
-    "(2) search_phages — filter by accession/accessions, dataset/datasets, completeness, lifestyle, taxonomy, "
-    "host or structured host_rank+host_name (Phylum..Species), cluster, subcluster, is_rep, length_min/max, gc_min/max "
-    "(pass save_tsv=true to export up to 2,000 matching rows to results/phagescope/ as TSV); "
-    "(3) get_phage — full metadata, 6-rank host lineage, lifestyle, and protein_count for one phage_id or accession; "
-    "(4) aggregate — fast SQL GROUP BY distribution (dataset, completeness, lifestyle, host_genus, host_species, "
-    "host_family, host_phylum, taxonomy, cluster) over any filtered phage cohort; "
-    "(5) search_proteins — search proteins on a phage (phage_id/accession + product_query/function_class), fetch "
-    "protein_ids in batch, or search the 12.6M protein families (family_query, dominant_class, min_members, min_datasets); "
-    "(6) family_members — inspect members of a protein family_id (optional subfamily_id, dataset, include_sequence); "
-    "(7) features — query trna, crispr, anticrispr, terminator, virulence (VFDB), amr (CARD), or transmembrane (TMHMM) "
-    "by phage_id/accession or cross-dataset keyword; "
-    "(8) structures — check 3D structure availability/pLDDT for up to 50 protein_ids (set materialize_pdb=true to copy .pdb files); "
-    "(9) materialize — export UNTRUNCATED full-length genomes (.fasta), proteins (.faa across all 27 datasets), "
-    "annotations (.gff3), cohort metadata (.tsv), or 3D structures (.pdb) directly into the session workspace "
-    "(results/phagescope/<output_subdir>/) ready for bio_tools (CheckV, geNomad, PhaBOX2, Prodigal, HMMER, MMseqs2, "
-    "FastANI, BLAST, SeqKit) and execute_code."
+    "(1) overview / datasets — catalog totals and live DB/mount status; "
+    "(2) cohort_report — PREFERRED for cohort exploration: ONE call returns exact count, length stats, "
+    "dataset/completeness/lifestyle/host-genus facets, and sample rows for any phage filter set "
+    "(save_tsv=true also exports the cohort TSV); "
+    "(3) search_phages — paged record listing by accession(s), dataset(s), completeness, lifestyle, taxonomy, "
+    "host or host_rank+host_name, cluster, length/gc bounds (save_tsv=true exports up to 2,000 rows); "
+    "(4) get_phage — full metadata + 6-rank host lineage + protein_count for one phage_id/accession; "
+    "(5) aggregate — single-dimension GROUP BY distribution over any filtered cohort; "
+    "(6) search_proteins — proteins on a phage (product_query/function_class), protein_ids in batch, or the "
+    "12.6M protein families (family_query, min_members, min_datasets); "
+    "(7) family_members — members of one family_id (optional subfamily_id, dataset, include_sequence); "
+    "(8) features — trna, crispr, anticrispr, terminator, virulence, amr, transmembrane by phage or cross-dataset keyword; "
+    "(9) structures — ESMFold/AFDB availability/pLDDT for up to 50 protein_ids (materialize_pdb=true copies .pdb); "
+    "(10) materialize — UNTRUNCATED genomes (.fasta), proteins (.faa), annotations (.gff3), metadata (.tsv), "
+    "structures (.pdb) into results/phagescope/<output_subdir>/ ready for bio_tools and execute_code."
 )
 
 PARAMETERS_SCHEMA: dict[str, Any] = {
@@ -144,6 +142,12 @@ PARAMETERS_SCHEMA: dict[str, Any] = {
         "include_total": {
             "type": "boolean",
             "description": "Run exact COUNT(*) in search_phages (default false for fast pagination).",
+        },
+        "sample_size": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20,
+            "description": "Representative sample rows returned by operation='cohort_report' (default 5).",
         },
         "group_by": {
             "type": "string",
