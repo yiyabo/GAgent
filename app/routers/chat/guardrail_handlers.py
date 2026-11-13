@@ -293,6 +293,12 @@ def apply_phagescope_fallback(
     actions = list(structured.actions or [])
     if any(getattr(action, "kind", "") == "plan_operation" for action in actions):
         return structured
+    if any(
+        getattr(action, "kind", "") == "tool_operation"
+        and str(getattr(action, "name", "") or "").startswith("mcp__")
+        for action in actions
+    ):
+        return structured
     if should_force_plan_first(user_message, actions):
         return structured
 

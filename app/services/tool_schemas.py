@@ -361,6 +361,43 @@ def _mounted_schema(name: str) -> Optional[Dict[str, Any]]:
     return get_mount_manager().schema_for(name)
 
 
+def format_mounted_tool_catalog_entry(
+    name: str,
+    *,
+    include_target_task_id: bool = False,
+    max_desc_chars: int = 240,
+) -> str | None:
+    """One-line description and parameter summary for a mounted MCP tool."""
+    envelope = _mounted_schema(name)
+    if not isinstance(envelope, dict):
+        return None
+    fn = envelope.get("function")
+    if not isinstance(fn, dict):
+        return None
+    raw_desc = " ".join(str(fn.get("description") or "").split())
+    if len(raw_desc) > max_desc_chars:
+        raw_desc = raw_desc[: max_desc_chars - 3].rstrip() + "..."
+    raw_params = fn.get("parameters")
+    params: dict[str, Any] = raw_params if isinstance(raw_params, dict) else {}
+    raw_props = params.get("properties")
+    props: dict[str, Any] = raw_props if isinstance(raw_props, dict) else {}
+    raw_req = params.get("required")
+    req_items = raw_req if isinstance(raw_req, list) else []
+    required = [str(k) for k in req_items if isinstance(k, str) and k in props]
+    optional = [str(k) for k in props if isinstance(k, str) and k not in required]
+    if include_target_task_id and "target_task_id" not in required and "target_task_id" not in optional:
+        optional.append("target_task_id")
+
+    clauses: list[str] = []
+    if raw_desc:
+        clauses.append(raw_desc.rstrip(".;"))
+    if required:
+        clauses.append("requires " + ", ".join(f"`{k}`" for k in required))
+    if optional:
+        clauses.append("optional " + "/".join(optional))
+    return "; ".join(clauses) if clauses else "external MCP tool"
+
+
 def build_tool_schemas(available_tools: List[str]) -> List[Dict[str, Any]]:
     """Build the tools payload for native tool calling from available tool names."""
     registry = _get_tool_registry()
