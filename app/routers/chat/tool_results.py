@@ -270,13 +270,13 @@ def sanitize_tool_result(tool_name: str, raw_result: Any) -> Dict[str, Any]:
                     sanitized[key] = raw_result.get(key)
         payload = raw_result.get("data")
         if isinstance(payload, dict):
-            trimmed: Dict[str, Any] = {}
+            trimmed_data: dict[str, Any] = {}
             for key in ("status", "message", "code", "results", "data", "error"):
                 if key in payload:
-                    trimmed[key] = payload[key]
-            if "results" in trimmed and isinstance(trimmed["results"], list):
-                trimmed["results"] = trimmed["results"][:3]
-            sanitized["data"] = trimmed
+                    trimmed_data[key] = payload[key]
+            if "results" in trimmed_data and isinstance(trimmed_data["results"], list):
+                trimmed_data["results"] = trimmed_data["results"][:3]
+            sanitized["data"] = trimmed_data
         return sanitized
 
     if tool_name == "file_operations" and isinstance(raw_result, dict):
@@ -756,6 +756,50 @@ def sanitize_tool_result(tool_name: str, raw_result: Any) -> Dict[str, Any]:
                 sanitized[key] = [str(item)[:300] for item in value[:50]]
         return sanitized
 
+    if tool_name == "phagescope_data" and isinstance(raw_result, dict):
+        ps_out: dict[str, Any] = {
+            "tool": tool_name,
+            "operation": raw_result.get("operation"),
+            "success": raw_result.get("success", False),
+        }
+        for key in (
+            "error",
+            "error_code",
+            "status_code",
+            "db_status",
+            "mounts",
+            "overview",
+            "phage",
+            "family",
+            "filters",
+            "group_by",
+            "feature_type",
+            "mode",
+            "target",
+            "count",
+            "total_exact",
+            "page",
+            "pagesize",
+            "has_more",
+            "returned",
+            "saved_rows",
+            "requested_phages",
+            "materialized_counts",
+            "proteins_count",
+            "pdb_copied",
+            "output_directory",
+            "output_directory_rel",
+            "manifest_path",
+            "files_saved",
+        ):
+            if key in raw_result:
+                ps_out[key] = raw_result[key]
+        for list_key in ("datasets", "groups", "results", "produced_files", "artifact_paths", "session_artifact_paths", "truncated_items", "missing"):
+            val = raw_result.get(list_key)
+            if isinstance(val, list):
+                ps_out[list_key] = val[:50]
+        return ps_out
+
     if tool_name.startswith(MCP_TOOL_PREFIX) and isinstance(raw_result, dict):
         # An external server's reply. The generic path below would keep only the
         # success flag and drop the data and the "untrusted" notice with it.
@@ -1089,7 +1133,8 @@ def summarize_tool_result(tool_name: str, result: Dict[str, Any]) -> str:
                 or str(snapshot.get("task_status") or "").strip()
                 or "unknown"
             )
-            counts = snapshot.get("counts") if isinstance(snapshot.get("counts"), dict) else {}
+            raw_counts = snapshot.get("counts")
+            counts = raw_counts if isinstance(raw_counts, dict) else {}
             done = counts.get("done") if isinstance(counts.get("done"), int) else None
             total = counts.get("total") if isinstance(counts.get("total"), int) else None
             suffix = ""
@@ -1150,7 +1195,8 @@ def summarize_tool_result(tool_name: str, result: Dict[str, Any]) -> str:
             summary = result.get("summary")
             if isinstance(summary, str) and summary.strip():
                 return _trim_text(summary, limit=700)
-            counts = result.get("counts") if isinstance(result.get("counts"), dict) else {}
+            raw_fc = result.get("counts")
+            counts = raw_fc if isinstance(raw_fc, dict) else {}
             path = result.get("path") or "unknown"
             total = counts.get("direct_children") or result.get("count") or "unknown"
             completed = counts.get("completed")
@@ -1162,8 +1208,10 @@ def summarize_tool_result(tool_name: str, result: Dict[str, Any]) -> str:
         if op == "list":
             path = result.get("path") or "unknown"
             count = result.get("count")
-            envelope = result.get("evidence_scope") if isinstance(result.get("evidence_scope"), dict) else {}
-            status_counts = envelope.get("status_counts") if isinstance(envelope.get("status_counts"), dict) else {}
+            raw_env = result.get("evidence_scope")
+            envelope = raw_env if isinstance(raw_env, dict) else {}
+            raw_sc = envelope.get("status_counts")
+            status_counts = raw_sc if isinstance(raw_sc, dict) else {}
             status_suffix = ""
             if status_counts:
                 status_suffix = f"; status_counts={status_counts}"
@@ -1485,6 +1533,19 @@ def summarize_tool_result(tool_name: str, result: Dict[str, Any]) -> str:
             return f"load_skill loaded {target} ({char_count} chars){suffix}."
         return f"load_skill loaded {target}{suffix}."
 
+    if tool_name == "phagescope_data":
+        op = str(result.get("operation") or "query")
+        if result.get("success") is False:
+            return f"phagescope_data {op} failed: {_trim_text(str(result.get('error') or 'request failed'), limit=400)}"
+        files = result.get("produced_files") or result.get("artifact_paths") or []
+        saved_note = f"; materialized {len(files)} file(s)" if isinstance(files, list) and files else ""
+        if op == "aggregate" and isinstance(result.get("groups"), list):
+            return f"phagescope_data aggregate ({result.get('group_by')}): {len(result['groups'])} group(s)."
+        if "returned" in result or "count" in result:
+            cnt = result.get("returned") if result.get("returned") is not None else result.get("count")
+            return f"phagescope_data {op}: {cnt} record(s){saved_note}."
+        return f"phagescope_data {op} completed{saved_note}."
+
     if tool_name.startswith(MCP_TOOL_PREFIX):
         if result.get("success") is False:
             return f"{tool_name} failed: {_trim_text(str(result.get('error') or 'external tool reported an error'), limit=400)}"
@@ -1621,11 +1682,8 @@ def append_recent_tool_result(
                 compressed_result[key] = value
         storage_value = sanitized.get("storage")
         if isinstance(storage_value, dict):
-            relative = (
-                dict(storage_value.get("relative"))
-                if isinstance(storage_value.get("relative"), dict)
-                else None
-            )
+            raw_rel = storage_value.get("relative")
+            relative = dict(raw_rel) if isinstance(raw_rel, dict) else None
             compressed_storage: Dict[str, Any] = {}
             for key in ("preview_path", "result_path", "output_dir"):
                 value = storage_value.get(key)

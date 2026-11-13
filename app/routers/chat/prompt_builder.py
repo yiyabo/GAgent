@@ -319,10 +319,27 @@ def compose_plan_artifact_access_hint(agent: Any, plan_bound: bool) -> str:
 
 
 def _mounted_action_lines(policy: dict[str, Any], existing_names: set[str]) -> list[str]:
-    from app.services.tool_schemas import format_mounted_tool_catalog_entry
+    from app.services.tool_schemas import (
+        format_mounted_tool_catalog_entry,
+        phagescope_data_enabled,
+    )
     from tool_box.mcp_mount import get_mount_manager
 
     lines: list[str] = []
+    if (
+        phagescope_data_enabled()
+        and "phagescope_data" not in existing_names
+        and is_tool_allowed("phagescope_data", policy)
+    ):
+        lines.append(
+            "- tool_operation: phagescope_data (PREFERRED PhageScope V2 catalog query, aggregation, and untruncated "
+            "FASTA/FAA/GFF3/TSV/PDB materializer over 2.57M phages, 27 datasets, 131.5M proteins, and 12.6M families; "
+            "requires `operation` in overview/datasets/search_phages/get_phage/aggregate/search_proteins/family_members/"
+            "features/structures/materialize; optional phage_id/phage_ids/accession/accessions/dataset/datasets/"
+            "completeness/lifestyle/taxonomy/host/host_rank/host_name/cluster/subcluster/is_rep/length_min/length_max/"
+            "gc_min/gc_max/group_by/protein_id/protein_ids/product_query/family_query/family_id/feature_type/keyword/"
+            "kinds/combine/save_tsv/materialize_pdb/output_subdir/max_items/page/pagesize/target_task_id)"
+        )
     for name in get_mount_manager().tool_names():
         if name in existing_names or not is_tool_allowed(name, policy):
             continue

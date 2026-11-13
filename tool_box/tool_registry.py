@@ -24,6 +24,7 @@ from .tools_impl import (
     manuscript_writer_tool,
     paper_replication_tool,
     phagescope_tool,
+    phagescope_data_tool,
     phagescope_research_tool,
     plan_operation_tool,
     result_interpreter_tool,
@@ -41,6 +42,7 @@ from .tools_impl import (
 )
 from .bio_tools import bio_tools_tool
 from .tools_impl.delegate_task import delegate_task_enabled
+from .tools_impl.phagescope_data import phagescope_data_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +117,9 @@ _TOOL_METADATA: Dict[str, Dict[str, Any]] = {
     "phagescope": {
         "search_hint": "phage bacteriophage gateway catalog protein host family structure sequence annotation slurm submit status results",
     },
+    "phagescope_data": {
+        "search_hint": "phagescope v2 database phage genome protein family host taxonomy structure fasta faa gff3 materialize cohort",
+    },
     "phagescope_research": {
         "search_hint": "phagescope local dataset host taxonomy machine learning audit split",
     },
@@ -179,6 +184,7 @@ _STANDARD_TOOLS: List[Dict[str, Any]] = [
     graph_rag_tool,
     manuscript_writer_tool,
     phagescope_tool,
+    phagescope_data_tool,
     phagescope_research_tool,
     sequence_fetch_tool,
     ncbi_search_tool,
@@ -242,6 +248,7 @@ def _extract_registration_kwargs(tool_def: Dict[str, Any]) -> Dict[str, Any]:
 # so they cannot be discovered or dispatched while disabled.
 _GATED_TOOLS = {
     "delegate_task": delegate_task_enabled,
+    "phagescope_data": phagescope_data_enabled,
 }
 
 

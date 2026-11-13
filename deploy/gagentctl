@@ -100,7 +100,7 @@ build() {
   local hits
   # Runtime .js only: source maps legitimately contain the dev origin and are
   # never executed (same rule as the gate inside deploy/Dockerfile.gateway).
-  hits=$(grep -rl --include='*.js' ":9000" "${ROOT_DIR}/web-ui/dist" 2>/dev/null | wc -l)
+  hits=$({ grep -rl --include='*.js' ":9000" "${ROOT_DIR}/web-ui/dist" 2>/dev/null || true; } | wc -l | tr -d ' ')
   [ "${hits}" -eq 0 ] || die "frontend runtime .js contains ':9000' (${hits} file(s))"
 
   log "building gagent-gateway:${tag}"

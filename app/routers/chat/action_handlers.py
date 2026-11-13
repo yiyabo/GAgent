@@ -934,11 +934,12 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
             return normalized
         params = normalized
 
-    elif tool_name in _GENERIC_EXECUTION_TOOLS:
+    elif tool_name in _GENERIC_EXECUTION_TOOLS or tool_name == "phagescope_data":
         # Env-gated / progressive-disclosure tools: the LLM's parameters are the
         # handler's own contract, so they need no per-tool normalizer. They do
         # need the session context the deep-think wrapper strips from the action
-        # parameters (`execute_code`'s kernel routing, delegation progress).
+        # parameters (`execute_code`'s kernel routing, delegation progress,
+        # `phagescope_data` session workspace materialization).
         if "tool_context" not in params:
             tool_context = _build_chat_tool_context(agent, tool_name)
             if tool_context is not None:
@@ -1487,7 +1488,7 @@ async def handle_tool_action(agent: Any, action: LLMAction) -> AgentStep:
                 # Save to A-mem asynchronously.
                 asyncio.create_task(
                     amem_client.save_execution(
-                        task=original_task,  # Use original task description.
+                        task=original_task or "",  # Use original task description.
                         result=sanitized,
                         session_id=agent.session_id,
                         plan_id=agent.plan_session.plan_id,

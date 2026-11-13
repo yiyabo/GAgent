@@ -1083,6 +1083,7 @@ def get_all_tools() -> List[str]:
         code_executor_enabled,
         code_mode_enabled,
         delegate_task_enabled,
+        phagescope_data_enabled,
     )
 
     if code_mode_enabled():
@@ -1093,6 +1094,8 @@ def get_all_tools() -> List[str]:
         # Default off (2026-09-27): delegated-coding harness is opt-in only;
         # execute_code owns one-script coding, delegate_task owns goals.
         tools.append("code_executor")
+    if phagescope_data_enabled():
+        tools.append("phagescope_data")
     # Tools mounted from external MCP servers (empty unless MCP_MOUNTS_FILE is set).
     from tool_box.mcp_mount import get_mount_manager
 
@@ -1445,16 +1448,21 @@ def resolve_subject_resolution(
         current_turn,
         last_subject_action_class=last_subject_action_class,
     ):
-        inherited = dict(active_subject)
+        inherited: dict[str, Any] = dict(active_subject) if isinstance(active_subject, Mapping) else {}
         canonical_ref = canonicalize_subject_ref(
             inherited.get("canonical_ref") or inherited.get("display_ref")
         )
         display_ref = str(inherited.get("display_ref") or canonical_ref).strip()
-        kind = str(inherited.get("kind") or "workspace").strip().lower()
+        raw_kind = str(inherited.get("kind") or "workspace").strip().lower()
+        inherited_kind: SubjectKind = (
+            "file"
+            if raw_kind == "file"
+            else ("directory" if raw_kind == "directory" else "workspace")
+        )
         reasons.append("inherited_subject")
         return (
             {
-                "kind": kind if kind in {"file", "directory", "workspace"} else "workspace",
+                "kind": inherited_kind,
                 "canonical_ref": canonical_ref,
                 "display_ref": display_ref or canonical_ref,
                 "aliases": build_subject_aliases(
@@ -1492,7 +1500,12 @@ def build_request_tier_profile(
     label stays "standard" as inert telemetry — downstream behavior keys off
     intent_type, not the tier. plan_conflict keeps its short cap: that is an
     intent-level guard, not a tier."""
-    common = dict(
+    flat_cap = 10 if decision.plan_conflict_requires_confirmation else 500
+    return RequestTierProfile(
+        request_tier="standard",
+        thinking_budget=_DEEP_THINK_THINKING_BUDGET,
+        max_iterations=max(3, min(default_max_iterations, flat_cap)),
+        output_bias="task_completion",
         available_tools=get_all_tools(),
         intent_type=decision.intent_type,
         explicit_task_ids=list(decision.explicit_task_ids),
@@ -1505,14 +1518,6 @@ def build_request_tier_profile(
         plan_optimize_required=decision.plan_optimize_required,
         plan_new_requested=decision.plan_new_requested,
         plan_conflict_requires_confirmation=decision.plan_conflict_requires_confirmation,
-    )
-    flat_cap = 10 if decision.plan_conflict_requires_confirmation else 500
-    return RequestTierProfile(
-        request_tier="standard",
-        thinking_budget=_DEEP_THINK_THINKING_BUDGET,
-        max_iterations=max(3, min(default_max_iterations, flat_cap)),
-        output_bias="task_completion",
-        **common,
     )
 
 

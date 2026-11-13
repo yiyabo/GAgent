@@ -30,7 +30,7 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from app.services.response_style import (
     PROFESSIONAL_STYLE_INSTRUCTION,
@@ -61,7 +61,7 @@ _INLINE_COUNT_PATTERN = re.compile(r"(?:合计|共)\s*([\d,]+)\s*条")
 _PERCENT_PATTERN = re.compile(r"(\d+(?:\.\d+)?)%")
 
 
-def _parse_int_token(value: Any) -> Optional[int]:
+def _parse_int_token(value: Any) -> int | None:
     text = str(value or "").strip().replace(",", "")
     if not text.isdigit():
         return None
@@ -75,7 +75,7 @@ def _format_percent(value: float) -> str:
     return f"{value:.1f}%"
 
 
-def _repair_distribution_summary_math(text: Optional[str]) -> Optional[str]:
+def _repair_distribution_summary_math(text: str | None) -> str | None:
     raw = str(text or "")
     if not raw.strip() or "%" not in raw:
         return text
@@ -97,7 +97,7 @@ def _repair_distribution_summary_math(text: Optional[str]) -> Optional[str]:
             continue
         table_counts_total += count
 
-    total: Optional[int] = None
+    total: int | None = None
     for pattern in _DISTRIBUTION_TOTAL_PATTERNS:
         match = pattern.search(raw)
         if not match:
@@ -110,7 +110,7 @@ def _repair_distribution_summary_math(text: Optional[str]) -> Optional[str]:
     if not total:
         return text
 
-    repaired_lines: List[str] = []
+    repaired_lines: list[str] = []
     for line in lines:
         stripped = line.strip()
         if stripped.startswith("|") and stripped.endswith("|"):
@@ -139,12 +139,12 @@ def _repair_distribution_summary_math(text: Optional[str]) -> Optional[str]:
 
 
 def _build_artifact_gallery_from_tool_results(
-    tool_results_payload: List[Dict[str, Any]],
+    tool_results_payload: list[dict[str, Any]],
     *,
-    session_id: Optional[str],
-    tracking_id: Optional[str],
-) -> List[Dict[str, Any]]:
-    gallery: List[Dict[str, Any]] = []
+    session_id: str | None,
+    tracking_id: str | None,
+) -> list[dict[str, Any]]:
+    gallery: list[dict[str, Any]] = []
     for item in tool_results_payload or []:
         if not isinstance(item, dict):
             continue
@@ -163,12 +163,12 @@ def _build_artifact_gallery_from_tool_results(
 
 
 def _build_artifact_files_from_tool_results(
-    tool_results_payload: List[Dict[str, Any]],
+    tool_results_payload: list[dict[str, Any]],
     *,
-    session_id: Optional[str],
-    tracking_id: Optional[str],
-) -> List[Dict[str, Any]]:
-    files: List[Dict[str, Any]] = []
+    session_id: str | None,
+    tracking_id: str | None,
+) -> list[dict[str, Any]]:
+    files: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
     for item in tool_results_payload or []:
         if not isinstance(item, dict):
@@ -194,16 +194,16 @@ def _build_artifact_files_from_tool_results(
     return files[:8]
 
 
-def truncate_summary_text(value: Optional[str]) -> Optional[str]:
+def truncate_summary_text(value: str | None) -> str | None:
     if value is None:
         return None
     return str(value)
 
 
 def _latest_verification_result_payload(
-    tool_results_payload: List[Dict[str, Any]],
-) -> Tuple[Optional[Dict[str, Any]], str]:
-    latest_result_payload: Optional[Dict[str, Any]] = None
+    tool_results_payload: list[dict[str, Any]],
+) -> tuple[dict[str, Any] | None, str]:
+    latest_result_payload: dict[str, Any] | None = None
     latest_verification_status = ""
 
     for item in reversed(tool_results_payload or []):
@@ -234,7 +234,7 @@ def _format_artifact_size(size_bytes: int) -> str:
     return f"{size_bytes / (1024 * 1024):.1f} MB"
 
 
-def _resolve_verified_output_rows(result_payload: Dict[str, Any]) -> List[Dict[str, str]]:
+def _resolve_verified_output_rows(result_payload: dict[str, Any]) -> list[dict[str, str]]:
     artifact_verification = result_payload.get("artifact_verification")
     if not isinstance(artifact_verification, dict):
         return []
@@ -254,7 +254,7 @@ def _resolve_verified_output_rows(result_payload: Dict[str, Any]) -> List[Dict[s
     )
     base_dir = Path(str(base_dir_value).strip()).expanduser() if str(base_dir_value or "").strip() else None
 
-    rows: List[Dict[str, str]] = []
+    rows: list[dict[str, str]] = []
     seen: set[str] = set()
     for raw_output in raw_outputs[:40]:
         label = str(raw_output or "").strip().replace("\\", "/")
@@ -293,8 +293,8 @@ def _resolve_verified_output_rows(result_payload: Dict[str, Any]) -> List[Dict[s
 
 def _build_contract_verification_success_analysis(
     user_message: str,
-    tool_results_payload: List[Dict[str, Any]],
-) -> Optional[str]:
+    tool_results_payload: list[dict[str, Any]],
+) -> str | None:
     language = "zh" if re.search(r"[\u4e00-\u9fff]", user_message or "") else "en"
     latest_result_payload, latest_verification_status = _latest_verification_result_payload(
         tool_results_payload
@@ -331,8 +331,8 @@ def _build_contract_verification_success_analysis(
 
 def _build_contract_verification_analysis(
     user_message: str,
-    tool_results_payload: List[Dict[str, Any]],
-) -> Optional[str]:
+    tool_results_payload: list[dict[str, Any]],
+) -> str | None:
     language = "zh" if re.search(r"[\u4e00-\u9fff]", user_message or "") else "en"
     latest_result_payload, latest_verification_status = _latest_verification_result_payload(
         tool_results_payload
@@ -389,10 +389,10 @@ def _build_contract_verification_analysis(
 
 def build_phagescope_deep_profile_analysis(
     user_message: str,
-    tool_results_payload: List[Dict[str, Any]],
-) -> Optional[str]:
+    tool_results_payload: list[dict[str, Any]],
+) -> str | None:
     language = "zh" if re.search(r"[\u4e00-\u9fff]", user_message or "") else "en"
-    profile: Optional[Dict[str, Any]] = None
+    profile: dict[str, Any] | None = None
     for item in tool_results_payload or []:
         if not isinstance(item, dict):
             continue
@@ -415,10 +415,14 @@ def build_phagescope_deep_profile_analysis(
     meta_size = profile.get("metadata_size_human") or "unknown"
     total_size = profile.get("total_size_human") or "unknown"
     unique_ids = profile.get("unique_phage_ids")
-    ml_table = profile.get("ml_metadata_table") if isinstance(profile.get("ml_metadata_table"), dict) else {}
-    schema = profile.get("metadata_schema") if isinstance(profile.get("metadata_schema"), dict) else {}
-    label_quality = profile.get("label_quality") if isinstance(profile.get("label_quality"), dict) else {}
-    split_readiness = profile.get("split_readiness") if isinstance(profile.get("split_readiness"), dict) else {}
+    raw_ml = profile.get("ml_metadata_table")
+    ml_table = raw_ml if isinstance(raw_ml, dict) else {}
+    raw_sc = profile.get("metadata_schema")
+    schema = raw_sc if isinstance(raw_sc, dict) else {}
+    raw_lq = profile.get("label_quality")
+    label_quality = raw_lq if isinstance(raw_lq, dict) else {}
+    raw_sr = profile.get("split_readiness")
+    split_readiness = raw_sr if isinstance(raw_sr, dict) else {}
     ml_empty = bool(ml_table.get("empty_or_header_only"))
     headers_consistent = schema.get("headers_consistent")
     host_available = label_quality.get("host_available_rows")
@@ -456,8 +460,8 @@ def build_phagescope_deep_profile_analysis(
     )
 
 
-def build_actions_summary(agent: Any, steps: List["AgentStep"]) -> List[Dict[str, Any]]:
-    summary: List[Dict[str, Any]] = []
+def build_actions_summary(agent: Any, steps: list[Any]) -> list[dict[str, Any]]:
+    summary: list[dict[str, Any]] = []
     for step in steps:
         action = step.action
         summary.append({
@@ -471,7 +475,7 @@ def build_actions_summary(agent: Any, steps: List["AgentStep"]) -> List[Dict[str
 
 
 def append_summary_to_reply(
-    agent: Any, reply: str, summary: List[Dict[str, Any]]
+    agent: Any, reply: str, summary: list[dict[str, Any]]
 ) -> str:
     # Do not append action summary at the end of replies:
     # the frontend already provides status tags and a "View process" panel.
@@ -481,16 +485,16 @@ def append_summary_to_reply(
 
 async def _generate_tool_analysis(
     user_message: str,
-    tool_results: List[Dict[str, Any]],
-    session_id: Optional[str] = None,
-    llm_provider: Optional[str] = None,
-) -> Optional[str]:
+    tool_results: list[dict[str, Any]],
+    session_id: str | None = None,
+    llm_provider: str | None = None,
+) -> str | None:
     """Use the LLM to generate a detailed analysis from tool results."""
     from tool_box.mcp_mount.config import TOOL_PREFIX as MCP_TOOL_PREFIX
 
     try:
         tools_description = []
-        web_search_items: List[Dict[str, str]] = []
+        web_search_items: list[dict[str, str]] = []
         for idx, tool_result in enumerate(tool_results, 1):
             tool_name = tool_result.get("name", "unknown")
             summary = tool_result.get("summary", "")
@@ -546,6 +550,36 @@ async def _generate_tool_analysis(
                             "\n   results: (empty — no structured URL list from the search tool; "
                             "do not treat the summary as independently verifiable without links.)"
                         )
+                elif tool_name == "phagescope_data":
+                    ps_details: dict[str, Any] = {}
+                    for ps_key in (
+                        "operation",
+                        "overview",
+                        "datasets",
+                        "phage",
+                        "family",
+                        "filters",
+                        "group_by",
+                        "groups",
+                        "results",
+                        "count",
+                        "returned",
+                        "has_more",
+                        "materialized_counts",
+                        "proteins_count",
+                        "pdb_copied",
+                        "produced_files",
+                        "artifact_paths",
+                        "output_directory",
+                        "missing",
+                    ):
+                        if ps_key in result_data and result_data[ps_key] is not None:
+                            ps_details[ps_key] = result_data[ps_key]
+                    if ps_details:
+                        ps_text = json.dumps(ps_details, ensure_ascii=False)
+                        if len(ps_text) > 10000:
+                            ps_text = ps_text[:9997] + "..."
+                        tool_desc += f"\n   details: {ps_text}"
                 elif str(tool_name).startswith(MCP_TOOL_PREFIX) or result_data.get("source") == "external_mcp":
                     if result_data.get("success") is False and "success: False" not in tool_desc:
                         tool_desc += "\n   success: False"
@@ -625,10 +659,10 @@ async def _generate_tool_analysis(
 
 async def _generate_tool_summary(
     user_message: str,
-    tool_results: List[Dict[str, Any]],
-    session_id: Optional[str] = None,
-    llm_provider: Optional[str] = None,
-) -> Optional[str]:
+    tool_results: list[dict[str, Any]],
+    session_id: str | None = None,
+    llm_provider: str | None = None,
+) -> str | None:
     """Use the LLM to generate a short summary from tool results (for process panel)."""
     try:
         tools_description = []
@@ -660,8 +694,8 @@ async def _generate_tool_summary(
         return None
 
 
-def _collect_created_tasks_from_steps(steps: List[Any]) -> List[Dict[str, Any]]:
-    created: List[Dict[str, Any]] = []
+def _collect_created_tasks_from_steps(steps: list[Any]) -> list[dict[str, Any]]:
+    created: list[dict[str, Any]] = []
     for step in steps:
         details = step.details or {}
         created_nodes = details.get("created")
@@ -677,13 +711,13 @@ def _collect_created_tasks_from_steps(steps: List[Any]) -> List[Dict[str, Any]]:
 
 async def _generate_action_analysis(
     user_message: str,
-    steps: List[Any],
-    session_id: Optional[str] = None,
-    llm_provider: Optional[str] = None,
-) -> Optional[str]:
+    steps: list[Any],
+    session_id: str | None = None,
+    llm_provider: str | None = None,
+) -> str | None:
     created_tasks = _collect_created_tasks_from_steps(steps)
 
-    step_summaries: List[str] = []
+    step_summaries: list[str] = []
     for step in steps:
         if not step.success:
             continue
@@ -704,7 +738,7 @@ async def _generate_action_analysis(
             step_summaries.append(f"[{kind}/{name}] {detail_text}")
 
     if created_tasks:
-        lines: List[str] = []
+        lines: list[str] = []
         for idx, task in enumerate(created_tasks, 1):
             task_name = str(task.get("name") or task.get("title") or "").strip()
             instruction = str(task.get("instruction") or "").strip()
@@ -758,7 +792,7 @@ async def _generate_action_analysis(
         return None
 
 
-def _build_brief_action_summary(steps: List[Any]) -> Optional[str]:
+def _build_brief_action_summary(steps: list[Any]) -> str | None:
     if not steps:
         return None
     if len(steps) == 1:
@@ -771,7 +805,7 @@ def _build_brief_action_summary(steps: List[Any]) -> Optional[str]:
             return f"Completed action: {step.action.kind}"
         return None
 
-    names: List[str] = []
+    names: list[str] = []
     for step in steps:
         if step.action.name:
             names.append(step.action.name)
@@ -788,7 +822,7 @@ def _build_brief_action_summary(steps: List[Any]) -> Optional[str]:
     return f"Completed {len(steps)} actions: {preview}{suffix}."
 
 
-def _should_skip_post_action_analysis(steps: List[Any]) -> bool:
+def _should_skip_post_action_analysis(steps: list[Any]) -> bool:
     """Skip extra LLM analysis when the action already returned a usable review body."""
 
     if not steps:

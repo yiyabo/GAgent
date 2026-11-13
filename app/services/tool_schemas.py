@@ -58,6 +58,11 @@ def code_executor_enabled() -> bool:
     return os.environ.get("CODE_EXECUTOR_ENABLED", "").strip() == "1"
 
 
+def phagescope_data_enabled() -> bool:
+    """Whether ``phagescope_data`` (PhageScope V2 catalog & materializer) is offered."""
+    return os.environ.get("PHAGESCOPE_DATA_ENABLED", "").strip() == "1"
+
+
 def _build_execute_code_description(content: Dict[str, Any]) -> str:
     """Static base (delegation pointer gated) + the dynamic per-allowlist signature list."""
     base = str(content["description"])
@@ -223,6 +228,14 @@ def _build_registry() -> Dict[str, Dict[str, Any]]:
             # (CODE_EXECUTOR_ENABLED=1, decision 2026-09-27). Same contract as
             # the other gated tools — invisible to every offer path while off.
             if not code_executor_enabled():
+                continue
+            registry[name] = _function_schema(
+                name,
+                content["description"],
+                content["parameters"],
+            )
+        elif name == "phagescope_data":
+            if not phagescope_data_enabled():
                 continue
             registry[name] = _function_schema(
                 name,
@@ -416,6 +429,12 @@ def build_tool_schemas(available_tools: List[str]) -> List[Dict[str, Any]]:
         # purpose: delegate_task is the chat-side delegation surface, and plan
         # tasks already delegate through PlanExecutor's own path.
         names.append("delegate_task")
+    if (
+        phagescope_data_enabled()
+        and "phagescope_data" not in names
+        and "phagescope_data" in registry
+    ):
+        names.append("phagescope_data")
     schemas = []
     for name in names:
         schema = registry.get(name) or _mounted_schema(name)
@@ -444,6 +463,13 @@ def build_executor_tool_schemas(available_tools: Optional[List[str]] = None) -> 
         # PlanExecutor's default offer pool gains execute_code only under the
         # flag; EXECUTOR_AVAILABLE_TOOLS itself stays static (golden master).
         names.append("execute_code")
+    if (
+        available_tools is None
+        and phagescope_data_enabled()
+        and "phagescope_data" not in names
+        and "phagescope_data" in registry
+    ):
+        names.append("phagescope_data")
     schemas = []
     for name in names:
         schema = registry.get(name)

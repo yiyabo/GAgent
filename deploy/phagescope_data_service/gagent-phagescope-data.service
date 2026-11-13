@@ -1,0 +1,14 @@
+[Unit]
+Description=GAgent PhageScope V2 Read-Only Data Service (PostgreSQL phage_ro + catalog files)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/data3/platform/gagent/phagescope-service
+EnvironmentFile=/data3/platform/gagent/phagescope-service/service.env
+ExecStart=/home/platform/.conda/envs/phage/bin/python /data3/platform/gagent/phagescope-service/server.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

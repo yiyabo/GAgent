@@ -18,6 +18,7 @@ from .manuscript_writer import manuscript_writer_tool
 from .literature_pipeline import literature_pipeline_tool
 from .review_pack_writer import review_pack_writer_tool
 from .phagescope import phagescope_tool
+from .phagescope_data import phagescope_data_tool
 from .phagescope_research import phagescope_research_tool
 from .result_interpreter import result_interpreter_tool
 from .plan_tools import plan_operation_tool
@@ -85,6 +86,7 @@ __all__ = [
     "literature_pipeline_tool",
     "review_pack_writer_tool",
     "phagescope_tool",
+    "phagescope_data_tool",
     "phagescope_research_tool",
     "result_interpreter_tool",
     "plan_operation_tool",

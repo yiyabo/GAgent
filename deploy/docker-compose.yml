@@ -75,6 +75,11 @@ services:
       # reference corpora. The old container had this exact read-only mount, so
       # keeping it preserves behaviour rather than adding capability.
       - ${GAGENT_REFDATA_DIR:-/data}:/data:ro
+      # Optional read-only PhageScope V2 public catalog mounts (620b sets host dirs in .env;
+      # other hosts default harmlessly to GAGENT_REFDATA_DIR).
+      - ${PHAGESCOPE_SEQ_HOST_DIR:-${GAGENT_REFDATA_DIR:-/data}}:/phagescope/phage_sequence:ro
+      - ${PHAGESCOPE_CSV_HOST_DIR:-${GAGENT_REFDATA_DIR:-/data}}:/phagescope/csv_data/Download:ro
+      - ${PHAGESCOPE_PDB_HOST_DIR:-${GAGENT_REFDATA_DIR:-/data}}:/phagescope/esmfold_pdb:ro
     extra_hosts:
       # Host services the app must reach: LLM gateway (sub2api), platform API,
       # and the host-side SOCKS/HTTP egress tunnels.

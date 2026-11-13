@@ -148,42 +148,30 @@ The traditional morphology-based families (Myoviridae, Siphoviridae, Podoviridae
    - Expression during lysogeny
    - Inhibition assays (plaque reduction)
 
-### 4. PhageScope Dataset Guide
+### 4. PhageScope V2 Dataset & Tooling Guide
 
-#### Dataset Overview (2024 Release)
-- **Total sequences**: 873,718 phage genomes
-- **Quality distribution**:
-  - High-quality (>90% complete): ~45%
-  - Medium-quality (50-90%): ~35%
-  - Low-quality (<50%): ~20%
-- **Taxonomic coverage**:
-  - Caudovirales: 96% (Myo: 35%, Sipho: 45%, Podoviridae: 16%)
-  - Other orders: 4%
+#### Dataset Overview (PhageScope V2, checked 2026-09-11)
+- **Total genomes**: **2,576,926** phage sequences (**1,350,637** annotated genomes + **1,226,289** mapped records) across **27** datasets (`Genbank`, `RefSeq`, `DDBJ`, `EMBL`, `tpg`, `PhagesDB`, `GPD`, `GVD`, `MGV`, `TemPhD`, `CHVD`, `IGVD`, `IMG_VR`, `GOV2`, `STV`, `GSV`, `UHGV`, `HPGC`, `URPC`, `ELGV`, `OVD`, `VMGC`, `OPD`, `BAPS`, `SVD`, `TYMEFLIES_Viral`, `MetaVR`)
+- **Proteins & families**: **131,509,307** predicted proteins (**71,971,209** annotated) clustered into **12,610,425** protein families and **15,570,596** subfamilies
+- **Quality distribution (annotated genomes)**:
+  - Complete: 169,857 | High-quality: 533,244 | Medium-quality: 291,096 | Low-quality: 334,344 | Not-determined: 22,095
+- **Lifestyle distribution**:
+  - Virulent: 843,896 | Temperate: 500,477 | Unlabeled: 6,263
+- **Functional tracks & structures**:
+  - Host species: 4,723 (6-rank taxonomy `Phylum`..`Species` in `phage_hosts`)
+  - tRNA/tmRNA: 1,254,450 | CRISPR arrays: 96,895 | Anti-CRISPR: 436,709 | Terminators: 8,483,595 | Virulence factors (VFDB): 52,079 | AMR genes (CARD): 3,107 | Transmembrane proteins: 5,879,404 | ESMFold/AFDB predicted 3D structures
 
-#### Host Distribution
-- **Top hosts**: E. coli (28%), Pseudomonas (15%), Streptococcus (12%)
-- **Host prediction confidence**:
-  - Genus-level: 85% accuracy
-  - Species-level: 65% accuracy
-- **Recommended filtering**:
-  - Use only high-quality genomes for ML training
-  - Balance host classes (min 100 genomes per genus)
-  - Remove duplicates (>95% ANI)
-
-#### Key Metadata Fields
-```
-phage_id: Unique identifier
-genome_length: bp
-gc_content: %
-num_genes: Predicted ORFs
-host_genus: Predicted host genus
-host_species: Predicted host species
-completeness: CheckV completeness %
-contamination: CheckV contamination %
-lifestyle: lytic/temperate/unknown
-family: ICTV family assignment
-genus: ICTV genus assignment
-```
+#### Calling PhageScope V2 in GAgent (`phagescope_data` + `bio_tools` + `execute_code`)
+1. **Query & Cohort Statistics**:
+   - Call `phagescope_data(operation="overview")` or `datasets` to check live catalog stats.
+   - Call `phagescope_data(operation="search_phages", host_rank="Genus", host_name="Pseudomonas", completeness=["Complete", "High-quality"], lifestyle="virulent", save_tsv=True)` to filter across 2.57M genomes and export a cohort TSV.
+   - Call `phagescope_data(operation="aggregate", group_by="host_genus", dataset="MetaVR")` for instant SQL `GROUP BY` distributions.
+2. **Protein Families, Functional Tracks, and 3D Structures**:
+   - Search 12.61M protein families with `phagescope_data(operation="search_proteins", family_query="endolysin", min_members=50)` or inspect members via `family_members`.
+   - Search functional elements via `phagescope_data(operation="features", feature_type="amr", keyword="lactamase")` or `feature_type="anticrispr"`.
+   - Check or export `.pdb` structures via `phagescope_data(operation="structures", protein_ids=[...], materialize_pdb=True)`.
+3. **Untruncated Materialization into `bio_tools` / `execute_code`**:
+   - Call `phagescope_data(operation="materialize", accessions=[...], kinds=["fasta", "faa", "gff3", "metadata_tsv"])` to write complete untruncated files under `results/phagescope/`, then pass `genomes.fasta` / `proteins.faa` directly into `bio_tools` (`checkv`, `genomad`, `phabox2`, `prodigal`, `hmmer`, `mmseqs2`, `fastani`, `blast`, `seqkit`) or analyze TSVs in `execute_code`.
 
 ### 5. Standard Analysis Workflows
 
