@@ -330,6 +330,9 @@ def test_data_service_rejects_bad_api_key() -> None:
     status, body = svc.dispatch_request(state, "GET", "/agent-api/v1/data/health/", {"X-API-Key": "wrong"})
     assert status == 401
     assert body["error"]["code"] == "unauthorized"
+    # urllib/httpx may send mixed-case 'X-api-key'
+    ok_status, ok_body = svc.dispatch_request(state, "GET", "/agent-api/v1/data/health/", {"X-api-key": "real-key"})
+    assert ok_status == 200 and ok_body == {"status": "ok"}
 
 
 async def test_overview_search_aggregate_and_features(mock_phagescope_env: Path) -> None:

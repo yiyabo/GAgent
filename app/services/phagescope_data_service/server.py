@@ -86,7 +86,8 @@ def dispatch_request(
     headers: dict[str, str],
     body_bytes: bytes = b"",
 ) -> tuple[int, dict[str, Any]]:
-    presented = headers.get("x-api-key") or headers.get("X-API-Key") or ""
+    lower_headers = {str(k).lower(): str(v) for k, v in headers.items()}
+    presented = lower_headers.get("x-api-key", "")
     if not state.api_key or not presented or not hmac.compare_digest(
         presented.encode("utf-8"), state.api_key.encode("utf-8")
     ):
@@ -96,7 +97,7 @@ def dispatch_request(
     path = parsed.path
     qs_multi = parse_qs(parsed.query, keep_blank_values=False)
     qs = {k: v[-1] for k, v in qs_multi.items() if v}
-    host_hdr = headers.get("host") or headers.get("Host") or "127.0.0.1:18326"
+    host_hdr = lower_headers.get("host") or "127.0.0.1:18326"
     base_url = f"http://{host_hdr}"
 
     try:
