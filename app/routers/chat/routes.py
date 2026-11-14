@@ -21,6 +21,7 @@ from app.repository.plan_storage import append_action_log_entry
 from app.routers import register_router
 from app.services.chat_attachments import attach_message_attachments
 from app.services.llm.llm_service import get_llm_service
+from app.services.llm.structured_response import LLMReply, LLMStructuredResponse
 from app.services.moderation import scan_user_input
 from app.services.moderation.refusal_matcher import (
     REFUSAL_REPLY_TEMPLATE,
@@ -1435,18 +1436,18 @@ async def _execute_confirmed_actions(
             extra_context=extra_context or {},
         )
 
-        # Execute each action.
-        for action in actions:
-            try:
-                # pi-lens-ignore: reportAttributeAccessIssue
-                step = await agent._dispatch_action(action)
-                logger.info(
-                    f"[CONFIRMATION] Action {action.name} completed: success={step.success}"
-                )
-            except Exception as e:
-                logger.error(f"[CONFIRMATION] Action {action.name} failed: {e}")
-
-        logger.info(f"[CONFIRMATION] All actions completed: {tracking_id}")
+        # Use the same action pipeline as ordinary structured chat: order,
+        # placeholder resolution, retry/blocking semantics, and plan persistence.
+        structured = LLMStructuredResponse(
+            llm_reply=LLMReply(message="Confirmed actions are executing."),
+            actions=actions,
+        )
+        result = await agent.execute_structured(structured)
+        if result.success:
+            logger.info("[CONFIRMATION] Actions completed: %s steps=%d", tracking_id, len(result.steps))
+        else:
+            failed = [step.action.name for step in result.steps if not step.success]
+            logger.error("[CONFIRMATION] Actions failed: %s failed=%s", tracking_id, failed)
 
     except Exception as e:
         logger.error(f"[CONFIRMATION] Execution error: {e}")
