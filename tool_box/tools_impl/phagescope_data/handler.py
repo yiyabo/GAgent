@@ -334,6 +334,7 @@ async def phagescope_data_handler(
                     "mode": "search_families",
                     "family_id": kwargs.get("family_id"),
                     "keyword": fam_kw,
+                    "family_search_mode": kwargs.get("family_search_mode", "auto"),
                     "dominant_class": kwargs.get("function_class"),
                     "min_members": kwargs.get("min_members"),
                     "min_datasets": kwargs.get("min_datasets"),

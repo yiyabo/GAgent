@@ -775,6 +775,9 @@ def sanitize_tool_result(tool_name: str, raw_result: Any) -> Dict[str, Any]:
             "group_by",
             "feature_type",
             "mode",
+            "source",
+            "search_mode",
+            "index_built_at",
             "target",
             "count",
             "total_exact",
@@ -794,7 +797,7 @@ def sanitize_tool_result(tool_name: str, raw_result: Any) -> Dict[str, Any]:
         ):
             if key in raw_result:
                 ps_out[key] = raw_result[key]
-        for list_key in ("datasets", "groups", "results", "produced_files", "artifact_paths", "session_artifact_paths", "truncated_items", "missing"):
+        for list_key in ("datasets", "groups", "results", "expanded_terms", "produced_files", "artifact_paths", "session_artifact_paths", "truncated_items", "missing"):
             val = raw_result.get(list_key)
             if isinstance(val, list):
                 ps_out[list_key] = val[:50]

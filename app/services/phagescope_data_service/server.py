@@ -26,10 +26,12 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 try:
     from . import accel_engine as ae
     from . import db_queries as dq
+    from . import family_fts_engine as fe
 except ImportError:  # pragma: no cover - direct script execution on host
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     dq = importlib.import_module("db_queries")
     ae = importlib.import_module("accel_engine")
+    fe = importlib.import_module("family_fts_engine")
 
 logger = logging.getLogger("phagescope_data_service")
 
@@ -55,6 +57,7 @@ class DataServiceState:
         csv_download_root: Path | None = None,
         pdb_host_prefix: str = "/data4/back_up_platform/esmfold_pdb/",
         accel_root: Path | None = None,
+        family_index_root: Path | None = None,
     ) -> None:
         self.api_key = api_key
         self.conn_provider = conn_provider
@@ -68,6 +71,11 @@ class DataServiceState:
         self.accel = engine if engine is not None and engine.available else None
         if engine is not None and self.accel is None:
             logger.warning("Acceleration build missing or manifest integrity check failed: %s", accel_root)
+        self.family_index_configured = family_index_root is not None
+        family_engine = fe.FamilyFTSEngine(family_index_root) if family_index_root is not None else None
+        self.family_index = family_engine if family_engine is not None and family_engine.available else None
+        if family_engine is not None and self.family_index is None:
+            logger.warning("Family FTS5 build unavailable: %s", family_engine.last_error)
 
 
 def _require_accel(state: DataServiceState):
@@ -480,6 +488,40 @@ def _handle_post(
         full_seq = bool(payload.get("full_sequence", False))
         page = _int_param(payload, "page", 1)
         pagesize = _int_param(payload, "pagesize", 50)
+        if mode == "search_families":
+            search_mode = str(payload.get("family_search_mode") or "auto").strip().lower()
+            if search_mode not in {"auto", "literal", "fts", "synonyms"}:
+                raise dq.ServiceQueryError(
+                    "invalid_parameter", "family_search_mode must be auto, literal, fts or synonyms."
+                )
+            keyword = payload.get("keyword")
+            if (
+                not keyword
+                and search_mode in {"fts", "synonyms"}
+                and not payload.get("family_id")
+                and not payload.get("protein_id")
+            ):
+                raise dq.ServiceQueryError("invalid_parameter", "FTS5 and synonym searches require a family keyword.")
+            if keyword and not payload.get("family_id") and not payload.get("protein_id") and search_mode != "literal":
+                if state.family_index is not None:
+                    return 200, state.family_index.search(
+                        keyword,
+                        mode="synonyms" if search_mode == "synonyms" else "fts",
+                        dominant_class=payload.get("dominant_class"),
+                        min_members=(
+                            _int_param(payload, "min_members", 0) if payload.get("min_members") is not None else None
+                        ),
+                        min_datasets=(
+                            _int_param(payload, "min_datasets", 0) if payload.get("min_datasets") is not None else None
+                        ),
+                        non_singleton_only=bool(payload.get("non_singleton_only", True)),
+                        page=page,
+                        pagesize=pagesize,
+                    )
+                if state.family_index_configured or search_mode in {"fts", "synonyms"}:
+                    raise dq.ServiceQueryError(
+                        "family_index_unavailable", "A validated family FTS5 index is required.", 503
+                    )
         with state.conn_provider() as conn:
             if mode == "by_phage":
                 pid = payload.get("phage_id")
@@ -658,6 +700,7 @@ def main() -> None:  # pragma: no cover - host entrypoint
         csv_download_root=Path(csv_env) if csv_env else None,
         pdb_host_prefix=os.environ.get("PHAGE_PDB_HOST_PREFIX", "/data4/back_up_platform/esmfold_pdb/"),
         accel_root=ae.accel_root_from_env(),
+        family_index_root=fe.family_index_root_from_env(),
     )
 
     bind_host = os.environ.get("BIND_HOST", "127.0.0.1")
