@@ -113,7 +113,7 @@ build() {
 }
 
 reprobe() {
-  local base="${1:-https://agent.medicalheart.cn}"
+  local base="${1:-https://phageagent.deepomics.org}"
   log "security re-probe against ${base} (expect 401 for protected paths)"
   local rc=0
   for p in /tools/available /usage/overview /tasks/1/result /skill-learning/skills/x /plans/1/results; do
