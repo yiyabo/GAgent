@@ -1,0 +1,13 @@
+{
+  "format_version": 1,
+  "description": "Conservative lexical aliases for PhageScope protein-family search. An alias match is a retrieval hint, not proof of protein function.",
+  "groups": [
+    {"canonical": "endolysin", "aliases": ["phage lysin"]},
+    {"canonical": "tail fiber", "aliases": ["tail fibre"]},
+    {"canonical": "antiholin", "aliases": ["anti holin"]},
+    {"canonical": "tape measure protein", "aliases": ["tail tape measure protein"]},
+    {"canonical": "terminase large subunit", "aliases": ["large terminase subunit"]},
+    {"canonical": "terminase small subunit", "aliases": ["small terminase subunit"]},
+    {"canonical": "portal protein", "aliases": ["phage portal protein"]}
+  ]
+}

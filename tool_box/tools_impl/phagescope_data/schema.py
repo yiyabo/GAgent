@@ -31,7 +31,8 @@ DESCRIPTION = (
     "(4) get_phage — full metadata + 6-rank host lineage + protein_count for one phage_id/accession; "
     "(5) aggregate — single-dimension GROUP BY distribution over any filtered cohort; "
     "(6) search_proteins — proteins on a phage (product_query/function_class), protein_ids in batch, or the "
-    "12.6M protein families (family_query, min_members, min_datasets); "
+    "12.6M protein families (family_query, min_members, min_datasets; family_search_mode='synonyms' "
+    "expands a small curated alias list, 'literal' keeps SQL substring search); "
     "(7) family_members — members of one family_id (optional subfamily_id, dataset, include_sequence); "
     "(8) features — trna, crispr, anticrispr, terminator, virulence, amr, transmembrane by phage or cross-dataset keyword; "
     "(9) structures — ESMFold/AFDB availability/pLDDT for up to 50 protein_ids (materialize_pdb=true copies .pdb); "
@@ -232,7 +233,12 @@ PARAMETERS_SCHEMA: dict[str, Any] = {
         },
         "family_query": {
             "type": "string",
-            "description": "Keyword search across 12.6M protein families' consensus_product (e.g. 'endolysin', 'holin', 'integrase').",
+            "description": "Protein-family keyword: indexed full words/phrases in consensus_product or dominant_class when FTS5 is configured (e.g. 'endolysin', 'tail fibre').",
+        },
+        "family_search_mode": {
+            "type": "string",
+            "enum": ["auto", "literal", "fts", "synonyms"],
+            "description": "Family keyword only: auto (default, FTS5 when configured, otherwise SQL); literal (original SQL substring); fts (indexed word/phrase); synonyms (FTS5 plus explicit curated aliases). FTS5/synonyms require a published family index; synonym hits are retrieval hints, not proof of function.",
         },
         "family_id": {"type": "string", "description": "Protein family ID (e.g. for family_members or materialize)."},
         "subfamily_id": {"type": "string", "description": "Optional protein subfamily ID."},
