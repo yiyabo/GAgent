@@ -1,0 +1,12 @@
+[Unit]
+Description=Daily GAgent protein-family index freshness check
+
+[Timer]
+OnCalendar=*-*-* 04:30:00
+RandomizedDelaySec=15m
+Persistent=true
+AccuracySec=1m
+Unit=gagent-phagescope-family-check.service
+
+[Install]
+WantedBy=timers.target

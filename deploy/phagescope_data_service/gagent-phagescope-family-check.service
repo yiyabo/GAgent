@@ -1,0 +1,8 @@
+[Unit]
+Description=GAgent read-only protein-family index freshness check
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/data3/platform/gagent/phagescope-service
+ExecStart=/home/platform/.conda/envs/phage/bin/python /data3/platform/gagent/phagescope-service/family_freshness.py --service-env /data3/platform/gagent/phagescope-service/service.env --index-root /data3/platform/gagent/phagescope-family-search/current --sample-size 256
