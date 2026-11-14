@@ -26,11 +26,13 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 try:
     from . import accel_engine as ae
     from . import db_queries as dq
+    from . import family_freshness as ff
     from . import family_fts_engine as fe
 except ImportError:  # pragma: no cover - direct script execution on host
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     dq = importlib.import_module("db_queries")
     ae = importlib.import_module("accel_engine")
+    ff = importlib.import_module("family_freshness")
     fe = importlib.import_module("family_fts_engine")
 
 logger = logging.getLogger("phagescope_data_service")
@@ -72,6 +74,7 @@ class DataServiceState:
         if engine is not None and self.accel is None:
             logger.warning("Acceleration build missing or manifest integrity check failed: %s", accel_root)
         self.family_index_configured = family_index_root is not None
+        self.family_index_root = family_index_root
         family_engine = fe.FamilyFTSEngine(family_index_root) if family_index_root is not None else None
         self.family_index = family_engine if family_engine is not None and family_engine.available else None
         if family_engine is not None and self.family_index is None:
@@ -192,6 +195,11 @@ def _handle_get(
             cur.execute("SELECT 1")
             cur.fetchone()
         return 200, {"status": "ok"}
+
+    if norm == "/agent-api/v1/data/v2/proteins/family-index/status/":
+        if state.family_index is None or state.family_index_root is None:
+            raise dq.ServiceQueryError("family_index_unavailable", "A validated family FTS5 index is required.", 503)
+        return 200, ff.read_status(state.family_index_root, state.family_index)
 
     if norm == "/agent-api/v1/data/stats/overview/":
         if not state.overview:

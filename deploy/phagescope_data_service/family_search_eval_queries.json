@@ -1,0 +1,26 @@
+{
+  "format_version": 1,
+  "purpose": "Candidate queries for expert review of FTS5 versus literal and curated alias retrieval. No relevance labels are assigned here.",
+  "queries": [
+    {"term": "endolysin", "group": "endolysin", "kind": "canonical"},
+    {"term": "phage lysin", "group": "endolysin", "kind": "alias"},
+    {"term": "tail fiber", "group": "tail fiber", "kind": "canonical"},
+    {"term": "tail fibre", "group": "tail fiber", "kind": "alias"},
+    {"term": "antiholin", "group": "antiholin", "kind": "canonical"},
+    {"term": "anti holin", "group": "antiholin", "kind": "alias"},
+    {"term": "tape measure protein", "group": "tape measure protein", "kind": "canonical"},
+    {"term": "tail tape measure protein", "group": "tape measure protein", "kind": "alias"},
+    {"term": "terminase large subunit", "group": "terminase large subunit", "kind": "canonical"},
+    {"term": "large terminase subunit", "group": "terminase large subunit", "kind": "alias"},
+    {"term": "terminase small subunit", "group": "terminase small subunit", "kind": "canonical"},
+    {"term": "small terminase subunit", "group": "terminase small subunit", "kind": "alias"},
+    {"term": "portal protein", "group": "portal protein", "kind": "canonical"},
+    {"term": "phage portal protein", "group": "portal protein", "kind": "alias"},
+    {"term": "lysin", "group": "control", "kind": "ambiguous"},
+    {"term": "LysM", "group": "control", "kind": "ambiguous"},
+    {"term": "murein hydrolase", "group": "control", "kind": "related"},
+    {"term": "holin", "group": "control", "kind": "unmapped"},
+    {"term": "integrase", "group": "control", "kind": "unmapped"},
+    {"term": "capsid protein", "group": "control", "kind": "unmapped"}
+  ]
+}

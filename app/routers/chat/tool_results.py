@@ -769,6 +769,7 @@ def sanitize_tool_result(tool_name: str, raw_result: Any) -> Dict[str, Any]:
             "db_status",
             "mounts",
             "overview",
+            "index_status",
             "phage",
             "family",
             "filters",
@@ -1542,6 +1543,9 @@ def summarize_tool_result(tool_name: str, result: Dict[str, Any]) -> str:
             return f"phagescope_data {op} failed: {_trim_text(str(result.get('error') or 'request failed'), limit=400)}"
         files = result.get("produced_files") or result.get("artifact_paths") or []
         saved_note = f"; materialized {len(files)} file(s)" if isinstance(files, list) and files else ""
+        if op == "family_index_status" and isinstance(result.get("index_status"), dict):
+            status = result["index_status"]
+            return f"phagescope_data family_index_status: {status.get('status', 'unverified')} (checked {status.get('checked_at') or 'never'})."
         if op == "aggregate" and isinstance(result.get("groups"), list):
             return f"phagescope_data aggregate ({result.get('group_by')}): {len(result['groups'])} group(s)."
         if "returned" in result or "count" in result:

@@ -351,6 +351,10 @@ async def phagescope_data_handler(
                 **resp,
             }
 
+        if op == "family_index_status":
+            resp = await client.call_service("v2/proteins/family-index/status/", method="GET", timeout=timeout)
+            return {"success": True, "tool": "phagescope_data", "operation": op, "index_status": resp}
+
         if op == "family_members":
             fid = str(kwargs.get("family_id") or "").strip()
             if not fid and kwargs.get("protein_id"):

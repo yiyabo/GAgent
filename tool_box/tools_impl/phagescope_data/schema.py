@@ -12,6 +12,7 @@ OPERATIONS = (
     "aggregate",
     "cohort_report",
     "search_proteins",
+    "family_index_status",
     "family_members",
     "features",
     "structures",
@@ -33,10 +34,11 @@ DESCRIPTION = (
     "(6) search_proteins — proteins on a phage (product_query/function_class), protein_ids in batch, or the "
     "12.6M protein families (family_query, min_members, min_datasets; family_search_mode='synonyms' "
     "expands a small curated alias list, 'literal' keeps SQL substring search); "
-    "(7) family_members — members of one family_id (optional subfamily_id, dataset, include_sequence); "
-    "(8) features — trna, crispr, anticrispr, terminator, virulence, amr, transmembrane by phage or cross-dataset keyword; "
-    "(9) structures — ESMFold/AFDB availability/pLDDT for up to 50 protein_ids (materialize_pdb=true copies .pdb); "
-    "(10) materialize — UNTRUNCATED genomes (.fasta), proteins (.faa), annotations (.gff3), metadata (.tsv), "
+    "(7) family_index_status — last GAgent-owned read-only drift check (counts plus fixed samples; a clean check is not full-content proof); "
+    "(8) family_members — members of one family_id (optional subfamily_id, dataset, include_sequence); "
+    "(9) features — trna, crispr, anticrispr, terminator, virulence, amr, transmembrane by phage or cross-dataset keyword; "
+    "(10) structures — ESMFold/AFDB availability/pLDDT for up to 50 protein_ids (materialize_pdb=true copies .pdb); "
+    "(11) materialize — UNTRUNCATED genomes (.fasta), proteins (.faa), annotations (.gff3), metadata (.tsv), "
     "structures (.pdb) into results/phagescope/<output_subdir>/ ready for bio_tools and execute_code."
 )
 
