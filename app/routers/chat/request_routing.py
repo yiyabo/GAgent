@@ -402,6 +402,19 @@ _PLAN_REQUEST_RE = re.compile(
     re.IGNORECASE,
 )
 
+# An imperative request for a complete research plan is a persistent plan
+# request even when adjectives separate the verb and 计划. Keep the imperative
+# prefix/suffix so questions about *how* to plan remain ordinary chat.
+_CHINESE_RESEARCH_PLAN_REQUEST_RE = re.compile(
+    r"(?:^|[，,。；;！!]\s*|然后|接着|请|帮我)"
+    r"(?:制定|创建|生成|拟定|编制|做|写)\s*(?:一份|一个)?\s*"
+    r"(?:完整的?|详细的?|可执行的?|全面的?)?\s*(?:研究|项目|课题)?计划"
+    r"(?=吧|[。！!,，；;]|$)"
+    r"|(?:^|[，,。；;！!]\s*|然后|接着|请)给我\s*(?:一份|一个)?\s*"
+    r"(?:完整的?|详细的?|可执行的?|全面的?)?\s*(?:研究|项目|课题)计划"
+    r"(?=吧|[。！!,，；;]|$)"
+)
+
 _PLAN_REVIEW_PHRASES = (
     "review this plan",
     "review the plan",
@@ -1539,9 +1552,12 @@ def _has_explicit_plan_request(text: str) -> bool:
         return False
     if _has_negated_plan_create_request(lowered):
         return False
-    return _contains_any_lowered(lowered, _PLAN_REQUEST_PHRASES) or _contains_any_lowered(
-        lowered, _PLAN_NEW_REQUEST_PHRASES
-    ) or bool(_PLAN_REQUEST_RE.search(lowered))
+    return (
+        _contains_any_lowered(lowered, _PLAN_REQUEST_PHRASES)
+        or _contains_any_lowered(lowered, _PLAN_NEW_REQUEST_PHRASES)
+        or bool(_PLAN_REQUEST_RE.search(lowered))
+        or bool(_CHINESE_RESEARCH_PLAN_REQUEST_RE.search(lowered))
+    )
 
 
 def _has_negated_plan_create_request(lowered: str) -> bool:
