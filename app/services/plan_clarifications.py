@@ -79,7 +79,7 @@ def ask_user_questions_schema() -> dict[str, Any]:
                     },
                 },
             },
-            "required": ["question", "options"],
+            "required": ["header", "question", "options"],
         },
     }
 
@@ -149,6 +149,20 @@ def _normalize_options(raw: Any, index: int) -> list[dict[str, Any]]:
     return ordered
 
 
+_HEADER_BREAK_RE = re.compile(r"[？?：:，,。.（(；;]")
+
+
+def _header(raw: Any, question: str, index: int) -> str:
+    """Chip label: the model's header, else the question's leading phrase.
+
+    An option label is never used: it reads as if that option were chosen.
+    """
+    text = " ".join(str(raw or "").split())
+    if not text:
+        text = _HEADER_BREAK_RE.split(question, maxsplit=1)[0].strip()
+    return text[:HEADER_MAX].strip() or f"Q{index}"
+
+
 def normalize_questions(raw: Any) -> list[dict[str, Any]]:
     """Validate model questions into the client contract or raise ClarificationError."""
     if not isinstance(raw, list) or not raw:
@@ -174,8 +188,7 @@ def normalize_questions(raw: Any) -> list[dict[str, Any]]:
             while qid in used_ids:
                 qid += "_x"
         used_ids.add(qid)
-        raw_header = " ".join(str(item.get("header") or options[0]["label"]).split())
-        header = raw_header[:HEADER_MAX].strip() or f"Q{index}"
+        header = _header(item.get("header"), text, index)
         questions.append(
             {
                 "id": qid,

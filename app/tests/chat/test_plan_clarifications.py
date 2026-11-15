@@ -449,3 +449,15 @@ def test_answer_prompt_separates_explicit_choices_from_defaults() -> None:
         )
     )
     assert "recommended defaults" not in answered
+
+
+def test_missing_header_falls_back_to_the_question_not_an_option() -> None:
+    [topic, plain] = clarifications.normalize_questions(
+        [
+            {"question": "研究边界：只做计算分析，还是纳入湿实验？", "options": ["纯计算：挖掘+结构域分析", "计算+湿实验规划"]},
+            {"question": "Which host should the Plan target first?", "options": ["S. aureus", "C. acnes"]},
+        ]
+    )
+    assert topic["header"] == "研究边界"
+    assert plain["header"] == "Which host s"
+    assert clarifications.ask_user_questions_schema()["items"]["required"] == ["header", "question", "options"]
