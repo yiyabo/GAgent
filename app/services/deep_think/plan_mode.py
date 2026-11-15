@@ -52,6 +52,7 @@ _PLAN_OPERATIONS = frozenset(
         "todo_list",
         "update_task",
         "resolve_input",
+        "ask_user",
     }
 )
 _READ_PHAGESCOPE_DATA_OPERATIONS = frozenset(

@@ -1840,5 +1840,24 @@
     "usageRow": "{{calls}} 次 · {{tokens}} tokens · {{duration}}",
     "failedCalls": "{{count}} 次失败",
     "streamingNote": "流式文本只计数不展示：思考 {{thinking}} 条、推理 {{reasoning}} 条、回答片段 {{deltas}} 条。"
+  },
+  "planClarify": {
+    "title": "规划前需要你确认",
+    "round": "第 {{round}}/{{max}} 轮",
+    "closed": "已结束",
+    "recommended": "推荐",
+    "other": "其他（自行填写）",
+    "otherPlaceholder": "写下你的选择或约束",
+    "submit": "提交回答",
+    "useRecommended": "按推荐继续",
+    "moreContext": "需要更多背景",
+    "hint": "也可以直接在输入框回复。未确认的推荐项会作为计划假设列出。",
+    "answerIntro": "我对规划问题的回答：",
+    "defaultsIntro": "按推荐继续（未选择的问题采用推荐项）：",
+    "moreContextMessage": "在回答这些规划问题前，请先解释每个选项会如何改变计划，以及你推荐的理由。",
+    "recommendedSuffix": "（采用推荐）",
+    "otherPrefix": "其他：",
+    "sendFailed": "无法发送你的回答：{{detail}}",
+    "assumptionsTitle": "计划假设（尚未确认）"
   }
 }

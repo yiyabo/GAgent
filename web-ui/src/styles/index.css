@@ -1504,3 +1504,15 @@ body .ant-tag.ant-tag-blue, body .ant-tag.ant-tag-geekblue {
 body .ant-tag.ant-tag-purple {
   color: var(--status-blocked-fg); background: var(--status-blocked-bg); border-color: var(--status-blocked-border);
 }
+
+/* Plan-mode clarification card */
+.plan-clarify-card .plan-clarify-option-desc {
+  display: block;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.plan-clarify-card .plan-clarify-question + .plan-clarify-question {
+  border-top: 1px solid var(--border-light);
+  padding-top: 12px;
+}

@@ -5,6 +5,9 @@ export interface ChatSessionSettings {
   response_length?: ResponseLength;
   plan_mode?: boolean;
   plan_offer_dismissed?: boolean;
+  /** Server-owned: the clarification card awaiting an answer in this session. */
+  pending_plan_clarification_id?: string | null;
+  waiting_user_input?: boolean;
   [key: string]: unknown;
 }
 

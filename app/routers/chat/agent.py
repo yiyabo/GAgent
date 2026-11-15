@@ -278,6 +278,35 @@ async def _emit_event(event_sink: Optional[Callable], event: Dict[str, Any]) -> 
             pass
 
 
+def _plan_clarification_profile(
+    extra_context: Dict[str, Any],
+    *,
+    session_id: Optional[str],
+    bound_plan_id: Optional[int],
+    plan_mode: bool,
+) -> Dict[str, Any]:
+    """Prompt inputs for Plan-mode clarifying questions (answer + rounds left)."""
+    from app.services import plan_clarifications as clarifications
+
+    profile: Dict[str, Any] = {}
+    response = clarifications.normalize_clarification_response(
+        extra_context.get("plan_clarification_response")
+    )
+    if response:
+        profile["plan_clarification_response"] = response
+    if plan_mode:
+        used = 0
+        if session_id:
+            try:
+                used = clarifications.rounds_used(
+                    clarifications.read_session_metadata(session_id), bound_plan_id
+                )
+            except Exception:
+                logger.warning("Plan clarification state unavailable", exc_info=True)
+        profile["plan_clarification_rounds_left"] = max(0, clarifications.MAX_ROUNDS - used)
+    return profile
+
+
 class StructuredChatAgent:
     """Plan conversation agent using a structured schema."""
 
@@ -2017,6 +2046,26 @@ class StructuredChatAgent:
                     if self.extra_context.get("plan_contract_enforced") and not plan_mode_tool_allowed(name, safe_params):
                         return plan_mode_denial(name, safe_params)
                     requested_operation = str(safe_params.get("operation") or "").strip().lower()
+                    if name == "plan_operation" and requested_operation == "ask_user":
+                        from app.services.plan_clarifications import (
+                            issue_plan_clarification,
+                            unavailable_result,
+                        )
+
+                        if not self.extra_context.get("plan_contract_enforced"):
+                            return unavailable_result()
+                        result = await asyncio.to_thread(
+                            issue_plan_clarification,
+                            session_id=self.session_id,
+                            owner_id=str(self.extra_context.get("owner_id") or "").strip() or None,
+                            bound_plan_id=self.plan_session.plan_id,
+                            params=safe_params,
+                        )
+                        if result.get("success") and isinstance(result.get("clarification"), dict):
+                            # Non-blocking: the turn ends with a question card.
+                            dt_agent._chat_plan_handoff_result = result
+                            dt_agent._chat_plan_handoff_query = effective_user_message
+                        return result
                     allow_new_plan_rebind = bool(
                         self.extra_context.get("plan_new_requested")
                         or self.extra_context.get("action_selection") == "model"
@@ -2798,6 +2847,12 @@ class StructuredChatAgent:
                         "owner_id": str(
                             self.extra_context.get("owner_id") or ""
                         ).strip() or None,
+                        **_plan_clarification_profile(
+                            self.extra_context,
+                            session_id=self.session_id,
+                            bound_plan_id=self.plan_session.plan_id,
+                            plan_mode=routing_decision.plan_contract_enforced,
+                        ),
                     }
                 if "on_runtime_restore" in ctor_params:
                     dt_agent_kwargs['on_runtime_restore'] = on_runtime_restore

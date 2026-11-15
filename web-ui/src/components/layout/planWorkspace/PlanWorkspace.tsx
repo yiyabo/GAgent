@@ -70,6 +70,10 @@ const ScopedPlanWorkspace: React.FC<{ planId: number | null; sessionId: string |
   const completed = executionTasks.filter((task) => taskStatus(task) === 'completed').length;
   const failures = executionTasks.filter((task) => taskStatus(task) === 'failed').length;
   const needsReview = executionTasks.filter((task) => taskStatus(task) === 'needs_review').length;
+  const rawAssumptions: unknown = treeQuery.data?.metadata?.assumptions;
+  const assumptions = Array.isArray(rawAssumptions)
+    ? rawAssumptions.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+    : [];
   const planTitle = treeQuery.data?.title || currentPlanTitle || (planId != null ? t('planWorkspace.planNum', { id: planId }) : t('planWorkspace.noPlanYet'));
   const artifactSessionId = artifactSourceSession(treeQuery.data) ?? undefined;
   const foreignSource = Boolean(artifactSessionId && artifactSessionId !== sessionId);
@@ -154,6 +158,9 @@ const ScopedPlanWorkspace: React.FC<{ planId: number | null; sessionId: string |
       !tasks.some((child) => child.parent_id === task.id)) &&
       <Alert className="pw-alert" type="warning" showIcon message={t('planWorkspace.decomposeIncomplete')}
         description={t('planWorkspace.decomposeIncompleteDesc')} />}
+    {planId != null && assumptions.length > 0 && <Alert className="pw-alert pw-assumptions" type="info" showIcon
+      message={t('planClarify.assumptionsTitle')}
+      description={<ul className="pw-assumption-list">{assumptions.map((item) => <li key={item}>{item}</li>)}</ul>} />}
     {sourceNotice && <Alert className="pw-alert" type="info" showIcon
       message={t('planWorkspace.foreignArtifacts', { title: sourceNotice.title })}
       description={t('planWorkspace.foreignArtifactsDesc')}

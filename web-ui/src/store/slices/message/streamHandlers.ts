@@ -262,6 +262,12 @@ export async function handleJobUpdate(ctx: StreamHandlerContext, event: any): Pr
 export function handleFinal(ctx: StreamHandlerContext, event: any): boolean {
   ctx = scopeStreamContext(ctx);
   ctx.state.finalPayload = event.payload;
+  const clarificationId = event.payload?.metadata?.plan_clarification?.request_id;
+  const streamedSessionId = ctx.currentSession?.id;
+  if (typeof clarificationId === 'string' && clarificationId && typeof streamedSessionId === 'string') {
+    // The server marked the session as waiting; mirror it for the card and sidebar.
+    ctx.get().setPendingPlanClarification?.(streamedSessionId, clarificationId);
+  }
 
   // ---- Background dispatch: detect long-running tasks ----
   const bgCategory = detectBackgroundCategory(event.payload);

@@ -187,6 +187,9 @@ class ChatSessionSettings(BaseModel):
     ] = None
     plan_mode: bool | None = None
     plan_offer_dismissed: bool | None = None
+    # Server-owned: set when a Plan-mode clarification card awaits an answer.
+    pending_plan_clarification_id: str | None = None
+    waiting_user_input: bool | None = None
 
 
 class ChatSessionSummary(BaseModel):

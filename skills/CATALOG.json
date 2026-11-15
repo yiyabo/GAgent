@@ -381,9 +381,9 @@
         "scanner": "passed",
         "scanner_version": 1,
         "reviewed_by": "pi (AI), full text read",
-        "reviewed_at": "2026-11-15",
+        "reviewed_at": "2026-11-16",
         "human_signoff": false,
-        "notes": "Written in-house for the Plan-mode offer flow. The all-zero commit placeholder means the skill has not yet landed in its first commit; no third-party content or executable scripts."
+        "notes": "Written in-house for the Plan-mode offer and clarifying-question flows (2026-11-16 adds plan_operation.ask_user guidance). The all-zero commit placeholder means the skill has not yet landed in its first commit; no third-party content or executable scripts."
       }
     },
     "pre-submission-reviewer": {

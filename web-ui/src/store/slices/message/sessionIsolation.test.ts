@@ -115,6 +115,16 @@ describe('source session isolation', () => {
     expect(store.messages.find((message: any) => message.id === 'assistant-A').content).toBe('A finished');
   });
 
+  it('marks the streamed session as waiting for a clarification answer after switching away', () => {
+    const fixture = buildStore();
+    const { store, b } = fixture;
+    store.setPendingPlanClarification = vi.fn();
+    const ctx = streamContext(fixture);
+    store.setCurrentSession(b);
+    handleFinal(ctx, { payload: { response: 'Questions', actions: [], metadata: { status: 'completed', plan_clarification: { request_id: 'clarify_A', questions: [{ id: 'q1' }] } } } });
+    expect(store.setPendingPlanClarification).toHaveBeenCalledWith('local-A', 'clarify_A');
+  });
+
   it('keeps background dispatch and terminal job updates associated with A after switching to B', async () => {
     const fixture = buildStore();
     const { store, b } = fixture;
