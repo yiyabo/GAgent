@@ -547,8 +547,8 @@ class DeepThinkAgent:
             "conflict_requires_confirmation": bool(
                 self.request_profile.get("plan_conflict_requires_confirmation")
             ),
+            "contract_enforced": bool(self.request_profile.get("plan_contract_enforced")),
         }
-
     def _has_bound_task_context(self, task_context: Optional[TaskExecutionContext]) -> bool:
         if task_context and (
             task_context.task_id is not None or str(task_context.task_instruction or "").strip()
@@ -1231,6 +1231,10 @@ class DeepThinkAgent:
             outcome=outcome,
             user_query=user_query,
         )
+
+    @staticmethod
+    def _plan_contract_blocks_final(outcome: dict[str, Any]) -> bool:
+        return _gating._plan_contract_blocks_final(outcome)
 
     def _build_request_tier_block(self) -> str:
         return _prompts._build_request_tier_block(self)

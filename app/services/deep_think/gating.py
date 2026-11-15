@@ -84,6 +84,7 @@ from app.services.deep_think.gating_plans import (
     _phagescope_dataset_analysis_requested,
     _phagescope_deep_profile_failure,
     _phagescope_deep_profile_seen,
+    _plan_contract_blocks_final,
     _summarize_structured_plan_outcome,
 )
 from app.services.deep_think.gating_probe import (

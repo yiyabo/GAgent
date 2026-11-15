@@ -54,6 +54,7 @@ class _NativeCycleState:
     pending_handoff_task_id: Optional[int] = None
     pending_handoff_previous_task_id: Optional[int] = None
     structured_plan_finalize_nudge_plan_id: Optional[int] = None
+    structured_plan_soft_retries: int = 0
     bound_task_before_cycle: Optional[int] = None
     runtime_iteration_limit: int = 0
     handoff_reserve_used: int = 0

@@ -975,21 +975,30 @@ async def _native_final_call_cycle(
             user_query=user_query,
         )
         if structured_plan_outcome.get("required") and not structured_plan_outcome.get("satisfied"):
+            soft = not bool(structured_plan_outcome.get("hard"))
+            if not soft or cycle.structured_plan_soft_retries < 1:
+                if soft:
+                    cycle.structured_plan_soft_retries += 1
+                current_step.self_correction = (
+                    "Rejected the final answer because the requested structured plan was not created or updated yet."
+                    if not soft
+                    else "Asked once for the requested structured plan before accepting a plan-less answer."
+                )
+                final_answer = ""
+                thinking_steps.append(current_step)
+                if agent.on_thinking:
+                    await agent._safe_callback(current_step)
+                messages.append({"role": "assistant", "content": result.content or ""})
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": agent._get_structured_plan_retry_prompt(),
+                    }
+                )
+                return "continue", ""
             current_step.self_correction = (
-                "Rejected the final answer because the required structured plan was not created or updated yet."
+                "Accepted the final answer after one repair attempt; no structured plan was created and this is reported to the user."
             )
-            final_answer = ""
-            thinking_steps.append(current_step)
-            if agent.on_thinking:
-                await agent._safe_callback(current_step)
-            messages.append({"role": "assistant", "content": result.content or ""})
-            messages.append(
-                {
-                    "role": "user",
-                    "content": agent._get_structured_plan_retry_prompt(),
-                }
-            )
-            return "continue", ""
         profile_path = agent._needs_directory_profile_before_final(
             user_query=user_query,
             steps=thinking_steps,
@@ -1869,7 +1878,7 @@ async def _native_finalize(
         thinking_steps,
         user_query=user_query,
     )
-    if structured_plan_outcome.get("required") and not structured_plan_outcome.get("satisfied"):
+    if agent._plan_contract_blocks_final(structured_plan_outcome):
         final_answer = agent._build_structured_plan_contract_failure_answer(
             outcome=structured_plan_outcome,
             user_query=user_query,
@@ -1907,6 +1916,7 @@ async def _native_finalize(
         termination_reason=getattr(agent, "_termination_reason", None),
         structured_plan_required=bool(structured_plan_outcome.get("required")),
         structured_plan_satisfied=bool(structured_plan_outcome.get("satisfied")),
+        structured_plan_hard=bool(structured_plan_outcome.get("hard", True)),
         structured_plan_state=structured_plan_outcome.get("state"),
         structured_plan_message=structured_plan_outcome.get("message"),
         structured_plan_plan_id=structured_plan_outcome.get("plan_id"),
@@ -2041,8 +2051,7 @@ async def _think_prompt_based(  # pyright: ignore[reportGeneralTypeIssues] -- le
                     )
                     final_answer = (
                         candidate_answer
-                        if not structured_plan_outcome.get("required")
-                        or structured_plan_outcome.get("satisfied")
+                        if not agent._plan_contract_blocks_final(structured_plan_outcome)
                         else ""
                     )
                     if not final_answer:
@@ -2366,8 +2375,7 @@ Respond with ONLY a JSON object:
                     )
                     final_answer = (
                         candidate_answer
-                        if not structured_plan_outcome.get("required")
-                        or structured_plan_outcome.get("satisfied")
+                        if not agent._plan_contract_blocks_final(structured_plan_outcome)
                         else ""
                     )
                 else:
@@ -2428,7 +2436,7 @@ Respond with ONLY a JSON object:
         thinking_steps,
         user_query=user_query,
     )
-    if structured_plan_outcome.get("required") and not structured_plan_outcome.get("satisfied"):
+    if agent._plan_contract_blocks_final(structured_plan_outcome):
         final_answer = agent._build_structured_plan_contract_failure_answer(
             outcome=structured_plan_outcome,
             user_query=user_query,
@@ -2466,6 +2474,7 @@ Respond with ONLY a JSON object:
         termination_reason=getattr(agent, "_termination_reason", None),
         structured_plan_required=bool(structured_plan_outcome.get("required")),
         structured_plan_satisfied=bool(structured_plan_outcome.get("satisfied")),
+        structured_plan_hard=bool(structured_plan_outcome.get("hard", True)),
         structured_plan_state=structured_plan_outcome.get("state"),
         structured_plan_message=structured_plan_outcome.get("message"),
         structured_plan_plan_id=structured_plan_outcome.get("plan_id"),
