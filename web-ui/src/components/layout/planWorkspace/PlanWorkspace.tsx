@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query';
 import { Alert, Button, Drawer, Empty, Space, Spin, Tabs, Tooltip } from 'antd';
 import { AppstoreOutlined, ApartmentOutlined, FolderOpenOutlined, FullscreenExitOutlined, FullscreenOutlined,
-  HistoryOutlined, NodeIndexOutlined, ReloadOutlined } from '@ant-design/icons';
+  HistoryOutlined, NodeIndexOutlined, ReloadOutlined, RightOutlined } from '@ant-design/icons';
 import { usePlanTasks, usePlanTree } from '@hooks/usePlans';
 import { useChatStore } from '@store/chat';
 import { useTasksStore } from '@store/tasks';
@@ -37,6 +37,9 @@ const ScopedPlanWorkspace: React.FC<{ planId: number | null; sessionId: string |
   const setChatContext = useChatStore((state) => state.setChatContext);
   const fullscreen = useLayoutStore((state) => state.dagSidebarFullscreen);
   const toggleFullscreen = useLayoutStore((state) => state.toggleDagSidebarFullscreen);
+  const workspaceMode = useLayoutStore((state) => state.workspaceMode);
+  const setPlanPanelVisible = useLayoutStore((state) => state.setPlanPanelVisible);
+  const setDagSidebarFullscreen = useLayoutStore((state) => state.setDagSidebarFullscreen);
   const taskQuery = usePlanTasks({ planId });
   const treeQuery = usePlanTree(planId);
   const tasks = useMemo(() => taskQuery.data.map((task) => {
@@ -132,7 +135,9 @@ const ScopedPlanWorkspace: React.FC<{ planId: number | null; sessionId: string |
           <Tooltip title={t('planWorkspace.checklist')}><Button aria-label={t('planWorkspace.checklist')} type="text" size="small" icon={<AppstoreOutlined />} disabled={planId == null || foreignSource} onClick={() => setTodoOpen(true)} /></Tooltip>
           <Tooltip title={t('planWorkspace.refreshPlan')}><Button aria-label={t('planWorkspace.refreshPlan')} type="text" size="small" icon={<ReloadOutlined spin={taskQuery.isFetching} />} onClick={refresh} disabled={planId == null} /></Tooltip>
           <Tooltip title={fullscreen ? t('planWorkspace.exitFocus') : t('planWorkspace.expandWorkspace')}><Button aria-label={fullscreen ? t('planWorkspace.exitFocus') : t('planWorkspace.expandWorkspace')} type="text" size="small"
-            icon={fullscreen ? <FullscreenExitOutlined /> : <FullscreenOutlined />} onClick={toggleFullscreen} /></Tooltip></Space>
+            icon={fullscreen ? <FullscreenExitOutlined /> : <FullscreenOutlined />} onClick={toggleFullscreen} /></Tooltip>
+          {workspaceMode !== 'classic' && <Tooltip title={t('workspace.hidePlanPanel')}><Button aria-label={t('workspace.hidePlanPanel')} type="text" size="small" icon={<RightOutlined />}
+            onClick={() => { setDagSidebarFullscreen(false); setPlanPanelVisible(false); }} /></Tooltip>}</Space>
       </div>
       {/* One session, one plan: the bound plan is shown read-only. Plans are created,
           reviewed or replaced inside the conversation itself and are never picked from

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { workspaceGeometry } from './workspaceGeometry';
+import { planPanelState, workspaceGeometry } from './workspaceGeometry';
 import { readWorkspaceMode, saveWorkspaceMode, WORKSPACE_PREFERENCE_KEY } from '@store/workspacePreference';
 
 describe('workspace layout recovery and resizing', () => {
@@ -23,5 +23,22 @@ describe('workspace layout recovery and resizing', () => {
     expect(localStorage.getItem(WORKSPACE_PREFERENCE_KEY)).toBe('plan');
     window.history.replaceState({}, '', '/chat');
     localStorage.removeItem(WORKSPACE_PREFERENCE_KEY);
+  });
+});
+
+
+describe('plan panel visibility', () => {
+  it('hides the plan pane and divider on desktop while offering a reopen control', () => {
+    expect(planPanelState({ compact: false, compactPlan: false, fullscreen: false, visible: false }))
+      .toEqual({ showPlan: false, showDivider: false, showReopen: true });
+    expect(planPanelState({ compact: false, compactPlan: false, fullscreen: false, visible: true }))
+      .toEqual({ showPlan: true, showDivider: true, showReopen: false });
+  });
+
+  it('keeps compact and focus modes usable regardless of the desktop preference', () => {
+    expect(planPanelState({ compact: true, compactPlan: true, fullscreen: false, visible: false }).showPlan).toBe(true);
+    expect(planPanelState({ compact: true, compactPlan: false, fullscreen: false, visible: true }).showPlan).toBe(false);
+    expect(planPanelState({ compact: false, compactPlan: false, fullscreen: true, visible: false }))
+      .toEqual({ showPlan: true, showDivider: false, showReopen: false });
   });
 });

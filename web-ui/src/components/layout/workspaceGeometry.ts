@@ -6,3 +6,20 @@ export function workspaceGeometry(width: number, showNav: boolean, requested: nu
   const planWidth = Math.min(maxPlan, Math.max(420, requested ?? available * 0.65));
   return { compact, navWidth, planWidth, maxPlan };
 }
+
+export function planPanelState({
+  compact,
+  compactPlan,
+  fullscreen,
+  visible,
+}: {
+  compact: boolean;
+  compactPlan: boolean;
+  fullscreen: boolean;
+  visible: boolean;
+}) {
+  const showPlan = fullscreen || (compact ? compactPlan : visible);
+  const showDivider = !compact && !fullscreen && visible;
+  const showReopen = !compact && !fullscreen && !visible;
+  return { showPlan, showDivider, showReopen };
+}
