@@ -46,6 +46,9 @@ class DeepThinkResult:
     termination_reason: Optional[str] = None
     structured_plan_required: bool = False
     structured_plan_satisfied: bool = False
+    # True only when an explicit client-side plan mode demanded creation.
+    # Natural-language hints may complete with a notice instead of failing.
+    structured_plan_hard: bool = True
     structured_plan_state: Optional[str] = None
     structured_plan_message: Optional[str] = None
     structured_plan_plan_id: Optional[int] = None
@@ -88,4 +91,5 @@ def structured_plan_contract_failed(result: Any) -> bool:
     """Required operations that were not fulfilled are a failed goal, not success."""
     return bool(getattr(result, 'structured_plan_required', False)
                 and not getattr(result, 'structured_plan_satisfied', False)
+                and getattr(result, 'structured_plan_hard', True)
                 and getattr(result, 'structured_plan_state', None) != 'confirmation_required')

@@ -1009,6 +1009,10 @@ class RequestRoutingDecision:
     plan_optimize_required: bool = False
     plan_new_requested: bool = False
     plan_conflict_requires_confirmation: bool = False
+    # True only for a deterministic, explicit plan-mode signal (UI toggle or
+    # command). Natural-language detection is a hint; a missed tool call must
+    # not turn the whole run into a failed goal.
+    plan_contract_enforced: bool = False
 
     @property
     def use_deep_think(self) -> bool:
@@ -1041,6 +1045,7 @@ class RequestRoutingDecision:
             "plan_optimize_required": self.plan_optimize_required,
             "plan_new_requested": self.plan_new_requested,
             "plan_conflict_requires_confirmation": self.plan_conflict_requires_confirmation,
+            "plan_contract_enforced": self.plan_contract_enforced,
         }
         if self.thinking_visibility == "progress":
             payload["progress_mode"] = "compact"
@@ -1065,6 +1070,7 @@ class RequestTierProfile:
     plan_optimize_required: bool = False
     plan_new_requested: bool = False
     plan_conflict_requires_confirmation: bool = False
+    plan_contract_enforced: bool = False
 
     def prompt_metadata(self) -> Dict[str, Any]:
         return {
@@ -1084,6 +1090,7 @@ class RequestTierProfile:
             "plan_optimize_required": self.plan_optimize_required,
             "plan_new_requested": self.plan_new_requested,
             "plan_conflict_requires_confirmation": self.plan_conflict_requires_confirmation,
+            "plan_contract_enforced": self.plan_contract_enforced,
         }
 
 
@@ -1133,6 +1140,25 @@ def strip_manual_deep_prefix(message: str) -> str:
     return stripped or text
 
 
+_PLAN_MODE_TRUTHY = frozenset({"1", "true", "on", "yes", "required", "plan", "force"})
+
+
+def _explicit_plan_mode(context: Mapping[str, Any] | None) -> bool:
+    """Deterministic plan-mode signal from the client (UI toggle / command).
+
+    Natural-language requests are hints. Only this explicit flag may turn a
+    missed ``plan_operation/create`` into a failed run.
+    """
+    if not context:
+        return False
+    raw = context.get("plan_mode")
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str):
+        return raw.strip().lower() in _PLAN_MODE_TRUTHY
+    return False
+
+
 def resolve_request_routing(
     *,
     message: str,
@@ -1172,6 +1198,9 @@ def resolve_request_routing(
     combined_reasons = list(
         dict.fromkeys(subject_reasons + intent_reasons + reasons)
     )
+    plan_contract_enforced = _explicit_plan_mode(context)
+    if plan_contract_enforced:
+        combined_reasons.append("plan_contract_enforced")
     context_plan_id = (context or {}).get("plan_id")
     effective_plan_bound = plan_id is not None or context_plan_id is not None
     plan_intent = resolve_plan_lifecycle_intent(
@@ -1260,6 +1289,7 @@ def resolve_request_routing(
             plan_optimize_required=plan_intent.optimize_requested,
             plan_new_requested=plan_intent.new_plan_requested,
             plan_conflict_requires_confirmation=plan_intent.conflict_requires_confirmation,
+            plan_contract_enforced=plan_contract_enforced,
         )
     return RequestRoutingDecision(
         request_tier=request_tier,
@@ -1281,6 +1311,7 @@ def resolve_request_routing(
         plan_optimize_required=plan_intent.optimize_requested,
         plan_new_requested=plan_intent.new_plan_requested,
         plan_conflict_requires_confirmation=plan_intent.conflict_requires_confirmation,
+        plan_contract_enforced=plan_contract_enforced,
     )
 
 
@@ -1531,6 +1562,7 @@ def build_request_tier_profile(
         plan_optimize_required=decision.plan_optimize_required,
         plan_new_requested=decision.plan_new_requested,
         plan_conflict_requires_confirmation=decision.plan_conflict_requires_confirmation,
+        plan_contract_enforced=decision.plan_contract_enforced,
     )
 
 

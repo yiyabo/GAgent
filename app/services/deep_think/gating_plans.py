@@ -233,6 +233,11 @@ def _summarize_structured_plan_outcome(
             "required_operations": required_ops,
             "satisfied_operations": satisfied_ops,
             "missing_operations": missing_ops,
+            # Only an explicit client-side plan mode may fail the run. A
+            # natural-language hint gets one repair attempt, then a visible
+            # notice instead of a failed goal.
+            "hard": bool(flags["contract_enforced"]),
+            "soft_missing": bool(not satisfied and not flags["contract_enforced"]),
         }
 
     is_bound_plan_mutation_request = (
@@ -287,6 +292,24 @@ def _summarize_structured_plan_outcome(
     }
 
 
+def _plan_contract_blocks_final(outcome: dict[str, Any]) -> bool:
+    """Whether an unsatisfied plan contract must replace the final answer.
+
+    Natural-language detection is a hint (``hard`` false): the caller gets one
+    repair attempt and then a visible notice, never a failed goal.
+    """
+    return bool(
+        outcome.get("required")
+        and not outcome.get("satisfied")
+        and (
+            outcome.get("hard", False)
+            # A bound-plan conflict confirmation is an intentional replacement,
+            # not a failed goal; keep surfacing its confirmation message.
+            or str(outcome.get("state") or "") == "confirmation_required"
+        )
+    )
+
+
 def _extract_successful_created_plan_from_tool_results(
     cls: Any,
     tool_results: List[Dict[str, Any]],
@@ -333,10 +356,20 @@ def _ensure_structured_plan_notice(
     text = str(answer or "").strip()
     if not outcome.get("required") or outcome.get("satisfied"):
         return text
-    notice = sanitize_professional_response_text(str(outcome.get("message") or "").strip())
+    language = _dta().detect_reasoning_language(user_query or text)
+    if outcome.get("soft_missing"):
+        # Inferred request: keep the answer, state plainly that no plan tree
+        # was created, and offer the next step.
+        notice = _dta()._localized_text(
+            language,
+            "本轮只生成了文字方案，没有创建可执行的结构化计划树。需要的话，我可以现在把它建成 Plan。",
+            "This run produced prose only; no executable plan tree was created. I can turn it into a Plan now if you want.",
+        )
+    else:
+        notice = sanitize_professional_response_text(str(outcome.get("message") or "").strip())
     if not notice:
         notice = _dta()._localized_text(
-            _dta().detect_reasoning_language(user_query or text),
+            language,
             "本轮未创建或更新结构化计划。",
             "A structured plan was not created or updated in this run.",
         )

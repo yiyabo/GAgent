@@ -1,11 +1,13 @@
 """Natural-language turns select actions in the existing model/tool loop."""
 
 import logging
+
 from .request_routing import (
     RequestRoutingDecision,
+    _explicit_plan_mode,
     manual_deep_think_requested,
-    strip_manual_deep_prefix,
     resolve_subject_resolution,
+    strip_manual_deep_prefix,
 )
 
 MODEL_SELECTION = "model_selects_actions"
@@ -28,6 +30,7 @@ _OLD_EXECUTION_KEYS = (
     "plan_optimize_required",
     "plan_new_requested",
     "plan_conflict_requires_confirmation",
+    "plan_contract_enforced",
     "task_directory_full",
 )
 
@@ -49,6 +52,7 @@ def resolve_model_routing(*, message, history=None, context=None, plan_id=None, 
         brevity_hint=False,
         explicit_task_ids=[],
         explicit_task_override=False,
+        plan_contract_enforced=_explicit_plan_mode(context),
     )
 
 
