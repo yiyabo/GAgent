@@ -490,12 +490,12 @@ async def _stream_plan_mode_offer(
     offer: dict[str, Any],
     response_text: str,
     event_sink: Callable[[dict[str, Any]], Awaitable[None]] | None,
+    gate_source: str = "llm",
 ) -> AsyncIterator[str]:
-    """Emit one pending Plan-mode offer without calling the model.
+    """Emit one pending Plan-mode offer without running the agent loop.
 
-    Deterministic counterpart to ``plan_operation.offer``: the caller already
-    decided (via ``plan_mode_offer_policy``) that this request qualifies, so no
-    tool loop runs and no Plan is created or executed.
+    The consent decision came from ``plan_mode_offer_gate``; this helper only
+    renders the card. No tool loop runs and no Plan is created or executed.
     """
     metadata: dict[str, Any] = {
         "status": "completed",
@@ -503,6 +503,7 @@ async def _stream_plan_mode_offer(
         "plan_creation_state": "offer",
         "termination_reason": "plan_mode_offer",
         "plan_mode_offer": offer,
+        "plan_offer_gate": gate_source,
     }
     from app.services.memory.context_recall import attach_recall_metadata
 
