@@ -31,13 +31,16 @@ def get_repo_root() -> Path:
 
 
 def _session_cwd(tool_context: ToolContext | None) -> Path | None:
-    """Session runtime dir for a chat-lane call that carries no explicit work_dir.
+    """Session runtime dir that relative inputs mean in the chat lane.
 
     execute_code already runs with this directory as its cwd, so relative paths
-    passed to other tools in the same session must mean the same place. An
-    explicit work_dir (plan task lanes) always wins and keeps its own rules.
+    passed to other tools in the same session must mean the same place. The
+    chat action bridge gives each tool a scratch work_dir for its own outputs
+    (``<session>/raw_files/chat_tools/<tool>``); that scratch is not where the
+    user's relative paths point. Any other explicit work_dir (plan task lanes)
+    wins and keeps its own rules.
     """
-    if tool_context is None or str(tool_context.work_dir or "").strip():
+    if tool_context is None:
         return None
     session_id = str(tool_context.session_id or "").strip()
     if not session_id:
@@ -45,9 +48,18 @@ def _session_cwd(tool_context: ToolContext | None) -> Path | None:
     try:
         from app.services.session_paths import get_runtime_session_dir
 
-        return get_runtime_session_dir(session_id).resolve(strict=False)
+        session_dir = get_runtime_session_dir(session_id).resolve(strict=False)
     except Exception:
         return None
+    work_dir = str(tool_context.work_dir or "").strip()
+    if not work_dir:
+        return session_dir
+    chat_scratch = session_dir / "raw_files" / "chat_tools"
+    try:
+        Path(work_dir).expanduser().resolve(strict=False).relative_to(chat_scratch)
+    except ValueError:
+        return None
+    return session_dir
 
 
 def _resolve_results_path(
@@ -104,9 +116,12 @@ def resolve_tool_path(
             return (task_output_base / candidate.name).resolve(strict=False)
         return (repo_root / "results" / candidate.name).resolve(strict=False)
 
-    base_dir = session_cwd or repo_root
-    if tool_context and str(tool_context.work_dir or "").strip():
+    if session_cwd is not None:
+        base_dir = session_cwd
+    elif tool_context and str(tool_context.work_dir or "").strip():
         base_dir = Path(tool_context.work_dir).expanduser().resolve(strict=False)
+    else:
+        base_dir = repo_root
     return (base_dir / candidate).resolve(strict=False)
 
 

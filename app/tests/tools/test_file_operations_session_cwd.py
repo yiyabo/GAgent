@@ -133,3 +133,70 @@ def test_resolution_rules_outside_the_chat_lane_are_unchanged(
         resolve_tool_path("/etc/hosts", tool_context=_chat())
         == Path("/etc/hosts").resolve()
     )
+
+
+# --- The chat action bridge (production path for DeepThink file tools) -------
+# Live p56 run: the bridge canonicalized "." against the process cwd (/app)
+# before the tool resolved it, and rebuilt a ToolContext whose per-tool scratch
+# work_dir bypassed the session cwd. Exercise those exact pieces.
+
+
+def _bridge(project, operation: str, path: str) -> dict:
+    from types import SimpleNamespace
+
+    from app.routers.chat.action_handlers import _build_chat_tool_context
+    from app.routers.chat.action_runtime_context import _normalize_local_tool_params
+
+    agent = SimpleNamespace(
+        session_id=SESSION,
+        plan_session=SimpleNamespace(plan_id=None, repo=None),
+        extra_context={},
+    )
+    params = _normalize_local_tool_params(agent, "file_operations", {"operation": operation, "path": path})
+    context = _build_chat_tool_context(agent, "file_operations")
+    assert context is not None and context.work_dir.endswith("raw_files/chat_tools/file_operations")
+    return _run(params["operation"], params["path"], tool_context=context)
+
+
+def test_bridge_list_dot_lists_the_session_directory(project) -> None:
+    result = _bridge(project, "list", ".")
+    assert result["success"] is True, result
+    assert result["path"] == str(project["session"])
+
+
+def test_bridge_reads_session_results_and_bare_files(project) -> None:
+    read = _bridge(project, "read", "results/summary.csv")
+    assert read["success"] is True, read
+    assert read["content"].startswith("a,b")
+    note = _bridge(project, "read", "notes.txt")
+    assert note["success"] is True and note["content"] == "session note"
+
+
+def test_bridge_still_denies_escapes_and_keeps_absolute_paths(project) -> None:
+    escaped = _bridge(project, "read", "../session_other/secret.txt")
+    assert escaped["success"] is False
+    assert "other user's data" not in str(escaped)
+    absolute = _bridge(project, "read", str(project["session"] / "notes.txt"))
+    assert absolute["success"] is True and absolute["content"] == "session note"
+
+
+def test_normalizer_keeps_relative_inputs_but_canonicalizes_subjects(project) -> None:
+    from types import SimpleNamespace
+
+    from app.routers.chat.action_runtime_context import _normalize_local_tool_params
+
+    plain = SimpleNamespace(extra_context={})
+    assert _normalize_local_tool_params(plain, "file_operations", {"path": "."})["path"] == "."
+    assert _normalize_local_tool_params(plain, "document_reader", {"file_path": "results\\a.md"})["file_path"] == "results/a.md"
+    absolute = f"{project['session']}/results/../notes.txt"
+    assert _normalize_local_tool_params(plain, "file_operations", {"path": absolute})["path"] == str(project["session"] / "notes.txt")
+    subject = {"canonical_ref": str(project["session"] / "results" / "summary.csv"), "display_ref": "summary.csv"}
+    agent = SimpleNamespace(extra_context={"active_subject": subject})
+    assert _normalize_local_tool_params(agent, "file_operations", {"path": "summary.csv"})["path"] == subject["canonical_ref"]
+
+
+def test_chat_scratch_work_dir_resolves_relative_inputs_to_the_session(project) -> None:
+    scratch = project["session"] / "raw_files" / "chat_tools" / "document_reader"
+    context = ToolContext(session_id=SESSION, work_dir=str(scratch))
+    assert resolve_tool_path(".", tool_context=context) == project["session"]
+    assert resolve_tool_path("results/a.md", tool_context=context) == project["session"] / "results" / "a.md"

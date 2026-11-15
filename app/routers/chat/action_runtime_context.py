@@ -35,6 +35,7 @@ from .artifact_gallery import update_recent_image_artifacts
 from .subject_identity import (
     build_subject_aliases,
     canonicalize_subject_ref,
+    normalize_path_text,
     normalize_tool_path,
     subject_identity_matches,
 )
@@ -164,6 +165,27 @@ def _extract_subject_from_tool_call(
     return None
 
 
+def _tool_input_path(value: Any, *, active_subject: Optional[Dict[str, Any]]) -> str:
+    """Normalize a tool input path without anchoring plain relative paths to the process cwd.
+
+    A reference to the active subject still becomes its canonical path, and
+    absolute paths and URLs are canonicalized as before. A plain relative path
+    stays relative so the tool's own resolver anchors it in the session
+    directory (execute_code's cwd); canonicalizing turned "." into /app, which
+    the session scope then rejected.
+    """
+    text = normalize_path_text(value)
+    if not text:
+        return ""
+    if (
+        "://" in text
+        or text.startswith(("/", "~"))
+        or subject_identity_matches(active_subject, candidate_ref=text)
+    ):
+        return normalize_tool_path(text, active_subject=active_subject)
+    return text
+
+
 def _normalize_local_tool_params(agent: Any, tool_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
     active_subject = (
         dict((getattr(agent, "extra_context", {}) or {}).get("active_subject") or {})
@@ -174,38 +196,38 @@ def _normalize_local_tool_params(agent: Any, tool_name: str, params: Dict[str, A
 
     if tool_name == "file_operations":
         if isinstance(normalized.get("path"), str):
-            normalized["path"] = normalize_tool_path(
+            normalized["path"] = _tool_input_path(
                 normalized.get("path"),
                 active_subject=active_subject,
             )
         if isinstance(normalized.get("destination"), str):
             normalized["destination"] = canonicalize_subject_ref(normalized.get("destination"))
     elif tool_name == "document_reader" and isinstance(normalized.get("file_path"), str):
-        normalized["file_path"] = normalize_tool_path(
+        normalized["file_path"] = _tool_input_path(
             normalized.get("file_path"),
             active_subject=active_subject,
         )
     elif tool_name == "vision_reader":
         if isinstance(normalized.get("image_path"), str):
-            normalized["image_path"] = normalize_tool_path(
+            normalized["image_path"] = _tool_input_path(
                 normalized.get("image_path"),
                 active_subject=active_subject,
             )
         if isinstance(normalized.get("file_path"), str):
-            normalized["file_path"] = normalize_tool_path(
+            normalized["file_path"] = _tool_input_path(
                 normalized.get("file_path"),
                 active_subject=active_subject,
             )
     elif tool_name == "result_interpreter":
         if isinstance(normalized.get("file_path"), str):
-            normalized["file_path"] = normalize_tool_path(
+            normalized["file_path"] = _tool_input_path(
                 normalized.get("file_path"),
                 active_subject=active_subject,
             )
         file_paths = normalized.get("file_paths")
         if isinstance(file_paths, list):
             normalized["file_paths"] = [
-                normalize_tool_path(item, active_subject=active_subject) if isinstance(item, str) else item
+                _tool_input_path(item, active_subject=active_subject) if isinstance(item, str) else item
                 for item in file_paths
             ]
     return normalized
