@@ -2253,6 +2253,7 @@
                   }
                 },
                 "required": [
+                  "header",
                   "question",
                   "options"
                 ],
