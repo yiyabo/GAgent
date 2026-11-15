@@ -3373,6 +3373,7 @@ class StructuredChatAgent:
                 "plan_optimize_required": routing_decision.plan_optimize_required,
                 "plan_new_requested": routing_decision.plan_new_requested,
                 "plan_conflict_requires_confirmation": routing_decision.plan_conflict_requires_confirmation,
+                "plan_contract_enforced": routing_decision.plan_contract_enforced,
                 "current_user_turn_index": _current_user_turn_index_from_history(self.history),
             }
         )

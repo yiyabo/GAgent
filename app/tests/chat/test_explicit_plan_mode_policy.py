@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
+from app.routers.chat.model_selection import resolve_model_routing
 from app.routers.chat.models import AgentStep
 from app.routers.chat.request_routing import resolve_request_routing
 from app.services.deep_think.plan_mode import (
@@ -12,6 +15,8 @@ from app.services.deep_think.plan_mode import (
     plan_mode_tool_names,
 )
 from app.services.llm.structured_response import LLMAction
+
+LIVE_PLAN_REQUEST = "调研噬菌体裂解酶的最新研究进展，并制定完整的研究计划。"
 
 
 @pytest.mark.parametrize(
@@ -109,6 +114,50 @@ def test_explicit_plan_mode_still_hardens_plan_creation() -> None:
     )
     assert decision.plan_create_required is True
     assert decision.plan_contract_enforced is True
+
+
+@pytest.mark.parametrize("model_selection", [True, False])
+def test_explicit_plan_mode_requires_creation_without_a_language_regex(
+    model_selection: bool,
+) -> None:
+    decision = (
+        resolve_model_routing(message=LIVE_PLAN_REQUEST, context={"plan_mode": True})
+        if model_selection
+        else resolve_request_routing(
+            message=LIVE_PLAN_REQUEST, context={"plan_mode": True}
+        )
+    )
+    assert decision.plan_create_required is True
+    assert decision.plan_contract_enforced is True
+
+
+def test_explicit_plan_mode_does_not_recreate_a_bound_plan() -> None:
+    decision = resolve_request_routing(
+        message="查看当前计划状态",
+        context={"plan_mode": True},
+        plan_id=34,
+    )
+    assert decision.plan_create_required is False
+
+
+def test_legacy_routing_context_preserves_the_permission_flag() -> None:
+    from app.tests.chat.test_unified_stream_event_golden import _build_agent
+
+    agent = _build_agent()
+    decision = resolve_request_routing(
+        message=LIVE_PLAN_REQUEST, context={"plan_mode": True}
+    )
+    agent._update_routing_context(decision)
+    assert agent.extra_context["plan_contract_enforced"] is True
+
+    action = LLMAction(
+        kind="tool_operation",
+        name="file_operations",
+        parameters={"operation": "write", "path": "results/plan.md", "content": "text"},
+    )
+    step = asyncio.run(agent._handle_tool_action(action))
+    assert step.success is False
+    assert step.details["error"] == "plan_mode_read_only"
 
 
 async def test_structured_action_guard_blocks_before_handler(monkeypatch) -> None:
