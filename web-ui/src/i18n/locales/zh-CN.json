@@ -538,7 +538,8 @@
     },
     "previewFile": "点击在侧边栏预览 {{name}}",
     "previewPdf": "点击在侧边栏预览 PDF: {{name}}",
-    "downloadFile": "下载 {{name}}"
+    "downloadFile": "下载 {{name}}",
+    "inspectRun": "查看运行详情"
   },
   "artifacts": {
     "formatPng": "PNG 300DPI",
@@ -1804,5 +1805,40 @@
       "askPrefill": "请解释这个节点，以及针对我的分析该怎么设置它的参数。",
       "loadFailed": "无法加载对话：{{error}}"
     }
+  },
+  "runInspector": {
+    "title": "运行检查器",
+    "refresh": "刷新",
+    "export": "导出 JSON",
+    "noRun": "这条消息没有记录对应的运行。",
+    "loadFailed": "无法加载这次运行",
+    "status": "状态",
+    "duration": "耗时",
+    "steps": "步骤",
+    "stepCounts": "{{steps}} 步 · 其中工具 {{tools}} 步",
+    "toolFailures": "工具失败",
+    "tokens": "Token",
+    "tokenSummary": "共 {{total}} · 缓存 {{cached}} · {{calls}} 次调用",
+    "artifacts": "产物",
+    "runId": "运行 ID",
+    "request": "请求",
+    "termination": "结束原因",
+    "truncated": "这次运行较大，只展示前面部分；可导出保存当前内容。",
+    "filterAll": "全部",
+    "filterTools": "工具",
+    "filterFailures": "失败",
+    "filterTool": "按工具筛选",
+    "showing": "显示 {{shown}} / {{total}}",
+    "noSteps": "没有符合筛选条件的步骤。",
+    "tool": "工具",
+    "reasoning": "推理",
+    "failed": "失败",
+    "result": "结果",
+    "stepMeta": "状态 {{status}} · 开始 {{start}} · 结束 {{end}}",
+    "events": "事件",
+    "usage": "模型用量",
+    "usageRow": "{{calls}} 次 · {{tokens}} tokens · {{duration}}",
+    "failedCalls": "{{count}} 次失败",
+    "streamingNote": "流式文本只计数不展示：思考 {{thinking}} 条、推理 {{reasoning}} 条、回答片段 {{deltas}} 条。"
   }
 }

@@ -1,5 +1,6 @@
 import { BaseApi } from './client';
 import type { ResponsePreferences } from '@/types/responseStyle';
+import type { RunInspection, RunInspectionTarget } from '@/types/runInspection';
 import type {
   ActionStatusResponse,
   ChatProjectsResponse,
@@ -184,6 +185,9 @@ export class ChatApi extends BaseApi {
   getHistory = async (sessionId: string, params?: Record<string, any>) => {
     return this.client.get(`/chat/history/${sessionId}`, { params });
   };
+
+  getRunInspection = (sessionId: string, target: RunInspectionTarget): Promise<RunInspection> =>
+    this.get(`/chat/sessions/${encodeURIComponent(sessionId)}/run-inspection`, target);
 
   getActiveRun = async (sessionId: string) => {
     return this.client.get(

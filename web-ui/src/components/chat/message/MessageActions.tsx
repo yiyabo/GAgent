@@ -16,6 +16,7 @@ import { useChatStore } from '@store/chat';
 import { useT } from '@/i18n/useT';
 import { resolveChatSessionProcessingKey } from '@/utils/chatSessionKeys';
 import { formatTime, fallbackCopyToClipboard, resolveMessageCopyText } from './utils';
+import InspectRunAction from '../runInspector/InspectRunAction';
 
 const { Text } = Typography;
 
@@ -89,6 +90,8 @@ const MessageActions: React.FC<MessageActionsProps> = ({ message }) => {
                 style={{ fontSize: 12, padding: '0 4px' }}
               />
             </Tooltip>
+
+            {type === 'assistant' && <InspectRunAction metadata={metadata as Record<string, unknown> | undefined} />}
 
             {type === 'assistant' && (
               <Tooltip title={t('chat.regenerate')}>
