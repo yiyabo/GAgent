@@ -40,10 +40,13 @@ def resolve_model_routing(*, message, history=None, context=None, plan_id=None, 
     manual = manual_deep_think_requested(message, context)
     effective = strip_manual_deep_prefix(str(message or ""))
     subject, _ = resolve_subject_resolution(message=effective, history=history, context=context)
+    explicit = _explicit_plan_mode(context)
+    plan_bound = plan_id is not None or (context or {}).get("plan_id") is not None
+    create_required = explicit and not plan_bound
     return RequestRoutingDecision(
         request_tier="standard",
         request_route_mode="manual_deepthink" if manual else "auto_deepthink",
-        route_reason_codes=[MODEL_SELECTION],
+        route_reason_codes=[MODEL_SELECTION] + (["plan_mode_create_required"] if create_required else []),
         manual_deep_think=manual,
         thinking_visibility="visible",
         effective_user_message=effective,
@@ -52,7 +55,8 @@ def resolve_model_routing(*, message, history=None, context=None, plan_id=None, 
         brevity_hint=False,
         explicit_task_ids=[],
         explicit_task_override=False,
-        plan_contract_enforced=_explicit_plan_mode(context),
+        plan_create_required=create_required,
+        plan_contract_enforced=explicit,
     )
 
 

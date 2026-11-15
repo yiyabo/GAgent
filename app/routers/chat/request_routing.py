@@ -1230,6 +1230,9 @@ def resolve_request_routing(
         and not plan_intent.conflict_requires_confirmation
         and (not effective_plan_bound or plan_intent.new_plan_requested)
     )
+    if plan_contract_enforced and not effective_plan_bound and not plan_intent.conflict_requires_confirmation:
+        plan_create_required = True
+        combined_reasons.append("plan_mode_create_required")
     plan_execute_required = bool(
         plan_intent.execute_requested
         and not plan_intent.conflict_requires_confirmation
