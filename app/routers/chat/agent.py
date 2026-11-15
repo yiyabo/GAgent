@@ -259,6 +259,7 @@ from .unified_stream import (
     _stream_deterministic_execute,
     _stream_direct_image_response,
     _stream_full_plan_delegate,
+    _stream_plan_mode_offer,
     _tool_progress_details,
     _truncate_progress_text,
 )
@@ -671,7 +672,7 @@ class StructuredChatAgent:
         return _resolve_action_placeholders_fn(action, previous_result)
 
     def _should_route_code_executor_unscoped(
-        self, context_error: Optional[str]
+        self, context_error: str | None
     ) -> bool:
         if not context_error:
             return False
@@ -1374,6 +1375,42 @@ class StructuredChatAgent:
         effective_user_message = routing_decision.effective_user_message
         self._current_user_message = effective_user_message
         from .model_selection import MODEL_SELECTION
+
+        # Deterministic Plan-mode offer: the Skill remains available, but a
+        # model that starts executing must not skip the user's consent step for
+        # an explicit multi-stage request.
+        if not routing_decision.plan_contract_enforced:
+            from app.services.plan_mode_offer_policy import (
+                offer_reason,
+                offer_text,
+                should_offer_plan_mode,
+            )
+            from app.services.plan_mode_offers import session_offer_settings
+
+            try:
+                offer_settings = session_offer_settings(self.session_id)
+            except Exception:
+                offer_settings = {}
+            if should_offer_plan_mode(
+                effective_user_message,
+                plan_mode=False,
+                bound_plan_id=self.plan_session.plan_id,
+                dismissed=offer_settings.get("plan_offer_dismissed") is True,
+            ):
+                offer = {
+                    "offer_id": f"offer_{uuid4().hex}",
+                    "status": "pending",
+                    "reason": offer_reason(effective_user_message),
+                    "query": effective_user_message,
+                }
+                async for chunk in _stream_plan_mode_offer(
+                    self,
+                    offer=offer,
+                    response_text=offer_text(effective_user_message),
+                    event_sink=event_sink,
+                ):
+                    yield chunk
+                return
         # Legacy adapters retain their declared contract; new chat turns select actions in the model.
         if MODEL_SELECTION not in routing_decision.route_reason_codes:
             status_ids = task_status_question(effective_user_message) if self.plan_session.plan_id is not None and not routing_decision.manual_deep_think else []
@@ -1847,8 +1884,8 @@ class StructuredChatAgent:
                     return payload
 
                 def _build_bio_input_blocked_payload(
-                    block_context: Optional[Dict[str, Any]]
-                ) -> Dict[str, Any]:
+                    block_context: dict[str, Any] | None
+                ) -> dict[str, Any]:
                     root_cause = ""
                     if isinstance(block_context, dict):
                         root_cause = str(block_context.get("summary") or "").strip()
@@ -1871,8 +1908,8 @@ class StructuredChatAgent:
                     return payload
 
                 def _build_sequence_input_blocked_payload(
-                    block_context: Optional[Dict[str, Any]]
-                ) -> Dict[str, Any]:
+                    block_context: dict[str, Any] | None
+                ) -> dict[str, Any]:
                     root_cause = ""
                     if isinstance(block_context, dict):
                         root_cause = str(block_context.get("summary") or "").strip()

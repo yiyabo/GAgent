@@ -438,7 +438,7 @@ async def _stream_direct_image_response(
     *,
     response_text: str,
     response_metadata: Dict[str, Any],
-    event_sink: Optional[Callable[[Dict[str, Any]], Awaitable[None]]],
+    event_sink: Callable[[dict[str, Any]], Awaitable[None]] | None,
 ) -> AsyncIterator[str]:
     """Stream the direct image-reuse response phase (图片直出).
 
@@ -478,6 +478,50 @@ async def _stream_direct_image_response(
             "actions": [],
             "metadata": response_metadata,
         },
+    }
+    if event_sink is not None:
+        await event_sink(payload)
+    yield _sse_message(payload)
+
+
+async def _stream_plan_mode_offer(
+    agent: Any,
+    *,
+    offer: dict[str, Any],
+    response_text: str,
+    event_sink: Callable[[dict[str, Any]], Awaitable[None]] | None,
+) -> AsyncIterator[str]:
+    """Emit one pending Plan-mode offer without calling the model.
+
+    Deterministic counterpart to ``plan_operation.offer``: the caller already
+    decided (via ``plan_mode_offer_policy``) that this request qualifies, so no
+    tool loop runs and no Plan is created or executed.
+    """
+    metadata: dict[str, Any] = {
+        "status": "completed",
+        "unified_stream": True,
+        "plan_creation_state": "offer",
+        "termination_reason": "plan_mode_offer",
+        "plan_mode_offer": offer,
+    }
+    from app.services.memory.context_recall import attach_recall_metadata
+
+    attach_recall_metadata(metadata, agent.extra_context)
+    if agent.session_id and response_text:
+        try:
+            _ag()._persist_runtime_context(agent)
+            _ag()._save_chat_message(
+                agent.session_id,
+                "assistant",
+                response_text,
+                metadata=metadata,
+                model_provider=(agent.extra_context or {}).get("model_provider"),
+            )
+        except Exception as save_err:  # pragma: no cover - defensive
+            logger.warning("[CHAT][PLAN_OFFER] Failed to save offer: %s", save_err)
+    payload = {
+        "type": "final",
+        "payload": {"response": response_text, "actions": [], "metadata": metadata},
     }
     if event_sink is not None:
         await event_sink(payload)
