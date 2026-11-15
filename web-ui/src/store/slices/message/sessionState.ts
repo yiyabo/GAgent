@@ -31,6 +31,7 @@ export function sessionPatch(state: ChatState, session: ChatSession, syncContext
       currentTaskId: session.current_task_id ?? null,
       currentTaskName: session.current_task_name ?? null,
       currentWorkflowId: session.workflow_id ?? null,
+      planMode: session.settings?.plan_mode === true,
     } : {}),
   };
 }
@@ -54,6 +55,7 @@ export function createSessionAccess(get: StoreGet, set: StoreSet, sessionId?: st
       currentTaskId: isCurrent() ? state.currentTaskId : session?.current_task_id ?? null,
       currentTaskName: isCurrent() ? state.currentTaskName : session?.current_task_name ?? null,
       currentWorkflowId: isCurrent() ? state.currentWorkflowId : session?.workflow_id ?? null,
+      planMode: isCurrent() ? state.planMode : session?.settings?.plan_mode === true,
       addMessage: (message: ChatMessage) => state.addMessage(message, sessionId ?? undefined),
       updateMessage: (messageId: string, updates: Partial<ChatMessage>) => state.updateMessage(messageId, updates, sessionId ?? undefined),
       setCurrentWorkflowId: (workflowId: string | null) => sourceSet({ currentWorkflowId: workflowId }),
@@ -80,6 +82,7 @@ export function createSessionAccess(get: StoreGet, set: StoreSet, sessionId?: st
     if ('currentTaskId' in patch) session.current_task_id = patch.currentTaskId;
     if ('currentTaskName' in patch) session.current_task_name = patch.currentTaskName;
     if ('currentWorkflowId' in patch) session.workflow_id = patch.currentWorkflowId;
+    if ('planMode' in patch) session.settings = { ...(session.settings ?? {}), plan_mode: patch.planMode };
     return sessionPatch(state, session, true);
   });
   return { get: sourceGet, set: sourceSet, isCurrent };

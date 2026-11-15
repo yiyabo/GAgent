@@ -34,6 +34,7 @@ export interface ChatState {
     currentPlanTitle: string | null;
     currentTaskId: number | null;
     currentTaskName: string | null;
+    planMode: boolean;
     // UI Slice State
     inputText: string;
     isTyping: boolean;
@@ -90,6 +91,7 @@ export interface ChatState {
     // Context Actions
     setChatContext: (context: { planId?: number | null; planTitle?: string | null; taskId?: number | null; taskName?: string | null }) => void;
     clearChatContext: () => void;
+    setPlanMode: (enabled: boolean) => Promise<void>;
     setCurrentWorkflowId: (workflowId: string | null) => void;
     // UI Actions
     setInputText: (text: string) => void;

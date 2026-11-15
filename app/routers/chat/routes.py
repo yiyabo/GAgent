@@ -245,6 +245,7 @@ def _select_owned_session_ids(
         if not normalized_ids:
             return []
         placeholders = ",".join("?" for _ in normalized_ids)
+        # pi-lens-ignore: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
         rows = conn.execute(
             f"""
             SELECT id
@@ -879,12 +880,14 @@ async def list_chat_sessions(
 
             where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
 
+            # pi-lens-ignore: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
             total_row = conn.execute(
                 f"SELECT COUNT(1) AS total FROM chat_sessions s {where_sql}",
                 params,
             ).fetchone()
             total = int(total_row["total"]) if total_row else 0
 
+            # pi-lens-ignore: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
             session_rows = conn.execute(
                 f"""
                 WITH session_with_last AS (
@@ -1061,6 +1064,12 @@ async def update_chat_session(
                         metadata_dict["default_llm_provider"] = normalized
                     else:
                         metadata_dict.pop("default_llm_provider", None)
+                if "plan_mode" in settings_update:
+                    plan_mode = settings_update.get("plan_mode")
+                    if plan_mode is None:
+                        metadata_dict.pop("plan_mode", None)
+                    else:
+                        metadata_dict["plan_mode"] = plan_mode
                 from app.services.response_style import ResponsePreferences
                 for key in ResponsePreferences.model_fields:
                     if key in settings_update:

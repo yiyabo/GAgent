@@ -185,6 +185,7 @@ class ChatSessionSettings(BaseModel):
     default_llm_provider: Optional[
         Literal["qwen", "mimo", "kimi"]
     ] = None
+    plan_mode: bool | None = None
 
 
 class ChatSessionSummary(BaseModel):

@@ -110,6 +110,14 @@ def _build_structured_plan_requirement_block(agent: "DeepThinkAgent") -> str:
         )
 
     requirement_lines: List[str] = []
+    if flags["contract_enforced"]:
+        requirement_lines.append(
+            "Explicit Plan mode is active. Research with read-only tools and create, review, or update "
+            "the structured Plan as requested, but do NOT execute Plan tasks, submit bioinformatics jobs, "
+            "run code, write result artifacts, or publish deliverables. Plan-tree edits are allowed; "
+            "execution must wait for the user to approve the Plan and exit Plan mode. If the user asks "
+            "for execution during this mode, explain that approval is required instead of calling an execution tool."
+        )
     if agent.request_profile.get("plan_tree_edit_allowed") is False:
         requirement_lines.append(
             ("No persistent Plan has been requested in this chat. A topic selection or request to explain a subject "

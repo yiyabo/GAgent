@@ -1,4 +1,5 @@
 import { ChatSliceCreator } from './types';
+import { chatApi } from '@api/chat';
 import { useTasksStore } from '@store/tasks';
 
 export const createContextSlice: ChatSliceCreator = (set, get) => ({
@@ -7,6 +8,7 @@ export const createContextSlice: ChatSliceCreator = (set, get) => ({
   currentPlanTitle: null,
   currentTaskId: null,
   currentTaskName: null,
+  planMode: false,
 
   setChatContext: ({ planId, planTitle, taskId, taskName }) => {
   set((state) => {
@@ -72,6 +74,29 @@ export const createContextSlice: ChatSliceCreator = (set, get) => ({
   sessions,
   };
   }),
+
+  setPlanMode: async (enabled) => {
+  const previous = {
+  planMode: get().planMode,
+  currentSession: get().currentSession,
+  sessions: get().sessions,
+  };
+  const session = previous.currentSession;
+  const settings = { ...(session?.settings ?? {}), plan_mode: enabled };
+  const currentSession = session ? { ...session, settings } : null;
+  const sessions = currentSession
+  ? previous.sessions.map((entry) => entry.id === currentSession.id ? currentSession : entry)
+  : previous.sessions;
+  set({ planMode: enabled, currentSession, sessions });
+
+  if (!session) return;
+  try {
+  await chatApi.updateSession(session.session_id ?? session.id, { settings });
+  } catch (error) {
+  set(previous);
+  throw error;
+  }
+  },
 
   setCurrentWorkflowId: (workflowId) => {
   const state = get();

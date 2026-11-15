@@ -3,6 +3,7 @@ import type { ResponseStyle, ResponseLength } from './responseStyle';
 export interface ChatSessionSettings {
   response_style?: ResponseStyle;
   response_length?: ResponseLength;
+  plan_mode?: boolean;
   [key: string]: unknown;
 }
 

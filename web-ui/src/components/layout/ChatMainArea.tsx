@@ -1,4 +1,5 @@
 import ResponseStyleSelector from '../chat/ResponseStyleSelector';
+import PlanModeControls from '../chat/PlanModeControls';
 import React, { useRef, useEffect, useState, useMemo, useCallback } from 'react';
 import {
   App as AntdApp,
@@ -743,7 +744,10 @@ const ChatMainArea: React.FC = () => {
                 </Button>
               </div>
             </div>
-            <div className="response-style-composer-toolbar"><ResponseStyleSelector /></div>
+            <div className="response-style-composer-toolbar" style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+              <PlanModeControls showApprove />
+              <ResponseStyleSelector />
+            </div>
           </div>
         </div>
       )}
