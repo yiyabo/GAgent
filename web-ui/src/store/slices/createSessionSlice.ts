@@ -38,6 +38,7 @@ export const createSessionSlice: ChatSliceCreator = (set, get) => ({
   currentPlanTitle: sessionPlanTitle,
   currentTaskId: sessionTaskId,
   currentTaskName: sessionTaskName,
+  planMode: session?.settings?.plan_mode === true,
   historyBeforeId: historyCursor,
   historyHasMore,
   historyLoading: false,
@@ -174,6 +175,7 @@ export const createSessionSlice: ChatSliceCreator = (set, get) => ({
   currentTaskId: null,
   currentTaskName: null,
   currentWorkflowId: null,
+  planMode: false,
   messages: [],
   });
   }
@@ -333,6 +335,7 @@ export const createSessionSlice: ChatSliceCreator = (set, get) => ({
   currentTaskId: null,
   currentTaskName: null,
   currentWorkflowId: null,
+  planMode: false,
   });
   SessionStorage.clearCurrentSessionId();
   }

@@ -32,6 +32,7 @@ def test_real_app_chat_session_crud_persists_state(app_client_factory) -> None:
                     "default_search_provider": "builtin",
                     "default_base_model": "qwen3.7-max",
                     "default_llm_provider": "qwen",
+                    "plan_mode": True,
                 },
             },
         )
@@ -44,6 +45,7 @@ def test_real_app_chat_session_crud_persists_state(app_client_factory) -> None:
         assert payload["settings"]["default_search_provider"] == "builtin"
         assert payload["settings"]["default_base_model"] == "qwen3.7-max"
         assert payload["settings"]["default_llm_provider"] == "qwen"
+        assert payload["settings"]["plan_mode"] is True
 
         with get_db() as conn:
             row = conn.execute(
@@ -56,6 +58,7 @@ def test_real_app_chat_session_crud_persists_state(app_client_factory) -> None:
         metadata = json.loads(row["metadata"])
         assert metadata["default_search_provider"] == "builtin"
         assert metadata["default_llm_provider"] == "qwen"
+        assert metadata["plan_mode"] is True
 
         head_response = client.head(f"/chat/sessions/{session_id}")
         assert head_response.status_code == 200
@@ -314,6 +317,7 @@ def test_cancelled_chat_history_exposes_continuation_and_original_run_stays_term
         with get_db() as conn:
             user_id = conn.execute('INSERT INTO chat_messages(session_id,role,content) VALUES(?,?,?)',(session_id,'user','Write a report')).lastrowid
             conn.commit()
+        assert user_id is not None
         request = ChatRequest(message='Write a report',session_id=session_id,client_message_id='original-report')
         chat_runs.create_chat_run('source-history',session_id,request.model_dump_json(),owner_id='alice',idempotency_key='original-report')
         assert chat_runs.claim_chat_run_lease('source-history','source-worker',ttl_seconds=300)
@@ -331,5 +335,6 @@ def test_cancelled_chat_history_exposes_continuation_and_original_run_stays_term
         assert child.status_code == 200
         child_id = child.json()['run_id']
         assert spawned == [child_id]
-        assert chat_runs.get_chat_run('source-history')['status'] == 'cancelled'
+        source_run = chat_runs.get_chat_run('source-history')
+        assert source_run is not None and source_run['status'] == 'cancelled'
         assert child.json()['resume_from_run_id'] == 'source-history'

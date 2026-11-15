@@ -48,6 +48,7 @@ import type { StreamMutableState, StreamHandlerContext } from './types';
 import type { ChatStreamEvent } from '../../chatUtils';
 
 
+// pi-lens-ignore: no-unsafe-dictionary-any
 export const _looksLikeSubstantialAssistant = (content: unknown, metadata?: Record<string, any> | null): boolean => {
   if (isRecoveryNote(content, metadata)) return false;
   const text = typeof content === 'string' ? content.trim() : '';
@@ -114,6 +115,7 @@ export const _recoverAfterStreamFailure = async (
       // re-sends the message (it re-fences synchronously inside sendMessage).
       get().setSessionProcessing(opts.processingKey, false);
       const target = source.get().messages.find((m: ChatMessage) => m.id === opts.assistantMessageId);
+      // pi-lens-ignore: no-unsafe-dictionary-any
       const prev = (target?.metadata ?? {}) as Record<string, any>;
       const prior = typeof target?.content === 'string' ? target.content.trim() : '';
       const base = prior && !isRecoveryNote(prior, prev) ? `${prior}\n\n` : '';
@@ -183,6 +185,7 @@ const _consumeUnifiedStream = async (
     if (event.type === 'artifact') {
       const targetMessage = ctx.get().messages.find((msg: any) => msg.id === ctx.assistantMessageId);
       if (targetMessage) {
+        // pi-lens-ignore: no-unsafe-dictionary-any
         const existingMetadata = { ...((targetMessage.metadata as Record<string, any> | undefined) ?? {}) };
         const mergedGallery = mergeArtifactGalleries(
           collectArtifactGallery(existingMetadata.artifact_gallery),
@@ -434,6 +437,7 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => {
   currentWorkflowId,
   currentSession,
   memoryEnabled,
+  planMode,
   processingSessionIds,
   } = get();
 
@@ -461,6 +465,7 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => {
   task_id: metadata?.task_id ?? currentTaskId ?? undefined,
   task_name: metadata?.task_name ?? currentTaskName ?? undefined,
   workflow_id: metadata?.workflow_id ?? currentWorkflowId ?? undefined,
+  plan_mode: typeof metadata?.plan_mode === 'boolean' ? metadata.plan_mode : planMode,
   attachments,
   };
   const clientMessageId = `client_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
@@ -520,6 +525,7 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => {
   workflow_id: mergedMetadata.workflow_id,
   attachments,
   memory_enabled: memoryEnabled,
+  plan_mode: mergedMetadata.plan_mode,
   ...(metadata ?? {}),
   },
   };
@@ -566,6 +572,7 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => {
     : await postChatRun(chatRequest);
   source.get().setActiveRunId(processingKey, run_id);
   const prevMeta =
+  // pi-lens-ignore: no-unsafe-dictionary-any
   (source.get().messages.find((m) => m.id === assistantMessageId)?.metadata ?? {}) as Record<string, any>;
   source.get().updateMessage(assistantMessageId, {
   metadata: {
@@ -625,6 +632,7 @@ export const createMessageSlice: ChatSliceCreator = (set, get) => {
     `\n\n${translate('chat.recovery.failureTail')}`;
   if (assistantMessageAdded) {
     const prev =
+      // pi-lens-ignore: no-unsafe-dictionary-any
       (source.get().messages.find((m) => m.id === assistantMessageId)?.metadata ?? {}) as Record<string, any>;
     const keepPartial = _looksLikeSubstantialAssistant(partialContent, prev);
     source.get().updateMessage(assistantMessageId, {

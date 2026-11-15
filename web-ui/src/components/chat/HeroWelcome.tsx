@@ -16,6 +16,7 @@ import { useT } from '@/i18n/useT';
 import type { TranslationKey } from '@/i18n/keys';
 import FileUploadButton from './FileUploadButton';
 import ResponseStyleSelector from './ResponseStyleSelector';
+import PlanModeControls from './PlanModeControls';
 import UploadedFilesList from './UploadedFilesList';
 
 const { TextArea } = Input;
@@ -139,6 +140,7 @@ export const HeroWelcome: React.FC<HeroWelcomeProps> = ({
         <div className="hero-prompt-toolbar">
           <div className="hero-prompt-toolbar-left">
             <FileUploadButton size="small" />
+            <PlanModeControls />
             <ResponseStyleSelector />
           </div>
 

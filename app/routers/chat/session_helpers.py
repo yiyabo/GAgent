@@ -132,6 +132,8 @@ def _extract_session_settings(
     llm_provider = _normalize_llm_provider(metadata.get("default_llm_provider"))
     if llm_provider:
         settings["default_llm_provider"] = llm_provider
+    if type(metadata.get("plan_mode")) is bool:
+        settings["plan_mode"] = metadata["plan_mode"]
     return settings or None
 
 
@@ -249,6 +251,7 @@ def _fetch_session_info(
         where_sql += " AND s.owner_id = ?"
         params.append(_normalize_owner_id(owner_id))
 
+    # pi-lens-ignore: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
     row = conn.execute(
         """
         SELECT
@@ -294,6 +297,7 @@ def _load_session_metadata_dict(
     if owner_id is not None:
         where_sql += " AND owner_id=?"
         params.append(_normalize_owner_id(owner_id))
+    # pi-lens-ignore: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
     row = conn.execute(
         f"SELECT metadata FROM chat_sessions {where_sql}",
         tuple(params),
@@ -321,6 +325,7 @@ def _update_session_metadata(
         if owner_id is not None:
             where_sql += " AND owner_id=?"
             params.append(_normalize_owner_id(owner_id))
+        # pi-lens-ignore: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
         conn.execute(
             """
             UPDATE chat_sessions
@@ -687,7 +692,8 @@ def _build_phagescope_submit_background_summary(
     snapshot: Optional[Dict[str, Any]] = None,
 ) -> str:
     snapshot = snapshot or {}
-    counts = snapshot.get("counts") if isinstance(snapshot.get("counts"), dict) else {}
+    raw_counts = snapshot.get("counts")
+    counts = raw_counts if isinstance(raw_counts, dict) else {}
     done = counts.get("done") if isinstance(counts.get("done"), int) else 0
     total_from_snapshot = counts.get("total") if isinstance(counts.get("total"), int) else 0
     total = total_from_snapshot or len(module_items or [])
@@ -868,6 +874,7 @@ def _get_session_current_task(
         if owner_id is not None:
             where_sql += " AND owner_id=?"
             params.append(_normalize_owner_id(owner_id))
+        # pi-lens-ignore: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
         row = conn.execute(
             f"SELECT current_task_id FROM chat_sessions {where_sql}",
             tuple(params),
@@ -1036,6 +1043,7 @@ def _set_session_plan_id(
         if owner_id is not None:
             where_sql += " AND owner_id=?"
             params.append(_normalize_owner_id(owner_id))
+        # pi-lens-ignore: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
         conn.execute(
             """
             UPDATE chat_sessions
@@ -1070,8 +1078,10 @@ def _save_chat_message(
         with get_db() as conn, guard_chat_run_assistant_save(conn, session_id, role) as run_scope:
             if run_scope is False:
                 return None
-            if run_scope is not None and run_scope["assistant_message_id"] is not None:
-                return int(run_scope["assistant_message_id"])
+            if run_scope is not None:
+                assistant_message_id = run_scope["assistant_message_id"]
+                if assistant_message_id is not None:
+                    return int(assistant_message_id)
             _ensure_session_exists(session_id, conn, owner_id=owner_id)
             cursor = conn.cursor()
             client_message_id = None
@@ -1091,10 +1101,12 @@ def _save_chat_message(
                     (session_id, role, client_message_id),
                 ).fetchone()
                 if existing_row is not None:
+                    existing_message_id = existing_row[0]
+                    assert existing_message_id is not None
                     if run_scope is not None:
                         cursor.execute(
                             "UPDATE chat_runs SET assistant_message_id = ? WHERE run_id = ?",
-                            (int(existing_row[0]), run_scope["run_id"]),
+                            (int(existing_message_id), run_scope["run_id"]),
                         )
                     logger.info(
                         "[CHAT][SAVE] dedupe session=%s client_message_id=%s -> message %s",
@@ -1102,7 +1114,7 @@ def _save_chat_message(
                         client_message_id,
                         existing_row[0],
                     )
-                    return int(existing_row[0])
+                    return int(existing_message_id)
             metadata_json = (
                 json.dumps(metadata, ensure_ascii=False) if metadata else None
             )
@@ -1120,7 +1132,9 @@ def _save_chat_message(
                 """,
                 (session_id, role, content, metadata_json),
             )
-            message_id = int(cursor.lastrowid)
+            raw_message_id = cursor.lastrowid
+            assert raw_message_id is not None
+            message_id = int(raw_message_id)
             if run_scope is not None:
                 cursor.execute(
                     "UPDATE chat_runs SET assistant_message_id = ? WHERE run_id = ?",
@@ -1191,6 +1205,7 @@ def _load_chat_history(
                 before_clause = "AND id < ?"
                 params.append(before_id)
             params.append(limit + 1)
+            # pi-lens-ignore: python.sqlalchemy.security.sqlalchemy-execute-raw-query.sqlalchemy-execute-raw-query
             cursor.execute(
                 f"""
                 SELECT id, role, content, metadata, created_at

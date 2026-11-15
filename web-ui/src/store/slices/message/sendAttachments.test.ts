@@ -55,6 +55,17 @@ beforeEach(() => {
 });
 
 describe('attachments travel with the message they were added to', () => {
+  it('sends the explicit Plan mode with the request and user-turn metadata', async () => {
+    const { store } = storeFixture();
+    store.planMode = true;
+    await store.sendMessage('Create a structured research plan');
+
+    const request = vi.mocked(postChatRun).mock.calls[0][0] as any;
+    expect(request.context.plan_mode).toBe(true);
+    const user = store.messages.find((m: any) => m.type === 'user');
+    expect(user.metadata.plan_mode).toBe(true);
+  });
+
   it('keeps every uploaded file, sends them all with the next message and empties the composer', async () => {
     const { store } = storeFixture();
     vi.mocked(uploadApi.uploadFile)

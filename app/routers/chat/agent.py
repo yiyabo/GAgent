@@ -3,16 +3,23 @@
 from __future__ import annotations
 
 from app.services.deep_think.models import structured_plan_contract_failed
+from app.services.deep_think.plan_mode import (
+    defer_plan_mode_execution,
+    plan_mode_denial,
+    plan_mode_tool_allowed,
+    plan_mode_tool_names,
+)
 
 import asyncio
 import inspect
 import json
 import logging
 import re
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import aclosing
 from dataclasses import replace
 from datetime import datetime, timezone, timedelta
-from typing import Any, AsyncIterator, Awaitable, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union, cast  # noqa: UP035 -- legacy annotation surface
 from uuid import uuid4
 
 from app.config.executor_config import get_executor_settings
@@ -1371,18 +1378,20 @@ class StructuredChatAgent:
         if MODEL_SELECTION not in routing_decision.route_reason_codes:
             status_ids = task_status_question(effective_user_message) if self.plan_session.plan_id is not None and not routing_decision.manual_deep_think else []
             if status_ids:
+                plan_id = self.plan_session.plan_id
+                assert plan_id is not None  # Narrowed by the status_ids condition above.
                 self.extra_context["explicit_task_override"] = False
                 self.extra_context["plan_execute_required"] = False
                 self.extra_context["full_plan_execution"] = False
                 self.extra_context.pop("pending_scope_task_ids", None)
                 self.extra_context.pop("_full_plan_executor_delegate", None)
-                response_text = task_status_reply(self.plan_session.repo, self.plan_session.plan_id, status_ids)
-                response_metadata = {"plan_id": self.plan_session.plan_id, "read_only_task_status": True,
+                response_text = task_status_reply(self.plan_session.repo, plan_id, status_ids)
+                response_metadata = {"plan_id": plan_id, "read_only_task_status": True,
                                      "queried_task_ids": status_ids, **routing_decision.metadata()}
                 if len(status_ids) == 1:
                     response_metadata["task_id"] = status_ids[0]
                     self.extra_context["current_task_id"] = status_ids[0]
-                    node = self.plan_session.repo.get_plan_tree(self.plan_session.plan_id).nodes.get(status_ids[0])
+                    node = self.plan_session.repo.get_plan_tree(plan_id).nodes.get(status_ids[0])
                     if node is not None:
                         response_metadata["task_name"] = node.display_name()
                 async for chunk in _stream_direct_image_response(
@@ -1703,11 +1712,8 @@ class StructuredChatAgent:
                     )
                     continue
 
-                metadata = (
-                    event_payload.get("metadata")
-                    if isinstance(event_payload.get("metadata"), dict)
-                    else {}
-                )
+                raw_metadata = event_payload.get("metadata")
+                metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
                 if level == "info" and metadata.get("sub_type") == "runtime_control":
                     action = str(metadata.get("action") or "").strip().lower()
                     paused_state: Optional[bool] = None
@@ -1924,7 +1930,10 @@ class StructuredChatAgent:
                     if 'bound_plan_id' not in state:
                         return
                     plan_id = int(state['bound_plan_id']) if state['bound_plan_id'] is not None else None
-                    self.plan_session.bind(plan_id)
+                    if plan_id is None:
+                        self.plan_session.detach()
+                    else:
+                        self.plan_session.bind(plan_id)
                     self._refresh_plan_tree(force_reload=True)
                     plan_tree = getattr(self, 'plan_tree', None)
                     title = str(state.get('bound_plan_title') or getattr(plan_tree, 'title', '') or '').strip() or None
@@ -1961,6 +1970,8 @@ class StructuredChatAgent:
                                 "reason": "background_handoff_complete"}
                     runtime_tool_context = params.get("tool_context") if isinstance(params, dict) else None
                     safe_params = _sanitize_deep_think_tool_params(params)
+                    if self.extra_context.get("plan_contract_enforced") and not plan_mode_tool_allowed(name, safe_params):
+                        return plan_mode_denial(name, safe_params)
                     requested_operation = str(safe_params.get("operation") or "").strip().lower()
                     allow_new_plan_rebind = bool(
                         self.extra_context.get("plan_new_requested")
@@ -2154,25 +2165,23 @@ class StructuredChatAgent:
                             ).strip()
                             == name
                         ):
+                            recent_parameters = latest_recent_entry.get("parameters")
+                            recent_result = latest_recent_entry.get("result")
                             captured_tool_result = {
-                                **dict(latest_recent_entry),
+                                **latest_recent_entry,
                                 "name": str(
                                     latest_recent_entry.get("name")
                                     or latest_recent_entry.get("tool")
                                     or name
                                 ).strip(),
                                 "parameters": (
-                                    dict(latest_recent_entry.get("parameters"))
-                                    if isinstance(
-                                        latest_recent_entry.get("parameters"), dict
-                                    )
+                                    recent_parameters
+                                    if isinstance(recent_parameters, dict)
                                     else dict(safe_params)
                                 ),
                                 "result": (
-                                    dict(latest_recent_entry.get("result"))
-                                    if isinstance(
-                                        latest_recent_entry.get("result"), dict
-                                    )
+                                    recent_result
+                                    if isinstance(recent_result, dict)
                                     else dict(result)
                                 ),
                             }
@@ -2696,7 +2705,11 @@ class StructuredChatAgent:
                 dt_agent_kwargs: Dict[str, Any] = {
                     "llm_client": self.llm_service,
                     "cancel_event": cancel_event,
-                    "available_tools": route_profile.available_tools,
+                    "available_tools": (
+                        plan_mode_tool_names(route_profile.available_tools)
+                        if routing_decision.plan_contract_enforced
+                        else route_profile.available_tools
+                    ),
                     "tool_executor": tool_wrapper,
                     "max_iterations": route_profile.max_iterations,
                     "tool_timeout": 120,
@@ -2911,7 +2924,7 @@ class StructuredChatAgent:
             await producer  # preserve deadline/cancellation instead of empty success
         finally:
             producer_closed = True
-            await drainer.aclose()
+            await cast(Any, drainer).aclose()
             await cancel_and_join(producer)
 
     async def process_deep_think_stream(self, user_message: str) -> AsyncIterator[str]:
@@ -2921,7 +2934,7 @@ class StructuredChatAgent:
         previous = self.extra_context.get("deep_think_enabled")
         self.extra_context["deep_think_enabled"] = True
         try:
-            async with aclosing(self.process_unified_stream(user_message)) as stream:
+            async with aclosing(cast(Any, self.process_unified_stream(user_message))) as stream:
                 async for chunk in stream:
                     yield chunk
         finally:
@@ -3117,6 +3130,7 @@ class StructuredChatAgent:
             plan_id=self.plan_session.plan_id,
             current_task_id=self.extra_context.get("current_task_id"),
         )
+        decision = defer_plan_mode_execution(decision)
         if resolver is resolve_request_routing:
             # Natural-language review/edit choices belong to the model, even
             # while the legacy execution shortcuts remain enabled. Quoted
@@ -3392,6 +3406,7 @@ class StructuredChatAgent:
         if routing_decision.explicit_task_override:
             self.extra_context["_current_task_source"] = "request"
             if self.plan_session.plan_id is not None:
+                tree: Any = None
                 try:
                     tree = self.plan_session.repo.get_plan_tree(self.plan_session.plan_id)
                     target_task_id = _resolve_explicit_task_scope_target_fn(
@@ -3654,6 +3669,16 @@ class StructuredChatAgent:
         return step
 
     async def _handle_tool_action(self, action):
+        if self.extra_context.get("plan_contract_enforced") and not plan_mode_tool_allowed(
+            action.name, action.parameters
+        ):
+            denied = plan_mode_denial(action.name, action.parameters)
+            return AgentStep(
+                action=action,
+                success=False,
+                message=denied["summary"],
+                details=denied,
+            )
         # Keep legacy monkeypatch points from app.routers.chat_routes wired into
         # the split action_handlers module, but never leave global module state
         # patched after this call.  Some tests and runtime callers invoke
