@@ -101,8 +101,9 @@ def _save_run_user_message(
     user_message_metadata = user_message_metadata or {}
     attach_response_preferences(user_message_metadata, request.context)
     attach_message_attachments(user_message_metadata, request.context)
-    if (request.context or {}).get("resume_from_run_id"):
-        user_message_metadata = {**(user_message_metadata or {}), "resume_from_run_id": request.context["resume_from_run_id"]}
+    resume_source = (request.context or {}).get("resume_from_run_id")
+    if resume_source:
+        user_message_metadata = {**(user_message_metadata or {}), "resume_from_run_id": resume_source}
     user_message_id = _save_chat_message(
         session_id,
         "user",
@@ -282,12 +283,15 @@ async def create_run(request: ChatRequest, raw_request: Request) -> Dict[str, st
     if not request.session_id:
         raise HTTPException(status_code=400, detail="session_id is required for chat runs")
     request = bind_chat_request_to_principal(raw_request, request)
+    session_id = request.session_id
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id is required for chat runs")
     owner_id = get_request_owner_id(raw_request)
-    run_id = start_background_chat_run(request, session_id=request.session_id, owner_id=owner_id)
+    run_id = start_background_chat_run(request, session_id=session_id, owner_id=owner_id)
     return {
         "run_id": run_id,
         "events_stream_url": f"/chat/runs/{run_id}/events",
-        "session_id": request.session_id,
+        "session_id": session_id,
     }
 
 
@@ -373,14 +377,17 @@ async def resume_run(
         payload["session_id"] = row["session_id"]
         payload["project_id"] = None  # rebind through the current trusted platform context
         payload["user_id"] = None
-        payload["client_message_id"] = str((body or {}).get("client_message_id") or f"resume:{run_id}")
-        payload["context"] = {**(payload.get("context") or {}), "resume_from_run_id": run_id}
-        if isinstance((body or {}).get("memory_enabled"), bool):
-            payload["context"]["memory_enabled"] = body["memory_enabled"]
+        client_message_id = str((body or {}).get("client_message_id") or f"resume:{run_id}")
+        payload["client_message_id"] = client_message_id
+        context = {**(payload.get("context") or {}), "resume_from_run_id": run_id}
+        memory_enabled = (body or {}).get("memory_enabled")
+        if isinstance(memory_enabled, bool):
+            context["memory_enabled"] = memory_enabled
+        payload["context"] = context
         resumed_request = ChatRequest.model_validate(payload)
     except (ValueError, TypeError) as exc:
         raise HTTPException(status_code=409, detail="The original request cannot be reconstructed") from exc
-    existing = get_chat_run_by_idempotency_key(row["session_id"], resumed_request.client_message_id)
+    existing = get_chat_run_by_idempotency_key(row["session_id"], client_message_id)
     if existing is not None:
         try:
             existing_source = (json.loads(existing.get("request_json") or "{}").get("context") or {}).get("resume_from_run_id")
@@ -393,6 +400,8 @@ async def resume_run(
         resumed_request, session_id=row["session_id"], owner_id=get_request_owner_id(request),
     )
     child_row = get_chat_run(child)
+    if child_row is None:
+        raise HTTPException(status_code=500, detail="The continuation run was not persisted")
     child_source = (json.loads(child_row["request_json"]).get("context") or {}).get("resume_from_run_id")
     if child_source != run_id:
         raise HTTPException(status_code=409, detail="This client_message_id belongs to another request")
@@ -434,6 +443,44 @@ async def stream_run_events(
     return StreamingResponse(gen(), media_type="text/event-stream", headers=headers)
 
 
+async def inspect_session_run(
+    session_id: str,
+    request: Request,
+    run_id: str | None = Query(None, description="Run to inspect"),
+    message_id: int | None = Query(None, ge=1, description="Assistant message whose run to inspect"),
+) -> dict[str, Any]:
+    """Read-only Run Inspector projection of one chat run.
+
+    Resolves the run by ``run_id`` or by the assistant ``message_id`` it
+    produced, enforces owner and session scope, and never re-executes anything.
+    """
+    from app.repository import run_inspection as repo
+    from app.services.run_inspector import build_run_inspection
+
+    if run_id:
+        row = repo.get_run_for_inspection(run_id)
+    elif message_id is not None:
+        row = repo.get_run_by_assistant_message(session_id, message_id)
+    else:
+        raise HTTPException(status_code=400, detail="run_id or message_id is required")
+    if not row:
+        raise HTTPException(status_code=404, detail="run not found")
+    ensure_owner_access(request, row.get("owner_id"), detail="run owner mismatch")
+    if row["session_id"] != session_id:
+        raise HTTPException(status_code=403, detail="session mismatch")
+    resolved = str(row["run_id"])
+
+    def _load() -> dict[str, Any]:
+        return build_run_inspection(
+            row,
+            repo.fetch_inspection_events(resolved),
+            repo.count_run_event_types(resolved),
+            repo.fetch_run_usage(resolved),
+        )
+
+    return await asyncio.to_thread(_load)
+
+
 def mount_run_routes(router: APIRouter) -> None:
     """Attach run routes on the same ``/chat`` prefix router."""
     router.add_api_route("/runs", create_run, methods=["POST"])
@@ -446,6 +493,11 @@ def mount_run_routes(router: APIRouter) -> None:
         "/runs/{run_id}/cancel",
         cancel_run,
         methods=["POST"],
+    )
+    router.add_api_route(
+        "/sessions/{session_id}/run-inspection",
+        inspect_session_run,
+        methods=["GET"],
     )
     router.add_api_route("/runs/{run_id}/resume", get_resume_info, methods=["GET"])
     router.add_api_route("/runs/{run_id}/resume", resume_run, methods=["POST"])

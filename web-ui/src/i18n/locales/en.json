@@ -538,7 +538,8 @@
     },
     "previewFile": "Click to preview {{name}} in the side panel",
     "previewPdf": "Click to preview PDF in the side panel: {{name}}",
-    "downloadFile": "Download {{name}}"
+    "downloadFile": "Download {{name}}",
+    "inspectRun": "Inspect run"
   },
   "artifacts": {
     "formatPng": "PNG 300 DPI",
@@ -1804,5 +1805,40 @@
       "askPrefill": "Explain this node and how I should set its parameters for my analysis.",
       "loadFailed": "Could not load the conversation: {{error}}"
     }
+  },
+  "runInspector": {
+    "title": "Run inspector",
+    "refresh": "Refresh",
+    "export": "Export JSON",
+    "noRun": "This message has no recorded run.",
+    "loadFailed": "Could not load this run",
+    "status": "Status",
+    "duration": "Duration",
+    "steps": "Steps",
+    "stepCounts": "{{steps}} steps · {{tools}} tool steps",
+    "toolFailures": "Tool failures",
+    "tokens": "Tokens",
+    "tokenSummary": "{{total}} total · {{cached}} cached · {{calls}} calls",
+    "artifacts": "Artifacts",
+    "runId": "Run ID",
+    "request": "Request",
+    "termination": "Termination",
+    "truncated": "This run is large; only the first part is shown. Export to keep what is shown.",
+    "filterAll": "All",
+    "filterTools": "Tools",
+    "filterFailures": "Failures",
+    "filterTool": "Filter by tool",
+    "showing": "Showing {{shown}} of {{total}}",
+    "noSteps": "No steps match this filter.",
+    "tool": "Tool",
+    "reasoning": "Reasoning",
+    "failed": "Failed",
+    "result": "Result",
+    "stepMeta": "Status {{status}} · started {{start}} · finished {{end}}",
+    "events": "Events",
+    "usage": "Model usage",
+    "usageRow": "{{calls}} calls · {{tokens}} tokens · {{duration}}",
+    "failedCalls": "{{count}} failed",
+    "streamingNote": "Streaming text is counted, not shown: {{thinking}} thinking, {{reasoning}} reasoning and {{deltas}} answer chunks."
   }
 }
