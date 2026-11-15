@@ -1376,14 +1376,18 @@ class StructuredChatAgent:
         self._current_user_message = effective_user_message
         from .model_selection import MODEL_SELECTION
 
-        # Deterministic Plan-mode offer: the Skill remains available, but a
-        # model that starts executing must not skip the user's consent step for
-        # an explicit multi-stage request.
+        # Model-reviewed Plan-mode offer: a cheap recall filter decides whether
+        # to spend one small LLM call; the model decides whether to pause. The
+        # Skill remains available when the gate says proceed.
         if not routing_decision.plan_contract_enforced:
+            from app.services.plan_mode_offer_gate import (
+                is_offer_candidate,
+                review_plan_offer,
+            )
             from app.services.plan_mode_offer_policy import (
                 offer_reason,
+                offer_state_allows,
                 offer_text,
-                should_offer_plan_mode,
             )
             from app.services.plan_mode_offers import session_offer_settings
 
@@ -1391,26 +1395,29 @@ class StructuredChatAgent:
                 offer_settings = session_offer_settings(self.session_id)
             except Exception:
                 offer_settings = {}
-            if should_offer_plan_mode(
-                effective_user_message,
+            if offer_state_allows(
                 plan_mode=False,
                 bound_plan_id=self.plan_session.plan_id,
                 dismissed=offer_settings.get("plan_offer_dismissed") is True,
-            ):
-                offer = {
-                    "offer_id": f"offer_{uuid4().hex}",
-                    "status": "pending",
-                    "reason": offer_reason(effective_user_message),
-                    "query": effective_user_message,
-                }
-                async for chunk in _stream_plan_mode_offer(
-                    self,
-                    offer=offer,
-                    response_text=offer_text(effective_user_message),
-                    event_sink=event_sink,
-                ):
-                    yield chunk
-                return
+            ) and is_offer_candidate(effective_user_message):
+                decision = await review_plan_offer(effective_user_message, self.llm_service)
+                self.extra_context["plan_offer_gate"] = decision.source
+                if decision.offer:
+                    offer = {
+                        "offer_id": f"offer_{uuid4().hex}",
+                        "status": "pending",
+                        "reason": offer_reason(effective_user_message),
+                        "query": effective_user_message,
+                    }
+                    async for chunk in _stream_plan_mode_offer(
+                        self,
+                        offer=offer,
+                        response_text=offer_text(effective_user_message),
+                        event_sink=event_sink,
+                        gate_source=decision.source,
+                    ):
+                        yield chunk
+                    return
         # Legacy adapters retain their declared contract; new chat turns select actions in the model.
         if MODEL_SELECTION not in routing_decision.route_reason_codes:
             status_ids = task_status_question(effective_user_message) if self.plan_session.plan_id is not None and not routing_decision.manual_deep_think else []
