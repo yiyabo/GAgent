@@ -46,7 +46,13 @@ def resolve_model_routing(*, message, history=None, context=None, plan_id=None, 
     return RequestRoutingDecision(
         request_tier="standard",
         request_route_mode="manual_deepthink" if manual else "auto_deepthink",
-        route_reason_codes=[MODEL_SELECTION] + (["plan_mode_create_required"] if create_required else []),
+        route_reason_codes=[MODEL_SELECTION]
+        + (["plan_mode_create_required"] if create_required else [])
+        + (
+            ["plan_offer_accepted"]
+            if context and context.get("plan_offer_accepted") is True and explicit
+            else []
+        ),
         manual_deep_think=manual,
         thinking_visibility="visible",
         effective_user_message=effective,
@@ -55,7 +61,8 @@ def resolve_model_routing(*, message, history=None, context=None, plan_id=None, 
         brevity_hint=False,
         explicit_task_ids=[],
         explicit_task_override=False,
-        plan_create_required=create_required,
+        plan_create_required=create_required
+        or bool(context and context.get("plan_offer_accepted") is True and explicit),
         plan_contract_enforced=explicit,
     )
 

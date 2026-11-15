@@ -74,12 +74,14 @@ export interface CompactProgressState {
 export interface ChatActionSummary {
   kind?: string | null;
   name?: string | null;
+  // pi-lens-ignore: no-unsafe-dictionary-any
   parameters?: Record<string, any> | null;
   order?: number | null;
   blocking?: boolean | null;
   status?: ChatActionStatus | null;
   success?: boolean | null;
   message?: string | null;
+  // pi-lens-ignore: no-unsafe-dictionary-any
   details?: Record<string, any> | null;
 }
 
@@ -127,8 +129,16 @@ export interface ArtifactFileItem {
   tracking_id?: string | null;
 }
 
+export interface PlanModeOffer {
+  offer_id: string;
+  status: 'pending';
+  reason: string;
+  query: string;
+}
+
 export interface ChatResponseMetadata {
   status?: ChatActionStatus;
+  plan_mode_offer?: PlanModeOffer | null;
   tracking_id?: string;
   plan_id?: number | null;
   plan_title?: string | null;
@@ -173,6 +183,7 @@ export interface ActionStatusResponse {
   status: ChatActionStatus;
   plan_id?: number | null;
   actions?: ChatActionSummary[];
+  // pi-lens-ignore: no-unsafe-dictionary-any
   result?: Record<string, any> | null;
   errors?: string[];
   created_at?: string | null;

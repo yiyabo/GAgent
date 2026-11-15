@@ -367,6 +367,25 @@
         "notes": "Written in-house; commit is the one that added the skill to this repository. Not a third-party import. Lists external reference URLs (databases) only as information."
       }
     },
+    "plan-mode-guidance": {
+      "origin": {
+        "kind": "internal",
+        "source": "gagent",
+        "path": "skills/plan-mode-guidance",
+        "commit": "0000000000000000000000000000000000000000",
+        "license": "internal"
+      },
+      "modified": false,
+      "modifications": [],
+      "review": {
+        "scanner": "passed",
+        "scanner_version": 1,
+        "reviewed_by": "pi (AI), full text read",
+        "reviewed_at": "2026-11-15",
+        "human_signoff": false,
+        "notes": "Written in-house for the Plan-mode offer flow. The all-zero commit placeholder means the skill has not yet landed in its first commit; no third-party content or executable scripts."
+      }
+    },
     "pre-submission-reviewer": {
       "origin": {
         "kind": "third_party",

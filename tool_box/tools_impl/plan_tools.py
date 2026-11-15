@@ -13,12 +13,16 @@ from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional
 
 from app.services.foundation.settings import chat_default_model, get_settings
+from app.services.plans.artifact_preflight import ArtifactPreflightService
+from app.services.plans.execution_contract import (
+    PLAN_EXECUTION_GUIDANCE,
+    execution_target_ids_schema,
+)
 from app.services.plans.plan_decomposer import PlanDecomposer
 from app.services.plans.plan_generation import (
     create_plan_and_generate,
     ensure_plan_generation_ready,
 )
-from app.services.plans.artifact_preflight import ArtifactPreflightService
 from app.services.plans.plan_optimizer import (
     auto_optimize_plan,
     capture_plan_optimization_outcome,
@@ -26,7 +30,6 @@ from app.services.plans.plan_optimizer import (
     resolve_plan_review_result,
 )
 from app.services.plans.task_metadata_generator import ensure_task_metadata
-from app.services.plans.execution_contract import PLAN_EXECUTION_GUIDANCE, execution_target_ids_schema
 
 logger = logging.getLogger(__name__)
 _artifact_preflight_service = ArtifactPreflightService()
@@ -145,7 +148,42 @@ async def plan_operation_handler(
     Returns:
         Dict containing operation result
     """
-    from app.services.plans.edit_policy import PLAN_EDITS, blocked_plan_edit, tool_plan_edit_allowed
+    from app.services.plan_mode_offers import (
+        build_plan_mode_offer,
+        session_offer_settings,
+    )
+    from app.services.plans.edit_policy import (
+        PLAN_EDITS,
+        blocked_plan_edit,
+        tool_plan_edit_allowed,
+    )
+
+    if operation == "offer":
+        extra = getattr(tool_context, "extra", None) or {}
+        query = str(kwargs.get("query") or "").strip()
+        if not query:
+            history = extra.get("chat_history")
+            if isinstance(history, list):
+                for message in reversed(history):
+                    if isinstance(message, dict) and message.get("role") == "user":
+                        query = str(message.get("content") or "").strip()
+                        if query:
+                            break
+        if not query:
+            return {"success": False, "operation": "offer", "error": "offer_query_required"}
+        session_id = getattr(tool_context, "session_id", None)
+        try:
+            settings = session_offer_settings(session_id)
+        except Exception as exc:
+            logger.warning("Plan offer state unavailable: %s", type(exc).__name__)
+            return {"success": False, "operation": "offer", "error": "offer_state_unavailable"}
+        return build_plan_mode_offer(
+            reason=str(kwargs.get("reason") or title or ""),
+            query=query,
+            settings=settings,
+            bound_plan_id=getattr(tool_context, "plan_id", None),
+        )
+
     if operation in PLAN_EDITS:
         denied = blocked_plan_edit(operation, tool_plan_edit_allowed(tool_context))
         if denied:
@@ -189,8 +227,8 @@ async def plan_operation_handler(
                 expand_composites=kwargs.get("expand_composites", True),
             )
         elif operation == "recompute":
-            from app.services.plans.artifact_recompute import preview,enqueue
             from app.repository.plan_repository import PlanRepository
+            from app.services.plans.artifact_recompute import enqueue, preview
             repo=PlanRepository();resolved=plan_id or getattr(tool_context,"plan_id",None)
             owner=getattr(tool_context,"owner_id",None)
             if not resolved or not owner or repo._get_plan_record(resolved)["owner"]!=owner:
@@ -382,8 +420,9 @@ async def _bind_plan(plan_id: Optional[int], tool_context: Optional[Any] = None)
             tool_context.plan_id = plan_id
         
         task_count = len(plan_tree.nodes) - 1
+        root_ids = set(plan_tree.root_node_ids())
         completed_count = sum(1 for node in plan_tree.nodes.values() 
-                            if node.status == "completed" and node.id != plan_tree.root_id)
+                            if node.status == "completed" and node.id not in root_ids)
         
         return {
             "success": True,
@@ -1209,7 +1248,7 @@ async def _get_todo_list(
 
     try:
         from app.repository.plan_repository import PlanRepository
-        from app.services.plans.todo_list import build_todo_list, assign_phase_labels
+        from app.services.plans.todo_list import assign_phase_labels, build_todo_list
 
         repo = PlanRepository()
         plan_tree = repo.get_plan_tree(plan_id)
@@ -1507,7 +1546,13 @@ UPDATE_TASK operation:
 
 Legacy compatibility:
 - Nested `updated_fields` / `updates` / `fields` payloads are accepted and flattened.
-- `task_name` / `task_instruction` aliases are accepted for add_task/update_task.""",
+- `task_name` / `task_instruction` aliases are accepted for add_task/update_task.
+
+OFFER operation:
+- Use only to suggest Plan mode for a multi-stage task that will need execution or artifact writes.
+- Include the user's original request verbatim in `query` and a concise explanation in `reason`.
+- This creates no Plan and executes nothing. Stop after the offer so the user can accept or decline.
+- Never use offer when the task is simple, a Plan is already bound, or the user declined planning.""",
     "category": "planning",
     "parameters_schema": {
         "type": "object",
@@ -1515,7 +1560,7 @@ Legacy compatibility:
             "operation": {
                 "type": "string",
                 "description": "Operation type",
-                "enum": ["create", "bind", "review", "optimize", "get", "todo_list", "execute_all", "execute_task", "update_task", "recompute", "resolve_input"],
+                "enum": ["offer", "create", "bind", "review", "optimize", "get", "todo_list", "execute_all", "execute_task", "update_task", "recompute", "resolve_input"],
             },
             "title": {
                 "type": "string",
@@ -1551,7 +1596,8 @@ Legacy compatibility:
             "target_task_ids": execution_target_ids_schema(),
             "input_alias": {"type":"string", "description":"Pending input alias to confirm during task input reconciliation."},
             "candidate_id": {"type":"string", "description":"Candidate ID from task input inventory; read its contents before resolve_input."},
-            "reason": {"type":"string", "description":"Explain why the inspected candidate content satisfies the required input."},
+            "reason": {"type":"string", "description":"Explain why this multi-stage request benefits from read-only planning, or why an inspected input candidate is valid."},
+            "query": {"type":"string", "description":"Original user request verbatim for an offer; required when operation='offer'."},
             "plan_id": {
                 "type": "integer",
                 "description": "Plan ID (required for review, optimize, get, todo_list)",

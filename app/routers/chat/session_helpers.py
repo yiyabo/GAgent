@@ -134,6 +134,8 @@ def _extract_session_settings(
         settings["default_llm_provider"] = llm_provider
     if type(metadata.get("plan_mode")) is bool:
         settings["plan_mode"] = metadata["plan_mode"]
+    if type(metadata.get("plan_offer_dismissed")) is bool:
+        settings["plan_offer_dismissed"] = metadata["plan_offer_dismissed"]
     return settings or None
 
 

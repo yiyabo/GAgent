@@ -1070,6 +1070,12 @@ async def update_chat_session(
                         metadata_dict.pop("plan_mode", None)
                     else:
                         metadata_dict["plan_mode"] = plan_mode
+                if "plan_offer_dismissed" in settings_update:
+                    dismissed = settings_update.get("plan_offer_dismissed")
+                    if dismissed is None:
+                        metadata_dict.pop("plan_offer_dismissed", None)
+                    else:
+                        metadata_dict["plan_offer_dismissed"] = dismissed
                 from app.services.response_style import ResponsePreferences
                 for key in ResponsePreferences.model_fields:
                     if key in settings_update:

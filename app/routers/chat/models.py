@@ -186,6 +186,7 @@ class ChatSessionSettings(BaseModel):
         Literal["qwen", "mimo", "kimi"]
     ] = None
     plan_mode: bool | None = None
+    plan_offer_dismissed: bool | None = None
 
 
 class ChatSessionSummary(BaseModel):

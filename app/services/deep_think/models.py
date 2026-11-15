@@ -59,6 +59,7 @@ class DeepThinkResult:
     output_spec_base_dir: Optional[str] = None
     output_verification: Optional[Dict[str, Any]] = None
     execution_issues: List[Dict[str, Any]] = field(default_factory=list)
+    plan_mode_offer: dict[str, Any] | None = None
     # Internal execution transcript; routers continue projecting their existing fields.
     continuation: Optional[Dict[str, Any]] = field(default=None, repr=False, compare=False)
 

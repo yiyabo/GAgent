@@ -46,6 +46,7 @@ from uuid import uuid4
 
 from app.services.deep_think_agent import DeepThinkResult, ThinkingStep, detect_reasoning_language
 from app.services.llm.structured_response import LLMStructuredResponse
+from app.services.plan_mode_offers import plan_mode_offer_from_result
 
 from .background import _sse_message
 from .deterministic_execute import (
@@ -101,8 +102,8 @@ def _truncate_progress_text(text: Optional[str], max_chars: int = 72) -> str:
 
 
 def _tool_progress_details(
-    tool_name: str, params: Optional[Dict[str, Any]]
-) -> Optional[str]:
+    tool_name: str, params: dict[str, Any] | None
+) -> str | None:
     params = params if isinstance(params, dict) else {}
     lowered = (tool_name or "").strip().lower()
     if lowered == "web_search":
@@ -193,9 +194,8 @@ async def _stream_deterministic_execute(
     )
     if deterministic_execute.actions:
         try:
-            deterministic_task_id = int(
-                deterministic_execute.actions[0].parameters.get("task_id")
-            )
+            raw_task_id = deterministic_execute.actions[0].parameters.get("task_id")
+            deterministic_task_id = int(raw_task_id) if raw_task_id is not None else None
         except (TypeError, ValueError, AttributeError):
             deterministic_task_id = None
     if deterministic_task_id is not None:
@@ -279,11 +279,8 @@ async def _stream_deterministic_execute(
             event_payload = payload.get("event")
             if not isinstance(event_payload, dict):
                 continue
-            metadata = (
-                event_payload.get("metadata")
-                if isinstance(event_payload.get("metadata"), dict)
-                else {}
-            )
+            raw_metadata = event_payload.get("metadata")
+            metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
             sub_type = str(metadata.get("sub_type") or "").strip().lower()
             if sub_type == "thinking_step":
                 step_payload = metadata.get("step")
@@ -617,6 +614,7 @@ async def _drain_unified_stream_events(
             )
             if item.get("background_plan_job_id"):
                 final_metadata["background_job_id"] = item["background_plan_job_id"]
+            final_metadata.update(plan_mode_offer_from_result(res))
 
             from app.services.memory.context_recall import attach_recall_metadata
             attach_recall_metadata(final_metadata, agent.extra_context)

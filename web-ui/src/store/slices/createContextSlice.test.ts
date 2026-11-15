@@ -53,10 +53,10 @@ describe('explicit Plan mode session state', () => {
     await state.setPlanMode(true);
 
     expect(state.planMode).toBe(true);
-    expect(state.currentSession.settings).toEqual({ response_length: 'concise', plan_mode: true });
+    expect(state.currentSession.settings).toEqual({ response_length: 'concise', plan_mode: true, plan_offer_dismissed: false });
     expect(state.sessions[0].settings.plan_mode).toBe(true);
     expect(chatApi.updateSession).toHaveBeenCalledWith('server-A', {
-      settings: { response_length: 'concise', plan_mode: true },
+      settings: { response_length: 'concise', plan_mode: true, plan_offer_dismissed: false },
     });
   });
 
@@ -67,6 +67,18 @@ describe('explicit Plan mode session state', () => {
     expect(state.planMode).toBe(false);
     state.setCurrentSession(a);
     expect(state.planMode).toBe(true);
+  });
+
+  it('persists dismissal and clears it after an explicit Plan-mode opt-in', async () => {
+    const { state } = fixture();
+    await state.dismissPlanModeOffer();
+    expect(state.currentSession.settings.plan_offer_dismissed).toBe(true);
+    expect(chatApi.updateSession).toHaveBeenLastCalledWith('server-A', {
+      settings: { response_length: 'concise', plan_mode: false, plan_offer_dismissed: true },
+    });
+
+    await state.setPlanMode(true);
+    expect(state.currentSession.settings.plan_offer_dismissed).toBe(false);
   });
 
   it('rolls back the optimistic toggle when persistence fails', async () => {

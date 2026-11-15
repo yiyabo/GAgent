@@ -92,6 +92,7 @@ export interface ChatState {
     setChatContext: (context: { planId?: number | null; planTitle?: string | null; taskId?: number | null; taskName?: string | null }) => void;
     clearChatContext: () => void;
     setPlanMode: (enabled: boolean) => Promise<void>;
+    dismissPlanModeOffer: () => Promise<void>;
     setCurrentWorkflowId: (workflowId: string | null) => void;
     // UI Actions
     setInputText: (text: string) => void;

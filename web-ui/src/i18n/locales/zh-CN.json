@@ -1445,7 +1445,12 @@
     "disclaimer": "本内容由AI生成，请核实",
     "planFailed": "计划状态：结构化计划创建失败",
     "planTextOnly": "计划状态：仅生成文本建议，未创建结构化计划",
-    "linkedPlan": "关联计划：{{rest}}"
+    "linkedPlan": "关联计划：{{rest}}",
+    "planOfferTitle": "这个任务适合先生成可审查的 Plan",
+    "planOfferAccept": "进入 Plan 模式并创建计划",
+    "planOfferDecline": "直接继续",
+    "planOfferAcceptFailed": "无法进入 Plan 模式并创建计划：{{detail}}",
+    "planOfferDeclineFailed": "无法保存你的选择：{{detail}}"
   },
   "thinkingControl": {
     "pause": "暂停",

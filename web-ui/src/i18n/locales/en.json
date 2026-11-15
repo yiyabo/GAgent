@@ -1445,7 +1445,12 @@
     "disclaimer": "AI-generated content. Please verify.",
     "planFailed": "Plan status: structured plan creation failed",
     "planTextOnly": "Plan status: only a text suggestion was produced; no structured plan was created",
-    "linkedPlan": "Linked plan:{{rest}}"
+    "linkedPlan": "Linked plan:{{rest}}",
+    "planOfferTitle": "This task may benefit from a reviewable Plan",
+    "planOfferAccept": "Enter Plan mode and create a Plan",
+    "planOfferDecline": "Continue directly",
+    "planOfferAcceptFailed": "Could not enter Plan mode and create a Plan: {{detail}}",
+    "planOfferDeclineFailed": "Could not save your choice: {{detail}}"
   },
   "thinkingControl": {
     "pause": "Pause",

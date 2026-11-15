@@ -4,6 +4,7 @@ export interface ChatSessionSettings {
   response_style?: ResponseStyle;
   response_length?: ResponseLength;
   plan_mode?: boolean;
+  plan_offer_dismissed?: boolean;
   [key: string]: unknown;
 }
 
@@ -30,6 +31,7 @@ export interface ChatStatusResponse {
     use_context: boolean;
     max_tasks?: number | null;
   };
+  // pi-lens-ignore: no-unsafe-dictionary-any
   features: Record<string, any>;
   warnings: string[];
 }

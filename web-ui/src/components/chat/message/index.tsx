@@ -30,6 +30,7 @@ import MessageActions from './MessageActions';
 import ResumeRunAction from './ResumeRunAction';
 import SkillLearningPanel from './SkillLearningPanel';
 import RecallReferences from './RecallReferences';
+import PlanModeOfferCard from './PlanModeOfferCard';
 import MessageAttachments from './MessageAttachments';
 import ToolResultDrawer, { ToolStatusBar } from './ToolResultDrawer';
 import { extractLlmReplyMessage } from '@/utils/llmReplyDisplay';
@@ -46,7 +47,7 @@ interface ChatMessageProps {
 
 const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sessionIdProp }) => {
   const t = useT();
-  const { type, content, timestamp, metadata } = message;
+  const { type, content, metadata } = message;
   const effectiveSessionId =
     sessionIdProp ??
     (typeof (metadata as any)?.session_id === 'string' ? (metadata as any).session_id : null);
@@ -551,6 +552,7 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
                   ) : null}
                   {showThinkingProcess && renderThinkingProcessBlock()}
                   {summaryBlock}
+                  {metadata.plan_mode_offer ? <PlanModeOfferCard offer={metadata.plan_mode_offer} /> : null}
                   {renderAiDisclaimer()}
                   {showInlineArtifactGallery && (
                     <ArtifactGallery items={artifactGallery} sessionId={effectiveSessionId} />
