@@ -386,20 +386,25 @@ def clarification_prompt_lines(response: Mapping[str, Any] | None) -> list[str]:
             "briefly and concretely, what each option changes in the Plan and why it matters, then ask "
             "again with plan_operation ask_user using clearer options. Do not create the Plan yet."
         ]
-    defaults = [
-        str(answer.get("header") or answer.get("id"))
-        for answer in response.get("answers") or []
-        if isinstance(answer, Mapping) and answer.get("recommended_used")
-    ]
+    answers = [a for a in response.get("answers") or [] if isinstance(a, Mapping)]
+    defaults = [str(a.get("header") or a.get("id")) for a in answers if a.get("recommended_used")]
+    explicit = [str(a.get("header") or a.get("id")) for a in answers if not a.get("recommended_used")]
     lines = [
         "The user's message answers your clarification questions. Treat the answers as binding "
         "requirements and continue the Plan now; do not ask the same questions again."
     ]
+    if explicit:
+        lines.append(
+            "The user chose these explicitly: "
+            + ", ".join(explicit)
+            + ". They are confirmed requirements: do not list them as assumptions or describe them as defaults."
+        )
     if defaults:
         lines.append(
-            "These choices were accepted as your recommended defaults rather than chosen explicitly: "
+            "Only these were accepted as your recommended defaults rather than chosen explicitly: "
             + ", ".join(defaults)
-            + ". Record them in plan_operation create assumptions=[...]."
+            + ". Record exactly these in plan_operation create assumptions=[...], marked as recommended defaults; "
+            "other assumptions are allowed only for decisions the user was never asked about."
         )
     return lines
 

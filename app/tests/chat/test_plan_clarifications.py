@@ -425,3 +425,27 @@ def test_result_projection_requires_questions() -> None:
     )
     assert projected["plan_clarification"]["request_id"] == "r1"
     assert projected["plan_clarification"]["max_rounds"] == clarifications.MAX_ROUNDS
+
+
+def test_answer_prompt_separates_explicit_choices_from_defaults() -> None:
+    lines = " ".join(
+        clarifications.clarification_prompt_lines(
+            {
+                "request_id": "r1",
+                "mode": "recommended",
+                "answers": [
+                    {"id": "host", "header": "宿主范围", "recommended_used": True},
+                    {"id": "depth", "header": "验证深度", "recommended_used": False},
+                ],
+            }
+        )
+    )
+    assert "chose these explicitly: 验证深度" in lines
+    assert "do not list them as assumptions" in lines
+    assert "Only these were accepted as your recommended defaults rather than chosen explicitly: 宿主范围." in lines
+    answered = " ".join(
+        clarifications.clarification_prompt_lines(
+            {"request_id": "r1", "mode": "answered", "answers": [{"id": "depth", "header": "验证深度"}]}
+        )
+    )
+    assert "recommended defaults" not in answered
