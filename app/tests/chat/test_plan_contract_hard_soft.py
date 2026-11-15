@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -112,7 +112,7 @@ def test_soft_missing_replaces_technical_message_with_actionable_notice() -> Non
         "state": "not_called",
         "message": "The requested structured plan contract was not satisfied: plan_operation was not called.",
     }
-    noted = _ensure_structured_plan_notice(None, "这里是研究方案正文。", outcome=outcome, user_query="制定完整的研究计划吧")
+    noted = _ensure_structured_plan_notice(cast(Any, SimpleNamespace()), "这里是研究方案正文。", outcome=outcome, user_query="制定完整的研究计划吧")
     assert "这里是研究方案正文。" in noted
     assert "没有创建可执行的结构化计划树" in noted
     assert "plan_operation was not called" not in noted
