@@ -1341,7 +1341,9 @@
     "navLabel": "Chat navigation",
     "expandChatList": "Expand chat list",
     "resize": "Resize chat and plan",
-    "drawerTitle": "Research chats"
+    "drawerTitle": "Research chats",
+    "hidePlanPanel": "Hide plan panel",
+    "showPlanPanel": "Show plan panel"
   },
   "chatMain": {
     "retry": "Please try again",

@@ -20,6 +20,7 @@
 .workspace-divider:hover, .workspace-divider:focus-visible { background: var(--surface-hover); outline: none; }
 .workspace-divider:focus-visible span { background: var(--primary-color); }
 .workspace-nav-reopen { flex-shrink: 0; align-self: flex-start; width: 28px; padding: 4px !important; margin-top: 12px; }
+.workspace-plan-reopen { flex-shrink: 0; align-self: flex-start; width: 28px; padding: 4px !important; margin-top: 12px; }
 .workspace-mobile-toolbar { padding: 8px 12px; border-bottom: 1px solid var(--border-color); display: flex; align-items: center; gap: 8px; }
 .research-workspace .ant-btn-primary { background: var(--primary-color) !important; box-shadow: none !important; }
 .research-workspace .ant-btn-primary:hover { transform: none; box-shadow: none !important; }

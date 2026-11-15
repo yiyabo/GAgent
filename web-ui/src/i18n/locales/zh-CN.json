@@ -1341,7 +1341,9 @@
     "navLabel": "会话导航",
     "expandChatList": "展开会话列表",
     "resize": "调整对话与计划宽度",
-    "drawerTitle": "研究会话"
+    "drawerTitle": "研究会话",
+    "hidePlanPanel": "隐藏计划面板",
+    "showPlanPanel": "显示计划面板"
   },
   "chatMain": {
     "retry": "请重试",

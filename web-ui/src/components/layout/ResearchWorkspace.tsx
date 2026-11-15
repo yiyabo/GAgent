@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Button, Drawer, Segmented, Tooltip } from 'antd';
-import { MenuUnfoldOutlined, MessageOutlined, PartitionOutlined } from '@ant-design/icons';
+import { LeftOutlined, MenuUnfoldOutlined, MessageOutlined, PartitionOutlined } from '@ant-design/icons';
 import { useLayoutStore } from '@store/layout';
 import { useChatStore } from '@store/chat';
 import { useT } from '@/i18n/useT';
@@ -8,7 +8,7 @@ import ChatSidebar from './ChatSidebar';
 import ChatMainArea from './ChatMainArea';
 import DAGSidebar from './DAGSidebar';
 import TaskDetailDrawer from '@components/tasks/TaskDetailDrawer';
-import { workspaceGeometry } from './workspaceGeometry';
+import { planPanelState, workspaceGeometry } from './workspaceGeometry';
 import './ResearchWorkspace.css';
 
 const ResearchWorkspace: React.FC = () => {
@@ -16,7 +16,7 @@ const ResearchWorkspace: React.FC = () => {
   const currentPlanId = useChatStore((state) => state.currentPlanId);
   const drawerScope = useChatStore((state) => `${state.currentSession?.session_id ?? state.currentSession?.id ?? 'none'}:${state.currentPlanId ?? 'none'}`);
   const { chatListVisible, workspacePlanWidth, setWorkspacePlanWidth, dagSidebarFullscreen,
-    toggleChatList, setDagSidebarFullscreen } = useLayoutStore();
+    planPanelVisible, toggleChatList, setDagSidebarFullscreen, setPlanPanelVisible } = useLayoutStore();
   const container = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(() => typeof window === 'undefined' ? 1440 : window.innerWidth);
   const [pane, setPane] = useState<'chat' | 'plan'>('chat');
@@ -60,6 +60,12 @@ const ResearchWorkspace: React.FC = () => {
   }, [geometry.maxPlan, setWorkspacePlanWidth]);
 
   const compactPlan = pane === 'plan' || dagSidebarFullscreen;
+  const panel = planPanelState({
+    compact: geometry.compact,
+    compactPlan,
+    fullscreen: dagSidebarFullscreen,
+    visible: planPanelVisible,
+  });
   return (
     <div className={`research-workspace ${geometry.compact ? 'is-compact' : ''}`} ref={container}>
       {geometry.compact && <div className="workspace-mobile-toolbar">
@@ -75,13 +81,14 @@ const ResearchWorkspace: React.FC = () => {
         <section className="workspace-conversation" aria-label={t('workspace.chatPane')} hidden={geometry.compact ? compactPlan : dagSidebarFullscreen}>
           <ChatMainArea />
         </section>
-        {!geometry.compact && !dagSidebarFullscreen && <div className="workspace-divider" role="separator" tabIndex={0}
+        {panel.showReopen && <Tooltip title={t('workspace.showPlanPanel')}><Button className="workspace-plan-reopen" type="text" aria-label={t('workspace.showPlanPanel')} icon={<LeftOutlined />} onClick={() => setPlanPanelVisible(true)} /></Tooltip>}
+        {panel.showDivider && <div className="workspace-divider" role="separator" tabIndex={0}
           aria-label={t('workspace.resize')} aria-orientation="vertical" aria-valuemin={420} aria-valuemax={Math.round(geometry.maxPlan)} aria-valuenow={Math.round(geometry.planWidth)}
           onPointerDown={(event) => { event.preventDefault(); drag.current = true; document.body.style.cursor = 'col-resize'; document.body.style.userSelect = 'none'; }}
           onDoubleClick={() => setWorkspacePlanWidth((width - geometry.navWidth) * 0.65)}
           onKeyDown={(event) => { if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') { event.preventDefault(); setWorkspacePlanWidth(Math.min(geometry.maxPlan, Math.max(420, geometry.planWidth + (event.key === 'ArrowLeft' ? 32 : -32)))); } }}
         ><span /></div>}
-        <section className="workspace-plan" aria-label={t('workspace.planPane')} hidden={geometry.compact && !compactPlan}
+        <section className="workspace-plan" aria-label={t('workspace.planPane')} hidden={!panel.showPlan}
           style={{ width: geometry.compact || dagSidebarFullscreen ? undefined : geometry.planWidth, flex: geometry.compact || dagSidebarFullscreen ? 1 : undefined }}>
           <DAGSidebar />
         </section>
