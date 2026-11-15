@@ -1840,5 +1840,24 @@
     "usageRow": "{{calls}} calls · {{tokens}} tokens · {{duration}}",
     "failedCalls": "{{count}} failed",
     "streamingNote": "Streaming text is counted, not shown: {{thinking}} thinking, {{reasoning}} reasoning and {{deltas}} answer chunks."
+  },
+  "planClarify": {
+    "title": "Please confirm before planning",
+    "round": "Round {{round}}/{{max}}",
+    "closed": "Closed",
+    "recommended": "Recommended",
+    "other": "Other (type your own)",
+    "otherPlaceholder": "Describe your choice or constraint",
+    "submit": "Submit answers",
+    "useRecommended": "Continue with recommendations",
+    "moreContext": "Need more context",
+    "hint": "You can also reply in the composer. Unconfirmed recommendations are listed as Plan assumptions.",
+    "answerIntro": "My answers to the planning questions:",
+    "defaultsIntro": "Continue with recommendations (unanswered questions use the recommended option):",
+    "moreContextMessage": "Before I answer these planning questions, please explain how each option changes the Plan and why you recommend it.",
+    "recommendedSuffix": " (recommended default)",
+    "otherPrefix": "Other: ",
+    "sendFailed": "Could not send your answers: {{detail}}",
+    "assumptionsTitle": "Plan assumptions (unconfirmed)"
   }
 }

@@ -93,6 +93,8 @@ export interface ChatState {
     clearChatContext: () => void;
     setPlanMode: (enabled: boolean) => Promise<void>;
     dismissPlanModeOffer: () => Promise<void>;
+    /** Mirror the server-owned pending clarification for the card and sidebar. */
+    setPendingPlanClarification: (sessionId: string, requestId: string | null) => void;
     setCurrentWorkflowId: (workflowId: string | null) => void;
     // UI Actions
     setInputText: (text: string) => void;

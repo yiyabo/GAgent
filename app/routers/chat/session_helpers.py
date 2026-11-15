@@ -136,6 +136,9 @@ def _extract_session_settings(
         settings["plan_mode"] = metadata["plan_mode"]
     if type(metadata.get("plan_offer_dismissed")) is bool:
         settings["plan_offer_dismissed"] = metadata["plan_offer_dismissed"]
+    from app.services.plan_clarifications import pending_settings
+
+    settings.update(pending_settings(metadata))
     return settings or None
 
 

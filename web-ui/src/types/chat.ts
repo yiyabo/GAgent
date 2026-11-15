@@ -136,9 +136,50 @@ export interface PlanModeOffer {
   query: string;
 }
 
+export interface PlanClarificationOption {
+  label: string;
+  description?: string;
+  recommended?: boolean;
+}
+
+export interface PlanClarificationQuestion {
+  id: string;
+  header: string;
+  question: string;
+  multi_select?: boolean;
+  options: PlanClarificationOption[];
+}
+
+/** Plan-mode clarifying questions; the turn ended and waits for the user's answer. */
+export interface PlanClarificationRequest {
+  request_id: string;
+  status: 'pending';
+  round: number;
+  max_rounds: number;
+  context?: string;
+  questions: PlanClarificationQuestion[];
+}
+
+export interface PlanClarificationAnswer {
+  id: string;
+  header: string;
+  question: string;
+  selected: string[];
+  other?: string | null;
+  recommended_used: boolean;
+}
+
+export interface PlanClarificationResponse {
+  request_id: string;
+  mode: 'answered' | 'recommended' | 'more_context';
+  answers: PlanClarificationAnswer[];
+}
+
 export interface ChatResponseMetadata {
   status?: ChatActionStatus;
   plan_mode_offer?: PlanModeOffer | null;
+  plan_clarification?: PlanClarificationRequest | null;
+  plan_clarification_response?: PlanClarificationResponse | null;
   tracking_id?: string;
   plan_id?: number | null;
   plan_title?: string | null;

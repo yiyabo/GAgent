@@ -118,6 +118,16 @@ def _build_structured_plan_requirement_block(agent: "DeepThinkAgent") -> str:
             "execution must wait for the user to approve the Plan and exit Plan mode. If the user asks "
             "for execution during this mode, explain that approval is required instead of calling an execution tool."
         )
+        from app.services.plan_clarifications import (
+            clarification_prompt_lines,
+            plan_mode_question_guidance,
+        )
+
+        clarification_response = agent.request_profile.get("plan_clarification_response")
+        requirement_lines.extend(clarification_prompt_lines(clarification_response))
+        rounds_left = agent.request_profile.get("plan_clarification_rounds_left")
+        if isinstance(rounds_left, int):
+            requirement_lines.append(plan_mode_question_guidance(rounds_left))
     if agent.request_profile.get("plan_tree_edit_allowed") is False:
         requirement_lines.append(
             ("No persistent Plan has been requested in this chat. A topic selection or request to explain a subject "
@@ -143,9 +153,20 @@ def _build_structured_plan_requirement_block(agent: "DeepThinkAgent") -> str:
             "you MUST call `plan_operation` with operation=`execute_all` for the created plan_id."
         )
     elif flags["create_required"]:
+        clarify_first = (
+            flags["contract_enforced"]
+            and int(agent.request_profile.get("plan_clarification_rounds_left") or 0) > 0
+            and not isinstance(agent.request_profile.get("plan_clarification_response"), dict)
+        )
         requirement_lines.append(
             "The user explicitly requested a structured plan. You MUST call `plan_operation` "
-            "with operation=`create`. Do not execute the plan unless the user explicitly requested execution."
+            "with operation=`create`"
+            + (
+                " (or, if a blocking decision cannot be looked up, ask_user first and stop)"
+                if clarify_first
+                else ""
+            )
+            + ". Do not execute the plan unless the user explicitly requested execution."
         )
     elif flags["execute_required"]:
         plan_ref = f" targeting plan_id={plan_id}" if plan_id is not None else " targeting the current bound plan"

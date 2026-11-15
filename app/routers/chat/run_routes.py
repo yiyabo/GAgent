@@ -71,6 +71,30 @@ def _plan_id_from_request(request: ChatRequest) -> Optional[int]:
         return None
 
 
+def _consume_plan_clarification(
+    request: ChatRequest,
+    user_message_metadata: Dict[str, Any],
+    *,
+    session_id: str,
+    owner_id: str,
+) -> None:
+    """Record a structured answer and clear the session's waiting-for-input state."""
+    from app.services.plan_clarifications import (
+        consume_pending_clarification,
+        normalize_clarification_response,
+    )
+
+    response = normalize_clarification_response(
+        (request.context or {}).get("plan_clarification_response")
+    )
+    if response:
+        user_message_metadata["plan_clarification_response"] = response
+    try:
+        consume_pending_clarification(session_id, response, owner_id=owner_id)
+    except Exception:
+        logger.warning("[CHAT][RUN] Failed to clear pending clarification", exc_info=True)
+
+
 def _save_run_user_message(
     request: ChatRequest,
     *,
@@ -104,6 +128,7 @@ def _save_run_user_message(
     resume_source = (request.context or {}).get("resume_from_run_id")
     if resume_source:
         user_message_metadata = {**(user_message_metadata or {}), "resume_from_run_id": resume_source}
+    _consume_plan_clarification(request, user_message_metadata, session_id=session_id, owner_id=owner_id)
     user_message_id = _save_chat_message(
         session_id,
         "user",

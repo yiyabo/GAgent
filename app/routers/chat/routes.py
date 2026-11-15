@@ -523,6 +523,14 @@ async def chat_message(
                 else {}
             )
             attach_message_attachments(user_message_metadata, context)
+            from .run_routes import _consume_plan_clarification
+
+            _consume_plan_clarification(
+                request,
+                user_message_metadata,
+                session_id=request.session_id,
+                owner_id=owner_id,
+            )
             _save_chat_message(
                 request.session_id,
                 "user",

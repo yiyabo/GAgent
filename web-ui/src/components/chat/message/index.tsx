@@ -31,6 +31,7 @@ import ResumeRunAction from './ResumeRunAction';
 import SkillLearningPanel from './SkillLearningPanel';
 import RecallReferences from './RecallReferences';
 import PlanModeOfferCard from './PlanModeOfferCard';
+import PlanClarificationCard from './PlanClarificationCard';
 import MessageAttachments from './MessageAttachments';
 import ToolResultDrawer, { ToolStatusBar } from './ToolResultDrawer';
 import { extractLlmReplyMessage } from '@/utils/llmReplyDisplay';
@@ -553,6 +554,7 @@ const ChatMessageInner: React.FC<ChatMessageProps> = ({ message, sessionId: sess
                   {showThinkingProcess && renderThinkingProcessBlock()}
                   {summaryBlock}
                   {metadata.plan_mode_offer ? <PlanModeOfferCard offer={metadata.plan_mode_offer} /> : null}
+                  {metadata.plan_clarification?.questions?.length ? <PlanClarificationCard request={metadata.plan_clarification} /> : null}
                   {renderAiDisclaimer()}
                   {showInlineArtifactGallery && (
                     <ArtifactGallery items={artifactGallery} sessionId={effectiveSessionId} />

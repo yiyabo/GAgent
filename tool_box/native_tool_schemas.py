@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from typing import Any, Dict
 from app.services.plans.execution_contract import PLAN_EXECUTION_GUIDANCE, execution_target_ids_schema
+from app.services.plan_clarifications import ASK_USER_GUIDANCE, ask_user_questions_schema, assumptions_schema
 
 from .phagescope_gateway_contract import extend_schema as _extend_gateway_schema
 from .tools_impl.phagescope_data.schema import (
@@ -1021,8 +1022,9 @@ NATIVE_TOOL_CONTENT: Dict[str, Dict[str, Any]] = {
         # native 有意收窄：impl 另有 expand_composites/new_status/note；todo_list 的必填 target_task_id 必须在两处提供。
         "description": (
             "Plan creation, optimization, and execution tool. "
-            "Operations: offer, create, bind, review, optimize, get, execute_all, execute_task, todo_list, recompute. "
+            "Operations: offer, ask_user, create, bind, review, optimize, get, execute_all, execute_task, todo_list, recompute. "
             + PLAN_EXECUTION_GUIDANCE + " "
+            + ASK_USER_GUIDANCE + " "
             "Use offer only to suggest Plan mode for multi-stage work that needs execution or artifact writes; include reason and the original query, then stop without creating or executing a Plan. "
             "Use recompute for explicitly requested updates of stale results after updating changed task instructions. "
             "Use create only for explicitly requested persistent Plans. After creation return its actual structure; do not automatically review, optimize or execute. Review is read-only and does not authorize edits or execution. "
@@ -1039,7 +1041,7 @@ NATIVE_TOOL_CONTENT: Dict[str, Dict[str, Any]] = {
             "properties": {
                 "operation": {
                     "type": "string",
-                    "enum": ["offer", "create", "bind", "review", "optimize", "get", "execute_all", "execute_task", "todo_list", "update_task", "recompute", "resolve_input"],
+                    "enum": ["offer", "ask_user", "create", "bind", "review", "optimize", "get", "execute_all", "execute_task", "todo_list", "update_task", "recompute", "resolve_input"],
                     "description": "Plan operation: get for state, execute_task for selected IDs, execute_all only for the explicitly requested whole Plan. bind switches Plans.",
                 },
                 "title": {"type": "string", "description": "Plan title (for create)."},
@@ -1053,6 +1055,9 @@ NATIVE_TOOL_CONTENT: Dict[str, Dict[str, Any]] = {
                 "candidate_id": {"type":"string", "description":"Candidate ID from task input inventory; read its contents before resolve_input."},
                 "reason": {"type":"string", "description":"Explain why this multi-stage request benefits from read-only planning, or why an inspected input candidate is valid."},
                 "query": {"type":"string", "description":"Original user request verbatim for an offer; required when operation='offer'."},
+                "questions": ask_user_questions_schema(),
+                "context": {"type": "string", "description": "ask_user only: one sentence on what you found and why these decisions matter."},
+                "assumptions": assumptions_schema(),
                 "plan_id": {"type": "integer", "description": "Plan ID (for review/optimize/get)."},
                 "tasks": {
                     "type": "array",

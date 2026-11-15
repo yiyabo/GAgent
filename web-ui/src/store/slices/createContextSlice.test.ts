@@ -81,6 +81,20 @@ describe('explicit Plan mode session state', () => {
     expect(state.currentSession.settings.plan_offer_dismissed).toBe(false);
   });
 
+  it('mirrors a pending clarification card for the matching session only', () => {
+    const { state } = fixture();
+    state.setPendingPlanClarification('server-A', 'clarify_1');
+    expect(state.currentSession.settings.pending_plan_clarification_id).toBe('clarify_1');
+    expect(state.currentSession.settings.waiting_user_input).toBe(true);
+    expect(state.sessions[0].settings.waiting_user_input).toBe(true);
+    expect(state.sessions[1].settings.waiting_user_input).toBeUndefined();
+    expect(chatApi.updateSession).not.toHaveBeenCalled();
+
+    state.setPendingPlanClarification('local-server-A', null);
+    expect(state.currentSession.settings.pending_plan_clarification_id).toBeNull();
+    expect(state.sessions[0].settings.waiting_user_input).toBe(false);
+  });
+
   it('rolls back the optimistic toggle when persistence fails', async () => {
     const { state } = fixture();
     vi.mocked(chatApi.updateSession).mockRejectedValueOnce(new Error('offline'));

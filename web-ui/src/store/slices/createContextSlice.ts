@@ -1,4 +1,5 @@
 import { ChatSliceCreator } from './types';
+import type { ChatSessionSettings } from '@/types';
 import { chatApi } from '@api/chat';
 import { useTasksStore } from '@store/tasks';
 
@@ -123,6 +124,25 @@ export const createContextSlice: ChatSliceCreator = (set, get) => ({
   set(previous);
   throw error;
   }
+  },
+
+  setPendingPlanClarification: (sessionId, requestId) => {
+  const withPending = <T extends { id: string; session_id?: string | null; settings?: ChatSessionSettings }>(entry: T): T => {
+  if (entry.id !== sessionId && entry.session_id !== sessionId) return entry;
+  return {
+  ...entry,
+  settings: {
+  ...(entry.settings ?? {}),
+  pending_plan_clarification_id: requestId,
+  waiting_user_input: requestId !== null,
+  },
+  };
+  };
+  const state = get();
+  set({
+  sessions: state.sessions.map(withPending),
+  currentSession: state.currentSession ? withPending(state.currentSession) : null,
+  });
   },
 
   setCurrentWorkflowId: (workflowId) => {

@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional
 
 from app.services.foundation.settings import chat_default_model, get_settings
+from app.services.plan_clarifications import ask_user_questions_schema, assumptions_schema
 from app.services.plans.artifact_preflight import ArtifactPreflightService
 from app.services.plans.execution_contract import (
     PLAN_EXECUTION_GUIDANCE,
@@ -184,6 +185,13 @@ async def plan_operation_handler(
             bound_plan_id=getattr(tool_context, "plan_id", None),
         )
 
+    if operation == "ask_user":
+        # Questions are issued only by the chat agent in explicit Plan mode,
+        # which ends the turn; background task runs and other lanes cannot ask.
+        from app.services.plan_clarifications import unavailable_result
+
+        return unavailable_result()
+
     if operation in PLAN_EDITS:
         denied = blocked_plan_edit(operation, tool_plan_edit_allowed(tool_context))
         if denied:
@@ -211,7 +219,10 @@ async def plan_operation_handler(
 
     try:
         if operation == "create":
-            return await _create_plan(title, description, tasks, tool_context=tool_context)
+            return await _create_plan(
+                title, description, tasks, tool_context=tool_context,
+                assumptions=kwargs.get("assumptions"),
+            )
         elif operation == "bind":
             return await _bind_plan(plan_id, tool_context=tool_context)
         elif operation == "review":
@@ -277,6 +288,7 @@ async def _create_plan(
     description: Optional[str],
     tasks: Optional[List[Dict[str, Any]]],
     tool_context: Optional[Any] = None,
+    assumptions: Any = None,
 ) -> Dict[str, Any]:
     """
     Create a new plan with initial tasks.
@@ -301,12 +313,18 @@ async def _create_plan(
         if isinstance(session_context, dict):
             owner = session_context.get("owner_id")
 
+        from app.services.plan_clarifications import normalize_assumptions
+
+        plan_metadata: Dict[str, Any] = {"created_by": "deepthink_agent"}
+        plan_assumptions = normalize_assumptions(assumptions)
+        if plan_assumptions:
+            plan_metadata["assumptions"] = plan_assumptions
         outcome = await create_plan_and_generate(
             title=title,
             description=description,
             tasks=tasks,
             owner=owner,
-            metadata={"created_by": "deepthink_agent"},
+            metadata=plan_metadata,
             repo=repo,
             decomposer=PlanDecomposer(repo=repo),
             session_context=session_context,
@@ -355,6 +373,8 @@ async def _create_plan(
             ),
         }
         result["auto_review"] = auto_review_payload
+        if plan_assumptions:
+            result["assumptions"] = plan_assumptions
         if isinstance(auto_review_payload.get("auto_optimize"), dict):
             result["auto_optimize"] = auto_review_payload["auto_optimize"]
         return result
@@ -1552,7 +1572,13 @@ OFFER operation:
 - Use only to suggest Plan mode for a multi-stage task that will need execution or artifact writes.
 - Include the user's original request verbatim in `query` and a concise explanation in `reason`.
 - This creates no Plan and executes nothing. Stop after the offer so the user can accept or decline.
-- Never use offer when the task is simple, a Plan is already bound, or the user declined planning.""",
+- Never use offer when the task is simple, a Plan is already bound, or the user declined planning.
+
+ASK_USER operation (explicit Plan mode only):
+- After read-only investigation, ask 1-3 multiple-choice questions about decisions that materially change the Plan and cannot be looked up.
+- Each question has 2-4 options with the recommended option first; the client adds a free-form "Other" choice.
+- The turn ends after asking; continue in the next message with the user's answers. At most two rounds per Plan.
+- Never ask whether the Plan is ready or whether to proceed. On create, record unconfirmed defaults in assumptions.""",
     "category": "planning",
     "parameters_schema": {
         "type": "object",
@@ -1560,7 +1586,7 @@ OFFER operation:
             "operation": {
                 "type": "string",
                 "description": "Operation type",
-                "enum": ["offer", "create", "bind", "review", "optimize", "get", "todo_list", "execute_all", "execute_task", "update_task", "recompute", "resolve_input"],
+                "enum": ["offer", "ask_user", "create", "bind", "review", "optimize", "get", "todo_list", "execute_all", "execute_task", "update_task", "recompute", "resolve_input"],
             },
             "title": {
                 "type": "string",
@@ -1598,6 +1624,9 @@ OFFER operation:
             "candidate_id": {"type":"string", "description":"Candidate ID from task input inventory; read its contents before resolve_input."},
             "reason": {"type":"string", "description":"Explain why this multi-stage request benefits from read-only planning, or why an inspected input candidate is valid."},
             "query": {"type":"string", "description":"Original user request verbatim for an offer; required when operation='offer'."},
+            "questions": ask_user_questions_schema(),
+            "context": {"type": "string", "description": "ask_user only: one sentence on what you found and why these decisions matter."},
+            "assumptions": assumptions_schema(),
             "plan_id": {
                 "type": "integer",
                 "description": "Plan ID (required for review, optimize, get, todo_list)",

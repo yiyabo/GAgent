@@ -53,6 +53,14 @@ describe('plan workspace navigation and async isolation', () => {
     expect(await screen.findByText('1 / 2 个任务已执行')).toBeInTheDocument();
     expect(screen.getByRole('button', {name: /重新执行/})).toBeEnabled();
   });
+  it('lists unconfirmed Plan assumptions recorded at creation', async () => {
+    const withAssumptions = tree(1);
+    withAssumptions.metadata = {assumptions: ['宿主：金黄色葡萄球菌（推荐默认）', '', 3]};
+    api.getPlanTree.mockResolvedValue(withAssumptions);
+    mount();
+    expect(await screen.findByText('计划假设（尚未确认）')).toBeInTheDocument();
+    expect(screen.getByText('宿主：金黄色葡萄球菌（推荐默认）')).toBeInTheDocument();
+  });
   it('shows review work separately from completed execution tasks', async () => {
     const pendingReview = tree(1);
     pendingReview.nodes['2'].status = 'needs_review';

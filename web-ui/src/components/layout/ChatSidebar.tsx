@@ -122,7 +122,8 @@ export const ChatSidebar: React.FC<{ onSessionSelected?: () => void; onCollapse?
 
     filteredSessions.forEach((s) => {
       const raw = s as any;
-      const isPending = raw?.metadata?.waiting_user_input || raw?.metadata?.status === 'waiting_input';
+      const isPending = Boolean(s.settings?.pending_plan_clarification_id)
+        || raw?.metadata?.waiting_user_input || raw?.metadata?.status === 'waiting_input';
       if (isPending) {
         pending.push(s);
       } else {

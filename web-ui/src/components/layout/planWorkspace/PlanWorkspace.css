@@ -112,3 +112,12 @@
   .pw-task-row { transition: none; }
   .pw-status-icon .anticon-spin { animation: none; }
 }
+
+.pw-assumption-list {
+  margin: 0;
+  padding-inline-start: 18px;
+}
+
+.pw-assumption-list li + li {
+  margin-top: 2px;
+}
