@@ -2398,6 +2398,13 @@ class StructuredChatAgent:
                         result = await execute_tool(name, **safe_params)
 
                     if (name == "plan_operation" and isinstance(result, dict)
+                            and result.get("success") and result.get("operation") == "offer"
+                            and isinstance(result.get("offer"), dict)):
+                        dt_agent._chat_plan_handoff_result = result
+                        dt_agent._chat_plan_handoff_query = effective_user_message
+                        return result
+
+                    if (name == "plan_operation" and isinstance(result, dict)
                             and result.get("success") and result.get("background_submitted") and result.get("job_id")):
                         dt_agent._chat_plan_handoff_result = result
                         dt_agent._chat_plan_handoff_query = effective_user_message

@@ -82,12 +82,39 @@ export const createContextSlice: ChatSliceCreator = (set, get) => ({
   sessions: get().sessions,
   };
   const session = previous.currentSession;
-  const settings = { ...(session?.settings ?? {}), plan_mode: enabled };
+  const settings = {
+  ...(session?.settings ?? {}),
+  plan_mode: enabled,
+  ...(enabled ? { plan_offer_dismissed: false } : {}),
+  };
   const currentSession = session ? { ...session, settings } : null;
   const sessions = currentSession
   ? previous.sessions.map((entry) => entry.id === currentSession.id ? currentSession : entry)
   : previous.sessions;
   set({ planMode: enabled, currentSession, sessions });
+
+  if (!session) return;
+  try {
+  await chatApi.updateSession(session.session_id ?? session.id, { settings });
+  } catch (error) {
+  set(previous);
+  throw error;
+  }
+  },
+
+  dismissPlanModeOffer: async () => {
+  const previous = {
+  planMode: get().planMode,
+  currentSession: get().currentSession,
+  sessions: get().sessions,
+  };
+  const session = previous.currentSession;
+  const settings = { ...(session?.settings ?? {}), plan_offer_dismissed: true };
+  const currentSession = session ? { ...session, settings } : null;
+  const sessions = currentSession
+  ? previous.sessions.map((entry) => entry.id === currentSession.id ? currentSession : entry)
+  : previous.sessions;
+  set({ currentSession, sessions });
 
   if (!session) return;
   try {

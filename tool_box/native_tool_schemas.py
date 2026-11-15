@@ -1021,8 +1021,9 @@ NATIVE_TOOL_CONTENT: Dict[str, Dict[str, Any]] = {
         # native 有意收窄：impl 另有 expand_composites/new_status/note；todo_list 的必填 target_task_id 必须在两处提供。
         "description": (
             "Plan creation, optimization, and execution tool. "
-            "Operations: create, bind, review, optimize, get, execute_all, execute_task, todo_list, recompute. "
+            "Operations: offer, create, bind, review, optimize, get, execute_all, execute_task, todo_list, recompute. "
             + PLAN_EXECUTION_GUIDANCE + " "
+            "Use offer only to suggest Plan mode for multi-stage work that needs execution or artifact writes; include reason and the original query, then stop without creating or executing a Plan. "
             "Use recompute for explicitly requested updates of stale results after updating changed task instructions. "
             "Use create only for explicitly requested persistent Plans. After creation return its actual structure; do not automatically review, optimize or execute. Review is read-only and does not authorize edits or execution. "
             "Use bind to switch the current session to a different plan (e.g. '切换到 plan X', '绑定 plan X'). "
@@ -1038,7 +1039,7 @@ NATIVE_TOOL_CONTENT: Dict[str, Dict[str, Any]] = {
             "properties": {
                 "operation": {
                     "type": "string",
-                    "enum": ["create", "bind", "review", "optimize", "get", "execute_all", "execute_task", "todo_list", "update_task", "recompute", "resolve_input"],
+                    "enum": ["offer", "create", "bind", "review", "optimize", "get", "execute_all", "execute_task", "todo_list", "update_task", "recompute", "resolve_input"],
                     "description": "Plan operation: get for state, execute_task for selected IDs, execute_all only for the explicitly requested whole Plan. bind switches Plans.",
                 },
                 "title": {"type": "string", "description": "Plan title (for create)."},
@@ -1050,7 +1051,8 @@ NATIVE_TOOL_CONTENT: Dict[str, Dict[str, Any]] = {
                                    "description": "Exact existing target ID whose dependency subgraph to inspect (required for todo_list)."},
                 "input_alias": {"type":"string", "description":"Pending input alias to confirm during task input reconciliation."},
                 "candidate_id": {"type":"string", "description":"Candidate ID from task input inventory; read its contents before resolve_input."},
-                "reason": {"type":"string", "description":"Explain why the inspected candidate content satisfies the required input."},
+                "reason": {"type":"string", "description":"Explain why this multi-stage request benefits from read-only planning, or why an inspected input candidate is valid."},
+                "query": {"type":"string", "description":"Original user request verbatim for an offer; required when operation='offer'."},
                 "plan_id": {"type": "integer", "description": "Plan ID (for review/optimize/get)."},
                 "tasks": {
                     "type": "array",
