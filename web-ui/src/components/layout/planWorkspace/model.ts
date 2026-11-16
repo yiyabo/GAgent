@@ -62,3 +62,18 @@ export function displayTime(value?: string | null): string {
     month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false,
   });
 }
+
+/** Smallest overview (title + meta) and smallest task area kept visible while resizing. */
+export const PLAN_TOP_MIN = 96;
+export const PLAN_TABS_MIN = 240;
+
+/**
+ * Clamp the requested overview height so the task tabs below always keep usable room.
+ * Returns null (automatic height) when nothing was requested or the panel is too short to split.
+ */
+export function clampPlanTopHeight(requested: number | null, containerHeight: number): number | null {
+  if (requested == null || !Number.isFinite(requested)) return null;
+  const max = containerHeight - PLAN_TABS_MIN;
+  if (max <= PLAN_TOP_MIN) return null;
+  return Math.round(Math.min(max, Math.max(PLAN_TOP_MIN, requested)));
+}

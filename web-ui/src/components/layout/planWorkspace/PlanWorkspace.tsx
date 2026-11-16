@@ -19,7 +19,7 @@ import ArtifactsPanel from '../ArtifactsPanel';
 import TaskOutline from './TaskOutline';
 import SelectedTaskDetail from './SelectedTaskDetail';
 import PlanRunHistory from './PlanRunHistory';
-import { defaultTaskSelection, isActiveJob, scopedPlanJobs, taskStatus } from './model';
+import { clampPlanTopHeight, defaultTaskSelection, isActiveJob, PLAN_TOP_MIN, scopedPlanJobs, taskStatus } from './model';
 import { artifactSourceSession, usePlanSourceGuard } from './usePlanSourceGuard';
 import { useT } from '@/i18n/useT';
 import './PlanWorkspace.css';
@@ -40,6 +40,8 @@ const ScopedPlanWorkspace: React.FC<{ planId: number | null; sessionId: string |
   const workspaceMode = useLayoutStore((state) => state.workspaceMode);
   const setPlanPanelVisible = useLayoutStore((state) => state.setPlanPanelVisible);
   const setDagSidebarFullscreen = useLayoutStore((state) => state.setDagSidebarFullscreen);
+  const planTopHeight = useLayoutStore((state) => state.planTopHeight);
+  const setPlanTopHeight = useLayoutStore((state) => state.setPlanTopHeight);
   const taskQuery = usePlanTasks({ planId });
   const treeQuery = usePlanTree(planId);
   const tasks = useMemo(() => taskQuery.data.map((task) => {
@@ -54,6 +56,11 @@ const ScopedPlanWorkspace: React.FC<{ planId: number | null; sessionId: string |
   const [graphOpen, setGraphOpen] = useState(false);
   const [backgroundOpen, setBackgroundOpen] = useState(false);
   const [filesOpen, setFilesOpen] = useState(false);
+  const [assumptionsCollapsed, setAssumptionsCollapsed] = useState(false);
+  const workspaceRef = useRef<HTMLDivElement>(null);
+  const overviewRef = useRef<HTMLDivElement>(null);
+  const [workspaceHeight, setWorkspaceHeight] = useState(0);
+  const resizing = useRef(false);
   const board = useQuery({
     queryKey: ['workspace', 'jobs', sessionId, planId], enabled: planId != null,
     queryFn: () => planTreeApi.getBackgroundTaskBoard({ plan_id: planId!, include_finished: true, limit: 50 }),
@@ -122,6 +129,48 @@ const ScopedPlanWorkspace: React.FC<{ planId: number | null; sessionId: string |
     previouslyActive.current = hasActiveWork;
   }, [board.dataUpdatedAt, planId, hasActiveWork, treeQuery.refetch]);
 
+  useEffect(() => {
+    const node = workspaceRef.current;
+    if (!node || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(([entry]) => setWorkspaceHeight(entry.contentRect.height));
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, []);
+
+  // Drag the divider between the plan overview and the task tabs (persisted per browser).
+  useEffect(() => {
+    const stop = () => {
+      if (!resizing.current) return;
+      resizing.current = false;
+      document.body.style.removeProperty('cursor');
+      document.body.style.removeProperty('user-select');
+    };
+    const move = (event: PointerEvent) => {
+      if (!resizing.current || !overviewRef.current || !workspaceRef.current) return;
+      const top = overviewRef.current.getBoundingClientRect().top;
+      const next = clampPlanTopHeight(event.clientY - top, workspaceRef.current.clientHeight);
+      if (next != null) setPlanTopHeight(next);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', stop);
+    window.addEventListener('pointercancel', stop);
+    window.addEventListener('blur', stop);
+    return () => {
+      stop();
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', stop);
+      window.removeEventListener('pointercancel', stop);
+      window.removeEventListener('blur', stop);
+    };
+  }, [setPlanTopHeight]);
+
+  const overviewHeight = clampPlanTopHeight(planTopHeight, workspaceHeight);
+  const nudgeOverview = (delta: number) => {
+    const current = overviewRef.current?.getBoundingClientRect().height ?? PLAN_TOP_MIN;
+    const next = clampPlanTopHeight(current + delta, workspaceRef.current?.clientHeight ?? 0);
+    if (next != null) setPlanTopHeight(next);
+  };
+
   const selectTask = (id: number) => {
     const task = tasks.find((item) => item.id === id);
     if (!task) return;
@@ -132,7 +181,9 @@ const ScopedPlanWorkspace: React.FC<{ planId: number | null; sessionId: string |
     setActiveTab('plan');
   };
 
-  return <div className="plan-workspace">
+  return <div className="plan-workspace" ref={workspaceRef}>
+    <div className={`pw-overview ${overviewHeight != null ? 'is-sized' : ''}`} ref={overviewRef}
+      style={overviewHeight != null ? { height: overviewHeight } : undefined}>
     <header className="pw-header">
       <div className="pw-heading-row"><span className="pw-eyebrow"><ApartmentOutlined /> {t('planWorkspace.eyebrow')}</span>
         <Space size={2}><Tooltip title={t('planWorkspace.allFilesTip')}><Button aria-label={t('planWorkspace.allFiles')} type="text" size="small" icon={<FolderOpenOutlined />} onClick={() => setFilesOpen(true)} /></Tooltip>
@@ -160,12 +211,24 @@ const ScopedPlanWorkspace: React.FC<{ planId: number | null; sessionId: string |
         description={t('planWorkspace.decomposeIncompleteDesc')} />}
     {planId != null && assumptions.length > 0 && <Alert className="pw-alert pw-assumptions" type="info" showIcon
       message={t('planClarify.assumptionsTitle')}
-      description={<ul className="pw-assumption-list">{assumptions.map((item) => <li key={item}>{item}</li>)}</ul>} />}
+      action={<Button type="link" size="small" aria-expanded={!assumptionsCollapsed} onClick={() => setAssumptionsCollapsed((value) => !value)}>
+        {assumptionsCollapsed ? t('planClarify.expandAssumptions', { count: assumptions.length }) : t('planClarify.collapseAssumptions')}</Button>}
+      description={assumptionsCollapsed ? undefined : <ul className="pw-assumption-list">{assumptions.map((item) => <li key={item}>{item}</li>)}</ul>} />}
     {sourceNotice && <Alert className="pw-alert" type="info" showIcon
       message={t('planWorkspace.foreignArtifacts', { title: sourceNotice.title })}
       description={t('planWorkspace.foreignArtifactsDesc')}
       action={<Button size="small" type="primary" loading={sourceGuard.busy} onClick={() => void sourceGuard.openSource(sourceNotice)}>{t('planWorkspace.openSource')}</Button>} />}
     {sourceGuard.error && <Alert className="pw-alert" type="warning" showIcon message={sourceGuard.error} closable onClose={sourceGuard.dismiss} />}
+    </div>
+    <div className="pw-overview-divider" role="separator" tabIndex={0} aria-orientation="horizontal"
+      aria-label={t('planWorkspace.resizeOverview')} title={t('planWorkspace.resizeOverview')}
+      aria-valuenow={overviewHeight ?? undefined}
+      onPointerDown={(event) => { event.preventDefault(); resizing.current = true; document.body.style.cursor = 'row-resize'; document.body.style.userSelect = 'none'; }}
+      onDoubleClick={() => setPlanTopHeight(null)}
+      onKeyDown={(event) => {
+        if (event.key === 'ArrowUp' || event.key === 'ArrowDown') { event.preventDefault(); nudgeOverview(event.key === 'ArrowUp' ? -32 : 32); }
+        else if (event.key === 'Home' || event.key === 'Escape') { event.preventDefault(); setPlanTopHeight(null); }
+      }}><span /></div>
     <Tabs className="pw-tabs" activeKey={activeTab} onChange={setActiveTab} destroyOnHidden
       tabBarExtraContent={planId != null ? <Tooltip title={t('planWorkspace.checklistTip')}><Button type="text" size="small" icon={<AppstoreOutlined />} disabled={foreignSource} onClick={() => setTodoOpen(true)}>{t('planWorkspace.checklist')}</Button></Tooltip> : undefined}
       items={[

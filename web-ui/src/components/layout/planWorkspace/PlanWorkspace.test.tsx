@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { planTreeApi } from '@api/planTree';
 import { useChatStore } from '@store/chat';
 import { useTasksStore } from '@store/tasks';
+import { useLayoutStore } from '@store/layout';
 import type { PlanResultItem, PlanTreeResponse } from '@/types';
 import PlanWorkspace from './PlanWorkspace';
 vi.mock('@api/planTree', () => ({ planTreeApi: {
@@ -60,6 +61,21 @@ describe('plan workspace navigation and async isolation', () => {
     mount();
     expect(await screen.findByText('计划假设（尚未确认）')).toBeInTheDocument();
     expect(screen.getByText('宿主：金黄色葡萄球菌（推荐默认）')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', {name: '收起'}));
+    expect(screen.queryByText('宿主：金黄色葡萄球菌（推荐默认）')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', {name: '展开（1 条）'}));
+    expect(screen.getByText('宿主：金黄色葡萄球菌（推荐默认）')).toBeInTheDocument();
+  });
+  it('lets the overview divider be reset by double-click and keyboard', async () => {
+    useLayoutStore.getState().setPlanTopHeight(260);
+    mount();
+    await screen.findByRole('heading', {name: '筛选 1'});
+    const divider = screen.getByRole('separator', {name: /计划概览与任务区/});
+    fireEvent.doubleClick(divider);
+    expect(useLayoutStore.getState().planTopHeight).toBeNull();
+    useLayoutStore.getState().setPlanTopHeight(260);
+    fireEvent.keyDown(divider, {key: 'Escape'});
+    expect(useLayoutStore.getState().planTopHeight).toBeNull();
   });
   it('shows review work separately from completed execution tasks', async () => {
     const pendingReview = tree(1);
