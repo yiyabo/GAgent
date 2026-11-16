@@ -238,3 +238,135 @@ def test_current_turn_trim_does_not_skip_an_older_user_turn() -> None:
     # A newer exchange sits between the offer and this message: not a card accept.
     assert decision.source == "explicit_plan_request"
     assert decision.query is None
+# --- server-side fallback -------------------------------------------------
+# Real clients upload history with ``metadata: null`` on every message, so the
+# offer card is only visible where it is stored: the session's last assistant
+# reply.
+
+import pytest  # noqa: E402
+
+from app.database import get_db, init_db  # noqa: E402
+
+
+@pytest.fixture
+def offer_session(isolated_app_env):
+    init_db()
+    with get_db() as conn:
+        conn.execute(
+            "INSERT INTO chat_sessions(id,owner_id,project_id,name) VALUES(?,?,?,?)",
+            ("s_offer", "u", None, "Offer"),
+        )
+        conn.commit()
+    return isolated_app_env
+
+
+def _store_message(role: str, content: str, metadata: dict | None = None) -> None:
+    with get_db() as conn:
+        conn.execute(
+            "INSERT INTO chat_messages(session_id,role,content,metadata) VALUES(?,?,?,?)",
+            ("s_offer", role, content, json.dumps(metadata) if metadata else None),
+        )
+        conn.commit()
+
+
+def _offer_metadata(status: str = "pending") -> dict:
+    return {
+        "plan_mode_offer": {
+            "offer_id": "offer_stored",
+            "status": status,
+            "query": ORIGINAL_QUERY,
+        }
+    }
+
+
+def _metadata_free_history() -> list[dict]:
+    """Exactly what the browser sends: no per-message metadata."""
+    return [
+        {"role": "user", "content": ORIGINAL_QUERY, "metadata": None},
+        {"role": "assistant", "content": "建议先进入 Plan 模式。", "metadata": None},
+        {"role": "user", "content": "进入 Plan 模式并创建计划", "metadata": None},
+        {"role": "assistant", "content": "", "metadata": None},
+    ]
+
+
+def test_typed_confirmation_accepts_the_stored_offer(offer_session) -> None:
+    _store_message("user", ORIGINAL_QUERY)
+    _store_message("assistant", "建议先进入 Plan 模式。", _offer_metadata())
+    decision = resolve_plan_mode_acceptance(
+        message="进入 Plan 模式并创建计划",
+        plan_bound=False,
+        settings={},
+        messages=_metadata_free_history(),
+        session_id="s_offer",
+    )
+    assert decision.source == "typed_offer_accept"
+    assert decision.query == ORIGINAL_QUERY
+    assert decision.offer_id == "offer_stored"
+
+
+def test_stored_offer_survives_an_empty_placeholder(offer_session) -> None:
+    _store_message("user", ORIGINAL_QUERY)
+    _store_message("assistant", "建议先进入 Plan 模式。", _offer_metadata())
+    _store_message("assistant", "")
+    decision = resolve_plan_mode_acceptance(
+        message="进入 Plan 模式并创建计划",
+        plan_bound=False,
+        settings={},
+        session_id="s_offer",
+    )
+    assert decision.source == "typed_offer_accept"
+
+
+def test_stored_offer_is_superseded_by_a_newer_reply(offer_session) -> None:
+    _store_message("user", ORIGINAL_QUERY)
+    _store_message("assistant", "建议先进入 Plan 模式。", _offer_metadata())
+    _store_message("user", "先不管计划，查一下这个基因")
+    _store_message("assistant", "这是检索结果。")
+    decision = resolve_plan_mode_acceptance(
+        message="进入 Plan 模式并创建计划",
+        plan_bound=False,
+        settings={},
+        session_id="s_offer",
+    )
+    assert decision.source == "explicit_plan_request"
+    assert decision.query is None
+
+
+def test_stored_offer_must_still_be_pending(offer_session) -> None:
+    _store_message("user", ORIGINAL_QUERY)
+    _store_message("assistant", "建议先进入 Plan 模式。", _offer_metadata("declined"))
+    decision = resolve_plan_mode_acceptance(
+        message="进入 Plan 模式并创建计划",
+        plan_bound=False,
+        settings={},
+        session_id="s_offer",
+    )
+    assert decision.source == "explicit_plan_request"
+
+
+def test_agent_level_typed_acceptance_reads_the_stored_offer(monkeypatch, offer_session) -> None:
+    """The wiring passes the session so a metadata-free client still works."""
+    persisted = _patch_acceptance_runtime(monkeypatch, {})
+    _store_message("user", ORIGINAL_QUERY)
+    _store_message("assistant", "建议先进入 Plan 模式。", _offer_metadata())
+    agent = _build_agent(extra_context={"owner_id": "alice"})
+    agent.plan_session.plan_id = None
+    agent.plan_tree = None
+    agent.session_id = "s_offer"
+    agent.history = _metadata_free_history()
+    seen: list[str] = []
+    original = agent._resolve_request_routing
+
+    def _capture(message):
+        seen.append(message)
+        return original(message)
+
+    monkeypatch.setattr(agent, "_resolve_request_routing", _capture)
+
+    events = _run(agent, "进入 Plan 模式并创建计划")
+
+    assert seen == [ORIGINAL_QUERY]
+    assert persisted == [True]
+    assert agent.extra_context["plan_offer_accepted"] is True
+    metadata = events[-1]["payload"]["metadata"]
+    assert metadata["plan_acceptance_source"] == "typed_offer_accept"
