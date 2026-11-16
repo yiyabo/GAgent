@@ -3,6 +3,30 @@ import { subscribeWithSelector } from 'zustand/middleware';
 import { readWorkspaceMode, saveWorkspaceMode, type WorkspaceMode } from './workspacePreference';
 
 const PLAN_PANEL_VISIBLE_KEY = 'gagent.layout.planPanelVisible';
+const PLAN_TOP_HEIGHT_KEY = 'gagent.layout.planTopHeight';
+
+/** Height of the plan overview (title, meta, assumptions) above the task tabs; null = automatic. */
+function readPlanTopHeight(): number | null {
+  try {
+    if (typeof window === 'undefined') return null;
+    const raw = window.localStorage.getItem(PLAN_TOP_HEIGHT_KEY);
+    if (raw === null) return null;
+    const value = Number(raw);
+    return Number.isFinite(value) && value > 0 ? Math.round(value) : null;
+  } catch {
+    return null;
+  }
+}
+
+function savePlanTopHeight(height: number | null): void {
+  try {
+    if (typeof window === 'undefined') return;
+    if (height === null) window.localStorage.removeItem(PLAN_TOP_HEIGHT_KEY);
+    else window.localStorage.setItem(PLAN_TOP_HEIGHT_KEY, String(Math.round(height)));
+  } catch {
+    // Storage may be unavailable in private mode; the height still applies for this session.
+  }
+}
 
 function readPlanPanelVisible(): boolean {
   try {
@@ -32,6 +56,8 @@ interface LayoutState {
   chatListVisible: boolean;
   chatListWidth: number;
   planPanelVisible: boolean;
+  planTopHeight: number | null;
+  setPlanTopHeight: (height: number | null) => void;
   dagSidebarWidth: number;
   dagSidebarFullscreen: boolean;
   toggleChatList: () => void;
@@ -56,6 +82,12 @@ export const useLayoutStore = create<LayoutState>()(
     chatListVisible: true,
     chatListWidth: 280,
     planPanelVisible: readPlanPanelVisible(),
+    planTopHeight: readPlanTopHeight(),
+    setPlanTopHeight: (height) => {
+      const next = height === null ? null : Math.round(height);
+      savePlanTopHeight(next);
+      set({ planTopHeight: next });
+    },
     dagSidebarWidth: 400,
     dagSidebarFullscreen: false,
     toggleChatList: () =>

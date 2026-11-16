@@ -928,6 +928,7 @@
     "fresh": "当前"
   },
   "planWorkspace": {
+    "resizeOverview": "拖动调整计划概览与任务区的高度，双击恢复默认",
     "planNum": "计划 #{{id}}",
     "noPlanYet": "尚未创建计划",
     "eyebrow": "当前对话计划",
@@ -1858,6 +1859,8 @@
     "recommendedSuffix": "（采用推荐）",
     "otherPrefix": "其他：",
     "sendFailed": "无法发送你的回答：{{detail}}",
-    "assumptionsTitle": "计划假设（尚未确认）"
+    "assumptionsTitle": "计划假设（尚未确认）",
+    "collapseAssumptions": "收起",
+    "expandAssumptions": "展开（{{count}} 条）"
   }
 }
