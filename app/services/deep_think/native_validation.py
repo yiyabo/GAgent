@@ -7,9 +7,31 @@ from .runtime_policy import policy_for
 def enabled():return bool(getattr(get_settings(),'agent_runtime_v2_enabled',False))
 
 
+def unwrap_raw_arguments(arguments,schema):
+    """Undo one accidental layer of JSON string encoding from the model.
+
+    ``app.llm`` preserves unparseable tool arguments as ``{"_raw": "<text>"}``.
+    Models occasionally double-encode a perfectly valid argument object; rejecting
+    those calls made them retry the same malformed payload several times.
+    """
+    if not isinstance(arguments,dict):return arguments
+    if '_raw' in schema.get('properties',{}):return arguments
+    if set(arguments)!={'_raw'}:return arguments
+    raw=arguments.get('_raw')
+    if not isinstance(raw,str):return arguments
+    try:loaded=json.loads(raw)
+    except (ValueError,TypeError):return arguments
+    return loaded if isinstance(loaded,dict) else arguments
+
+
 def validate(arguments,schema):
     if not isinstance(arguments,dict):return {'error_code':'non_object','executed':False}
-    if '_raw' in arguments and '_raw' not in schema.get('properties',{}):return {'error_code':'invalid_json','executed':False}
+    arguments=unwrap_raw_arguments(arguments,schema)
+    if not isinstance(arguments,dict):return {'error_code':'non_object','executed':False}
+    if '_raw' in arguments and '_raw' not in schema.get('properties',{}):
+        return {'error_code':'invalid_json','executed':False,
+                'hint':'Tool arguments must be a JSON object matching the schema, not a JSON-encoded string. '
+                       'Do not wrap the object in "_raw" and do not encode it twice; resend the object directly.'}
     missing=[k for k in schema.get('required',[]) if k not in arguments]
     if missing:return {'error_code':'missing_required','missing_fields':missing,'executed':False}
     kinds={'string':str,'object':dict,'array':list,'boolean':bool,'integer':int,'number':(int,float)}
@@ -32,7 +54,9 @@ def schema_for(agent,name):
 
 def rejected_call(agent,call,iteration,index):
     if not policy_for(agent, get_settings())['arguments']:return None
-    error=validate(call.arguments,schema_for(agent,call.name))
+    schema=schema_for(agent,call.name)
+    call.arguments=unwrap_raw_arguments(call.arguments,schema)
+    error=validate(call.arguments,schema)
     if not error:return None
     finish=getattr(agent,'_last_native_finish_reason',None)
     incomplete=error['error_code'] in {'invalid_json','missing_required'}
@@ -60,7 +84,9 @@ def observe_result(agent,result):
     agent._native_empty_truncated_streak = getattr(agent, '_native_empty_truncated_streak', 0) + 1 if empty_truncation else 0
     invalid=False
     for call in result.tool_calls:
-        error=validate(call.arguments,schema_for(agent,call.name))
+        schema=schema_for(agent,call.name)
+        call.arguments=unwrap_raw_arguments(call.arguments,schema)
+        error=validate(call.arguments,schema)
         call.argument_status=error['error_code'] if error else 'valid'
         raw=json.dumps(call.arguments,ensure_ascii=False)
         call.argument_chars=len(raw);call.argument_sha256=hashlib.sha256(raw.encode()).hexdigest()

@@ -49,6 +49,8 @@ _REGISTRY: Dict[str, ResourceSpec] = {
         id="phagescope.sequence_corpus",
         name="PhageScope sequence corpus",
         candidate_roots=(
+            # 620b: the PhageScope V2 read-only mount (docker-compose `phage_sequence`).
+            "/phagescope/phage_sequence",
             str(pathlib.Path(__file__).resolve().parents[3] / "phagescope"),
             "/home/zczhao/Phage-Agent/phagescope",
             "/mnt/sdm/zczhao/Phage-Agent/phagescope",
@@ -163,3 +165,41 @@ def resolve_resources(resource_ids: Iterable[Any]) -> Tuple[Dict[str, Dict[str, 
             continue
         resolved[resource_id] = resource.to_dict()
     return resolved, missing
+
+
+def resource_availability(resource_id: Any) -> Dict[str, Any]:
+    """Resolved local availability for one registered resource (no I/O beyond stat)."""
+    normalized = normalize_resource_id(resource_id)
+    spec = get_resource_spec(normalized)
+    resolved = resolve_resource(normalized)
+    return {
+        "id": normalized,
+        "registered": spec is not None,
+        "available": resolved is not None,
+        "root": resolved.resolved_root if resolved else None,
+        "required_paths": list(resolved.required_paths) if resolved else [],
+        "description": spec.description if spec else "",
+    }
+
+
+def available_resource_prompt_lines() -> List[str]:
+    """Tell the planner which external data resources actually exist on this host.
+
+    Plan tasks may only declare resources that resolve locally; otherwise the
+    executor correctly blocks them before any work happens.
+    """
+    lines: List[str] = []
+    for spec in list_resource_specs():
+        info = resource_availability(spec.id)
+        if info["available"]:
+            lines.append(
+                f"Local data resource AVAILABLE: {spec.id} at {info['root']} "
+                f"({'; '.join(spec.format_hints[:2])})"
+            )
+        else:
+            lines.append(
+                f"Local data resource UNAVAILABLE: {spec.id} is not mounted on this deployment. "
+                "Do NOT list it in required_resources or `resource:` references; obtain sequences "
+                "through the phagescope_data tool or NCBI instead."
+            )
+    return lines

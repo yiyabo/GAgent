@@ -146,6 +146,12 @@ def _build_structured_plan_requirement_block(agent: DeepThinkAgent) -> str:
             "file production in this chat loop. After successful submission, return the job receipt. "
             "A discussion or status question does not authorize starting Plan execution."
         )
+    if flags["create_required"] or flags["contract_enforced"]:
+        from app.services.resources.resource_registry import (
+            available_resource_prompt_lines,
+        )
+
+        requirement_lines.extend(available_resource_prompt_lines())
     if flags["create_required"] and flags["execute_after_create_required"]:
         requirement_lines.append(
             "The user explicitly requested creating a structured executable plan and executing it. "

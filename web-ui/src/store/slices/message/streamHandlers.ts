@@ -269,6 +269,23 @@ export function handleFinal(ctx: StreamHandlerContext, event: any): boolean {
     ctx.get().setPendingPlanClarification?.(streamedSessionId, clarificationId);
   }
 
+  // The server may have switched this session into Plan mode itself (an
+  // explicit "create a plan" request, or the user typing the offer button's
+  // label). Mirror it locally; the server already persisted the setting.
+  if (event.payload?.metadata?.plan_mode === true && event.payload?.metadata?.plan_acceptance_source) {
+    ctx.set((state: any) => {
+      const session = state.currentSession;
+      if (!session) return { planMode: true };
+      const settings = { ...(session.settings ?? {}), plan_mode: true, plan_offer_dismissed: false };
+      const currentSession = { ...session, settings };
+      return {
+        planMode: true,
+        currentSession,
+        sessions: state.sessions.map((entry: any) => entry.id === currentSession.id ? currentSession : entry),
+      };
+    });
+  }
+
   // ---- Background dispatch: detect long-running tasks ----
   const bgCategory = detectBackgroundCategory(event.payload);
   if (bgCategory) {

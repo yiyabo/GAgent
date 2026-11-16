@@ -10,6 +10,7 @@ vi.mock('@api/chat', () => ({
 import { chatApi } from '@api/chat';
 import {
   flushPendingThinkingDeltas,
+  handleFinal,
   handleJobUpdate,
   handleProgressStatus,
   handleReasoningDelta,
@@ -123,6 +124,33 @@ describe('streamHandlers session sync', () => {
     expect(chatApi.updateSession).toHaveBeenCalledWith(
       'session-1',
       expect.objectContaining({ plan_id: 55, plan_title: 'Plan 55' }),
+    );
+  });
+
+  it('mirrors a server-side Plan mode acceptance without another PATCH', async () => {
+    const { store, ctx } = buildContext();
+    store.planMode = false;
+    store.currentSession.settings = { plan_mode: false, plan_offer_dismissed: true };
+    ctx.state.finalPayload = {
+      response: '已进入 Plan 模式',
+      actions: [],
+      metadata: {
+        status: 'completed',
+        plan_mode: true,
+        plan_acceptance_source: 'typed_offer_accept',
+      },
+    };
+
+    handleFinal(ctx as any, { payload: ctx.state.finalPayload });
+    await processFinalPayload(ctx as any);
+
+    expect(store.planMode).toBe(true);
+    expect(store.currentSession.settings.plan_mode).toBe(true);
+    expect(store.currentSession.settings.plan_offer_dismissed).toBe(false);
+    expect(store.sessions[0].settings.plan_mode).toBe(true);
+    expect(chatApi.updateSession).not.toHaveBeenCalledWith(
+      'session-1',
+      expect.objectContaining({ settings: expect.anything() }),
     );
   });
 
