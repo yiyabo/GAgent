@@ -928,7 +928,6 @@
     "fresh": "Current"
   },
   "planWorkspace": {
-    "resizeOverview": "Drag to resize the plan overview and tasks; double-click to reset",
     "planNum": "Plan #{{id}}",
     "noPlanYet": "No plan yet",
     "eyebrow": "Plan for this conversation",
@@ -1859,8 +1858,6 @@
     "recommendedSuffix": " (recommended default)",
     "otherPrefix": "Other: ",
     "sendFailed": "Could not send your answers: {{detail}}",
-    "assumptionsTitle": "Plan assumptions (unconfirmed)",
-    "collapseAssumptions": "Collapse",
-    "expandAssumptions": "Expand ({{count}})"
+    "assumptionsTitle": "Plan assumptions (unconfirmed)"
   }
 }

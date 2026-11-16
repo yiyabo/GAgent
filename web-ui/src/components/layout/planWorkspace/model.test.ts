@@ -1,6 +1,8 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { BackgroundTaskBoardResponse, BackgroundTaskItem, PlanTaskNode } from '@/types';
-import { clampPlanTopHeight, defaultTaskSelection, buildTaskOutline, PLAN_TABS_MIN, PLAN_TOP_MIN, scopedPlanJobs, selectTaskJob, taskStatus } from './model';
+import { defaultTaskSelection, buildTaskOutline, scopedPlanJobs, selectTaskJob, taskStatus } from './model';
 const task = (id: number, parent_id?: number): PlanTaskNode => ({ id, parent_id, name: `Task ${id}`, status: 'pending' });
 const job = (job_id: string, plan_id: number, current_task_id?: number): BackgroundTaskItem => ({
   job_id, plan_id, current_task_id, status: 'running', category: 'code_executor', job_type: 'plan_execute', label: job_id,
@@ -37,14 +39,12 @@ describe('plan workspace scope and outline', () => {
   it('prefers the active matching run over history', () => {
     expect(selectTaskJob([{ ...job('old', 1, 2), status: 'completed' }, job('current', 1, 2)], 2)?.job_id).toBe('current');
   });
-  it('keeps the task tabs usable when the overview is resized', () => {
-    expect(clampPlanTopHeight(null, 900)).toBeNull();
-    expect(clampPlanTopHeight(Number.NaN, 900)).toBeNull();
-    expect(clampPlanTopHeight(10, 900)).toBe(PLAN_TOP_MIN);
-    expect(clampPlanTopHeight(800, 900)).toBe(900 - PLAN_TABS_MIN);
-    expect(clampPlanTopHeight(300.4, 900)).toBe(300);
-    // Too short to split: fall back to the automatic, capped overview.
-    expect(clampPlanTopHeight(300, PLAN_TABS_MIN + PLAN_TOP_MIN)).toBeNull();
-    expect(clampPlanTopHeight(300, 0)).toBeNull();
+  it('scrolls the whole panel and gives the task tabs a full panel height', () => {
+    const css = readFileSync(resolve(__dirname, 'PlanWorkspace.css'), 'utf8');
+    const workspaceRule = css.match(/^\.plan-workspace \{([^}]*)\}/m)?.[1] ?? '';
+    const tabsRule = css.match(/^\.pw-tabs \{([^}]*)\}/m)?.[1] ?? '';
+    expect(workspaceRule).toMatch(/overflow-y: auto/);
+    expect(tabsRule).toMatch(/height: 100%/);
+    expect(tabsRule).not.toMatch(/flex: 1/);
   });
 });
