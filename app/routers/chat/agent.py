@@ -1400,6 +1400,36 @@ class StructuredChatAgent:
         Optional ``run_id`` aligns the Deep Think job id with a chat run id.
         ``event_sink`` receives the same JSON payloads as SSE ``data:`` lines (dict form).
         """
+        from app.services.plan_mode_offer_acceptance import (
+            persist_plan_mode_enabled,
+            resolve_plan_mode_acceptance,
+        )
+        from app.services.plan_mode_offers import session_offer_settings
+
+        try:
+            acceptance = resolve_plan_mode_acceptance(
+                message=user_message,
+                plan_bound=self.plan_session.plan_id is not None,
+                settings=session_offer_settings(self.session_id),
+                messages=self.history,
+            )
+        except Exception:
+            acceptance = None
+        if acceptance is not None and acceptance.plan_mode:
+            # An explicit Plan request outranks an earlier "Continue directly".
+            user_message = acceptance.query or user_message
+            self.extra_context["plan_mode"] = True
+            self.extra_context["plan_acceptance_source"] = acceptance.source
+            if acceptance.offer_id:
+                self.extra_context["plan_offer_accepted"] = True
+                self.extra_context["plan_offer_id"] = acceptance.offer_id
+            if acceptance.clear_dismissed:
+                self.extra_context["plan_offer_dismissed"] = False
+            try:
+                persist_plan_mode_enabled(self.session_id, enabled=True)
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.debug("Failed to persist accepted Plan mode: %s", exc)
+
         routing_decision, route_profile = self._resolve_request_routing(user_message)
         effective_user_message = routing_decision.effective_user_message
         self._current_user_message = effective_user_message
@@ -1418,8 +1448,6 @@ class StructuredChatAgent:
                 offer_state_allows,
                 offer_text,
             )
-            from app.services.plan_mode_offers import session_offer_settings
-
             try:
                 offer_settings = session_offer_settings(self.session_id)
             except Exception:

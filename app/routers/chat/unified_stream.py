@@ -48,6 +48,7 @@ from app.services.deep_think_agent import DeepThinkResult, ThinkingStep, detect_
 from app.services.llm.structured_response import LLMStructuredResponse
 from app.services.plan_clarifications import plan_clarification_from_result
 from app.services.plan_mode_offers import plan_mode_offer_from_result
+from app.services.plan_mode_offer_acceptance import plan_acceptance_metadata
 
 from .background import _sse_message
 from .deterministic_execute import (
@@ -662,6 +663,7 @@ async def _drain_unified_stream_events(
                 final_metadata["background_job_id"] = item["background_plan_job_id"]
             final_metadata.update(plan_mode_offer_from_result(res))
             final_metadata.update(plan_clarification_from_result(res))
+            final_metadata.update(plan_acceptance_metadata(agent.extra_context))
 
             from app.services.memory.context_recall import attach_recall_metadata
             attach_recall_metadata(final_metadata, agent.extra_context)

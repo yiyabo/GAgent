@@ -178,6 +178,9 @@ export interface PlanClarificationResponse {
 export interface ChatResponseMetadata {
   status?: ChatActionStatus;
   plan_mode_offer?: PlanModeOffer | null;
+  /** Server accepted an explicit Plan request / a typed offer confirmation. */
+  plan_mode?: boolean;
+  plan_acceptance_source?: 'explicit_plan_request' | 'typed_offer_accept' | string;
   plan_clarification?: PlanClarificationRequest | null;
   plan_clarification_response?: PlanClarificationResponse | null;
   tracking_id?: string;
