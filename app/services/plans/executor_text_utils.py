@@ -68,7 +68,7 @@ def _log_job(level: str, message: str, metadata: Optional[Dict[str, Any]] = None
 
 
 _BLOCKED_DEPENDENCY_MARKER_RE = re.compile(
-    r"(?:^|\b)(?:STATUS\s*:\s*)?BLOCKED_DEPENDENCY(?:\b|$)",
+    r"(?:^|\b)(?:STATUS\s*:\s*)?BLOCKED_(?:DEPENDENCY|UPSTREAM)(?:\b|$)",
     re.IGNORECASE,
 )
 
