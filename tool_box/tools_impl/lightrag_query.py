@@ -7,7 +7,8 @@ Final answer generation stays in Phage-Agent's own LLM path.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+import re
+from typing import Any, Dict, List
 
 import httpx
 
@@ -74,6 +75,47 @@ def _build_context_preview(context_items: Any, *, max_items: int, max_chars: int
     return "\n".join(blocks).strip()
 
 
+KEYWORD_MAX_ITEMS = 10
+KEYWORD_MAX_CHARS = 80
+_KEYWORD_SPLIT_RE = re.compile(r"[,;\n\uff0c\uff1b\u3001]+")
+
+
+def normalize_keywords(value: Any) -> list[str]:
+    """Clean agent-supplied LightRAG keywords: list or delimited string, deduped, bounded."""
+    if isinstance(value, str):
+        raw: list[Any] = _KEYWORD_SPLIT_RE.split(value)
+    elif isinstance(value, (list, tuple)):
+        raw = list(value)
+    else:
+        return []
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        text = " ".join(item.split())[:KEYWORD_MAX_CHARS].strip()
+        key = text.casefold()
+        if not text or key in seen:
+            continue
+        seen.add(key)
+        cleaned.append(text)
+        if len(cleaned) >= KEYWORD_MAX_ITEMS:
+            break
+    return cleaned
+
+
+def _agent_keywords(hl_keywords: Any, ll_keywords: Any) -> tuple[list[str], list[str]]:
+    """Both levels or neither.
+
+    LightRAG skips its own (per-shard LLM) keyword extraction as soon as either
+    list is non-empty, and then searches relations with ``hl`` and entities with
+    ``ll``; an empty level would silently search nothing, so mirror the other.
+    """
+    hl = normalize_keywords(hl_keywords)
+    ll = normalize_keywords(ll_keywords)
+    return (hl or ll), (ll or hl)
+
+
 async def lightrag_query_handler(
     *,
     query: str,
@@ -82,6 +124,8 @@ async def lightrag_query_handler(
     max_chunks: int = 12,
     max_references: int = 12,
     include_references: bool = True,
+    hl_keywords: Any = None,
+    ll_keywords: Any = None,
 ) -> Dict[str, Any]:
     query_text = (query or "").strip()
     if len(query_text) < 3:
@@ -132,6 +176,15 @@ async def lightrag_query_handler(
         "max_references": safe_max_refs,
         "include_references": bool(include_references),
         "include_chunk_content": True,
+    }
+    hl, ll = _agent_keywords(hl_keywords, ll_keywords)
+    if hl and ll:
+        payload["hl_keywords"] = hl
+        payload["ll_keywords"] = ll
+    keywords = {
+        "source": "agent" if hl and ll else "lightrag",
+        "high_level": hl,
+        "low_level": ll,
     }
 
     try:
@@ -233,6 +286,7 @@ async def lightrag_query_handler(
         "success": True,
         "query": query_text,
         "mode": safe_mode,
+        "keywords": keywords,
         "summary": {
             "entities": len(entities),
             "relationships": len(relationships),
@@ -255,57 +309,84 @@ async def lightrag_query_handler(
     }
 
 
+DESCRIPTION = (
+    "PREFERRED knowledge-graph / literature RAG tool. Query the large LightRAG "
+    "8-shard corpus for entities, relations, chunks, and references. Use this by "
+    "default for knowledge-graph, literature-backed, or corpus factual questions. "
+    "Returns retrieval evidence only (no final generation). Always pass both "
+    "`ll_keywords` (specific entities) and `hl_keywords` (broad themes) in English: "
+    "LightRAG then searches the graph with them directly instead of making one LLM "
+    "keyword-extraction call per shard (8 calls, ~1-2 s per query)."
+)
+
+PARAMETERS_SCHEMA: Dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "query": {
+            "type": "string",
+            "description": "Natural-language question for the LightRAG corpus.",
+        },
+        "mode": {
+            "type": "string",
+            "enum": ["mix", "hybrid", "local", "global", "naive"],
+            "default": "mix",
+            "description": "LightRAG retrieval mode (default: mix).",
+        },
+        "top_k": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 20,
+            "default": 5,
+            "description": "Per-shard top_k for entity/relation retrieval.",
+        },
+        "max_chunks": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 40,
+            "default": 12,
+            "description": "Max merged chunks/context items to keep.",
+        },
+        "max_references": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 40,
+            "default": 12,
+            "description": "Max references to keep.",
+        },
+        "ll_keywords": {
+            "type": "array",
+            "items": {"type": "string"},
+            "maxItems": KEYWORD_MAX_ITEMS,
+            "description": (
+                "Low-level keywords: the specific entities in the question, in English "
+                "(gene/protein/domain names, organisms, phages, methods), e.g. "
+                '["LysK", "SH3b domain", "Staphylococcus aureus"]. Matched against graph entities.'
+            ),
+        },
+        "hl_keywords": {
+            "type": "array",
+            "items": {"type": "string"},
+            "maxItems": KEYWORD_MAX_ITEMS,
+            "description": (
+                "High-level keywords: the broad concepts or themes of the question, in English, "
+                'e.g. ["cell wall binding", "endolysin domain architecture"]. Matched against graph relations.'
+            ),
+        },
+        "include_references": {
+            "type": "boolean",
+            "default": True,
+            "description": "Whether to include reference metadata in the tool result.",
+        },
+    },
+    "required": ["query"],
+}
+
+
 lightrag_query_tool = {
     "name": "lightrag_query",
-    "description": (
-        "PREFERRED knowledge-graph / literature RAG tool. Query the large LightRAG "
-        "8-shard corpus for entities, relations, chunks, and references. Use this by "
-        "default for knowledge-graph, literature-backed, or corpus factual questions. "
-        "Returns retrieval evidence only (no final generation)."
-    ),
+    "description": DESCRIPTION,
     "category": "knowledge_graph",
-    "parameters_schema": {
-        "type": "object",
-        "properties": {
-            "query": {
-                "type": "string",
-                "description": "Natural-language question for the LightRAG corpus.",
-            },
-            "mode": {
-                "type": "string",
-                "enum": ["mix", "hybrid", "local", "global", "naive"],
-                "default": "mix",
-                "description": "LightRAG retrieval mode (default: mix).",
-            },
-            "top_k": {
-                "type": "integer",
-                "minimum": 1,
-                "maximum": 20,
-                "default": 5,
-                "description": "Per-shard top_k for entity/relation retrieval.",
-            },
-            "max_chunks": {
-                "type": "integer",
-                "minimum": 1,
-                "maximum": 40,
-                "default": 12,
-                "description": "Max merged chunks/context items to keep.",
-            },
-            "max_references": {
-                "type": "integer",
-                "minimum": 1,
-                "maximum": 40,
-                "default": 12,
-                "description": "Max references to keep.",
-            },
-            "include_references": {
-                "type": "boolean",
-                "default": True,
-                "description": "Whether to include reference metadata in the tool result.",
-            },
-        },
-        "required": ["query"],
-    },
+    "parameters_schema": PARAMETERS_SCHEMA,
     "handler": lightrag_query_handler,
     "tags": ["knowledge", "graph", "rag", "lightrag", "literature"],
     "examples": [
@@ -314,4 +395,10 @@ lightrag_query_tool = {
     ],
 }
 
-__all__ = ["lightrag_query_tool", "lightrag_query_handler"]
+__all__ = [
+    "DESCRIPTION",
+    "PARAMETERS_SCHEMA",
+    "lightrag_query_handler",
+    "lightrag_query_tool",
+    "normalize_keywords",
+]

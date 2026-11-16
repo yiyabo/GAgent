@@ -49,7 +49,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any
 
 from app.config import get_graph_rag_settings, get_search_settings
 from app.services.llm.structured_response import LLMAction
@@ -82,7 +82,7 @@ def _clean_existing_path_param(value: str) -> str:
     return cleaned
 
 
-def _parse_json_list_param(value: Any) -> Optional[List[Any]]:
+def _parse_json_list_param(value: Any) -> list[Any] | None:
     if isinstance(value, list):
         return value
     if not isinstance(value, str) or not value.strip():
@@ -98,7 +98,7 @@ def _parse_json_list_param(value: Any) -> Optional[List[Any]]:
     return None
 
 
-def _scientific_figure_label_key(params: Dict[str, Any]) -> str:
+def _scientific_figure_label_key(params: dict[str, Any]) -> str:
     panels_value = _parse_json_list_param(params.get("panels"))
     if panels_value:
         for panel in panels_value:
@@ -110,7 +110,7 @@ def _scientific_figure_label_key(params: Dict[str, Any]) -> str:
     return "label"
 
 
-def _coerce_inline_number(value: str) -> Union[int, float]:
+def _coerce_inline_number(value: str) -> int | float:
     number = float(value)
     return int(number) if number.is_integer() else number
 
@@ -119,7 +119,7 @@ def _extract_scientific_figure_inline_rows(
     user_message: Any,
     *,
     label_key: str,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     text = str(user_message or "").strip()
     if not text:
         return []
@@ -135,7 +135,7 @@ def _extract_scientific_figure_inline_rows(
         maxsplit=1,
         flags=re.IGNORECASE,
     )[0]
-    rows: List[Dict[str, Any]] = []
+    rows: list[dict[str, Any]] = []
     metric_re = re.compile(
         r"(?P<key>[A-Za-z_][A-Za-z0-9_./%-]*)\s*(?:=|:)?\s*(?P<value>-?\d+(?:\.\d+)?)"
     )
@@ -147,7 +147,7 @@ def _extract_scientific_figure_inline_rows(
         if not metric_matches:
             continue
         label = cleaned[: metric_matches[0].start()].strip(" :：,-–—")
-        row: Dict[str, Any] = {label_key: label or f"row_{len(rows) + 1}"}
+        row: dict[str, Any] = {label_key: label or f"row_{len(rows) + 1}"}
         for metric_match in metric_matches:
             row[metric_match.group("key")] = _coerce_inline_number(
                 metric_match.group("value")
@@ -156,7 +156,7 @@ def _extract_scientific_figure_inline_rows(
     return rows
 
 
-def _web_search_query_from_params(params: Dict[str, Any]) -> str:
+def _web_search_query_from_params(params: dict[str, Any]) -> str:
     """Best-effort recovery of the search text from whatever shape arrived.
 
     The native schema offers `query` and invites `queries` for broad comparison
@@ -205,7 +205,7 @@ def _normalize_web_search_params(
     agent: Any,
     action: LLMAction,
     tool_name: str,
-    params: Dict[str, Any],
+    params: dict[str, Any],
 ) -> Any:
     query = _web_search_query_from_params(params)
     if not query:
@@ -241,7 +241,7 @@ def _normalize_file_operations_params(
     agent: Any,
     action: LLMAction,
     tool_name: str,
-    params: Dict[str, Any],
+    params: dict[str, Any],
 ) -> Any:
     operation = params.get("operation")
     if not isinstance(operation, str) or not operation.strip():
@@ -308,7 +308,7 @@ def _normalize_lightrag_query_params(
     agent: Any,
     action: LLMAction,
     tool_name: str,
-    params: Dict[str, Any],
+    params: dict[str, Any],
 ) -> Any:
     query = params.get("query")
     if not isinstance(query, str) or not query.strip():
@@ -326,6 +326,7 @@ def _normalize_lightrag_query_params(
             parsed = default
         return max(minimum, min(parsed, maximum))
 
+    raw_params = params
     mode_raw = params.get("mode")
     mode = str(mode_raw or "mix").strip() or "mix"
     include_references = params.get("include_references")
@@ -339,6 +340,11 @@ def _normalize_lightrag_query_params(
         "max_references": _safe_lightrag_int(params.get("max_references"), 12, 1, 40),
         "include_references": bool(include_references),
     }
+    # Agent-supplied keywords skip LightRAG's per-shard LLM extraction; the
+    # handler cleans and pairs them, so only pass through what was provided.
+    for key in ("hl_keywords", "ll_keywords"):
+        if key in raw_params:
+            params[key] = raw_params[key]
     return params
 
 
@@ -346,7 +352,7 @@ def _normalize_graph_rag_params(
     agent: Any,
     action: LLMAction,
     tool_name: str,
-    params: Dict[str, Any],
+    params: dict[str, Any],
 ) -> Any:
     query = params.get("query")
     if not isinstance(query, str) or not query.strip():
@@ -388,7 +394,7 @@ def _normalize_graph_rag_params(
         return_subgraph = bool(return_subgraph)
 
     focus_raw = params.get("focus_entities")
-    focus_entities: List[str] = []
+    focus_entities: list[str] = []
     if isinstance(focus_raw, list):
         for item in focus_raw:
             if isinstance(item, str) and item.strip():
@@ -408,7 +414,7 @@ def _normalize_literature_pipeline_params(
     agent: Any,
     action: LLMAction,
     tool_name: str,
-    params: Dict[str, Any],
+    params: dict[str, Any],
 ) -> Any:
     query = params.get("query")
     if not isinstance(query, str) or not query.strip():
@@ -418,7 +424,7 @@ def _normalize_literature_pipeline_params(
             message="literature_pipeline requires a non-empty `query` string.",
             details={"error": "missing_query", "tool": tool_name},
         )
-    clean_params: Dict[str, Any] = {"query": query.strip()}
+    clean_params: dict[str, Any] = {"query": query.strip()}
     max_results = params.get("max_results")
     if max_results is not None:
         try:
@@ -453,7 +459,7 @@ def _normalize_review_pack_writer_params(
     agent: Any,
     action: LLMAction,
     tool_name: str,
-    params: Dict[str, Any],
+    params: dict[str, Any],
 ) -> Any:
     topic = params.get("topic")
     if not isinstance(topic, str) or not topic.strip():
@@ -463,7 +469,7 @@ def _normalize_review_pack_writer_params(
             message="review_pack_writer requires a non-empty `topic` string.",
             details={"error": "missing_topic", "tool": tool_name},
         )
-    clean_params: Dict[str, Any] = {"topic": topic.strip()}
+    clean_params: dict[str, Any] = {"topic": topic.strip()}
     query = params.get("query")
     if isinstance(query, str) and query.strip():
         clean_params["query"] = query.strip()
@@ -489,7 +495,7 @@ def _normalize_review_pack_writer_params(
         clean_params["output_path"] = output_path.strip()
     sections = params.get("sections")
     if isinstance(sections, list):
-        clean_sections: List[str] = []
+        clean_sections: list[str] = []
         for item in sections:
             if isinstance(item, str) and item.strip():
                 clean_sections.append(item.strip())
@@ -521,9 +527,9 @@ def _normalize_sequence_fetch_params(
     agent: Any,
     action: LLMAction,
     tool_name: str,
-    params: Dict[str, Any],
+    params: dict[str, Any],
 ) -> Any:
-    clean_params: Dict[str, Any] = {}
+    clean_params: dict[str, Any] = {}
     accession_value = params.get("accession")
     accessions_value = params.get("accessions")
 
@@ -587,7 +593,7 @@ def _normalize_ncbi_search_params(
     agent: Any,
     action: LLMAction,
     tool_name: str,
-    params: Dict[str, Any],
+    params: dict[str, Any],
 ) -> Any:
     # The handler validates every field itself; this only drops unknown keys and
     # attributes the request to the chat session for the per-session NCBI cap.
@@ -611,7 +617,7 @@ def _normalize_ncbi_search_params(
 def _normalize_url_fetch_params(    agent: Any,
     action: LLMAction,
     tool_name: str,
-    params: Dict[str, Any],
+    params: dict[str, Any],
 ) -> Any:
     clean_params = {}
     url_value = params.get("url")
@@ -679,7 +685,7 @@ async def _normalize_code_executor_params(
     agent: Any,
     action: LLMAction,
     tool_name: str,
-    params: Dict[str, Any],
+    params: dict[str, Any],
 ) -> Any:
     seq_block_payload = agent.extra_context.get(_SEQUENCE_FETCH_NO_CLAUDE_FALLBACK_KEY)
     if seq_block_payload:
@@ -777,7 +783,7 @@ def _normalize_document_reader_params(
     agent: Any,
     action: LLMAction,
     tool_name: str,
-    params: Dict[str, Any],
+    params: dict[str, Any],
 ) -> Any:
     operation = params.get("operation")
     file_path = params.get("file_path")
@@ -818,7 +824,7 @@ def _normalize_vision_reader_params(
     agent: Any,
     action: LLMAction,
     tool_name: str,
-    params: Dict[str, Any],
+    params: dict[str, Any],
 ) -> Any:
     operation = params.get("operation")
     image_path = params.get("image_path") or params.get("file_path")
@@ -838,7 +844,7 @@ def _normalize_vision_reader_params(
     question = params.get("question")
     language = params.get("language")
 
-    clean_params: Dict[str, Any] = {
+    clean_params: dict[str, Any] = {
         "operation": operation,
         "image_path": image_path,
     }
@@ -872,7 +878,7 @@ def _normalize_paper_replication_params(
     agent: Any,
     action: LLMAction,
     tool_name: str,
-    params: Dict[str, Any],
+    params: dict[str, Any],
 ) -> Any:
     # Paper replication ExperimentCard loader
     exp_id = params.get("experiment_id")
@@ -892,7 +898,7 @@ def _normalize_generate_experiment_card_params(
     agent: Any,
     action: LLMAction,
     tool_name: str,
-    params: Dict[str, Any],
+    params: dict[str, Any],
 ) -> Any:
     exp_id = params.get("experiment_id")
     if exp_id is not None and not isinstance(exp_id, str):
@@ -927,7 +933,7 @@ def _normalize_bio_tools_params(
     agent: Any,
     action: LLMAction,
     tool_name: str,
-    params: Dict[str, Any],
+    params: dict[str, Any],
 ) -> Any:
     raw_tool_name = params.get("tool_name")
     operation = params.get("operation", "help")
@@ -946,7 +952,7 @@ def _normalize_bio_tools_params(
             details={"error": "missing_operation", "tool": tool_name},
         )
 
-    clean_params: Dict[str, Any] = {
+    clean_params: dict[str, Any] = {
         "tool_name": raw_tool_name.strip(),
         "operation": operation.strip(),
     }
@@ -995,7 +1001,7 @@ def _normalize_phagescope_params(
     agent: Any,
     action: LLMAction,
     tool_name: str,
-    params: Dict[str, Any],
+    params: dict[str, Any],
 ) -> Any:
     if "result_kind" not in params:
         for alias in ("resultkind", "resultKind", "result_type", "resultType"):
@@ -1025,7 +1031,7 @@ def _normalize_phagescope_params(
             sequence_ids_value = params[alias]
             break
     if sequence_ids_value is not None and not params.get("phageid") and not params.get("phageids"):
-        seq_items: List[str] = []
+        seq_items: list[str] = []
         if isinstance(sequence_ids_value, (list, tuple, set)):
             seq_items = [str(v).strip() for v in sequence_ids_value if str(v).strip()]
         elif isinstance(sequence_ids_value, str):
@@ -1059,7 +1065,7 @@ def _normalize_phagescope_params(
             details={"error": "missing_action", "tool": tool_name},
         )
 
-    clean_params: Dict[str, Any] = {
+    clean_params: dict[str, Any] = {
         "action": action_value.strip(),
     }
     for key in (
@@ -1206,7 +1212,7 @@ def _normalize_phagescope_research_params(
     agent: Any,
     action: LLMAction,
     tool_name: str,
-    params: Dict[str, Any],
+    params: dict[str, Any],
 ) -> Any:
     action_value = params.get("action", "audit")
     if not isinstance(action_value, str) or not action_value.strip():
@@ -1217,7 +1223,7 @@ def _normalize_phagescope_research_params(
             details={"error": "missing_action", "tool": tool_name},
         )
 
-    clean_params: Dict[str, Any] = {"action": action_value.strip()}
+    clean_params: dict[str, Any] = {"action": action_value.strip()}
     for key in (
         "data_dir",
         "output_dir",
@@ -1254,7 +1260,7 @@ def _normalize_manuscript_writer_params(
     agent: Any,
     action: LLMAction,
     tool_name: str,
-    params: Dict[str, Any],
+    params: dict[str, Any],
 ) -> Any:
     raw_action_params = action.parameters if isinstance(action.parameters, dict) else {}
     params = _ah()._align_manuscript_writer_params_with_bound_task(agent, dict(params))
@@ -1373,7 +1379,7 @@ def _normalize_result_interpreter_params(
     agent: Any,
     action: LLMAction,
     tool_name: str,
-    params: Dict[str, Any],
+    params: dict[str, Any],
 ) -> Any:
     operation = params.get("operation")
     if not isinstance(operation, str) or not operation.strip():
@@ -1392,7 +1398,7 @@ def _normalize_result_interpreter_params(
             message=f"Unsupported result_interpreter operation: {operation!r}.",
             details={"error": "invalid_operation", "tool": tool_name},
         )
-    clean_params: Dict[str, Any] = {"operation": operation}
+    clean_params: dict[str, Any] = {"operation": operation}
     fp = params.get("file_path")
     if isinstance(fp, str) and fp.strip():
         clean_params["file_path"] = fp.strip()
@@ -1424,7 +1430,7 @@ def _normalize_scientific_figure_generator_params(
     agent: Any,
     action: LLMAction,
     tool_name: str,
-    params: Dict[str, Any],
+    params: dict[str, Any],
 ) -> Any:
     datasets_value = _parse_json_list_param(params.get("datasets"))
     if datasets_value is None:
@@ -1456,7 +1462,7 @@ def _normalize_scientific_figure_generator_params(
             details={"error": "missing_datasets", "tool": tool_name},
         )
 
-    clean_params: Dict[str, Any] = {"datasets": datasets}
+    clean_params: dict[str, Any] = {"datasets": datasets}
     title = params.get("title")
     if isinstance(title, str) and title.strip():
         clean_params["title"] = title.strip()
@@ -1505,7 +1511,7 @@ def _normalize_deliverable_submit_params(
     agent: Any,
     action: LLMAction,
     tool_name: str,
-    params: Dict[str, Any],
+    params: dict[str, Any],
 ) -> Any:
     raw_artifacts = params.get("artifacts")
     if not isinstance(raw_artifacts, list):
