@@ -100,16 +100,75 @@ def _latest_pending_offer(
         meta = _message_metadata(item)
         if not isinstance(meta, dict):
             continue
-        offer = meta.get("plan_mode_offer")
-        if not isinstance(offer, dict):
+        offer = _offer_from_metadata(meta)
+        if offer is None:
             continue
-        if str(offer.get("status") or "") != "pending":
+        return offer
+    return None
+
+
+def _offer_from_metadata(meta: Any) -> dict[str, str] | None:
+    """The pending offer on one stored assistant message, if it still stands."""
+    if isinstance(meta, str):
+        import json
+
+        try:
+            meta = json.loads(meta)
+        except ValueError:
+            meta = None
+    if not isinstance(meta, dict):
+        return None
+    offer = meta.get("plan_mode_offer")
+    if not isinstance(offer, dict):
+        return None
+    if str(offer.get("status") or "") != "pending":
+        return None
+    offer_id = str(offer.get("offer_id") or "").strip()
+    query = str(offer.get("query") or "").strip()[:_OFFER_QUERY_CAP]
+    if not offer_id or not query:
+        return None
+    return {"offer_id": offer_id, "query": query}
+
+
+def _stored_row(row: Any) -> tuple[Any, Any, Any]:
+    """(role, content, metadata) from a sqlite row or plain tuple."""
+    try:
+        return row["role"], row["content"], row["metadata"]
+    except (KeyError, TypeError, IndexError):
+        return row[0], row[1], row[2]
+
+
+def _latest_pending_offer_from_session(session_id: str | None) -> dict[str, str] | None:
+    """Server-side fallback: the client never uploads per-message metadata.
+
+    Chat requests send ``history`` with ``metadata: null`` on every turn, so the
+    offer card is invisible to the request payload. Read it where it is stored:
+    only the session's *last* assistant reply may be accepted, which keeps a
+    dismissed or superseded offer from being revived.
+    """
+    if not session_id:
+        return None
+    from app.database import get_db
+
+    try:
+        with get_db() as conn:
+            rows = conn.execute(
+                "SELECT role, content, metadata FROM chat_messages "
+                "WHERE session_id=? ORDER BY id DESC LIMIT 6",
+                (session_id,),
+            ).fetchall()
+    except Exception:
+        return None
+    for row in rows:
+        role, content, stored = _stored_row(row)
+        if role != "assistant":
+            continue
+        offer = _offer_from_metadata(stored)
+        if offer is not None:
+            return offer
+        if str(content or "").strip():
+            # A newer real reply supersedes the card.
             return None
-        offer_id = str(offer.get("offer_id") or "").strip()
-        query = str(offer.get("query") or "").strip()[:_OFFER_QUERY_CAP]
-        if not offer_id or not query:
-            return None
-        return {"offer_id": offer_id, "query": query}
     return None
 
 
@@ -119,6 +178,7 @@ def resolve_plan_mode_acceptance(
     plan_bound: bool,
     settings: dict[str, Any],
     messages: list[dict[str, Any]] | None = None,
+    session_id: str | None = None,
 ) -> PlanModeAcceptance:
     """Plan mode when the user explicitly asks for a Plan or accepts an offer."""
     from app.routers.chat.request_routing import _has_explicit_plan_request
@@ -127,7 +187,9 @@ def resolve_plan_mode_acceptance(
     if plan_bound or settings.get("plan_mode") is True or not text:
         return PlanModeAcceptance(plan_mode=False, clear_dismissed=False)
 
-    pending = _latest_pending_offer(messages, current_message=text)
+    pending = _latest_pending_offer(messages, current_message=text) or (
+        _latest_pending_offer_from_session(session_id)
+    )
     confirmer = len(text) <= _CONFIRMER_MAX_CHARS and bool(_CONFIRMER_RE.match(text))
     if pending and confirmer:
         return PlanModeAcceptance(
