@@ -1412,6 +1412,7 @@ class StructuredChatAgent:
                 plan_bound=self.plan_session.plan_id is not None,
                 settings=session_offer_settings(self.session_id),
                 messages=self.history,
+                session_id=self.session_id,
             )
         except Exception:
             acceptance = None
