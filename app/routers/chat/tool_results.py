@@ -39,6 +39,71 @@ def _trim_text(value: str, *, limit: int) -> str:
     return text
 
 
+_LIGHTRAG_MAX_PREVIEW_CHARS = 12000
+_LIGHTRAG_MAX_ITEMS = 10
+_LIGHTRAG_MAX_REFERENCES = 12
+_LIGHTRAG_ITEM_CHARS = 300
+
+
+def _lightrag_items(items: Any, keys: tuple[str, ...], limit: int) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    if not isinstance(items, list):
+        return rows
+    for item in items[:limit]:
+        if not isinstance(item, dict):
+            continue
+        row: dict[str, Any] = {}
+        for key in keys:
+            value = item.get(key)
+            if isinstance(value, str) and value.strip():
+                row[key] = _trim_text(value, limit=_LIGHTRAG_ITEM_CHARS)
+            elif isinstance(value, (int, float)) and not isinstance(value, bool):
+                row[key] = value
+        if row:
+            rows.append(row)
+    return rows
+
+
+def _lightrag_evidence(raw_result: dict[str, Any]) -> dict[str, Any]:
+    """Model-visible LightRAG evidence: the rendered context plus slim graph rows.
+
+    The tool already caps its own payload; this bounds it again so the chat
+    transcript stays small (the full output is still stored on disk).
+    """
+    evidence: dict[str, Any] = {}
+    preview = raw_result.get("context_preview")
+    if isinstance(preview, str) and preview.strip():
+        evidence["context_preview"] = _trim_text(preview, limit=_LIGHTRAG_MAX_PREVIEW_CHARS)
+    for key, fields_, limit in (
+        ("references", ("reference_id", "file_path", "title", "shard"), _LIGHTRAG_MAX_REFERENCES),
+        ("entities", ("entity_name", "entity_type", "description", "file_path", "shard"), _LIGHTRAG_MAX_ITEMS),
+        (
+            "relationships",
+            ("src_id", "tgt_id", "description", "keywords", "file_path", "shard"),
+            _LIGHTRAG_MAX_ITEMS,
+        ),
+    ):
+        rows = _lightrag_items(raw_result.get(key), fields_, limit)
+        if rows:
+            evidence[key] = rows
+    for key in ("mode", "note"):
+        value = raw_result.get(key)
+        if isinstance(value, str) and value.strip():
+            evidence[key] = value
+    return evidence
+
+
+def _lightrag_has_evidence(sanitized: dict[str, Any]) -> bool:
+    if any(sanitized.get(key) for key in ("context_preview", "entities", "relationships", "chunks")):
+        return True
+    summary = sanitized.get("summary")
+    counts = summary if isinstance(summary, dict) else {}
+    return any(
+        isinstance(counts.get(key), int) and counts[key] > 0
+        for key in ("entities", "relationships", "chunks")
+    )
+
+
 def _extract_result_interpreter_output_text(value: Any) -> Optional[str]:
     if not isinstance(value, str):
         return None
@@ -956,16 +1021,11 @@ def sanitize_tool_result(tool_name: str, raw_result: Any) -> Dict[str, Any]:
                 triples = sanitized.get("triples")
                 sanitized["empty_result"] = not bool(triples)
         if tool_name == "lightrag_query":
-            if not sanitized.get("success"):
-                sanitized["empty_result"] = False
-            else:
-                has_evidence = bool(
-                    sanitized.get("context_preview")
-                    or sanitized.get("entities")
-                    or sanitized.get("relationships")
-                    or sanitized.get("chunks")
-                )
-                sanitized["empty_result"] = not has_evidence
+            # The generic key list above keeps only ``summary``; without this the
+            # model never saw the retrieved evidence and every successful query
+            # was flagged empty (live 620b run dt_1506823c…).
+            sanitized.update(_lightrag_evidence(raw_result))
+            sanitized["empty_result"] = bool(sanitized.get("success")) and not _lightrag_has_evidence(sanitized)
         return sanitized
 
     if raw_result is None:
