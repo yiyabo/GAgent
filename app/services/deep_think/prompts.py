@@ -31,13 +31,13 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any
 
 from app.services import bio_tools_catalog
 from app.services.deep_think.models import TaskExecutionContext
 from app.services.foundation.settings import CHAT_HISTORY_ABS_MAX, get_settings
-from app.services.response_style import PROFESSIONAL_STYLE_INSTRUCTION
 from app.services.prompt_policy import PLAN_SCOPE_POLICY, REFERENCE_SCOPE_POLICY
+from app.services.response_style import PROFESSIONAL_STYLE_INSTRUCTION
 from app.services.tool_schemas import (
     code_executor_enabled,
     code_mode_enabled,
@@ -57,7 +57,7 @@ def _dta() -> Any:
     return deep_think_agent
 
 
-_BIO_TOOLS_FALLBACK_CATALOG: Dict[str, List[str]] = {
+_BIO_TOOLS_FALLBACK_CATALOG: dict[str, list[str]] = {
     "seqkit": ["stats", "grep", "seq", "head"],
     "blast": ["blastn", "blastp", "makeblastdb"],
     "prodigal": ["predict", "meta"],
@@ -66,7 +66,7 @@ _BIO_TOOLS_FALLBACK_CATALOG: Dict[str, List[str]] = {
 }
 
 
-def _load_bio_tools_catalog() -> Dict[str, List[str]]:
+def _load_bio_tools_catalog() -> dict[str, list[str]]:
     config_path = Path(__file__).resolve().parents[3] / "tool_box" / "bio_tools" / "tools_config.json"
     try:
         if not config_path.exists():
@@ -84,7 +84,7 @@ def _load_bio_tools_catalog() -> Dict[str, List[str]]:
         return dict(_BIO_TOOLS_FALLBACK_CATALOG)
 
 
-def _format_bio_tools_catalog(catalog: Dict[str, List[str]]) -> str:
+def _format_bio_tools_catalog(catalog: dict[str, list[str]]) -> str:
     return "; ".join(
         f"{tool} ({', '.join(ops) if ops else 'no operations'})"
         for tool, ops in sorted(catalog.items())
@@ -96,7 +96,7 @@ _BIO_TOOLS_NAMES = sorted(_BIO_TOOLS_CATALOG.keys())
 _BIO_TOOLS_CATALOG_TEXT = _format_bio_tools_catalog(_BIO_TOOLS_CATALOG)
 
 
-def _build_structured_plan_requirement_block(agent: "DeepThinkAgent") -> str:
+def _build_structured_plan_requirement_block(agent: DeepThinkAgent) -> str:
     flags = agent._plan_contract_flags()
     plan_id = agent._current_plan_id()
 
@@ -109,7 +109,7 @@ def _build_structured_plan_requirement_block(agent: "DeepThinkAgent") -> str:
             "Ask the user to choose one option: update the existing plan, create a new plan in this session, or start a new chat.\n"
         )
 
-    requirement_lines: List[str] = []
+    requirement_lines: list[str] = []
     if flags["contract_enforced"]:
         requirement_lines.append(
             "Explicit Plan mode is active. Research with read-only tools and create, review, or update "
@@ -130,14 +130,14 @@ def _build_structured_plan_requirement_block(agent: "DeepThinkAgent") -> str:
             requirement_lines.append(plan_mode_question_guidance(rounds_left))
     if agent.request_profile.get("plan_tree_edit_allowed") is False:
         requirement_lines.append(
-            ("No persistent Plan has been requested in this chat. A topic selection or request to explain a subject "
+            "No persistent Plan has been requested in this chat. A topic selection or request to explain a subject "
              "is not permission to create a research project. Answer the current question in chat; do not create "
              "or bind a Plan. Ordinary tools and an internal todo-list remain available."
              if plan_id is None else
              "The persisted Plan task tree is fixed for this turn. Executing, retrying or repairing a task does not "
             "authorize plan edits. Do not create/split/delete/move/rewrite tasks, change their output requirements, "
             "or optimize the tree. You may maintain an internal todo-list and change your working approach "
-            "to complete the original task. Plan edits require an explicit user request.")
+            "to complete the original task. Plan edits require an explicit user request."
         )
     if agent.request_profile.get("chat_plan_execution_background_only") and plan_id is not None:
         requirement_lines.append(
@@ -206,11 +206,11 @@ def _build_structured_plan_requirement_block(agent: "DeepThinkAgent") -> str:
 
 
 def _build_created_plan_finalize_nudge(
-    agent: "DeepThinkAgent",
+    agent: DeepThinkAgent,
     *,
     user_query: str,
     plan_id: int,
-    plan_title: Optional[str] = None,
+    plan_title: str | None = None,
 ) -> str:
     language = _dta().detect_reasoning_language(user_query)
     title_suffix = f"，标题：{plan_title}" if language == "zh" and plan_title else (
@@ -234,11 +234,11 @@ def _build_created_plan_finalize_nudge(
 
 
 def _build_created_plan_execute_nudge(
-    agent: "DeepThinkAgent",
+    agent: DeepThinkAgent,
     *,
     user_query: str,
     plan_id: int,
-    plan_title: Optional[str] = None,
+    plan_title: str | None = None,
 ) -> str:
     language = _dta().detect_reasoning_language(user_query)
     title_suffix = f"，标题：{plan_title}" if language == "zh" and plan_title else (
@@ -260,9 +260,9 @@ def _build_created_plan_execute_nudge(
 
 
 def _build_tool_failure_correction_nudge(
-    agent: "DeepThinkAgent",
-    tool_results: List[Dict[str, Any]],
-) -> Optional[str]:
+    agent: DeepThinkAgent,
+    tool_results: list[dict[str, Any]],
+) -> str | None:
     for item in tool_results:
         if not isinstance(item, dict):
             continue
@@ -283,7 +283,7 @@ def _build_tool_failure_correction_nudge(
     return None
 
 
-def _build_plan_conflict_confirmation_message(agent: "DeepThinkAgent") -> str:
+def _build_plan_conflict_confirmation_message(agent: DeepThinkAgent) -> str:
     plan_id = agent._current_plan_id()
     plan_title = agent._current_plan_title()
     title_suffix = f" ('{plan_title}')" if plan_title else ""
@@ -294,11 +294,11 @@ def _build_plan_conflict_confirmation_message(agent: "DeepThinkAgent") -> str:
     )
 
 
-def _get_structured_plan_retry_prompt(agent: "DeepThinkAgent") -> str:
+def _get_structured_plan_retry_prompt(agent: DeepThinkAgent) -> str:
     flags = agent._plan_contract_flags()
     if flags["conflict_requires_confirmation"]:
         return agent._build_plan_conflict_confirmation_message()
-    required_ops: List[str] = []
+    required_ops: list[str] = []
     if flags["create_required"]:
         required_ops.append("create")
     if flags["execute_required"]:
@@ -323,7 +323,7 @@ def _get_structured_plan_retry_prompt(agent: "DeepThinkAgent") -> str:
     )
 
 
-def _build_request_tier_block(agent: "DeepThinkAgent") -> str:
+def _build_request_tier_block(agent: DeepThinkAgent) -> str:
     """Single efficiency contract for every turn (tier-free flat loop)."""
     brief_note = ""
     if agent._is_brief_execute_followup():
@@ -341,7 +341,7 @@ def _build_request_tier_block(agent: "DeepThinkAgent") -> str:
             "- For immutable source inputs, prefer canonical data-directory paths over same-named session-root `results/` copies, especially when the session copy is empty or malformed.\n"
             "- For single-cell integration tasks, fewer than 2 valid upstream samples means the preconditions are not met; do not claim integration succeeded.\n"
         )
-        from app.services.plans.completion_policy import plan_agent_managed, guidance
+        from app.services.plans.completion_policy import guidance, plan_agent_managed
         if plan_agent_managed(agent):
             execute_note = "- " + guidance() + "\n"
     return (
@@ -359,7 +359,7 @@ def _build_request_tier_block(agent: "DeepThinkAgent") -> str:
     )
 
 
-def _build_tool_access_block(agent: "DeepThinkAgent") -> str:
+def _build_tool_access_block(agent: DeepThinkAgent) -> str:
     lines = [
         "=== TOOL ACCESS ===",
         "- Use the tools available in this run. A catalog or Skill mentioning a tool does not make it available; load its schema when supported before calling it.",
@@ -386,7 +386,7 @@ def _build_tool_access_block(agent: "DeepThinkAgent") -> str:
     return "\n".join(lines) + "\n"
 
 
-def _build_grounded_tooling_block(agent: "DeepThinkAgent") -> str:
+def _build_grounded_tooling_block(agent: DeepThinkAgent) -> str:
     """Nudge the agent to use tools for verification when facts are checkable."""
     return (
         "=== GROUNDED TOOLING ===\n"
@@ -397,7 +397,7 @@ def _build_grounded_tooling_block(agent: "DeepThinkAgent") -> str:
     )
 
 
-def _build_artifact_deliverable_workflow_block(agent: "DeepThinkAgent") -> str:
+def _build_artifact_deliverable_workflow_block(agent: DeepThinkAgent) -> str:
     return (
         """=== FIGURE FINE-TUNING & ITERATIVE REFINEMENT RULES ===
 - When the user requests a figure fine-tuning (e.g., prompt starting with '【图表局部微调】针对目标图表' or '[Figure fine-tune] Target figure', or asking to modify colors, fonts, margins, annotations, or panel layouts of an existing figure):
@@ -417,7 +417,7 @@ def _build_artifact_deliverable_workflow_block(agent: "DeepThinkAgent") -> str:
     )
 
 
-def _build_bio_tools_quick_map_block(agent: "DeepThinkAgent") -> str:
+def _build_bio_tools_quick_map_block(agent: DeepThinkAgent) -> str:
     if "bio_tools" not in agent.available_tools:
         return ""
     return (
@@ -464,7 +464,7 @@ def _build_bio_tools_quick_map_block(agent: "DeepThinkAgent") -> str:
     )
 
 
-def _build_skills_index_block(agent: "DeepThinkAgent") -> str:
+def _build_skills_index_block(agent: DeepThinkAgent) -> str:
     """Level-1 skill index (names + descriptions); opened on demand with load_skill."""
     if "load_skill" not in agent.available_tools:
         return ""
@@ -474,8 +474,8 @@ def _build_skills_index_block(agent: "DeepThinkAgent") -> str:
 
 
 def _build_plan_artifact_discovery_block(
-    agent: "DeepThinkAgent",
-    context: Optional[Dict[str, Any]] = None,
+    agent: DeepThinkAgent,
+    context: dict[str, Any] | None = None,
 ) -> str:
     plan_id = agent._current_plan_id()
     if plan_id is None:
@@ -506,7 +506,7 @@ def _build_plan_artifact_discovery_block(
     return "\n".join(lines)
 
 
-def _build_evidence_scope_block(agent: "DeepThinkAgent") -> str:
+def _build_evidence_scope_block(agent: DeepThinkAgent) -> str:
     return (
         "=== EVIDENCE SCOPE RULES ===\n"
         "- Distinguish complete enumeration, status/manifest files, and sampled previews.\n"
@@ -521,7 +521,7 @@ def _build_evidence_scope_block(agent: "DeepThinkAgent") -> str:
     )
 
 
-def _build_session_isolation_block(agent: "DeepThinkAgent") -> str:
+def _build_session_isolation_block(agent: DeepThinkAgent) -> str:
     session_id = str(agent.request_profile.get("session_id") or "").strip()
     if not session_id:
         return ""
@@ -564,8 +564,8 @@ def _build_session_isolation_block(agent: "DeepThinkAgent") -> str:
     )
 
 
-def _build_shared_strategy_block(agent: "DeepThinkAgent") -> str:
-    from app.services.plans.completion_policy import plan_agent_managed, guidance
+def _build_shared_strategy_block(agent: DeepThinkAgent) -> str:
+    from app.services.plans.completion_policy import guidance, plan_agent_managed
     missing_input_rule = (
         "- If the current bound task depends on upstream deliverables that are missing, report BLOCKED_DEPENDENCY clearly instead of silently switching to a different upstream task.\n"
         "- Do not convert an integration/analysis task into full upstream preprocessing unless the task instruction explicitly authorizes backfilling prerequisites.\n"
@@ -624,7 +624,7 @@ def _build_shared_strategy_block(agent: "DeepThinkAgent") -> str:
     ) + agent._build_compliance_policy_block()
 
 
-def _build_compliance_policy_block(agent: "DeepThinkAgent") -> str:
+def _build_compliance_policy_block(agent: DeepThinkAgent) -> str:
     """IP / trade-secret / commercial-violation refusal policy (GB/T 41812 standard).
 
     Covers all 5 core violation categories from the 1,600-question IP & trade secrets
@@ -644,7 +644,7 @@ def _build_compliance_policy_block(agent: "DeepThinkAgent") -> str:
         )
 
 
-def _build_protocol_boundary_block(agent: "DeepThinkAgent", mode: str) -> str:
+def _build_protocol_boundary_block(agent: DeepThinkAgent, mode: str) -> str:
     if mode == "native":
         return (
             "=== PROTOCOL BOUNDARY (NATIVE TOOL CALLING) ===\n"
@@ -661,7 +661,7 @@ def _build_protocol_boundary_block(agent: "DeepThinkAgent", mode: str) -> str:
     )
 
 
-def _is_brief_execute_followup_context(context: Optional[Dict[str, Any]]) -> bool:
+def _is_brief_execute_followup_context(context: dict[str, Any] | None) -> bool:
     if not isinstance(context, dict):
         return False
     intent_type = str(context.get("intent_type") or "").strip().lower()
@@ -670,8 +670,8 @@ def _is_brief_execute_followup_context(context: Optional[Dict[str, Any]]) -> boo
 
 
 def _select_recent_history(
-    context: Optional[Dict[str, Any]],
-) -> tuple[List[Dict[str, Any]], bool]:
+    context: dict[str, Any] | None,
+) -> tuple[list[dict[str, Any]], bool]:
     """Shared history selection/clip policy.
 
     Returns ``(selected, brief_execute_followup)`` where each selected item is
@@ -710,7 +710,7 @@ def _select_recent_history(
         history = filtered_history
     recent = history[-limit:] if len(history) > limit else history
     clip_limit = 240 if brief_execute_followup else 500
-    selected: List[Dict[str, Any]] = []
+    selected: list[dict[str, Any]] = []
     for msg in recent:
         content = msg.get("content", "")
         if len(content) > clip_limit:
@@ -719,7 +719,7 @@ def _select_recent_history(
     return selected, brief_execute_followup
 
 
-def _append_recent_chat_history(prompt: str, context: Optional[Dict[str, Any]]) -> str:
+def _append_recent_chat_history(prompt: str, context: dict[str, Any] | None) -> str:
     """Legacy text form. No longer used by the prompt builders (history now
     enters the LLM call as role messages via `_extract_history_messages` so
     the system prompt stays byte-stable for provider prompt caching); kept
@@ -733,10 +733,10 @@ def _append_recent_chat_history(prompt: str, context: Optional[Dict[str, Any]]) 
 
 
 def _extract_history_messages(
-    context: Optional[Dict[str, Any]],
+    context: dict[str, Any] | None,
     *,
-    current_user_query: Optional[str] = None,
-) -> List[Dict[str, str]]:
+    current_user_query: str | None = None,
+) -> list[dict[str, str]]:
     """Chat history as OpenAI-style role messages for the LLM call.
 
     Only user/assistant roles pass through; consecutive same-role items are
@@ -752,7 +752,7 @@ def _extract_history_messages(
                 and str(last.get("content") or "").strip() == str(current_user_query).strip()):
             context = {**context, "chat_history": history[:-1]}
     selected, _brief = _select_recent_history(context)
-    messages: List[Dict[str, str]] = []
+    messages: list[dict[str, str]] = []
     for msg in selected:
         role = str(msg.get("role") or "").strip().lower()
         if role not in ("user", "assistant"):
@@ -762,9 +762,13 @@ def _extract_history_messages(
             messages[-1]["content"] = f"{messages[-1]['content']}\n{content}"
         else:
             messages.append({"role": role, "content": content})
-    if current_user_query and messages and messages[-1]["role"] == "user":
-        if messages[-1]["content"].strip() == str(current_user_query).strip():
-            messages.pop()
+    if (
+        current_user_query
+        and messages
+        and messages[-1]["role"] == "user"
+        and messages[-1]["content"].strip() == str(current_user_query).strip()
+    ):
+        messages.pop()
     return messages
 
 
@@ -778,12 +782,12 @@ def _clip_reference_text(value: Any, *, limit: int = 800) -> str:
 def _append_reference_context(
     cls,
     prompt: str,
-    context: Optional[Dict[str, Any]],
+    context: dict[str, Any] | None,
 ) -> str:
     if not context:
         return prompt
 
-    from app.services.response_style import response_style_instruction, SNAPSHOT_KEY
+    from app.services.response_style import SNAPSHOT_KEY, response_style_instruction
     if SNAPSHOT_KEY in context:
         prompt += "\n=== CHAT REPLY PREFERENCES ===\n" + response_style_instruction(context)
 
@@ -791,7 +795,7 @@ def _append_reference_context(
     recall_block = format_recall_context(context)
     from app.services.skill_learning.context import format_skill_context
     recall_block = "\n".join(block for block in (recall_block, format_skill_context(context)) if block)
-    blocks: List[str] = [recall_block] if recall_block else []
+    blocks: list[str] = [recall_block] if recall_block else []
     if context.get("action_selection") == "model":
         blocks.append("=== PLAN REFERENCE INDEX (NOT AN EXECUTION ASSIGNMENT) ===")
         blocks.append(json.dumps(context.get("model_plan_index") or {}, ensure_ascii=False))
@@ -830,7 +834,7 @@ def _append_reference_context(
 
     continuation_summary = context.get("continuation_summary")
     if brief_execute_followup and isinstance(continuation_summary, dict):
-        continuation_lines: List[str] = []
+        continuation_lines: list[str] = []
         previous_user_request = cls._clip_reference_text(
             continuation_summary.get("previous_user_request"),
             limit=240,
@@ -928,9 +932,9 @@ def _append_reference_context(
 
 
 def _build_native_system_prompt(
-    agent: "DeepThinkAgent",
-    context: Optional[Dict[str, Any]] = None,
-    task_context: Optional[TaskExecutionContext] = None,
+    agent: DeepThinkAgent,
+    context: dict[str, Any] | None = None,
+    task_context: TaskExecutionContext | None = None,
 ) -> str:
     """System prompt for native tool calling mode (no JSON formatting rules)."""
     from app.services.response_style import SNAPSHOT_KEY
@@ -1066,9 +1070,9 @@ def _execute_code_catalog_entry() -> str:
 
 
 def _build_system_prompt(
-    agent: "DeepThinkAgent",
-    context: Optional[Dict[str, Any]] = None,
-    task_context: Optional[TaskExecutionContext] = None,
+    agent: DeepThinkAgent,
+    context: dict[str, Any] | None = None,
+    task_context: TaskExecutionContext | None = None,
 ) -> str:
     """Construct the system prompt for DeepThink, task-aware when available."""
     from app.services.response_style import SNAPSHOT_KEY
@@ -1119,7 +1123,9 @@ def _build_system_prompt(
         "lightrag_query": (
             "PREFERRED knowledge-graph / literature RAG over the large LightRAG corpus. "
             "Use for corpus factual questions, entity/relation evidence, and literature-backed context. "
-            "Params: {\"query\": \"your question\", \"mode\": \"mix|hybrid|local|global|naive\", \"top_k\": 5, \"max_chunks\": 12}."
+            "Params: {\"query\": \"your question\", \"ll_keywords\": [\"specific entities in English\"], "
+            "\"hl_keywords\": [\"broad themes in English\"], \"mode\": \"mix\", \"top_k\": 5, \"max_chunks\": 12}. "
+            "Always give both keyword lists: LightRAG then skips its per-shard LLM keyword extraction."
         ),
         "graph_rag": (
             "LEGACY small local triples graph with limited coverage. Prefer lightrag_query. "
@@ -1424,7 +1430,7 @@ When ready to answer:
     return agent._append_reference_context(base_prompt, context)
 
 
-def _get_next_step_prompt(agent: "DeepThinkAgent", iteration: int) -> str:
+def _get_next_step_prompt(agent: DeepThinkAgent, iteration: int) -> str:
     """Generate the next-step prompt (tier-free flat loop): one uniform
     completion nudge; the endgame is owned by the loop guards, not by a
     tier-specific prompt ladder."""

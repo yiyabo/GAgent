@@ -90,6 +90,15 @@ def _lightrag_evidence(raw_result: dict[str, Any]) -> dict[str, Any]:
         value = raw_result.get(key)
         if isinstance(value, str) and value.strip():
             evidence[key] = value
+    keywords = raw_result.get("keywords")
+    if isinstance(keywords, dict):
+        # Which keywords drove graph retrieval and who supplied them (agent vs
+        # LightRAG's own extraction) — visible in transcripts and Run Inspector.
+        evidence["keywords"] = {
+            "source": str(keywords.get("source") or ""),
+            "high_level": [str(k) for k in keywords.get("high_level") or []][:10],
+            "low_level": [str(k) for k in keywords.get("low_level") or []][:10],
+        }
     return evidence
 
 

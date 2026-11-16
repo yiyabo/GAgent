@@ -54,6 +54,7 @@ ALL_NATIVE_TOOLS = [
     "document_reader",
     "file_operations",
     "graph_rag",
+    "lightrag_query",
     "literature_pipeline",
     "load_skill",
     "manuscript_writer",

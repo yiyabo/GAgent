@@ -1560,6 +1560,79 @@
     },
     {
       "function": {
+        "description": "PREFERRED knowledge-graph / literature RAG tool. Query the large LightRAG 8-shard corpus for entities, relations, chunks, and references. Use this by default for knowledge-graph, literature-backed, or corpus factual questions. Returns retrieval evidence only (no final generation). Always pass both `ll_keywords` (specific entities) and `hl_keywords` (broad themes) in English: LightRAG then searches the graph with them directly instead of making one LLM keyword-extraction call per shard (8 calls, ~1-2 s per query).",
+        "name": "lightrag_query",
+        "parameters": {
+          "properties": {
+            "hl_keywords": {
+              "description": "High-level keywords: the broad concepts or themes of the question, in English, e.g. [\"cell wall binding\", \"endolysin domain architecture\"]. Matched against graph relations.",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 10,
+              "type": "array"
+            },
+            "include_references": {
+              "default": true,
+              "description": "Whether to include reference metadata in the tool result.",
+              "type": "boolean"
+            },
+            "ll_keywords": {
+              "description": "Low-level keywords: the specific entities in the question, in English (gene/protein/domain names, organisms, phages, methods), e.g. [\"LysK\", \"SH3b domain\", \"Staphylococcus aureus\"]. Matched against graph entities.",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 10,
+              "type": "array"
+            },
+            "max_chunks": {
+              "default": 12,
+              "description": "Max merged chunks/context items to keep.",
+              "maximum": 40,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "max_references": {
+              "default": 12,
+              "description": "Max references to keep.",
+              "maximum": 40,
+              "minimum": 1,
+              "type": "integer"
+            },
+            "mode": {
+              "default": "mix",
+              "description": "LightRAG retrieval mode (default: mix).",
+              "enum": [
+                "mix",
+                "hybrid",
+                "local",
+                "global",
+                "naive"
+              ],
+              "type": "string"
+            },
+            "query": {
+              "description": "Natural-language question for the LightRAG corpus.",
+              "type": "string"
+            },
+            "top_k": {
+              "default": 5,
+              "description": "Per-shard top_k for entity/relation retrieval.",
+              "maximum": 20,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "query"
+          ],
+          "type": "object"
+        }
+      },
+      "type": "function"
+    },
+    {
+      "function": {
         "description": "Collect a literature evidence pack from PubMed/PMC. Produces evidence.md, references.bib, and library.jsonl for downstream drafting.",
         "name": "literature_pipeline",
         "parameters": {

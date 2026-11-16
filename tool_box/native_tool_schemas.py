@@ -20,6 +20,10 @@ from app.services.plans.execution_contract import PLAN_EXECUTION_GUIDANCE, execu
 from app.services.plan_clarifications import ASK_USER_GUIDANCE, ask_user_questions_schema, assumptions_schema
 
 from .phagescope_gateway_contract import extend_schema as _extend_gateway_schema
+from .tools_impl.lightrag_query import (
+    DESCRIPTION as _LIGHTRAG_DESC,
+    PARAMETERS_SCHEMA as _LIGHTRAG_PARAMS,
+)
 from .tools_impl.phagescope_data.schema import (
     DESCRIPTION as _PHAGESCOPE_DATA_DESC,
     PARAMETERS_SCHEMA as _PHAGESCOPE_DATA_PARAMS,
@@ -1275,6 +1279,12 @@ NATIVE_TOOL_CONTENT: Dict[str, Dict[str, Any]] = {
     "phagescope_data": {
         "description": _PHAGESCOPE_DATA_DESC,
         "parameters": _PHAGESCOPE_DATA_PARAMS,
+    },
+    # Same single source as the tools_impl dict (description + parameters), so the
+    # agent-supplied keyword fields cannot drift from what the handler accepts.
+    "lightrag_query": {
+        "description": _LIGHTRAG_DESC,
+        "parameters": _LIGHTRAG_PARAMS,
     },
 }
 
