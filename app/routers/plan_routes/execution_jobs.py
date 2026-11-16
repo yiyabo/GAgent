@@ -136,6 +136,55 @@ def _run_decomposition_job(
     )
 
 
+def _self_repair_blocked(
+    *,
+    plan_id: int,
+    task_id: int,
+    result: Any,
+    task_order: List[int],
+    session_ctx: Dict[str, Any],
+    paper_mode: bool,
+    enforce_dependencies: bool,
+    rounds_used: List[int],
+) -> tuple[Any, Optional[Dict[str, Any]]]:
+    """Give a dependency-blocked task one bounded repair round instead of stopping the job."""
+    from app.services.plans import blocker_recovery
+
+    if not blocker_recovery.is_blocked_result(result) or len(rounds_used) >= blocker_recovery.max_rounds_per_job():
+        return result, None
+    rounds_used.append(task_id)
+
+    def _config(*, session_context: Dict[str, Any], force_rerun: bool) -> ExecutionConfig:
+        return ExecutionConfig(
+            session_context=session_context,
+            paper_mode=bool(paper_mode),
+            enforce_dependencies=enforce_dependencies,
+            force_rerun=force_rerun,
+        )
+
+    try:
+        outcome = blocker_recovery.attempt(
+            executor=_facade()._plan_executor,
+            plan_id=plan_id,
+            task_id=task_id,
+            result=result,
+            task_order=task_order,
+            session_context=session_ctx,
+            config_factory=_config,
+            log=_facade().log_job_event,
+        )
+    except (RunDeadlineExceeded, asyncio.CancelledError):
+        raise
+    except Exception as exc:  # pragma: no cover - repair must never hide the original blocker
+        logger.warning("Self-repair for task %s failed: %s", task_id, exc)
+        _facade().log_job_event("warning", "Self-repair failed; keeping the original blocker.",
+                                {"sub_type": "self_repair", "task_id": task_id, "error": str(exc)})
+        return result, {"blocked_task_id": task_id, "error": str(exc)}
+    if outcome is None:
+        return result, None
+    return outcome.result, outcome.summary
+
+
 @bounded_plan_job(lambda: _facade().plan_decomposition_jobs)
 def _run_task_chain_job(
     *,
@@ -156,6 +205,8 @@ def _run_task_chain_job(
     reused: List[int] = []
     step_summaries: List[Dict[str, Any]] = []
     total_steps = len(task_order)
+    self_repair_rounds: List[int] = []
+    self_repairs: Dict[str, Any] = {}
 
     def _build_progress_stats(
         *,
@@ -264,6 +315,13 @@ def _run_task_chain_job(
                           if task_id != target_task_id else None)
                 if result is None:
                     result = _facade()._plan_executor.execute_task(plan_id, task_id, config=exec_config)
+                    result, self_repair = _self_repair_blocked(
+                        plan_id=plan_id, task_id=task_id, result=result, task_order=task_order,
+                        session_ctx=session_ctx, paper_mode=bool(paper_mode), enforce_dependencies=True,
+                        rounds_used=self_repair_rounds,
+                    )
+                    if self_repair is not None:
+                        self_repairs[str(task_id)] = self_repair
                 else:
                     _facade().log_job_event("info", "Reusing verified upstream task outputs.",
                         {"task_id": task_id, "status": "already_completed"})
@@ -306,6 +364,7 @@ def _run_task_chain_job(
                     "task_id": task_id,
                     "status": "already_completed" if was_reused else result.status,
                     "duration_sec": result.duration_sec,
+                    **({"self_repair": self_repairs[str(task_id)]} if str(task_id) in self_repairs else {}),
                 }
             )
 
@@ -462,6 +521,8 @@ def _run_full_plan_job(
     skipped: List[int] = []
     step_summaries: List[Dict[str, Any]] = []
     audit_repairs: Dict[str, Any] = {}
+    self_repair_rounds: List[int] = []
+    self_repairs: Dict[str, Any] = {}
     total_steps = len(task_order)
     baseline_completed_steps = max(0, int(initial_completed_steps or 0))
     overall_steps = max(total_steps, int(overall_total_steps or 0), baseline_completed_steps)
@@ -842,6 +903,13 @@ def _run_full_plan_job(
                 )
                 
                 result = _facade()._plan_executor.execute_task(plan_id, task_id, config=exec_config)
+                result, self_repair = _self_repair_blocked(
+                    plan_id=plan_id, task_id=task_id, result=result, task_order=task_order,
+                    session_ctx=session_ctx, paper_mode=bool(paper_mode),
+                    enforce_dependencies=exec_config.enforce_dependencies, rounds_used=self_repair_rounds,
+                )
+                if self_repair is not None:
+                    self_repairs[str(task_id)] = self_repair
             except (RunDeadlineExceeded, asyncio.CancelledError):
                 raise
             except Exception as exc:
@@ -923,7 +991,11 @@ def _run_full_plan_job(
             audit_repairs[str(task_id)] = repair_result
             final_status = _status_after_audit_repair(result.status, repair_result)
 
-            step_summaries.append({"task_id": task_id, "status": final_status, "duration_sec": result.duration_sec, "audit_repair": repair_result})
+            step_summaries.append({
+                "task_id": task_id, "status": final_status, "duration_sec": result.duration_sec,
+                "audit_repair": repair_result,
+                **({"self_repair": self_repairs[str(task_id)]} if str(task_id) in self_repairs else {}),
+            })
 
             _facade().log_job_event(
                 "info" if result.status == "completed" else "warning" if result.status in {"skipped", "needs_review"} else "error",

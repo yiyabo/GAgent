@@ -83,6 +83,9 @@ def guidance() -> str:
         "Inspect and reuse upstream files by content, even when names or aliases differ or no publication exists. "
         "If an input is missing or incomplete, recover it from existing materials or produce the necessary supplement "
         "within this task before continuing. Preserve provenance and report unresolved gaps honestly; never invent evidence. "
+        "When a tool fails or hits its time limit, change the approach before giving up: split long downloads or jobs "
+        "into resumable steps that fit the limit, reuse shared copies under /data or bio_tools databases, or switch to "
+        "a server-side tool. Report BLOCKED_DEPENDENCY only after such alternatives were tried, listing each attempt. "
         "This permission covers supporting work and a private todo list, not editing, splitting or rerunning the persisted "
         "Plan tree. Only the user can authorize changes to that tree."
     )

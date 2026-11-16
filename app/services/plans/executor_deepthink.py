@@ -272,6 +272,8 @@ class _DeepThinkMethods:
             constraints = [line for line in constraints if "independently checks OutputSpec" not in line]
             constraints.append("PlanExecutor records this task's execution lifecycle. When finished, use submit_final_answer in native mode or the final_answer field in strict mode to deliver your result and file paths.")
             constraints.append(guidance())
+        from .blocker_recovery import prompt_lines as self_repair_lines
+        constraints.extend(self_repair_lines(session_context))
         from . import input_discovery
         input_prompt = input_discovery.prompt(session_context)
         if input_prompt:
