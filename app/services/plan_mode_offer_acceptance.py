@@ -40,7 +40,51 @@ class PlanModeAcceptance:
     source: str = "none"
 
 
-def _latest_pending_offer(messages: list[dict[str, Any]] | None) -> dict[str, str] | None:
+def _message_metadata(item: dict[str, Any]) -> dict[str, Any] | None:
+    meta = item.get("metadata")
+    if isinstance(meta, str):
+        import json
+
+        try:
+            meta = json.loads(meta)
+        except ValueError:
+            meta = None
+    return meta if isinstance(meta, dict) else None
+
+
+def _trim_current_turn(
+    messages: list[dict[str, Any]], current_message: str | None
+) -> list[dict[str, Any]]:
+    """Drop the turn the client just posted, leaving the previous exchange.
+
+    Chat requests send the history *including* the user message being sent and
+    an empty assistant placeholder for the answer. Both are newer than the
+    offer we are looking for, so scanning would stop on the user message and
+    never see the card.
+    """
+    items = list(messages)
+    current = str(current_message or "").strip()
+    while items:
+        last = items[-1]
+        role = last.get("role")
+        content = str(last.get("content") or "").strip()
+        meta = _message_metadata(last)
+        has_offer = isinstance(meta, dict) and isinstance(meta.get("plan_mode_offer"), dict)
+        if role == "assistant" and not content and not has_offer:
+            items.pop()
+            continue
+        if role == "user" and current and content == current:
+            items.pop()
+            continue
+        break
+    return items
+
+
+def _latest_pending_offer(
+    messages: list[dict[str, Any]] | None,
+    *,
+    current_message: str | None = None,
+) -> dict[str, str] | None:
     """Pending offer on an assistant message after the last user turn.
 
     A dismissed session must not resurrect its old offer on an unrelated
@@ -48,19 +92,12 @@ def _latest_pending_offer(messages: list[dict[str, Any]] | None) -> dict[str, st
     """
     if not messages:
         return None
-    for item in reversed(messages):
+    for item in reversed(_trim_current_turn(list(messages), current_message)):
         if item.get("role") == "user":
             return None
         if item.get("role") != "assistant":
             continue
-        meta = item.get("metadata")
-        if isinstance(meta, str):
-            import json
-
-            try:
-                meta = json.loads(meta)
-            except ValueError:
-                meta = None
+        meta = _message_metadata(item)
         if not isinstance(meta, dict):
             continue
         offer = meta.get("plan_mode_offer")
@@ -90,7 +127,7 @@ def resolve_plan_mode_acceptance(
     if plan_bound or settings.get("plan_mode") is True or not text:
         return PlanModeAcceptance(plan_mode=False, clear_dismissed=False)
 
-    pending = _latest_pending_offer(messages)
+    pending = _latest_pending_offer(messages, current_message=text)
     confirmer = len(text) <= _CONFIRMER_MAX_CHARS and bool(_CONFIRMER_RE.match(text))
     if pending and confirmer:
         return PlanModeAcceptance(
